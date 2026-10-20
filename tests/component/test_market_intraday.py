@@ -50,10 +50,14 @@ def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
             ]
         }
     }
-    session = FakeSession([payload])
+    session = FakeSession([payload, payload])
     received_at = AFTERNOON + timedelta(seconds=2)
     client = EastmoneyClient(
-        worker_pool=None, timeout_seconds=2, session_factory=lambda: session, wall_clock=lambda: received_at
+        worker_pool=None,
+        timeout_seconds=2,
+        session_factory=lambda: session,
+        wall_clock=lambda: received_at,
+        monotonic=lambda: 100.0,
     )
 
     bars = client.fetch_intraday_minutes("600001", now=AFTERNOON)
@@ -69,6 +73,14 @@ def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
     assert "fqt" not in session.calls[0][1]["params"]
     assert session.calls[0][1]["timeout"] == 2
     assert session.calls[0][1]["cancel_requested"]() is False
+    assert client.fetch_intraday_minutes("600001", now=AFTERNOON, deadline=100.5) == bars
+    assert session.calls[1][1]["timeout"] == 0.5
+    assert session.calls[1][1]["deadline"] == 100.5
+    with pytest.raises(RuntimeError, match="eastmoney_request_cancelled_or_expired"):
+        client.fetch_intraday_minutes("600001", now=AFTERNOON, deadline=100.0)
+    with pytest.raises(RuntimeError, match="eastmoney_request_cancelled_or_expired"):
+        client.fetch_intraday_minutes("600001", now=AFTERNOON, cancelled=lambda: True)
+    assert len(session.calls) == 2
 
 
 @pytest.mark.parametrize("changed_field", ("close", "volume", "source_time", "source"))

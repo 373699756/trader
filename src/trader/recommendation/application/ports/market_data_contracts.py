@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 from trader.recommendation.domain.market.models import FeatureSnapshot
 
-LOGICAL_CACHE_LIMIT_BYTES = 248 * 1024 * 1024
-PROCESS_PEAK_RSS_LIMIT_BYTES = 384 * 1024 * 1024
+LOGICAL_CACHE_LIMIT_BYTES = 512 * 1024 * 1024
+PROCESS_PEAK_RSS_LIMIT_BYTES = 2048 * 1024 * 1024
 MARKET_CHANGE_SET_VERSION = "market_change_set"
 FEATURE_ENVELOPE_VERSION = "feature_snapshot_envelope"
 

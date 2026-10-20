@@ -19,29 +19,48 @@ from trader.download.domain.company_evidence import (
 
 def EncodeCompanySnapshot(snapshot: CompanyEvidenceSnapshot) -> str:
     return json.dumps(
-        {
-            "code": snapshot.code,
-            "published_at": snapshot.published_at.isoformat(),
-            "window_start": snapshot.window_start.isoformat(),
-            "window_end": snapshot.window_end.isoformat(),
-            "version": snapshot.version,
-            "announcements": [
-                {"disclosure": _disclosure(item.disclosure), "text": item.text, "checked": item.checked}
-                for item in snapshot.announcements
-            ],
-            "announcement_complete": snapshot.announcement_complete,
-            "financials": [_financial(item) for item in snapshot.financials],
-            "pledge": _ratio(snapshot.pledge) if snapshot.pledge else None,
-            "unlocks": [_ratio(item) for item in snapshot.unlocks],
-            "unlock_checked": snapshot.unlock_checked,
-            "news": [_disclosure(item) for item in snapshot.news],
-            "news_checked": snapshot.news_checked,
-            "failures": snapshot.failures,
-        },
+        _snapshot_fields(snapshot),
         ensure_ascii=False,
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def EncodeCompanyPublication(snapshot: CompanyEvidenceSnapshot) -> tuple[str, str]:
+    """Project once; hash the existing normalized protocol before adding publication coordinates."""
+    payload = _snapshot_fields(snapshot)
+    payload["version"] = ""
+    payload["published_at"] = datetime.combine(
+        snapshot.window_end, datetime.min.time(), snapshot.published_at.tzinfo
+    ).isoformat()
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+    payload["version"] = digest
+    payload["published_at"] = snapshot.published_at.isoformat()
+    return digest, json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _snapshot_fields(snapshot: CompanyEvidenceSnapshot) -> dict[str, object]:
+    return {
+        "code": snapshot.code,
+        "published_at": snapshot.published_at.isoformat(),
+        "window_start": snapshot.window_start.isoformat(),
+        "window_end": snapshot.window_end.isoformat(),
+        "version": snapshot.version,
+        "announcements": [
+            {"disclosure": _disclosure(item.disclosure), "text": item.text, "checked": item.checked}
+            for item in snapshot.announcements
+        ],
+        "announcement_complete": snapshot.announcement_complete,
+        "financials": [_financial(item) for item in snapshot.financials],
+        "pledge": _ratio(snapshot.pledge) if snapshot.pledge else None,
+        "unlocks": [_ratio(item) for item in snapshot.unlocks],
+        "unlock_checked": snapshot.unlock_checked,
+        "news": [_disclosure(item) for item in snapshot.news],
+        "news_checked": snapshot.news_checked,
+        "failures": snapshot.failures,
+    }
 
 
 def DecodeCompanySnapshot(payload: str) -> CompanyEvidenceSnapshot:
@@ -156,4 +175,4 @@ def _decode_ratio(raw: dict[str, object]) -> CompanyRatio:
     return CompanyRatio(str(raw["code"]), date.fromisoformat(str(raw["day"])), float(cast(float, raw["ratio_pct"])))
 
 
-__all__ = ["CompanySnapshotDigest", "DecodeCompanySnapshot", "EncodeCompanySnapshot"]
+__all__ = ["CompanySnapshotDigest", "DecodeCompanySnapshot", "EncodeCompanySnapshot", "EncodeCompanyPublication"]

@@ -23,6 +23,8 @@ from trader.recommendation.application.runtime.scheduler_runtime import Schedule
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 
@@ -40,7 +42,7 @@ class RuntimeWorkerResources:
     data_pool: BoundedExecutor
     quote_pool: BoundedExecutor
     market_quote_pool: BoundedExecutor
-    research_pool: BoundedExecutor
+    minute_pool: BoundedExecutor
     persistence_pool: BoundedExecutor
     source_lanes: SourceLaneScheduler
     json_writer: RuntimeJsonWriter
@@ -57,7 +59,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     scheduler: SchedulerRuntime
     records: SQLiteDecisionRecords
     market_cache: BoundedLruCache[object]
-    research_pool: BoundedExecutor
+    minute_pool: BoundedExecutor
     source_lanes: SourceLaneScheduler
     data_pool: BoundedExecutor
     quote_pool: BoundedExecutor
@@ -71,6 +73,10 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     outcome_evidence: OutcomeEvidenceT
     history_observer: PublishedHistoryObserver
     web_services: WebServicesT
+    workers: RuntimeWorkerResources
+    market_data: MarketFeatureService
+    budget: DeepSeekBudgetLedger
+    owns_shared_resources: bool = True
 
     @property
     def profile_id(self) -> ScoringProfileId:
@@ -83,9 +89,10 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             self.data_pool,
             self.quote_pool,
             self.market_quote_pool,
-            self.research_pool,
+            self.minute_pool,
             (self.long_runtime, self.history_observer),
             self.market_cache,
+            self.owns_shared_resources,
         )
 
     def start(self) -> bool:

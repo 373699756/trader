@@ -70,6 +70,7 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
         "candidate_feature_batch",
         "hard_filter_batch",
         "board_cross_section",
+        "quote_factor_inputs",
         "candidate_preselection",
         "board_score_batch",
         "global_local_draft",
@@ -119,16 +120,16 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
 
 def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -> None:
     expected_policies = {
-        "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "observation", False),
-        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 1080, "observation", False),
-        "intraday_minutes": (45.0, 90.0, None, None, 45.0, 360, "observation", False),
+        "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 12000, "observation", False),
+        "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 12000, "observation", False),
+        "intraday_minutes": (45.0, 90.0, None, None, 45.0, 12000, "observation", False),
         "security_master_calendar": (
             86400.0,
             86400.0,
             None,
             None,
             300.0,
-            6000,
+            12000,
             "observation",
             False,
         ),
@@ -138,6 +139,7 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
         "candidate_feature_batch": (86400.0, 86400.0, None, None, 60.0, 24, "feature_batches", False),
         "hard_filter_batch": (86400.0, 86400.0, None, None, 60.0, 24, "feature_batches", False),
         "board_cross_section": (86400.0, 86400.0, None, None, 60.0, 24, "feature_batches", False),
+        "quote_factor_inputs": (86400.0, 86400.0, None, None, 60.0, 12000, "feature_batches", False),
         "candidate_preselection": (86400.0, 86400.0, None, None, 60.0, 4, "feature_batches", False),
         "board_score_batch": (86400.0, 86400.0, None, None, 60.0, 24, "local_scoring", False),
         "global_local_draft": (86400.0, 86400.0, None, None, 60.0, 4, "local_scoring", False),
@@ -184,15 +186,15 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
 
 def _parse_cache_groups(groups_raw: Mapping[str, object]) -> dict[str, CacheGroupPolicy]:
     expected_groups = {
-        "observation": 128 * 1024 * 1024,
-        "canonical_snapshots": 56 * 1024 * 1024,
-        "feature_batches": 24 * 1024 * 1024,
-        "local_scoring": 16 * 1024 * 1024,
-        "review": 12 * 1024 * 1024,
-        "projection": 12 * 1024 * 1024,
+        "observation": 264 * 1024 * 1024,
+        "canonical_snapshots": 116 * 1024 * 1024,
+        "feature_batches": 49 * 1024 * 1024,
+        "local_scoring": 33 * 1024 * 1024,
+        "review": 25 * 1024 * 1024,
+        "projection": 25 * 1024 * 1024,
     }
     if groups_raw != expected_groups:
-        raise ConfigurationError("cache_policy.groups must match the fixed 128/56/24/16/12/12 MiB allocation")
+        raise ConfigurationError("cache_policy.groups must match the fixed 264/116/49/33/25/25 MiB allocation")
     return {name: CacheGroupPolicy(max_bytes=Integer(groups_raw, name, minimum=1)) for name in expected_groups}
 
 
@@ -271,7 +273,7 @@ def ParsePerformanceBudgets(raw: Mapping[str, object]) -> PerformanceBudgetSetti
         growth_percent=Number(memory_raw, "growth_percent", minimum=0.000001),
     )
     if memory != PerformanceMemorySettings(LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES, 20.0):
-        raise ConfigurationError("performance memory budget must match the fixed 248/384 MiB contract")
+        raise ConfigurationError("performance memory budget must match the fixed 512/2048 MiB contract")
     relative = Number(raw, "relative_regression_percent", minimum=0.000001)
     if relative != 5.0:
         raise ConfigurationError("relative_regression_percent must remain fixed at 5")

@@ -5,14 +5,15 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.infra.cache_contracts import BoundedCache, CacheIdentity, RequestKey
 from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,
@@ -20,6 +21,7 @@ from trader.infra.market_data.history.history import (
     RequireQfqHistory,
     SummarizeHistoryMetrics,
 )
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.factors import Clamp, PercentileScoresWithMetadata, WeightedScore
 from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
@@ -213,6 +215,17 @@ if len(FEATURE_SCHEMA_NAMES) != len(set(FEATURE_SCHEMA_NAMES)):
     raise ValueError("feature schema contains duplicate feature names")
 
 
+@dataclass(frozen=True)
+class _CachedQuoteFactors:
+    quote: MarketQuote
+    bars: tuple[DailyBar, ...]
+    context: HistoryContext | None
+    values: tuple[tuple[str, float | None], ...]
+
+    def matches(self, quote: MarketQuote, bars: tuple[DailyBar, ...], context: HistoryContext | None) -> bool:
+        return self.quote == quote and self.bars == bars and self.context == context
+
+
 class FeatureBuilder:
     def __init__(  # noqa: PLR0913 - feature builder receives explicit policy owners at the composition boundary
         self,
@@ -223,6 +236,7 @@ class FeatureBuilder:
         feature_component_weights: FeatureComponentWeightPolicy,
         *,
         model_momentum_horizons: tuple[int, ...] = (20, 40, 60),
+        cache: BoundedCache[object] | None = None,
     ) -> None:
         if (
             not model_momentum_horizons
@@ -236,6 +250,8 @@ class FeatureBuilder:
         self._long_research_policy = long_research_policy
         self._feature_component_weights = feature_component_weights
         self._model_momentum_horizons = tuple(model_momentum_horizons)
+        self._cache = cache
+        self._base_policy_identity = ContentHash(feature_component_weights)
 
     def build(
         self,
@@ -470,22 +486,57 @@ class FeatureBuilder:
         if context is not None and context.latest_trade_date > observation_date:
             context = None
             bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
-        history = context.profile if context is not None else SummarizeHistoryMetrics(bars)
-        completed_bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
-        if (
-            context is not None
-            and context.latest_trade_date >= observation_date
-            and context.previous_profile is not None
-        ):
-            setup_history = context.previous_profile
-        else:
-            setup_history = SummarizeHistoryMetrics(completed_bars) if len(completed_bars) != len(bars) else history
-        returns = {
-            days: context.return_pct(days, quote.price, observation_date)
+        base_context = (
+            replace(
+                context,
+                sample_count=min(61, context.sample_count),
+                return_anchors=tuple((lag, price) for lag, price in context.return_anchors if lag <= 60),
+            )
             if context is not None
-            else _live_return_pct(bars, days, quote.price, observation_date)
-            for days in (1, 3, 5, 10, 20, 40, 60)
-        }
+            else None
+        )
+        cache = self._cache
+        if cache is None:
+            values = self._base_features(quote, bars, base_context)
+        else:
+            # Base factors depend on the same <=60-day facts in either profile.
+            # Profile publication/model identities remain bound by DailyFeaturePack.
+            identity = CacheIdentity(
+                "quote_factor_inputs",
+                "local_history",
+                quote.code,
+                RequestKey({"version": quote.data_version, "source_time": quote.source_time.isoformat()}),
+                observation_date,
+                "quote_factors",
+                "qfq",
+                self._base_policy_identity,
+                FEATURE_SCHEMA_ID,
+            )
+
+            def build() -> _CachedQuoteFactors:
+                found = cache.get(identity)
+                if found is not None and found.value is not None:
+                    cached = cast(_CachedQuoteFactors, found.value)
+                    if cached.matches(quote, bars, base_context):
+                        return cached
+                result = _CachedQuoteFactors(
+                    quote, bars, base_context, tuple(sorted(self._base_features(quote, bars, base_context).items()))
+                )
+                cache.put(
+                    identity,
+                    result,
+                    data_version=quote.data_version,
+                    source_time=quote.source_time,
+                    received_at=quote.received_time,
+                )
+                return result
+
+            cached = cast(_CachedQuoteFactors, cache.coalesce(identity, build))
+            # Opaque provider versions can be reused for corrected facts. Check
+            # the full immutable input even after joining a concurrent request.
+            if not cached.matches(quote, bars, base_context):
+                cached = build()
+            values = dict(cached.values)
         anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *self._model_momentum_horizons)))
         qfq_alpha = {
             item.feature_id.value: item.value
@@ -504,6 +555,35 @@ class FeatureBuilder:
                 ),
                 self._model_momentum_horizons,
             )
+        }
+        return {**values, **qfq_alpha}
+
+    def _base_features(
+        self,
+        quote: MarketQuote,
+        bars: tuple[DailyBar, ...],
+        history_summary: HistoryContext | None = None,
+    ) -> dict[str, float | None]:
+        observation_date = quote.source_time.astimezone(_SHANGHAI).date().isoformat()
+        context = history_summary
+        if context is not None and context.latest_trade_date > observation_date:
+            context = None
+            bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
+        history = context.profile if context is not None else SummarizeHistoryMetrics(bars)
+        completed_bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
+        if (
+            context is not None
+            and context.latest_trade_date >= observation_date
+            and context.previous_profile is not None
+        ):
+            setup_history = context.previous_profile
+        else:
+            setup_history = SummarizeHistoryMetrics(completed_bars) if len(completed_bars) != len(bars) else history
+        returns = {
+            days: context.return_pct(days, quote.price, observation_date)
+            if context is not None
+            else _live_return_pct(bars, days, quote.price, observation_date)
+            for days in (1, 3, 5, 10, 20, 40, 60)
         }
         ma5 = setup_history.moving_average_5d
         ma10 = setup_history.moving_average_10d
@@ -565,7 +645,6 @@ class FeatureBuilder:
             "return_10d": returns[10],
             "return_20d": returns[20],
             "return_60d": returns[60],
-            **qfq_alpha,
             "qfq_amihud_20d": history.amihud_20d,
             "qfq_average_amount_20d": history.average_amount_20d,
             "volatility_20d": volatility,

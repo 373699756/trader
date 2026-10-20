@@ -111,7 +111,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--qfq-database", type=Path)
     parser.add_argument(
-        "--baseline-checkout", type=Path, help="isolated old checkout for five alternating history-write comparisons"
+        "--baseline-checkout",
+        type=Path,
+        help="isolated checkout for five alternating history-write or download-performance comparisons",
     )
     parser.add_argument("--scoring-profile", choices=("v2", "v3", "both"), default=None)
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
@@ -286,8 +288,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         output_format = "json"
     if output_format == "text" and args.profile != "market-factor-compare":
         raise ValueError("--format text is only available for market-factor-compare")
-    if args.baseline_checkout is not None and args.profile != "history-write":
-        raise ValueError("--baseline-checkout is only available for history-write")
+    if args.baseline_checkout is not None and args.profile not in {"history-write", "download-performance"}:
+        raise ValueError("--baseline-checkout is only available for history-write or download-performance")
     if args.cpu_profile_dir is not None and args.profile != "market-factor-compare":
         raise ValueError("--cpu-profile-dir is only available for market-factor-compare")
     return (
@@ -642,7 +644,10 @@ def build_commands(
         ),
         "download_performance": DiagnosticCommand(
             "download_performance",
-            (python_executable, "-m", "scripts.runtime_diagnostics.download_performance"),
+            (python_executable, "-m", "scripts.runtime_diagnostics.download_performance")
+            + (
+                ("--baseline-checkout", str(options.baseline_checkout)) if options.baseline_checkout is not None else ()
+            ),
             common_timeout,
         ),
         "history_source_compare": DiagnosticCommand(

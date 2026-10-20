@@ -33,7 +33,7 @@ from trader.infra.market_data.history.history import (
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
-from trader.infra.workers import BoundedExecutor
+from trader.infra.workers import BoundedExecutor, InjectedExecutor
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneRecoverySummary,
@@ -156,6 +156,8 @@ class _AllowAllEligibility:
 
 class _FixtureHistory:
     """Test-only history projection; production uses the published BaoStock archive."""
+
+    input_identity = "fixture:history"
 
     def __init__(self, client: Any, monotonic: Any) -> None:
         self._client = client
@@ -328,6 +330,7 @@ def _service(
         kwargs.pop("intraday_client", None),
         runner,
         workers=kwargs.pop("intraday_workers", 6),
+        minute_pool=kwargs.pop("minute_pool", InjectedExecutor(worker_pool)),
         ttl_seconds=kwargs.pop("intraday_ttl_seconds", 45),
         batch_timeout_seconds=kwargs.pop("intraday_batch_timeout_seconds", 3),
         capacity=intraday_capacity,
@@ -745,7 +748,7 @@ class StaticIntradayClient:
         self._bars = bars
         self.calls = []
 
-    def fetch_intraday_minutes(self, code, *, now):
+    def fetch_intraday_minutes(self, code, *, now, deadline=None, cancelled=None):
         self.calls.append(code)
         return self._bars
 
@@ -754,13 +757,13 @@ class SequenceIntradayClient:
     def __init__(self, batches) -> None:
         self._batches = iter(batches)
 
-    def fetch_intraday_minutes(self, _code, *, now):
+    def fetch_intraday_minutes(self, _code, *, now, deadline=None, cancelled=None):
         return next(self._batches)
 
 
 class FailingIntradayClient:
     @staticmethod
-    def fetch_intraday_minutes(_code, *, now):
+    def fetch_intraday_minutes(_code, *, now, deadline=None, cancelled=None):
         raise RuntimeError("offline")
 
 
@@ -771,7 +774,7 @@ class BlockingIntradayClient:
         self.finished = threading.Event()
         self.calls = []
 
-    def fetch_intraday_minutes(self, code, *, now):
+    def fetch_intraday_minutes(self, code, *, now, deadline=None, cancelled=None):
         self.calls.append(code)
         self.started.set()
         self.release.wait(2.0)

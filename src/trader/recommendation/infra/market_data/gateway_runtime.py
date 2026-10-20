@@ -6,13 +6,15 @@ import math
 import threading
 from collections import deque
 from collections.abc import Callable, Sequence
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Generic, TypeVar, cast
+from typing import Generic, TypeVar
 
 from trader.infra.failures import ClassifyAdapterFailure
 from trader.infra.market_data.observations import SourceObservation
-from trader.recommendation.application.ports.market_data import MarketDataNoDataError
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError, MarketDataNoDataError
 from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
@@ -57,39 +59,34 @@ class _SourceFetch:
 
 class _SingleFlight(Generic[_T]):
     def __init__(self) -> None:
-        self._condition = threading.Condition()
-        self._running = False
-        self._generation = 0
-        self._result: _T | None = None
-        self._error: BaseException | None = None
+        self._lock = threading.Lock()
+        self._running: dict[object, Future[_T]] = {}
 
-    def run(self, function: Callable[[], _T]) -> _T:
-        with self._condition:
-            generation = self._generation
-            if self._running:
-                while self._running and self._generation == generation:
-                    self._condition.wait()
-                if self._error is not None:
-                    raise self._error
-                return cast(_T, self._result)
-            self._running = True
+    def run(self, function: Callable[[], _T], *, key: object = None, timeout: float | None = None) -> _T:
+        with self._lock:
+            current = self._running.get(key)
+            owner = current is None
+            if current is None:
+                if len(self._running) >= 2:
+                    raise MarketDataDeadlineExceededError("shared collection capacity exhausted")
+                current = Future()
+                self._running[key] = current
+        if not owner:
+            try:
+                return current.result(timeout=timeout)
+            except FutureTimeoutError as exc:
+                raise MarketDataDeadlineExceededError("shared collection wait exceeded deadline") from exc
         try:
             result = function()
         except BaseException as exc:
-            with self._condition:
-                self._error = exc
-                self._result = None
-                self._running = False
-                self._generation += 1
-                self._condition.notify_all()
+            current.set_exception(exc)
             raise
-        with self._condition:
-            self._result = result
-            self._error = None
-            self._running = False
-            self._generation += 1
-            self._condition.notify_all()
-        return result
+        else:
+            current.set_result(result)
+            return result
+        finally:
+            with self._lock:
+                self._running.pop(key, None)
 
 
 def _market_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:

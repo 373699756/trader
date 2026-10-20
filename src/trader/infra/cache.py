@@ -76,7 +76,34 @@ class BoundedLruCache(Generic[_T]):
         self._scope_bytes: dict[tuple[str, str], int] = {}
         self._group_bytes = {name: 0 for name in policy.groups}
         self._total_bytes = 0
+        self._resident_bytes: dict[tuple[str, str], int] = {}
         self._stopped = False
+
+    def reserve_resident(self, dataset: str, source: str, size_bytes: int) -> bool:
+        """Account a fixed startup projection retained by its sole external owner.
+
+        These bytes cannot be evicted while the owner still holds the projection.
+        A rejected replacement preserves the previous reservation.
+        """
+        if size_bytes < 0 or not source:
+            raise ValueError("resident cache reservation is invalid")
+        with self._lock:
+            group = self._policy.datasets[dataset].group
+            scope = (dataset, source)
+            previous = self._resident_bytes.get(scope, 0)
+            growth = size_bytes - previous
+            if self._stopped or size_bytes > self._policy.groups[group].max_bytes:
+                return False
+            self._evict_bytes_locked(group, max(0, growth))
+            if (
+                self._group_bytes[group] + growth > self._policy.groups[group].max_bytes
+                or self._total_bytes + growth > self._policy.total_bytes
+            ):
+                return False
+            self._resident_bytes[scope] = size_bytes
+            self._group_bytes[group] += growth
+            self._total_bytes += growth
+            return True
 
     def get(self, identity: CacheIdentity) -> CacheLookup[_T] | None:
         now = self._monotonic()
@@ -242,12 +269,13 @@ class BoundedLruCache(Generic[_T]):
         with self._lock:
             scopes = set(self._stats)
             scopes.update(self._scope_entries)
+            scopes.update(self._resident_bytes)
             result: dict[str, dict[str, CacheStats]] = {}
             for dataset, source in sorted(scopes):
                 stats = self._stats.get((dataset, source), _MutableStats())
                 scope = (dataset, source)
                 snapshot = CacheStats(
-                    entries=self._scope_entries.get(scope, 0),
+                    entries=self._scope_entries.get(scope, 0) + bool(self._resident_bytes.get(scope, 0)),
                     capacity=self._policy.datasets[dataset].capacity,
                     hit=stats.hit,
                     miss=stats.miss,
@@ -258,7 +286,7 @@ class BoundedLruCache(Generic[_T]):
                     refresh=stats.refresh,
                     eviction=stats.eviction,
                     load_error=stats.load_error,
-                    estimated_bytes=self._scope_bytes.get(scope, 0),
+                    estimated_bytes=self._scope_bytes.get(scope, 0) + self._resident_bytes.get(scope, 0),
                 )
                 result.setdefault(dataset, {})[source] = snapshot
             return CacheStatus(result)

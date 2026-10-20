@@ -5,10 +5,11 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryManifest
+from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.market_data.history.history import (
     BuildHistoryContext,
     DailyBar,
@@ -17,7 +18,9 @@ from trader.infra.market_data.history.history import (
 )
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.domain.market.epochs import DailyFeaturePack, DailyFeatureRow, DataPlaneCoverageEvidence
 from trader.recommendation.domain.market.history_tail import HistoryQuality
+from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,
@@ -77,11 +80,15 @@ class PublishedHistoryCache:
         tail_recovery: CandidateHistoryTailRecovery | None = None,
         outcome_history: ReadPublishedHistoryUseCase | None = None,
         open_dates: Callable[[], tuple[date, ...]] | None = None,
+        reserve_bytes: Callable[[int], bool] | None = None,
+        require_input_binding: bool = False,
     ) -> None:
         self._history = history
         self._outcome_history = outcome_history
         self._monotonic = monotonic
         self._open_dates = open_dates
+        self._reserve_bytes = reserve_bytes
+        self._require_input_binding = require_input_binding
         self._lookback_sessions = max(61, lookback_sessions)
         self._recovery = recovery
         self._tail_recovery = tail_recovery
@@ -92,6 +99,8 @@ class PublishedHistoryCache:
         self._disk_snapshot_hash: str | None = None
         self._outcome_disk_snapshot_hash: str | None = None
         self._initialized = False
+        self._daily_pack: DailyFeaturePack | None = None
+        self._entry_bytes = 0
         self._entries: dict[str, PublishedHistoryEntry] = {}
         self._universe_rows = 0
         self._covered_rows = 0
@@ -151,19 +160,85 @@ class PublishedHistoryCache:
         except (RuntimeError, ValueError) as exc:
             self._record_error(type(exc).__name__)
             return False
-        if cancelled() or self._monotonic() >= deadline:
-            self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
-            return False
         if not self._identity_stable(manifest, confirmed):
+            return False
+        size_bytes = self._reserve_projection(entries, cancelled, deadline)
+        if size_bytes is None:
             return False
         with self._lock:
             self._manifest = manifest
             self._disk_snapshot_hash = manifest.snapshot_hash
             self._entries = entries
+            self._entry_bytes = size_bytes
             self._universe_rows = len(manifest.universe_codes)
             self._covered_rows = sum(len(entry.bars) >= _RAW_RETENTION_SESSIONS for entry in entries.values())
             self._maintenance_reason = None
         return True
+
+    def _reserve_projection(
+        self, entries: Mapping[str, PublishedHistoryEntry], cancelled: Callable[[], bool], deadline: float
+    ) -> int | None:
+        if cancelled() or self._monotonic() >= deadline:
+            self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
+            return None
+        size_bytes = sum(len(CanonicalJsonBytes((code, entry))) for code, entry in entries.items())
+        if cancelled() or self._monotonic() >= deadline:
+            self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
+            return None
+        if self._reserve_bytes is not None and not self._reserve_bytes(size_bytes):
+            self._record_error("history_preload_capacity")
+            return None
+        return size_bytes
+
+    @property
+    def loaded_identity(self) -> str:
+        with self._lock:
+            return self._manifest.snapshot_hash if self._manifest else "qfq:unavailable"
+
+    def bind_inputs(
+        self,
+        observed_at: datetime,
+        *,
+        versions: Mapping[str, str],
+        config_version: str,
+    ) -> None:
+        """Attach provenance to the same startup contexts; no additional history reads."""
+        observed_at = observed_at.astimezone(SHANGHAI)
+        with self._lock:
+            if self._daily_pack is not None or not self._entries or self._manifest is None:
+                return
+            rows = tuple(
+                _daily_row(code, entry, observed_at, {**versions, "qfq": self._manifest.snapshot_hash})
+                for code, entry in sorted(self._entries.items())
+                if entry.context.latest_trade_date < observed_at.date().isoformat()
+                or (entry.context.latest_trade_date == observed_at.date().isoformat() and observed_at.hour >= 15)
+            )
+            if not rows:
+                return
+            codes = tuple(row.code for row in rows)
+            pack = DailyFeaturePack(
+                observed_at.date(),
+                self._manifest.sequence,
+                observed_at,
+                observed_at,
+                config_version,
+                versions.get("trading_calendar", "calendar:unavailable"),
+                rows,
+                {**versions, "qfq": self._manifest.snapshot_hash},
+                DataPlaneCoverageEvidence((), codes if versions.get("security_master") else (), (), ()),
+            )
+            # Count the full entry index as well, including rows excluded by the
+            # observation cutoff. The pack adds lineage without copying bars.
+            size_bytes = self._entry_bytes + len(CanonicalJsonBytes(pack))
+            if self._reserve_bytes is not None and not self._reserve_bytes(size_bytes):
+                self._record_error("history_input_capacity")
+                return
+            self._daily_pack = pack
+
+    @property
+    def input_identity(self) -> str:
+        with self._lock:
+            return self._daily_pack.input_identity if self._daily_pack is not None else self.loaded_identity
 
     def _identity_stable(self, manifest: PublishedHistoryManifest, confirmed: PublishedHistoryManifest | None) -> bool:
         if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
@@ -232,6 +307,8 @@ class PublishedHistoryCache:
     def require_projection(self) -> None:
         """Defer a realtime attempt while its first local projection is loading."""
         with self._lock:
+            if self._require_input_binding and self._daily_pack is None:
+                raise MarketDataPendingError(self._maintenance_reason or "history_inputs_loading")
             if self._manifest is None and (self._refresh_lock.locked() or self._maintenance_state == "loading"):
                 raise MarketDataPendingError("history_projection_loading")
 
@@ -431,6 +508,49 @@ class PublishedHistoryCache:
         with self._lock:
             self._error_count += 1
             self._maintenance_reason = reason
+
+
+def _daily_row(
+    code: str,
+    entry: PublishedHistoryEntry,
+    observed_at: datetime,
+    versions: Mapping[str, str],
+) -> DailyFeatureRow:
+    profile = entry.context.profile
+    values = {
+        "ma5": profile.moving_average_5d,
+        "ma10": profile.moving_average_10d,
+        "ma20": profile.moving_average_20d,
+        "ma60": profile.moving_average_60d,
+        "amihud_20d": profile.amihud_20d,
+        "volatility_20d": profile.volatility_20d,
+        "amount_median_20d": profile.median_amount_20d,
+    }
+    day = date.fromisoformat(entry.context.latest_trade_date)
+    source_time = datetime.combine(day, time(15), tzinfo=SHANGHAI)
+    fields = {
+        name: FieldValue(
+            name,
+            value,
+            "qfq",
+            source_time,
+            observed_at,
+            versions["qfq"],
+            versions["qfq"],
+            FieldQualityState.MISSING if value is None else FieldQualityState.VALID,
+        )
+        for name, value in values.items()
+    }
+    return DailyFeatureRow(
+        code,
+        values,
+        entry.context.sample_count,
+        day,
+        fields,
+        security_master_version=versions.get("security_master", ""),
+        history_version=versions["qfq"],
+        missing_fields=tuple(name for name, value in values.items() if value is None),
+    )
 
 
 __all__ = ["PublishedHistoryCache", "PublishedHistoryEntry", "PublishedHistoryStatus"]

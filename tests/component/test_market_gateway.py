@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from tests.component.market_data_test_support import (
     FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
@@ -35,6 +37,7 @@ from tests.component.market_data_test_support import (
     time,
     timedelta,
 )
+from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 
 
 def test_gateway_falls_back_and_tracks_health() -> None:
@@ -385,8 +388,11 @@ def test_gateway_source_health_records_superseded_without_physical_failure() -> 
     assert health.physical_failure_count == 0
 
 
-def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_call() -> None:
+@pytest.mark.parametrize("with_lanes", (False, True))
+def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_call(with_lanes) -> None:
     source = BlockingMarketClient((_quote(),))
+    pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="shared-gateway")
+    lanes = SourceLaneScheduler(pool) if with_lanes else None
     gateway = MarketDataGateway(
         source,
         StaticMarketClient(()),
@@ -394,19 +400,26 @@ def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_cal
         minimum_market_rows=1,
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
+        worker_pool=pool,
+        source_lanes=lanes,
     )
     results: list[tuple[MarketQuote, ...]] = []
     threads = [threading.Thread(target=lambda: results.append(tuple(gateway.fetch_market()))) for _index in range(2)]
 
     try:
+        pool.start()
         for thread in threads:
             thread.start()
         assert source.started.wait(1.0)
-        time.sleep(0.02)
+        with pytest.raises(MarketDataDeadlineExceededError):
+            gateway.fetch_market(deadline=datetime.now(timezone.utc) + timedelta(seconds=0.02))
     finally:
         source.release.set()
         for thread in threads:
             thread.join(1.0)
+        if lanes is not None:
+            lanes.stop(wait=True)
+        pool.stop(wait=True, cancel_futures=True)
 
     assert source.calls == 1
     assert [[(item.code, item.price, item.source) for item in result] for result in results] == [

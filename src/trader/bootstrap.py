@@ -16,6 +16,7 @@ from flask import Flask
 
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -30,6 +31,7 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.entrypoints.company_evidence_progress import ReportStPreparation
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
@@ -110,6 +112,7 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
+from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
@@ -163,6 +166,7 @@ from trader.recommendation.infra.runtime.composition_inputs import (
     RuntimePersistenceContext,
     RuntimePublicationContext,
     RuntimePublicationDependencies,
+    SharedRecommendationInputs,
 )
 from trader.recommendation.infra.runtime.initialization import FixedCacheTtl as _fixed_cache_ttl
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
@@ -178,7 +182,7 @@ from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
-from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from trader.training.infra.training_settings import LoadProfileTrainingSettings, ProfileTrainingSettings
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
@@ -317,44 +321,23 @@ def _prepare_reference(
             sessions.borrow,
             workers,
             lambda: cancel_requested() or not workers.is_running(),
-            report=lambda completed, total, summary: (
-                progress(
-                    EvidenceSyncProgress(
-                        "st_eligibility",
-                        completed,
-                        total - completed,
-                        0,
-                        0,
-                        0,
-                        f"unknown:{summary.unknown}" if summary and summary.unknown else "",
-                    )
-                )
-                if progress
-                else None
+            report=partial(ReportStPreparation, progress),
+        )
+        return PrepareReference(
+            universe,
+            observed_at,
+            ReferencePreparationDependencies(
+                source.fetch,
+                partial(
+                    FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
+                ),
+                CurrentIndustryPublication(
+                    reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested)
+                ).fetch,
+                ReferencePublication(reference_root).publish,
+                cancel_requested,
             ),
         )
-        # Permanent ever-ST evidence is requalified today without repeating its vendor request.
-        evidence = tuple(
-            replace(item, checked_on=observed_at.date()) for item in source.fetch(universe, observed_at.date())
-        )
-        calendar = FetchAkshareCalendar(30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested))
-        try:
-            industries = CurrentIndustryPublication(
-                reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested)
-            ).fetch(observed_at)
-        except (OSError, RuntimeError, ValueError):
-            industries = ()
-        reference = PreparedReference(
-            tuple(sorted(universe, key=lambda item: item.code)),
-            tuple(sorted(evidence, key=lambda item: item.code)),
-            observed_at,
-            calendar,
-            industries[0].data_version if industries else None,
-        )
-        if cancel_requested():
-            raise RuntimeError("reference_preparation_cancelled")
-        ReferencePublication(reference_root).publish(reference)
-        return reference
     finally:
         stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         resources.close()
@@ -569,8 +552,6 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenc
                 CapabilityEvidencePublisher(command.artifact_dir),
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
         if isinstance(command, QualificationCommand):
-            from functools import partial
-
             from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
             from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 
@@ -588,6 +569,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     scoring_profile: ScoringProfileId | None = None,
     runtime_scope: ScoringProfileId | None = None,
     owns_shared_runtime: bool = True,
+    shared_inputs: SharedRecommendationInputs | None = None,
 ) -> ApplicationSystem[SQLiteResearchTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
@@ -605,7 +587,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     latency = LatencyWaterfall()
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
     cadence_planner = CadencePlanner(cadence_policy, started_at=ShanghaiClock(now).now())
-    workers = _build_worker_context(settings, latency)
+    workers = _build_worker_context(settings, latency, shared_inputs.workers if shared_inputs else None)
     context = RuntimeBuildContext(
         settings,
         strategy,
@@ -619,14 +601,21 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         owns_shared_runtime,
     )
     reference_publication = ReferencePublication(settings.data_paths.reference)
-    references = PublishedReferences(
-        reference_publication.read,
-        reference_publication.identity,
-        CurrentIndustryCache(settings.data_paths.reference / "industry.sqlite3").load,
-        max_age_seconds=_fixed_cache_ttl(settings, "security_master_calendar"),
+    references = (
+        shared_inputs.market.references
+        if shared_inputs
+        else PublishedReferences(
+            reference_publication.read,
+            reference_publication.identity,
+            CurrentIndustryCache(settings.data_paths.reference / "industry.sqlite3").load,
+            max_age_seconds=_fixed_cache_ttl(settings, "security_master_calendar"),
+            reserve_bytes=partial(
+                workers.market_cache.reserve_resident, "security_master_calendar", "startup_reference"
+            ),
+        )
     )
     calendar = ChinaTradingCalendar(references.reference, now=now)
-    persistence = _build_persistence(context)
+    persistence = _build_persistence(context, shared_inputs.budget if shared_inputs else None)
     profile_id = strategy.scoring_profile
     model_failure = "production_model_missing"
     try:
@@ -644,8 +633,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         context,
         calendar,
         references,
-        history_lookback_sessions=training_settings.history_sessions,
-        model_momentum_horizons=training_settings.momentum_horizons,
+        training_settings=training_settings,
+        shared_market=shared_inputs.market if shared_inputs else None,
     )
     reviewer = _build_reviewer(context, persistence.budget)
     policy = _recommendation_policy(context.strategy)
@@ -676,7 +665,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     publication_io = PublicationIoTracker(now=ShanghaiClock(now).now, monotonic=time.monotonic)
     publication = _build_publication(
         context,
-        calendar,
         RuntimePublicationDependencies(persistence.sequence, persistence.records, market_data, persistence.outcomes),
         publication_io=publication_io,
     )
@@ -753,19 +741,15 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
     )
 
-    def initialize_published_inputs(cancelled: Callable[[], bool]) -> None:
-        references.initialize()
-        market_data.history.initialize(cancelled=cancelled)
-        market_data.research.initialize(market_data.risk_universe_codes(now()), cancelled=cancelled)
-
     history_observer = PublishedHistoryObserver(
         market_data.history,
-        initialize=initialize_published_inputs,
-        observers=(
-            market_data.research.observe_publication,
-            references.observe_publication,
-            model_publications.observe_publication,
+        initialize=partial(
+            market_data.initialize_published_inputs,
+            model_version=ContentHash(loaded_profile.publications) if loaded_profile else model_failure,
+            config_version=effective_config_version,
         ),
+        observers=(model_publications.observe_publication,)
+        + ((market_data.research.observe_publication, references.observe_publication) if shared_inputs is None else ()),
     )
     supervisor = RuntimeSupervisor(
         scheduler,
@@ -777,10 +761,10 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 lambda: _initialize_if_available(publication.research_trace),
                 lambda: _initialize_if_available(persistence.outcomes),
                 lambda: InitializeReferenceDataPlane(market_data, persistence.data_plane),
-                persistence.budget.initialize,
+                *((persistence.budget.initialize,) if shared_inputs is None else ()),
                 lambda: publication.tomorrow_freezer.restore(now().date()),
                 lambda: publication.d25_freezer.restore(now().date()),
-                lambda: persistence.budget.recover_incomplete(now()),
+                *((lambda: persistence.budget.recover_incomplete(now()),) if shared_inputs is None else ()),
             ),
             interval_seconds=SchedulerIntervalSeconds,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -807,7 +791,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         scheduler=scheduler,
         records=persistence.records,
         market_cache=workers.market_cache,
-        research_pool=workers.research_pool,
+        minute_pool=workers.minute_pool,
         source_lanes=workers.source_lanes,
         data_pool=workers.data_pool,
         quote_pool=workers.quote_pool,
@@ -821,19 +805,26 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         outcome_evidence=persistence.outcomes,
         history_observer=history_observer,
         web_services=web_services,
+        workers=workers,
+        market_data=market_data,
+        budget=persistence.budget,
+        owns_shared_resources=shared_inputs is None,
     )
 
 
 def BuildProfiledSystem(config_path: str | Path) -> ProfiledApplicationSystem[Flask]:
     """Build both production profiles with one read-only delivery surface."""
-
     settings = LoadRuntimeSettings(config_path)
-    systems = (
-        BuildSystem(config_path, scoring_profile="v2", runtime_scope="v2", owns_shared_runtime=True),
-        BuildSystem(config_path, scoring_profile="v3", runtime_scope="v3", owns_shared_runtime=False),
+    v2 = BuildSystem(config_path, scoring_profile="v2", runtime_scope="v2", owns_shared_runtime=True)
+    v3 = BuildSystem(
+        config_path,
+        scoring_profile="v3",
+        runtime_scope="v3",
+        owns_shared_runtime=False,
+        shared_inputs=SharedRecommendationInputs(v2.workers, v2.market_data, v2.budget),
     )
     default_profile = LoadStrategySettings(settings.strategy_config_path).scoring_profile
-    profiles: dict[str, UnifiedWebServices] = {system.profile_id: system.web_services for system in systems}
+    profiles: dict[str, UnifiedWebServices] = {system.profile_id: system.web_services for system in (v2, v3)}
     app = CreateApp(
         services=ProfiledWebServices(
             profiles=profiles,
@@ -845,14 +836,24 @@ def BuildProfiledSystem(config_path: str | Path) -> ProfiledApplicationSystem[Fl
             ),
         )
     )
-    return ProfiledApplicationSystem(settings, app, systems)
+    return ProfiledApplicationSystem(settings, app, (v2, v3))
 
 
-def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> RuntimeWorkerResources:
+def _build_worker_context(
+    settings: RuntimeSettings, latency: LatencyWaterfall, shared: RuntimeWorkerResources | None = None
+) -> RuntimeWorkerResources:
     urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
     control_pool = BoundedExecutor(
         worker_count=2, urgent_worker_count=1, queue_capacity=4, thread_name_prefix="trader-control"
     )
+    persistence_pool = BoundedExecutor(
+        worker_count=1,
+        queue_capacity=max(1, settings.pipeline.event_queue_size),
+        thread_name_prefix="trader-persistence",
+    )
+    json_writer = RuntimeJsonWriter(persistence_pool)
+    if shared is not None:
+        return replace(shared, control_pool=control_pool, persistence_pool=persistence_pool, json_writer=json_writer)
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers + urgent_worker_count,
         urgent_worker_count=urgent_worker_count,
@@ -862,17 +863,7 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
     source_lanes = SourceLaneScheduler(data_pool, latency=latency)
     quote_pool = BoundedExecutor(worker_count=4, queue_capacity=4, thread_name_prefix="candidate-quotes")
     market_quote_pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="market-quotes")
-    research_pool = BoundedExecutor(
-        worker_count=settings.pipeline.market_workers,
-        queue_capacity=settings.market_data.candidate_pool_size,
-        thread_name_prefix="research-data",
-    )
-    persistence_pool = BoundedExecutor(
-        worker_count=1,
-        queue_capacity=max(1, settings.pipeline.event_queue_size),
-        thread_name_prefix="trader-persistence",
-    )
-    json_writer = RuntimeJsonWriter(persistence_pool)
+    minute_pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="intraday-minutes")
     market_cache: BoundedLruCache[object] = BoundedLruCache(
         settings.market_data.cache_policy, cadence_seconds=settings.pipeline.cadence_seconds, wall_clock=_utc_now
     )
@@ -881,7 +872,7 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         data_pool=data_pool,
         quote_pool=quote_pool,
         market_quote_pool=market_quote_pool,
-        research_pool=research_pool,
+        minute_pool=minute_pool,
         persistence_pool=persistence_pool,
         source_lanes=source_lanes,
         json_writer=json_writer,
@@ -894,8 +885,8 @@ def _build_market_data(
     calendar: ChinaTradingCalendar,
     references: PublishedReferences,
     *,
-    history_lookback_sessions: int = 61,
-    model_momentum_horizons: tuple[int, ...] = (20, 40, 60),
+    training_settings: ProfileTrainingSettings,
+    shared_market: MarketFeatureService | None = None,
 ) -> MarketFeatureService:
     settings = context.settings
     strategy = context.strategy
@@ -904,123 +895,137 @@ def _build_market_data(
     data_pool = workers.data_pool
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
-    intraday_client = EastmoneyClient(
-        session_factory=OpenExternalHttp,
-        timeout_seconds=settings.market_data.candidate_timeout_seconds,
-        worker_pool=workers.quote_pool,
-        cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
-        wall_clock=now,
-    )
-    sina = SinaClient(
-        worker_pool=workers.quote_pool,
-        session_factory=OpenExternalHttp,
-        timeout_seconds=settings.market_data.sina_timeout_seconds,
-        cancel_requested=lambda: source_lanes.is_stopped("sina"),
-        wall_clock=now,
-    )
-    tencent = TencentClient(
-        session_factory=OpenExternalHttp,
-        timeout_seconds=settings.market_data.candidate_timeout_seconds,
-        cancel_requested=lambda: source_lanes.is_stopped("tencent"),
-        wall_clock=now,
-        worker_pool=workers.quote_pool,
-    )
-
-    def official_quote_codes() -> tuple[str, ...]:
-        return SelectQuotePopulation(
-            references.static_reference().reference,
-            eligibility.exclusions(now()),
-            references.historical_st_eligibility(),
-        )
-
-    tencent_market_client = TencentClient(
-        session_factory=OpenExternalHttp,
-        timeout_seconds=settings.market_data.candidate_timeout_seconds,
-        cancel_requested=lambda: source_lanes.is_stopped("tencent_market"),
-        wall_clock=now,
-        worker_pool=workers.market_quote_pool,
-    )
-    tencent_market = TencentFullMarketSource(tencent_market_client, official_quote_codes)
-    gateway = MarketDataGateway(
-        tencent_market,
-        sina,
-        tencent,
-        minimum_market_rows=settings.market_data.minimum_market_rows,
-        circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
-        circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
-        full_market_primary_timeout_seconds=settings.market_data.full_market_primary_timeout_seconds,
-        full_market_fetchers={
-            "tencent_market": lambda deadline, cancel_event: tencent_market.fetch_market(
-                deadline=deadline, cancel_event=cancel_event
-            ),
-            "sina": lambda deadline, cancel_event: sina.fetch_market(deadline=deadline, cancel_event=cancel_event),
-        },
-        recovery_probes={"tencent_market": tencent_market.probe_market, "sina": sina.probe_market},
-        worker_pool=data_pool,
-        source_lanes=source_lanes,
-        cache=market_cache,
-        source_contracts=settings.market_data.source_contracts,
-        config_version=settings.config_version,
-        schema_version="market_snapshot",
-        wall_clock=now,
-        latency=context.latency,
-        listing_open_dates=calendar.open_dates,
-    )
     feature_builder = FeatureBuilder(
         strategy.news_signal,
         strategy.tomorrow_tail_signal,
         strategy.market_regime,
         strategy.long_research,
         strategy.feature_component_weights,
-        model_momentum_horizons=model_momentum_horizons,
-    )
-    runner = MarketTaskRunner(
-        worker_pool=data_pool,
-        source_lanes=source_lanes,
+        model_momentum_horizons=training_settings.momentum_horizons,
         cache=market_cache,
-        source_contracts=settings.market_data.source_contracts,
-        config_version=settings.config_version,
-        schema_version="market_snapshot",
-        wall_clock=now,
     )
-    history_root = settings.data_paths.history
-    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
+    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(settings.data_paths.history))
     history_cache = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(
-            SQLiteQfqWindowCache(settings.data_paths.daily_window, "v2" if history_lookback_sessions > 61 else "v3")
-        ),
-        lookback_sessions=history_lookback_sessions,
+        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache(settings.data_paths.daily_window, strategy.scoring_profile)),
+        lookback_sessions=training_settings.history_sessions,
         monotonic=time.monotonic,
         outcome_history=published_history,
         open_dates=calendar.open_dates,
+        reserve_bytes=partial(
+            market_cache.reserve_resident, "security_master_calendar", f"qfq_{strategy.scoring_profile}"
+        ),
+        require_input_binding=True,
     )
-    eligibility = SQLiteIssuerEligibilityIndex(
-        settings.data_paths.eligibility, read_only=not context.owns_shared_runtime
-    )
-    if context.owns_shared_runtime:
-        try:
-            eligibility.record_manual_blacklist(
-                strategy.hard_filters.blacklist_codes, now(), context.effective_config_version
+    if shared_market is None:
+        intraday_client = EastmoneyClient(
+            session_factory=OpenExternalHttp,
+            timeout_seconds=settings.market_data.candidate_timeout_seconds,
+            worker_pool=workers.minute_pool,
+            cancel_requested=lambda: source_lanes.is_stopped("eastmoney_intraday"),
+            wall_clock=now,
+            monotonic=time.monotonic,
+        )
+        sina = SinaClient(
+            worker_pool=workers.quote_pool,
+            session_factory=OpenExternalHttp,
+            timeout_seconds=settings.market_data.sina_timeout_seconds,
+            cancel_requested=lambda: source_lanes.is_stopped("sina"),
+            wall_clock=now,
+        )
+        tencent = TencentClient(
+            session_factory=OpenExternalHttp,
+            timeout_seconds=settings.market_data.candidate_timeout_seconds,
+            cancel_requested=lambda: source_lanes.is_stopped("tencent"),
+            wall_clock=now,
+            worker_pool=workers.quote_pool,
+        )
+
+        def official_quote_codes() -> tuple[str, ...]:
+            return SelectQuotePopulation(
+                references.static_reference().reference,
+                eligibility.exclusions(now()),
+                references.historical_st_eligibility(),
             )
-        except RuntimeError:
-            # The typed index retains any facts it could verify; persistence degradation stays observable.
-            pass
-    risk_root = settings.data_paths.company.parent
-    research = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(risk_root / "evidence.sqlite3"),
-        wall_clock=now,
-        open_dates=calendar.open_dates,
-        monotonic=time.monotonic,
-    )
-    intraday_loader = IntradayLoader(
-        intraday_client,
-        runner,
-        workers=settings.pipeline.market_workers,
-        ttl_seconds=_fixed_cache_ttl(settings, "intraday_minutes"),
-        batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
-        capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
-        monotonic=time.monotonic,
-    )
+
+        tencent_market_client = TencentClient(
+            session_factory=OpenExternalHttp,
+            timeout_seconds=settings.market_data.candidate_timeout_seconds,
+            cancel_requested=lambda: source_lanes.is_stopped("tencent_market"),
+            wall_clock=now,
+            worker_pool=workers.market_quote_pool,
+        )
+        tencent_market = TencentFullMarketSource(tencent_market_client, official_quote_codes)
+        gateway = MarketDataGateway(
+            tencent_market,
+            sina,
+            tencent,
+            minimum_market_rows=settings.market_data.minimum_market_rows,
+            circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
+            circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+            full_market_primary_timeout_seconds=settings.market_data.full_market_primary_timeout_seconds,
+            full_market_fetchers={
+                "tencent_market": lambda deadline, cancel_event: tencent_market.fetch_market(
+                    deadline=deadline, cancel_event=cancel_event
+                ),
+                "sina": lambda deadline, cancel_event: sina.fetch_market(deadline=deadline, cancel_event=cancel_event),
+            },
+            recovery_probes={"tencent_market": tencent_market.probe_market, "sina": sina.probe_market},
+            worker_pool=data_pool,
+            source_lanes=source_lanes,
+            cache=market_cache,
+            source_contracts=settings.market_data.source_contracts,
+            config_version=settings.config_version,
+            schema_version="market_snapshot",
+            wall_clock=now,
+            latency=context.latency,
+            listing_open_dates=calendar.open_dates,
+        )
+        runner = MarketTaskRunner(
+            worker_pool=data_pool,
+            source_lanes=source_lanes,
+            cache=market_cache,
+            source_contracts=settings.market_data.source_contracts,
+            config_version=settings.config_version,
+            schema_version="market_snapshot",
+            wall_clock=now,
+        )
+        eligibility_index = SQLiteIssuerEligibilityIndex(
+            settings.data_paths.eligibility, read_only=not context.owns_shared_runtime
+        )
+        if context.owns_shared_runtime:
+            try:
+                eligibility_index.record_manual_blacklist(
+                    strategy.hard_filters.blacklist_codes, now(), context.effective_config_version
+                )
+            except RuntimeError:
+                # The typed index retains any facts it could verify; persistence degradation stays observable.
+                pass
+        eligibility: IssuerEligibilityPort = eligibility_index
+        research = PublishedCompanyResearch(
+            SQLiteCompanyEvidenceReader(settings.data_paths.company.parent / "evidence.sqlite3"),
+            wall_clock=now,
+            open_dates=calendar.open_dates,
+            monotonic=time.monotonic,
+            reserve_bytes=partial(market_cache.reserve_resident, "security_master_calendar", "company"),
+            source_versions=references.versions,
+            config_version=settings.config_version,
+        )
+        intraday_loader = IntradayLoader(
+            intraday_client,
+            runner,
+            workers=5,
+            minute_pool=workers.minute_pool,
+            ttl_seconds=_fixed_cache_ttl(settings, "intraday_minutes"),
+            batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,
+            capacity=settings.market_data.cache_policy.datasets["intraday_minutes"].capacity,
+            monotonic=time.monotonic,
+        )
+    else:
+        gateway = shared_market.quotes.gateway
+        runner = shared_market.runner
+        eligibility = shared_market.eligibility
+        research = shared_market.research
+        intraday_loader = shared_market.intraday
     quote_cache = QuoteCache(
         QuoteCacheDependencies(gateway, feature_builder, history_cache, references),
         market_ttl_seconds=min(context.cadence_policy.intervals[PipelineTask.FULL_MARKET].values()),
@@ -1050,14 +1055,15 @@ def _build_market_data(
     return market_data
 
 
-def _build_persistence(context: RuntimeBuildContext) -> RuntimePersistenceContext:
+def _build_persistence(
+    context: RuntimeBuildContext, shared_budget: DeepSeekBudgetLedger | None = None
+) -> RuntimePersistenceContext:
     settings = context.settings
-    runtime_database_lock = threading.Lock()
     profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
     records = SQLiteDecisionRecords(profile_root / "decisions.sqlite3")
     data_plane = SQLiteDataPlane(profile_root / "snapshots.sqlite3")
     outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records)
-    budget = DeepSeekBudgetLedger(
+    budget = shared_budget or DeepSeekBudgetLedger(
         context.budget_path,
         daily_hard_limit=settings.deepseek.daily_hard_limit,
         strategy_limits=settings.deepseek.strategy_limits,
@@ -1073,7 +1079,7 @@ def _build_persistence(context: RuntimeBuildContext) -> RuntimePersistenceContex
             healthy_batch_count=settings.deepseek.adaptive.healthy_batch_count,
             cooldown_seconds=settings.deepseek.adaptive.cooldown_seconds,
         ),
-        write_lock=runtime_database_lock,
+        write_lock=threading.Lock(),
     )
     return RuntimePersistenceContext(
         PublicationSequence(profile_root / "snapshots.sqlite3"),
@@ -1085,10 +1091,9 @@ def _build_persistence(context: RuntimeBuildContext) -> RuntimePersistenceContex
 
 
 def _build_reviewer(context: RuntimeBuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
-    settings = context.settings
     strategy = context.strategy
     return DeepSeekReviewer(
-        settings.deepseek,
+        context.settings.deepseek,
         budget,
         DeepSeekHttpClient(post=_post_external_http),
         ReviewCache(
@@ -1108,7 +1113,6 @@ def _build_reviewer(context: RuntimeBuildContext, budget: DeepSeekBudgetLedger) 
 
 def _build_publication(
     context: RuntimeBuildContext,
-    calendar: ChinaTradingCalendar,
     dependencies: RuntimePublicationDependencies,
     *,
     publication_io: PublicationIoTracker,
@@ -1130,7 +1134,6 @@ def _build_publication(
         settings.data_paths.research(context.strategy.scoring_profile),
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
-
     observer = AsyncDecisionObserver[DecisionObservation](
         (research_trace.record, *dependencies.additional_observers),
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
@@ -1140,22 +1143,16 @@ def _build_publication(
     runtime_identity = DecisionRuntimeIdentity(
         context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
     )
-    tomorrow_freezer = ScoredFreezeCoordinator(
+    freezer = partial(
+        ScoredFreezeCoordinator,
         tomorrow_decisions,
         records,
         clock,
         runtime_identity=runtime_identity,
-        strategy=Strategy.TOMORROW,
         publication_io=publication_io,
     )
-    d25_freezer = ScoredFreezeCoordinator(
-        tomorrow_decisions,
-        records,
-        clock,
-        runtime_identity=runtime_identity,
-        strategy=Strategy.D25,
-        publication_io=publication_io,
-    )
+    tomorrow_freezer = freezer(strategy=Strategy.TOMORROW)
+    d25_freezer = freezer(strategy=Strategy.D25)
     long_runtime = LongRuntime(
         LongRuntimeDependencies(
             market_data,

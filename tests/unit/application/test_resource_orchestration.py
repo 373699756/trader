@@ -90,7 +90,7 @@ def test_quote_pool_is_started_before_supervisor_and_stopped_after_source_lanes(
         data_pool=_Pool("data", events),
         quote_pool=_Pool("quote", events),
         market_quote_pool=_Pool("market-quote", events),
-        research_pool=_Pool("research", events),
+        minute_pool=_Pool("minute", events),
         auxiliary_runtimes=(),
         market_cache=_Cache(events),
     )
@@ -102,7 +102,7 @@ def test_quote_pool_is_started_before_supervisor_and_stopped_after_source_lanes(
         "start:data",
         "start:quote",
         "start:market-quote",
-        "start:research",
+        "start:minute",
         "start:supervisor",
     ]
     assert events.index("stop:source-lanes:True") < events.index("stop:quote:True")
@@ -117,7 +117,7 @@ def test_quote_pool_is_rolled_back_when_supervisor_does_not_start() -> None:
         data_pool=_Pool("data", events),
         quote_pool=_Pool("quote", events),
         market_quote_pool=_Pool("market-quote", events),
-        research_pool=_Pool("research", events),
+        minute_pool=_Pool("minute", events),
         auxiliary_runtimes=(),
         market_cache=_Cache(events),
     )
@@ -125,3 +125,21 @@ def test_quote_pool_is_rolled_back_when_supervisor_does_not_start() -> None:
     assert StartApplicationResources(resources, timeout_seconds=1.0) is False
     assert "stop:quote:True" in events
     assert "stop:market-quote:True" in events
+
+
+def test_second_profile_does_not_start_or_close_shared_resources():
+    events = []
+    resources = ApplicationResources(
+        supervisor=_Supervisor("v3", events),
+        source_lanes=_SourceLanes(events),
+        data_pool=_Pool("data", events),
+        quote_pool=_Pool("quote", events),
+        market_quote_pool=_Pool("market", events),
+        minute_pool=_Pool("minutes", events),
+        auxiliary_runtimes=(),
+        market_cache=_Cache(events),
+        owns_shared_resources=False,
+    )
+    assert StartApplicationResources(resources, timeout_seconds=1)
+    StopApplicationResources(resources, deadline=ShutdownDeadline.start(1))
+    assert events == ["start:v3", "stop:supervisor"]

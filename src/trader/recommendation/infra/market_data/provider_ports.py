@@ -36,7 +36,14 @@ class CandidateQuoteSource(Protocol):
 
 
 class IntradaySource(Protocol):
-    def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]: ...
+    def fetch_intraday_minutes(
+        self,
+        code: str,
+        *,
+        now: datetime | None = None,
+        deadline: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> tuple[MinuteBar, ...]: ...
 
 
 FullMarketFetcher = Callable[[datetime | None, threading.Event], Sequence[MarketQuote]]

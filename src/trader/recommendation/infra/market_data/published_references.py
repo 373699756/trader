@@ -7,6 +7,7 @@ from datetime import date, datetime
 from types import MappingProxyType
 
 from trader.download.domain.prepared_reference import PreparedReference
+from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth, SecurityMasterSourceHealth
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
@@ -32,11 +33,13 @@ class PublishedReferences:
         read_industries: Callable[[datetime], tuple[SourceObservation, ...]],
         *,
         max_age_seconds: float,
+        reserve_bytes: Callable[[int], bool] | None = None,
     ) -> None:
         self._read = read
         self._read_identity = read_identity
         self._read_industries = read_industries
         self._max_age = max_age_seconds
+        self._reserve_bytes = reserve_bytes
         self._lock = threading.RLock()
         self._initialization_lock = threading.Lock()
         self._reference: PreparedReference | None = None
@@ -89,6 +92,10 @@ class PublishedReferences:
                 self._failure = f"reference_{type(exc).__name__}"
                 return
             with self._lock:
+                size_bytes = len(CanonicalJsonBytes((reference, static, industries)))
+                if self._reserve_bytes is not None and not self._reserve_bytes(size_bytes):
+                    self._failure = "reference_preload_capacity"
+                    return
                 self._reference, self._static = reference, static
                 self._industries = MappingProxyType(industries)
                 self._industry_source_time = min((row.source_time for row in rows), default=None)

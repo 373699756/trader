@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonObject
@@ -33,7 +34,6 @@ from trader.recommendation.infra.market_data.intraday_loader import IntradayLoad
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _history_population_codes,
     _normalize_codes,
-    _reference_epoch,
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
@@ -78,7 +78,35 @@ class MarketFeatureService:
     def reference_version(self) -> str:
         """Return the immutable reference epoch used by scoring caches."""
 
-        return _reference_epoch(self.references.versions())
+        return "reference:" + ContentHash(
+            {
+                **self.references.versions(),
+                "qfq": self.history.input_identity,
+                "company": self.research.input_identity,
+                "config": self.runner.config_version,
+            }
+        )
+
+    def initialize_published_inputs(
+        self,
+        cancelled: Callable[[], bool],
+        *,
+        model_version: str,
+        config_version: str,
+    ) -> None:
+        self.references.initialize()
+        self.history.initialize(cancelled=cancelled)
+        observed_at = self.runner.wall_clock()
+        self.research.initialize(self.risk_universe_codes(observed_at), cancelled=cancelled)
+        self.history.bind_inputs(
+            observed_at,
+            versions={
+                **self.references.versions(),
+                "company": self.research.loaded_identity,
+                "model": model_version,
+            },
+            config_version=config_version,
+        )
 
     def risk_universe_codes(self, observed_at: datetime) -> tuple[str, ...]:
         """Return the official non-ST research population without requiring quotes."""
@@ -109,7 +137,7 @@ class MarketFeatureService:
         observed_at = observed_at.astimezone(SHANGHAI)
         self.history.require_projection()
         reference = self.references.static_reference()
-        reference_epoch = reference.reference_epoch
+        reference_epoch = self.reference_version()
         with self._eligibility_lock:
             cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
             original_quotes = self._latest_market_quotes

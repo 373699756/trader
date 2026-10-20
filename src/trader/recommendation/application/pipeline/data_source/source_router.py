@@ -627,6 +627,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 candidate_features = scoring_batch.features
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise DataRefreshUnavailableError(_failure_code(exc)) from exc
+        reference_version = self._market.reference_version()
         data_version = self._versions.accept(
             f"native:{request.strategy.value}",
             (
@@ -634,11 +635,12 @@ class MarketInputCoordinator(DataRefreshPort):
                 self._market_version,
                 self._candidate_version,
                 self._research_version,
-                self._market.reference_version(),
+                reference_version,
                 shared.market_features,
                 candidate_features,
             ),
         )
+        data_version = f"{data_version}:{reference_version}"
         candidate_stage = AssembleCandidateInputs(
             shared.candidate_stage, candidate_features, as_of=request.observed_at, data_version=data_version
         )

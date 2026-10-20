@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import Future, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 from trader.infra.cache_contracts import CacheIdentity
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.workers import (
-    InjectedExecutor,
     SubmitOrReject,
     WorkerExecutor,
 )
@@ -34,8 +33,6 @@ from trader.recommendation.infra.market_data.market_feature_cache_entries import
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.provider_ports import IntradaySource
 
-_P = ParamSpec("_P")
-_T = TypeVar("_T")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
@@ -70,6 +67,7 @@ class _IntradayLoadState:
 
 class IntradayLoaderOptions(TypedDict):
     workers: int
+    minute_pool: WorkerExecutor
     ttl_seconds: float
     batch_timeout_seconds: float
     capacity: int
@@ -85,7 +83,8 @@ class IntradayLoader:
     ) -> None:
         self._client = client
         self._runner = runner
-        self._workers = max(1, options["workers"])
+        self._workers = min(5, max(1, options["workers"]))
+        self._minute_pool = options["minute_pool"]
         self._ttl_seconds = max(1.0, options["ttl_seconds"])
         self._batch_timeout_seconds = max(0.01, options["batch_timeout_seconds"])
         self._capacity = max(1, options["capacity"])
@@ -156,7 +155,10 @@ class IntradayLoader:
         try:
             lane_result = lane_future.result(timeout=max(0.0, request.deadline - self._monotonic()))
         except FutureTimeoutError:
-            lane_future.cancel()
+            # Another profile may have joined or refreshed this queued request.
+            # Its own batch deadline stops expired I/O when the lane reaches it.
+            return self._intraday_timeout_fallback(request)
+        if self._monotonic() >= request.deadline:
             return self._intraday_timeout_fallback(request)
         for code, restrictions in lane_restrictions.items():
             for restriction in restrictions:
@@ -240,56 +242,47 @@ class IntradayLoader:
     ) -> None:
         source_lanes = self._runner.source_lanes
         batch_deadline = state.request.deadline
-        nested_inline = source_lanes is not None and source_lanes.owns_current_thread("eastmoney_intraday")
-        pool = InjectedExecutor(self._runner.worker_pool, inline=nested_inline)
-        futures, timed_out, deferred = self._submit_intraday(
-            pool,
-            state,
-            missing,
-            batch_deadline,
-            nested_inline,
-        )
-        completed, pending = wait(futures, timeout=max(0.0, batch_deadline - self._monotonic()))
-        for future in completed:
-            self._consume_intraday_future(state, futures[future], future)
-        for future in pending:
-            if future.cancel():
-                deferred.append(futures[future])
-            else:
-                timed_out.append(futures[future])
-        self._consume_intraday_timeouts(state, tuple(timed_out))
-        if deferred:
+        cancelled = threading.Event()
+        futures: dict[Future[tuple[MinuteBar, ...]], str] = {}
+        remaining = iter(dict.fromkeys(missing))
+        exhausted = False
+        assert self._client is not None
+        try:
+            while not exhausted or futures:
+                if self._monotonic() >= batch_deadline or (
+                    source_lanes is not None and source_lanes.is_stopped("eastmoney_intraday")
+                ):
+                    break
+                while not exhausted and len(futures) < self._workers and self._monotonic() < batch_deadline:
+                    code = next(remaining, None)
+                    if code is None:
+                        exhausted = True
+                        break
+                    future = SubmitOrReject(
+                        self._minute_pool,
+                        self._client.fetch_intraday_minutes,
+                        code,
+                        now=state.request.observed_at,
+                        deadline=batch_deadline,
+                        cancelled=cancelled.is_set,
+                    )
+                    futures[future] = code
+                completed, _ = wait(
+                    futures,
+                    timeout=min(0.05, max(0.0, batch_deadline - self._monotonic())),
+                    return_when=FIRST_COMPLETED,
+                )
+                if self._monotonic() >= batch_deadline:
+                    break
+                for future in completed:
+                    self._consume_intraday_future(state, futures.pop(future), future)
+        finally:
+            cancelled.set()
+            timed_out = tuple(code for future, code in futures.items() if not future.cancel())
+        self._consume_intraday_timeouts(state, timed_out)
+        if not timed_out and (futures or not exhausted):
             with self._lock:
                 self._last_error = "intraday_batch_deferred"
-
-    def _submit_intraday(
-        self,
-        pool: WorkerExecutor,
-        state: _IntradayLoadState,
-        missing: Sequence[str],
-        batch_deadline: float,
-        nested_inline: bool,
-    ) -> tuple[dict[Future[tuple[MinuteBar, ...]], str], list[str], list[str]]:
-        futures: dict[Future[tuple[MinuteBar, ...]], str] = {}
-        timed_out: list[str] = []
-        deferred: list[str] = []
-        assert self._client is not None
-        for index, code in enumerate(missing):
-            if self._monotonic() >= batch_deadline:
-                deferred.extend(missing[index:])
-                break
-            future = SubmitOrReject(
-                pool,
-                self._client.fetch_intraday_minutes,
-                code,
-                now=state.request.observed_at,
-            )
-            if nested_inline and self._monotonic() >= batch_deadline:
-                timed_out.append(code)
-                deferred.extend(missing[index + 1 :])
-                break
-            futures[future] = code
-        return futures, timed_out, deferred
 
     def _consume_intraday_future(
         self,

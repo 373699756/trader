@@ -194,6 +194,36 @@ def test_reader_does_not_initialize_or_write_missing_database(tmp_path):
     assert not reader.path.exists()
 
 
+def test_company_publication_build_allows_writes_and_rejects_a_changed_source(tmp_path, monkeypatch):
+    import trader.download.infra.company_evidence_index as publication
+
+    index = _index(tmp_path)
+    partition = index.partitions(("sse",), NOW)[0]
+    index.commit_page(partition, DisclosurePage((_disclosure(),), 1, False), NOW)
+    index.publish(("600001",), NOW)
+    reader = SQLiteCompanyEvidenceReader(index.path)
+    before = reader.read(("600001",))
+    identity = reader.publication_version()
+    encode = publication.EncodeCompanyPublication
+    changed = False
+
+    def concurrent_change(snapshot):
+        nonlocal changed
+        if not changed:
+            changed = True
+            index.commit_page(partition, DisclosurePage((_disclosure(title="更正", digest="b"),), 1, False), NOW)
+        return encode(snapshot)
+
+    monkeypatch.setattr(publication, "EncodeCompanyPublication", concurrent_change)
+    with pytest.raises(RuntimeError, match="source_changed"):
+        index.publish(("600001",), NOW)
+    assert changed and reader.publication_version() == identity and reader.read(("600001",)) == before
+    monkeypatch.setattr(publication, "EncodeCompanyPublication", encode)
+    index.publish(("600001",), NOW)
+    assert reader.publication_version() != identity
+    assert reader.read(("600001",))[0].announcements[0].disclosure.title == "更正"
+
+
 def test_reader_releases_transaction_before_consumers_and_pins_all_requested_rows(tmp_path):
     index = _index(tmp_path)
     codes = ("600002", "600001")

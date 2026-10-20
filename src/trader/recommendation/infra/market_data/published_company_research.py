@@ -1,16 +1,24 @@
 """Preload one company publication and qualify its facts against the startup calendar."""
 
+from __future__ import annotations
+
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from functools import partial
 from types import MappingProxyType
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, TypedDict
+
+if TYPE_CHECKING:
+    from typing_extensions import Unpack
 
 from trader.download.domain.company_evidence import CompanyEvidenceSnapshot
+from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.domain.market.epochs import ResearchEpoch
 from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.domain.market.research import (
     AnnouncementRiskVerified,
     CorporateRiskFactsFromAnnouncements,
@@ -27,6 +35,12 @@ class CompanyEvidenceReadPort(Protocol):
     def visit(self, codes: Sequence[str], consume: Callable[[CompanyEvidenceSnapshot], None]) -> None: ...
 
 
+class _CompanyInputOptions(TypedDict, total=False):
+    reserve_bytes: Callable[[int], bool]
+    source_versions: Callable[[], Mapping[str, str]]
+    config_version: str
+
+
 class PublishedCompanyResearch:
     def __init__(
         self,
@@ -35,19 +49,28 @@ class PublishedCompanyResearch:
         wall_clock: Callable[[], datetime],
         open_dates: Callable[[], tuple[date, ...]],
         monotonic: Callable[[], float],
+        **options: Unpack[_CompanyInputOptions],
     ) -> None:
         self._reader = reader
         self._wall_clock = wall_clock
         self._open_dates = open_dates
         self._monotonic = monotonic
+        self._reserve_bytes = options.get("reserve_bytes")
+        self._source_versions = options.get("source_versions")
+        self._config_version = options.get("config_version", "company")
+        self._initialization_lock = threading.Lock()
         self._lock = threading.RLock()
-        self._observations: Mapping[str, ResearchObservation] = MappingProxyType({})
+        self._epoch: ResearchEpoch | None = None
         self._last_error = "company_not_loaded"
         self._publication_version = ""
         self._disk_version = ""
         self._initialized = False
 
     def initialize(self, codes: Sequence[str], *, cancelled: Callable[[], bool]) -> None:
+        with self._initialization_lock:
+            self._initialize(codes, cancelled=cancelled)
+
+    def _initialize(self, codes: Sequence[str], *, cancelled: Callable[[], bool]) -> None:
         with self._lock:
             if self._initialized:
                 return
@@ -79,12 +102,46 @@ class PublishedCompanyResearch:
                 return
             if before != after:
                 continue
-            with self._lock:
-                self._observations = MappingProxyType(rows)
-                self._publication_version = self._disk_version = after
-                self._last_error = "" if rows else "company_snapshot:missing"
+            self._adopt_projection(rows, observed_at, after, cancelled, deadline)
             return
         self._last_error = "company_publication_changed"
+
+    def _adopt_projection(
+        self,
+        rows: Mapping[str, ResearchObservation],
+        observed_at: datetime,
+        publication: str,
+        cancelled: Callable[[], bool],
+        deadline: float,
+    ) -> None:
+        epoch = _research_epoch(
+            rows,
+            observed_at,
+            publication,
+            self._config_version,
+            self._source_versions() if self._source_versions is not None else {},
+        )
+        size_bytes = len(CanonicalJsonBytes(epoch))
+        if cancelled() or self._monotonic() >= deadline:
+            self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+            return
+        if self._reserve_bytes is not None and not self._reserve_bytes(size_bytes):
+            self._last_error = "company_preload_capacity"
+            return
+        with self._lock:
+            self._epoch = epoch
+            self._publication_version = self._disk_version = publication
+            self._last_error = "" if rows else "company_snapshot:missing"
+
+    @property
+    def loaded_identity(self) -> str:
+        with self._lock:
+            return self._publication_version or "company:unavailable"
+
+    @property
+    def input_identity(self) -> str:
+        with self._lock:
+            return self._epoch.input_identity if self._epoch is not None else "company:unavailable"
 
     def observe_publication(self) -> None:
         try:
@@ -120,7 +177,7 @@ class PublishedCompanyResearch:
         result: dict[str, ResearchObservation] = {}
         with self._lock:
             for code in codes:
-                original = self._observations.get(code)
+                original = self._epoch.observations.get(code) if self._epoch is not None else None
                 if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
                     original = None
                 item = _qualified(original, now, required) if original is not None else None
@@ -147,7 +204,10 @@ class PublishedCompanyResearch:
         now = ShanghaiNow(self._wall_clock())
         required = self._required_coverage(now)
         with self._lock:
-            rows = tuple(_qualified(item, now, required) for item in self._observations.values())
+            rows = tuple(
+                _qualified(item, now, required)
+                for item in (self._epoch.observations.values() if self._epoch is not None else ())
+            )
             coverages = tuple(ResearchComponentCoverage(item) for item in rows)
             covered = tuple(sum(coverage[index] for coverage in coverages) for index in range(4))
             verified = sum(_action_ready(item) for item in rows)
@@ -180,6 +240,48 @@ class PublishedCompanyResearch:
                 disk_identity=self._disk_version,
                 restart_required=self._publication_version != self._disk_version,
             )
+
+
+def _research_epoch(
+    rows: Mapping[str, ResearchObservation],
+    observed_at: datetime,
+    publication: str,
+    config_version: str,
+    versions: Mapping[str, str],
+) -> ResearchEpoch:
+    fields: dict[str, Mapping[str, FieldValue]] = {}
+    for code, row in rows.items():
+        coverage = ResearchComponentCoverage(row)
+        components = (
+            ("financial", coverage[0]),
+            ("announcements", coverage[1]),
+            ("pledge", coverage[2]),
+            ("unlock", coverage[3]),
+            ("corporate_risk", row.corporate_risk_window_complete),
+        )
+        fields[code] = {
+            name: FieldValue(
+                name,
+                True if covered else None,
+                "company",
+                row.snapshot_at or observed_at,
+                observed_at,
+                row.data_version,
+                row.data_version,
+                FieldQualityState.VALID if covered else FieldQualityState.MISSING,
+            )
+            for name, covered in components
+        }
+    return ResearchEpoch(
+        observed_at.date(),
+        0,
+        observed_at,
+        observed_at,
+        config_version,
+        rows,
+        {**versions, "company": publication or "company:unavailable"},
+        fields,
+    )
 
 
 def _capture_published_observation(
@@ -224,7 +326,7 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
     announcements = tuple(
         ResearchAnnouncement(
             item.disclosure.title,
-            item.disclosure.published_at,
+            ShanghaiNow(item.disclosure.published_at),
             item.disclosure.identity,
             "issuer_disclosure",
             item.text,
@@ -236,7 +338,7 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
     reports = tuple(
         FinancialReport(
             item.report_date,
-            item.published_at,
+            ShanghaiNow(item.published_at),
             item.basic_eps,
             item.book_value_per_share,
             item.revenue_growth_pct,
@@ -251,7 +353,13 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
     )
     evidence = tuple(
         Evidence(
-            item.identity, "news", item.title[:240], item.source, item.published_at, snapshot.published_at, item.digest
+            item.identity,
+            "news",
+            item.title[:240],
+            item.source,
+            ShanghaiNow(item.published_at),
+            ShanghaiNow(snapshot.published_at),
+            item.digest,
         )
         for item in snapshot.news
         if now - timedelta(days=7) <= item.published_at <= now
@@ -262,7 +370,7 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
             item.title[:240],
             item.source,
             item.published_at,
-            snapshot.published_at,
+            ShanghaiNow(snapshot.published_at),
             snapshot.version,
         )
         for item in announcements
@@ -271,7 +379,7 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
     failures = snapshot.failures
     return ResearchObservation(
         data_version=snapshot.version,
-        snapshot_at=snapshot.published_at,
+        snapshot_at=ShanghaiNow(snapshot.published_at),
         loaded_at=now,
         queried_on=snapshot.window_end,
         pledge_checked_on=snapshot.pledge.day if snapshot.pledge else None,

@@ -9,6 +9,27 @@ from typing import TextIO
 
 from trader.download.application.progress_message import ProgressDuration
 from trader.download.domain.company_evidence import DisclosurePartition, EvidenceSyncProgress
+from trader.download.domain.history_sync import HistoryStEligibilitySummary
+
+
+def ReportStPreparation(
+    progress: Callable[[EvidenceSyncProgress], None] | None,
+    completed: int,
+    total: int,
+    summary: HistoryStEligibilitySummary | None,
+) -> None:
+    if progress is not None:
+        progress(
+            EvidenceSyncProgress(
+                "st_eligibility",
+                completed,
+                total - completed,
+                0,
+                0,
+                0,
+                f"unknown:{summary.unknown}" if summary and summary.unknown else "",
+            )
+        )
 
 
 class CompanyEvidenceProgress:
@@ -96,4 +117,4 @@ def _scope(progress: EvidenceSyncProgress) -> str:
     return f" | 当前 {market}{scope.start.isoformat()}~{scope.end.isoformat()} 第{scope.page}页"
 
 
-__all__ = ["CompanyEvidenceProgress"]
+__all__ = ["CompanyEvidenceProgress", "ReportStPreparation"]

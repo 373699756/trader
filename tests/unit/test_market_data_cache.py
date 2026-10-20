@@ -52,6 +52,19 @@ class MutableClocks:
         self.wall_value += timedelta(seconds=seconds)
 
 
+def test_resident_projections_share_the_group_budget_with_evictable_entries():
+    cache = BoundedLruCache(_policy(group_bytes=1200), wall_clock=lambda: NOW)
+    assert cache.reserve_resident("daily_history", "company", 800)
+    assert not cache.put(_identity("600001"), "x" * 600, data_version="input", source_time=NOW)
+    assert cache.reserve_resident("daily_history", "qfq_v2", 300)
+    assert not cache.reserve_resident("daily_history", "qfq_v3", 300)
+    assert not cache.reserve_resident("daily_history", "company", 950)
+    assert cache.status().datasets["daily_history"]["company"].estimated_bytes == 800
+    assert sum(row.estimated_bytes for row in cache.status().datasets["daily_history"].values()) == 1100
+    assert cache.reserve_resident("daily_history", "company", 0)
+    assert cache.put(_identity("600001"), "content", data_version="input", source_time=NOW)
+
+
 def _policy(*, capacity: int = 2, group_bytes: int = 100_000) -> CachePolicy:
     return CachePolicy(
         datasets={

@@ -55,6 +55,13 @@ class RuntimePersistenceContext:
 
 
 @dataclass(frozen=True)
+class SharedRecommendationInputs:
+    workers: RuntimeWorkerResources
+    market: MarketFeatureService
+    budget: DeepSeekBudgetLedger
+
+
+@dataclass(frozen=True)
 class RuntimePublicationContext:
     tomorrow_records: SQLiteDecisionRecords
     tomorrow_index: UnifiedDecisionIndex
@@ -82,4 +89,5 @@ __all__ = [
     "RuntimePersistenceContext",
     "RuntimePublicationContext",
     "RuntimePublicationDependencies",
+    "SharedRecommendationInputs",
 ]

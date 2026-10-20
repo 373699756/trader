@@ -7,7 +7,7 @@
         "cadence_task": "full_market",
         "action_max_age_multiplier": 3,
         "negative_ttl_seconds": 10,
-        "capacity": 6000,
+        "capacity": 12000,
         "group": "observation",
         "persisted": false
       },
@@ -17,7 +17,7 @@
         "cadence_task": "candidate_quotes",
         "action_max_age_multiplier": 3,
         "negative_ttl_seconds": 3,
-        "capacity": 1080,
+        "capacity": 12000,
         "group": "observation",
         "persisted": false
       },
@@ -27,7 +27,7 @@
         "cadence_task": null,
         "action_max_age_multiplier": null,
         "negative_ttl_seconds": 45,
-        "capacity": 360,
+        "capacity": 12000,
         "group": "observation",
         "persisted": false
       },
@@ -37,8 +37,18 @@
         "cadence_task": null,
         "action_max_age_multiplier": null,
         "negative_ttl_seconds": 300,
-        "capacity": 6000,
+        "capacity": 12000,
         "group": "observation",
+        "persisted": false
+      },
+      "quote_factor_inputs": {
+        "refresh_ttl_seconds": 86400,
+        "action_max_age_seconds": 86400,
+        "cadence_task": null,
+        "action_max_age_multiplier": null,
+        "negative_ttl_seconds": 60,
+        "capacity": 12000,
+        "group": "feature_batches",
         "persisted": false
       },
       "board_cross_section": {
@@ -193,16 +203,16 @@
       }
     },
     "groups": {
-      "observation": 134217728,
-      "canonical_snapshots": 58720256,
-      "feature_batches": 25165824,
-      "local_scoring": 16777216,
-      "review": 12582912,
-      "projection": 12582912
+      "observation": 276824064,
+      "canonical_snapshots": 121634816,
+      "feature_batches": 51380224,
+      "local_scoring": 34603008,
+      "review": 26214400,
+      "projection": 26214400
     },
-    "total_bytes": 260046848,
+    "total_bytes": 536870912,
     "runtime_reserve_bytes": 8388608,
-    "pool_total_bytes": 268435456,
+    "pool_total_bytes": 545259520,
     "estimator": "canonical_json_utf8"
   }
 }

@@ -26,7 +26,7 @@ from trader.recommendation.application.ports.market_data import (
     MarketDataUnavailableError,
 )
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.application.runtime.schedule import PhaseAt, ShanghaiNow
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler, SourceRequestSupersededError
 from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
@@ -223,22 +223,18 @@ class MarketDataGateway:
         self._latency.plan(trace_id, "full_market")
         self._latency.enter(trace_id)
         try:
-            if self._source_lanes is not None:
-                result = self._fetch_market_once(
+            result = self._market_flight.run(
+                lambda: self._fetch_market_once(
                     requested_at,
                     force=force,
                     deadline=deadline,
                     max_observation_age_seconds=300.0 if observed_at is not None else None,
-                )
-            else:
-                result = self._market_flight.run(
-                    lambda: self._fetch_market_once(
-                        requested_at,
-                        force=force,
-                        deadline=deadline,
-                        max_observation_age_seconds=300.0 if observed_at is not None else None,
-                    )
-                )
+                ),
+                key=(ShanghaiNow(requested_at).date(), PhaseAt(ShanghaiNow(requested_at), is_trading_day=True), force),
+                timeout=max(0.0, (deadline - self._wall_clock()).total_seconds()) if deadline is not None else None,
+            )
+            if deadline is not None and self._wall_clock() >= deadline:
+                raise MarketDataDeadlineExceededError("market data deadline exceeded while joining shared collection")
         except MarketDataDeadlineExceededError:
             self._latency.finish(trace_id, outcome="timeout")
             raise

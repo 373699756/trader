@@ -38,8 +38,8 @@
       "full_market_other": 15
     },
     "memory": {
-      "cache_logical_bytes": 260046848,
-      "process_peak_rss_bytes": 402653184,
+      "cache_logical_bytes": 536870912,
+      "process_peak_rss_bytes": 2147483648,
       "growth_percent": 20
     },
     "relative_regression_percent": 5

@@ -26,9 +26,8 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_evidence_codec import (
-    CompanySnapshotDigest,
     DecodeCompanySnapshot,
-    EncodeCompanySnapshot,
+    EncodeCompanyPublication,
 )
 from trader.download.infra.company_evidence_sql import SCHEMA
 from trader.infra.sqlite_connection import (
@@ -485,30 +484,54 @@ class SQLiteCompanyEvidenceIndex:
         return changes
 
     def publish(self, codes: Sequence[str], observed_at: datetime) -> int:
-        # All normalized reads and the publication pointer share one transaction. No whole-file copy/merge.
-        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+        requested = tuple(sorted(set(codes)))
+        if len(requested) > 12_000:
+            raise ValueError("company_publication_population_exceeded")
+        # TEMP belongs to this connection and disappears on close. It is never a second publication.
+        with (
+            self._connect() as connection,
+            SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=8)) as source,
+        ):
+            connection.run("PRAGMA temp_store=FILE")
+            connection.run(
+                "CREATE TEMP TABLE prepared_publication(code TEXT PRIMARY KEY,version TEXT,published_at TEXT,payload TEXT)"
+            )
+            source_version = source.run("PRAGMA data_version").require_one()[0]
+            with SqliteTransaction(source):
+                versions = {str(row[0]): str(row[1]) for row in source.run("SELECT code,version FROM published")}
+                shared = _snapshot_shared(source, observed_at)
+                for offset in range(0, len(requested), 128):
+                    batch = requested[offset : offset + 128]
+                    inputs = _snapshot_rows(source, batch, observed_at)
+                    values = []
+                    for code in batch:
+                        snapshot = _build_snapshot(code, observed_at, inputs[code], shared)
+                        version, payload = EncodeCompanyPublication(snapshot)
+                        versions[code] = version
+                        values.append((code, version, observed_at.isoformat(), payload))
+                    with SqliteTransaction(connection):
+                        connection.run_many("INSERT INTO temp.prepared_publication VALUES(?,?,?,?)", values)
             digest = hashlib.sha256()
-            shared = _snapshot_shared(connection, observed_at)
-            for offset in range(0, len(codes), 128):
-                batch = tuple(codes[offset : offset + 128])
-                inputs = _snapshot_rows(connection, batch, observed_at)
-                values = []
-                for code in batch:
-                    snapshot = _build_snapshot(code, observed_at, inputs[code], shared)
-                    values.append(
-                        (snapshot.code, snapshot.version, observed_at.isoformat(), EncodeCompanySnapshot(snapshot))
-                    )
-                connection.run_many(
-                    "INSERT INTO published VALUES(?,?,?,?) ON CONFLICT(code) DO UPDATE "
-                    "SET version=excluded.version,published_at=excluded.published_at,payload=excluded.payload "
-                    "WHERE version<>excluded.version",
-                    values,
+            for code in sorted(versions):
+                digest.update(versions[code].encode())
+            with SqliteTransaction(connection, immediate=True):
+                # This same read handle observes every concurrent commit, including other publications.
+                if source.run("PRAGMA data_version").require_one()[0] != source_version:
+                    raise RuntimeError("company_publication_source_changed")
+                connection.run(
+                    "INSERT INTO published SELECT * FROM temp.prepared_publication WHERE true "
+                    "ON CONFLICT(code) DO UPDATE SET version=excluded.version,"
+                    "published_at=excluded.published_at,payload=excluded.payload WHERE version<>excluded.version"
                 )
-            for row in connection.run("SELECT version FROM published ORDER BY code"):
-                digest.update(row[0].encode())
-            version = digest.hexdigest()
-            connection.run("INSERT OR REPLACE INTO publication VALUES(1,?,?)", (version, observed_at.isoformat()))
-            # Only this fresh evidence database is pruned; frozen decisions and old databases are untouched.
+                connection.run(
+                    "INSERT OR REPLACE INTO publication VALUES(1,?,?)", (digest.hexdigest(), observed_at.isoformat())
+                )
+        self._prune(observed_at)
+        return len(requested)
+
+    def _prune(self, observed_at: datetime) -> None:
+        # Cleanup is independent of the short publication transaction; failure cannot roll back its pointer.
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             cutoff = (observed_at.date() - timedelta(days=365)).isoformat()
             connection.run(
                 "DELETE FROM disclosures WHERE (kind='announcement' AND published_at<?) OR (kind='news' AND published_at<?)",
@@ -520,7 +543,6 @@ class SQLiteCompanyEvidenceIndex:
             connection.run(
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
             )
-        return len(codes)
 
 
 def _key(partition: DisclosurePartition) -> tuple[str, str, str]:
@@ -691,8 +713,7 @@ def _build_snapshot(
         ),
         failures,
     )
-    version = CompanySnapshotDigest(snapshot)
-    return replace(snapshot, version=version)
+    return snapshot
 
 
 class SQLiteCompanyEvidenceReader:

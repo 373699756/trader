@@ -26,6 +26,7 @@ CORE_HISTORY_MIN_SESSIONS = 20
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
+_SOURCE_ERROR_CODE = re.compile(r"^[A-Za-z0-9_:.-]{1,240}$")
 CANDIDATE_REALTIME_FEATURES = frozenset(
     {
         "breakout_deviation_pct",
@@ -186,6 +187,16 @@ class DailyFeaturePack:
     version: str = field(init=False)
 
     @cached_property
+    def input_identity(self) -> str:
+        return _content_hash(
+            {
+                "config": self.config_version,
+                "calendar": self.calendar_version,
+                "sources": self.source_versions,
+            }
+        )
+
+    @cached_property
     def content_hash(self) -> str:
         """Integrity material for persistence, never an online revision key."""
         return _content_hash(
@@ -210,8 +221,11 @@ class DailyFeaturePack:
         if not rows:
             raise ValueError("daily feature rows must not be empty")
         _require_unique_codes(tuple(row.code for row in rows), "daily feature rows")
-        if any(row.data_as_of >= self.trade_date for row in rows):
-            raise ValueError("daily feature data_as_of must precede trade_date")
+        if any(
+            row.data_as_of > self.trade_date or (row.data_as_of == self.trade_date and self.observed_at.hour < 15)
+            for row in rows
+        ):
+            raise ValueError("daily feature data_as_of must precede trade_date until market close")
         row_codes = {row.code for row in rows}
         if not set(self.coverage.potential_executable_codes) <= row_codes:
             raise ValueError("potential executable codes must exist in daily feature rows")
@@ -421,6 +435,10 @@ class ResearchEpoch:
     version: str = field(init=False)
 
     @cached_property
+    def input_identity(self) -> str:
+        return _content_hash({"config": self.config_version, "sources": self.source_versions})
+
+    @cached_property
     def content_hash(self) -> str:
         """Integrity material for persistence, never an online revision key."""
         return _content_hash(
@@ -512,7 +530,8 @@ def _validate_research_observation(
     observed_at: datetime,
     received_at: datetime,
 ) -> None:
-    _sorted_unique_reason_codes(observation.source_errors, "research source_errors")
+    if any(_SOURCE_ERROR_CODE.fullmatch(reason) is None for reason in observation.source_errors):
+        raise ValueError("research source_errors must contain bounded failure codes")
     _validate_financial_time(observation, observed_at)
     _validate_announcement_times(observation, observed_at)
     _validate_risk_fact_times(observation, observed_at)

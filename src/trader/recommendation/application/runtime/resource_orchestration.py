@@ -62,9 +62,10 @@ class ApplicationResources:
     data_pool: PoolResource
     quote_pool: PoolResource
     market_quote_pool: PoolResource
-    research_pool: PoolResource
+    minute_pool: PoolResource
     auxiliary_runtimes: tuple[AuxiliaryRuntimeResource, ...]
     market_cache: CacheResource
+    owns_shared_resources: bool = True
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ class _StartedResources:
     data_pool: bool
     quote_pool: bool
     market_quote_pool: bool
-    research_pool: bool
+    minute_pool: bool
 
 
 def StartApplicationResources(
@@ -85,21 +86,22 @@ def StartApplicationResources(
     data_pool = resources.data_pool
     quote_pool = resources.quote_pool
     market_quote_pool = resources.market_quote_pool
-    research_pool = resources.research_pool
+    minute_pool = resources.minute_pool
     auxiliary_runtimes = resources.auxiliary_runtimes
     auxiliary_started: list[AuxiliaryRuntimeResource] = []
     data_started = False
     quote_started = False
     market_quote_started = False
-    research_started = False
+    minute_started = False
     try:
         for runtime in auxiliary_runtimes:
             if runtime.start():
                 auxiliary_started.append(runtime)
-        data_started = data_pool.start()
-        quote_started = quote_pool.start()
-        market_quote_started = market_quote_pool.start()
-        research_started = research_pool.start()
+        if resources.owns_shared_resources:
+            data_started = data_pool.start()
+            quote_started = quote_pool.start()
+            market_quote_started = market_quote_pool.start()
+            minute_started = minute_pool.start()
         started = supervisor.start()
     except BaseException:
         deadline = ShutdownDeadline.start(timeout_seconds)
@@ -110,14 +112,14 @@ def StartApplicationResources(
                 data_started,
                 quote_started,
                 market_quote_started,
-                research_started,
+                minute_started,
             ),
             deadline,
         )
         raise
     if started:
         return True
-    if not any((research_started, market_quote_started, quote_started, data_started, bool(auxiliary_started))):
+    if not any((minute_started, market_quote_started, quote_started, data_started, bool(auxiliary_started))):
         return False
     deadline = ShutdownDeadline.start(timeout_seconds)
     _stop_started_resources(
@@ -127,7 +129,7 @@ def StartApplicationResources(
             data_started,
             quote_started,
             market_quote_started,
-            research_started,
+            minute_started,
         ),
         deadline,
     )
@@ -139,8 +141,8 @@ def _stop_started_resources(
     started: _StartedResources,
     deadline: ShutdownDeadline,
 ) -> None:
-    if started.research_pool:
-        resources.research_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+    if started.minute_pool:
+        resources.minute_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
     if started.data_pool:
         resources.data_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
     if started.quote_pool:
@@ -161,23 +163,26 @@ def StopApplicationResources(
     data_pool = resources.data_pool
     quote_pool = resources.quote_pool
     market_quote_pool = resources.market_quote_pool
-    research_pool = resources.research_pool
+    minute_pool = resources.minute_pool
     auxiliary_runtimes = resources.auxiliary_runtimes
     market_cache = resources.market_cache
     steps: list[ShutdownStep] = []
     for runtime in auxiliary_runtimes:
         runtime.stop(wait=False, deadline=deadline)
-    source_lanes.stop(wait=False, deadline=deadline)
+    if resources.owns_shared_resources:
+        source_lanes.stop(wait=False, deadline=deadline)
     supervisor_report = supervisor.stop(deadline)
     steps.extend(supervisor_report.steps)
-    steps.extend(source_lanes.stop(wait=True, deadline=deadline))
-    steps.append(data_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-    steps.append(quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-    steps.append(market_quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-    steps.append(research_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+    if resources.owns_shared_resources:
+        steps.extend(source_lanes.stop(wait=True, deadline=deadline))
+        steps.append(data_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+        steps.append(quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+        steps.append(market_quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+        steps.append(minute_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     for runtime in auxiliary_runtimes:
         steps.append(runtime.stop(wait=True, deadline=deadline))
-    steps.append(market_cache.stop(wait=True, deadline=deadline))
+    if resources.owns_shared_resources:
+        steps.append(market_cache.stop(wait=True, deadline=deadline))
     return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
 
 

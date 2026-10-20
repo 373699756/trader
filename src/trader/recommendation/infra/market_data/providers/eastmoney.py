@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
@@ -36,6 +37,15 @@ _REQUEST_ROUNDS = 2
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+@dataclass(frozen=True)
+class _RequestBudget:
+    deadline: float | None = None
+    cancelled: Callable[[], bool] | None = None
+
+
+_DEFAULT_REQUEST_BUDGET = _RequestBudget()
+
+
 class _EastmoneyRequiredOptions(TypedDict):
     timeout_seconds: float
     worker_pool: BoundedExecutor | None
@@ -45,6 +55,7 @@ class _EastmoneyRequiredOptions(TypedDict):
 class _EastmoneyOptionalOptions(TypedDict, total=False):
     cancel_requested: Callable[[], bool]
     wall_clock: Callable[[], datetime]
+    monotonic: Callable[[], float]
 
 
 class _EastmoneyOptions(_EastmoneyRequiredOptions, _EastmoneyOptionalOptions):
@@ -61,6 +72,7 @@ class EastmoneyClient:
         self._session_factory = options["session_factory"]
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
+        self._monotonic = options.get("monotonic", time.monotonic)
 
     def fetch_history(self, code: str, *, days: int = 90, now: datetime | None = None) -> tuple[DailyBar, ...]:
         return self._fetch_daily_history(code, days=days, now=now, adjustment=PriceAdjustment.QFQ)
@@ -131,7 +143,14 @@ class EastmoneyClient:
             )
         return tuple(bars[-days:])
 
-    def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]:
+    def fetch_intraday_minutes(
+        self,
+        code: str,
+        *,
+        now: datetime | None = None,
+        deadline: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> tuple[MinuteBar, ...]:
         observed_at = now or self._wall_clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("intraday observation time must be timezone-aware")
@@ -148,6 +167,7 @@ class EastmoneyClient:
                 "secid": _secid(code),
             },
             request_rounds=1,
+            budget=_RequestBudget(deadline, cancelled),
         )
         trends = _object_mapping(payload.get("data")).get("trends")
         if not isinstance(trends, list):
@@ -191,20 +211,31 @@ class EastmoneyClient:
         params: Mapping[str, str],
         *,
         request_rounds: int = _REQUEST_ROUNDS,
+        budget: _RequestBudget = _DEFAULT_REQUEST_BUDGET,
     ) -> Mapping[str, object]:
         last_error: Exception | None = None
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+        deadline = budget.deadline
+
+        def stopped() -> bool:
+            return self._cancel_requested() or (budget.cancelled is not None and budget.cancelled())
+
         for _round in range(max(1, request_rounds)):
             for host in hosts:
                 self._ensure_running()
+                if stopped() or (deadline is not None and self._monotonic() >= deadline):
+                    raise RuntimeError("eastmoney_request_cancelled_or_expired")
                 try:
                     with self._session_factory() as request_session:
                         response = request_session.get(
                             f"https://{host}{path}",
                             params=dict(params),
                             headers=headers,
-                            timeout=self._timeout_seconds,
-                            cancel_requested=self._cancel_requested,
+                            timeout=min(self._timeout_seconds, max(0.001, deadline - self._monotonic()))
+                            if deadline is not None
+                            else self._timeout_seconds,
+                            deadline=deadline,
+                            cancel_requested=stopped,
                         )
                         response.raise_for_status()
                         payload = response.json()

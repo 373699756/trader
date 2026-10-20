@@ -50,4 +50,4 @@ def test_candidate_quote_cache_is_sized_and_wired_for_the_physical_union() -> No
     cache_config = json.loads(_read("config/cache.json"))
 
     assert 'datasets["candidate_quotes"].capacity' in bootstrap
-    assert cache_config["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] == 1080
+    assert cache_config["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] == 12000

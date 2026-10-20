@@ -146,6 +146,7 @@ def test_configuration_contract_is_valid() -> None:
         "candidate_feature_batch",
         "hard_filter_batch",
         "board_cross_section",
+        "quote_factor_inputs",
         "candidate_preselection",
         "board_score_batch",
         "global_local_draft",
@@ -157,10 +158,10 @@ def test_configuration_contract_is_valid() -> None:
         "published_date_index",
     }
     assert runtime.market_data.cache_policy.estimator == "canonical_json_utf8"
-    assert runtime.market_data.cache_policy.total_bytes == 248 * 1024 * 1024
+    assert runtime.market_data.cache_policy.total_bytes == 512 * 1024 * 1024
     assert runtime.market_data.cache_policy.runtime_reserve_bytes == 8 * 1024 * 1024
-    assert runtime.market_data.cache_policy.pool_total_bytes == 256 * 1024 * 1024
-    assert runtime.market_data.cache_policy.datasets["candidate_quotes"].capacity == 1080
+    assert runtime.market_data.cache_policy.pool_total_bytes == 520 * 1024 * 1024
+    assert runtime.market_data.cache_policy.datasets["candidate_quotes"].capacity == 12000
     assert {name: policy.persisted for name, policy in runtime.market_data.cache_policy.datasets.items()} == {
         "full_market_quotes": False,
         "candidate_quotes": False,
@@ -172,6 +173,7 @@ def test_configuration_contract_is_valid() -> None:
         "candidate_feature_batch": False,
         "hard_filter_batch": False,
         "board_cross_section": False,
+        "quote_factor_inputs": False,
         "candidate_preselection": False,
         "board_score_batch": False,
         "global_local_draft": False,
@@ -193,8 +195,8 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.performance_budgets.latency_p95_ms["targeted_overlay_commit"] == 100
     assert runtime.performance_budgets.latency_p95_ms["quote_to_draft"] == 5000
     assert runtime.performance_budgets.latency_p95_ms["browser_patch_to_paint"] == 100
-    assert runtime.performance_budgets.memory.cache_logical_bytes == 260046848
-    assert runtime.performance_budgets.memory.process_peak_rss_bytes == 402653184
+    assert runtime.performance_budgets.memory.cache_logical_bytes == 536870912
+    assert runtime.performance_budgets.memory.process_peak_rss_bytes == 2147483648
     assert set(runtime.pipeline.cadence_seconds["full_market"].values()) == {10.0}
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["morning_main"] == 1
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 1
@@ -582,7 +584,7 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
         ),
         (
             lambda raw: raw["performance_budgets"]["memory"].update({"cache_logical_bytes": 268435456}),
-            "fixed 248/384 MiB",
+            "fixed 512/2048 MiB",
         ),
         (
             lambda raw: raw["market_data"].update({"single_flight": False}),
