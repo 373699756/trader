@@ -30,7 +30,11 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput, M
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, StageState, ValidateStageBatchContinuity
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.decision_identity import ScoredTopSix
+from trader.recommendation.domain.publication.decision_identity import (
+    CommittedDecisionRecord,
+    FormalScoredDecision,
+    ScoredTopSix,
+)
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import (
     LEGACY_EXPOSURE_CONTRACT,
@@ -38,6 +42,10 @@ from trader.recommendation.domain.scoring.residualization import (
 )
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.infra.persistence.decision_record_codec import (
+    CommittedRecordBytes,
+    CommittedRecordFromBytes,
+)
 from trader.training.application.research_audit import BuildCommittedResearchAudit
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -165,6 +173,9 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert projection.input_quality.history_required_sessions == 61
     assert ("score_scale", "weighted_evidence_quality_0_100") in projection.local.input_versions
     assert ("score_model", f"daily_reconstructible_ensemble:{'b' * 64}") in projection.local.input_versions
+    assert projection.cost_reference_version is not None
+    assert ("cost_reference", projection.cost_reference_version) in projection.local.input_versions
+    assert any(name.startswith("board_population:") for name, _version in projection.local.input_versions)
     assert all(item.model_diagnostics is not None for item in projection.local.items)
     assert all("model_prediction_rank" not in dict(item.score_components) for item in projection.local.items)
     assert all("tail_structure" in dict(item.score_components) for item in projection.local.items)
@@ -195,6 +206,15 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert hybrid.decision is not None
     hybrid = hybrid.decision
     assert hybrid.parent_version == projection.local.version
+    assert hybrid.input_versions == projection.local.input_versions
+    local_scores = {item.code: item.final_score for item in projection.local.items}
+    assert all(item.final_score == local_scores[item.code] for item in hybrid.items)
+    record = CommittedDecisionRecord(FormalScoredDecision(hybrid), EVALUATED_AT.replace(hour=15, minute=0), "scheduled")
+    encoded = CommittedRecordBytes(record)
+    restored = CommittedRecordFromBytes(encoded)
+    assert restored == record
+    assert CommittedRecordBytes(restored) == encoded
+    assert restored.decision.input_versions == projection.local.input_versions
     reviewed = next(item for item in hybrid.items if item.code == code)
     assert reviewed.review_outcome == "applied"
     index = UnifiedDecisionIndex()
@@ -290,6 +310,42 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
     assert predictor.codes == ("600001",)
     rejected_evaluation = next(item for item in projection.selection.evaluations if item.code == "600002")
     assert rejected_evaluation.disposition.value == "reject"
+
+
+def test_cost_reference_uses_full_model_eligible_board_before_candidate_limits(application_feature_factory) -> None:
+    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    features = tuple(
+        _with_model_features(
+            _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10))),
+            index,
+        )
+        for index in range(123)
+    )
+    requested = features[30]
+    # Model-qualified peers remain in the reference even with no local scoring fields.
+    population = tuple(
+        replace(
+            feature,
+            values={
+                name: value
+                for name, value in feature.values.items()
+                if name.startswith("qfq_") or name == "amount_median_20d"
+            },
+        )
+        for feature in features[:121]
+    )
+    rejected = replace(features[121], quote=replace(features[121].quote, is_st=True))
+    pending = replace(
+        features[122], values={name: value for name, value in features[122].values.items() if name != "qfq_return_1d"}
+    )
+    native = replace(_native_input((requested,)), market_features=(*population, rejected, pending))
+    projection = BuildScoredLocal(
+        native, policy, sequence=1, runtime=ScoredProjectionInputs(model_scoring=_router(_ProductionPredictor()))
+    )
+    diagnostics = dict(projection.model_diagnostics)[requested.quote.code]
+    assert diagnostics.estimated_cost_pct == pytest.approx(0.25)
+    assert projection.cost_reference_version is not None
+    assert ("cost_reference", projection.cost_reference_version) in projection.local.input_versions
 
 
 def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(

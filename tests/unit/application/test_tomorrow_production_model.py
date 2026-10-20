@@ -110,6 +110,81 @@ def test_model_residual_population_includes_non_candidate_peers(application_feat
     assert len(service._state.momenta) == 2
 
 
+@pytest.mark.parametrize("profile_id", ("v2", "v3"))
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_cost_reference_is_fixed_per_board_before_requested_subset(
+    application_feature_factory, profile_id, strategy
+) -> None:
+    class _FixedPredictor(_Predictor):
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            return tuple(ModelPrediction(item.code, 0.0031) for item in inputs)
+
+    predictor = _FixedPredictor()
+    predictor.profile_id = profile_id
+    population = []
+    for code, board, amihud in (
+        ("600000", Board.MAIN, 1.0),
+        ("600001", Board.MAIN, 2.0),
+        ("600002", Board.MAIN, 3.0),
+        ("300000", Board.CHINEXT, 101.0),
+        ("300001", Board.CHINEXT, 102.0),
+        ("300002", Board.CHINEXT, 103.0),
+    ):
+        feature = application_feature_factory(code, NOW)
+        feature = replace(feature, quote=replace(feature.quote, board=board))
+        population.append(_model_feature(feature, offset=0.0, amihud=amihud))
+    features = tuple(population)
+    service = _strategy_service(predictor, strategy)
+    context = ModelScoringContext(population_features=features, population_identity="2026-08-31:final_review")
+    whole = service.score(features, context=context)
+    for subset in ((features[1],), (features[1], features[0]), (features[2], features[1]), tuple(reversed(features))):
+        batch = service.score(subset, context=context)
+        assert batch.cost_reference_version == whole.cost_reference_version
+        for code, diagnostics in batch.diagnostics.items():
+            assert diagnostics.estimated_cost_pct == whole.diagnostics[code].estimated_cost_pct
+            assert diagnostics.predicted_net_excess_pct == whole.diagnostics[code].predicted_net_excess_pct
+    assert whole.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.3)
+    assert whole.diagnostics["300001"].estimated_cost_pct == pytest.approx(0.3)
+    assert whole.diagnostics["600001"].predicted_net_excess_pct > 0.0
+
+
+def test_non_requested_cost_change_invalidates_batch_without_rerunning_predictions(application_feature_factory) -> None:
+    class _CountingPredictor(_Predictor):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            self.calls += 1
+            return super().predict(inputs)
+
+    predictor = _CountingPredictor()
+    service = _service(predictor)
+    features = tuple(
+        _model_feature(application_feature_factory(f"60000{index}", NOW), offset=0.0, amihud=float(index + 1))
+        for index in range(3)
+    )
+    context = ModelScoringContext(population_features=features)
+    first = service.score((features[1],), context=context)
+    assert service.score((features[1],), context=context) is first
+    corrected = replace(features[0], values={**features[0].values, "qfq_amihud_20d": 4.0})
+    second = service.score((features[1],), context=replace(context, population_features=(corrected, *features[1:])))
+    assert first.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.3)
+    assert second.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.2)
+    assert first.cost_reference_version != second.cost_reference_version
+    assert predictor.calls == 1
+    new_phase = service.score((features[1],), context=replace(context, population_identity="next-phase"))
+    assert new_phase.cost_reference_version != first.cost_reference_version
+    assert new_phase.diagnostics == first.diagnostics
+
+
+def test_explicit_empty_cost_population_does_not_fall_back_to_requested_codes(application_feature_factory) -> None:
+    feature = _model_feature(application_feature_factory("600001", NOW), offset=0.0, amihud=1.0)
+    batch = _service(_Predictor()).score((feature,), context=ModelScoringContext(population_features=()))
+    assert batch.predictions == ()
+    assert batch.diagnostics == {}
+    assert batch.missing_codes == ("600001",)
+
+
 def test_production_model_residualizes_bound_features_and_keeps_prediction_rank_as_diagnostic(
     application_feature_factory,
 ) -> None:

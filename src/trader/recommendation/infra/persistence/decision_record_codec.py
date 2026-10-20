@@ -313,7 +313,7 @@ def _model_diagnostics_from_json(raw: object) -> DecisionModelDiagnostics | None
         _number(value, "predicted_excess_return_pct"),
         _number(value, "estimated_cost_pct"),
         _number(value, "predicted_net_excess_pct"),
-        _number(value, "model_disagreement_pct") if "model_disagreement_pct" in value else None,
+        _optional_number(value.get("model_disagreement_pct")),
     )
 
 

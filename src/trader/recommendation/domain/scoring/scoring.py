@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -120,17 +121,12 @@ def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSecti
         for item in ordered
     )
     basis = _population_basis(request, current_distributions, current_sample)
-    normalization_version = (
-        request.fallback.population.population_version
-        if basis.status == "fallback" and request.fallback is not None
-        else request.data_version
-    )
+    population = _build_population(request, basis, current_sample, len(ordered))
     normalized, normalization = _normalize_features(
         ordered,
         basis.reference_values,
-        normalization_version,
+        population.population_version,
     )
-    population = _build_population(request, basis, current_sample, len(ordered))
     enriched = _enrich_features(normalized, population, request)
     return BoardCrossSection(
         board=request.board,
@@ -163,11 +159,13 @@ def _population_basis(
     fallback_age = request.fallback_age_sessions
     fallback_ok = (
         fallback is not None
+        and fallback.board is request.board
+        and fallback.phase == request.phase
         and fallback.population.status == "current"
         and fallback.population.sample_size >= MIN_BOARD_SAMPLE
         and fallback_age is not None
         and 0 <= fallback_age <= MAX_FALLBACK_SESSIONS
-        and fallback.population.trade_date != request.trade_date
+        and fallback.population.trade_date < request.trade_date
     )
     if current_sample >= MIN_BOARD_SAMPLE:
         return _PopulationBasis("current", current_distributions, current_distributions, None, None)
@@ -205,6 +203,10 @@ def _build_population(
         status=basis.status,
         fallback_date=basis.fallback_date,
         fallback_age=basis.fallback_age,
+        merge_epoch=request.merge_epoch,
+        reference_hash=hashlib.sha256(
+            repr(tuple((name, tuple(values)) for name, values in sorted(basis.reference_values.items()))).encode()
+        ).hexdigest(),
     )
     population_version = _population_version(identity)
     return BoardPopulation(
@@ -307,7 +309,7 @@ def ProjectBoardPolicy(
     policy: BoardStrategyPolicy,
     features: Sequence[FeatureSnapshot],
 ) -> tuple[FeatureSnapshot, ...]:
-    """Normalize a bounded fresh candidate set against an existing board population."""
+    """Project fresh inputs against the fixed board reference, regardless of batch size."""
 
     if policy.strategy is not strategy or policy.board is not cross_section.board:
         raise ValueError("board policy does not match cross-section")

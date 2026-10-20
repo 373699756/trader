@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
@@ -162,6 +164,73 @@ def PercentileScores(values: Mapping[str, float | None], *, inverse: bool = Fals
     return scores
 
 
+@dataclass(frozen=True)
+class PercentileReference:
+    """A fixed, sorted distribution shared by whole-population and subset projections."""
+
+    values: tuple[float, ...]
+    lower_quantile: float = 0.025
+    upper_quantile: float = 0.975
+    lower_bound: float | None = field(init=False)
+    upper_bound: float | None = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.lower_quantile <= self.upper_quantile <= 1.0:
+            raise ValueError("invalid winsor quantiles")
+        finite = sorted(float(value) for value in self.values)
+        if any(not math.isfinite(value) for value in finite):
+            raise ValueError("percentile reference must contain finite values")
+        lower = _quantile(finite, self.lower_quantile) if finite else None
+        upper = _quantile(finite, self.upper_quantile) if finite else None
+        bounded = (
+            tuple(min(upper, max(lower, value)) for value in finite) if lower is not None and upper is not None else ()
+        )
+        object.__setattr__(self, "values", bounded)
+        object.__setattr__(self, "lower_bound", lower)
+        object.__setattr__(self, "upper_bound", upper)
+
+    def rank(self, value: float) -> float:
+        """Project onto this reference using average ties and the existing 0–1 scale."""
+        if not math.isfinite(value):
+            raise ValueError("percentile input must be finite")
+        if not self.values:
+            raise ValueError("percentile reference is empty")
+        if len(self.values) == 1:
+            return 0.5
+        bounded = min(self.values[-1], max(self.values[0], value))
+        left = bisect_left(self.values, bounded)
+        right = bisect_right(self.values, bounded)
+        return min(1.0, max(0.0, (left + right - 1) / (2.0 * (len(self.values) - 1))))
+
+    def scores(
+        self,
+        values: Mapping[str, float | None],
+        *,
+        inverse: bool = False,
+        population_data_version: str = "",
+    ) -> tuple[dict[str, float], CrossSectionStats]:
+        result: dict[str, float] = {}
+        missing_count = 0
+        for key, value in values.items():
+            if value is None or not math.isfinite(value):
+                missing_count += 1
+                result[key] = 50.0
+            elif not self.values:
+                result[key] = 50.0
+            else:
+                rank = self.rank(float(value))
+                result[key] = 100.0 * (1.0 - rank if inverse else rank)
+        return result, CrossSectionStats(
+            self.lower_bound,
+            self.upper_bound,
+            len(self.values),
+            missing_count,
+            self.lower_quantile,
+            self.upper_quantile,
+            population_data_version,
+        )
+
+
 def PercentileScoresWithMetadata(
     values: Mapping[str, float | None],
     *,
@@ -170,40 +239,12 @@ def PercentileScoresWithMetadata(
     upper_quantile: float = 0.975,
     population_data_version: str = "",
 ) -> tuple[dict[str, float], CrossSectionStats]:
-    if not 0.0 <= lower_quantile <= upper_quantile <= 1.0:
-        raise ValueError("invalid winsor quantiles")
-    raw_finite = sorted(
-        (float(value), key) for key, value in values.items() if value is not None and math.isfinite(value)
-    )
-    result = {key: 50.0 for key in values}
-    missing_count = len(values) - len(raw_finite)
-    if not raw_finite:
-        return result, CrossSectionStats(
-            None,
-            None,
-            0,
-            missing_count,
-            lower_quantile,
-            upper_quantile,
-            population_data_version,
-        )
-    raw_values = [value for value, _ in raw_finite]
-    lower = _quantile(raw_values, lower_quantile)
-    upper = _quantile(raw_values, upper_quantile)
-    finite = sorted((min(upper, max(lower, value)), key) for value, key in raw_finite)
-    metadata = CrossSectionStats(
-        lower,
-        upper,
-        len(finite),
-        missing_count,
+    reference = PercentileReference(
+        tuple(float(value) for value in values.values() if value is not None and math.isfinite(value)),
         lower_quantile,
         upper_quantile,
-        population_data_version,
     )
-    ranks = AverageRankPercentiles(tuple(value for value, _key in finite))
-    for (_value, key), rank in zip(finite, ranks, strict=True):
-        result[key] = 100.0 * (1.0 - rank if inverse else rank)
-    return result, metadata
+    return reference.scores(values, inverse=inverse, population_data_version=population_data_version)
 
 
 def Winsorize(values: Iterable[float], lower_quantile: float = 0.025, upper_quantile: float = 0.975) -> list[float]:
@@ -238,6 +279,7 @@ __all__ = [
     "BandScore",
     "Clamp",
     "InverseScore",
+    "PercentileReference",
     "PercentileScoresWithMetadata",
     "PRODUCTION_FACTOR_IDS",
     "PercentileScores",

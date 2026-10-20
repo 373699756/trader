@@ -16,6 +16,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionOverlay,
     FormalScoredDecision,
+    ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -35,8 +36,9 @@ def _no_content_digest(*args, **kwargs):
 def test_scoring_publication_get_and_sse_do_not_compute_content_hash(monkeypatch, application_feature_factory):
     policy = _runtime_policy()
     native = _native_input(_features(application_feature_factory))
-    monkeypatch.setattr(hashlib, "sha256", _no_content_digest)
+    monkeypatch.setattr(ScoredDecision, "content_hash", property(_no_content_digest))
     projection = LocalScoringService().score(native, policy, sequence=1)
+    monkeypatch.setattr(hashlib, "sha256", _no_content_digest)
     current = projection.local
     index = UnifiedDecisionIndex()
     assert index.publish(current, expected_version=None).accepted

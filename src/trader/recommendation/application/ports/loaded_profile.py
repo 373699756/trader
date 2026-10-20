@@ -122,6 +122,7 @@ class ModelScoreBatch:
     diagnostics: Mapping[str, ModelDiagnostics]
     predictions: tuple[HeadPrediction, ...]
     missing_codes: tuple[str, ...]
+    cost_reference_version: str | None = None
 
     def __post_init__(self) -> None:
         diagnostics = dict(self.diagnostics)
@@ -132,6 +133,7 @@ class ModelScoreBatch:
             or set(diagnostics) != set(prediction_codes)
             or len(self.missing_codes) != len(set(self.missing_codes))
             or set(self.missing_codes).intersection(prediction_codes)
+            or self.cost_reference_version == ""
         ):
             raise ValueError("model score batch identity is invalid")
         object.__setattr__(self, "diagnostics", MappingProxyType(diagnostics))
@@ -142,6 +144,7 @@ class ModelScoringContext:
     time_budget_seconds: float | None = None
     input_age_seconds: float = 0.0
     population_features: tuple[FeatureSnapshot, ...] | None = None
+    population_identity: str = ""
 
     def __post_init__(self) -> None:
         if (

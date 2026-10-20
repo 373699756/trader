@@ -4,6 +4,7 @@ import pytest
 
 from trader.recommendation.domain.market.factors import (
     BandScore,
+    PercentileReference,
     PercentileScores,
     PercentileScoresWithMetadata,
     RoundScore,
@@ -66,6 +67,29 @@ def test_percentile_scores_single_sample_is_neutral_and_replayable() -> None:
     assert metadata.upper_bound == 7.0
     assert metadata.sample_size == 1
     assert metadata.missing_count == 1
+
+
+@pytest.mark.parametrize("inverse", (False, True))
+def test_fixed_reference_projects_winsorized_ties_and_missing_values_consistently(inverse) -> None:
+    values = {str(index): float(index) for index in range(1000)}
+    reference = PercentileReference(tuple(values.values()))
+    whole, _metadata = PercentileScoresWithMetadata(values, inverse=inverse)
+    subset, metadata = reference.scores(
+        {"0": 0.0, "50": 50.0, "999": 999.0, "missing": None},
+        inverse=inverse,
+        population_data_version="fixed-population",
+    )
+
+    assert subset == {**{code: whole[code] for code in ("0", "50", "999")}, "missing": 50.0}
+    assert metadata.sample_size == 1000
+    assert metadata.missing_count == 1
+    assert metadata.population_data_version == "fixed-population"
+    assert reference.rank(0.0) == pytest.approx(12 / 999)
+    assert reference.rank(999.0) == pytest.approx(987 / 999)
+    assert PercentileReference((7.0, 7.0, 7.0)).rank(7.0) == 0.5
+    assert PercentileReference((7.0,)).rank(7.0) == 0.5
+    with pytest.raises(ValueError, match="reference is empty"):
+        PercentileReference(()).rank(7.0)
 
 
 def test_round_score_uses_round_half_up() -> None:

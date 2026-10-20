@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from trader.recommendation.domain.market.factors import BandScore, Clamp, PercentileScoresWithMetadata
+from trader.recommendation.domain.market.factors import BandScore, Clamp, PercentileReference
 from trader.recommendation.domain.market.models import (
     Board,
     CrossSectionStats,
@@ -75,15 +76,8 @@ def _normalize_features(
     stats: dict[str, CrossSectionStats] = {}
     for raw_name, (score_name, inverse) in _NORMALIZED_FIELDS.items():
         values = raw_by_name[raw_name]
-        reference = tuple(reference_values.get(raw_name, ()))
-        if reference and len(reference) >= MIN_BOARD_SAMPLE and _reference_is_needed(values, reference):
-            score_map, metadata = _scores_against_reference(
-                values, reference, inverse=inverse, data_version=data_version
-            )
-        else:
-            score_map, metadata = PercentileScoresWithMetadata(
-                values, inverse=inverse, population_data_version=data_version
-            )
+        reference = PercentileReference(tuple(reference_values[raw_name]))
+        score_map, metadata = reference.scores(values, inverse=inverse, population_data_version=data_version)
         scores[score_name] = score_map
         stats[score_name] = metadata
 
@@ -92,7 +86,11 @@ def _normalize_features(
         values = dict(item.values)
         for raw_name, (score_name, _inverse) in _NORMALIZED_FIELDS.items():
             raw_value = raw_by_name[raw_name][item.quote.code]
-            values[score_name] = scores[score_name][item.quote.code] if raw_value is not None else None
+            values[score_name] = (
+                scores[score_name][item.quote.code]
+                if raw_value is not None and stats[score_name].sample_size > 0
+                else None
+            )
         turnover_shock = _turnover_shock(item)
         amount_shock = _amount_shock(item)
         values.update(
@@ -131,39 +129,6 @@ def _raw_field(
     if name == "speed":
         return item.quote.speed
     return item.optional_value(name)
-
-
-def _scores_against_reference(
-    values: Mapping[str, float | None],
-    reference: Sequence[float],
-    *,
-    inverse: bool,
-    data_version: str,
-) -> tuple[dict[str, float], CrossSectionStats]:
-    finite = sorted(float(value) for value in reference if math.isfinite(float(value)))
-    lower = _quantile(finite, 0.025)
-    upper = _quantile(finite, 0.975)
-    if lower is None or upper is None:
-        raise ValueError("reference population must contain finite values")
-    result: dict[str, float] = {}
-    for key, value in values.items():
-        if value is None or not math.isfinite(float(value)) or len(finite) < 2:
-            result[key] = 50.0
-            continue
-        bounded = min(upper, max(lower, float(value)))
-        less = sum(item < bounded for item in finite)
-        equal = sum(item == bounded for item in finite)
-        average_rank = less + (equal - 1) / 2.0
-        score = average_rank * 100.0 / max(1, len(finite) - 1)
-        result[key] = Clamp(100.0 - score if inverse else score)
-    missing_count = sum(not _finite_value(value) for value in values.values())
-    return result, CrossSectionStats(lower, upper, len(finite), missing_count, 0.025, 0.975, data_version)
-
-
-def _reference_is_needed(values: Mapping[str, float | None], reference: Sequence[float]) -> bool:
-    return (
-        len(reference) >= MIN_BOARD_SAMPLE and sum(_finite_value(value) for value in values.values()) < MIN_BOARD_SAMPLE
-    )
 
 
 def _turnover_shock(item: FeatureSnapshot) -> float | None:
@@ -295,6 +260,8 @@ class _PopulationVersionIdentity:
     status: str
     fallback_date: str | None
     fallback_age: int | None
+    merge_epoch: str
+    reference_hash: str
 
 
 def _population_version(
@@ -309,8 +276,10 @@ def _population_version(
         identity.status,
         identity.fallback_date,
         identity.fallback_age,
+        identity.merge_epoch,
+        identity.reference_hash,
     )
-    return f"population:{coordinates!r}"
+    return f"population:{hashlib.sha256(repr(coordinates).encode()).hexdigest()}"
 
 
 def _liquidity_bucket(value: float | None, p50: float | None, p80: float | None) -> str:

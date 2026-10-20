@@ -20,6 +20,7 @@ from trader.recommendation.domain.scoring.scoring import (
     BoardCandidateComponents,
     BoardCrossSectionRequest,
     BuildBoardCrossSection,
+    ProjectBoardPolicy,
     ScoreBoardStrategy,
     SupportedWeight,
 )
@@ -262,6 +263,96 @@ def test_board_score_is_independent_of_industry_and_competition_group(applicatio
     )
 
     assert ScoreBoardStrategy(feature, policy) == ScoreBoardStrategy(changed, policy)
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_fixed_board_population_keeps_scores_across_request_sizes_and_partitions(
+    application_feature_factory, strategy
+) -> None:
+    features = tuple(
+        replace(feature, values={**feature.values, "amount_median_20d": float(index + 1) * 1_000_000})
+        for index, feature in enumerate(_features(application_feature_factory, 1000, Board.MAIN))
+    )
+    section = _build_board_cross_section(
+        features,
+        board=Board.MAIN,
+        merge_epoch="fixed",
+        trade_date="2026-07-16",
+        phase="morning_main",
+        data_version="fixed",
+    )
+    names = (*_LOCAL_COMPONENT_WEIGHTS[strategy], "entry_quality")
+    if strategy is Strategy.TOMORROW:
+        names = (*names, "market_state")
+    policy = _policy(strategy, Board.MAIN, {name: 1 / len(names) for name in names})
+    whole = ApplyBoardPolicy(section, strategy, policy)
+    expected = {item.quote.code: item for item in whole}
+    for size in (1, 99, 100, 120, 1000):
+        requested = tuple(reversed(features[:size]))
+        for projected in ProjectBoardPolicy(section, strategy, policy, requested):
+            original = expected[projected.quote.code]
+            assert projected.values == original.values
+            assert projected.board_population == original.board_population
+            for name, metadata in projected.normalization.items():
+                assert replace(metadata, missing_count=0) == replace(original.normalization[name], missing_count=0)
+            assert ScoreBoardStrategy(projected, policy) == ScoreBoardStrategy(original, policy)
+    for start in range(0, 1000, 99):
+        for projected in ProjectBoardPolicy(section, strategy, policy, features[start : start + 99]):
+            assert projected.values == expected[projected.quote.code].values
+
+
+@pytest.mark.parametrize(
+    ("age", "phase", "expected_status"),
+    ((5, "morning_main", "fallback"), (6, "morning_main", "stale"), (1, "afternoon", "insufficient")),
+)
+def test_fixed_board_reference_respects_fallback_age_and_phase(
+    application_feature_factory, age, phase, expected_status
+) -> None:
+    features = _features(application_feature_factory, 120, Board.MAIN)
+    original = _build_board_cross_section(
+        features,
+        board=Board.MAIN,
+        merge_epoch="previous",
+        trade_date="2026-07-16",
+        phase="morning_main",
+        data_version="previous",
+    )
+    current = BuildBoardCrossSection(
+        BoardCrossSectionRequest(
+            features=features[:5],
+            board=Board.MAIN,
+            merge_epoch="current",
+            trade_date="2026-07-17",
+            phase=phase,
+            data_version="current",
+            fallback=original,
+            fallback_age_sessions=age,
+        )
+    )
+    assert current.population.status == expected_status
+    if expected_status == "fallback":
+        assert current.reference_values == original.reference_values
+        assert current.features[0].value("relative_strength_5d") == original.features[0].value("relative_strength_5d")
+        assert current.normalization["relative_strength_5d"].sample_size == 120
+
+
+def test_board_reference_identity_binds_content_and_merge_epoch(application_feature_factory) -> None:
+    features = _features(application_feature_factory, 120, Board.MAIN)
+    request = BoardCrossSectionRequest(
+        features=features,
+        board=Board.MAIN,
+        merge_epoch="first",
+        trade_date="2026-07-16",
+        phase="morning_main",
+        data_version="source",
+    )
+    first = BuildBoardCrossSection(request)
+    changed = replace(features[0], values={**features[0].values, "return_5d": 1234.0})
+    second = BuildBoardCrossSection(replace(request, features=(changed, *features[1:])))
+    third = BuildBoardCrossSection(replace(request, merge_epoch="next"))
+    reordered = BuildBoardCrossSection(replace(request, features=tuple(reversed(features))))
+    assert len({item.population.population_version for item in (first, second, third)}) == 3
+    assert reordered.population == first.population
 
 
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])

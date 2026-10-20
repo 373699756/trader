@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import threading
 import time
@@ -32,7 +33,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.candidate.filters import BoardForSnapshot
-from trader.recommendation.domain.market.factors import RoundScore
+from trader.recommendation.domain.market.factors import PercentileReference, RoundScore
 from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
     TOMORROW_MODEL_FEATURE_MANIFEST,
@@ -109,9 +110,19 @@ class _ModelComputationState:
     market_state: tuple[float | None, ...]
     inputs: tuple[ModelInput, ...]
     predictions: tuple[ModelPrediction, ...]
-    cost_inputs: tuple[float, ...]
+    cost_inputs: tuple[tuple[str, float], ...]
+    cost_reference_version: str
     missing_codes: tuple[str, ...]
     batch: ModelScoreBatch
+
+
+@dataclass(frozen=True)
+class _CostReference:
+    version: str
+    boards: tuple[tuple[str, PercentileReference], ...]
+
+    def rank(self, row: _RawRow) -> float:
+        return next(reference for board, reference in self.boards if board == row.board).rank(row.amihud_20d)
 
 
 class SharedModelFeatureCache:
@@ -291,7 +302,7 @@ class ProductionModelScoringService:
         with self._lock:
             self._request_count += 1
             try:
-                return self._score_locked(tuple(features), scoring_context.population_features, deadline)
+                return self._score_locked(tuple(features), scoring_context, deadline)
             except ModelScoringDeadlineError as exc:
                 self._publish_computation_status(
                     candidate_count=len(features),
@@ -304,14 +315,20 @@ class ProductionModelScoringService:
     def _score_locked(
         self,
         features: tuple[FeatureSnapshot, ...],
-        population_features: tuple[FeatureSnapshot, ...] | None,
+        context: ModelScoringContext,
         deadline: _ScoringDeadline,
     ) -> ModelScoreBatch:
         deadline.require_time("before_feature_computation")
         requested_codes = {feature.quote.code for feature in features}
         if len(requested_codes) != len(features):
             raise ValueError("model scoring candidates must be unique")
-        population = {feature.quote.code: feature for feature in population_features or features}
+        reference_features = context.population_features if context.population_features is not None else features
+        population = {feature.quote.code: feature for feature in reference_features}
+        if len(population) != len(reference_features):
+            raise ValueError("model reference population must contain unique codes")
+        cost_reference = self._cost_reference(reference_features, context.population_identity)
+        deadline.require_time("after_cost_reference")
+        cost_boards = frozenset(board for board, _reference in cost_reference.boards)
         population.update((feature.quote.code, feature) for feature in features)
         rows, missing_population_codes = _eligible_rows(
             tuple(population.values()),
@@ -327,8 +344,10 @@ class ProductionModelScoringService:
                     and self._exposure_contract.requires_industry
                     and row.industry not in self._industry_ids
                 }
+                | {row.code for row in rows if row.code in requested_codes and row.board not in cost_boards}
             )
         )
+        requested_codes.difference_update(missing_codes)
         codes = tuple(row.code for row in rows)
         if len(codes) != len(set(codes)):
             raise ValueError(f"{self._strategy.value} model scoring candidates must be unique")
@@ -440,7 +459,7 @@ class ProductionModelScoringService:
         if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
             raise ValueError(f"{self._strategy.value} production model returned a mismatched prediction batch")
         cost_inputs = tuple(
-            row.amihud_20d
+            (row.board, row.amihud_20d)
             for row in ordered_rows
             if row.code in requested_codes
             and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
@@ -449,6 +468,7 @@ class ProductionModelScoringService:
             previous is not None
             and inputs == previous.inputs
             and cost_inputs == previous.cost_inputs
+            and cost_reference.version == previous.cost_reference_version
             and missing_codes == previous.missing_codes
         ):
             self._cache_hit_count += 1
@@ -459,7 +479,13 @@ class ProductionModelScoringService:
             )
             return previous.batch
         deadline.require_time("before_score_projection")
-        batch = _score_predictions(self.model_version, predictions, cost_inputs, missing_codes, self._cost_policy)
+        costs = tuple(
+            self._cost_policy.estimate(cost_reference.rank(row))
+            for row in ordered_rows
+            if row.code in requested_codes
+            and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
+        )
+        batch = _score_predictions(self.model_version, predictions, costs, missing_codes, cost_reference.version)
         deadline.require_time("completed_after_score_projection_deadline")
         self._state = _ModelComputationState(
             revisions,
@@ -470,6 +496,7 @@ class ProductionModelScoringService:
             inputs,
             predictions,
             cost_inputs,
+            cost_reference.version,
             missing_codes,
             batch,
         )
@@ -479,6 +506,37 @@ class ProductionModelScoringService:
             deadline=deadline,
         )
         return batch
+
+    def _cost_reference(
+        self,
+        features: tuple[FeatureSnapshot, ...],
+        population_identity: str,
+    ) -> _CostReference:
+        rows, _missing = _eligible_rows(features, self._row_contract)
+        eligible = tuple(
+            row for row in rows if not self._exposure_contract.requires_industry or row.industry in self._industry_ids
+        )
+        coordinates = (
+            self._predictor.profile_id,
+            self._strategy.value,
+            self.model_version,
+            population_identity,
+            self._cost_policy.round_trip_base_rate,
+            self._cost_policy.liquidity_rank_multiplier,
+            tuple((row.code, row.board, row.amihud_20d) for row in eligible),
+            tuple(
+                (feature.quote.code, feature.merge_epoch)
+                for feature in sorted(features, key=lambda item: item.quote.code)
+            ),
+        )
+        version = f"board-cost-reference:{hashlib.sha256(repr(coordinates).encode()).hexdigest()}"
+        return _CostReference(
+            version,
+            tuple(
+                (board, PercentileReference(tuple(row.amihud_20d for row in eligible if row.board == board), 0.0, 1.0))
+                for board in sorted({row.board for row in eligible})
+            ),
+        )
 
     def _stage_value(
         self,
@@ -531,14 +589,12 @@ class ProductionModelScoringService:
 def _score_predictions(
     model_version: str,
     predictions: tuple[ModelPrediction, ...],
-    cost_inputs: tuple[float, ...],
+    costs: tuple[float, ...],
     missing_codes: tuple[str, ...],
-    cost_policy: ExecutionCostPolicy,
+    cost_reference_version: str,
 ) -> ModelScoreBatch:
     if not predictions:
-        return ModelScoreBatch(model_version, {}, (), missing_codes)
-    amihud_ranks = PercentileRanks(cost_inputs)
-    costs = tuple(cost_policy.estimate(rank) for rank in amihud_ranks)
+        return ModelScoreBatch(model_version, {}, (), missing_codes, cost_reference_version)
     utilities = tuple(
         prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
     )
@@ -563,7 +619,7 @@ def _score_predictions(
             predicted_net_excess_pct=net_pct,
             model_disagreement_pct=None,
         )
-    return ModelScoreBatch(model_version, diagnostics, predictions, missing_codes)
+    return ModelScoreBatch(model_version, diagnostics, predictions, missing_codes, cost_reference_version)
 
 
 def _eligible_rows(

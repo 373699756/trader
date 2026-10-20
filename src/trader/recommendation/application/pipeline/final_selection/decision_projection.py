@@ -93,6 +93,7 @@ class ScoredLocalProjection:
     score_model_version: str | None = None
     model_diagnostics: tuple[tuple[str, ModelDiagnostics], ...] = ()
     downside_assessments: tuple[tuple[str, DownsideAssessment], ...] = ()
+    cost_reference_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,7 @@ class _DecisionProjectionContext:
     parent_version: str | None = None
     score_model_version: str | None = None
     model_diagnostics: Mapping[str, ModelDiagnostics] | None = None
+    cost_reference_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -164,10 +166,27 @@ def BuildScoredLocal(
     model_batch = (
         model_scoring.score(
             strategy,
-            _model_eligible_candidates(scoring_input, policy),
+            _model_eligible_features(
+                scoring_input.candidate_features,
+                policy,
+                evaluated_at=native_input.evaluated_at,
+                max_age_seconds=native_input.score_max_age_seconds,
+            ),
             context=replace(
                 runtime.scoring_context or ModelScoringContext(),
-                population_features=native_input.market_features,
+                population_features=_model_eligible_features(
+                    native_input.market_features,
+                    policy,
+                    evaluated_at=(
+                        _market_population_watermark(native_input.market_features)
+                        if native_input.market_features
+                        else native_input.evaluated_at
+                    ),
+                    max_age_seconds=native_input.preselect_max_age_seconds,
+                ),
+                population_identity=(
+                    f"{native_input.trade_date.isoformat()}:{native_input.phase}:{native_input.config_version}"
+                ),
             ),
         )
         if model_scoring is not None and uses_model
@@ -269,11 +288,13 @@ def BuildScoredLocal(
                 downside_assessments=downside_assessments,
                 score_model_version=model_version,
                 model_diagnostics=model_batch.diagnostics if model_batch is not None else None,
+                cost_reference_version=model_batch.cost_reference_version if model_batch is not None else None,
             ),
         ),
         score_model_version=model_version,
         model_diagnostics=tuple(sorted(model_batch.diagnostics.items())) if model_batch is not None else (),
         downside_assessments=downside_assessments,
+        cost_reference_version=model_batch.cost_reference_version if model_batch is not None else None,
     )
 
 
@@ -329,16 +350,19 @@ def _model_execution_gate_reasons(
     }
 
 
-def _model_eligible_candidates(
-    native_input: ScoredNativeInput,
+def _model_eligible_features(
+    features: tuple[FeatureSnapshot, ...],
     policy: RecommendationPolicy,
+    *,
+    evaluated_at: datetime,
+    max_age_seconds: float,
 ) -> tuple[FeatureSnapshot, ...]:
     eligible: list[FeatureSnapshot] = []
-    for feature in native_input.candidate_features:
+    for feature in features:
         filtered = HardFilter(
             feature,
-            native_input.evaluated_at,
-            max_age_seconds=native_input.score_max_age_seconds,
+            evaluated_at,
+            max_age_seconds=max_age_seconds,
             policy=policy.hard_filter,
         )
         if filtered.allowed:
@@ -435,6 +459,7 @@ def BuildScoredHybrid(
             decision_policy=decision_policy,
             score_model_version=projection.score_model_version,
             model_diagnostics=dict(projection.model_diagnostics),
+            cost_reference_version=projection.cost_reference_version,
         ),
     )
     return ScoredReviewProjection(decision, stages)
@@ -461,9 +486,11 @@ def _scored_decision(
                 ("research", epoch.research_epoch_version),
                 ("score_scale", WEIGHTED_EVIDENCE_SCORE_SCALE),
                 ("score_model", context.score_model_version),
+                ("cost_reference", context.cost_reference_version),
             )
             if value is not None
-        ),
+        )
+        + tuple((f"board_population:{board}", version) for board, version in sorted(epoch.population_versions.items())),
         config_version=epoch.config_version,
         strategy_version=epoch.strategy_version,
         fusion_version=epoch.fusion_version,
