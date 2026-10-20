@@ -257,8 +257,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     if not 1 <= args.sqlite_revision_write_sample_count <= 5_000:
         raise ValueError("--sqlite-revision-write-sample-count must be within 1..5000")
     _validate_baostock_options(args)
-    if len(args.download_sizes) > 3 or any(not 1 <= size <= 100 for size in args.download_sizes):
-        raise ValueError("--download-sizes accepts up to three sizes within 1..100")
+    maximum_size = 5000 if args.profile == "history-write" and args.baseline_checkout is not None else 100
+    if len(args.download_sizes) > 3 or any(not 1 <= size <= maximum_size for size in args.download_sizes):
+        raise ValueError(f"--download-sizes accepts up to three sizes within 1..{maximum_size}")
     if len(set(args.market_sources)) != len(args.market_sources):
         raise ValueError("--market-sources must be distinct")
     if args.market_mode != "single" and "tencent" not in args.market_sources:
@@ -624,7 +625,11 @@ def build_commands(
                 "-m",
                 "scripts.runtime_diagnostics.history_write_benchmark",
                 "--size",
-                str(min(options.download_sizes[0], 64)),
+                str(
+                    options.download_sizes[0]
+                    if options.baseline_checkout is not None
+                    else min(options.download_sizes[0], 64)
+                ),
                 "--sessions",
                 str(options.history_days),
             )

@@ -171,12 +171,24 @@ def test_tencent_download_profile_uses_actual_updater_with_bounded_samples():
 
 
 def test_history_layout_comparison_requires_explicit_external_baseline(tmp_path):
-    args = _parser().parse_args(["--profile", "history-write", "--baseline-checkout", str(tmp_path)])
+    args = _parser().parse_args(
+        [
+            "--profile",
+            "history-write",
+            "--baseline-checkout",
+            str(tmp_path),
+            "--download-sizes",
+            "5000",
+        ]
+    )
     options, _ = _validate(args)
     command = build_commands(options)[0]
     assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path))
+    assert command.argv[command.argv.index("--size") + 1] == "5000"
     with pytest.raises(ValueError, match="only available"):
         _validate(_parser().parse_args(["--profile", "local", "--baseline-checkout", str(tmp_path)]))
+    with pytest.raises(ValueError, match="1..100"):
+        _validate(_parser().parse_args(["--profile", "history-write", "--download-sizes", "5000"]))
 
 
 def test_full_profile_adds_browser_and_offline_performance_without_duplicate_probes() -> None:

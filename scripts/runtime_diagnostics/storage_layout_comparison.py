@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -41,11 +42,13 @@ class _LayoutRun(TypedDict):
     peak_rss_bytes: int
 
 
-def CompareLayouts(baseline: Path, *, rounds: int, size: int) -> dict[str, object]:
+def CompareLayouts(baseline: Path, *, rounds: int, size: int, sessions: int = 2000) -> dict[str, object]:
     current = Path(__file__).resolve().parents[2]
     baseline = baseline.resolve(strict=True)
     if baseline == current or current in baseline.parents or not (baseline / "src/trader").is_dir():
         raise ValueError("baseline must be an isolated checkout outside the active repository")
+    if (baseline / "src/trader/download/infra/history_prices.py").is_file():
+        return _compare_publications(baseline, current, rounds=rounds, size=size, sessions=min(sessions, 251))
     if not 5 <= rounds <= 10 or not 4 <= size <= 64:
         raise ValueError("comparison requires 5..10 rounds and 4..64 securities")
     runs: dict[str, list[_LayoutRun]] = {"monthly": [], "annual": []}
@@ -115,6 +118,139 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int) -> dict[str, objec
             "runs": runs,
         },
     }
+
+
+def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: int, sessions: int) -> dict[str, object]:
+    if not 5 <= rounds <= 10 or not 4 <= size <= 5000 or not 1 <= sessions <= 251:
+        raise ValueError("window comparison requires 5..10 rounds, 4..5000 securities and 1..251 sessions")
+    runs: dict[str, list[dict[str, dict[str, float]]]] = {"baseline": [], "candidate": []}
+    for number in range(rounds):
+        order = ("baseline", "candidate") if number % 2 == 0 else ("candidate", "baseline")
+        for label in order:
+            checkout = baseline if label == "baseline" else current
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--worker",
+                    "window",
+                    "--checkout",
+                    str(checkout),
+                    "--size",
+                    str(size),
+                    "--sessions",
+                    str(sessions),
+                ],
+                cwd=checkout,
+                env={**os.environ, "PYTHONPATH": str(checkout / "src")},
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=True,
+            )
+            runs[label].append(json.loads(completed.stdout))
+    comparisons = []
+    passed = True
+    for name in runs["baseline"][0]:
+        before = statistics.median(run[name]["milliseconds"] for run in runs["baseline"])
+        after = statistics.median(run[name]["milliseconds"] for run in runs["candidate"])
+        passed = passed and after < before * (1.0 if name.startswith("read_") else 1.1)
+        comparisons.append(
+            {
+                "case": name,
+                "baseline_median_ms": before,
+                "candidate_median_ms": after,
+                "ratio": after / before,
+                "baseline_identity_scans": statistics.median(run[name]["identity_scans"] for run in runs["baseline"]),
+                "candidate_identity_scans": statistics.median(run[name]["identity_scans"] for run in runs["candidate"]),
+            }
+        )
+    return {
+        "schema_version": "storage-layout-comparison",
+        "status": "passed" if passed else "failed",
+        "summary": {
+            "fixture": True,
+            "mode": "window_publications",
+            "rounds": rounds,
+            "stocks": size,
+            "sessions": sessions,
+            "cache_policy": "fresh process, warm operating-system cache; alternating order",
+            "comparison": comparisons,
+            "runs": runs,
+        },
+    }
+
+
+def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[str, float]]:
+    sys.path[:0] = [str(checkout / "src"), str(checkout)]
+    from trader.download.domain.published_history import (
+        PublishedHistoryCell,
+        PublishedHistorySide,
+        PublishedHistoryWindow,
+    )
+    from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+    from trader.infra.sqlite_connection import SqliteConnection
+
+    scans = 0
+    original = SqliteConnection.run
+
+    def observed(connection, sql, parameters=()):  # type: ignore[no-untyped-def]
+        nonlocal scans
+        if sql.startswith("SELECT code,digest,source,first_day,cutoff FROM identities"):
+            scans += 1
+        return original(connection, sql, parameters)
+
+    SqliteConnection.run = observed
+    days = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(sessions))
+    result: dict[str, dict[str, float]] = {}
+
+    def measure(name: str, action: Callable[[], object]) -> None:
+        before = scans
+        started = time.perf_counter()
+        action()
+        result[name] = {"milliseconds": (time.perf_counter() - started) * 1000, "identity_scans": scans - before}
+
+    def window(number: int, price: float = 10.0) -> PublishedHistoryWindow:
+        code = f"{('600', '601', '603', '605', '000')[number // 1000]}{number % 1000:03d}"
+        cells = []
+        for day in days:
+            raw = PublishedHistorySide(
+                code, day, "unadjusted", price, price, price, price, 100.0, 1000.0, None, None, None, "trading"
+            )
+            cells.append(PublishedHistoryCell(code, day, "complete", raw, replace(raw, adjustment="qfq")))
+        return PublishedHistoryWindow(code, tuple(cells))
+
+    with TemporaryDirectory(prefix="trader-window-comparison-") as scratch:
+        primary = SQLiteQfqWindowCache(Path(scratch) / "daily_window.sqlite3", "v2")
+        peer = SQLiteQfqWindowCache(primary.path, "v3")
+
+        def publish() -> None:
+            for start in range(0, size, 32):
+                primary.replace_paired_windows(
+                    peer,
+                    tuple(window(number) for number in range(start, min(start + 32, size))),
+                    "fixture",
+                    calendar=days,
+                    completed_day=days[-1],
+                )
+
+        def read(cache: SQLiteQfqWindowCache) -> None:
+            manifest = cache.manifest()
+            assert manifest is not None
+            assert sum(len(item.cells) for item in cache.iter_windows(manifest, sessions=cache.sessions)) == (
+                size * min(sessions, cache.sessions)
+            )
+
+        measure("initial_write", publish)
+        for cache in (primary, peer):
+            measure(f"read_{cache.profile}", partial(read, cache))
+        measure(
+            "incremental_write",
+            lambda: primary.replace_paired_windows(
+                peer, (window(0, 12.0),), "fixture", calendar=days, completed_day=days[-1]
+            ),
+        )
+    return result
 
 
 def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
@@ -294,8 +430,15 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--worker", choices=("monthly", "annual"), required=True)
+    parser.add_argument("--worker", choices=("monthly", "annual", "window"), required=True)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--size", type=int, required=True)
+    parser.add_argument("--sessions", type=int, default=251)
     args = parser.parse_args()
-    print(json.dumps(_worker(args.checkout.resolve(strict=True), args.worker, args.size), sort_keys=True))
+    checkout = args.checkout.resolve(strict=True)
+    report = (
+        _window_worker(checkout, args.size, args.sessions)
+        if args.worker == "window"
+        else _worker(checkout, args.worker, args.size)
+    )
+    print(json.dumps(report, sort_keys=True))

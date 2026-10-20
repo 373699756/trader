@@ -195,7 +195,9 @@ def main() -> int:
     if args.baseline_checkout is not None:
         from .storage_layout_comparison import CompareLayouts
 
-        report = CompareLayouts(args.baseline_checkout, rounds=args.comparison_rounds, size=args.size)
+        report = CompareLayouts(
+            args.baseline_checkout, rounds=args.comparison_rounds, size=args.size, sessions=args.sessions
+        )
         emit_report(report)
         return 0 if report["status"] == "passed" else 1
     if not 1 <= args.size <= 64 or not 5 <= args.sessions <= 2000:

@@ -10,6 +10,7 @@ from contextlib import closing
 from datetime import date
 from pathlib import Path
 from typing import TypeAlias
+from uuid import uuid4
 
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
@@ -38,7 +39,7 @@ _BAR_ROW_PARAMETERS = len(PRICE_COLUMNS) + 2
 _INSERT_ROWS_PER_STATEMENT = 39
 _INSERT_ROW_PLACEHOLDERS = "(" + ",".join("?" for _ in range(_BAR_ROW_PARAMETERS)) + ")"
 _SCHEMA = SqliteSchema(
-    version=1,
+    version=2,
     statements=(
         f"CREATE TABLE bars(code TEXT NOT NULL, day TEXT NOT NULL, {PRICE_WINDOW_SQL}, PRIMARY KEY(code,day)) WITHOUT ROWID",
         "CREATE TABLE identities(profile TEXT NOT NULL, code TEXT NOT NULL, digest TEXT NOT NULL, "
@@ -46,6 +47,7 @@ _SCHEMA = SqliteSchema(
         "PRIMARY KEY(profile,code)) WITHOUT ROWID",
         "CREATE TABLE calendars(profile TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY(profile,day)) WITHOUT ROWID",
         "CREATE TABLE completions(code TEXT PRIMARY KEY, day TEXT NOT NULL, source TEXT NOT NULL) WITHOUT ROWID",
+        "CREATE TABLE publications(profile TEXT PRIMARY KEY, identity TEXT NOT NULL) WITHOUT ROWID",
     ),
 )
 
@@ -233,6 +235,7 @@ class SQLiteQfqWindowCache:
             )
             connection.run_many("DELETE FROM completions WHERE code=?", ((code,) for code in excluded))
             deleted = connection.run("DELETE FROM bars WHERE code NOT IN (SELECT code FROM identities)").rowcount
+            self._publish_identity(connection)
         return (self.path.name,), deleted
 
     def _matches_windows(
@@ -382,6 +385,9 @@ class SQLiteQfqWindowCache:
                         connection.run_many(
                             "INSERT INTO calendars VALUES (?,?)", ((cache.profile, day) for day in day_texts)
                         )
+                if changed:
+                    for cache in (self, peer):
+                        cache._publish_identity(connection)
         except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
             reason = (
                 "qfq_pair_database_busy"
@@ -397,29 +403,68 @@ class SQLiteQfqWindowCache:
             return None
         try:
             with closing(self._connection()) as connection, SqliteTransaction(connection):
-                identities = tuple(
-                    tuple(row)
-                    for row in connection.run(
-                        "SELECT code,digest,source,first_day,cutoff FROM identities WHERE profile=? ORDER BY code",
-                        (self.profile,),
-                    )
-                )
-                calendar = tuple(
-                    date.fromisoformat(row[0])
-                    for row in connection.run("SELECT day FROM calendars WHERE profile=? ORDER BY day", (self.profile,))
-                )
-            if not identities:
-                return None
-            if not calendar:
-                raise RuntimeError("qfq_calendar_missing")
-            digest = hashlib.sha256(
-                json.dumps((identities, tuple(day.isoformat() for day in calendar)), separators=(",", ":")).encode(
-                    "ascii"
-                )
-            ).hexdigest()
-            return PublishedHistoryManifest(digest, 1, calendar[-1], calendar, tuple(row[0] for row in identities))
+                return self._calculate_manifest(connection)
         except (sqlite3.Error, OSError, ValueError) as exc:
             raise RuntimeError("qfq_manifest_unavailable") from exc
+
+    def _calculate_manifest(self, connection: SqliteConnection) -> PublishedHistoryManifest | None:
+        identities = tuple(
+            tuple(row)
+            for row in connection.run(
+                "SELECT code,digest,source,first_day,cutoff FROM identities WHERE profile=? ORDER BY code",
+                (self.profile,),
+            )
+        )
+        calendar = tuple(
+            date.fromisoformat(row[0])
+            for row in connection.run("SELECT day FROM calendars WHERE profile=? ORDER BY day", (self.profile,))
+        )
+        publication_id = self._publication_id(connection)
+        if not identities:
+            if publication_id is not None:
+                raise RuntimeError("qfq_publication_identity_mismatch")
+            return None
+        if not calendar:
+            raise RuntimeError("qfq_calendar_missing")
+        if publication_id is None:
+            raise RuntimeError("qfq_publication_identity_missing")
+        digest = hashlib.sha256(
+            json.dumps((identities, tuple(day.isoformat() for day in calendar)), separators=(",", ":")).encode("ascii")
+        ).hexdigest()
+        return PublishedHistoryManifest(
+            digest, 1, calendar[-1], calendar, tuple(row[0] for row in identities), publication_id
+        )
+
+    def _publish_identity(self, connection: SqliteConnection) -> None:
+        if connection.run("SELECT 1 FROM identities WHERE profile=? LIMIT 1", (self.profile,)).fetchone() is None:
+            connection.run("DELETE FROM publications WHERE profile=?", (self.profile,))
+        else:
+            connection.run(
+                "INSERT INTO publications VALUES (?,?) ON CONFLICT(profile) DO UPDATE SET identity=excluded.identity",
+                (self.profile, uuid4().hex),
+            )
+
+    def _publication_id(self, connection: SqliteConnection) -> str | None:
+        row = connection.run("SELECT identity FROM publications WHERE profile=?", (self.profile,)).fetchone()
+        if row is None:
+            return None
+        identity = row[0]
+        if (
+            not isinstance(identity, str)
+            or len(identity) != 32
+            or any(character not in "0123456789abcdef" for character in identity)
+        ):
+            raise RuntimeError("qfq_publication_identity_invalid")
+        return identity
+
+    def _require_publication(self, manifest: PublishedHistoryManifest) -> None:
+        try:
+            with closing(self._connection()) as connection:
+                identity = self._publication_id(connection)
+        except (sqlite3.Error, OSError) as exc:
+            raise RuntimeError("qfq_manifest_unavailable") from exc
+        if identity is None or identity != manifest.publication_id:
+            raise RuntimeError("qfq_publication_changed")
 
     def iter_windows(self, manifest: PublishedHistoryManifest, *, sessions: int) -> Iterator[PublishedHistoryWindow]:
         for start in range(0, len(manifest.universe_codes), 32):
@@ -430,14 +475,12 @@ class SQLiteQfqWindowCache:
     ) -> tuple[PublishedHistoryWindow, ...]:
         if not 1 <= sessions <= self.sessions:
             raise ValueError("qfq_read_window_invalid")
-        if self.manifest() != manifest:
-            raise RuntimeError("qfq_publication_changed")
+        self._require_publication(manifest)
         allowed = frozenset(manifest.universe_codes)
         first = manifest.calendar_dates[-min(sessions, len(manifest.calendar_dates))]
         windows = tuple(
             PublishedHistoryWindow(window.code, tuple(cell for cell in window.cells if cell.trade_date >= first))
             for window in self.read_codes(tuple(code for code in codes if code in allowed))
         )
-        if self.manifest() != manifest:
-            raise RuntimeError("qfq_publication_changed")
+        self._require_publication(manifest)
         return windows

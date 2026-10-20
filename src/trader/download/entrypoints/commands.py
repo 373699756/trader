@@ -28,6 +28,8 @@ def RunDownload(repository_root: Path, config_path: Path, *, quiet_success: bool
     ready = status.state in {"completed", "already_current"} and status.training_due_reason != "data_incomplete"
     if not ready or not quiet_success:
         print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True))
+    if status.state == "cancelled":
+        return 130
     if not ready:
         print("完整历史未通过训练准入；未启动双档训练。", file=sys.stderr)
     elif quiet_success and status.unresolved_price_cells:
@@ -109,6 +111,8 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
                 sort_keys=True,
             )
         )
+        if run_status.maintenance_state == "cancelled":
+            return 130
         return 0 if run_status.successful else 1
     finally:
         task_log.close()

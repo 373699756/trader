@@ -106,11 +106,14 @@ def _project_side(side: BaoStockDailySide | None) -> PublishedHistorySide | None
 
 @dataclass(frozen=True, slots=True)
 class PublishedHistoryManifest:
+    """Content identity plus an optional commit token for mutable window publications."""
+
     snapshot_hash: str
     sequence: int
     data_cutoff: date
     calendar_dates: tuple[date, ...]
     universe_codes: tuple[str, ...]
+    publication_id: str | None = None
 
     def __post_init__(self) -> None:
         dates = tuple(self.calendar_dates)
@@ -125,6 +128,11 @@ class PublishedHistoryManifest:
             or not codes
             or codes != tuple(sorted(set(codes)))
             or any(len(code) != 6 or not code.isdigit() for code in codes)
+            or self.publication_id is not None
+            and (
+                len(self.publication_id) != 32
+                or any(character not in "0123456789abcdef" for character in self.publication_id)
+            )
         ):
             raise ValueError("published history manifest is invalid")
         object.__setattr__(self, "calendar_dates", dates)

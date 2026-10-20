@@ -11,14 +11,40 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.download.domain.history_automation import HistoryAutomationStatus
+from trader.download.domain.history_automation import (
+    DeriveHistoryAutomationStatus,
+    HistoryAutomationRunStatus,
+    HistoryAutomationStatus,
+)
 from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationStatus
 from trader.download.infra.history_automation_installation import (
     HistoryAutomationInstallationRequest,
     PlanHistoryAutomationInstallation,
 )
 from trader.entrypoints.cli import BuildParser, Main
+from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
+
+
+@pytest.mark.parametrize(("state", "exit_code"), (("cancelled", 130), ("failed", 1)))
+def test_scheduled_cli_preserves_cancellation_and_failure(tmp_path, monkeypatch, capsys, state, exit_code):
+    config = Path("config/runtime.json").resolve()
+    runtime = replace(
+        LoadRuntimeSettings(config), runtime_dir=tmp_path / "runtime", data_paths=DataPaths(tmp_path / "data")
+    )
+    now = datetime(2026, 9, 11, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    due = DeriveHistoryAutomationStatus(None, now, archive_root=runtime.data_paths.history)
+    result = HistoryAutomationRunStatus(
+        now, runtime.data_paths.history, state, state, due, "not_attempted", None, False
+    )
+    monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda _: runtime)
+    monkeypatch.setattr("trader.infra.settings.LoadRuntimeSettings", lambda _: runtime)
+    monkeypatch.setattr(
+        "trader.download.infra.history_maintenance_runner.RunScheduledHistoryMaintenance",
+        lambda *_args, **_kwargs: result,
+    )
+    assert Main(["--config", str(config), "sync", "history"]) == exit_code
+    assert json.loads(capsys.readouterr().out)["maintenance_state"] == state
 
 
 def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_status() -> None:

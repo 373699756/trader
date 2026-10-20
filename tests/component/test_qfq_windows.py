@@ -169,7 +169,8 @@ def test_corrupt_prices_fail_closed(tmp_path, corrupt_price):
         cache.read_code("600001")
 
 
-def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, monkeypatch):
+@pytest.mark.parametrize("bound_publication", (False, True))
+def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, monkeypatch, bound_publication):
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
@@ -178,6 +179,8 @@ def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, mo
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     publish_windows(primary, (_window(),), "old")
+    manifest = primary.manifest()
+    assert manifest is not None
     started, release = threading.Event(), threading.Event()
     decode = module.PriceCellFromColumns
 
@@ -189,7 +192,11 @@ def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, mo
 
     monkeypatch.setattr(module, "PriceCellFromColumns", blocked)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        reading = pool.submit(primary.read_code, "600001")
+        reading = (
+            pool.submit(primary.read_windows, manifest, ("600001",), sessions=251)
+            if bound_publication
+            else pool.submit(primary.read_code, "600001")
+        )
         assert started.wait(3)
         publishing = pool.submit(
             primary.replace_paired_windows,
@@ -203,7 +210,11 @@ def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, mo
             assert publishing.result(timeout=4)[1] == 251
         finally:
             release.set()
-        assert reading.result(timeout=5).cells[-1].qfq.close_price == 10.0
+        if bound_publication:
+            with pytest.raises(RuntimeError, match="qfq_publication_changed"):
+                reading.result(timeout=5)
+        else:
+            assert reading.result(timeout=5).cells[-1].qfq.close_price == 10.0
     assert primary.read_code("600001").cells[-1].qfq.close_price == 12.0
 
 

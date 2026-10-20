@@ -108,6 +108,15 @@ must stay within the 10% regression limit. Files
 and databases are disposable; warm operating-system cache and the small fixture
 do not establish full-market or physical cold-cache performance.
 
+With an annual-layout baseline, the same command compares shared-window
+publication reads and writes instead. `--download-sizes` accepts up to 5000
+synthetic securities, and `--history-days` sets the window length (capped at 251).
+Each worker publishes bounded batches, reads both profiles through `iter_windows`,
+and reports complete identity scans and elapsed time. Five alternating rounds
+must improve reads and keep initial/incremental writes within 10% of the baseline.
+For a focused identity-scan measurement use `--download-sizes 5000 --history-days 5`;
+this is a synthetic metadata workload, not full-market service acceptance.
+
 Build an isolated migration candidate from a stopped copy containing `data/`
 and `.runtime/trader/`:
 

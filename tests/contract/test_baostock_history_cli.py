@@ -20,6 +20,37 @@ from trader.entrypoints.cli import BuildParser, Main
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize(("state", "exit_code"), (("cancelled", 130), ("failed", 1)))
+def test_train_preserves_history_cancellation_and_failure(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, state, exit_code
+) -> None:
+    status = HistoryMaintenanceStatus(
+        state,
+        state,
+        Path("data/market/history"),
+        "tencent",
+        None,
+        None,
+        None,
+        None,
+        0,
+        False,
+        "data_incomplete",
+        False,
+    )
+    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr(
+        "trader.training.entrypoints.commands.RunJointTraining",
+        lambda _runtime: pytest.fail("cancelled or failed history must not start training"),
+    )
+    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train"]) == exit_code
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["state"] == state
+    if state == "cancelled":
+        assert "未通过训练准入" not in captured.err
+
+
 def test_download_is_a_zero_argument_command() -> None:
     args = BuildParser().parse_args(["train"])
 
