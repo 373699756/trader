@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from trader.infra.market_data.history.history import (
     BuildHistoryContext,
@@ -12,6 +15,7 @@ from trader.infra.market_data.history.history import (
 )
 from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.domain.market.models import MarketQuote
+from trader.recommendation.domain.risk.downside import DeriveEntrySetup
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +75,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         volume_ratio=0.5,
         turnover_rate=2.0,
         amount=100_000_000.0,
+        volume=500.0,
         amplitude=2.5,
         market_cap=10_000_000_000.0,
         industry="工业",
@@ -89,9 +94,16 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
 
     assert feature.values["prior_high_20d"] == max(bar.high for bar in prior[-20:])
     assert feature.values["atr20_pct"] != SummarizeHistoryMetrics(bars).atr20_pct
+    assert feature.values["volume_to_5d_average"] == 0.5
+    uncached = builder.build((quote,), {quote.code: bars}, NOW)[0]
+    assert uncached.values == feature.values
 
 
-def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> None:
+@pytest.mark.parametrize("volume", [1_000.0, None, -1.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("vendor_ratio", [None, 0.5])
+def test_entry_quality_requires_actual_volume_without_amount_or_vendor_ratio_substitution(
+    volume: float | None, vendor_ratio: float | None
+) -> None:
     settings = LoadStrategySettings(ROOT / "config/strategy.json")
     builder = FeatureBuilder(
         settings.news_signal,
@@ -127,9 +139,10 @@ def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> N
         pct_change=0.11,
         change_5m=0.1,
         speed=0.1,
-        volume_ratio=None,
+        volume_ratio=vendor_ratio,
         turnover_rate=2.0,
         amount=10_000.0,
+        volume=volume,
         amplitude=2.1,
         market_cap=10_000_000_000.0,
         industry="工业",
@@ -141,6 +154,52 @@ def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> N
 
     feature = builder.build((quote,), {quote.code: bars}, NOW)[0]
 
-    assert feature.values["volume_to_5d_average"] == 1.0
-    assert feature.values["entry_quality"] == 50.0
-    assert "entry_quality" not in feature.missing_fields
+    if volume == 1_000.0:
+        assert feature.values["volume_to_5d_average"] == 1.0
+        assert feature.values["entry_quality"] == 50.0
+        assert "entry_quality" not in feature.missing_fields
+        repriced = replace(quote, price=18.5, amount=20_000.0, volume_ratio=3.0)
+        changed = builder.build((repriced,), {quote.code: bars}, NOW)[0]
+        assert changed.values["volume_to_5d_average"] == 1.0
+        for unavailable_history in (bars[:4], tuple(replace(bar, volume=0.0) for bar in bars)):
+            unavailable = builder.build((quote,), {quote.code: unavailable_history}, NOW)[0]
+            assert unavailable.values["volume_to_5d_average"] is None
+            assert unavailable.values["entry_quality"] is None
+    else:
+        assert feature.values["volume_to_5d_average"] is None
+        assert feature.values["entry_quality"] is None
+        assert "entry_quality" in feature.missing_fields
+        assert DeriveEntrySetup(feature).setup_type == "none"
+
+
+@pytest.mark.parametrize(
+    ("volumes", "expected"),
+    [
+        ((1_000.0,) * 5, 1_000.0),
+        ((1_000.0,) * 4 + (0.0,), 800.0),
+        ((0.0,) * 5, 0.0),
+        ((1_000.0,) * 4, None),
+        ((1_000.0,) * 4 + (-1.0,), None),
+        ((1_000.0,) * 4 + (float("nan"),), None),
+        ((1_000.0,) * 4 + (float("inf"),), None),
+    ],
+)
+def test_five_session_volume_mean_keeps_real_zero_and_rejects_incomplete_or_invalid_window(
+    volumes: tuple[float, ...], expected: float | None
+) -> None:
+    bars = tuple(
+        DailyBar(
+            f"2026-07-{index + 1:02d}",
+            10.0,
+            10.0,
+            11.0,
+            9.0,
+            volume,
+            10_000.0,
+            0.0,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index, volume in enumerate(volumes)
+    )
+    assert SummarizeHistoryMetrics(bars).average_volume_5d == expected

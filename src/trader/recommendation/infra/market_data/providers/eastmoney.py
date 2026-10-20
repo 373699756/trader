@@ -119,7 +119,7 @@ class EastmoneyClient:
                     close=close,
                     high=high,
                     low=low,
-                    volume=volume,
+                    volume=volume * 100.0,
                     amount=amount,
                     pct_change=pct_change,
                     turnover_rate=turnover_rate,

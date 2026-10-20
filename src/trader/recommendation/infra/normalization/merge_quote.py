@@ -155,6 +155,7 @@ def _project_quote(projection: _QuoteProjection) -> MarketQuote:
         volume_ratio=_number(values.get("volume_ratio")),
         turnover_rate=_number(values.get("turnover_rate")),
         amount=_number(values.get("amount")),
+        volume=_number(values.get("volume")),
         amplitude=_number(values.get("amplitude")),
         market_cap=_number(values.get("market_cap")),
         industry=_text(values.get("industry")),

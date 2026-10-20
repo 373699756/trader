@@ -59,6 +59,7 @@ def test_eastmoney_normalizes_history() -> None:
     history = client.fetch_history("600001", days=90, now=NOW)
 
     assert history[0].amount == 100000000
+    assert history[0].volume == 10_000.0
 
 
 def test_eastmoney_history_fallback_attempts_each_host_once() -> None:
@@ -101,13 +102,18 @@ def test_eastmoney_outcome_history_requests_explicit_qfq_and_raw_pairs() -> None
     assert {bar.source for bar in bars} == {"eastmoney"}
 
 
-def test_tencent_normalizes_targeted_quote() -> None:
+@pytest.mark.parametrize(
+    ("wire_volume", "shares"),
+    [("250000", 25_000_000.0), ("0", 0.0), ("", None), ("-1", None), ("nan", None), ("inf", None)],
+)
+def test_tencent_normalizes_targeted_quote(wire_volume: str, shares: float | None) -> None:
     fields = [""] * 50
     fields[1] = "测试股份"
     fields[2] = "600001"
     fields[3] = "12.00"
     fields[4] = "11.65"
     fields[5] = "11.80"
+    fields[6] = wire_volume
     fields[30] = "20260716100000"
     fields[32] = "3.00"
     fields[33] = "12.20"
@@ -125,6 +131,7 @@ def test_tencent_normalizes_targeted_quote() -> None:
 
     assert quotes[0].price == 12.0
     assert quotes[0].amount == 300000000.0
+    assert quotes[0].volume == shares
     assert quotes[0].market_cap == 12_050_000_000.0
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
     assert session.calls[0][1]["timeout"] == 0.75
@@ -542,6 +549,7 @@ def test_sina_market_request_uses_injected_transport() -> None:
                     "changepercent": "3.00",
                     "turnoverratio": "3.0",
                     "amount": "300000000",
+                    "volume": "25000000",
                     "mktcap": "3000000",
                 }
             ],
@@ -552,6 +560,7 @@ def test_sina_market_request_uses_injected_transport() -> None:
     quotes = client.fetch_market(NOW)
 
     assert quotes[0].code == "600001"
+    assert quotes[0].volume == 25_000_000.0
 
 
 def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:

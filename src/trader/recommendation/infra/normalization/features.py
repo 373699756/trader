@@ -130,7 +130,7 @@ RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("ma10", "float", description="10日均线"),
     FeatureSchema("ma20", "float", description="20日均线"),
     FeatureSchema("ma20_slope_pct", "float", description="MA20五日斜率"),
-    FeatureSchema("volume_to_5d_average", "float", description="当日量与5日均量比"),
+    FeatureSchema("volume_to_5d_average", "float", description="当日累计成交股数/前5个完整交易日均量"),
     FeatureSchema("prior_high_20d", "float", description="前20日最高价"),
     FeatureSchema("breakout_deviation_pct", "float", description="相对前20日高点偏离"),
     FeatureSchema("price_volume_confirmation", "float", description="量价确认"),
@@ -647,20 +647,18 @@ def _live_return_pct(
 
 
 def _volume_to_5d_average(quote: MarketQuote, history: HistoryProfile) -> float | None:
-    if quote.volume_ratio is not None and math.isfinite(quote.volume_ratio) and quote.volume_ratio >= 0.0:
-        return quote.volume_ratio
-    amount = quote.amount
-    average_amount = history.average_amount_5d
+    volume = quote.volume
+    average_volume = history.average_volume_5d
     if (
-        amount is None
-        or not math.isfinite(amount)
-        or amount < 0.0
-        or average_amount is None
-        or not math.isfinite(average_amount)
-        or average_amount <= 0.0
+        volume is None
+        or not math.isfinite(volume)
+        or volume < 0.0
+        or average_volume is None
+        or not math.isfinite(average_volume)
+        or average_volume <= 0.0
     ):
         return None
-    return amount / average_amount
+    return volume / average_volume
 
 
 __all__ = [

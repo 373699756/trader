@@ -312,6 +312,7 @@ def ObservationFromQuote(quote: MarketQuote, *, source: str, observed_at: dateti
         "volume_ratio": quote.volume_ratio,
         "turnover_rate": quote.turnover_rate,
         "amount": quote.amount,
+        "volume": quote.volume,
         "amplitude": quote.amplitude,
         "market_cap": quote.market_cap,
         "industry": quote.industry,

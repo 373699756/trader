@@ -29,6 +29,7 @@ REALTIME_FIELDS = frozenset(
         "volume_ratio",
         "turnover_rate",
         "amount",
+        "volume",
         "amplitude",
         "market_cap",
         "is_st",

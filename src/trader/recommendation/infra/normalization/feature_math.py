@@ -132,6 +132,7 @@ def _missing_quote_fields(quote: MarketQuote) -> tuple[str, ...]:
             "volume_ratio",
             "turnover_rate",
             "amount",
+            "volume",
             "amplitude",
             "market_cap",
         )

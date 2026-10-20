@@ -26,11 +26,12 @@ SCORING_QUOTE_FIELDS = (
     "high",
     "low",
     "turnover_rate",
+    "volume",
     "amplitude",
 )
 REQUIRED_DECISION_QUOTE_FIELDS = SCORING_QUOTE_FIELDS
-DERIVABLE_QUOTE_FIELDS = ("volume_ratio",)
-OPTIONAL_FALLBACK_QUOTE_FIELDS = ("market_cap",)
+DERIVABLE_QUOTE_FIELDS: tuple[str, ...] = ()
+OPTIONAL_FALLBACK_QUOTE_FIELDS = ("market_cap", "volume_ratio")
 VALIDATION_QUOTE_FIELDS = ("previous_close", "open_price")
 IGNORED_REALTIME_FIELDS = ("speed", "change_5m")
 QUOTE_FIELDS = (
@@ -41,13 +42,14 @@ QUOTE_FIELDS = (
     "low",
     "pct_change",
     "amount",
+    "volume",
     "turnover_rate",
     "volume_ratio",
     "market_cap",
     "amplitude",
 )
 _POSITIVE = frozenset({"price", "previous_close", "open_price", "high", "low", "amount", "market_cap"})
-_NONNEGATIVE = frozenset({"turnover_rate", "volume_ratio", "amplitude"})
+_NONNEGATIVE = frozenset({"turnover_rate", "volume", "volume_ratio", "amplitude"})
 _RESEARCH = frozenset(
     {
         "value_score",

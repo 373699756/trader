@@ -7,6 +7,11 @@ from zoneinfo import ZoneInfo
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 from trader.recommendation.infra.normalization import columnar_merge as columnar_merge_module
+from trader.recommendation.infra.normalization.columnar import (
+    ColumnarQuoteBatch,
+    MarketChanges,
+    TargetedMarketChanges,
+)
 from trader.recommendation.infra.normalization.columnar_merge import (
     CompleteRealtimeNormalization,
     TryMergeCompleteRealtime,
@@ -91,6 +96,7 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkey
         "volume_ratio": 1.4,
         "turnover_rate": 2.0,
         "amount": 300_000_000.0,
+        "volume": 30_000_000.0,
         "amplitude": 4.0,
         "market_cap": 20_000_000_000.0,
         "industry": "工业",
@@ -120,6 +126,8 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkey
 
     assert projection is not None
     assert projection.quotes == (expected_quote,)
+    assert projection.quotes[0].volume == 30_000_000.0
+    assert expected_sources["volume"] == "tencent"
     assert projection.field_sources == {"600001": expected_sources}
     assert projection.source_versions == {"tencent": "tencent_market-source", "sina": "sina-source"}
     assert projection.conflicts == tuple(sorted(expected_conflicts))
@@ -128,12 +136,37 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkey
     assert TryMergeCompleteRealtime((tencent, replace(sina, status="failed", error_code="offline"))) is None
 
 
+def test_volume_only_change_survives_scalar_merge_and_both_dirty_projections() -> None:
+    observation = _observation("tencent_market")
+    first = MergeMarketObservations(
+        (replace(observation, fields={**observation.fields, "volume": 1_000.0}),),
+        observed_at=NOW,
+        merge_epoch="first",
+    )
+    second = MergeMarketObservations(
+        (replace(observation, fields={**observation.fields, "volume": 2_000.0}),),
+        observed_at=NOW,
+        merge_epoch="second",
+    )
+    assert first.quotes[0].volume == 1_000.0
+    assert second.quotes[0].volume == 2_000.0
+    previous = ColumnarQuoteBatch.from_snapshot(first, config_version="config", schema_version="fixture")
+    current = ColumnarQuoteBatch.from_snapshot(second, config_version="config", schema_version="fixture")
+    full = MarketChanges(previous, current)
+    targeted = TargetedMarketChanges(first, second, ("600001",))
+    for changes in (full, targeted):
+        assert changes.dirty_codes == ("600001",)
+        assert changes.dirty_field_families == ("quote_liquidity",)
+        assert changes.to_public().dirty_codes == ("600001",)
+
+
 def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkeypatch) -> None:
     complete_fields = {
         **_observation("tencent_market").fields,
         "change_5m": 0.2,
         "speed": 0.3,
         "volume_ratio": 1.4,
+        "volume": 30_000_000.0,
         "turnover_rate": 2.0,
         "amplitude": 4.0,
         "market_cap": 20_000_000_000.0,
@@ -172,6 +205,7 @@ def test_columnar_normalization_matches_scalar_quote_observation() -> None:
         "volume_ratio": 1.4,
         "turnover_rate": 2.0,
         "amount": 300_000_000.0,
+        "volume": 30_000_000.0,
         "amplitude": 4.0,
         "market_cap": 20_000_000_000.0,
         "industry": "工业",
@@ -191,6 +225,7 @@ def test_columnar_normalization_matches_scalar_quote_observation() -> None:
             volume_ratio=1.4,
             turnover_rate=2.0,
             amount=300_000_000.0,
+            volume=30_000_000.0,
             amplitude=4.0,
             market_cap=20_000_000_000.0,
             industry="工业",

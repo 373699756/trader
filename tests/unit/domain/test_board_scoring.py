@@ -355,10 +355,10 @@ def test_board_reference_identity_binds_content_and_merge_epoch(application_feat
     assert reordered.population == first.population
 
 
-@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("bad", [None, 0.0, -1.0, float("nan"), float("inf")])
 def test_non_positive_or_non_finite_shock_denominators_remain_missing(
     application_feature_factory,
-    bad: float,
+    bad: float | None,
 ) -> None:
     features = _features(application_feature_factory, 11, Board.MAIN)
     first = replace(
@@ -376,6 +376,45 @@ def test_non_positive_or_non_finite_shock_denominators_remain_missing(
 
     assert cross_section.features[0].optional_value("turnover_shock_20") is None
     assert cross_section.features[0].optional_value("amount_shock_20") is None
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_missing_real_turnover_and_entry_volume_cannot_receive_supported_score(
+    application_feature_factory, strategy
+) -> None:
+    feature = _features(application_feature_factory, 1, Board.MAIN)[0]
+    feature = replace(feature, values={**feature.values, "turnover_median_20d": None, "entry_quality": None})
+    projected = _build_board_cross_section(
+        (feature,),
+        board=Board.MAIN,
+        merge_epoch="epoch-1",
+        trade_date="2026-07-16",
+        phase="morning_main",
+        data_version="data-1",
+    ).features[0]
+    assert projected.quote.amount > 0
+    assert projected.quote.market_cap > 0
+    assert projected.optional_value("amount_median_20d") > 0
+    assert projected.optional_value("turnover_shock_20") is None
+    assert projected.optional_value("turnover_shock_score") is None
+    weights = {name: 0.0 for name in _LOCAL_COMPONENT_WEIGHTS[strategy]}
+    if strategy is Strategy.TOMORROW:
+        weights["market_state"] = 0.0
+    policy = _policy(strategy, Board.MAIN, {**weights, "entry_quality": 1.0})
+    scored = ScoreBoardStrategy(projected, policy)
+    assert scored.components["quality_penalty"] == 50.0
+    assert scored.base_score == 0.0
+    final = FuseScore(
+        FusionRequest(
+            local=scored,
+            local_risk_facts=(),
+            review=None,
+            risk_rules={},
+            fusion_mode=FusionMode.LOCAL_DEGRADED,
+            policy=FusionPolicy(25.0),
+        )
+    )
+    assert final.score.final_score == final.score.local_score == 0.0
 
 
 def test_same_input_uses_board_specific_tomorrow_weights(application_feature_factory) -> None:

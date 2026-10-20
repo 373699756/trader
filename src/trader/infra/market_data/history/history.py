@@ -20,6 +20,8 @@ class HistoryAdjustmentError(ValueError):
 
 @dataclass(frozen=True)
 class DailyBar:
+    """Daily prices with actual volume in shares, amount in yuan and turnover in percentage points."""
+
     trade_date: str
     open_price: float
     close: float
@@ -140,7 +142,12 @@ def SummarizeHistoryMetrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         (ma20 / prior_ma20 - 1.0) * 100.0 if ma20 is not None and prior_ma20 is not None and prior_ma20 > 0.0 else None
     )
     atr20 = AverageTrueRangePct(bars)
-    volume_5d = _positive_average(tuple(bar.volume for bar in bars[-5:]), 5)
+    volumes = tuple(bar.volume for bar in bars[-5:])
+    volume_5d = (
+        sum(volumes) / 5.0
+        if len(volumes) == 5 and all(math.isfinite(value) and value >= 0.0 for value in volumes)
+        else None
+    )
     amount_5d = _positive_average(tuple(bar.amount for bar in bars[-5:]), 5)
     high_20d = max((bar.high for bar in bars[-20:] if bar.high > 0.0), default=None) if len(bars) >= 20 else None
 

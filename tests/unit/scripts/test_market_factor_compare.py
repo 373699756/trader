@@ -56,6 +56,7 @@ def _quote(code: str = "600001", **changes: object) -> MarketQuote:
         volume_ratio=1,
         turnover_rate=1,
         amount=100_000_000,
+        volume=10_000_000,
         amplitude=1,
         market_cap=10_000_000_000,
         industry="industry",
@@ -445,11 +446,12 @@ def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> No
         "high",
         "low",
         "turnover_rate",
+        "volume",
         "amplitude",
     ]
     assert summary["input_owners"]["local_industry_fields"] == ["industry", "model_industry"]
-    assert summary["input_owners"]["derivable_realtime_fields"] == ["volume_ratio"]
-    assert summary["input_owners"]["optional_fallback_realtime_fields"] == ["market_cap"]
+    assert summary["input_owners"]["derivable_realtime_fields"] == []
+    assert summary["input_owners"]["optional_fallback_realtime_fields"] == ["market_cap", "volume_ratio"]
     assert summary["input_owners"]["validation_realtime_fields"] == ["previous_close", "open_price"]
     assert summary["input_owners"]["ignored_realtime_fields"] == ["speed", "change_5m"]
 
@@ -646,6 +648,7 @@ def test_diagnostic_eastmoney_parser_preserves_units_missing_and_source_time_unc
     requested_fields = set(calls[0]["params"]["fields"].split(","))
     assert {"f11", "f22"}.isdisjoint(requested_fields)
     assert "f100" in requested_fields
+    assert "f5" in requested_fields
     quote = ParseEastmoneySpotQuote(
         {
             "f12": "600001",
@@ -653,6 +656,7 @@ def test_diagnostic_eastmoney_parser_preserves_units_missing_and_source_time_unc
             "f2": 12,
             "f3": 1.5,
             "f6": 100_000_000,
+            "f5": 250_000,
             "f20": 10_000_000_000,
             "f22": 0,
             "f11": "-",
@@ -663,6 +667,7 @@ def test_diagnostic_eastmoney_parser_preserves_units_missing_and_source_time_unc
     )
     assert quote is not None
     assert quote.amount == 100_000_000
+    assert quote.volume == 25_000_000
     assert quote.market_cap == 10_000_000_000
     assert quote.pct_change == 1.5
     assert quote.speed == 0

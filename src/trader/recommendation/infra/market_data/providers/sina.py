@@ -25,6 +25,7 @@ from trader.recommendation.infra.normalization.quote import (
     BuildMarketQuote,
     MarketQuoteInput,
     NormalizeQuotes,
+    ParseVolume,
     ToFloat,
 )
 
@@ -293,6 +294,7 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
             volume_ratio=None,
             turnover_rate=ToFloat(row.get("turnoverratio")),
             amount=ToFloat(row.get("amount")),
+            volume=ParseVolume(row.get("volume")),
             amplitude=_amplitude(high, low, settlement),
             market_cap=_scaled_market_cap(row.get("mktcap")),
             industry="",

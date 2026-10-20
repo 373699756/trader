@@ -28,6 +28,7 @@ from trader.recommendation.infra.normalization.quote import (
     BuildMarketQuote,
     MarketQuoteInput,
     NormalizeQuotes,
+    ParseVolume,
     ToFloat,
 )
 from trader.training.domain.evaluation.models import OutcomeBar
@@ -306,6 +307,7 @@ def _parse_payload(fields: Mapping[str, object], received_at: datetime, requeste
             volume_ratio=ToFloat(fields.get("49")),
             turnover_rate=ToFloat(fields.get("38")),
             amount=amount,
+            volume=ParseVolume(fields.get("6"), shares_per_unit=100.0),
             amplitude=ToFloat(fields.get("43")),
             market_cap=_market_cap(fields.get("45")),
             industry="",

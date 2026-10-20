@@ -67,6 +67,17 @@ def _cell(code: str, day: date) -> BaoStockDailyCell:
     return BaoStockDailyCell(code, day, "complete", raw, qfq)
 
 
+def test_qfq_projection_uses_actual_raw_volume_with_adjusted_prices() -> None:
+    cell = _cell("600001", NOW.date())
+    assert cell.qfq is not None and cell.unadjusted is not None
+    adjusted = replace(cell.qfq, close_price=5.0, volume=200_000.0)
+    published = ProjectHistoryCell(replace(cell, qfq=adjusted))
+    bars = QfqBars(PublishedHistoryWindow("600001", (published,)))
+    assert bars[0].close == 5.0
+    assert bars[0].volume == cell.unadjusted.volume == 100_000.0
+    assert bars[0].turnover_rate == cell.unadjusted.turnover == 1.0
+
+
 class _Archive:
     def __init__(self, sessions: int, gap: int, codes: tuple[str, ...]) -> None:
         dates = tuple(day for day in CALENDAR if day < NOW.date())

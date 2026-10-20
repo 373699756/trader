@@ -85,6 +85,8 @@ class MarketQuote:
     rule_version: str = ""
     rule_effective_date: date | None = None
     execution_restrictions: tuple[str, ...] = ()
+    # Actual cumulative shares traded in this session; never a vendor volume ratio.
+    volume: float | None = field(default=None, kw_only=True)
 
     def age_seconds(self, now: datetime) -> float:
         return max(0.0, (now - self.source_time).total_seconds())

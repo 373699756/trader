@@ -134,11 +134,6 @@ def _raw_field(
 def _turnover_shock(item: FeatureSnapshot) -> float | None:
     current = item.quote.turnover_rate
     baseline = item.optional_value("turnover_median_20d")
-    if baseline is None:
-        amount_median = item.optional_value("amount_median_20d")
-        market_cap = item.quote.market_cap
-        if amount_median is not None and market_cap is not None and math.isfinite(market_cap) and market_cap > 0.0:
-            baseline = amount_median / market_cap * 100.0
     if (
         current is None
         or baseline is None

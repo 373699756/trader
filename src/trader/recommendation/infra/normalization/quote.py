@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Protocol
 
@@ -53,6 +53,15 @@ def NormalizeQuotes(
     return tuple(normalized)
 
 
+def ParseVolume(raw: object, *, shares_per_unit: float = 1.0) -> float | None:
+    """Normalize a supplier's actual share/lot count to non-negative shares."""
+    value = ToFloat(raw)
+    if value is None or value < 0.0:
+        return None
+    shares = value * shares_per_unit
+    return shares if math.isfinite(shares) and shares >= 0.0 else None
+
+
 def _require_timezone(value: datetime, field_name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
@@ -94,6 +103,7 @@ class MarketQuoteInput:
     has_major_regulatory_risk: bool = False
     cross_source_deviation_pct: float | None = None
     cross_source_verified: bool = True
+    volume: float | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         code = self.code.strip()
@@ -133,6 +143,7 @@ def BuildMarketQuote(values: MarketQuoteInput) -> MarketQuote:
         volume_ratio=values.volume_ratio,
         turnover_rate=values.turnover_rate,
         amount=values.amount,
+        volume=values.volume,
         amplitude=values.amplitude,
         market_cap=values.market_cap,
         industry=values.industry,
@@ -177,5 +188,6 @@ __all__ = [
     "BuildMarketQuote",
     "InferOnePriceLimit",
     "NormalizeQuotes",
+    "ParseVolume",
     "ToFloat",
 ]

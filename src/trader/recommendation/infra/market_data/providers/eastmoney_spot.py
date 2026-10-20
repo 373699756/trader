@@ -6,7 +6,7 @@ from datetime import datetime
 
 from trader.infra.http_contracts import HttpTransport
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput, ToFloat
+from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput, ParseVolume, ToFloat
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class EastmoneySpotClient:
                 "invt": "2",
                 "fid": "f12",
                 "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23",
-                "fields": "f2,f3,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f100",
+                "fields": "f2,f3,f5,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f100",
                 "ut": "bd1d9ddb04089700cf9c27f6f7426281",
             },
             timeout=timeout,
@@ -76,6 +76,7 @@ def ParseEastmoneySpotQuote(row: Mapping[str, object], received_at: datetime) ->
             volume_ratio=ToFloat(row.get("f10")),
             turnover_rate=ToFloat(row.get("f8")),
             amount=ToFloat(row.get("f6")),
+            volume=ParseVolume(row.get("f5"), shares_per_unit=100.0),
             amplitude=ToFloat(row.get("f7")),
             market_cap=ToFloat(row.get("f20")),
             industry=str(row.get("f100") or ""),

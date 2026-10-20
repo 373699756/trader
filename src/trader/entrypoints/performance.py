@@ -725,6 +725,7 @@ _COMPLETE_REALTIME_FIELDS = (
     "volume_ratio",
     "turnover_rate",
     "amount",
+    "volume",
     "amplitude",
     "market_cap",
     "industry",
@@ -793,6 +794,7 @@ def _quote_input(index: int, now: datetime) -> MarketQuoteInput:
         board_reliability="verified",
         exchange="SZSE" if board is Board.CHINEXT else "SSE",
         listing_date=date(2020, 1, 1),
+        volume=10_000_000.0,
     )
 
 

@@ -30,6 +30,7 @@ _QUOTE_FIELDS = (
     "volume_ratio",
     "turnover_rate",
     "amount",
+    "volume",
     "amplitude",
     "market_cap",
     "industry",
@@ -67,6 +68,7 @@ _COLUMNAR_INPUT_SCHEMA: dict[str, pl.DataType] = {
     "volume_ratio": pl.Float64,
     "turnover_rate": pl.Float64,
     "amount": pl.Float64,
+    "volume": pl.Float64,
     "amplitude": pl.Float64,
     "market_cap": pl.Float64,
     "industry": pl.String,
@@ -323,6 +325,9 @@ def _quote_from_complete_observation(
     projection: _QuoteProjection,
 ) -> MarketQuote:
     values = observation.fields
+    volume = _number(values["volume"])
+    if volume is None or volume < 0.0:
+        raise ValueError("complete quote volume must be non-negative shares")
     raw_numbers = (
         values["price"],
         values["previous_close"],
@@ -411,6 +416,7 @@ def _quote_from_complete_observation(
         "cn-board-rules",
         _RULE_EFFECTIVE_DATE,
         projection.restrictions,
+        volume=volume,
     )
 
 
