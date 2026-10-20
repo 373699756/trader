@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from hashlib import sha256
@@ -9,7 +8,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import (
+    SqliteConnectionOptions,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     BuildDecisionCommitted,
     DecisionObservation,
@@ -71,21 +74,19 @@ def test_physical_capacity_counts_wal_and_rejects_before_partition_creation(tmp_
 
 def test_physical_commit_admission_rolls_back_index_and_payload_growth(tmp_path):
     from trader.training.infra.research.trace_capacity import TracePhysicalBudget
-    from trader.training.infra.research.trace_storage import Connection
 
     database = tmp_path / "audit.sqlite3"
-    with Connection(database, write=True) as conn:
-        conn.apply_script(
-            "PRAGMA journal_mode=WAL; CREATE TABLE audit (id INTEGER PRIMARY KEY, payload BLOB); CREATE INDEX payload_idx ON audit(payload); INSERT INTO audit VALUES(1, 'old');"
-        )
+    with SqliteSession(database, SqliteConnectionOptions(journal_mode="WAL")) as conn, SqliteTransaction(conn):
+        conn.run("CREATE TABLE audit (id INTEGER PRIMARY KEY, payload BLOB)")
+        conn.run("CREATE INDEX payload_idx ON audit(payload)")
+        conn.run("INSERT INTO audit VALUES(1, 'old')")
     size_before = database.stat().st_size
     with pytest.raises(ResearchTraceCapacityError, match="physical"):
-        with Connection(database, write=True) as conn:
+        with SqliteSession(database) as conn, SqliteTransaction(conn, immediate=True):
             conn.run("PRAGMA cache_spill=OFF")
-            conn.run("BEGIN IMMEDIATE")
             conn.run("INSERT INTO audit VALUES(2, zeroblob(262144))")
             TracePhysicalBudget(131072, 131072).require_commit(conn, (database,), database)
-    with Connection(database, write=False) as conn:
+    with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as conn:
         assert conn.run("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
     assert database.stat().st_size == size_before
 
@@ -129,7 +130,7 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
     from trader.training.infra.research.trace_storage import InitializeDatabase
 
     InitializeDatabase(database, set())
-    with closing(OpenSqliteConnection(database)) as connection, connection:
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run(
             """
             INSERT INTO committed_events (
@@ -217,7 +218,7 @@ def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
     event = _persistent_event(decision())
     archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
     database = tmp_path / "traces" / f"{event.trade_date.isoformat()}.sqlite3"
-    with closing(OpenSqliteConnection(database)) as connection, connection:
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run(
             "UPDATE committed_events SET payload = ? WHERE decision_version = ?",
             (b"{}", event.decision_version),

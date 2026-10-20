@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -43,15 +44,14 @@ class SqliteResult:
         return self._cursor.fetchmany(size)
 
     def __iter__(self) -> Iterator[sqlite3.Row]:
-        while (row := self.fetchone()) is not None:
-            yield row
+        yield from self._cursor
 
     def close(self) -> None:
         self._cursor.close()
 
 
 class SqliteConnection:
-    """Project SQLite session owning the driver, transaction and statement APIs."""
+    """Thread-owned driver handle exposing bounded statement operations."""
 
     def __init__(self, driver: sqlite3.Connection) -> None:
         self._driver = driver
@@ -63,10 +63,6 @@ class SqliteConnection:
     def run_many(self, sql: str, parameters: Iterable[SqliteParameters]) -> SqliteResult:
         return SqliteResult(self._driver.executemany(sql, (_parameters(row) for row in parameters)))
 
-    def apply_script(self, sql: str) -> None:
-        """Existing schema scripts only; atomic creation uses EnsureSqliteSchema."""
-        self._driver.executescript(sql)
-
     @property
     def in_transaction(self) -> bool:
         return self._driver.in_transaction
@@ -75,61 +71,46 @@ class SqliteConnection:
     def total_changes(self) -> int:
         return self._driver.total_changes
 
-    @property
-    def isolation_level(self) -> str | None:
-        return self._driver.isolation_level
-
     def observe_statements(self, callback: Callable[[str], None] | None) -> None:
         self._driver.set_trace_callback(callback)
 
     def observe_progress(self, callback: Callable[[], int] | None, steps: int) -> None:
         self._driver.set_progress_handler(callback, steps)
 
-    def commit(self) -> None:
-        self._driver.commit()
-
-    def rollback(self) -> None:
-        self._driver.rollback()
-
     def close(self) -> None:
+        """Close the handle, rolling back any unfinished transaction."""
         self._driver.close()
-
-    def __enter__(self) -> SqliteConnection:
-        return self
-
-    def __exit__(
-        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
-    ) -> None:
-        self._driver.__exit__(exc_type, exc, traceback)
 
 
 def _parameters(values: SqliteParameters) -> tuple[SqliteParameter, ...] | dict[str, SqliteParameter]:
-    if isinstance(values, Mapping):
-        return {key: _parameter(value) for key, value in values.items()}
-    return tuple(_parameter(value) for value in values)
-
-
-def _parameter(value: object) -> SqliteParameter:
-    if value is None or isinstance(value, (str, int, float, bytes)):
-        return value
-    raise ValueError("sqlite_parameter_type_invalid")
+    parameters = dict(values) if isinstance(values, Mapping) else tuple(values)
+    for value in parameters.values() if isinstance(parameters, dict) else parameters:
+        if value is not None and not isinstance(value, (str, int, float, bytes)):
+            raise ValueError("sqlite_parameter_type_invalid")
+    return cast(tuple[SqliteParameter, ...] | dict[str, SqliteParameter], parameters)
 
 
 @dataclass(frozen=True)
 class SqliteConnectionOptions:
     read_only: bool = False
     timeout_seconds: float = 5.0
-    journal_mode: Literal["WAL", "DELETE"] | None = None
+    journal_mode: Literal["WAL", "DELETE", "OFF"] | None = None
     foreign_keys: bool = False
     immutable: bool = False
     query_only: bool | None = None
     check_same_thread: bool = True
-    isolation_level: Literal["DEFERRED", "IMMEDIATE", "EXCLUSIVE"] | None = "DEFERRED"
     page_size: int | None = None
+    cache_kib: int | None = None
+    mmap_bytes: int | None = None
+    temp_storage: Literal["DEFAULT", "FILE", "MEMORY"] | None = None
+    durability: Literal["durable", "rebuildable"] = "durable"
 
     def __post_init__(self) -> None:
         if (
-            not isfinite(self.timeout_seconds)
+            self.durability not in {"durable", "rebuildable"}
+            or self.journal_mode not in {None, "WAL", "DELETE", "OFF"}
+            or self.temp_storage not in {None, "DEFAULT", "FILE", "MEMORY"}
+            or not isfinite(self.timeout_seconds)
             or self.timeout_seconds < 0
             or self.read_only
             and self.journal_mode is not None
@@ -137,6 +118,14 @@ class SqliteConnectionOptions:
             and not self.read_only
             or self.page_size is not None
             and (self.read_only or self.page_size not in (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536))
+            or self.cache_kib is not None
+            and self.cache_kib < 1
+            or self.mmap_bytes is not None
+            and self.mmap_bytes < 0
+            or self.journal_mode == "OFF"
+            and self.durability != "rebuildable"
+            or self.durability == "rebuildable"
+            and (self.read_only or self.journal_mode != "OFF")
         ):
             raise ValueError("invalid_sqlite_connection_options")
 
@@ -144,11 +133,28 @@ class SqliteConnectionOptions:
 _DEFAULT_OPTIONS = SqliteConnectionOptions()
 
 
+def _configure_database(connection: sqlite3.Connection, options: SqliteConnectionOptions) -> None:
+    query_only = options.query_only if options.query_only is not None else options.read_only
+    if query_only:
+        connection.execute("PRAGMA query_only=ON")
+    if not options.read_only:
+        if options.page_size is not None:
+            connection.execute(f"PRAGMA page_size={options.page_size}")
+        if options.journal_mode is not None:
+            actual = connection.execute(f"PRAGMA journal_mode={options.journal_mode}").fetchone()[0]
+            if actual.upper() != options.journal_mode:
+                raise sqlite3.OperationalError("sqlite_journal_mode_unavailable")
+        connection.execute("PRAGMA synchronous=FULL" if options.durability == "durable" else "PRAGMA synchronous=OFF")
+    if options.foreign_keys:
+        connection.execute("PRAGMA foreign_keys=ON")
+
+
 def OpenSqliteConnection(
     path: Path | Literal[":memory:"],
     options: SqliteConnectionOptions = _DEFAULT_OPTIONS,
     *,
     cancel_requested: Callable[[], bool] | None = None,
+    statement_trace: Callable[[str], None] | None = None,
 ) -> SqliteConnection:
     """Caller closes the handle; immutable is only for offline, unchanging copies."""
     connection = sqlite3.connect(
@@ -156,24 +162,20 @@ def OpenSqliteConnection(
         uri=options.read_only,
         timeout=options.timeout_seconds,
         check_same_thread=options.check_same_thread,
-        isolation_level=options.isolation_level,
+        isolation_level=None,
     )
     try:
-        query_only = options.query_only if options.query_only is not None else options.read_only
-        if query_only:
-            connection.execute("PRAGMA query_only=ON")
-        if not options.read_only:
-            if options.page_size is not None:
-                connection.execute(f"PRAGMA page_size={options.page_size}")
-            if options.journal_mode is not None:
-                actual = connection.execute(f"PRAGMA journal_mode={options.journal_mode}").fetchone()[0]
-                if actual.upper() != options.journal_mode:
-                    raise sqlite3.OperationalError("sqlite_journal_mode_unavailable")
-            connection.execute("PRAGMA synchronous=FULL")
-        if options.foreign_keys:
-            connection.execute("PRAGMA foreign_keys=ON")
+        _configure_database(connection, options)
         if cancel_requested is not None:
             connection.set_progress_handler(lambda: int(cancel_requested()), 10_000)
+        if statement_trace is not None:
+            connection.set_trace_callback(statement_trace)
+        if options.cache_kib is not None:
+            connection.execute(f"PRAGMA cache_size=-{options.cache_kib}")
+        if options.mmap_bytes is not None:
+            connection.execute(f"PRAGMA mmap_size={options.mmap_bytes}")
+        if options.temp_storage is not None:
+            connection.execute(f"PRAGMA temp_store={options.temp_storage}")
         return SqliteConnection(connection)
     except BaseException:
         connection.close()
@@ -192,24 +194,74 @@ def _connection_target(path: Path | Literal[":memory:"], options: SqliteConnecti
 
 
 @contextmanager
-def SqliteTransaction(connection: SqliteConnection, *, immediate: bool = False) -> Iterator[SqliteConnection]:
-    """Commit a complete unit or roll it back, including cancellation; no nested transactions."""
-    if connection.in_transaction:
-        raise ValueError("sqlite_nested_transaction")
-    connection.run("BEGIN IMMEDIATE" if immediate else "BEGIN")
-    with connection:
+def SqliteSession(
+    path: Path | Literal[":memory:"],
+    options: SqliteConnectionOptions = _DEFAULT_OPTIONS,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+    statement_trace: Callable[[str], None] | None = None,
+) -> Iterator[SqliteConnection]:
+    """Own a connection lifetime; transactions are explicit and never committed on close."""
+    connection = OpenSqliteConnection(path, options, cancel_requested=cancel_requested, statement_trace=statement_trace)
+    try:
         yield connection
+    finally:
+        connection.close()
+
+
+class SqliteTransaction:
+    """One explicit transaction, optionally spanning methods on a thread-owned session."""
+
+    def __init__(self, connection: SqliteConnection, *, immediate: bool = False) -> None:
+        self._connection = connection
+        self._immediate = immediate
+        self._active = False
+
+    def begin(self) -> None:
+        if self._active or self._connection.in_transaction:
+            raise ValueError("sqlite_nested_transaction")
+        self._connection.run("BEGIN IMMEDIATE" if self._immediate else "BEGIN")
+        self._active = True
+
+    def commit(self) -> None:
+        if not self._active:
+            raise ValueError("sqlite_transaction_inactive")
+        try:
+            self._connection._driver.commit()
+        except BaseException:
+            self.rollback()
+            raise
+        self._active = False
+
+    def rollback(self) -> None:
+        if self._active:
+            try:
+                self._connection._driver.rollback()
+            finally:
+                self._active = False
+
+    def __enter__(self) -> SqliteTransaction:
+        self.begin()
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        if exc_type is not None:
+            self.rollback()
+        elif self._active:
+            self.commit()
 
 
 @dataclass(frozen=True)
 class SqliteSchema:
     """Adapter-owned DDL statements; infrastructure owns their atomic installation."""
 
-    version: int
+    version: int | None
     statements: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if type(self.version) is not int or not 1 <= self.version <= 2_147_483_647:
+        if self.version is not None and (type(self.version) is not int or not 1 <= self.version <= 2_147_483_647):
             raise ValueError("sqlite_schema_version_invalid")
         if not self.statements or any(
             not statement.strip().upper().startswith("CREATE ") for statement in self.statements
@@ -217,27 +269,78 @@ class SqliteSchema:
             raise ValueError("sqlite_schema_requires_create_statements")
 
 
-def EnsureSqliteSchema(connection: SqliteConnection, schema: SqliteSchema, *, allow_create: bool = False) -> None:
+def _schema_tokens(statement: str) -> tuple[str, ...]:
+    statement = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", statement, count=1, flags=re.IGNORECASE)
+    tokens = re.findall(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|\w+|[^\w\s]", statement.rstrip().rstrip(";"))
+    return tuple(token if token.startswith(("'", '"')) else token.lower() for token in tokens)
+
+
+def _validate_unversioned_schema(connection: SqliteConnection, schema: SqliteSchema) -> None:
+    """Unversioned formats retain their exact adapter-owned DDL instead of acquiring a second identity."""
+    actual = {
+        str(row[0]): str(row[1]) for row in connection.run("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL")
+    }
+    for statement in schema.statements:
+        match = re.match(
+            r"\s*CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+            statement,
+            re.IGNORECASE,
+        )
+        if match is None or match[1] not in actual or _schema_tokens(actual[match[1]]) != _schema_tokens(statement):
+            raise sqlite3.DatabaseError("sqlite_schema_unsupported")
+
+
+def _schema_exists(
+    connection: SqliteConnection,
+    schema: SqliteSchema,
+    validate: Callable[[SqliteConnection], None] | None,
+) -> bool:
+    # Read both facts in one SQLite statement so a concurrent initializer cannot
+    # make us combine the old version with its newly committed tables.
+    version, populated = connection.run(
+        "SELECT user_version, EXISTS(SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*') "
+        "FROM pragma_user_version"
+    ).require_one()
+    if schema.version is not None and version == schema.version:
+        if validate is not None:
+            validate(connection)
+        return True
+    if version != 0:
+        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
+    if not populated:
+        return False
+    if schema.version is not None:
+        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
+    _validate_unversioned_schema(connection, schema)
+    if validate is not None:
+        validate(connection)
+    return True
+
+
+def EnsureSqliteSchema(
+    connection: SqliteConnection,
+    schema: SqliteSchema,
+    *,
+    allow_create: bool = False,
+    initialize: Callable[[SqliteConnection], None] | None = None,
+    validate: Callable[[SqliteConnection], None] | None = None,
+) -> None:
     """Validate a format or atomically initialize an empty database; never migrate one."""
-    version = connection.run("PRAGMA user_version").require_one()[0]
-    if version == schema.version:
+    if _schema_exists(connection, schema, validate):
         return
-    if version != 0 or not allow_create:
+    if not allow_create:
         raise sqlite3.DatabaseError("sqlite_schema_unsupported")
     with SqliteTransaction(connection, immediate=True):
-        # A competing initializer may have committed while this connection waited.
-        version = connection.run("PRAGMA user_version").require_one()[0]
-        if version == schema.version:
+        if _schema_exists(connection, schema, validate):
             return
-        if (
-            version != 0
-            or connection.run("SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' LIMIT 1").fetchone()
-            is not None
-        ):
-            raise sqlite3.DatabaseError("sqlite_schema_unsupported")
         for statement in schema.statements:
             connection.run(statement)
-        connection.run(f"PRAGMA user_version={schema.version}")
+        if initialize is not None:
+            initialize(connection)
+        if schema.version is not None:
+            connection.run(f"PRAGMA user_version={schema.version}")
+        if validate is not None:
+            validate(connection)
 
 
 def CheckSqliteIntegrity(connection: SqliteConnection) -> None:
@@ -256,5 +359,6 @@ __all__ = [
     "SqliteParameters",
     "SqliteResult",
     "SqliteSchema",
+    "SqliteSession",
     "SqliteTransaction",
 ]

@@ -29,6 +29,7 @@ from trader.infra.sqlite_connection import (
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
+    SqliteSession,
     SqliteTransaction,
 )
 
@@ -266,20 +267,25 @@ class HistoryPricePartition:
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with closing(
-                OpenSqliteConnection(
-                    self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True, page_size=8192)
-                )
+            with SqliteSession(
+                self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True, page_size=8192)
             ) as connection:
                 if self._statement_trace is not None:
                     connection.observe_statements(self._statement_trace)
-                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
-                with SqliteTransaction(connection, immediate=True):
+
+                def initialize_metadata(connection: SqliteConnection) -> None:
                     connection.run(
                         "INSERT OR IGNORE INTO metadata(singleton,schema_identity,calendar_year) VALUES(1,?,?)",
                         (_SCHEMA_IDENTITY, self._calendar_year),
                     )
-                self._require_metadata(connection)
+
+                EnsureSqliteSchema(
+                    connection,
+                    _SCHEMA,
+                    allow_create=True,
+                    initialize=initialize_metadata,
+                    validate=self._require_metadata,
+                )
                 self._require_schema(connection)
         except (sqlite3.Error, ValueError) as exc:
             raise HistoryPricePartitionError("history month partition initialization failed") from exc
@@ -336,8 +342,7 @@ class HistoryPricePartition:
                 while batch := tuple(islice(incoming, 4096)):
                     if shutil.disk_usage(self._path.parent).free < 64 * 1024**2:
                         raise HistoryPricePartitionError("disk_space_insufficient")
-                    with connection:
-                        connection.run("BEGIN IMMEDIATE")
+                    with SqliteTransaction(connection, immediate=True):
                         self._save_batch(connection, self._prepare_revisions(batch))
                         connection.run("DROP TABLE requested_history_revisions")
         except sqlite3.Error as exc:
@@ -385,8 +390,7 @@ class HistoryPricePartition:
         if not prepared:
             return
         try:
-            with closing(self._write_connection()) as connection, connection:
-                connection.run("BEGIN IMMEDIATE")
+            with closing(self._write_connection()) as connection, SqliteTransaction(connection, immediate=True):
                 self._require_metadata(connection)
                 self._save_batch(connection, prepared)
         except HistoryPricePartitionConflictError:
@@ -648,9 +652,9 @@ class HistoryPricePartition:
         try:
             with (
                 closing(self._read_connection()) as connection,
+                SqliteTransaction(connection),
                 self._activity.watch(connection) if self._activity else nullcontext(),
             ):
-                connection.run("BEGIN")
                 self._require_metadata(connection)
                 self._require_schema(connection)
                 if sequence is None:
@@ -698,8 +702,7 @@ class HistoryPricePartition:
         del retain_pages
         candidate = cls(path, reference.calendar_year, reference.calendar_month)
         try:
-            with closing(candidate._read_connection()) as connection:
-                connection.run("BEGIN")
+            with closing(candidate._read_connection()) as connection, SqliteTransaction(connection):
                 candidate._require_metadata(connection)
                 candidate._require_schema(connection)
                 proof = CalculateHistoryProof(
@@ -911,13 +914,13 @@ class HistoryPricePartition:
                 raise HistoryPricePartitionError("history month table contract is invalid")
 
     def _write_connection(self) -> SqliteConnection:
-        connection = OpenSqliteConnection(self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True))
-        if self._statement_trace is not None:
-            connection.observe_statements(self._statement_trace)
-        connection.run("PRAGMA cache_size=-8192")
-        connection.run("PRAGMA mmap_size=0")
-        connection.run("PRAGMA temp_store=FILE")
-        return connection
+        return OpenSqliteConnection(
+            self._path,
+            SqliteConnectionOptions(
+                journal_mode="WAL", foreign_keys=True, cache_kib=8192, mmap_bytes=0, temp_storage="FILE"
+            ),
+            statement_trace=self._statement_trace,
+        )
 
     def _read_connection(self) -> SqliteConnection:
         return OpenHistoryPriceReader(
@@ -948,8 +951,7 @@ class HistoryPriceWriteSession:
                 while batch := tuple(islice(incoming, 4096)):
                     if shutil.disk_usage(self._prices._path.parent).free < 64 * 1024**2:
                         raise HistoryPricePartitionError("disk_space_insufficient")
-                    with self._connection:
-                        self._connection.run("BEGIN IMMEDIATE")
+                    with SqliteTransaction(self._connection, immediate=True):
                         prepared = self._prices._prepare_revisions(batch)
                         if self._fresh:
                             self._prices._insert_fresh_batch(self._connection, prepared)

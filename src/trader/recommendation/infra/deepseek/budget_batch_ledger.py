@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.sqlite_connection import SqliteConnection, SqliteTransaction
 from trader.recommendation.domain.evidence.review import DeepSeekReview
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget_audit import _require_aware, _sync_call_audit
@@ -53,8 +53,7 @@ class BudgetBatchLedger:
         if request.cache_hit_count < 0 or request.cache_hit_count > len(codes):
             raise ValueError("DeepSeek batch cache hits must be within candidate count")
         batch_id = uuid.uuid4().hex
-        with self._connect() as connection:
-            connection.run("BEGIN IMMEDIATE")
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True) as transaction:
             connection.run(
                 """
                 INSERT INTO deepseek_review_batches(
@@ -82,7 +81,7 @@ class BudgetBatchLedger:
                 """,
                 ((batch_id, code) for code in codes),
             )
-            connection.commit()
+            transaction.commit()
         return batch_id
 
     def finish_batch(self, completion: BudgetBatchCompletion) -> None:
@@ -91,8 +90,7 @@ class BudgetBatchLedger:
         _require_aware(completion.completed_at, "batch completed_at")
         if completion.physical_attempts < 0:
             raise ValueError("physical attempts cannot be negative")
-        with self._connect() as connection:
-            connection.run("BEGIN IMMEDIATE")
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True) as transaction:
             changed = connection.run(
                 """
                 UPDATE deepseek_review_batches
@@ -108,12 +106,12 @@ class BudgetBatchLedger:
                 ),
             ).rowcount
             if changed != 1:
-                connection.rollback()
+                transaction.rollback()
                 raise KeyError(f"unknown or completed DeepSeek batch: {completion.batch_id}")
             for code, review in completion.reviews.items():
                 outcome = review.outcome.value
                 if code != review.code or outcome not in _CANDIDATE_TERMINALS:
-                    connection.rollback()
+                    transaction.rollback()
                     raise ValueError("DeepSeek candidate result does not match its batch code")
                 updated = connection.run(
                     """
@@ -124,7 +122,7 @@ class BudgetBatchLedger:
                     (outcome, review.completed_at.isoformat(), review.error[:500], completion.batch_id, code),
                 ).rowcount
                 if updated != 1:
-                    connection.rollback()
+                    transaction.rollback()
                     raise ValueError(f"candidate {code} is not pending in batch {completion.batch_id}")
             connection.run(
                 """
@@ -138,12 +136,12 @@ class BudgetBatchLedger:
                     completion.batch_id,
                 ),
             )
-            connection.commit()
+            transaction.commit()
 
     def set_batch_cache_hits(self, batch_id: str, count: int) -> None:
         if count < 0:
             raise ValueError("batch cache hits cannot be negative")
-        with self._connect() as connection:
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             changed = connection.run(
                 """
                 UPDATE deepseek_review_batches
@@ -157,8 +155,7 @@ class BudgetBatchLedger:
 
     def fail_running_batch(self, batch_id: str, *, completed_at: datetime, error: str) -> bool:
         _require_aware(completed_at, "batch failure time")
-        with self._connect() as connection:
-            connection.run("BEGIN IMMEDIATE")
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True) as transaction:
             changed = connection.run(
                 """
                 UPDATE deepseek_review_batches
@@ -193,5 +190,5 @@ class BudgetBatchLedger:
                 )
                 for reservation_id in reservation_ids:
                     _sync_call_audit(connection, reservation_id)
-            connection.commit()
+            transaction.commit()
         return bool(changed)

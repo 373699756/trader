@@ -68,7 +68,7 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int, sessions: int = 20
                     str(size),
                 ],
                 cwd=checkout,
-                env={**os.environ, "PYTHONPATH": str(checkout / "src")},
+                env={**os.environ, "PYTHONPATH": str(checkout / "src"), "PYTHONHASHSEED": "0"},
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -113,6 +113,7 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int, sessions: int = 20
             "history_months": 100,
             "history_sessions": 2000,
             "cache_policy": "fresh process, warm operating-system cache; alternating order",
+            "python_hash_seed": 0,
             "wal_peak_sampling_seconds": 0.005,
             "comparison": comparison,
             "runs": runs,
@@ -142,7 +143,7 @@ def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: i
                     str(sessions),
                 ],
                 cwd=checkout,
-                env={**os.environ, "PYTHONPATH": str(checkout / "src")},
+                env={**os.environ, "PYTHONPATH": str(checkout / "src"), "PYTHONHASHSEED": "0"},
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -154,15 +155,28 @@ def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: i
     for name in runs["baseline"][0]:
         before = statistics.median(run[name]["milliseconds"] for run in runs["baseline"])
         after = statistics.median(run[name]["milliseconds"] for run in runs["candidate"])
-        passed = passed and after < before * (1.0 if name.startswith("read_") else 1.1)
+        paired_ratios = [
+            candidate[name]["milliseconds"] / baseline_run[name]["milliseconds"]
+            for baseline_run, candidate in zip(runs["baseline"], runs["candidate"], strict=True)
+        ]
+        paired_ratio = statistics.median(paired_ratios)
+        passed = passed and paired_ratio < (1.0 if name.startswith("read_") else 1.1)
         comparisons.append(
             {
                 "case": name,
                 "baseline_median_ms": before,
                 "candidate_median_ms": after,
                 "ratio": after / before,
+                "paired_ratios": paired_ratios,
+                "median_paired_ratio": paired_ratio,
                 "baseline_identity_scans": statistics.median(run[name]["identity_scans"] for run in runs["baseline"]),
                 "candidate_identity_scans": statistics.median(run[name]["identity_scans"] for run in runs["candidate"]),
+                "baseline_connections": statistics.median(run[name]["connections"] for run in runs["baseline"]),
+                "candidate_connections": statistics.median(run[name]["connections"] for run in runs["candidate"]),
+                "baseline_transactions": statistics.median(run[name]["transactions"] for run in runs["baseline"]),
+                "candidate_transactions": statistics.median(run[name]["transactions"] for run in runs["candidate"]),
+                "baseline_median_cpu_ms": statistics.median(run[name]["process_cpu_ms"] for run in runs["baseline"]),
+                "candidate_median_cpu_ms": statistics.median(run[name]["process_cpu_ms"] for run in runs["candidate"]),
             }
         )
     return {
@@ -174,7 +188,12 @@ def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: i
             "rounds": rounds,
             "stocks": size,
             "sessions": sessions,
+            "adapter_stocks": min(size, 1000),
+            "adapter_sessions": 20,
+            "wal_peak_sampling_seconds": 0.005,
             "cache_policy": "fresh process, warm operating-system cache; alternating order",
+            "python_hash_seed": 0,
+            "comparison_policy": "median of within-round candidate/baseline ratios; 11 incremental writes per worker",
             "comparison": comparisons,
             "runs": runs,
         },
@@ -183,6 +202,22 @@ def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: i
 
 def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[str, float]]:
     sys.path[:0] = [str(checkout / "src"), str(checkout)]
+    from trader.infra import sqlite_connection
+
+    counters = {"connections": 0, "transactions": 0}
+    original_open = sqlite_connection.OpenSqliteConnection
+
+    def trace(sql: str) -> None:
+        if sql.lstrip().upper().startswith("BEGIN"):
+            counters["transactions"] += 1
+
+    def open_connection(*args, **kwargs):  # type: ignore[no-untyped-def]
+        connection = original_open(*args, **kwargs)
+        counters["connections"] += 1
+        connection.observe_statements(trace)
+        return connection
+
+    sqlite_connection.OpenSqliteConnection = open_connection
     from trader.download.domain.published_history import (
         PublishedHistoryCell,
         PublishedHistorySide,
@@ -200,15 +235,51 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
             scans += 1
         return original(connection, sql, parameters)
 
-    SqliteConnection.run = observed
+    SqliteConnection.run = observed  # type: ignore[method-assign]  # Process-local SQL instrumentation.
     days = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(sessions))
     result: dict[str, dict[str, float]] = {}
 
-    def measure(name: str, action: Callable[[], object]) -> None:
+    def measure(name: str, action: Callable[[], object], *, repetitions: int = 1) -> None:
         before = scans
-        started = time.perf_counter()
-        action()
-        result[name] = {"milliseconds": (time.perf_counter() - started) * 1000, "identity_scans": scans - before}
+        before_counters = dict(counters)
+        stopped = Event()
+        wal_peak = 0
+
+        def sample_wal() -> None:
+            nonlocal wal_peak
+            while not stopped.wait(0.005):
+                total = 0
+                for path in root.rglob("*-wal"):
+                    try:
+                        total += path.stat().st_size
+                    except FileNotFoundError:
+                        continue
+                wal_peak = max(wal_peak, total)
+
+        sampler = Thread(target=sample_wal, name="offline-wal-sampler")
+        sampler.start()
+        timings = []
+        cpu_timings = []
+        try:
+            for _ in range(repetitions):
+                started = time.perf_counter()
+                cpu_started = time.process_time()
+                action()
+                timings.append((time.perf_counter() - started) * 1000)
+                cpu_timings.append((time.process_time() - cpu_started) * 1000)
+        finally:
+            stopped.set()
+            sampler.join(timeout=5)
+        result[name] = {
+            "milliseconds": statistics.median(timings),
+            "process_cpu_ms": statistics.median(cpu_timings),
+            "repetitions": repetitions,
+            "identity_scans": (scans - before) / repetitions,
+            "connections": (counters["connections"] - before_counters["connections"]) / repetitions,
+            "transactions": (counters["transactions"] - before_counters["transactions"]) / repetitions,
+            "sampled_wal_peak_bytes": wal_peak,
+            "process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+        }
 
     def window(number: int, price: float = 10.0) -> PublishedHistoryWindow:
         code = f"{('600', '601', '603', '605', '000')[number // 1000]}{number % 1000:03d}"
@@ -221,7 +292,8 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
         return PublishedHistoryWindow(code, tuple(cells))
 
     with TemporaryDirectory(prefix="trader-window-comparison-") as scratch:
-        primary = SQLiteQfqWindowCache(Path(scratch) / "daily_window.sqlite3", "v2")
+        root = Path(scratch)
+        primary = SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v2")
         peer = SQLiteQfqWindowCache(primary.path, "v3")
 
         def publish() -> None:
@@ -244,13 +316,98 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
         measure("initial_write", publish)
         for cache in (primary, peer):
             measure(f"read_{cache.profile}", partial(read, cache))
-        measure(
-            "incremental_write",
-            lambda: primary.replace_paired_windows(
-                peer, (window(0, 12.0),), "fixture", calendar=days, completed_day=days[-1]
-            ),
-        )
+        changed_price = 12.0
+
+        def update() -> None:
+            nonlocal changed_price
+            changed_price += 1.0
+            assert (
+                primary.replace_paired_windows(
+                    peer, (window(0, changed_price),), "fixture", calendar=days, completed_day=days[-1]
+                )[1]
+                == sessions
+            )
+
+        measure("incremental_write", update, repetitions=11)
+        _sqlite_adapter_cases(root, min(size, 1000), measure)
     return result
+
+
+def _sqlite_adapter_cases(root: Path, size: int, measure: Callable[[str, Callable[[], object]], None]) -> None:
+    """Exercise unchanged adapter contracts against each checkout, using identical typed inputs."""
+    from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide, BuildBaostockTrainingSplit
+    from trader.download.domain.company_evidence import Disclosure, DisclosurePage
+    from trader.download.domain.history_revision import HistoryRevision
+    from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+    from trader.download.infra.history_prices import HistoryPricePartition
+    from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
+    from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
+
+    codes = tuple(f"600{number:03d}" for number in range(size))
+    days = tuple(date(2026, 1, day) for day in range(1, 21))
+    revisions = []
+    for day in days:
+        for code in codes:
+            raw = BaoStockDailySide(
+                code, day, "unadjusted", 10.0, 10.0, 10.0, 10.0, 100.0, 1000.0, 10.0, 0.0, 0.0, "trading"
+            )
+            qfq = replace(raw, adjustment="qfq", preclose=None, pct_change=None, turnover=None)
+            revisions.append(
+                HistoryRevision(1, "main", BaoStockDailyCell(code, day, "complete", raw, qfq), None, None, None)
+            )
+    partition = HistoryPricePartition(root / "prices_2026.sqlite3", 2026, 1)
+    partition.initialize()
+    measure("history_batch_write", lambda: partition.save_revisions(revisions))
+
+    def scan() -> None:
+        assert sum(1 for _ in partition.iter_training_rows(days[0], days[-1], snapshot_sequence=1)) == size * 20
+
+    measure("history_training_narrow_read", scan)
+    split_days = tuple(date(2021, 1, 1) + timedelta(days=offset) for offset in range(1600))
+    split = BuildBaostockTrainingSplit(split_days, parent_manifest_hash="a" * 64)
+    samples = tuple(
+        TrainingSample(code, day, "main", "fixture", 1_000_000.0, (0.1,) * 6, (0.02, 0.03, 0.04, 0.05, 0.06, 0.045))
+        for code in codes
+        for day in split.model_fit_dates[:20]
+    )
+    sample_path = root / "samples.sqlite3"
+
+    def build_samples() -> None:
+        with SQLiteTrainingSampleIndex(sample_path, 6) as index:
+            index.add_final(samples)
+            index.prepare_for_model_fitting(split)
+
+    def read_samples() -> None:
+        with SQLiteTrainingSampleIndex(sample_path, 6, prepared_split_hash=split.content_hash) as index:
+            counts = index.industry_counts(TOMORROW_HEAD_CONTRACT)
+            assert len(counts) == 1
+            matrix = index.industry_data(counts[0], TOMORROW_HEAD_CONTRACT)
+            assert matrix.training.features.shape == (size * 20, 6)
+            assert abs(float(matrix.training.labels.sum()) - size * 20 * 0.02) < 1e-6
+
+    measure("training_sample_write", build_samples)
+    measure("training_sample_read", read_samples)
+    now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
+    company = SQLiteCompanyEvidenceIndex(root / "company.sqlite3")
+    company.initialize()
+    disclosure_partition = company.partitions(("sse",), now)[0]
+    disclosures = tuple(
+        Disclosure("fixture", f"{code}:{offset}", (code,), "普通公告", now, "", str(offset))
+        for code in codes
+        for offset in range(3)
+    )
+    measure(
+        "company_page_write",
+        lambda: company.commit_page(disclosure_partition, DisclosurePage(disclosures, len(disclosures), False), now),
+    )
+    measure("company_publish", lambda: company.publish(codes, now))
+    reader = SQLiteCompanyEvidenceReader(company.path)
+    expected = reader.read(codes)
+
+    def read_company() -> None:
+        assert reader.read(codes) == expected
+
+    measure("company_read", read_company)
 
 
 def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
@@ -270,7 +427,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
         if layout == "annual":
             connection.observe_statements(trace)
         else:
-            connection.set_trace_callback(trace)
+            connection.set_trace_callback(trace)  # type: ignore[attr-defined]  # Retired checkout returns the driver.
         return connection
 
     sqlite_connection.OpenSqliteConnection = observed_open
@@ -387,7 +544,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
                     return primary.replace_paired_windows(
                         secondary, windows, "fixture", calendar=calendar, completed_day=calendar[-1]
                     )
-                return primary.replace_paired_windows(secondary, windows, "fixture")
+                return primary.replace_paired_windows(secondary, windows, "fixture")  # type: ignore[call-arg]  # Retired API.
 
             measure("window_initial_write", publish)
 
@@ -406,7 +563,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
                     window,
                     cells=(
                         *window.cells[:-1],
-                        replace(window.cells[-1], qfq=replace(window.cells[-1].qfq, close_price=9.5)),
+                        replace(window.cells[-1], qfq=replace(window.cells[-1].qfq, close_price=9.5)),  # type: ignore[type-var]  # Fixture always has paired prices.
                     ),
                 )
                 for window in windows

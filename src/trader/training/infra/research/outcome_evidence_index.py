@@ -7,14 +7,19 @@ import json
 import math
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import OutcomeTierSummary
 from trader.recommendation.application.ports.decision_records import DecisionRecordPort
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
@@ -57,7 +62,7 @@ class SQLiteOutcomeEvidenceIndex:
         if not database.is_file():
             return OutcomeEvidenceStatus(False, 0, 0, 0, None, "")
         try:
-            with closing(OpenSqliteConnection(database, SqliteConnectionOptions(read_only=True))) as connection:
+            with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
                 benchmark = connection.run("SELECT COUNT(*), MAX(trade_date) FROM benchmark_returns").require_one()
                 outcomes = connection.run(
                     "SELECT COUNT(*), COALESCE(SUM(status = 'complete'), 0) FROM recommendation_outcomes"
@@ -98,8 +103,10 @@ class SQLiteOutcomeEvidenceIndex:
             if self._initialized:
                 return
             self._database.parent.mkdir(parents=True, exist_ok=True)
-            with self._connection() as connection:
-                connection.apply_script(_SCHEMA)
+            with SqliteSession(
+                self._database, SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=10)
+            ) as connection:
+                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
             self._initialized = True
 
     def pending_outcome_targets(self, *, limit: int) -> Sequence[OutcomeTarget]:
@@ -139,7 +146,11 @@ class SQLiteOutcomeEvidenceIndex:
     def record_benchmark_return(self, benchmark: BenchmarkReturn, *, observed_at: datetime) -> None:
         payload = _benchmark_bytes(benchmark)
         self.initialize()
-        with self._lock, self._connection() as connection:
+        with (
+            self._lock,
+            SqliteSession(self._database, _CONNECTION_OPTIONS) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             existing = connection.run(
                 "SELECT payload_hash, payload FROM benchmark_returns WHERE trade_date = ?",
                 (benchmark.trade_date,),
@@ -156,7 +167,7 @@ class SQLiteOutcomeEvidenceIndex:
         if limit < 1:
             raise ValueError("benchmark return limit must be positive")
         self.initialize()
-        with self._lock, self._connection() as connection:
+        with self._lock, SqliteSession(self._database, _CONNECTION_OPTIONS) as connection:
             rows = connection.run(
                 """
                 SELECT trade_date, return_pct, payload_hash, payload
@@ -176,7 +187,11 @@ class SQLiteOutcomeEvidenceIndex:
         if any(outcome.is_retryable for outcome in outcomes):
             raise ValueError("retryable recommendation outcomes cannot be persisted")
         self.initialize()
-        with self._lock, self._connection() as connection:
+        with (
+            self._lock,
+            SqliteSession(self._database, _CONNECTION_OPTIONS) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             for outcome in outcomes:
                 payload = _outcome_bytes(outcome)
                 key = (outcome.snapshot_id, outcome.strategy.value, outcome.stock_code, outcome.horizon)
@@ -208,7 +223,7 @@ class SQLiteOutcomeEvidenceIndex:
 
     def _pending_horizons(self, snapshot_id: str, strategy: Strategy, code: str) -> tuple[int, ...]:
         horizons = OutcomeHorizons(strategy)
-        with self._lock, self._connection() as connection:
+        with self._lock, SqliteSession(self._database, _CONNECTION_OPTIONS) as connection:
             rows = connection.run(
                 "SELECT horizon FROM recommendation_outcomes WHERE snapshot_id = ? AND strategy = ? AND stock_code = ?",
                 (snapshot_id, strategy.value, code),
@@ -216,16 +231,8 @@ class SQLiteOutcomeEvidenceIndex:
         settled = {int(row["horizon"]) for row in rows}
         return tuple(horizon for horizon in horizons if horizon not in settled)
 
-    @contextmanager
-    def _connection(self) -> Iterator[SqliteConnection]:
-        connection = OpenSqliteConnection(self._database, SqliteConnectionOptions(timeout_seconds=10.0))
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
 
-
+_CONNECTION_OPTIONS = SqliteConnectionOptions(timeout_seconds=10.0)
 _SummaryTier = Literal["recommend", "watch"]
 
 
@@ -271,7 +278,7 @@ def _summary_rows(
     snapshot_ids = tuple(sorted({snapshot_id for snapshot_id, _code in identities}))
     placeholders = ",".join("?" for _snapshot_id in snapshot_ids)
     try:
-        with closing(OpenSqliteConnection(database, SqliteConnectionOptions(read_only=True))) as connection:
+        with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
             rows = connection.run(
                 "SELECT snapshot_id, stock_code, horizon, payload_hash, payload "
                 f"FROM recommendation_outcomes WHERE strategy = ? AND snapshot_id IN ({placeholders})",
@@ -351,31 +358,38 @@ def _raise_on_conflict(existing: sqlite3.Row | None, payload: bytes, label: str)
         raise OutcomeEvidenceConflictError(f"immutable {label} conflict")
 
 
-_SCHEMA = """
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = FULL;
-CREATE TABLE IF NOT EXISTS benchmark_returns(
-    trade_date TEXT PRIMARY KEY,
-    return_pct REAL NOT NULL,
-    observed_at TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    payload BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS recommendation_outcomes(
-    snapshot_id TEXT NOT NULL,
-    strategy TEXT NOT NULL,
-    recommend_date TEXT NOT NULL,
-    stock_code TEXT NOT NULL,
-    horizon INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    settled_at TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    payload BLOB NOT NULL,
-    PRIMARY KEY(snapshot_id, strategy, stock_code, horizon)
-);
-CREATE INDEX IF NOT EXISTS recommendation_outcomes_date_idx
-ON recommendation_outcomes(recommend_date, strategy);
-"""
+_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_returns(
+            trade_date TEXT PRIMARY KEY,
+            return_pct REAL NOT NULL,
+            observed_at TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload BLOB NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS recommendation_outcomes(
+            snapshot_id TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            recommend_date TEXT NOT NULL,
+            stock_code TEXT NOT NULL,
+            horizon INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            settled_at TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload BLOB NOT NULL,
+            PRIMARY KEY(snapshot_id, strategy, stock_code, horizon)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS recommendation_outcomes_date_idx
+        ON recommendation_outcomes(recommend_date, strategy)
+        """,
+    ),
+)
 
 
 __all__ = [

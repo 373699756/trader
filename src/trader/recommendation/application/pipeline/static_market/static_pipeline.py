@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -214,7 +213,7 @@ class StaticMarketPipeline:
             return
         try:
             self.eligibility.refresh_snapshot(observed_at, source="full_market")
-        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             self.eligibility.refresh_failed(observed_at, f"eligibility_refresh_failed:{type(exc).__name__.lower()}")
 
     def dynamic_snapshot(

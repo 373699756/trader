@@ -8,13 +8,19 @@ import math
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
-from contextlib import closing
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.training.application.historical_backtest import HistoricalScreeningDay
 from trader.training.application.historical_screening import (
     HistoricalPriceHistoryIdentity,
@@ -54,7 +60,12 @@ class SQLiteHistoricalScreeningSnapshot:
         ordered = tuple(sorted(universe, key=lambda item: item.code))
         if len({item.code for item in ordered}) != len(ordered):
             raise ValueError("historical screening universe contains duplicate codes")
-        with closing(self._write_connection()) as connection, connection:
+        with (
+            SqliteSession(
+                self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True)
+            ) as connection,
+            SqliteTransaction(connection),
+        ):
             self._register_spec(connection, spec)
             existing_codes = tuple(
                 str(row[0])
@@ -94,7 +105,10 @@ class SQLiteHistoricalScreeningSnapshot:
     def completed_codes(self, research_identity: str) -> frozenset[str]:
         if not self._database.is_file():
             return frozenset()
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
                 "SELECT code FROM downloads WHERE research_identity = ? AND status = 'complete'",
                 (research_identity,),
@@ -104,7 +118,10 @@ class SQLiteHistoricalScreeningSnapshot:
     def registered_universe(self, research_identity: str) -> tuple[HistoricalSecurity, ...]:
         if not self._database.is_file():
             return ()
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
                 """
                 SELECT code, board, name, is_st, is_suspended
@@ -125,7 +142,12 @@ class SQLiteHistoricalScreeningSnapshot:
     ) -> None:
         self._initialize()
         ordered = tuple(bars)
-        with closing(self._write_connection()) as connection, connection:
+        with (
+            SqliteSession(
+                self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True)
+            ) as connection,
+            SqliteTransaction(connection),
+        ):
             self._register_spec(connection, spec)
             if (
                 connection.run(
@@ -200,7 +222,12 @@ class SQLiteHistoricalScreeningSnapshot:
         if not error_code or len(error_code) > 64:
             raise ValueError("historical screening failure code is invalid")
         self._initialize()
-        with closing(self._write_connection()) as connection, connection:
+        with (
+            SqliteSession(
+                self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True)
+            ) as connection,
+            SqliteTransaction(connection),
+        ):
             self._register_spec(connection, spec)
             connection.run(
                 """
@@ -219,7 +246,10 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return HistoricalScreeningSnapshotStatus(research_identity=research_identity)
         try:
-            with closing(self._read_connection()) as connection, connection:
+            with (
+                SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+                SqliteTransaction(connection),
+            ):
                 spec = connection.run(
                     "SELECT spec_hash FROM specs WHERE research_identity = ?", (research_identity,)
                 ).fetchone()
@@ -262,7 +292,10 @@ class SQLiteHistoricalScreeningSnapshot:
         empty_hash = _sha256(_canonical(()))
         if not self._database.is_file():
             return HistoricalScreeningSnapshotManifest(spec.research_identity, "", empty_hash, empty_hash, ())
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             persisted_spec = connection.run(
                 "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
             ).fetchone()
@@ -351,7 +384,10 @@ class SQLiteHistoricalScreeningSnapshot:
 
         if not self._database.is_file():
             return ()
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
                 _SCREENING_QUERY,
                 {
@@ -388,7 +424,10 @@ class SQLiteHistoricalScreeningSnapshot:
 
         if not self._database.is_file():
             return
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
@@ -418,7 +457,10 @@ class SQLiteHistoricalScreeningSnapshot:
 
         if not self._database.is_file():
             return ()
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
@@ -452,8 +494,8 @@ class SQLiteHistoricalScreeningSnapshot:
     def _initialize(self) -> None:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
-            with closing(OpenSqliteConnection(self._database)) as connection, connection:
-                connection.apply_script(_SCHEMA)
+            with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL")) as connection:
+                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
 
     def _register_spec(self, connection: SqliteConnection, spec: HistoricalScreeningSpec) -> None:
         existing = connection.run(
@@ -465,12 +507,6 @@ class SQLiteHistoricalScreeningSnapshot:
             "INSERT OR IGNORE INTO specs(research_identity, spec_hash) VALUES (?, ?)",
             (spec.research_identity, spec.content_hash),
         )
-
-    def _write_connection(self) -> SqliteConnection:
-        return OpenSqliteConnection(self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True))
-
-    def _read_connection(self) -> SqliteConnection:
-        return OpenSqliteConnection(self._database, SqliteConnectionOptions(read_only=True))
 
 
 def _bar_payload(bar: HistoricalPriceBar) -> dict[str, object]:
@@ -497,53 +533,62 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-_SCHEMA = """
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-CREATE TABLE IF NOT EXISTS specs(
-    research_identity TEXT PRIMARY KEY,
-    spec_hash TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS universe(
-    research_identity TEXT NOT NULL,
-    code TEXT NOT NULL,
-    board TEXT NOT NULL,
-    name TEXT NOT NULL,
-    is_st INTEGER NOT NULL,
-    is_suspended INTEGER NOT NULL,
-    payload_hash TEXT NOT NULL,
-    PRIMARY KEY(research_identity, code),
-    FOREIGN KEY(research_identity) REFERENCES specs(research_identity)
-);
-CREATE TABLE IF NOT EXISTS bars(
-    research_identity TEXT NOT NULL,
-    code TEXT NOT NULL,
-    trade_date TEXT NOT NULL,
-    open_price REAL NOT NULL,
-    close_price REAL NOT NULL,
-    high_price REAL NOT NULL,
-    low_price REAL NOT NULL,
-    volume REAL NOT NULL,
-    amount REAL NOT NULL,
-    pct_change REAL NOT NULL,
-    turnover_rate REAL,
-    adjustment TEXT NOT NULL,
-    source TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    PRIMARY KEY(research_identity, code, trade_date),
-    FOREIGN KEY(research_identity, code) REFERENCES universe(research_identity, code)
-);
-CREATE TABLE IF NOT EXISTS downloads(
-    research_identity TEXT NOT NULL,
-    code TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('complete', 'failed')),
-    bar_count INTEGER NOT NULL,
-    content_hash TEXT NOT NULL,
-    error_code TEXT NOT NULL,
-    PRIMARY KEY(research_identity, code)
-);
-CREATE INDEX IF NOT EXISTS bars_identity_date ON bars(research_identity, trade_date);
-"""
+_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS specs(
+            research_identity TEXT PRIMARY KEY,
+            spec_hash TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS universe(
+            research_identity TEXT NOT NULL,
+            code TEXT NOT NULL,
+            board TEXT NOT NULL,
+            name TEXT NOT NULL,
+            is_st INTEGER NOT NULL,
+            is_suspended INTEGER NOT NULL,
+            payload_hash TEXT NOT NULL,
+            PRIMARY KEY(research_identity, code),
+            FOREIGN KEY(research_identity) REFERENCES specs(research_identity)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS bars(
+            research_identity TEXT NOT NULL,
+            code TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            open_price REAL NOT NULL,
+            close_price REAL NOT NULL,
+            high_price REAL NOT NULL,
+            low_price REAL NOT NULL,
+            volume REAL NOT NULL,
+            amount REAL NOT NULL,
+            pct_change REAL NOT NULL,
+            turnover_rate REAL,
+            adjustment TEXT NOT NULL,
+            source TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            PRIMARY KEY(research_identity, code, trade_date),
+            FOREIGN KEY(research_identity, code) REFERENCES universe(research_identity, code)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS downloads(
+            research_identity TEXT NOT NULL,
+            code TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('complete', 'failed')),
+            bar_count INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            error_code TEXT NOT NULL,
+            PRIMARY KEY(research_identity, code)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS bars_identity_date ON bars(research_identity, trade_date)",
+    ),
+)
 
 _SCREENING_QUERY = """
 WITH ordered AS (

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema, SqliteTransaction
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -54,35 +54,6 @@ class DeepSeekHealthGate:
         self._connect = connect
         self._policy = policy
 
-    @staticmethod
-    def initialize(connection: SqliteConnection) -> None:
-        connection.apply_script(
-            """
-            CREATE TABLE IF NOT EXISTS deepseek_health_events(
-                batch_id TEXT PRIMARY KEY,
-                trade_date TEXT NOT NULL,
-                completed_at TEXT NOT NULL,
-                transport_failed INTEGER NOT NULL,
-                schema_failed INTEGER NOT NULL,
-                candidate_count INTEGER NOT NULL,
-                accepted_count INTEGER NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_deepseek_health_events_day
-            ON deepseek_health_events(trade_date, completed_at);
-
-            CREATE TABLE IF NOT EXISTS deepseek_health_state(
-                trade_date TEXT PRIMARY KEY,
-                mode TEXT NOT NULL,
-                open_until TEXT,
-                probe_batch_id TEXT NOT NULL DEFAULT '',
-                recovery_successes INTEGER NOT NULL DEFAULT 0,
-                reason TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL
-            );
-            """
-        )
-
     def reservation_rejection(
         self,
         connection: SqliteConnection,
@@ -124,8 +95,7 @@ class DeepSeekHealthGate:
         if completion.physical_attempts <= 0:
             return
         trade_date = completion.completed_at.date().isoformat()
-        with self._connect() as connection:
-            connection.run("BEGIN IMMEDIATE")
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True) as transaction:
             success_calls, failed_calls = connection.run(
                 """
                 SELECT
@@ -175,7 +145,7 @@ class DeepSeekHealthGate:
                     accepted_count=accepted_count,
                 ),
             )
-            connection.commit()
+            transaction.commit()
 
     def summary(self, trade_date: str) -> dict[str, object]:
         with self._connect() as connection:
@@ -356,4 +326,37 @@ def _half_open_allowed(value: datetime) -> bool:
     return local < _MORNING_HALF_OPEN_CUTOFF or _AFTERNOON_START <= local < _AFTERNOON_HALF_OPEN_CUTOFF
 
 
-__all__ = ["DeepSeekHealthGate", "DeepSeekHealthPolicy"]
+__all__ = ["HEALTH_SCHEMA", "DeepSeekHealthGate", "DeepSeekHealthPolicy"]
+
+
+HEALTH_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS deepseek_health_events(
+            batch_id TEXT PRIMARY KEY,
+            trade_date TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            transport_failed INTEGER NOT NULL,
+            schema_failed INTEGER NOT NULL,
+            candidate_count INTEGER NOT NULL,
+            accepted_count INTEGER NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_deepseek_health_events_day
+        ON deepseek_health_events(trade_date, completed_at)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS deepseek_health_state(
+            trade_date TEXT PRIMARY KEY,
+            mode TEXT NOT NULL,
+            open_until TEXT,
+            probe_batch_id TEXT NOT NULL DEFAULT '',
+            recovery_successes INTEGER NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """,
+    ),
+)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
-from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -18,7 +17,7 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
@@ -84,9 +83,7 @@ def ReadReferences(database: Path, at: datetime, industry_database: Path, calend
     observations: list[SourceObservation] = []
     industries: dict[str, ModelIndustryReference] = {}
     if database.is_file():
-        with closing(
-            OpenSqliteConnection(database, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
-        ) as connection:
+        with SqliteSession(database, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
             for row in connection.run("SELECT * FROM security_master_recent WHERE status='committed'"):
                 record = RowToRecord("security_master_recent", row)
                 if not isinstance(record, SecurityMasterRecord):

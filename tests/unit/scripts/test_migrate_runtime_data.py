@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import closing
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -13,7 +12,7 @@ from scripts.migrate_runtime_data import MigrationError, inspect_layout, migrate
 from scripts.runtime_migration import ImportTraces, MergeDatabase
 from tests.unit.infra.test_decision_records import NOW, decision, record
 from tests.unit.infra.test_issuer_eligibility_index import _fact
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.ports.decision_records import DecisionCheckpoint, DecisionRecordConflictError
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFactHash, ManualBlacklistFact
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
@@ -38,7 +37,7 @@ def _legacy_freeze(source: Path) -> dict[str, bytes]:
     for profile in ("v2", "v3"):
         root = source / "data/freeze" / profile
         root.mkdir(parents=True)
-        with closing(OpenSqliteConnection(root / "freeze.sqlite3")) as connection, connection:
+        with SqliteSession(root / "freeze.sqlite3") as connection, SqliteTransaction(connection):
             connection.run(
                 "CREATE TABLE decision_records(strategy TEXT,trade_date TEXT,version TEXT,payload_hash TEXT,committed_at TEXT,commit_kind TEXT,status TEXT,relative_path TEXT,payload_sha256 TEXT)"
             )
@@ -85,7 +84,7 @@ def test_candidate_preserves_exact_formal_bytes_and_first_wins(tmp_path):
         records = SQLiteDecisionRecords(path)
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             assert records.load(strategy, NOW.date()) == record(strategy)
-            with closing(OpenSqliteConnection(path)) as connection:
+            with SqliteSession(path) as connection:
                 payload = connection.run(
                     "SELECT payload FROM decision_records WHERE strategy=?", (strategy.value,)
                 ).require_one()[0]
@@ -104,7 +103,7 @@ def test_checkpoint_bytes_and_consumption_survive_migration(tmp_path, consumed):
     checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
     payload = CommittedRecordBytes(CommittedDecisionRecord(checkpoint.decision, boundary, "checkpoint_recovery"))
     (root / "checkpoint.json").write_bytes(payload)
-    with closing(OpenSqliteConnection(root / "freeze.sqlite3")) as connection, connection:
+    with SqliteSession(root / "freeze.sqlite3") as connection, SqliteTransaction(connection):
         connection.run(
             "INSERT INTO decision_checkpoints VALUES(?,?,?,?,?,?,?,?,?)",
             (
@@ -125,7 +124,7 @@ def test_checkpoint_bytes_and_consumption_survive_migration(tmp_path, consumed):
     assert SQLiteDecisionRecords(database).load_checkpoint(Strategy.TOMORROW, NOW.date()) == (
         None if consumed else checkpoint
     )
-    with closing(OpenSqliteConnection(database)) as connection:
+    with SqliteSession(database) as connection:
         assert connection.run("SELECT payload FROM decision_checkpoints").require_one()[0] == payload
 
 
@@ -141,7 +140,7 @@ def test_unverified_source_never_publishes_or_changes_source(tmp_path, damage):
     elif damage == "wal":
         (root / "freeze.sqlite3-wal").write_bytes(b"uncheckpointed")
     else:
-        with closing(OpenSqliteConnection(root / "freeze.sqlite3")) as connection, connection:
+        with SqliteSession(root / "freeze.sqlite3") as connection, SqliteTransaction(connection):
             connection.run("UPDATE decision_records SET status='staged'")
     before = _fingerprint(source)
     target = tmp_path / "candidate"
@@ -156,7 +155,7 @@ def test_budget_rows_and_sequence_reservations_survive_profile_merge(tmp_path):
     runtime = source / ".runtime/trader"
     for index, root in enumerate((runtime, runtime / "profiles/v2")):
         root.mkdir(parents=True)
-        with closing(OpenSqliteConnection(root / "deepseek-budget.sqlite3")) as connection, connection:
+        with SqliteSession(root / "deepseek-budget.sqlite3") as connection, SqliteTransaction(connection):
             connection.run("CREATE TABLE calls(identity TEXT PRIMARY KEY,used INTEGER)")
             connection.run("INSERT INTO calls VALUES(?,?)", (str(index), 84))
         sequence = PublicationSequence(root / "publication-sequence.sqlite3", block_size=10)
@@ -164,7 +163,7 @@ def test_budget_rows_and_sequence_reservations_survive_profile_merge(tmp_path):
         sequence.allocate(minimum=100 * (index + 1))
     target = tmp_path / "candidate"
     migrate(source, target, default_profile="v2")
-    with closing(OpenSqliteConnection(target / "recommendation/shared/deepseek_budget.sqlite3")) as connection:
+    with SqliteSession(target / "recommendation/shared/deepseek_budget.sqlite3") as connection:
         assert connection.run("SELECT SUM(used) FROM calls").require_one()[0] == 168
     sequence = PublicationSequence(target / "recommendation/v2/snapshots.sqlite3", block_size=10)
     sequence.initialize()
@@ -174,7 +173,7 @@ def test_budget_rows_and_sequence_reservations_survive_profile_merge(tmp_path):
 def test_conflicting_budget_identity_stops_instead_of_resetting(tmp_path):
     first, second, target = (tmp_path / name for name in ("first.sqlite3", "second.sqlite3", "target.sqlite3"))
     for path, used in ((first, 1), (second, 2)):
-        with closing(OpenSqliteConnection(path)) as connection, connection:
+        with SqliteSession(path) as connection, SqliteTransaction(connection):
             connection.run("CREATE TABLE calls(identity TEXT PRIMARY KEY,used INTEGER)")
             connection.run("INSERT INTO calls VALUES('same',?)", (used,))
     MergeDatabase(first, target)
@@ -213,13 +212,13 @@ def test_compressed_quarantine_bytes_survive_partitioning(tmp_path):
     source = tmp_path / "traces.sqlite3"
     InitializeDatabase(source, set())
     payload = PersistedPayloadBytes(json.dumps({"trade_date": "2026-10-16", "padding": "a" * 2000}).encode())
-    with closing(OpenSqliteConnection(source)) as connection, connection:
+    with SqliteSession(source) as connection, SqliteTransaction(connection):
         connection.run(
             "INSERT INTO committed_event_quarantine VALUES(?,?,?,?)", ("decision", "fixture", "hash", payload)
         )
     target = tmp_path / "traces"
     ImportTraces(source, target)
-    with closing(OpenSqliteConnection(target / "2026-10-16.sqlite3")) as connection:
+    with SqliteSession(target / "2026-10-16.sqlite3") as connection:
         assert connection.run("SELECT payload FROM committed_event_quarantine").require_one()[0] == payload
 
 
@@ -241,7 +240,7 @@ def test_eligibility_facts_blacklist_and_refresh_identity_survive_migration(tmp_
     snapshot = reference / "snapshots/fixture"
     snapshot.mkdir(parents=True)
     facts = tuple(sorted((_fact(), ManualBlacklistFact("600002", NOW, "a" * 64))))
-    with closing(OpenSqliteConnection(snapshot / "facts.sqlite3")) as connection, connection:
+    with SqliteSession(snapshot / "facts.sqlite3") as connection, SqliteTransaction(connection):
         connection.run(
             "CREATE TABLE issuer_eligibility_facts(code,reason,effective_at,evidence_id,source,evidence_hash,content_hash)"
         )

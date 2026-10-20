@@ -5,7 +5,6 @@ import json
 import re
 import shutil
 import sqlite3
-from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -44,7 +43,7 @@ from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, T
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 from trader.entrypoints import cli
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 
@@ -118,6 +117,37 @@ def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_pat
     assert _fingerprints(tmp_path) == before
 
 
+def test_batch_iteration_opens_once_per_32_codes_and_closes_before_yield(tmp_path, monkeypatch):
+    from trader.download.infra import qfq_sqlite as module
+
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    windows = tuple(_window(f"600{number:03d}", days=DAYS[-5:]) for number in range(65))
+    publish_windows(primary, windows, "fixture")
+    manifest = primary.manifest()
+    assert manifest is not None
+    opened = []
+    original = module.OpenSqliteConnection
+
+    def connect(*args, **kwargs):
+        connection = original(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(module, "OpenSqliteConnection", connect)
+    iterator = primary.iter_windows(manifest, sessions=5)
+    assert next(iterator) == windows[0]
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].run("SELECT 1")
+    iterator.close()
+    opened.clear()
+    assert tuple(primary.iter_windows(manifest, sessions=5)) == windows
+    assert len(opened) == 3
+    for connection in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.run("SELECT 1")
+
+
 def test_pair_failure_rolls_back_prices_both_identities_and_checkpoint(tmp_path, monkeypatch):
     from trader.infra.sqlite_connection import SqliteConnection
 
@@ -163,7 +193,7 @@ def test_invalid_code_creates_no_database(tmp_path, code):
 def test_corrupt_prices_fail_closed(tmp_path, corrupt_price):
     cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     publish_windows(cache, (_window(),), "fixture")
-    with closing(OpenSqliteConnection(cache.path)) as connection, connection:
+    with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE bars SET qfq_close=? WHERE code='600001'", (corrupt_price,))
     with pytest.raises(RuntimeError, match="identity_mismatch"):
         cache.read_code("600001")
@@ -449,7 +479,7 @@ def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, pr
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     assert updater.execute(observed).completed_codes == 1
     cache = updater.v2 if profile == "v2" else updater.v3
-    with closing(OpenSqliteConnection(cache.path)) as connection, connection:
+    with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
         connection.run(f"UPDATE identities SET {field}=? WHERE code=? AND profile=?", (value, "600001", profile))
     assert not cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
     result = updater.execute(observed)
@@ -1013,7 +1043,7 @@ def test_source_migration_ignores_legacy_checkpoint_and_refetches_full_window(tm
     updater.seed((_window(),), "history:seed", calendar=DAYS)
     source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
     # Even a valid same-day code checkpoint cannot relabel old-source rows.
-    with closing(OpenSqliteConnection(updater.v2.path)) as connection, connection:
+    with SqliteSession(updater.v2.path) as connection, SqliteTransaction(connection):
         connection.run("INSERT INTO completions VALUES(?,?,?)", ("600001", DAYS[-1].isoformat(), source))
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.completed_codes == 1 and result.skipped_codes == 0

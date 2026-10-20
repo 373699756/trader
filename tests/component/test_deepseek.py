@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
@@ -14,7 +13,11 @@ from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.failures import AdapterFailureCode
 from trader.infra.http_contracts import HttpStatusError, HttpTimeout
 from trader.infra.settings import DeepSeekSettings
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    SqliteConnectionOptions,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
@@ -357,9 +360,9 @@ def test_http_result_preserves_provider_identity_cache_usage_and_finish_reason()
     assert result.prompt_cache_miss_tokens == 8
 
 
-def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path) -> None:
+def test_budget_initialize_rejects_invalid_schema_without_rewriting(tmp_path) -> None:
     database_path = tmp_path / "runtime.sqlite3"
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         connection.run("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         connection.run("INSERT INTO schema_meta(key, value) VALUES ('schema_version', 'N/A')")
 
@@ -370,13 +373,14 @@ def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path)
         stage_targets={"tomorrow_morning": 0},
         stage_limits={"tomorrow_morning": 2},
     )
-    ledger.initialize()
+    with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+        ledger.initialize()
 
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         version = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
 
     assert version is not None
-    assert int(str(version[0])) == BUDGET_SCHEMA_VERSION
+    assert version[0] == "N/A"
 
 
 def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
@@ -391,7 +395,7 @@ def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
     )
     ledger.initialize()
 
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         version = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
 
     assert version is not None
@@ -420,8 +424,10 @@ def test_budget_summary_remains_memory_only_while_sqlite_is_exclusively_locked(t
     ledger = _budget(database_path)
     expected = ledger.summary("2026-08-25")
 
-    with closing(OpenSqliteConnection(database_path, SqliteConnectionOptions(timeout_seconds=0.0))) as blocker, blocker:
-        blocker.run("BEGIN EXCLUSIVE")
+    with (
+        SqliteSession(database_path, SqliteConnectionOptions(timeout_seconds=0.0)) as blocker,
+        SqliteTransaction(blocker, immediate=True),
+    ):
         assert ledger.summary("2026-08-25") == expected
 
     assert expected["by_stage"] == {
@@ -462,8 +468,10 @@ def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked
         )
     )
 
-    with closing(OpenSqliteConnection(database_path, SqliteConnectionOptions(timeout_seconds=0.0))) as blocker, blocker:
-        blocker.run("BEGIN EXCLUSIVE")
+    with (
+        SqliteSession(database_path, SqliteConnectionOptions(timeout_seconds=0.0)) as blocker,
+        SqliteTransaction(blocker, immediate=True),
+    ):
         response = app.test_client().get("/api/status")
 
     assert response.status_code == 200
@@ -489,7 +497,7 @@ def test_budget_reservation_and_batch_roll_over_on_shanghai_midnight(tmp_path) -
     assert reservation.allowed is True
     assert ledger.summary("2026-08-25")["used"] == 0
     assert ledger.summary("2026-08-26")["used"] == 1
-    with closing(OpenSqliteConnection(tmp_path / "runtime.sqlite3")) as connection, connection:
+    with SqliteSession(tmp_path / "runtime.sqlite3") as connection, SqliteTransaction(connection):
         assert tuple(
             connection.run(
                 "SELECT trade_date FROM deepseek_review_batches WHERE batch_id = ?",
@@ -644,7 +652,7 @@ def test_call_audit_replaces_raw_failure_text_with_bounded_category(tmp_path) ->
         completed_at=NOW + timedelta(seconds=1),
     )
 
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         audit = connection.run("SELECT outcome, error_code FROM deepseek_calls").fetchone()
     assert tuple(audit) == ("failed", "request_failed")
 
@@ -806,7 +814,7 @@ def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> Non
     assert status["configured"] is False
     assert status["last_physical_attempts"] == 0
     assert status["physical_call_acceptance"]["zero_call_reason"] == "api_key_missing"
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         assert tuple(
             connection.run("SELECT status, physical_attempts, error FROM deepseek_review_batches").fetchone()
         ) == ("skipped", 0, "api_key_missing")
@@ -843,7 +851,7 @@ def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
     )
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.REJECTED
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         attempts = connection.run(
             "SELECT status, http_status, token_count FROM deepseek_call_reservations ORDER BY rowid"
         ).fetchall()
@@ -886,7 +894,7 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
     assert budget.summary(NOW.date().isoformat())["used"] == 1
     assert budget.summary(NOW.date().isoformat())["timeout_count"] == 1
     assert reviewer.status()["last_batch_status"] == "failed"
-    with closing(OpenSqliteConnection(tmp_path / "runtime.sqlite3")) as connection, connection:
+    with SqliteSession(tmp_path / "runtime.sqlite3") as connection, SqliteTransaction(connection):
         call = connection.run("SELECT outcome, error_code FROM deepseek_calls").fetchone()
     assert tuple(call) == ("failed", "timeout")
 
@@ -1000,7 +1008,7 @@ def test_schema_repair_uses_second_and_final_physical_attempt(tmp_path) -> None:
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert budget.summary(NOW.date().isoformat())["used"] == 2
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("SELECT status, physical_attempts FROM deepseek_review_batches").fetchone()) == (
             "success",
             2,
@@ -1038,7 +1046,7 @@ def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path
     assert result[first.quote.code].outcome is ReviewOutcome.APPLIED
     assert result[second.quote.code].outcome is ReviewOutcome.REJECTED
     assert reviewer.status()["last_batch_status"] == "partial"
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("SELECT status FROM deepseek_review_batches").fetchone()) == ("partial",)
         assert [
             tuple(row)
@@ -1132,7 +1140,7 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
 
     assert reservation.allowed is True
     assert ledger.recover_incomplete(NOW + timedelta(minutes=2)) == 2
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("SELECT status FROM deepseek_call_reservations").fetchone()) == ("abandoned",)
         assert tuple(connection.run("SELECT status FROM deepseek_review_batches").fetchone()) == ("abandoned",)
         assert tuple(connection.run("SELECT outcome FROM deepseek_candidate_results").fetchone()) == ("rejected",)

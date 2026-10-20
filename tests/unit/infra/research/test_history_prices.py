@@ -15,7 +15,7 @@ from trader.download.infra.history_prices import (
     HistoryPricePartitionConflictError,
     HistoryPricePartitionError,
 )
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 def _side(day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -53,8 +53,8 @@ def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> Non
     statements: list[str] = []
     month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)
     month.initialize()
-    assert sum(sql.strip().upper().startswith("BEGIN IMMEDIATE") for sql in statements) == 2
-    assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 2
+    assert sum(sql.strip().upper().startswith("BEGIN IMMEDIATE") for sql in statements) == 1
+    assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 1
 
 
 def test_first_build_insert_rejects_duplicate_without_changing_durable_rows(tmp_path: Path) -> None:
@@ -161,7 +161,7 @@ def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> N
     path = tmp_path / "prices_2026.sqlite3"
     repository = HistoryPricePartition(path, 2026, 9)
     repository.initialize()
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("PRAGMA page_size").fetchone()) == (8192,)
     original = _revision(date(2026, 9, 10), 1, 10.0)
     revised = _revision(date(2026, 9, 10), 3, 11.0)
@@ -175,7 +175,7 @@ def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> N
     assert repository.read_day(date(2026, 9, 10), snapshot_sequence=3) == (revised,)
     assert repository.read_day(date(2026, 9, 10), snapshot_sequence=3, board="star") == ()
     assert repository.read_code("600001", date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=3) == (revised,)
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         indexes = {
             name: tuple(row[2] for row in connection.run(f"PRAGMA index_info('{name}')"))
             for (name,) in connection.run("SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL")
@@ -222,7 +222,7 @@ def test_month_partition_batch_context_uses_requested_keys_as_the_outer_query(tm
     revision = _revision(date(2026, 9, 10), 1, 10.0)
     repository.save_revisions((revision,))
 
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run(
             "CREATE TEMP TABLE requested_history_revisions ("
             "trade_date TEXT NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
@@ -280,7 +280,7 @@ def test_month_partition_seal_scans_rows_without_a_temporary_sort(tmp_path: Path
     repository.initialize()
     repository.save_revisions(tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16)))
 
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         plan = tuple(
             str(row[3]) for row in connection.run("EXPLAIN QUERY PLAN " + partition_module._ALL_REVISION_SCAN_SQL)
         )
@@ -335,7 +335,7 @@ def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
     assert tuple(repository.iter_range_by_code(start, end, snapshot_sequence=sequence)) == tuple(expected)
 
     query = next(value for value in statements if value.lstrip().startswith("SELECT records.trade_date"))
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         plan = tuple(str(row[3]) for row in connection.run("EXPLAIN QUERY PLAN " + query))
     assert not any("TEMP B-TREE" in detail for detail in plan)
 
@@ -358,7 +358,7 @@ def test_training_stream_projects_latest_points_without_revision_hashes_or_tempo
     assert revised[0].point.qfq_close_price == 10.0
     query = next(value for value in statements if "qfq_close" in value)
     assert "content_hash" not in query
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         plan = tuple(str(row[3]) for row in connection.run("EXPLAIN QUERY PLAN " + query))
     assert not any("TEMP B-TREE" in detail for detail in plan)
 
@@ -382,14 +382,14 @@ def test_existing_month_partition_keeps_its_physical_page_size(tmp_path: Path) -
     path = tmp_path / "prices_2026.sqlite3"
     path.parent.mkdir(parents=True, exist_ok=True)
     HistoryPricePartition(path, 2026, 9).initialize()
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection:
         connection.run("PRAGMA journal_mode=DELETE")
         connection.run("PRAGMA page_size=4096")
         connection.run("VACUUM")
 
     HistoryPricePartition(path, 2026, 9).initialize()
 
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("PRAGMA page_size").fetchone()) == (4096,)
 
 
@@ -434,7 +434,7 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
     assert reference.row_count == 1
     sealed_path = tmp_path / reference.relative_path
     HistoryPricePartition.verify(sealed_path, reference)
-    with closing(OpenSqliteConnection(sealed_path)) as connection, connection:
+    with SqliteSession(sealed_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
     with pytest.raises(HistoryPricePartitionError, match="logical"):
         HistoryPricePartition.verify(sealed_path, reference)
@@ -476,7 +476,7 @@ def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, mon
     HistoryPricePartition.verify(tmp_path / reference.relative_path, reference)
 
     assert not calls  # Verification reads logical SQLite rows, not the entire file.
-    with repository._read_connection() as connection:
+    with closing(repository._read_connection()) as connection:
         assert tuple(connection.run("PRAGMA cache_size").fetchone()) == (-8192,)
         assert tuple(connection.run("PRAGMA mmap_size").fetchone()) == (0,)
         assert tuple(connection.run("PRAGMA temp_store").fetchone()) == (1,)
@@ -488,7 +488,7 @@ def test_month_partition_rejects_invalid_payload_and_changed_observation(tmp_pat
     repository.initialize()
     repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
     reference = repository.seal()
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_records SET qfq_close=999")
     with pytest.raises(HistoryPricePartitionError):
         HistoryPricePartition.verify(path, reference)

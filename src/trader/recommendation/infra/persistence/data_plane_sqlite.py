@@ -1,250 +1,126 @@
-"""SQLite migration and schema helpers for unified data-plane persistence."""
+"""Own the snapshots database schema, including durable publication coordinates."""
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+)
 
 SCHEMA_VERSION = 3
 SCHEMA_META_KEY = "schema_version"
 
 
-def Connect(database_path: Path, *, cross_thread: bool = False) -> SqliteConnection:
-    connection = OpenSqliteConnection(
-        database_path,
-        SqliteConnectionOptions(timeout_seconds=8.0, foreign_keys=True, check_same_thread=not cross_thread),
-    )
-    return connection
-
-
-def ReadConnect(database_path: Path) -> SqliteConnection:
-    connection = OpenSqliteConnection(
-        database_path, SqliteConnectionOptions(read_only=True, timeout_seconds=8.0, foreign_keys=True)
-    )
-    return connection
-
-
-@contextmanager
-def ConnectionScope(database_path: Path) -> Iterator[SqliteConnection]:
-    connection = Connect(database_path)
-    try:
-        with connection:
-            yield connection
-    finally:
-        connection.close()
-
-
-@contextmanager
-def ReadConnectionScope(database_path: Path) -> Iterator[SqliteConnection]:
-    connection = ReadConnect(database_path)
-    try:
-        yield connection
-    finally:
-        connection.close()
-
-
 def InitializeDatabase(database_path: Path) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    with ConnectionScope(database_path) as connection:
-        connection.run("PRAGMA journal_mode=WAL")
-        connection.apply_script(
-            """
-            CREATE TABLE IF NOT EXISTS schema_meta(
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
+    with SqliteSession(
+        database_path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True, timeout_seconds=8)
+    ) as connection:
+        EnsureSqliteSchema(connection, _SCHEMA, allow_create=True, initialize=_initialize, validate=_validate)
 
-            CREATE TABLE IF NOT EXISTS security_master_recent(
-                code TEXT PRIMARY KEY,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined'))
-            );
 
-            CREATE TABLE IF NOT EXISTS security_master_formal(
-                freeze_id TEXT NOT NULL,
-                code TEXT NOT NULL,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined')),
-                PRIMARY KEY(freeze_id, code)
-            );
+def _initialize(connection: SqliteConnection) -> None:
+    connection.run("INSERT INTO schema_meta(key,value) VALUES (?,?)", (SCHEMA_META_KEY, str(SCHEMA_VERSION)))
+    connection.run("INSERT INTO publication_sequence VALUES (1,0)")
 
-            CREATE TABLE IF NOT EXISTS source_cursor_recent(
-                cursor_name TEXT PRIMARY KEY,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                cursor_value TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined'))
-            );
 
-            CREATE TABLE IF NOT EXISTS source_cursor_formal(
-                freeze_id TEXT NOT NULL,
-                cursor_name TEXT NOT NULL,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                cursor_value TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined')),
-                PRIMARY KEY(freeze_id, cursor_name)
-            );
+def _validate(connection: SqliteConnection) -> None:
+    row = connection.run("SELECT value FROM schema_meta WHERE key=?", (SCHEMA_META_KEY,)).fetchone()
+    if row is None or row[0] != str(SCHEMA_VERSION):
+        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
 
-            CREATE TABLE IF NOT EXISTS trading_calendar_recent(
-                calendar_name TEXT PRIMARY KEY,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined'))
-            );
 
-            CREATE TABLE IF NOT EXISTS trading_calendar_formal(
-                freeze_id TEXT NOT NULL,
-                calendar_name TEXT NOT NULL,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined')),
-                PRIMARY KEY(freeze_id, calendar_name)
-            );
+__all__ = ["SCHEMA_VERSION", "SCHEMA_META_KEY", "InitializeDatabase"]
 
-            CREATE TABLE IF NOT EXISTS data_plane_quarantine_audit(
-                audit_key TEXT PRIMARY KEY,
-                record_kind TEXT NOT NULL,
-                record_identity TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                observed_at TEXT NOT NULL
-            );
-            """
+_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS schema_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )
-        ApplyMigrations(connection)
-        if _current_schema_version(connection) < SCHEMA_VERSION:
-            connection.run(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
-                (SCHEMA_META_KEY, str(SCHEMA_VERSION)),
-            )
-        if _current_schema_version(connection) == 0:
-            connection.run(
-                "INSERT INTO schema_meta(key, value) VALUES (?, ?)",
-                (SCHEMA_META_KEY, str(SCHEMA_VERSION)),
-            )
-
-
-def ApplyMigrations(connection: SqliteConnection) -> None:
-    """Apply migrations for all known schema versions in order."""
-    current = _current_schema_version(connection)
-    for version in sorted(MIGRATIONS):
-        if version <= current:
-            continue
-        for statement in MIGRATIONS[version]:
-            try:
-                connection.run(statement)
-            except sqlite3.OperationalError as exc:
-                text = str(exc).lower()
-                if "duplicate column name" not in text and "no such table" not in text:
-                    raise
-        connection.run(
-            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
-            (SCHEMA_META_KEY, str(version)),
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS security_master_recent(
+            code TEXT PRIMARY KEY,
+            observed_at TEXT NOT NULL,
+            source_time TEXT NOT NULL,
+            source TEXT NOT NULL,
+            data_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'committed',
+            error TEXT NOT NULL DEFAULT '',
+            recovery_payload BLOB,
+            recovery_sha256 TEXT NOT NULL DEFAULT '',
+            CHECK(status IN ('staged', 'committed', 'quarantined'))
         )
-
-
-def _current_schema_version(connection: SqliteConnection) -> int:
-    row = connection.run("SELECT value FROM schema_meta WHERE key = ?", (SCHEMA_META_KEY,)).fetchone()
-    if row is None:
-        return 0
-    return _parse_schema_version(row[0])
-
-
-def _parse_schema_version(raw: object) -> int:
-    try:
-        return int(str(raw).strip())
-    except (ValueError, TypeError):
-        return 0
-
-
-MIGRATIONS: dict[int, tuple[str, ...]] = {
-    2: (
-        "ALTER TABLE security_master_recent ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE security_master_recent ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE security_master_recent ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE security_master_recent ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE security_master_formal ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE security_master_formal ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE security_master_formal ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE security_master_formal ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE historical_feature_recent ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE historical_feature_recent ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE historical_feature_recent ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE historical_feature_recent ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE historical_feature_formal ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE historical_feature_formal ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE historical_feature_formal ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE historical_feature_formal ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE source_cursor_recent ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE source_cursor_recent ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE source_cursor_recent ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE source_cursor_recent ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE source_cursor_formal ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE source_cursor_formal ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE source_cursor_formal ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE source_cursor_formal ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-    ),
-    3: (
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS security_master_formal(
+            freeze_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            source_time TEXT NOT NULL,
+            source TEXT NOT NULL,
+            data_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'committed',
+            error TEXT NOT NULL DEFAULT '',
+            recovery_payload BLOB,
+            recovery_sha256 TEXT NOT NULL DEFAULT '',
+            CHECK(status IN ('staged', 'committed', 'quarantined')),
+            PRIMARY KEY(freeze_id, code)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS source_cursor_recent(
+            cursor_name TEXT PRIMARY KEY,
+            observed_at TEXT NOT NULL,
+            source_time TEXT NOT NULL,
+            source TEXT NOT NULL,
+            data_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            cursor_value TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'committed',
+            error TEXT NOT NULL DEFAULT '',
+            recovery_payload BLOB,
+            recovery_sha256 TEXT NOT NULL DEFAULT '',
+            CHECK(status IN ('staged', 'committed', 'quarantined'))
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS source_cursor_formal(
+            freeze_id TEXT NOT NULL,
+            cursor_name TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            source_time TEXT NOT NULL,
+            source TEXT NOT NULL,
+            data_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            cursor_value TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'committed',
+            error TEXT NOT NULL DEFAULT '',
+            recovery_payload BLOB,
+            recovery_sha256 TEXT NOT NULL DEFAULT '',
+            CHECK(status IN ('staged', 'committed', 'quarantined')),
+            PRIMARY KEY(freeze_id, cursor_name)
+        )
+        """,
         """
         CREATE TABLE IF NOT EXISTS trading_calendar_recent(
             calendar_name TEXT PRIMARY KEY,
@@ -281,17 +157,15 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
             PRIMARY KEY(freeze_id, calendar_name)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS data_plane_quarantine_audit(
+            audit_key TEXT PRIMARY KEY,
+            record_kind TEXT NOT NULL,
+            record_identity TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            observed_at TEXT NOT NULL
+        )
+        """,
+        "CREATE TABLE IF NOT EXISTS publication_sequence (singleton INTEGER PRIMARY KEY CHECK(singleton=1), reserved_until INTEGER NOT NULL)",
     ),
-}
-
-
-__all__ = [
-    "SCHEMA_VERSION",
-    "SCHEMA_META_KEY",
-    "ApplyMigrations",
-    "ConnectionScope",
-    "Connect",
-    "InitializeDatabase",
-    "ReadConnectionScope",
-    "ReadConnect",
-]
+)

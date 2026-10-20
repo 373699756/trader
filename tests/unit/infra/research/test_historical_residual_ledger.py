@@ -1,11 +1,10 @@
 import json
-from contextlib import closing
 from dataclasses import replace
 from datetime import date
 
 import pytest
 
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
@@ -85,7 +84,7 @@ def test_sqlite_ledger_rejects_prediction_payload_tampering(tmp_path) -> None:
     ledger = SQLiteHistoricalResidualLedger(path)
     ledger.append_predictions((_prediction(),))
     ledger.append_outcomes((_outcome(),))
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE historical_prediction SET content_hash = ?", ("f" * 64,))
 
     with pytest.raises(HistoricalResidualLedgerCorruptionError, match="prediction"):
@@ -96,7 +95,7 @@ def test_sqlite_ledger_rejects_unknown_payload_fields(tmp_path) -> None:
     path = tmp_path / "ledger.sqlite3"
     ledger = SQLiteHistoricalResidualLedger(path)
     ledger.append_predictions((_prediction(),))
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         payload = json.loads(connection.run("SELECT payload FROM historical_prediction").fetchone()[0])
         payload["unexpected"] = True
         connection.run(

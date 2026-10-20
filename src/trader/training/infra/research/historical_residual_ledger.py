@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
@@ -49,7 +54,7 @@ class SQLiteHistoricalResidualLedger:
         self._initialize()
 
     def append_predictions(self, records: tuple[HistoricalPredictionRecord, ...]) -> None:
-        with closing(self._connect()) as connection, connection:
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
             for record in records:
                 self._append_row(
                     connection,
@@ -65,7 +70,7 @@ class SQLiteHistoricalResidualLedger:
                 )
 
     def append_outcomes(self, records: tuple[HistoricalOutcomeRecord, ...]) -> None:
-        with closing(self._connect()) as connection, connection:
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
             for record in records:
                 self._append_row(
                     connection,
@@ -80,7 +85,7 @@ class SQLiteHistoricalResidualLedger:
                 )
 
     def read_joined(self, strategy: ResearchStrategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
-        with closing(self._connect()) as connection, connection:
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
             outcomes = connection.run(
                 "SELECT content_hash, payload FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
                 (strategy, parent_split_hash),
@@ -101,7 +106,7 @@ class SQLiteHistoricalResidualLedger:
     def read_predictions(
         self, strategy: ResearchStrategy, parent_split_hash: str
     ) -> tuple[HistoricalPredictionRecord, ...]:
-        with closing(self._connect()) as connection, connection:
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
             rows = connection.run(
                 "SELECT content_hash, payload FROM historical_prediction "
                 "WHERE strategy = ? AND parent_split_hash = ? "
@@ -117,32 +122,8 @@ class SQLiteHistoricalResidualLedger:
         return tuple(result)
 
     def _initialize(self) -> None:
-        with closing(self._connect()) as connection, connection:
-            connection.apply_script(
-                """
-                CREATE TABLE IF NOT EXISTS historical_prediction (
-                    identity TEXT PRIMARY KEY,
-                    strategy TEXT NOT NULL,
-                    trade_date TEXT NOT NULL,
-                    code TEXT NOT NULL,
-                    horizon INTEGER NOT NULL,
-                    model_hash TEXT NOT NULL,
-                    parent_split_hash TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    payload TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS historical_outcome (
-                    identity TEXT PRIMARY KEY,
-                    strategy TEXT NOT NULL,
-                    trade_date TEXT NOT NULL,
-                    code TEXT NOT NULL,
-                    horizon INTEGER NOT NULL,
-                    parent_split_hash TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    payload TEXT NOT NULL
-                );
-                """
-            )
+        with SqliteSession(self._path) as connection:
+            EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
 
     @staticmethod
     def _append_row(
@@ -170,9 +151,6 @@ class SQLiteHistoricalResidualLedger:
         values.extend((row.parent_split_hash, row.content_hash, row.payload))
         placeholders = ",".join("?" for _ in values)
         connection.run(f"INSERT INTO {row.table} VALUES ({placeholders})", values)
-
-    def _connect(self) -> SqliteConnection:
-        return OpenSqliteConnection(self._path)
 
 
 def _base_identity(key: ResidualJoinKey, parent_split_hash: str) -> str:
@@ -377,3 +355,35 @@ __all__ = [
     "HistoricalResidualLedgerCorruptionError",
     "SQLiteHistoricalResidualLedger",
 ]
+
+
+_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS historical_prediction (
+            identity TEXT PRIMARY KEY,
+            strategy TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            horizon INTEGER NOT NULL,
+            model_hash TEXT NOT NULL,
+            parent_split_hash TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS historical_outcome (
+            identity TEXT PRIMARY KEY,
+            strategy TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            horizon INTEGER NOT NULL,
+            parent_split_hash TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            payload TEXT NOT NULL
+        )
+        """,
+    ),
+)

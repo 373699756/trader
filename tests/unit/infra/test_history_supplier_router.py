@@ -462,7 +462,6 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
     control.initialize()
     index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
-    index.initialize()
     tasks = _download_tasks(context, control, None, index, 5)
     assert tasks[0].dates == dates
     assert tasks[1].dates == dates[-639:]

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.training.application.h1_point_in_time import H1PointInTimeSnapshotPort
 from trader.training.application.historical_screening import HistoricalSecurity, ResearchBoard
 from trader.training.domain.evaluation.h1_point_in_time import (
@@ -66,43 +72,20 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
 
     def _initialize(self) -> None:
         self._root.mkdir(parents=True, exist_ok=True)
-        with closing(self._write_connection()) as connection, connection:
-            connection.apply_script(
-                """
-                CREATE TABLE IF NOT EXISTS specs (
-                    strategy TEXT PRIMARY KEY, research_identity TEXT NOT NULL,
-                    spec_hash TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS universe (
-                    strategy TEXT NOT NULL, code TEXT NOT NULL, board TEXT NOT NULL,
-                    name TEXT NOT NULL, is_st INTEGER NOT NULL, is_suspended INTEGER NOT NULL,
-                    payload_hash TEXT NOT NULL, PRIMARY KEY(strategy, code)
-                );
-                CREATE TABLE IF NOT EXISTS records (
-                    strategy TEXT NOT NULL, code TEXT NOT NULL, trade_date TEXT NOT NULL,
-                    observed_at TEXT NOT NULL, open_price REAL NOT NULL, close_price REAL NOT NULL,
-                    high_price REAL NOT NULL, low_price REAL NOT NULL, volume REAL NOT NULL,
-                    amount REAL NOT NULL, pct_change REAL NOT NULL, turnover_rate REAL,
-                    adjustment TEXT NOT NULL, source TEXT NOT NULL, anchor_price REAL NOT NULL,
-                    anchor_volume REAL NOT NULL, anchor_amount REAL NOT NULL,
-                    security_state_hash TEXT NOT NULL, sector_hash TEXT NOT NULL,
-                    risk_facts_hash TEXT NOT NULL, tail_field_hash TEXT NOT NULL,
-                    payload_hash TEXT NOT NULL, PRIMARY KEY(strategy, code, trade_date)
-                );
-                CREATE TABLE IF NOT EXISTS downloads (
-                    strategy TEXT NOT NULL, code TEXT NOT NULL, status TEXT NOT NULL,
-                    record_count INTEGER NOT NULL, content_hash TEXT NOT NULL,
-                    error_code TEXT NOT NULL, PRIMARY KEY(strategy, code)
-                );
-                """
-            )
+        with SqliteSession(
+            self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)
+        ) as connection:
+            EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
 
     def register_universe(self, spec: H1PointInTimeSpec, universe: Sequence[HistoricalSecurity]) -> None:
         self._initialize()
         ordered = tuple(sorted(universe, key=lambda item: item.code))
         if len({item.code for item in ordered}) != len(ordered):
             raise ValueError("H1 universe contains duplicate codes")
-        with closing(self._write_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             self._register_spec(connection, spec)
             existing = tuple(
                 str(row[0])
@@ -137,7 +120,10 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def registered_universe(self, strategy: ResearchStrategy) -> tuple[HistoricalSecurity, ...]:
         if not self._database.is_file():
             return ()
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
                 "SELECT code, board, name, is_st, is_suspended FROM universe WHERE strategy = ? ORDER BY code",
                 (strategy,),
@@ -150,7 +136,10 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def completed_codes(self, strategy: ResearchStrategy) -> frozenset[str]:
         if not self._database.is_file():
             return frozenset()
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
                 "SELECT code FROM downloads WHERE strategy = ? AND status = 'complete'", (strategy,)
             ).fetchall()
@@ -166,7 +155,10 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             raise ValueError("H1 record dates must be unique and ordered")
         if any(item.code != code or item.strategy != spec.strategy for item in ordered):
             raise ValueError("H1 record set identity mismatch")
-        with closing(self._write_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             self._register_spec(connection, spec)
             if (
                 connection.run(
@@ -229,7 +221,10 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if not error_code or len(error_code) > 64:
             raise ValueError("H1 failure code is invalid")
         self._initialize()
-        with closing(self._write_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             self._register_spec(connection, spec)
             connection.run(
                 "INSERT INTO downloads(strategy, code, status, record_count, content_hash, error_code) VALUES (?, ?, 'failed', 0, '', ?) ON CONFLICT(strategy, code) DO UPDATE SET status = CASE WHEN downloads.status = 'complete' THEN downloads.status ELSE excluded.status END, error_code = CASE WHEN downloads.status = 'complete' THEN downloads.error_code ELSE excluded.error_code END",
@@ -254,7 +249,10 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                 manifest.content_hash,
                 spec.source_cutoff,
             )
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             completed = tuple(
                 str(row[0])
                 for row in connection.run(
@@ -323,7 +321,10 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         )
 
     def _manifest_snapshot(self, spec: H1PointInTimeSpec) -> _H1ManifestSnapshot:
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             persisted = connection.run(
                 "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
             ).fetchone()
@@ -360,7 +361,10 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def inspect(self, spec: H1PointInTimeSpec) -> H1PointInTimeSnapshotStatus:
         if not self._database.is_file():
             return H1PointInTimeSnapshotStatus(strategy=spec.strategy)
-        with closing(self._read_connection()) as connection, connection:
+        with (
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             spec_row = connection.run("SELECT spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)).fetchone()
             universe_count = int(
                 connection.run("SELECT COUNT(*) FROM universe WHERE strategy = ?", (spec.strategy,)).require_one()[0]
@@ -394,14 +398,6 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             "INSERT OR IGNORE INTO specs(strategy, research_identity, spec_hash) VALUES (?, ?, ?)",
             (spec.strategy, spec.research_identity, spec.content_hash),
         )
-
-    def _write_connection(self) -> SqliteConnection:
-        return OpenSqliteConnection(
-            self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True, isolation_level="IMMEDIATE")
-        )
-
-    def _read_connection(self) -> SqliteConnection:
-        return OpenSqliteConnection(self._database, SqliteConnectionOptions(read_only=True))
 
 
 def _h1_universe_hash(rows: tuple[tuple[object, ...], ...]) -> str:
@@ -561,3 +557,43 @@ def _record_payload(record: H1PointInTimeRecord) -> dict[str, object]:
 
 
 __all__ = ["H1PointInTimeSnapshotConflictError", "H1PointInTimeSnapshotStatus", "SQLiteH1PointInTimeSnapshot"]
+
+
+_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS specs (
+            strategy TEXT PRIMARY KEY, research_identity TEXT NOT NULL,
+            spec_hash TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS universe (
+            strategy TEXT NOT NULL, code TEXT NOT NULL, board TEXT NOT NULL,
+            name TEXT NOT NULL, is_st INTEGER NOT NULL, is_suspended INTEGER NOT NULL,
+            payload_hash TEXT NOT NULL, PRIMARY KEY(strategy, code)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS records (
+            strategy TEXT NOT NULL, code TEXT NOT NULL, trade_date TEXT NOT NULL,
+            observed_at TEXT NOT NULL, open_price REAL NOT NULL, close_price REAL NOT NULL,
+            high_price REAL NOT NULL, low_price REAL NOT NULL, volume REAL NOT NULL,
+            amount REAL NOT NULL, pct_change REAL NOT NULL, turnover_rate REAL,
+            adjustment TEXT NOT NULL, source TEXT NOT NULL, anchor_price REAL NOT NULL,
+            anchor_volume REAL NOT NULL, anchor_amount REAL NOT NULL,
+            security_state_hash TEXT NOT NULL, sector_hash TEXT NOT NULL,
+            risk_facts_hash TEXT NOT NULL, tail_field_hash TEXT NOT NULL,
+            payload_hash TEXT NOT NULL, PRIMARY KEY(strategy, code, trade_date)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS downloads (
+            strategy TEXT NOT NULL, code TEXT NOT NULL, status TEXT NOT NULL,
+            record_count INTEGER NOT NULL, content_hash TEXT NOT NULL,
+            error_code TEXT NOT NULL, PRIMARY KEY(strategy, code)
+        )
+        """,
+    ),
+)

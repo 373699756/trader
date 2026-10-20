@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-from contextlib import closing
 from pathlib import Path
 
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
-    OpenSqliteConnection,
     SqliteConnectionOptions,
+    SqliteSession,
     SqliteTransaction,
 )
 
@@ -36,7 +35,7 @@ def AuditActiveQfq(path: Path) -> dict[str, object]:
             rows += len(window.cells)
         profiles.append({"profile": cache.profile, "codes": len(manifest.universe_codes), "rows": rows})
     with (
-        closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection,
+        SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
         SqliteTransaction(connection),
     ):
         CheckSqliteIntegrity(connection)

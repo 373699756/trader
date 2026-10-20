@@ -7,7 +7,6 @@ import sqlite3
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Collection
-from contextlib import closing
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -18,10 +17,10 @@ from trader.download.domain.history_reference import HistoryReferenceSnapshot, H
 from trader.download.domain.history_revision import HistoryRevision
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
-    OpenSqliteConnection,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
+    SqliteSession,
     SqliteTransaction,
 )
 
@@ -152,7 +151,7 @@ def WriteHistoryReference(connection: SqliteConnection, reference: HistoryRefere
 
 def ReadHistoryReference(path: Path, digest: str) -> HistoryReferenceSnapshot:
     try:
-        with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
             row = connection.run("SELECT payload_json FROM bound_references WHERE content_hash=?", (digest,)).fetchone()
         if row is None:
             raise ValueError("history_reference_missing")
@@ -203,7 +202,7 @@ def ReadStEvidence(path: Path) -> tuple[HistoryStEvidence, ...]:
     if not path.is_file():
         return ()
     try:
-        with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
             EnsureSqliteSchema(connection, _ST_SCHEMA)
             return tuple(
                 HistoryStEvidence(code, date.fromisoformat(day), cast(Literal["ever_st", "clear", "unknown"], status))
@@ -215,7 +214,7 @@ def ReadStEvidence(path: Path) -> tuple[HistoryStEvidence, ...]:
 
 def WriteStEvidence(path: Path, evidence: tuple[HistoryStEvidence, ...]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(OpenSqliteConnection(path, SqliteConnectionOptions(journal_mode="WAL"))) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(journal_mode="WAL")) as connection:
         EnsureSqliteSchema(connection, _ST_SCHEMA, allow_create=True)
         with SqliteTransaction(connection, immediate=True):
             connection.run_many(

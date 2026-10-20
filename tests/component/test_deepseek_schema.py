@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from trader.infra.settings import DeepSeekSettings
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.evidence.review import (
     ReviewCandidateContext,
     ReviewOutcome,
@@ -125,7 +124,7 @@ def test_reviewer_runs_bounded_challenger_and_persists_model_audit(tmp_path) -> 
     assert review.actual_model == "deepseek-v4-flash-202607"
     assert review.challenger_actual_model == "deepseek-v4-pro-202607"
     assert review.dimensions["market_flow"].confidence == 0.6
-    with closing(OpenSqliteConnection(database_path)) as connection, connection:
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
         rows = connection.run(
             "SELECT model_role, requested_model, actual_model, reasoning_effort, total_tokens "
             "FROM deepseek_calls ORDER BY rowid"

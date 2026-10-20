@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from contextlib import closing
 from dataclasses import replace
 
 import pytest
@@ -11,7 +10,7 @@ import pytest
 from scripts.runtime_diagnostics.qfq_sqlite import AuditActiveQfq, ClassifyQfqDiagnosticError
 from tests.helpers.qfq import qfq_window
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 def _seed(path, *, complete=True):
@@ -49,7 +48,7 @@ def test_audit_reports_unconfirmed_publication(tmp_path):
 def test_audit_reports_checkpoint_source_conflict(tmp_path):
     path = tmp_path / "daily_window.sqlite3"
     _seed(path)
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE completions SET source='other'")
     report = AuditActiveQfq(path)
     assert report["status"] == "degraded"

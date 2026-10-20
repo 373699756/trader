@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from contextlib import closing
 from pathlib import Path
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    SqliteConnectionOptions,
+    SqliteSession,
+    SqliteTransaction,
+)
+from trader.recommendation.infra.persistence.data_plane_sqlite import InitializeDatabase
 
 
 class PublicationSequence:
@@ -27,27 +31,8 @@ class PublicationSequence:
         with self._lock:
             if self._initialized:
                 return
-            self._path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                with (
-                    closing(
-                        OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=5.0))
-                    ) as connection,
-                    connection,
-                ):
-                    connection.run("BEGIN IMMEDIATE")
-                    exists = (
-                        connection.run(
-                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='publication_sequence'"
-                        ).fetchone()
-                        is not None
-                    )
-                    connection.run(
-                        "CREATE TABLE IF NOT EXISTS publication_sequence "
-                        "(singleton INTEGER PRIMARY KEY CHECK(singleton=1), reserved_until INTEGER NOT NULL)"
-                    )
-                    if not exists:
-                        connection.run("INSERT INTO publication_sequence VALUES (1, 0)")
+                InitializeDatabase(self._path)
                 self._reserve()
             except (OSError, sqlite3.Error) as exc:
                 raise RuntimeError("publication_sequence_unavailable") from exc
@@ -71,10 +56,9 @@ class PublicationSequence:
     def _reserve(self, *, minimum: int = 1) -> None:
         try:
             with (
-                closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=5.0))) as connection,
-                connection,
+                SqliteSession(self._path, SqliteConnectionOptions(timeout_seconds=5.0)) as connection,
+                SqliteTransaction(connection, immediate=True),
             ):
-                connection.run("BEGIN IMMEDIATE")
                 row = connection.run("SELECT reserved_until FROM publication_sequence WHERE singleton=1").fetchone()
                 if row is None or not isinstance(row[0], int) or row[0] < 0 or row[0] > 2**63 - 1 - self._block_size:
                     raise RuntimeError("publication_sequence_invalid")

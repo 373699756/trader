@@ -7,16 +7,15 @@ import sqlite3
 import threading
 from collections import Counter
 from collections.abc import Sequence
-from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
-    OpenSqliteConnection,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
+    SqliteSession,
     SqliteTransaction,
 )
 from trader.recommendation.domain.market.eligibility import (
@@ -61,7 +60,7 @@ class SQLiteIssuerEligibilityIndex:
             raise RuntimeError("read-only issuer eligibility index cannot initialize")
         with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(journal_mode="WAL"))) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(journal_mode="WAL")) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
                 with SqliteTransaction(connection, immediate=True):
                     facts = self._checked_facts(connection)
@@ -82,9 +81,7 @@ class SQLiteIssuerEligibilityIndex:
             self._validate_incoming(incoming)
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                with closing(
-                    OpenSqliteConnection(self._path, SqliteConnectionOptions(journal_mode="WAL"))
-                ) as connection:
+                with SqliteSession(self._path, SqliteConnectionOptions(journal_mode="WAL")) as connection:
                     EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
                     with SqliteTransaction(connection, immediate=True):
                         current = self._checked_facts(connection)
@@ -236,7 +233,7 @@ class SQLiteIssuerEligibilityIndex:
         if not self._path.exists():
             return
         try:
-            with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA)
                 with SqliteTransaction(connection):
                     metadata = connection.run(
@@ -301,7 +298,7 @@ class SQLiteIssuerEligibilityIndex:
             raise RuntimeError("read-only issuer eligibility index cannot publish")
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(journal_mode="WAL"))) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(journal_mode="WAL")) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
                 with SqliteTransaction(connection, immediate=True):
                     facts = self._checked_facts(connection)

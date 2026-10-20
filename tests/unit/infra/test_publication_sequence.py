@@ -1,9 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 
 import pytest
 
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 
 
@@ -52,7 +51,7 @@ def test_invalid_persistent_coordinate_fails_closed(tmp_path, reserved_until):
     path = tmp_path / "sequence.sqlite3"
     first = PublicationSequence(path, block_size=8)
     first.initialize()
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE publication_sequence SET reserved_until=?", (reserved_until,))
     with pytest.raises(RuntimeError, match="invalid"):
         PublicationSequence(path, block_size=8).initialize()
@@ -63,7 +62,7 @@ def test_deleted_reservation_cannot_reset_a_previous_sequence(tmp_path):
     first = PublicationSequence(path, block_size=8)
     first.initialize()
     first.allocate()
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("DELETE FROM publication_sequence")
     with pytest.raises(RuntimeError, match="invalid"):
         PublicationSequence(path, block_size=8).initialize()

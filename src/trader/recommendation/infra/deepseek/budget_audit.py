@@ -34,12 +34,6 @@ def _count(connection: SqliteConnection, where: str, parameters: tuple[object, .
     )
 
 
-def _ensure_column(connection: SqliteConnection, table: str, column: str, declaration: str) -> None:
-    columns = {str(row[1]) for row in connection.run(f"PRAGMA table_info({table})").fetchall()}
-    if column not in columns:
-        connection.run(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
-
-
 def _current_schema_version(connection: SqliteConnection) -> int:
     row = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
     if row is None:

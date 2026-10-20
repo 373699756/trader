@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import closing, nullcontext
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -25,7 +25,7 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_st_source import HistoryStNameSource, ParseNameHistorySt
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_runner import RunHistorySync
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 @pytest.mark.parametrize(
@@ -181,7 +181,7 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
     control.initialize()
     control.save_reference(reference)
     assert ReadHistoryReference(path, reference.content_hash) == reference
-    with closing(OpenSqliteConnection(path)) as connection:
+    with SqliteSession(path) as connection:
         payload = json.loads(connection.run("SELECT payload_json FROM bound_references").require_one()[0])
     assert payload["st_statuses"] == {code: ["2026-10-09", "clear"]}
     assert payload["industries"][code] == [
@@ -190,7 +190,7 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
     ]
     assert "st_evidence" not in payload and "industry_intervals" not in payload
     payload["eligible_codes"] = ["600002"]
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE bound_references SET payload_json=?", (json.dumps(payload),))
     with pytest.raises(ValueError):
         ReadHistoryReference(path, reference.content_hash)
@@ -278,7 +278,7 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
     reader = HistorySnapshotReader(tmp_path)
     assert tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
     source = HistoryControlIndex(tmp_path / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
-    with closing(OpenSqliteConnection(tmp_path / "catalog.sqlite3")) as connection, connection:
+    with SqliteSession(tmp_path / "catalog.sqlite3") as connection, SqliteTransaction(connection):
         connection.run("DELETE FROM bound_references WHERE content_hash=?", (source.supplier_contract[12:76],))
     with pytest.raises(HistorySnapshotReadError, match="history_reference_unavailable"):
         tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, {"600001"}))
@@ -454,7 +454,7 @@ def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, da
     snapshot = HistoryControlIndex(root / "catalog.sqlite3").load_published_state().snapshot
     HistorySnapshotReader(root).reference_index(snapshot)
     HistoryControlIndex(root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
-    with closing(OpenSqliteConnection(root / "catalog.sqlite3")) as connection, connection:
+    with SqliteSession(root / "catalog.sqlite3") as connection, SqliteTransaction(connection):
         if damage == "missing":
             connection.run("DELETE FROM bound_references")
         else:
@@ -516,7 +516,7 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
     assert [item.code for item in published.iter_windows(manifest, sessions=2)] == ["600001"]
 
     with (
-        closing(OpenSqliteConnection(config.archive_root / snapshot.partitions[0].relative_path)) as connection,
-        connection,
+        SqliteSession(config.archive_root / snapshot.partitions[0].relative_path) as connection,
+        SqliteTransaction(connection),
     ):
         assert connection.run("SELECT COUNT(*) FROM daily_records WHERE code='600002'").fetchone()[0] > 0

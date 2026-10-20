@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
-from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -28,7 +27,7 @@ from trader.download.infra.history_snapshot_reader import (
     HistorySnapshotReadError,
     RouteHistoryMonths,
 )
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 def _side(code: str, day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -117,7 +116,7 @@ def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_p
     day = date(2026, 9, 1)
     snapshot = _build_snapshot(tmp_path, (_revision("600001", day),))
     path = tmp_path / snapshot.partitions[0].relative_path
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_records SET qfq_trading_status='invalid'")
 
     with pytest.raises(HistorySnapshotReadError, match="history training partition read failed"):
@@ -295,7 +294,7 @@ def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> 
     day = date(2026, 9, 1)
     snapshot = _build_snapshot(root, (_revision("600001", day),))
     path = root / snapshot.partitions[0].relative_path
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
 
     with pytest.raises(HistorySnapshotReadError, match="verification failed"):
@@ -393,7 +392,7 @@ def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monke
     path = root / snapshot.partitions[0].relative_path
     previous = path.stat()
     if change == "same_size_corruption":
-        with closing(OpenSqliteConnection(path)) as connection, connection:
+        with SqliteSession(path) as connection, SqliteTransaction(connection):
             connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
         os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
     elif change == "atomic_replace":

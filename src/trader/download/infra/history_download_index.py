@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 import re
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
 
 _QFQ_UNUSABLE_RECHECK_SESSIONS = 20
 
@@ -75,39 +79,43 @@ class HistoryDownloadBatch:
             raise ValueError("history_download_batch_invalid")
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS download_batch (
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1), sequence INTEGER NOT NULL,
-    source_hash TEXT NOT NULL, calendar_hash TEXT NOT NULL, universe_hash TEXT NOT NULL,
-    cutoff TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS download_tasks (
-    code TEXT PRIMARY KEY, dates_json TEXT NOT NULL, tencent_done INTEGER NOT NULL DEFAULT 0,
-    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3), failure TEXT
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS download_gaps (
-    code TEXT NOT NULL, trade_date TEXT NOT NULL, PRIMARY KEY(code,trade_date)
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS download_qfq_unusable (
-    code TEXT NOT NULL, trade_date TEXT NOT NULL, checked_cutoff TEXT NOT NULL,
-    PRIMARY KEY(code,trade_date)
-) WITHOUT ROWID;
-"""
+HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS download_batch (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), sequence INTEGER NOT NULL,
+            source_hash TEXT NOT NULL, calendar_hash TEXT NOT NULL, universe_hash TEXT NOT NULL,
+            cutoff TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS download_tasks (
+            code TEXT PRIMARY KEY, dates_json TEXT NOT NULL, tencent_done INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3), failure TEXT
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS download_gaps (
+            code TEXT NOT NULL, trade_date TEXT NOT NULL, PRIMARY KEY(code,trade_date)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS download_qfq_unusable (
+            code TEXT NOT NULL, trade_date TEXT NOT NULL, checked_cutoff TEXT NOT NULL,
+            PRIMARY KEY(code,trade_date)
+        ) WITHOUT ROWID
+        """,
+    ),
+)
 
 
 class HistoryDownloadIndex:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def _connect(self) -> SqliteConnection:
-        return OpenSqliteConnection(self._path)
-
-    def initialize(self) -> None:
-        with closing(self._connect()) as connection, connection:
-            connection.apply_script(_SCHEMA)
-
     def pending(self, published_sequence: int) -> HistoryDownloadBatch | None:
-        with closing(self._connect()) as connection:
+        with SqliteSession(self._path) as connection:
             row = connection.run(
                 "SELECT sequence,source_hash,calendar_hash,universe_hash,cutoff FROM download_batch"
             ).fetchone()
@@ -116,8 +124,7 @@ class HistoryDownloadIndex:
         return HistoryDownloadBatch(row[0], row[1], row[2], row[3], date.fromisoformat(row[4]))
 
     def begin(self, batch: HistoryDownloadBatch, tasks: tuple[HistoryDownloadTask, ...]) -> None:
-        with closing(self._connect()) as connection, connection:
-            connection.run("BEGIN IMMEDIATE")
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
             connection.run("DELETE FROM download_tasks")
             connection.run(
                 "INSERT OR REPLACE INTO download_batch VALUES(1,?,?,?,?,?)",
@@ -135,7 +142,7 @@ class HistoryDownloadIndex:
             )
 
     def tasks(self) -> tuple[HistoryDownloadTask, ...]:
-        with closing(self._connect()) as connection:
+        with SqliteSession(self._path) as connection:
             rows = connection.run(
                 "SELECT code,dates_json,tencent_done,attempts,failure FROM download_tasks ORDER BY code"
             ).fetchall()
@@ -150,8 +157,7 @@ class HistoryDownloadIndex:
         """Replace only an unpublished batch's parents, preserving all durable progress."""
         if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
             raise ValueError("history_download_identity_conflict")
-        with closing(self._connect()) as connection, connection:
-            connection.run("BEGIN IMMEDIATE")
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
             updated = connection.run(
                 """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?
                    WHERE singleton=1 AND sequence=? AND cutoff=?
@@ -174,7 +180,7 @@ class HistoryDownloadIndex:
 
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""
-        with closing(self._connect()) as connection:
+        with SqliteSession(self._path) as connection:
             return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM download_gaps"))
 
     def gaps_by_code(self, calendar_dates: tuple[date, ...] | None = None) -> dict[str, tuple[date, ...]]:
@@ -184,7 +190,7 @@ class HistoryDownloadIndex:
         positions = {day: index for index, day in enumerate(calendar_dates or ())}
         last = len(positions) - 1
         grouped: dict[str, list[date]] = {}
-        with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
             for code, day, checked in connection.run(
                 "SELECT g.code,g.trade_date,u.checked_cutoff FROM download_gaps g "
                 "LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
@@ -206,8 +212,7 @@ class HistoryDownloadIndex:
         """Advance one durable batch only after all of its monthly price commits succeed."""
         if not completions or len({item.task.code for item in completions}) != len(completions):
             raise ValueError("history_download_completions_invalid")
-        with closing(self._connect()) as connection, connection:
-            connection.run("BEGIN IMMEDIATE")
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
             cutoff_row = connection.run("SELECT cutoff FROM download_batch WHERE singleton=1").fetchone()
             if cutoff_row is None:
                 raise ValueError("history_download_batch_missing")
@@ -246,8 +251,7 @@ class HistoryDownloadIndex:
                 )
 
     def begin_attempt(self, code: str) -> int:
-        with closing(self._connect()) as connection, connection:
-            connection.run("BEGIN IMMEDIATE")
+        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
             connection.run("UPDATE download_tasks SET attempts=attempts+1 WHERE code=? AND attempts<3", (code,))
             return int(connection.run("SELECT attempts FROM download_tasks WHERE code=?", (code,)).require_one()[0])
 
@@ -256,7 +260,7 @@ class HistoryDownloadIndex:
         stocks: set[str] = set()
         reasons: dict[str, int] = {}
         dates: list[date] = []
-        with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
             rows = connection.run(
                 "SELECT g.code,CASE WHEN u.trade_date IS NOT NULL THEN 'tencent_qfq_invalid_price' "
                 "ELSE COALESCE(NULLIF(t.failure,'tencent_qfq_invalid_price'),'history_price_pending') "
@@ -278,4 +282,10 @@ class HistoryDownloadIndex:
         )
 
 
-__all__ = ["HistoryDownloadBatch", "HistoryDownloadCompletion", "HistoryDownloadIndex", "HistoryDownloadTask"]
+__all__ = [
+    "HISTORY_DOWNLOAD_SCHEMA",
+    "HistoryDownloadBatch",
+    "HistoryDownloadCompletion",
+    "HistoryDownloadIndex",
+    "HistoryDownloadTask",
+]

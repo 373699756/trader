@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
     DataPlaneConflictError,
@@ -22,7 +20,6 @@ from trader.recommendation.application.ports.data_plane_records import (
     TradingCalendarRecord,
 )
 from trader.recommendation.application.ports.json_values import JsonObject
-from trader.recommendation.infra.persistence import data_plane_sqlite
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -31,11 +28,9 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 def test_data_plane_write_probe_classifies_concurrent_writer_without_changing_rows(tmp_path: Path) -> None:
     data_plane = SQLiteDataPlane((tmp_path) / "snapshots.sqlite3")
     data_plane.initialize()
-    with closing(OpenSqliteConnection(tmp_path / "snapshots.sqlite3")) as locker:
-        locker.run("BEGIN IMMEDIATE")
+    with SqliteSession(tmp_path / "snapshots.sqlite3") as locker, SqliteTransaction(locker, immediate=True):
         with pytest.raises(DataPlaneBusyError, match="database lock"):
             data_plane.probe_writable(timeout_seconds=0.001)
-        locker.rollback()
     data_plane.probe_writable()
 
 
@@ -62,7 +57,7 @@ def test_committed_write_uses_one_atomic_row_without_recovery_copy(tmp_path: Pat
 
     data_plane.save_security_master_recent(record)
 
-    with closing(OpenSqliteConnection(_database_path(tmp_path))) as connection:
+    with SqliteSession(_database_path(tmp_path)) as connection, SqliteTransaction(connection):
         row = connection.run(
             "SELECT status, recovery_payload, recovery_sha256 FROM security_master_recent WHERE code = ?",
             (record.code,),
@@ -71,8 +66,8 @@ def test_committed_write_uses_one_atomic_row_without_recovery_copy(tmp_path: Pat
     assert data_plane.load_security_master_recent(record.code) == record
 
 
-def test_buffered_daily_writer_serializes_threads_and_survives_reopen(tmp_path: Path) -> None:
-    data_plane = SQLiteDataPlane((tmp_path) / "snapshots.sqlite3", buffered_writes=True)
+def test_daily_writer_serializes_threads_and_survives_reopen(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane((tmp_path) / "snapshots.sqlite3")
     records = tuple(
         _security_master_record(f"{600001 + index:06d}", payload={"field": "snapshot"}) for index in range(30)
     )
@@ -90,17 +85,17 @@ def test_security_master_batch_uses_one_write_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_plane = SQLiteDataPlane((tmp_path) / "snapshots.sqlite3")
-    original_connection_scope = data_plane_sqlite.ConnectionScope
+    from trader.infra import sqlite_connection
+
+    original_open = sqlite_connection.OpenSqliteConnection
     connection_count = 0
 
-    @contextmanager
-    def counting_connection_scope(database_path: Path) -> Iterator[object]:
+    def counting_open(*args, **kwargs):
         nonlocal connection_count
         connection_count += 1
-        with original_connection_scope(database_path) as connection:
-            yield connection
+        return original_open(*args, **kwargs)
 
-    monkeypatch.setattr(data_plane_sqlite, "ConnectionScope", counting_connection_scope)
+    monkeypatch.setattr(sqlite_connection, "OpenSqliteConnection", counting_open)
     records = tuple(
         _security_master_record(code, payload={"board": "main", "exchange": "sse"})
         for code in ("600001", "600002", "600003")
@@ -199,13 +194,13 @@ def test_formal_records_are_idempotent_for_same_payload_and_conflict_on_differen
     record = _security_master_record("600002", payload={"field": "formal"})
 
     data_plane.save_security_master_formal("freeze-2026-07-30", record)
-    with data_plane_sqlite.ConnectionScope(_database_path(tmp_path)) as connection:
+    with SqliteSession(_database_path(tmp_path)) as connection, SqliteTransaction(connection):
         connection.run(
             "UPDATE security_master_formal SET status = 'staged' WHERE freeze_id = ? AND code = ?",
             ("freeze-2026-07-30", "600002"),
         )
     data_plane.save_security_master_formal("freeze-2026-07-30", record)
-    with data_plane_sqlite.ConnectionScope(_database_path(tmp_path)) as connection:
+    with SqliteSession(_database_path(tmp_path)) as connection, SqliteTransaction(connection):
         retried = connection.run(
             "SELECT status FROM security_master_formal WHERE freeze_id = ? AND code = ?",
             ("freeze-2026-07-30", "600002"),
@@ -232,7 +227,7 @@ def test_load_verification_failure_quarantines_committed_row_and_returns_none(tm
     data_plane.save_security_master_recent(record)
     db = _database_path(tmp_path)
 
-    with data_plane_sqlite.ConnectionScope(db) as connection:
+    with SqliteSession(db) as connection, SqliteTransaction(connection):
         connection.run(
             "UPDATE security_master_recent SET payload = ?, payload_hash = ? WHERE code = ?",
             ('{"invalid": true', "000000000000000000000000000000000000000000000000000000000000000000", "600003"),
@@ -240,7 +235,7 @@ def test_load_verification_failure_quarantines_committed_row_and_returns_none(tm
 
     assert data_plane.load_security_master_recent("600003") is None
 
-    with data_plane_sqlite.ConnectionScope(db) as connection:
+    with SqliteSession(db) as connection, SqliteTransaction(connection):
         row = connection.run(
             "SELECT status, error FROM security_master_recent WHERE code = ?",
             ("600003",),
@@ -266,7 +261,7 @@ def test_recovery_promotes_staged_rows_and_quarantines_corrupted_committed_rows(
     )
     data_plane.save_security_master_recent(_security_master_record("600004", payload={"field": "to-corrupt"}))
 
-    with data_plane_sqlite.ConnectionScope(_database_path(tmp_path)) as connection:
+    with SqliteSession(_database_path(tmp_path)) as connection, SqliteTransaction(connection):
         connection.run(
             "UPDATE security_master_recent SET payload = ? WHERE code = ?",
             ('{"invalid": true', "600004"),
@@ -289,7 +284,7 @@ def _insert_staged_source_cursor_row(database: Path, *, cursor_name: str, payloa
     text = _canonical_json(payload)
     payload_bytes = text.encode()
     payload_hash = hashlib.sha256(payload_bytes).hexdigest()
-    with data_plane_sqlite.ConnectionScope(database) as connection:
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run(
             """
             INSERT INTO source_cursor_recent(

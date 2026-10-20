@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -10,7 +9,7 @@ import pytest
 from trader.download.application.update_qfq import QfqPairPublicationError
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection
+from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
 
 _DAYS = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(4))
 
@@ -120,7 +119,7 @@ def test_cold_manifest_rejects_unpublished_or_corrupt_metadata(tmp_path, mutatio
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     primary.replace_paired_windows(peer, (_window("600001"),), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
-    with closing(OpenSqliteConnection(primary.path)) as connection, connection:
+    with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
         connection.run(mutation)
     with pytest.raises(RuntimeError):
         fresh = SQLiteQfqWindowCache(primary.path, "v2")
@@ -148,7 +147,7 @@ def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     primary.replace_paired_windows(peer, (_window("600001"),), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
-    with closing(OpenSqliteConnection(primary.path)) as connection, connection:
+    with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
         connection.run("DROP TABLE publications")
         connection.run("PRAGMA user_version=1")
     before = primary.path.read_bytes()

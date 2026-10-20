@@ -642,20 +642,18 @@ def _status(action: str, state_name: str, state: HistoryPartitionRepackBuildStat
 
 
 def _read_connection(path: Path, *, copy_destination: bool = False) -> SqliteConnection:
-    connection = OpenSqliteConnection(
+    return OpenSqliteConnection(
         path,
         SqliteConnectionOptions(
-            read_only=True, timeout_seconds=30.0, foreign_keys=True, query_only=not copy_destination
+            read_only=True,
+            timeout_seconds=30.0,
+            foreign_keys=True,
+            query_only=not copy_destination,
+            cache_kib=8192,
+            mmap_bytes=0,
+            temp_storage="FILE",
         ),
     )
-    try:
-        connection.run("PRAGMA cache_size=-8192")
-        connection.run("PRAGMA mmap_size=0")
-        connection.run("PRAGMA temp_store=FILE")
-    except BaseException:
-        connection.close()
-        raise
-    return connection
 
 
 def _remove_sqlite_files(path: Path) -> None:

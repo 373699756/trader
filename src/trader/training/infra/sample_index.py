@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
@@ -13,7 +12,13 @@ from typing import Literal, cast
 import numpy as np
 
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    OpenSqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteTransaction,
+)
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation"]
@@ -81,28 +86,29 @@ class SQLiteTrainingSampleIndex:
         self._feature_count = feature_count
         self._prepared_split_hash = prepared_split_hash
         self._counts_by_target: dict[str, tuple[TrainingIndustryCounts, ...]] = {}
-        self._connection = (
-            OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))
-            if prepared_split_hash is not None
-            else OpenSqliteConnection(path)
+        self._connection = OpenSqliteConnection(
+            path,
+            SqliteConnectionOptions(
+                read_only=prepared_split_hash is not None,
+                journal_mode="OFF" if prepared_split_hash is None else None,
+                durability="rebuildable" if prepared_split_hash is None else "durable",
+                cache_kib=TRAINING_SAMPLE_CACHE_MIB * 1024,
+                mmap_bytes=TRAINING_SAMPLE_MMAP_BYTES,
+                temp_storage="FILE",
+            ),
         )
+        self._transaction = SqliteTransaction(self._connection, immediate=True)
         try:
             self._initialize()
-        except sqlite3.Error:
+        except BaseException:
             self._connection.close()
             raise
 
     def _initialize(self) -> None:
-        self._connection.run(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")  # noqa: S608
-        self._connection.run(f"PRAGMA mmap_size={TRAINING_SAMPLE_MMAP_BYTES}")  # noqa: S608
-        self._connection.run("PRAGMA temp_store=FILE")
         if self._prepared_split_hash is not None:
             return
         feature_columns = ", ".join(f"f{position} REAL NOT NULL" for position in range(self._feature_count))
-        self._connection.apply_script(
-            f"""
-            PRAGMA journal_mode=OFF;
-            PRAGMA synchronous=OFF;
+        schema_sql = f"""
             CREATE TABLE samples (
                 trade_date TEXT NOT NULL,
                 code TEXT NOT NULL,
@@ -125,11 +131,17 @@ class SQLiteTrainingSampleIndex:
                 )
             ) WITHOUT ROWID;
             """
+        schema = SqliteSchema(
+            None, tuple(statement.strip() for statement in schema_sql.split(";") if statement.strip())
         )
-        self._connection.run("BEGIN IMMEDIATE")
+        EnsureSqliteSchema(self._connection, schema, allow_create=True)
+        self._transaction.begin()
 
     def close(self) -> None:
-        self._connection.close()
+        try:
+            self._transaction.rollback()
+        finally:
+            self._connection.close()
 
     def __enter__(self) -> SQLiteTrainingSampleIndex:
         return self
@@ -157,7 +169,7 @@ class SQLiteTrainingSampleIndex:
         )
         self._connection.run_many("INSERT INTO sample_split_dates VALUES (?, ?)", split_dates)
         self._connection.run("CREATE INDEX samples_industry_date ON samples(industry, trade_date, code)")
-        self._connection.commit()
+        self._transaction.commit()
         self._prepared_split_hash = split.content_hash
 
     def require_split(self, split: BaoStockTrainingSplit) -> None:

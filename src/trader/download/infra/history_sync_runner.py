@@ -341,7 +341,6 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
             ):
                 raise RuntimeError("history_format_requires_rebuild")
             control.initialize()
-            index.initialize()
             return _HistorySync(
                 configuration,
                 supplier,

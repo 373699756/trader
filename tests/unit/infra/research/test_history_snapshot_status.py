@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,7 +20,7 @@ from trader.download.domain.history_sync import HistorySupplierContext, HistoryS
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
 from trader.download.infra.history_sync_runner import RunHistorySync
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -155,7 +154,7 @@ def test_partition_tamper_fails_closed_without_losing_the_snapshot_identity(tmp_
     assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
     active = InspectHistorySnapshot(root)
     partition = next(root.glob("prices_*.sqlite3"))
-    with closing(OpenSqliteConnection(partition)) as connection, connection:
+    with SqliteSession(partition) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
 
     verified = InspectHistorySnapshot(root, verify_partitions=True)

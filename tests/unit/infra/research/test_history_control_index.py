@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -34,7 +33,7 @@ from trader.download.infra.history_control_index import (
     HistoryMaintenanceLock,
     InspectHistoryDisk,
 )
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 REFERENCE = HistoryReferenceSnapshot(("600001",), (), (HistoryStEvidence("600001", NOW.date(), "clear"),))
@@ -96,6 +95,27 @@ def test_control_repository_round_trips_typed_state_and_replays_same_content(tmp
     assert repository.integrity().state == "healthy"
 
 
+def test_failed_catalog_seed_leaves_no_tables_and_retry_creates_all_consumers(tmp_path, monkeypatch):
+    path = tmp_path / "catalog.sqlite3"
+    index = HistoryControlIndex(path)
+    original = index._initialize_metadata
+
+    def interrupt(connection):
+        original(connection)
+        raise RuntimeError("catalog seed interrupted")
+
+    monkeypatch.setattr(index, "_initialize_metadata", interrupt)
+    with pytest.raises(RuntimeError, match="seed interrupted"):
+        index.initialize()
+    with SqliteSession(path) as connection:
+        assert connection.run("SELECT name FROM sqlite_master").fetchall() == []
+    monkeypatch.setattr(index, "_initialize_metadata", original)
+    index.initialize()
+    with SqliteSession(path) as connection:
+        tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"metadata", "immutable_records", "active_snapshot", "bound_references", "download_gaps"} <= tables
+
+
 def test_published_control_decodes_only_active_snapshot_and_three_parents(tmp_path, monkeypatch):
     repository = HistoryControlIndex(tmp_path / "catalog.sqlite3")
     repository.initialize()
@@ -128,7 +148,7 @@ def test_published_control_rejects_tampered_required_record(tmp_path, kind):
     repository = HistoryControlIndex(path)
     repository.initialize()
     _save_all(repository, _values())
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE immutable_records SET content_hash=? WHERE kind=?", ("f" * 64, kind))
     with pytest.raises(HistoryControlError, match="hash|pointer"):
         repository.load_published_state()

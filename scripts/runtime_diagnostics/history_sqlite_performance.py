@@ -13,7 +13,6 @@ import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from itertools import islice
@@ -23,7 +22,7 @@ from trader.download.domain.history_control import HistoryActiveSnapshot, Histor
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 from .reporting import emit_report
 
@@ -205,9 +204,7 @@ def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalS
         if not path.is_file() or path.is_symlink():
             raise RuntimeError("history SQLite partition is unavailable")
         total_bytes += path.stat().st_size
-        with closing(
-            OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0))
-        ) as connection:
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0)) as connection:
             page_size = int(connection.run("PRAGMA page_size").require_one()[0])
             page_sizes.add(page_size)
             page_count += int(connection.run("PRAGMA page_count").require_one()[0])
@@ -274,7 +271,7 @@ def _measure_queries(
     year, month = _partition_identity(reference)
     month_start = date(year, month, 1)
     month_end = min(active.data_cutoff, date(year, month, calendar.monthrange(year, month)[1]))
-    with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
         seed = connection.run(
             "SELECT trade_date, code, board FROM daily_records ORDER BY trade_date DESC, code LIMIT 1"
         ).fetchone()
@@ -383,7 +380,7 @@ def _timings(
 
 
 def _query_plan(path: Path, statement: str) -> tuple[str, ...]:
-    with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
         rows = connection.run(f"EXPLAIN QUERY PLAN {statement}")
         return tuple(str(row[3]) for row in rows)
 

@@ -1,7 +1,7 @@
 """Fresh SQLite, production use case and reader contracts without supplier writes."""
 
 import json
-from contextlib import closing
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -21,7 +21,11 @@ from trader.download.domain.company_evidence import (
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
 from trader.infra.http_contracts import HttpResponse, HttpTimeout
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    SqliteConnectionOptions,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -81,13 +85,13 @@ def test_second_run_reuses_baseline_without_redownloading(tmp_path):
 def test_page_rows_and_cursor_rollback_together(tmp_path):
     index = _index(tmp_path)
     partition = index.partitions(("sse",), NOW)[0]
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run(
             "CREATE TRIGGER refuse_cursor BEFORE UPDATE ON partitions BEGIN SELECT RAISE(ABORT,'fixture'); END"
         )
     with pytest.raises(RuntimeError, match="persistence_unavailable"):
         index.commit_page(partition, DisclosurePage((_disclosure(),), 1, False), NOW)
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         assert connection.run("SELECT count(*) FROM disclosures").fetchone()[0] == 0
         assert connection.run("SELECT MAX(next_page) FROM partitions").fetchone()[0] == 1
 
@@ -110,12 +114,44 @@ def test_unchanged_announcement_does_not_rewrite_document(tmp_path):
     assert index.commit_page(partition, DisclosurePage((item,), 1, False), NOW) == 1
     index.commit_document(item, "verified body")
     assert index.commit_page(partition, DisclosurePage((item,), 1, False), NOW) == 0
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("SELECT body,body_checked FROM disclosures").fetchone()) == ("verified body", 1)
     changed = replace(item, title="更正公告", digest="b")
     assert index.commit_page(partition, DisclosurePage((changed,), 1, False), NOW) == 1
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("SELECT body,body_checked FROM disclosures").fetchone()) == ("", 0)
+
+
+def test_page_batch_rolls_back_partial_links_and_preserves_change_counts(tmp_path):
+    index = _index(tmp_path)
+    partition = index.partitions(("sse",), NOW)[0]
+    rows = (
+        replace(_disclosure(), codes=("600001", "600003")),
+        replace(_disclosure("second"), codes=("600002",)),
+    )
+    page = DisclosurePage(rows, 2, False)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run(
+            "CREATE TRIGGER refuse_link BEFORE INSERT ON disclosure_codes WHEN NEW.code='600002' "
+            "BEGIN SELECT RAISE(ABORT,'fixture'); END"
+        )
+    with pytest.raises(RuntimeError, match="persistence_unavailable"):
+        index.commit_page(partition, page, NOW)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        assert connection.run("SELECT COUNT(*) FROM disclosures").require_one()[0] == 0
+        assert connection.run("SELECT COUNT(*) FROM disclosure_codes").require_one()[0] == 0
+        assert connection.run("SELECT COUNT(*) FROM partition_rows").require_one()[0] == 0
+        connection.run("DROP TRIGGER refuse_link")
+    assert index.commit_page(partition, page, NOW) == 2
+    assert index.commit_page(partition, page, NOW) == 0
+    with SqliteSession(index.path) as connection:
+        assert [
+            tuple(row)
+            for row in connection.run(
+                "SELECT d.source_id,c.code FROM disclosures d JOIN disclosure_codes c "
+                "ON c.disclosure_id=d.id ORDER BY c.code"
+            )
+        ] == [("first", "600001"), ("second", "600002"), ("first", "600003")]
 
 
 def test_partial_page_never_removes_existing_links_and_truncation_cannot_complete(tmp_path):
@@ -124,7 +160,7 @@ def test_partial_page_never_removes_existing_links_and_truncation_cannot_complet
     index.commit_page(partition, DisclosurePage((_disclosure(),), 1, False), NOW)
     with pytest.raises(ValueError, match="truncated"):
         index.commit_page(partition, DisclosurePage((), 1, False), NOW)
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         assert connection.run("SELECT count(*) FROM disclosure_codes").fetchone()[0] == 1
 
 
@@ -137,7 +173,7 @@ def test_publication_isolated_from_unpublished_changes_and_failure(tmp_path):
     before = reader.read(("600001",))
     index.commit_page(partition, DisclosurePage((_disclosure(title="修订", digest="b"),), 1, False), NOW)
     assert reader.read(("600001",)) == before
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run(
             "CREATE TRIGGER refuse_publication BEFORE UPDATE ON published BEGIN SELECT RAISE(ABORT,'fixture'); END"
         )
@@ -165,8 +201,8 @@ def test_reader_releases_transaction_before_consumers_and_pins_all_requested_row
         if not observed:
             index.publish(codes, NOW + timedelta(days=1))
             with (
-                closing(OpenSqliteConnection(index.path, SqliteConnectionOptions(timeout_seconds=0))) as connection,
-                connection,
+                SqliteSession(index.path, SqliteConnectionOptions(timeout_seconds=0)) as connection,
+                SqliteTransaction(connection),
             ):
                 assert connection.run("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
         observed.append(snapshot)
@@ -244,12 +280,20 @@ def test_reader_and_candidate_load_never_invoke_background_download(tmp_path):
 
 def test_old_database_is_rejected_without_mutation(tmp_path):
     path = tmp_path / "company_evidence.sqlite3"
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("CREATE TABLE risk_evidence_recent(payload TEXT)")
     before = path.read_bytes()
     with pytest.raises(ValueError, match="contract_mismatch"):
         SQLiteCompanyEvidenceIndex(path).initialize()
     assert path.read_bytes() == before
+
+
+def test_corrupt_database_initialization_reports_the_business_error(tmp_path):
+    path = tmp_path / "company_evidence.sqlite3"
+    path.write_bytes(b"not a SQLite database")
+    with pytest.raises(RuntimeError, match="company_evidence_persistence_unavailable") as error:
+        SQLiteCompanyEvidenceIndex(path).initialize()
+    assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
 
 
 def test_new_day_queries_only_increment_overlap_and_one_month_audit(tmp_path):
@@ -294,7 +338,7 @@ def test_duplicate_page_links_restart_without_claiming_complete(tmp_path):
     continued = replace(part, page=2, received_rows=1, expected_rows=2)
     with pytest.raises(ValueError, match="duplicate"):
         index.commit_page(continued, DisclosurePage((_disclosure(),), 2, False), NOW)
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         assert connection.run("SELECT COUNT(*) FROM coverage").fetchone()[0] == 0
     assert index.partitions(("sse",), NOW)[0].page == 1
 
@@ -305,7 +349,7 @@ def test_unchanged_publication_does_not_rewrite_rows_or_change_version(tmp_path)
     SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
     before = reader.read(("600001",))
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run(
             "CREATE TRIGGER no_rewrite BEFORE UPDATE ON published BEGIN SELECT RAISE(ABORT,'unexpected rewrite'); END"
         )
@@ -324,14 +368,14 @@ def test_ratio_snapshot_retraction_and_failed_page_preserve_last_complete_snapsh
         StructuredCompanyPage("unlock", 1, 2, 2, ratios=(replace(one, ratio_pct=20),)),
         NOW,
     )
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         assert connection.run("SELECT ratio_pct FROM ratios").fetchone()[0] == 10
     with pytest.raises(ValueError, match="incomplete"):
         index.commit_structured(
             replace(query, page=2, received_rows=1, expected_rows=2), StructuredCompanyPage("unlock", 2, 2, 2), NOW
         )
     index.commit_structured(query, StructuredCompanyPage("unlock", 1, 1, 0), NOW)
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         assert connection.run("SELECT COUNT(*) FROM ratios").fetchone()[0] == 0
 
 
@@ -341,7 +385,7 @@ def test_corrupt_read_model_is_rejected_and_previous_memory_is_retained(tmp_path
     reader = SQLiteCompanyEvidenceReader(index.path)
     research = PublishedCompanyResearch(reader, wall_clock=lambda: NOW)
     before = research.load(("600001",), NOW, include_structured=True)
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE published SET payload=replace(payload,'window_incomplete','unexpected')")
     with pytest.raises(ValueError, match="digest"):
         reader.read(("600001",))
@@ -392,7 +436,7 @@ def test_missing_published_row_invalidates_existing_memory_coverage(tmp_path):
     SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     research = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: NOW)
     assert research.load(("600001",), NOW, include_structured=True)["600001"].corporate_risk_window_complete
-    with closing(OpenSqliteConnection(index.path)) as connection, connection:
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("DELETE FROM published")
     report = research.load_report(("600001",), NOW, include_structured=True)
     assert report.deferred_codes == ("600001",)

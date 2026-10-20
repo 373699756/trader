@@ -6,17 +6,17 @@ import hashlib
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     EnsureSqliteSchema,
-    OpenSqliteConnection,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
+    SqliteSession,
     SqliteTransaction,
 )
 from trader.recommendation.application.ports.decision_records import (
@@ -57,9 +57,7 @@ class SQLiteDecisionRecords:
     def initialize(self) -> None:
         self._database.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with closing(
-                OpenSqliteConnection(self._database, SqliteConnectionOptions(journal_mode="WAL"))
-            ) as connection:
+            with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL")) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
                 CheckSqliteIntegrity(connection)
             self.recover()
@@ -69,15 +67,13 @@ class SQLiteDecisionRecords:
     @contextmanager
     def _connect(self, *, write: bool = False) -> Iterator[SqliteConnection]:
         try:
-            with closing(
-                OpenSqliteConnection(
-                    self._database,
-                    SqliteConnectionOptions(
-                        read_only=not write,
-                        timeout_seconds=10.0,
-                        journal_mode="WAL" if write else None,
-                    ),
-                )
+            with SqliteSession(
+                self._database,
+                SqliteConnectionOptions(
+                    read_only=not write,
+                    timeout_seconds=10.0,
+                    journal_mode="WAL" if write else None,
+                ),
             ) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA)
                 with SqliteTransaction(connection, immediate=write):

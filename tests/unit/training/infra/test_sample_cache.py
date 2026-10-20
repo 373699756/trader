@@ -50,25 +50,16 @@ def test_partial_cache_is_never_reused(tmp_path):
 def test_failed_sample_initialization_closes_sqlite_connection(tmp_path, monkeypatch):
     connections = []
 
-    class FailingConnection:
-        def __init__(self, connection):
-            self.connection = connection
-
-        def run(self, *args):
-            return self.connection.run(*args)
-
-        def apply_script(self, _script):
-            raise sqlite3.OperationalError("fixture cannot initialize database")
-
-        def close(self):
-            self.connection.close()
-
     def failing_connect(*args, **kwargs):
-        connection = FailingConnection(OpenSqliteConnection(*args, **kwargs))
+        connection = OpenSqliteConnection(*args, **kwargs)
         connections.append(connection)
         return connection
 
+    def fail_schema(*args, **kwargs):
+        raise sqlite3.OperationalError("fixture cannot initialize database")
+
     monkeypatch.setattr("trader.training.infra.sample_index.OpenSqliteConnection", failing_connect)
+    monkeypatch.setattr("trader.training.infra.sample_index.EnsureSqliteSchema", fail_schema)
     cache = TrainingSampleCache(tmp_path, "input", 1, "split")
     with pytest.raises(sqlite3.OperationalError, match="cannot initialize"):
         cache.open()

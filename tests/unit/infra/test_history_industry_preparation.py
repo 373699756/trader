@@ -1,4 +1,3 @@
-from contextlib import closing
 from datetime import date, timedelta
 
 import pytest
@@ -16,7 +15,7 @@ from trader.download.infra.history_reference_codec import ReadHistoryReference
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_runner import RunHistorySync
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 @pytest.fixture
@@ -151,7 +150,7 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
         identity = control.read_source(snapshot.source_identity_hash)
         path = config.archive_root / "catalog.sqlite3"
         original = ReadHistoryReference(path, identity.supplier_contract[12:76])
-        with closing(OpenSqliteConnection(path)) as connection, connection:
+        with SqliteSession(path) as connection, SqliteTransaction(connection):
             if damage == "missing":
                 connection.run("DELETE FROM bound_references")
             else:

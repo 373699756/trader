@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,7 +9,7 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision, pipeline, stage_snapshots
 from trader.http_api.response.decision_projection import SerializeDecisionView, SerializeEvent
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
@@ -115,7 +114,7 @@ def test_formal_records_and_payloads_share_one_database(tmp_path):
 
 def test_unversioned_legacy_database_is_rejected(tmp_path):
     path = tmp_path / "decisions.sqlite3"
-    with closing(OpenSqliteConnection(path)) as connection:
+    with SqliteSession(path) as connection:
         connection.run("CREATE TABLE legacy(value TEXT)")
     with pytest.raises(DecisionRecordUnavailableError):
         SQLiteDecisionRecords(path).initialize()
@@ -212,7 +211,7 @@ def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Pa
     records.initialize()
     expected = record()
     records.commit(expected)
-    with closing(OpenSqliteConnection(tmp_path / "decisions.sqlite3")) as connection, connection:
+    with SqliteSession(tmp_path / "decisions.sqlite3") as connection, SqliteTransaction(connection):
         connection.run("UPDATE decision_records SET payload=?", (b"corrupt",))
 
     summary = records.recover()
@@ -228,11 +227,11 @@ def test_invalid_index_identity_is_quarantined_without_rewriting_payload(tmp_pat
     records = SQLiteDecisionRecords(path)
     records.initialize()
     records.commit(record())
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         before = connection.run("SELECT payload FROM decision_records").require_one()[0]
         connection.run("UPDATE decision_records SET version='invalid'")
     assert records.recover().quarantined == 1
-    with closing(OpenSqliteConnection(path)) as connection:
+    with SqliteSession(path) as connection:
         assert connection.run("SELECT payload FROM decision_records").require_one()[0] == before
     with pytest.raises(DecisionRecordUnavailableError):
         records.load(Strategy.TOMORROW, NOW.date())
@@ -284,7 +283,7 @@ def test_corrupted_checkpoint_is_quarantined_and_never_restored(tmp_path: Path) 
     boundary = NOW.replace(hour=14, minute=50)
     checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
     records.save_checkpoint(checkpoint)
-    with closing(OpenSqliteConnection(tmp_path / "decisions.sqlite3")) as connection, connection:
+    with SqliteSession(tmp_path / "decisions.sqlite3") as connection, SqliteTransaction(connection):
         connection.run("UPDATE decision_checkpoints SET payload=?", (b"corrupt",))
 
     summary = records.recover()

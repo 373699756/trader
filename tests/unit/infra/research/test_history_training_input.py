@@ -4,7 +4,6 @@ import hashlib
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -38,7 +37,7 @@ from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisi
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -336,7 +335,7 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
     assert history.read_outcome_bars(("600001",), NOW)
     assert len(verified) == initial_count
     partition = root / verified[0].relative_path
-    with closing(OpenSqliteConnection(partition)) as connection, connection:
+    with SqliteSession(partition) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_records SET qfq_close=99 WHERE trade_date=?", (dates[0].isoformat(),))
     before = history.entries()
     assert history.read_outcome_bars(("600001",), NOW) == {}

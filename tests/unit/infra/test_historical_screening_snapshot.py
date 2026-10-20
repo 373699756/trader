@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from contextlib import closing
 from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
 
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.training.application.historical_screening import HistoricalSecurity
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalPriceBar
 from trader.training.infra.research.historical_screening_snapshot import (
@@ -75,7 +74,7 @@ def test_historical_screening_archive_manifest_detects_bar_payload_tampering(tmp
     archive.save_history(HISTORICAL_SCREENING_SPEC, security.code, (_bar(),))
 
     database = tmp_path / "experiments" / HISTORICAL_SCREENING_SPEC.research_identity / "samples.sqlite3"
-    with closing(OpenSqliteConnection(database)) as connection, connection:
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run("UPDATE bars SET close_price = 10.7 WHERE code = '600001'")
 
     with pytest.raises(HistoricalScreeningSnapshotConflictError, match="bar payload"):

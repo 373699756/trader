@@ -54,3 +54,32 @@ def test_all_python_consumers_use_the_shared_sqlite_connection_boundary():
                 if lines:
                     failures.append(f"{path.relative_to(root)}:{node.lineno}:embedded")
     assert failures == []
+
+
+def test_business_code_uses_explicit_transactions_and_has_no_driver_import_in_application():
+    root = Path(__file__).resolve().parents[2] / "src/trader"
+    failures = []
+    for path in root.rglob("*.py"):
+        if path == root / "infra/sqlite_connection.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "apply_script":
+                    failures.append(f"{path.relative_to(root)}:{node.lineno}:script")
+                if node.func.attr == "run" and node.args and isinstance(node.args[0], ast.Constant):
+                    statement = node.args[0].value
+                    if isinstance(statement, str) and statement.lstrip().upper().startswith(
+                        ("BEGIN", "COMMIT", "ROLLBACK")
+                    ):
+                        failures.append(f"{path.relative_to(root)}:{node.lineno}:transaction")
+            if "application" in path.parts or "domain" in path.parts:
+                imports = (
+                    [item.name for item in node.names]
+                    if isinstance(node, ast.Import)
+                    else [node.module or ""]
+                    if isinstance(node, ast.ImportFrom)
+                    else []
+                )
+                if any(name == "sqlite3" or name == "trader.infra.sqlite_connection" for name in imports):
+                    failures.append(f"{path.relative_to(root)}:{node.lineno}:dependency")
+    assert failures == []

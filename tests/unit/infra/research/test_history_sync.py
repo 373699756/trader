@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -35,7 +34,7 @@ from trader.download.infra.history_prices import HistoryPricePartition, HistoryP
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_runner import RunHistorySync
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteSession, SqliteTransaction
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -558,7 +557,7 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
     assert (
         len(tuple(month.iter_training_rows(days[0], days[-1], snapshot_sequence=snapshot.partitions[0].sequence))) == 6
     )
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run(
             "UPDATE daily_records SET content_hash=? WHERE code='600001' AND trade_date=?",
             ("0" * 64, days[0].isoformat()),
@@ -569,7 +568,7 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
 
 def test_old_database_format_is_rejected_without_conversion(tmp_path):
     path = tmp_path / "catalog.sqlite3"
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("CREATE TABLE metadata(singleton INTEGER PRIMARY KEY,schema_identity TEXT)")
         connection.run("INSERT INTO metadata VALUES(1,'history_control')")
     result = RunHistorySync(
@@ -578,7 +577,7 @@ def test_old_database_format_is_rejected_without_conversion(tmp_path):
         clock=lambda: NOW,
     )
     assert result.state == "failed"
-    with closing(OpenSqliteConnection(path)) as connection, connection:
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("SELECT schema_identity FROM metadata").fetchone()) == ("history_control",)
 
 

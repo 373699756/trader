@@ -1,9 +1,8 @@
-from contextlib import closing
 from datetime import date, datetime
 
 import pytest
 
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.training.application.historical_screening import HistoricalSecurity
 from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeRecord, H1PointInTimeSpec
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
@@ -43,8 +42,8 @@ def test_h1_archive_is_idempotent_and_detects_tampering(tmp_path):
     assert manifest.completed_codes == 1
     assert archive.completed_codes("tomorrow") == frozenset({"600001"})
     with (
-        closing(OpenSqliteConnection(tmp_path / "experiments/h1_point_in_time/samples.sqlite3")) as connection,
-        connection,
+        SqliteSession(tmp_path / "experiments/h1_point_in_time/samples.sqlite3") as connection,
+        SqliteTransaction(connection),
     ):
         connection.run("UPDATE records SET close_price = 10.7 WHERE code = '600001'")
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="payload"):
@@ -63,7 +62,7 @@ def test_h1_archive_rejects_retired_spec_identity_without_migration(tmp_path):
     spec = H1PointInTimeSpec("tomorrow")
     archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
-    with closing(OpenSqliteConnection(database)) as connection, connection:
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run("UPDATE specs SET spec_hash = ? WHERE strategy = 'tomorrow'", ("f" * 64,))
 
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="spec"):
@@ -77,7 +76,7 @@ def test_h1_archive_rejects_direct_identity_mismatch_and_universe_tampering(tmp_
     with pytest.raises(ValueError, match="identity"):
         archive.save_records(spec, "600002", (_record(),))
     database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
-    with closing(OpenSqliteConnection(database)) as connection, connection:
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run("UPDATE universe SET name = 'tampered' WHERE code = '600001'")
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="universe payload"):
         archive.manifest(spec)

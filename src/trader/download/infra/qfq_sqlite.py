@@ -457,30 +457,51 @@ class SQLiteQfqWindowCache:
             raise RuntimeError("qfq_publication_identity_invalid")
         return identity
 
-    def _require_publication(self, manifest: PublishedHistoryManifest) -> None:
-        try:
-            with closing(self._connection()) as connection:
-                identity = self._publication_id(connection)
-        except (sqlite3.Error, OSError) as exc:
-            raise RuntimeError("qfq_manifest_unavailable") from exc
+    def _require_publication(self, connection: SqliteConnection, manifest: PublishedHistoryManifest) -> None:
+        identity = self._publication_id(connection)
         if identity is None or identity != manifest.publication_id:
             raise RuntimeError("qfq_publication_changed")
 
     def iter_windows(self, manifest: PublishedHistoryManifest, *, sessions: int) -> Iterator[PublishedHistoryWindow]:
+        allowed = frozenset(manifest.universe_codes)
         for start in range(0, len(manifest.universe_codes), 32):
-            yield from self.read_windows(manifest, manifest.universe_codes[start : start + 32], sessions=sessions)
+            yield from self._read_windows(
+                manifest, manifest.universe_codes[start : start + 32], sessions=sessions, allowed=allowed
+            )
 
     def read_windows(
         self, manifest: PublishedHistoryManifest, codes: Sequence[str], *, sessions: int
     ) -> tuple[PublishedHistoryWindow, ...]:
+        return self._read_windows(manifest, codes, sessions=sessions, allowed=frozenset(manifest.universe_codes))
+
+    def _read_windows(
+        self, manifest: PublishedHistoryManifest, codes: Sequence[str], *, sessions: int, allowed: frozenset[str]
+    ) -> tuple[PublishedHistoryWindow, ...]:
         if not 1 <= sessions <= self.sessions:
             raise ValueError("qfq_read_window_invalid")
-        self._require_publication(manifest)
-        allowed = frozenset(manifest.universe_codes)
+        requested = tuple(sorted(set(codes) & allowed))
+        for code in requested:
+            _validate_code(code)
         first = manifest.calendar_dates[-min(sessions, len(manifest.calendar_dates))]
-        windows = tuple(
-            PublishedHistoryWindow(window.code, tuple(cell for cell in window.cells if cell.trade_date >= first))
-            for window in self.read_codes(tuple(code for code in codes if code in allowed))
-        )
-        self._require_publication(manifest)
-        return windows
+        windows: list[PublishedHistoryWindow] = []
+        try:
+            with closing(self._connection()) as connection:
+                self._require_publication(connection, manifest)
+                for start in range(0, len(requested), 32):
+                    with SqliteTransaction(connection):
+                        rows = self._batch_rows(connection, requested[start : start + 32])
+                    windows.extend(
+                        PublishedHistoryWindow(
+                            code,
+                            tuple(
+                                cell
+                                for day, values in cells
+                                if (cell := PriceCellFromColumns(code, day, values)).trade_date >= first
+                            ),
+                        )
+                        for code, cells in rows
+                    )
+                self._require_publication(connection, manifest)
+        except (sqlite3.Error, OSError) as exc:
+            raise RuntimeError("qfq_read_failed") from exc
+        return tuple(windows)

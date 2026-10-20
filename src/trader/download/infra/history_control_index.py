@@ -8,7 +8,6 @@ import shutil
 import sqlite3
 import tempfile
 from collections.abc import Callable
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -36,9 +35,18 @@ from trader.download.domain.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
+from trader.download.infra.history_download_index import HISTORY_DOWNLOAD_SCHEMA
 from trader.download.infra.history_reference_codec import WriteHistoryReference
 from trader.infra.process_lock import ProcessLock, ProcessLockError
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    CheckSqliteIntegrity,
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
 
 FaultInjector = Callable[[str], None]
 ControlKind = Literal[
@@ -72,25 +80,34 @@ DiskUsage = Callable[[Path], DiskUsageResult]
 
 _SCHEMA_IDENTITY = "history_catalog"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS bound_references(content_hash TEXT PRIMARY KEY,payload_json TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS metadata (
-    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_identity TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS immutable_records (
-    kind TEXT NOT NULL,
-    record_key TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    PRIMARY KEY(kind, record_key)
-) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS active_snapshot (
-    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    snapshot_hash TEXT NOT NULL,
-    sequence INTEGER NOT NULL CHECK(sequence > 0)
-);
-"""
+_SCHEMA = SqliteSchema(
+    None,
+    (
+        "CREATE TABLE IF NOT EXISTS bound_references(content_hash TEXT PRIMARY KEY,payload_json TEXT NOT NULL) WITHOUT ROWID",
+        """
+        CREATE TABLE IF NOT EXISTS metadata (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            schema_identity TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS immutable_records (
+            kind TEXT NOT NULL,
+            record_key TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY(kind, record_key)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS active_snapshot (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            snapshot_hash TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK(sequence > 0)
+        )
+        """,
+    ),
+)
 
 
 class HistoryControlError(RuntimeError):
@@ -155,40 +172,40 @@ class HistoryControlIndex:
         self._fault_injector = fault_injector or (lambda _stage: None)
 
     def initialize(self) -> None:
-        if self._path.exists():
-            try:
-                with closing(self._read_connection()) as connection:
-                    identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
-                if identity is None or tuple(identity) != (_SCHEMA_IDENTITY,):
-                    raise HistoryControlError("history_format_requires_rebuild")
-            except sqlite3.Error as exc:
-                raise HistoryControlError("history_control_invalid") from exc
-        if self._path.exists() and self.integrity().state == "corrupt":
-            raise HistoryControlError("history control database is corrupt")
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with closing(self._connect()) as connection, connection:
-                connection.run("PRAGMA journal_mode=WAL")
-                connection.run("PRAGMA synchronous=FULL")
-                connection.apply_script(_SCHEMA)
-                connection.run(
-                    "INSERT OR IGNORE INTO metadata(singleton, schema_identity) VALUES (1, ?)",
-                    (_SCHEMA_IDENTITY,),
+            with SqliteSession(
+                self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True)
+            ) as connection:
+                EnsureSqliteSchema(
+                    connection,
+                    SqliteSchema(None, _SCHEMA.statements + HISTORY_DOWNLOAD_SCHEMA.statements),
+                    allow_create=True,
+                    initialize=self._initialize_metadata,
+                    validate=self._validate_metadata,
                 )
-                identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
-                if identity is None or tuple(identity) != (_SCHEMA_IDENTITY,):
-                    raise HistoryControlConflictError("history control schema identity conflicts")
+                CheckSqliteIntegrity(connection)
         except sqlite3.Error as exc:
             raise HistoryControlError("history control initialization failed") from exc
         self._fault_injector("schema_initialized")
         _fsync_file(self._path)
         _fsync_directory(self._path.parent)
 
+    @staticmethod
+    def _initialize_metadata(connection: SqliteConnection) -> None:
+        connection.run("INSERT INTO metadata(singleton,schema_identity) VALUES (1,?)", (_SCHEMA_IDENTITY,))
+
+    @staticmethod
+    def _validate_metadata(connection: SqliteConnection) -> None:
+        row = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
+        if row is None or tuple(row) != (_SCHEMA_IDENTITY,):
+            raise HistoryControlError("history_format_requires_rebuild")
+
     def integrity(self) -> HistoryControlIntegrityStatus:
         if not self._path.is_file():
             return HistoryControlIntegrityStatus("missing", "control_database_missing")
         try:
-            with closing(self._read_connection()) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
                 check = connection.run("PRAGMA quick_check").fetchone()
                 identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
         except sqlite3.Error:
@@ -229,8 +246,10 @@ class HistoryControlIndex:
             separators=(",", ":"),
         )
         try:
-            with closing(self._connect()) as connection, connection:
-                connection.run("BEGIN IMMEDIATE")
+            with (
+                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+                SqliteTransaction(connection, immediate=True),
+            ):
                 existing = connection.run(
                     "SELECT 1 FROM immutable_records WHERE kind=? AND record_key=?",
                     ("reminder_claim", key),
@@ -250,8 +269,10 @@ class HistoryControlIndex:
         self._save("reminder", key, value.content_hash, _reminder_payload(value))
 
     def save_reference(self, reference: HistoryReferenceSnapshot) -> None:
-        with closing(self._connect()) as connection, connection:
-            connection.run("BEGIN IMMEDIATE")
+        with (
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             WriteHistoryReference(connection, reference)
 
     def publish_snapshot(
@@ -268,8 +289,10 @@ class HistoryControlIndex:
             raise HistoryControlConflictError("history_reference_identity_conflict")
         payload = json.dumps(_snapshot_payload(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         try:
-            with closing(self._connect()) as connection, connection:
-                connection.run("BEGIN IMMEDIATE")
+            with (
+                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+                SqliteTransaction(connection, immediate=True),
+            ):
                 if reference is not None:
                     WriteHistoryReference(connection, reference)
                 if connection.run("SELECT 1 FROM bound_references WHERE content_hash=?", (digest,)).fetchone() is None:
@@ -313,7 +336,7 @@ class HistoryControlIndex:
             ("universe", value.universe_hash),
         )
         try:
-            with closing(self._read_connection()) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
                 present = {
                     (kind, record_key)
                     for kind, record_key in connection.run(
@@ -331,7 +354,7 @@ class HistoryControlIndex:
         if self.integrity().state != "healthy":
             raise HistoryControlError("history control database is unavailable")
         try:
-            with closing(self._read_connection()) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
                 rows = connection.run(
                     "SELECT kind, content_hash, payload_json FROM immutable_records ORDER BY kind, record_key"
                 ).fetchall()
@@ -378,8 +401,7 @@ class HistoryControlIndex:
     def read_source(self, content_hash: str) -> HistorySourceIdentity:
         """Read one immutable supplier identity without scanning historical checkpoints."""
         try:
-            with closing(self._read_connection()) as connection:
-                connection.run("PRAGMA query_only=ON")
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
                 source = _read_publication_record(connection, "source", content_hash)
                 if not isinstance(source, HistorySourceIdentity):
                     raise HistoryControlError("history source identity is invalid")
@@ -390,9 +412,10 @@ class HistoryControlIndex:
     def load_published_state(self) -> HistoryPublishedControlState | None:
         """Read and hash four publication records, never historical checkpoints."""
         try:
-            with closing(self._read_connection()) as connection:
-                connection.run("PRAGMA query_only=ON")
-                connection.run("BEGIN")
+            with (
+                SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection,
+                SqliteTransaction(connection),
+            ):
                 identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
                 if identity is None or tuple(identity) != (_SCHEMA_IDENTITY,):
                     raise HistoryControlError("history control schema identity is invalid")
@@ -425,7 +448,7 @@ class HistoryControlIndex:
         if self.integrity().state != "healthy":
             raise HistoryControlError("history control database is unavailable")
         try:
-            with closing(self._read_connection()) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
                 active = connection.run(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
                 ).fetchone()
@@ -501,8 +524,10 @@ class HistoryControlIndex:
     def _save(self, kind: ControlKind, key: str, content_hash: str, payload: dict[str, object]) -> None:
         payload_json = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         try:
-            with closing(self._connect()) as connection, connection:
-                connection.run("BEGIN IMMEDIATE")
+            with (
+                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+                SqliteTransaction(connection, immediate=True),
+            ):
                 existing = connection.run(
                     "SELECT content_hash, payload_json FROM immutable_records WHERE kind=? AND record_key=?",
                     (kind, key),
@@ -516,12 +541,6 @@ class HistoryControlIndex:
                 )
         except sqlite3.Error as exc:
             raise HistoryControlError("history immutable control record write failed") from exc
-
-    def _connect(self) -> SqliteConnection:
-        return OpenSqliteConnection(self._path, SqliteConnectionOptions(foreign_keys=True))
-
-    def _read_connection(self) -> SqliteConnection:
-        return OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))
 
 
 def _read_publication_record(connection: SqliteConnection, kind: ControlKind, key: str) -> ControlRecord:
@@ -921,7 +940,7 @@ def _remove_sqlite_sidecars(path: Path) -> None:
 
 def _checkpoint_wal(path: Path) -> None:
     try:
-        with closing(OpenSqliteConnection(path)) as connection:
+        with SqliteSession(path) as connection:
             result = connection.run("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     except sqlite3.Error as exc:
         raise HistoryControlError("history control WAL checkpoint failed") from exc

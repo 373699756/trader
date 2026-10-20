@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
     DataPlaneConflictError,
@@ -96,42 +96,23 @@ class SQLiteDataPlane:
         self,
         database_path: Path,
         *,
-        buffered_writes: bool = False,
         read_only: bool = False,
     ) -> None:
         self._runtime_root = database_path.parent
         self._database = database_path
         self._lock = threading.RLock()
         self._initialized = False
-        self._buffered_writes = buffered_writes
         self._read_only = read_only
-        self._writer_connection: SqliteConnection | None = None
 
     def close(self) -> None:
-        with self._lock:
-            connection = self._writer_connection
-            self._writer_connection = None
-            if connection is not None:
-                connection.close()
+        """All database handles are owned by individual operations."""
 
     @contextmanager
     def _write_scope(self) -> Iterator[SqliteConnection]:
         self._require_writable()
-        if not self._buffered_writes:
-            with data_plane_sqlite.ConnectionScope(self._database) as connection:
+        with SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=8, foreign_keys=True)) as connection:
+            with SqliteTransaction(connection, immediate=True):
                 yield connection
-            return
-        writer_connection = self._writer_connection
-        if writer_connection is None:
-            writer_connection = data_plane_sqlite.Connect(self._database, cross_thread=True)
-            try:
-                writer_connection.run("PRAGMA synchronous=NORMAL")
-            except sqlite3.DatabaseError:
-                writer_connection.close()
-                raise
-            self._writer_connection = writer_connection
-        with writer_connection:
-            yield writer_connection
 
     def initialize(self) -> None:
         with self._lock:
@@ -139,7 +120,9 @@ class SQLiteDataPlane:
                 return
             try:
                 if self._read_only:
-                    with data_plane_sqlite.ReadConnectionScope(self._database) as connection:
+                    with SqliteSession(
+                        self._database, SqliteConnectionOptions(read_only=True, timeout_seconds=8, foreign_keys=True)
+                    ) as connection:
                         row = connection.run(
                             "SELECT value FROM schema_meta WHERE key = ?",
                             (data_plane_sqlite.SCHEMA_META_KEY,),
@@ -168,11 +151,10 @@ class SQLiteDataPlane:
         if not self._lock.acquire(timeout=wait_seconds):
             raise DataPlaneBusyError("data plane write_probe blocked by local writer")
         try:
-            with data_plane_sqlite.ConnectionScope(self._database) as connection:
-                remaining_ms = max(0, int((wait_seconds - (time.monotonic() - started)) * 1000))
-                connection.run(f"PRAGMA busy_timeout={remaining_ms}")
-                connection.run("BEGIN IMMEDIATE")
-                connection.rollback()
+            remaining = max(0.0, wait_seconds - (time.monotonic() - started))
+            with SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=remaining)) as connection:
+                with SqliteTransaction(connection, immediate=True) as transaction:
+                    transaction.rollback()
         except sqlite3.DatabaseError as exc:
             raise _map_sqlite_error(exc, operation="write_probe") from exc
         finally:
@@ -304,7 +286,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                with self._write_scope() as connection:
                     for profile in _PROFILES.values():
                         for table in (profile.recent_table, profile.formal_table):
                             for row in connection.run(
@@ -537,8 +519,12 @@ class SQLiteDataPlane:
 
     @contextmanager
     def _read_scope(self) -> Iterator[SqliteConnection]:
-        scope = data_plane_sqlite.ReadConnectionScope if self._read_only else data_plane_sqlite.ConnectionScope
-        with scope(self._database) as connection:
+        with (
+            SqliteSession(
+                self._database, SqliteConnectionOptions(read_only=self._read_only, timeout_seconds=8, foreign_keys=True)
+            ) as connection,
+            SqliteTransaction(connection),
+        ):
             yield connection
 
     def _require_writable(self) -> None:

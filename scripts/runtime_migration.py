@@ -7,7 +7,6 @@ import json
 import re
 import shutil
 import sqlite3
-from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -16,9 +15,9 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.infra.history_reference_codec import WriteStEvidence
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
-    OpenSqliteConnection,
     SqliteConnection,
     SqliteConnectionOptions,
+    SqliteSession,
     SqliteTransaction,
 )
 from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
@@ -27,6 +26,7 @@ from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityFactHash,
     IssuerEligibilityReason,
 )
+from trader.recommendation.infra.persistence import data_plane_sqlite
 from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordFromBytes
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
@@ -62,7 +62,7 @@ def ValidateDatabase(path: Path) -> None:
         sidecar = Path(str(path) + suffix)
         if sidecar.exists() and sidecar.stat().st_size:
             raise ValueError("migration_requires_stopped_checkpointed_source")
-    with closing(OpenSqliteConnection(path, _READ)) as connection:
+    with SqliteSession(path, _READ) as connection:
         CheckSqliteIntegrity(connection)
         if connection.run("PRAGMA foreign_key_check").fetchone() is not None:
             raise ValueError("migration_foreign_key_invalid")
@@ -76,7 +76,7 @@ def MergeDatabase(source: Path, target: Path) -> None:
     if not target.exists():
         CopyFile(source, target)
         return
-    with closing(OpenSqliteConnection(source, _READ)) as reader, closing(OpenSqliteConnection(target)) as writer:
+    with SqliteSession(source, _READ) as reader, SqliteSession(target) as writer:
         source_schema = tuple(
             tuple(row)
             for row in reader.run(
@@ -127,7 +127,7 @@ def ImportDecisions(database: Path, target: Path) -> None:
     ValidateDatabase(database)
     records = SQLiteDecisionRecords(target)
     records.initialize()
-    with closing(OpenSqliteConnection(database, _READ)) as connection:
+    with SqliteSession(database, _READ) as connection:
         for row in connection.run("SELECT * FROM decision_records ORDER BY trade_date,strategy"):
             if row["status"] != "committed":
                 raise ValueError("migration_requires_recovered_formal_decisions")
@@ -175,8 +175,8 @@ def ImportDecisions(database: Path, target: Path) -> None:
                 raise ValueError("migration_unindexed_decision_evidence")
     # Verify exact persisted bytes, independently of the decoder's in-memory representation.
     with (
-        closing(OpenSqliteConnection(database, _READ)) as reader,
-        closing(OpenSqliteConnection(target, SqliteConnectionOptions(read_only=True))) as writer,
+        SqliteSession(database, _READ) as reader,
+        SqliteSession(target, SqliteConnectionOptions(read_only=True)) as writer,
     ):
         for table in ("decision_records", "decision_checkpoints"):
             for row in reader.run(f"SELECT * FROM {table}"):
@@ -218,7 +218,7 @@ def ImportEligibility(reference: Path, legacy: Path, target: Path) -> None:
     facts: dict[tuple[str, IssuerEligibilityReason, str], IssuerEligibilityFact] = {}
     for database in databases:
         ValidateDatabase(database)
-        with closing(OpenSqliteConnection(database, _READ)) as connection:
+        with SqliteSession(database, _READ) as connection:
             for row in connection.run(
                 "SELECT code,reason,effective_at,evidence_id,source,evidence_hash,content_hash FROM issuer_eligibility_facts"
             ):
@@ -239,7 +239,7 @@ def ImportEligibility(reference: Path, legacy: Path, target: Path) -> None:
     if index.facts() != ordered or index.status().manifest_hash != digest:
         raise ValueError("migration_eligibility_verification_failed")
     if manifest is not None:
-        with closing(OpenSqliteConnection(target)) as connection, SqliteTransaction(connection, immediate=True):
+        with SqliteSession(target) as connection, SqliteTransaction(connection, immediate=True):
             connection.run(
                 "UPDATE publication SET refresh_state=?,last_refresh_at=?,next_refresh_at=?,refresh_failure_count=?,last_source=? WHERE singleton=1",
                 (
@@ -274,15 +274,12 @@ def ImportSequence(source: Path, target: Path) -> None:
     if not source.is_file():
         return
     ValidateDatabase(source)
-    with closing(OpenSqliteConnection(source, _READ)) as reader:
+    with SqliteSession(source, _READ) as reader:
         reserved = reader.run("SELECT reserved_until FROM publication_sequence WHERE singleton=1").require_one()[0]
     if type(reserved) is not int or not 0 <= reserved < 2**63:
         raise ValueError("migration_sequence_invalid")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with closing(OpenSqliteConnection(target)) as writer, SqliteTransaction(writer, immediate=True):
-        writer.run(
-            "CREATE TABLE IF NOT EXISTS publication_sequence (singleton INTEGER PRIMARY KEY CHECK(singleton=1), reserved_until INTEGER NOT NULL)"
-        )
+    data_plane_sqlite.InitializeDatabase(target)
+    with SqliteSession(target) as writer, SqliteTransaction(writer, immediate=True):
         writer.run(
             "INSERT INTO publication_sequence VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET reserved_until=MAX(reserved_until,excluded.reserved_until)",
             (reserved,),
@@ -295,7 +292,7 @@ def ImportTraces(source: Path, target: Path) -> None:
         return
     ValidateDatabase(source)
     initialized: set[Path] = set()
-    with closing(OpenSqliteConnection(source, _READ)) as reader:
+    with SqliteSession(source, _READ) as reader:
         for table in ("committed_events", "committed_event_quarantine"):
             columns = tuple(str(row[1]) for row in reader.run(f"PRAGMA table_info({table})"))
             for row in reader.run(f"SELECT * FROM {table}"):
@@ -309,7 +306,7 @@ def ImportTraces(source: Path, target: Path) -> None:
                     day = date.fromisoformat(envelope["trade_date"])
                 path = target / f"{day.isoformat()}.sqlite3"
                 InitializeDatabase(path, initialized)
-                with closing(OpenSqliteConnection(path)) as writer, SqliteTransaction(writer, immediate=True):
+                with SqliteSession(path) as writer, SqliteTransaction(writer, immediate=True):
                     _insert_exact(writer, table, columns, tuple(row))
 
 

@@ -7,7 +7,6 @@ import resource
 import time
 from _thread import LockType
 from collections.abc import Callable
-from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as daytime
@@ -36,7 +35,11 @@ from trader.download.infra.history_storage_profile import (
 )
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    SqliteConnectionOptions,
+    SqliteSession,
+    SqliteTransaction,
+)
 
 from .reporting import emit_report
 
@@ -144,8 +147,8 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
             rows = 0
             for path in root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
                 with (
-                    closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection,
-                    connection,
+                    SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
+                    SqliteTransaction(connection),
                 ):
                     rows += connection.run("SELECT COUNT(*) FROM daily_records").require_one()[0]
             results.append(

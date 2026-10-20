@@ -32,18 +32,15 @@ def OpenHistoryPriceReader(
 ) -> SqliteConnection:
     """Retry only SQLite lock contention; always close a failed connection."""
     for attempt in range(3):
-        connection: SqliteConnection | None = None
         try:
-            connection = OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, foreign_keys=True))
-            if statement_trace is not None:
-                connection.observe_statements(statement_trace)
-            connection.run("PRAGMA cache_size=-8192")
-            connection.run(f"PRAGMA mmap_size={mmap_bytes}")
-            connection.run("PRAGMA temp_store=FILE")
-            return connection
+            return OpenSqliteConnection(
+                path,
+                SqliteConnectionOptions(
+                    read_only=True, foreign_keys=True, cache_kib=8192, mmap_bytes=mmap_bytes, temp_storage="FILE"
+                ),
+                statement_trace=statement_trace,
+            )
         except sqlite3.Error as exc:
-            if connection is not None:
-                connection.close()
             if not _retryable_lock(exc) or attempt == 2:
                 raise
             if activity is not None:

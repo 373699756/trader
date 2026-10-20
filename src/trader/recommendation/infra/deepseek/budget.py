@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
 from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
 
 if TYPE_CHECKING:
@@ -24,7 +31,6 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget_audit import (
     _count,
     _current_schema_version,
-    _ensure_column,
     _require_aware,
     _stage_key,
     _sync_call_audit,
@@ -35,7 +41,7 @@ from trader.recommendation.infra.deepseek.budget_batch_ledger import (
     BudgetBatchRequest,
 )
 from trader.recommendation.infra.deepseek.budget_reporting import BudgetReportingConfig, BudgetSummaryReader
-from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthGate, DeepSeekHealthPolicy
+from trader.recommendation.infra.deepseek.health_gate import HEALTH_SCHEMA, DeepSeekHealthGate, DeepSeekHealthPolicy
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
 _CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})
@@ -218,129 +224,15 @@ class DeepSeekBudgetLedger:
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        schema = SqliteSchema(None, _BUDGET_SCHEMA.statements + HEALTH_SCHEMA.statements)
         with self._connect() as connection:
-            connection.apply_script(
-                """
-                CREATE TABLE IF NOT EXISTS schema_meta(
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS deepseek_call_reservations(
-                    reservation_id TEXT PRIMARY KEY,
-                    trade_date TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    bucket TEXT NOT NULL,
-                    phase TEXT NOT NULL,
-                    stage_key TEXT NOT NULL DEFAULT '',
-                    batch_id TEXT NOT NULL DEFAULT '',
-                    emergency_reason TEXT NOT NULL DEFAULT '',
-                    requested_at TEXT NOT NULL,
-                    completed_at TEXT,
-                    status TEXT NOT NULL,
-                    error TEXT NOT NULL DEFAULT '',
-                    http_status INTEGER,
-                    latency_ms REAL,
-                    token_count INTEGER NOT NULL DEFAULT 0,
-                    timed_out INTEGER NOT NULL DEFAULT 0,
-                    model_role TEXT NOT NULL DEFAULT 'primary',
-                    requested_model TEXT,
-                    actual_model TEXT,
-                    reasoning_effort TEXT,
-                    system_fingerprint TEXT,
-                    finish_reason TEXT,
-                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                    completion_tokens INTEGER NOT NULL DEFAULT 0,
-                    prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
-                    prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE TABLE IF NOT EXISTS deepseek_calls(
-                    call_id TEXT PRIMARY KEY,
-                    strategy TEXT NOT NULL,
-                    phase TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    batch_id TEXT NOT NULL,
-                    requested_at TEXT NOT NULL,
-                    completed_at TEXT,
-                    http_status INTEGER,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    latency_ms REAL,
-                    outcome TEXT NOT NULL,
-                    error_code TEXT NOT NULL DEFAULT '',
-                    model_role TEXT NOT NULL DEFAULT 'primary',
-                    requested_model TEXT,
-                    actual_model TEXT,
-                    reasoning_effort TEXT,
-                    system_fingerprint TEXT,
-                    finish_reason TEXT,
-                    total_tokens INTEGER NOT NULL DEFAULT 0,
-                    prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
-                    prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_deepseek_budget_day
-                ON deepseek_call_reservations(trade_date, strategy, bucket, stage_key);
-
-                CREATE TABLE IF NOT EXISTS deepseek_review_batches(
-                    batch_id TEXT PRIMARY KEY,
-                    trade_date TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    phase TEXT NOT NULL,
-                    bucket TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    requested_at TEXT NOT NULL,
-                    deadline TEXT NOT NULL,
-                    completed_at TEXT,
-                    status TEXT NOT NULL,
-                    candidate_count INTEGER NOT NULL,
-                    cache_hit_count INTEGER NOT NULL DEFAULT 0,
-                    physical_attempts INTEGER NOT NULL DEFAULT 0,
-                    error TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_deepseek_batches_day
-                ON deepseek_review_batches(trade_date, strategy, phase, status);
-
-                CREATE TABLE IF NOT EXISTS deepseek_candidate_results(
-                    batch_id TEXT NOT NULL REFERENCES deepseek_review_batches(batch_id),
-                    stock_code TEXT NOT NULL,
-                    outcome TEXT NOT NULL,
-                    completed_at TEXT,
-                    error TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY(batch_id, stock_code)
-                );
-                """
-            )
-            _ensure_column(connection, "deepseek_call_reservations", "stage_key", "TEXT NOT NULL DEFAULT ''")
-            _ensure_column(connection, "deepseek_call_reservations", "batch_id", "TEXT NOT NULL DEFAULT ''")
-            _ensure_column(connection, "deepseek_call_reservations", "completed_at", "TEXT")
-            _ensure_column(connection, "deepseek_call_reservations", "timed_out", "INTEGER NOT NULL DEFAULT 0")
-            _ensure_column(
+            EnsureSqliteSchema(
                 connection,
-                "deepseek_call_reservations",
-                "emergency_reason",
-                "TEXT NOT NULL DEFAULT ''",
+                schema,
+                allow_create=True,
+                initialize=self._initialize_metadata,
+                validate=self._validate_metadata,
             )
-            for column, declaration in (
-                ("model_role", "TEXT NOT NULL DEFAULT 'primary'"),
-                ("requested_model", "TEXT"),
-                ("actual_model", "TEXT"),
-                ("reasoning_effort", "TEXT"),
-                ("system_fingerprint", "TEXT"),
-                ("finish_reason", "TEXT"),
-                ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
-                ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
-                ("prompt_cache_hit_tokens", "INTEGER NOT NULL DEFAULT 0"),
-                ("prompt_cache_miss_tokens", "INTEGER NOT NULL DEFAULT 0"),
-            ):
-                _ensure_column(connection, "deepseek_call_reservations", column, declaration)
-                _ensure_column(connection, "deepseek_calls", column, declaration)
-            _ensure_column(connection, "deepseek_calls", "total_tokens", "INTEGER NOT NULL DEFAULT 0")
-            if self._health is not None:
-                self._health.initialize(connection)
-            self._ensure_schema_version(connection)
         self._initialized = True
         with self._connect() as connection:
             days = {
@@ -355,12 +247,14 @@ class DeepSeekBudgetLedger:
         for day in days:
             self._refresh_summary(day)
 
-    def _ensure_schema_version(self, connection: SqliteConnection) -> None:
-        if _current_schema_version(connection) < SCHEMA_VERSION:
-            connection.run(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
+    @staticmethod
+    def _initialize_metadata(connection: SqliteConnection) -> None:
+        connection.run("INSERT INTO schema_meta(key,value) VALUES ('schema_version',?)", (str(SCHEMA_VERSION),))
+
+    @staticmethod
+    def _validate_metadata(connection: SqliteConnection) -> None:
+        if _current_schema_version(connection) != SCHEMA_VERSION:
+            raise sqlite3.DatabaseError("sqlite_schema_unsupported")
 
     def reserve(
         self,
@@ -373,14 +267,13 @@ class DeepSeekBudgetLedger:
         assert context is not None
         reservation_id = uuid.uuid4().hex
         with self._write_lock:
-            with self._connect() as connection:
-                _begin_immediate(connection)
+            with self._connect() as connection, _write_transaction(connection) as transaction:
                 rejection = self._limit_rejection(connection, context)
                 if rejection:
-                    connection.rollback()
+                    transaction.rollback()
                     return BudgetReservation(False, "", context.bucket, rejection, context.stage)
                 self._insert_reservation(connection, reservation_id, context)
-                connection.commit()
+                transaction.commit()
             self._refresh_summary(context.trade_date)
         return BudgetReservation(True, reservation_id, context.bucket, "reserved", context.stage)
 
@@ -522,7 +415,7 @@ class DeepSeekBudgetLedger:
         if status not in _CALL_TERMINALS:
             raise ValueError(f"invalid physical call terminal status: {status}")
         with self._write_lock:
-            with self._connect() as connection:
+            with self._connect() as connection, _write_transaction(connection) as transaction:
                 row = connection.run(
                     "SELECT trade_date FROM deepseek_call_reservations WHERE reservation_id = ?",
                     (reservation_id,),
@@ -532,7 +425,6 @@ class DeepSeekBudgetLedger:
                 day = str(row[0])
                 completed = options.get("completed_at") or datetime.now().astimezone()
                 _require_aware(completed, "physical call completion time")
-                _begin_immediate(connection)
                 changed = connection.run(
                     """
                     UPDATE deepseek_call_reservations
@@ -560,17 +452,16 @@ class DeepSeekBudgetLedger:
                     ),
                 ).rowcount
                 if changed != 1:
-                    connection.rollback()
+                    transaction.rollback()
                     raise KeyError(f"unknown or completed reservation: {reservation_id}")
                 _sync_call_audit(connection, reservation_id)
-                connection.commit()
+                transaction.commit()
             self._refresh_summary(day)
 
     def recover_incomplete(self, recovered_at: datetime) -> int:
         _require_aware(recovered_at, "recovery time")
         with self._write_lock:
-            with self._connect() as connection:
-                _begin_immediate(connection)
+            with self._connect() as connection, _write_transaction(connection) as transaction:
                 reservation_ids = tuple(
                     str(row[0])
                     for row in connection.run(
@@ -613,7 +504,7 @@ class DeepSeekBudgetLedger:
                     """,
                     (recovered_at.isoformat(),),
                 )
-                connection.commit()
+                transaction.commit()
             for day in days:
                 self._refresh_summary(day)
         return int(calls) + int(batches)
@@ -668,24 +559,28 @@ class DeepSeekBudgetLedger:
 
     @contextmanager
     def _connect(self) -> Iterator[SqliteConnection]:
-        connection = OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=10.0, foreign_keys=True))
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
+        with SqliteSession(self._path, SqliteConnectionOptions(timeout_seconds=10.0, foreign_keys=True)) as connection:
+            yield connection
 
 
-def _begin_immediate(connection: SqliteConnection) -> None:
+@contextmanager
+def _write_transaction(connection: SqliteConnection) -> Iterator[SqliteTransaction]:
+    transaction = SqliteTransaction(connection, immediate=True)
     deadline = time.monotonic() + _BEGIN_IMMEDIATE_TIMEOUT_SECONDS
     while True:
         try:
-            connection.run("BEGIN IMMEDIATE")
-            return
+            transaction.begin()
+            break
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
                 raise
             time.sleep(_BEGIN_IMMEDIATE_RETRY_SECONDS)
+    try:
+        yield transaction
+        if connection.in_transaction:
+            transaction.commit()
+    finally:
+        transaction.rollback()
 
 
 def _validate_budget_envelopes(
@@ -720,3 +615,108 @@ def _validate_challenger_envelope(challenger_limits: Mapping[str, int], daily_li
 
 
 __all__ = ["SCHEMA_VERSION", "BudgetReservation", "DeepSeekBudgetLedger"]
+
+
+_BUDGET_SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS schema_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS deepseek_call_reservations(
+            reservation_id TEXT PRIMARY KEY,
+            trade_date TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            bucket TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            stage_key TEXT NOT NULL DEFAULT '',
+            batch_id TEXT NOT NULL DEFAULT '',
+            emergency_reason TEXT NOT NULL DEFAULT '',
+            requested_at TEXT NOT NULL,
+            completed_at TEXT,
+            status TEXT NOT NULL,
+            error TEXT NOT NULL DEFAULT '',
+            http_status INTEGER,
+            latency_ms REAL,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            timed_out INTEGER NOT NULL DEFAULT 0,
+            model_role TEXT NOT NULL DEFAULT 'primary',
+            requested_model TEXT,
+            actual_model TEXT,
+            reasoning_effort TEXT,
+            system_fingerprint TEXT,
+            finish_reason TEXT,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+            prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS deepseek_calls(
+            call_id TEXT PRIMARY KEY,
+            strategy TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            model TEXT NOT NULL,
+            batch_id TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            completed_at TEXT,
+            http_status INTEGER,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            latency_ms REAL,
+            outcome TEXT NOT NULL,
+            error_code TEXT NOT NULL DEFAULT '',
+            model_role TEXT NOT NULL DEFAULT 'primary',
+            requested_model TEXT,
+            actual_model TEXT,
+            reasoning_effort TEXT,
+            system_fingerprint TEXT,
+            finish_reason TEXT,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+            prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_deepseek_budget_day
+        ON deepseek_call_reservations(trade_date, strategy, bucket, stage_key)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS deepseek_review_batches(
+            batch_id TEXT PRIMARY KEY,
+            trade_date TEXT NOT NULL,
+            strategy TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            bucket TEXT NOT NULL,
+            model TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            deadline TEXT NOT NULL,
+            completed_at TEXT,
+            status TEXT NOT NULL,
+            candidate_count INTEGER NOT NULL,
+            cache_hit_count INTEGER NOT NULL DEFAULT 0,
+            physical_attempts INTEGER NOT NULL DEFAULT 0,
+            error TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_deepseek_batches_day
+        ON deepseek_review_batches(trade_date, strategy, phase, status)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS deepseek_candidate_results(
+            batch_id TEXT NOT NULL REFERENCES deepseek_review_batches(batch_id),
+            stock_code TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            completed_at TEXT,
+            error TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(batch_id, stock_code)
+        )
+        """,
+    ),
+)

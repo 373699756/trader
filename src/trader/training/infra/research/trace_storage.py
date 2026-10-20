@@ -2,36 +2,47 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+)
 
-SCHEMA = """
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = FULL;
-CREATE TABLE IF NOT EXISTS committed_events (
-    decision_version TEXT PRIMARY KEY,
-    strategy TEXT NOT NULL,
-    trade_date TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    decision_hash TEXT NOT NULL,
-    schema_version TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    payload BLOB NOT NULL
-);
-CREATE INDEX IF NOT EXISTS committed_events_trade_date
-ON committed_events(trade_date DESC, strategy, observed_at DESC);
-CREATE TABLE IF NOT EXISTS committed_event_quarantine (
-    decision_version TEXT PRIMARY KEY,
-    reason TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    payload BLOB NOT NULL
-);
-"""
+SCHEMA = SqliteSchema(
+    None,
+    (
+        """
+        CREATE TABLE IF NOT EXISTS committed_events (
+            decision_version TEXT PRIMARY KEY,
+            strategy TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            decision_hash TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload BLOB NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS committed_events_trade_date
+        ON committed_events(trade_date DESC, strategy, observed_at DESC)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS committed_event_quarantine (
+            decision_version TEXT PRIMARY KEY,
+            reason TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            payload BLOB NOT NULL
+        )
+        """,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -49,22 +60,12 @@ def PartitionDate(path: Path) -> date | None:
         return None
 
 
-@contextmanager
-def Connection(database: Path, *, write: bool) -> Iterator[SqliteConnection]:
-    conn = OpenSqliteConnection(database, SqliteConnectionOptions(read_only=not write))
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
-
-
 def InitializeDatabase(database: Path, initialized: set[Path]) -> None:
     if database in initialized:
         return
     database.parent.mkdir(parents=True, exist_ok=True)
-    with Connection(database, write=True) as conn:
-        conn.apply_script(SCHEMA)
+    with SqliteSession(database, SqliteConnectionOptions(journal_mode="WAL")) as conn:
+        EnsureSqliteSchema(conn, SCHEMA, allow_create=True)
     initialized.add(database)
 
 
@@ -82,4 +83,4 @@ def QuarantineRow(conn: SqliteConnection, decision_version: str, reason: str) ->
     conn.run("DELETE FROM committed_events WHERE decision_version = ?", (decision_version,))
 
 
-__all__ = ["TraceIndexSummary", "SCHEMA", "Connection", "InitializeDatabase", "PartitionDate", "QuarantineRow"]
+__all__ = ["TraceIndexSummary", "SCHEMA", "InitializeDatabase", "PartitionDate", "QuarantineRow"]

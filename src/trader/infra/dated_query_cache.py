@@ -5,12 +5,27 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteSession,
+    SqliteTransaction,
+)
+
+_SCHEMA = SqliteSchema(
+    None,
+    tuple(
+        f"CREATE TABLE IF NOT EXISTS {table} (day TEXT PRIMARY KEY, source TEXT NOT NULL, "
+        "observed_on TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID"
+        for table in ("queries", "current_industry_queries")
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -37,14 +52,8 @@ class SQLiteDatedQueryCache:
             raise ValueError("dated_query_cache_path_unsafe")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with (
-                closing(OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=5))) as connection,
-                connection,
-            ):
-                connection.run(
-                    f"CREATE TABLE IF NOT EXISTS {self.table} (day TEXT PRIMARY KEY, source TEXT NOT NULL, "
-                    "observed_on TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID"
-                )
+            with SqliteSession(self.path, SqliteConnectionOptions(timeout_seconds=5)) as connection:
+                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
 
@@ -55,9 +64,7 @@ class SQLiteDatedQueryCache:
         if not self.path.is_file():
             return None
         try:
-            with closing(
-                OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
-            ) as connection:
+            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
                 if not self._table_exists(connection):
                     return None
                 rows = connection.run(
@@ -73,9 +80,7 @@ class SQLiteDatedQueryCache:
         if not self.path.is_file():
             return None
         try:
-            with closing(
-                OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
-            ) as connection:
+            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
                 if not self._table_exists(connection):
                     return None
                 row = connection.run(
@@ -113,8 +118,8 @@ class SQLiteDatedQueryCache:
         self.prepare()
         try:
             with (
-                closing(OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=5))) as connection,
-                connection,
+                SqliteSession(self.path, SqliteConnectionOptions(timeout_seconds=5)) as connection,
+                SqliteTransaction(connection),
             ):
                 connection.run(
                     f"INSERT OR REPLACE INTO {self.table} VALUES (?,?,?,?,?)",
