@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
@@ -15,6 +16,7 @@ from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.tail import MinuteBar
+from trader.recommendation.infra.market_data.market_cache_identity import MinuteContentVersion
 from trader.recommendation.infra.market_data.outcome_history import PairOutcomeHistory
 from trader.recommendation.infra.normalization.quote import (
     ToFloat,
@@ -150,6 +152,7 @@ class EastmoneyClient:
         trends = _object_mapping(payload.get("data")).get("trends")
         if not isinstance(trends, list):
             return ()
+        received_at = self._wall_clock().astimezone(_SHANGHAI)
         bars: list[MinuteBar] = []
         for raw in trends:
             parts = str(raw).split(",")
@@ -174,11 +177,12 @@ class EastmoneyClient:
                     close=close,
                     volume=volume if volume is not None and volume >= 0.0 else None,
                     source="eastmoney_intraday",
-                    received_time=observed_at,
-                    data_version=f"eastmoney-intraday:{int(observed_at.timestamp())}",
+                    received_time=received_at,
+                    data_version="eastmoney_intraday",
                 )
             )
-        return tuple(bars)
+        version = MinuteContentVersion(bars)
+        return tuple(replace(bar, data_version=version) for bar in bars)
 
     def _get(
         self,

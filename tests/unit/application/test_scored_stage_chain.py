@@ -33,6 +33,7 @@ from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters 
 from trader.recommendation.application.ports.runtime import PipelineTaskRequest, ReviewUnavailableError
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.application.runtime.cadence import PipelineTask
+from trader.recommendation.application.runtime.trading_session import TradingSession
 from trader.recommendation.domain.evidence.pipeline import (
     SourceHealthState,
     StageState,
@@ -253,3 +254,116 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     pending = adapter.data.input_quality_status()
     assert adapter.decisions.register_review(projection, observed) is None
     assert adapter.data.input_quality_status() == pending
+
+
+@pytest.mark.parametrize("successful", (True, False))
+@pytest.mark.parametrize(
+    "superseded_by", ("none", "input", "local", "date", "resume", "close", "cas_close", "cas_input")
+)
+def test_review_writes_require_current_parent_input_session_and_open_day(
+    application_feature_factory, monkeypatch, successful, superseded_by
+):
+    clock = [EVALUATED_AT]
+    adapter = build_cycle_fixture(
+        _Market(_features(application_feature_factory)),
+        config_version="fixture",
+        candidate_pool_size=120,
+        decision_build=_decision_build(now=lambda: clock[0]),
+    )
+    request = _request(EVALUATED_AT, phase="afternoon")
+    if superseded_by in {"date", "resume"}:
+        session = TradingSession(lambda: clock[0], lambda: clock[0].timestamp())
+        request = replace(request, session=session.capture())
+    _prime_scoring_cache(adapter, EVALUATED_AT)
+    adapter.data.refresh(request)
+    local = adapter.decisions.build_local(request)
+    projection = adapter.decisions.projection(local.version)
+    assert projection is not None and projection.review_candidates
+    result = BuildScoredHybrid(
+        projection,
+        _policy(),
+        {item.code: replace(review(item.code, 100), completed_at=EVALUATED_AT) for item in projection.review_candidates}
+        if successful
+        else {},
+        review_deadline=request.review_deadline,
+    )
+    assert result is not None
+    assert (result.decision is not None) == successful
+    if superseded_by == "input":
+        adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, EVALUATED_AT + timedelta(seconds=1)))
+    elif superseded_by == "local":
+        newer = replace(request, sequence=2, input_version="newer-local")
+        adapter.data.refresh(newer)
+        assert adapter.decisions.build_local(newer).version != local.version
+    elif superseded_by == "date":
+        clock[0] += timedelta(days=1)
+    elif superseded_by == "resume":
+        clock[0] += timedelta(minutes=6)
+    elif superseded_by == "close":
+        clock[0] = clock[0].replace(hour=15, minute=0)
+    elif superseded_by in {"cas_close", "cas_input"}:
+        from trader.recommendation.application.pipeline.local_score import local_decision_builder
+
+        update = local_decision_builder.UpdateSupplyStatusDecision
+
+        def advance_before_commit(*args, **kwargs):
+            quality = update(*args, **kwargs)
+            if superseded_by == "cas_close":
+                clock[0] = clock[0].replace(hour=15, minute=0)
+            else:
+                adapter.data.refresh_task(
+                    PipelineTaskRequest(PipelineTask.FULL_MARKET, EVALUATED_AT + timedelta(seconds=1))
+                )
+            return quality
+
+        monkeypatch.setattr(local_decision_builder, "UpdateSupplyStatusDecision", advance_before_commit)
+    before = adapter.data.input_quality_status()
+    accepted = adapter.decisions.register_review(projection, result)
+    after = adapter.data.input_quality_status()
+    if superseded_by != "none":
+        assert accepted is None
+        assert after == before
+    else:
+        assert after != before
+        updated = next(item for item in after if item.strategy is Strategy.TOMORROW)
+        ValidateStageBatchContinuity(updated.stage_snapshots)
+        if successful:
+            assert accepted is not None and accepted.pipeline.stage_snapshots == updated.stage_snapshots
+            assert {item.code: item.final_score for item in accepted.items} == {
+                item.code: item.final_score for item in local.items
+            }
+        else:
+            assert accepted is None
+            assert updated.stage_snapshots[10].state is StageState.DEGRADED
+    assert adapter.decisions.projection(local.version) is projection
+
+
+def test_local_diagnostics_cannot_commit_after_inputs_advance_during_scoring(application_feature_factory, monkeypatch):
+    from trader.recommendation.application.pipeline.local_score import local_decision_builder
+
+    adapter = build_cycle_fixture(
+        _Market(_features(application_feature_factory)),
+        config_version="fixture",
+        candidate_pool_size=120,
+        decision_build=_decision_build(now=lambda: EVALUATED_AT),
+    )
+    request = _request(EVALUATED_AT, phase="afternoon")
+    _prime_scoring_cache(adapter, EVALUATED_AT)
+    adapter.data.refresh(request)
+    before = adapter.data.input_quality_status()
+    build = local_decision_builder.BuildSupplyStatus
+
+    def advance_before_commit(*args, **kwargs):
+        quality = build(*args, **kwargs)
+        adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, EVALUATED_AT + timedelta(seconds=1)))
+        return quality
+
+    monkeypatch.setattr(local_decision_builder, "BuildSupplyStatus", advance_before_commit)
+    local = adapter.decisions.build_local(request)
+    assert local is not None
+    assert adapter.data.input_quality_status() == before
+    projection = adapter.decisions.projection(local.version)
+    observed = BuildScoredHybrid(projection, _policy(), {}, review_deadline=request.review_deadline)
+    assert observed is not None
+    assert adapter.decisions.register_review(projection, observed) is None
+    assert adapter.data.input_quality_status() == before

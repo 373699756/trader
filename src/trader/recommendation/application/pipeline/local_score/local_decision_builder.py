@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
+from datetime import time as wall_time
 
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     BuildModelScoringContext as _model_scoring_context,
@@ -55,7 +56,9 @@ from trader.recommendation.application.ports.runtime import (
     ResearchIntent,
 )
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
-from trader.recommendation.application.ports.scoring_inputs import AcceptedScoringInputs
+from trader.recommendation.application.ports.scoring_inputs import AcceptedScoringInputs, ScoringInputIdentity
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.application.runtime.trading_session import SessionGuard, SessionLease, StaleSessionError
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,
@@ -78,6 +81,12 @@ class DecisionBuildDependencies:
     research_audit_builder: Callable[[ScoredLocalProjection, ScoredDecision], ResearchAuditIdentity | None] = (
         lambda _projection, _decision: None
     )
+
+
+@dataclass(frozen=True)
+class _ReviewInput:
+    identity: ScoringInputIdentity
+    session: SessionLease | None
 
 
 class LocalDecisionBuilder(DecisionBuilderPort):
@@ -104,6 +113,7 @@ class LocalDecisionBuilder(DecisionBuilderPort):
         self._lock = threading.RLock()
         self._projections: dict[str, ScoredLocalProjection] = {}
         self._decisions: dict[str, ScoredDecision] = {}
+        self._review_inputs: dict[str, _ReviewInput] = {}
         self._next_sequence = dependencies.next_sequence
 
     def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
@@ -120,6 +130,8 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             raise DecisionUnavailableError("current native input is unavailable")
         if batch.candidate_stage is None:
             raise DecisionUnavailableError("candidate observations are unavailable")
+        if batch.quality_identity is None:
+            raise DecisionUnavailableError("scoring input identity is unavailable")
         try:
             evaluated_at = _decision_observed_at(batch)
             started = self._monotonic()
@@ -175,13 +187,22 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             projection,
             local=replace(projection.local, pipeline=quality_status.pipeline),
         )
-        self._inputs.replace_quality(request.strategy, expected_quality, quality_status)
-        if not projection.input_quality.publishable:
-            self._draft_index.publish(projection.local)
-            raise DecisionUnavailableError(projection.input_quality.status)
-        with self._lock:
+        with SessionGuard(request.session), self._lock:
+            accepted = self._inputs.replace_quality(
+                batch.quality_identity,
+                expected_quality,
+                quality_status,
+                parent_version=projection.local.version,
+                session=request.session,
+            )
+            if not projection.input_quality.publishable:
+                if accepted:
+                    self._draft_index.publish(projection.local)
+                raise DecisionUnavailableError(projection.input_quality.status)
             self._projections[projection.local.version] = projection
             self._decisions[projection.local.version] = projection.local
+            if accepted:
+                self._review_inputs[projection.local.version] = _ReviewInput(batch.quality_identity, request.session)
             self._trim_research_sources()
         return projection.local
 
@@ -197,30 +218,56 @@ class LocalDecisionBuilder(DecisionBuilderPort):
         projection: ScoredLocalProjection,
         review: ScoredReviewProjection,
     ) -> ScoredDecision | None:
-        decision = review.decision or projection.local
         with self._lock:
-            current_quality = self._inputs.quality(decision.strategy)
-            if (
-                current_quality is not None
-                and current_quality.summary.trade_date == decision.trade_date
-                and current_quality.stage_snapshots[9] == projection.stages.local_score.snapshot
-            ):
-                expected_quality = current_quality
-                current_quality = UpdateSupplyStatusDecision(
-                    current_quality,
-                    projection,
-                    decision,
-                    candidate_score_threshold=self._policy.selection.candidate_min_score,
-                    scored_stages=review.stages,
-                )
-                decision = replace(decision, pipeline=current_quality.pipeline)
-                self._inputs.replace_quality(decision.strategy, expected_quality, current_quality)
-            if review.decision is None:
-                return None
+            context = self._review_inputs.get(projection.local.version)
+        if context is None:
+            return None
+        try:
+            with SessionGuard(context.session):
+                return self._register_current_review(projection, review, context)
+        except StaleSessionError:
+            return None
+
+    def _register_current_review(
+        self, projection: ScoredLocalProjection, review: ScoredReviewProjection, context: _ReviewInput
+    ) -> ScoredDecision | None:
+        at = ShanghaiNow(self._now())
+        if at.date() != context.identity.trade_date or at.time() >= wall_time(15, 0):
+            return None
+        decision = review.decision or projection.local
+        if review.decision is not None and decision.parent_version != projection.local.version:
+            return None
+        current = self._inputs.quality(decision.strategy)
+        if (
+            current is None
+            or current.identity != context.identity
+            or current.parent_version != projection.local.version
+        ):
+            return None
+        quality = UpdateSupplyStatusDecision(
+            current.quality,
+            projection,
+            decision,
+            candidate_score_threshold=self._policy.selection.candidate_min_score,
+            scored_stages=review.stages,
+        )
+        decision = replace(decision, pipeline=quality.pipeline)
+        if not self._inputs.replace_quality(
+            context.identity,
+            current,
+            quality,
+            parent_version=decision.version,
+            session=context.session,
+            valid_before=at.replace(hour=15, minute=0, second=0, microsecond=0),
+        ):
+            return None
+        if review.decision is None:
+            return None
+        with self._lock:
             self._projections[decision.version] = projection
             self._decisions[decision.version] = decision
             self._trim_research_sources()
-            return decision
+        return decision
 
     def research_audit_factory(self, version: str) -> Callable[[], ResearchAuditIdentity | None]:
         with self._lock:
@@ -304,3 +351,4 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             version = next(iter(self._decisions))
             self._decisions.pop(version, None)
             self._projections.pop(version, None)
+            self._review_inputs.pop(version, None)

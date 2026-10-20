@@ -207,6 +207,7 @@ class BoundedCache(Protocol, Generic[_T]):
         *,
         data_version: str,
         source_time: datetime,
+        received_at: datetime | None = None,
     ) -> bool: ...
 
     def put_negative(self, identity: CacheIdentity, *, error_code: str) -> bool: ...

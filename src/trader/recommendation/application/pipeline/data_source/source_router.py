@@ -76,14 +76,19 @@ from trader.recommendation.application.ports.runtime import (
     PipelineTaskRequest,
     RefreshOutcome,
 )
-from trader.recommendation.application.ports.scoring_inputs import InputBatch, TopKQuoteBatch
+from trader.recommendation.application.ports.scoring_inputs import (
+    InputBatch,
+    InputQualityObservation,
+    ScoringInputIdentity,
+    TopKQuoteBatch,
+)
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.application.runtime.trading_session import SessionGuard, SessionLease
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.domain.market.refresh import IntradayRefreshResult, ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
 
@@ -179,7 +184,7 @@ class MarketReader(Protocol):
         deadline: datetime | None = None,
     ) -> ResearchRefreshResult: ...
 
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None: ...
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult: ...
 
     def read_candidate_features(
         self,
@@ -242,16 +247,17 @@ class MarketInputCoordinator(DataRefreshPort):
         self._candidate_market_version = "market:unavailable"
         self._candidate_refresh_pending = True
         self._research_version = "research:initial"
-        self._intraday_version = "intraday:initial"
+        self._intraday_refresh: IntradayRefreshResult | None = None
         self._market_quote_versions: dict[str, MarketQuote] = {}
         self._candidate_quote_versions: dict[str, MarketQuote] = {}
         self._topk_version = "topk:unavailable"
         self._score_feature_batches: dict[tuple[int, str, bool, tuple[str, ...]], tuple[FeatureSnapshot, ...]] = {}
-        self._input_quality: dict[Strategy, InputQualityStatus] = {}
+        self._input_quality: dict[Strategy, InputQualityObservation] = {}
+        self._quality_revision = 0
 
     def invalidate_history(self) -> None:
         with self._lock:
-            self._score_feature_batches.clear()
+            self._invalidate_scoring_locked()
 
     def refresh_task(self, request: PipelineTaskRequest) -> RefreshOutcome:
         deadline = _task_deadline(request)
@@ -328,6 +334,7 @@ class MarketInputCoordinator(DataRefreshPort):
             request.observed_at,
         )
         with SessionGuard(request.session), self._lock:
+            self._quality_revision += 1
             changed = data_version != self._market_version
             changed_codes = _changed_version_codes(self._market_quote_versions, quote_versions)
             requested_changed = requested != self._latest_requested_codes
@@ -439,6 +446,7 @@ class MarketInputCoordinator(DataRefreshPort):
         with SessionGuard(request.session), self._lock:
             if candidate_pipeline is not self._candidate_pipeline:
                 raise DataRefreshUnavailableError("candidate_population_superseded")
+            self._quality_revision += 1
             changed = data_version != self._candidate_version or market_version != self._candidate_market_version
             changed_codes = _changed_version_codes(self._candidate_quote_versions, quote_versions)
             self._candidate_version = data_version
@@ -515,7 +523,7 @@ class MarketInputCoordinator(DataRefreshPort):
             )
             quality_stage = MeasuredOutput(quality_stage, started, self._monotonic)
             first_nine = (*first_eight, quality_stage.snapshot)
-            self._input_quality[strategy] = InputQualityStatus(
+            quality = InputQualityStatus(
                 strategy=strategy,
                 status="not_ready",
                 publishable=False,
@@ -543,6 +551,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 ),
                 primary_blocker=context.primary_blocker,
             )
+            self._input_quality[strategy] = InputQualityObservation(quality)
 
     def _refresh_topk(
         self,
@@ -580,12 +589,27 @@ class MarketInputCoordinator(DataRefreshPort):
     ) -> RefreshOutcome:
         requested = self._requested_codes()
         _require_codes(requested, "intraday_universe_unavailable")
-        self._market.refresh_intraday_tail(requested, request.observed_at)
-        data_version = f"intraday:{request.observed_at:%Y%m%dT%H%M%S%f}"
+        refreshed = self._market.refresh_intraday_tail(requested, request.observed_at)
         with SessionGuard(request.session), self._lock:
-            self._intraday_version = data_version
-            self._invalidate_scoring_locked()
-        return RefreshOutcome(request.task, True, data_version, requested, request.observed_at, False)
+            previous = self._intraday_refresh
+            if previous is not None and refreshed.checked_at < previous.checked_at:
+                return RefreshOutcome(request.task, False, previous.data_version, (), refreshed.completed_at, True)
+            before = {item.code: item for item in previous.inputs} if previous is not None else {}
+            after = {item.code: item for item in refreshed.inputs}
+            changed_codes = tuple(
+                sorted(code for code in before.keys() | after.keys() if before.get(code) != after.get(code))
+            )
+            self._intraday_refresh = refreshed
+            if changed_codes:
+                self._invalidate_scoring_locked()
+        return RefreshOutcome(
+            request.task,
+            bool(changed_codes),
+            refreshed.data_version,
+            changed_codes,
+            refreshed.completed_at,
+            refreshed.used_fallback,
+        )
 
     def _refresh_industry_heat(
         self,
@@ -655,6 +679,8 @@ class MarketInputCoordinator(DataRefreshPort):
             ):
                 raise DataRefreshUnavailableError("long_refresh_rejected")
             return
+        with SessionGuard(request.session), self._lock:
+            source_revision = self._quality_revision
         try:
             shared = self._cached_input(request)
             candidate_features = shared.candidate_features
@@ -695,6 +721,14 @@ class MarketInputCoordinator(DataRefreshPort):
             shared.issuer_eligibility,
             (*shared.input_stages[:7], candidate_stage.snapshot),
             candidate_stage,
+            ScoringInputIdentity(
+                request.strategy,
+                request.trade_date,
+                source_revision,
+                data_version,
+                request.session.generation if request.session is not None else 0,
+                request.sequence,
+            ),
         )
         with SessionGuard(request.session), self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
@@ -793,7 +827,9 @@ class MarketInputCoordinator(DataRefreshPort):
             self._candidate_version,
             self._research_version,
             self._market.reference_version(),
-            self._intraday_version if include_intraday_tail else "intraday:not_used",
+            (self._intraday_refresh.data_version if self._intraday_refresh is not None else "intraday:initial")
+            if include_intraday_tail
+            else "intraday:not_used",
             self._latest_requested_codes,
             tuple((strategy.value, self._strategy_requested_codes[strategy]) for strategy in SCORED_STRATEGIES),
         )
@@ -807,6 +843,7 @@ class MarketInputCoordinator(DataRefreshPort):
 
     def _invalidate_scoring_locked(self) -> None:
         self._score_feature_batches.clear()
+        self._quality_revision += 1
 
     def _schedule_reference_data(
         self,
@@ -833,21 +870,43 @@ class MarketInputCoordinator(DataRefreshPort):
         with self._lock:
             return self._latest_topk_quotes
 
-    def quality(self, strategy: Strategy) -> InputQualityStatus | None:
+    def quality(self, strategy: Strategy) -> InputQualityObservation | None:
         with self._lock:
             return self._input_quality.get(strategy)
 
     def replace_quality(
-        self, strategy: Strategy, expected: InputQualityStatus | None, quality: InputQualityStatus
+        self,
+        identity: ScoringInputIdentity,
+        expected: InputQualityObservation | None,
+        quality: InputQualityStatus,
+        *,
+        parent_version: str,
+        session: SessionLease | None,
+        valid_before: datetime | None = None,
     ) -> bool:
-        with self._lock:
-            if self._input_quality.get(strategy) != expected:
+        with SessionGuard(session), self._lock:
+            generation = session.generation if session is not None else 0
+            if (
+                identity.source_revision != self._quality_revision
+                or identity.generation != generation
+                or (session is not None and identity.trade_date != session.trade_date)
+                or identity.trade_date != quality.summary.trade_date
+                or identity.strategy is not quality.strategy
+                or (valid_before is not None and ShanghaiNow(self._now()) >= valid_before)
+                or self._input_quality.get(identity.strategy) is not expected
+                or (
+                    expected is not None
+                    and expected.identity is not None
+                    and expected.identity.sequence > identity.sequence
+                )
+            ):
                 return False
-            self._input_quality[strategy] = quality
+            self._input_quality[identity.strategy] = InputQualityObservation(quality, identity, parent_version)
             return True
 
     def input_quality_status(self) -> tuple[InputQualityStatus, ...]:
         with self._lock:
             return tuple(
-                self._input_quality[strategy] for strategy in sorted(self._input_quality, key=lambda item: item.value)
+                self._input_quality[strategy].quality
+                for strategy in sorted(self._input_quality, key=lambda item: item.value)
             )

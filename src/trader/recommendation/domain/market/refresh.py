@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -58,4 +58,25 @@ class ResearchRefreshResult:
             raise ValueError("research refresh completion cannot precede start")
 
 
-__all__ = ["ResearchRefreshResult"]
+@dataclass(frozen=True)
+class IntradayInputIdentity:
+    code: str
+    content_version: str
+    restrictions: tuple[str, ...]
+    source_time: datetime | None = field(compare=False)
+    received_at: datetime | None = field(compare=False)
+
+
+@dataclass(frozen=True)
+class IntradayRefreshResult:
+    inputs: tuple[IntradayInputIdentity, ...]
+    data_version: str
+    checked_at: datetime
+    completed_at: datetime
+
+    @property
+    def used_fallback(self) -> bool:
+        return any(item.restrictions for item in self.inputs)
+
+
+__all__ = ["ResearchRefreshResult", "IntradayInputIdentity", "IntradayRefreshResult"]

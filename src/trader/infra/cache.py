@@ -37,6 +37,7 @@ class CacheEntry(Generic[_T]):
     negative_inserted_at: float | None
     estimated_bytes: int
     value_estimated_bytes: int
+    received_at: datetime | None = None
 
 
 @dataclass
@@ -127,12 +128,15 @@ class BoundedLruCache(Generic[_T]):
         *,
         data_version: str,
         source_time: datetime,
+        received_at: datetime | None = None,
     ) -> bool:
         if not data_version.strip():
             raise ValueError("cache data_version must not be empty")
         _require_aware(source_time, "cache source_time")
+        if received_at is not None:
+            _require_aware(received_at, "cache received_at")
         frozen = FreezeCacheValue(value)
-        estimated_bytes = self._estimate_entry(identity, frozen, data_version, source_time, None)
+        estimated_bytes = self._estimate_entry(identity, frozen, data_version, source_time, None, received_at)
         entry = CacheEntry(
             frozen,
             data_version,
@@ -142,6 +146,7 @@ class BoundedLruCache(Generic[_T]):
             None,
             estimated_bytes,
             estimated_bytes,
+            received_at,
         )
         return self._insert_entry(identity, entry)
 
@@ -159,6 +164,7 @@ class BoundedLruCache(Generic[_T]):
                     current.data_version,
                     current.source_time,
                     normalized,
+                    current.received_at,
                 )
                 entry = CacheEntry(
                     current.value,
@@ -169,6 +175,7 @@ class BoundedLruCache(Generic[_T]):
                     now,
                     estimated_bytes,
                     current.value_estimated_bytes,
+                    current.received_at,
                 )
             else:
                 estimated_bytes = self._estimate_entry(identity, None, None, None, normalized)
@@ -321,9 +328,16 @@ class BoundedLruCache(Generic[_T]):
                 and entry.source_time is not None
                 and current.data_version is not None
                 and entry.data_version is not None
-                and (entry.source_time, entry.data_version) < (current.source_time, current.data_version)
             ):
-                return False
+                if (entry.received_at is None) != (current.received_at is None):
+                    raise ValueError("cache write ordering must remain consistent within one identity")
+                if entry.received_at is not None and current.received_at is not None:
+                    # Receipt ordering permits same-source-time revisions with opaque content hashes.
+                    older = (entry.source_time, entry.received_at) < (current.source_time, current.received_at)
+                else:
+                    older = (entry.source_time, entry.data_version) < (current.source_time, current.data_version)
+                if older:
+                    return False
             self._remove_locked(identity)
             self._evict_scope_locked(identity, policy.capacity)
             self._evict_bytes_locked(policy.group, entry.estimated_bytes)
@@ -457,6 +471,7 @@ class BoundedLruCache(Generic[_T]):
             None,
             estimated_bytes,
             estimated_bytes,
+            entry.received_at,
         )
         group = self._policy.datasets[identity.dataset].group
         difference = estimated_bytes - entry.estimated_bytes
@@ -474,8 +489,9 @@ class BoundedLruCache(Generic[_T]):
         data_version: str | None,
         source_time: datetime | None,
         error_code: str | None,
+        received_at: datetime | None = None,
     ) -> int:
-        payload = (
+        payload: dict[str, object] = (
             {"error_code": error_code}
             if value is None and data_version is None and source_time is None and error_code is not None
             else {
@@ -485,6 +501,8 @@ class BoundedLruCache(Generic[_T]):
                 "error_code": error_code,
             }
         )
+        if received_at is not None:
+            payload["received_at"] = received_at
         return len(CanonicalJsonBytes(identity)) + len(CanonicalJsonBytes(payload))
 
     def _dataset_policy(self, identity: CacheIdentity) -> CacheDatasetPolicy:

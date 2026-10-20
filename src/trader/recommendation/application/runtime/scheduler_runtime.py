@@ -95,6 +95,7 @@ _SCORING_INPUT_TASKS = frozenset(
         PipelineTask.CANDIDATE_QUOTES,
         PipelineTask.FINAL_CANDIDATE_QUOTES,
         PipelineTask.RESEARCH_SNAPSHOT,
+        PipelineTask.INTRADAY_TAIL,
     }
 )
 _CALENDAR_RETRY_DELAYS_SECONDS = (30.0, 60.0, 120.0, 300.0)

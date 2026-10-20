@@ -266,13 +266,14 @@ def UpdateSupplyStatusDecision(
     if stage_counts is None:
         raise ValueError("decision update requires immutable candidate stage facts")
     refresh = current.pipeline.stage("candidate_refresh")
+    scored_stage_keys = {snapshot.stage for snapshot in scored_stages.snapshots}
     return BuildSupplyStatus(
         projection,
         stage_counts,
         candidate_quote_eligible=refresh.output_count,
         candidate_score_threshold=candidate_score_threshold,
         decision=decision,
-        input_stages=current.stage_snapshots[:9],
+        input_stages=tuple(snapshot for snapshot in current.stage_snapshots if snapshot.stage not in scored_stage_keys),
         scored_stages=scored_stages,
     )
 

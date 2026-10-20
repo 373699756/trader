@@ -318,6 +318,26 @@ def test_cache_rejects_out_of_order_positive_replacement() -> None:
     assert cache.get(identity).data_version == "a-newer-time"
 
 
+def test_cache_receipt_order_accepts_content_revisions_and_rejects_late_delivery() -> None:
+    clocks = MutableClocks()
+    cache = BoundedLruCache(_policy(), monotonic=clocks.monotonic, wall_clock=clocks.wall)
+    identity = _identity("600001")
+    assert cache.put(identity, (1,), data_version="hash:z", source_time=NOW, received_at=NOW)
+    assert cache.put(identity, (2,), data_version="hash:a", source_time=NOW, received_at=NOW)
+    received_at = NOW + timedelta(seconds=5)
+    assert cache.put(identity, (3,), data_version="hash:0", source_time=NOW, received_at=received_at)
+    cache.put_negative(identity, error_code="fixture-failure")
+    clocks.advance(11)
+    assert cache.get(identity).error_code is None
+    assert not cache.put(identity, (1,), data_version="hash:z", source_time=NOW, received_at=NOW)
+    assert not cache.put(
+        identity, (0,), data_version="hash:zz", source_time=NOW - timedelta(minutes=1), received_at=received_at
+    )
+    assert cache.get(identity).value == (3,)
+    assert cache.get(identity).data_version == "hash:0"
+    assert cache.get(identity).source_time == NOW
+
+
 def test_cache_rejects_one_entry_larger_than_its_group_byte_limit() -> None:
     cache = BoundedLruCache(_policy(group_bytes=512))
     identity = _identity("600001")

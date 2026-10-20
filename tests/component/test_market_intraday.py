@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timezone
+
 from tests.component.market_data_test_support import (
     AFTERNOON,
     FEATURE_WEIGHT_POLICY,
@@ -35,6 +37,7 @@ from tests.component.market_data_test_support import (
     time,
     timedelta,
 )
+from trader.recommendation.infra.market_data.market_cache_identity import MinuteContentVersion
 
 
 def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
@@ -48,21 +51,114 @@ def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
         }
     }
     session = FakeSession([payload])
-    client = EastmoneyClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
+    received_at = AFTERNOON + timedelta(seconds=2)
+    client = EastmoneyClient(
+        worker_pool=None, timeout_seconds=2, session_factory=lambda: session, wall_clock=lambda: received_at
+    )
 
     bars = client.fetch_intraday_minutes("600001", now=AFTERNOON)
 
     assert [bar.close for bar in bars] == [10.1, 10.2]
     assert [bar.volume for bar in bars] == [100.0, 150.0]
     assert bars[-1].source_time.isoformat() == "2026-07-16T14:50:00+08:00"
-    assert bars[-1].received_time == AFTERNOON
-    assert bars[-1].data_version == f"eastmoney-intraday:{int(AFTERNOON.timestamp())}"
+    assert bars[-1].received_time == received_at
+    assert {bar.data_version for bar in bars} == {MinuteContentVersion(bars)}
     assert bars[-1].source == "eastmoney_intraday"
     assert session.calls[0][0][0].endswith("/api/qt/stock/trends2/get")
     assert session.calls[0][1]["params"]["ndays"] == "1"
     assert "fqt" not in session.calls[0][1]["params"]
     assert session.calls[0][1]["timeout"] == 2
     assert session.calls[0][1]["cancel_requested"]() is False
+
+
+@pytest.mark.parametrize("changed_field", ("close", "volume", "source_time", "source"))
+def test_minute_content_identity_tracks_older_bar_corrections_but_not_delivery(changed_field) -> None:
+    bars = _tail_minute_bars()
+    delivered_again = tuple(
+        replace(bar, received_time=bar.received_time + timedelta(seconds=45), data_version="another-poll")
+        for bar in reversed(bars)
+    )
+    assert MinuteContentVersion(delivered_again) == MinuteContentVersion(bars)
+    corrected = replace(
+        bars[0],
+        **{
+            changed_field: {
+                "close": bars[0].close + 0.01,
+                "volume": 123456.0,
+                "source_time": bars[0].source_time - timedelta(minutes=1),
+                "source": "another-source",
+            }[changed_field]
+        },
+    )
+    assert MinuteContentVersion((corrected, *bars[1:])) != MinuteContentVersion(bars)
+
+
+@pytest.mark.parametrize("utc_clock", (False, True))
+def test_minute_refresh_separates_content_receipt_and_expired_qualification(utc_clock) -> None:
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
+    monotonic = MutableMonotonic()
+
+    def wall_clock():
+        now = AFTERNOON + timedelta(seconds=monotonic.value)
+        return now.astimezone(timezone.utc) if utc_clock else now
+
+    original = _tail_minute_bars()
+    repeated = tuple(replace(bar, received_time=AFTERNOON + timedelta(seconds=46)) for bar in original)
+    corrected = (replace(repeated[0], close=repeated[0].close + 0.01), *repeated[1:])
+    intraday = SequenceIntradayClient((original, repeated, repeated, corrected, corrected))
+    cache: BoundedLruCache[object] = BoundedLruCache(
+        runtime.market_data.cache_policy,
+        cadence_seconds=runtime.pipeline.cadence_seconds,
+        monotonic=monotonic,
+        wall_clock=wall_clock,
+    )
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        intraday_client=intraday,
+        cache=cache,
+        source_contracts=runtime.market_data.source_contracts,
+        config_version=runtime.config_version,
+        monotonic=monotonic,
+        wall_clock=wall_clock,
+    )
+
+    first = service.refresh_intraday_tail(("600001",), wall_clock())
+    assert first.checked_at.utcoffset() == first.completed_at.utcoffset() == timedelta(hours=8)
+    monotonic.value = 5
+    cached = service.refresh_intraday_tail(("600001",), wall_clock())
+    assert cached.data_version == first.data_version
+    assert cached.checked_at > first.checked_at
+    assert cached.inputs[0].received_at == first.inputs[0].received_at
+    assert service.intraday.status().success_count == 1
+
+    monotonic.value = 46
+    repeated_result = service.refresh_intraday_tail(("600001",), wall_clock())
+    assert repeated_result.data_version == first.data_version
+    assert repeated_result.inputs == first.inputs
+    assert repeated_result.inputs[0].received_at > first.inputs[0].received_at
+    assert repeated_result.inputs[0].source_time == first.inputs[0].source_time
+
+    monotonic.value = 89
+    # The existing cache entry is still fresh; no supplier request is required.
+    unchanged = service.refresh_intraday_tail(("600001",), wall_clock())
+    assert unchanged.data_version == first.data_version
+    monotonic.value = 92
+    aged = service.refresh_intraday_tail(("600001",), wall_clock())
+    assert aged.inputs[0].content_version == first.inputs[0].content_version
+    assert aged.data_version != first.data_version
+    assert aged.inputs[0].restrictions == ("intraday_data_degraded",)
+    monotonic.value = 138
+    revised = service.refresh_intraday_tail(("600001",), wall_clock())
+    assert revised.inputs[0].content_version != first.inputs[0].content_version
+    assert revised.inputs[0].source_time == first.inputs[0].source_time
+    assert revised.inputs[0].restrictions == ("intraday_data_degraded",)
+    monotonic.value = 184
+    expired = service.refresh_intraday_tail(("600001",), wall_clock())
+    assert expired.data_version == revised.data_version
+    assert expired.used_fallback
+    assert service.intraday.status().success_count == 5
 
 
 def test_intraday_tail_has_a_lane_independent_from_full_market_refresh() -> None:

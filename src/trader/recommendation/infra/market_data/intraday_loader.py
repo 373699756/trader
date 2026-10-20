@@ -9,19 +9,23 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheIdentity
+from trader.infra.serialization.canonical import ContentHash
 from trader.infra.workers import (
     InjectedExecutor,
     SubmitOrReject,
     WorkerExecutor,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.refresh import IntradayInputIdentity, IntradayRefreshResult
 from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 from trader.recommendation.infra.market_data.market_cache_identity import (
+    MinuteContentVersion,
     _add_action_restriction,
     _minute_version,
     _source_batch_identity,
@@ -32,6 +36,7 @@ from trader.recommendation.infra.market_data.provider_ports import IntradaySourc
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,27 @@ class IntradayLoader:
         self._latest_source_time = ""
         self._sources: tuple[str, ...] = ()
         self._data_versions: tuple[str, ...] = ()
+
+    def refresh(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
+        observed_at = observed_at.astimezone(_SHANGHAI)
+        requested = tuple(sorted(set(codes)))
+        self.load(requested, observed_at)
+        completed_at = max(observed_at, self._runner.wall_clock()).astimezone(_SHANGHAI)
+        restrictions: dict[str, set[str]] = {}
+        # Use the same retained view as the scoring reader, including expiry/fallback qualification.
+        retained = self.cached(requested, action_restrictions=restrictions, observed_at=completed_at)
+        inputs = tuple(
+            IntradayInputIdentity(
+                code,
+                MinuteContentVersion(retained.get(code, ())),
+                tuple(sorted(restrictions.get(code, set()))) if retained.get(code) else ("intraday_no_data",),
+                max((bar.source_time for bar in retained.get(code, ())), default=None),
+                max((bar.received_time for bar in retained.get(code, ())), default=None),
+            )
+            for code in requested
+        )
+        version = ContentHash([(item.code, item.content_version, item.restrictions) for item in inputs])
+        return IntradayRefreshResult(inputs, f"intraday:{version}", observed_at, completed_at)
 
     def load(
         self,
@@ -337,7 +363,13 @@ class IntradayLoader:
             cache.put_negative(identity, error_code="intraday_no_data")
             return
         source_time = max(bar.source_time for bar in bars)
-        cache.put(identity, bars, data_version=max(bar.data_version for bar in bars), source_time=source_time)
+        cache.put(
+            identity,
+            bars,
+            data_version=MinuteContentVersion(bars),
+            source_time=source_time,
+            received_at=max(bar.received_time for bar in bars),
+        )
         if used_fallback:
             cache.put_negative(identity, error_code="intraday_refresh_failed")
         if not cache.is_actionable(identity, source_time):
@@ -376,8 +408,9 @@ class IntradayLoader:
             cache.put(
                 identity,
                 old_entry.bars,
-                data_version=max(bar.data_version for bar in old_entry.bars),
+                data_version=MinuteContentVersion(old_entry.bars),
                 source_time=source_time,
+                received_at=max(bar.received_time for bar in old_entry.bars),
             )
         cache.put_negative(identity, error_code="intraday_batch_deadline")
         if old_entry is not None and old_entry.bars:
@@ -451,12 +484,13 @@ class IntradayLoader:
         codes: Sequence[str],
         *,
         action_restrictions: dict[str, set[str]] | None = None,
+        observed_at: datetime | None = None,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         now = self._monotonic()
         result: dict[str, tuple[MinuteBar, ...]] = {}
         cache = self._runner.cache
+        observed_at = observed_at or self._runner.wall_clock()
         if cache is not None:
-            observed_at = self._runner.wall_clock()
             for code in codes:
                 identity = self._runner.cache_identity(
                     "intraday_minutes",

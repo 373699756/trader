@@ -9,6 +9,7 @@ from typing import ParamSpec, TypeVar
 
 from trader.infra.cache_contracts import CacheRequestKey, RequestKey
 from trader.infra.market_data.history.history import DailyBar
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
@@ -165,11 +166,25 @@ def _quote_age_summary(quotes: Sequence[MarketQuote], measured_at: datetime) -> 
     }
 
 
-def _minute_version(bars: Sequence[MinuteBar]) -> tuple[float, float, str]:
+def _minute_version(bars: Sequence[MinuteBar]) -> tuple[float, float]:
     return max(
-        ((bar.source_time.timestamp(), bar.received_time.timestamp(), bar.data_version) for bar in bars),
-        default=(float("-inf"), float("-inf"), ""),
+        ((bar.source_time.timestamp(), bar.received_time.timestamp()) for bar in bars),
+        default=(float("-inf"), float("-inf")),
     )
+
+
+def MinuteContentVersion(bars: Sequence[MinuteBar]) -> str:
+    """Identify normalized minute facts without polling or delivery timestamps."""
+    facts = [
+        (
+            bar.source_time.timestamp(),
+            bar.source,
+            bar.close if math.isfinite(bar.close) else None,
+            bar.volume if bar.volume is not None and math.isfinite(bar.volume) else None,
+        )
+        for bar in sorted(bars, key=lambda item: (item.source_time, item.source, repr(item.close), repr(item.volume)))
+    ]
+    return f"intraday:{ContentHash(facts)}"
 
 
 def _history_version(bars: Sequence[DailyBar]) -> str:

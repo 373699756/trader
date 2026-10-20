@@ -1233,14 +1233,16 @@ def test_scoring_wave_skips_overlapping_ten_second_tick() -> None:
     assert all(isinstance(index.snapshot(strategy).current, ScoredDecision) for strategy in decisions.built)
 
 
-def test_unchanged_candidate_refresh_does_not_trigger_another_score() -> None:
-    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+@pytest.mark.parametrize("task", (PipelineTask.CANDIDATE_QUOTES, PipelineTask.INTRADAY_TAIL))
+@pytest.mark.parametrize("changed", (False, True))
+def test_scoring_input_refresh_triggers_score_only_when_changed(task, changed) -> None:
+    observed_at = datetime(2026, 8, 11, 14, 0, tzinfo=SHANGHAI)
 
     class UnchangedCandidates(DataRefresh):
         def refresh_task(self, request) -> RefreshOutcome:
             outcome = super().refresh_task(request)
-            if request.task is PipelineTask.CANDIDATE_QUOTES:
-                return replace(outcome, changed=False, data_version="candidate:stable")
+            if request.task is task:
+                return replace(outcome, changed=changed, data_version="input:stable")
             return outcome
 
     data = UnchangedCandidates()
@@ -1272,13 +1274,13 @@ def test_unchanged_candidate_refresh_does_not_trigger_another_score() -> None:
 
     runtime.start()
     runtime._process_pipeline_task(  # noqa: SLF001 - verifies the refresh-to-score handoff boundary
-        ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.MORNING_MAIN)
+        ScheduledPipelineTask(task, observed_at, MarketPhase.AFTERNOON)
     )
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
     assert decisions.input_quality_status() == ()
-    assert data.calls == []
+    assert data.calls == ([Strategy.TOMORROW, Strategy.D25] if changed else [])
 
 
 def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None:

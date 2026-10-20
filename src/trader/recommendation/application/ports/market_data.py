@@ -14,6 +14,7 @@ from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, Pipe
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot as _MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, LiveQuote
+from trader.recommendation.domain.market.refresh import IntradayRefreshResult
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult as _ResearchRefreshResult
 
 
@@ -185,7 +186,7 @@ class ReferenceDataPort(Protocol):
         security_master_codes: Sequence[str] | None = None,
     ) -> None: ...
 
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None: ...
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult: ...
 
 
 class MarketMetadataPort(Protocol):

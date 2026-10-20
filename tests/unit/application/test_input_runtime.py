@@ -36,7 +36,11 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
 )
 from trader.recommendation.domain.market.models import Board
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.domain.market.refresh import (
+    IntradayInputIdentity,
+    IntradayRefreshResult,
+    ResearchRefreshResult,
+)
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
@@ -1054,6 +1058,12 @@ def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_c
 
         def refresh_intraday_tail(self, codes, _observed_at):
             assert tuple(codes) == ("600001",)
+            return IntradayRefreshResult(
+                (IntradayInputIdentity("600001", "minute:updated", (), _observed_at, _observed_at),),
+                "intraday:updated",
+                _observed_at,
+                _observed_at,
+            )
 
     market = MutatingTailMarket((replace(feature, quote=replace(feature.quote, board=Board.MAIN, is_st=True)),))
     adapter = build_cycle_fixture(
@@ -1073,6 +1083,61 @@ def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_c
 
     assert built is not None
     assert built.trade_date == observed_at.date()
+
+
+def test_intraday_changes_invalidate_scoring_only_for_content_or_qualification(application_feature_factory) -> None:
+    observed_at = TEST_NOW
+
+    class MinuteMarket(_Market):
+        content = "facts:first"
+        restrictions = ()
+
+        def refresh_intraday_tail(self, codes, checked_at):
+            return IntradayRefreshResult(
+                tuple(
+                    IntradayInputIdentity(code, self.content, self.restrictions, observed_at, checked_at)
+                    for code in codes
+                ),
+                f"intraday:{self.content}:{'-'.join(self.restrictions) or 'ready'}",
+                checked_at,
+                checked_at,
+            )
+
+    market = MinuteMarket((application_feature_factory("600001", observed_at),))
+    adapter = build_cycle_fixture(
+        market, config_version="fixture", candidate_pool_size=120, decision_build=_decision_build()
+    )
+    _prime_scoring_cache(adapter, observed_at)
+    first = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, observed_at))
+    assert first.changed and first.changed_codes == ("600001",)
+    adapter.data.refresh(_request(observed_at, phase="afternoon"))
+    reads = len(market.candidate_reads)
+    epoch = adapter.data.scoring_epoch()
+
+    checked_at = observed_at + timedelta(seconds=5)
+    repeated = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, checked_at))
+    assert not repeated.changed and repeated.changed_codes == ()
+    assert adapter.data.scoring_epoch() == epoch
+    adapter.data.refresh(_request(checked_at, phase="afternoon"))
+    assert len(market.candidate_reads) == reads
+
+    for step, (content, restrictions) in enumerate(
+        (("facts:corrected", ()), ("facts:corrected", ("intraday_data_degraded",))), start=2
+    ):
+        market.content, market.restrictions = content, restrictions
+        checked_at = observed_at + timedelta(seconds=step * 5)
+        revised = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, checked_at))
+        assert revised.changed_codes == ("600001",)
+        assert revised.changed and revised.used_fallback == bool(restrictions)
+        assert adapter.data.scoring_epoch() != epoch
+        epoch = adapter.data.scoring_epoch()
+        adapter.data.refresh(_request(checked_at, phase="afternoon"))
+        assert len(market.candidate_reads) > reads
+        reads = len(market.candidate_reads)
+
+    old = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, observed_at))
+    assert not old.changed
+    assert adapter.data.scoring_epoch() == epoch
 
 
 def test_completed_immutable_input_remains_scoreable_after_a_new_quote_epoch(

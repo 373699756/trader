@@ -28,7 +28,7 @@ from trader.recommendation.domain.market.models import (
     LiveQuote,
     MarketQuote,
 )
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.domain.market.refresh import IntradayRefreshResult, ResearchRefreshResult
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
@@ -462,8 +462,8 @@ class MarketFeatureService:
         )
         self.history.refresh()
 
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None:
-        self.intraday.load(self._eligible_codes(codes, observed_at), observed_at)
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
+        return self.intraday.refresh(self._eligible_codes(codes, observed_at), observed_at)
 
     def read_candidate_features(
         self,
@@ -489,7 +489,9 @@ class MarketFeatureService:
             action_restrictions=action_restrictions,
         )
         intraday = (
-            self.intraday.cached(normalized, action_restrictions=action_restrictions) if include_intraday_tail else None
+            self.intraday.cached(normalized, action_restrictions=action_restrictions, observed_at=observed_at)
+            if include_intraday_tail
+            else None
         )
         features = self._apply_issuer_risk_facts(
             self.quotes.build_candidate_features(
