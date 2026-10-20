@@ -28,6 +28,8 @@ class PipelineStageOutput(Generic[_RecordT]):
     business_rejections: BusinessRejectionSummary | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.snapshot, PipelineStageSnapshot):
+            raise ValueError("active stage output requires an active snapshot")
         if len(self.records) != self.snapshot.output_count:
             raise ValueError("stage output records must match the snapshot output count")
         is_filter = self.snapshot.stage in {PipelineStage.STATIC_FILTER, PipelineStage.DYNAMIC_FILTER}

@@ -14,6 +14,10 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
+from trader.recommendation.domain.publication.historical_pipeline import (
+    HistoricalPipelineAudit,
+    HistoricalStageSnapshot,
+)
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
 DecisionStage = Literal["local", "hybrid"]
@@ -234,7 +238,7 @@ class ScoredDecision:
     population_count: int | None = None
     rejected_count: int | None = None
     selection_diagnostics: SelectionDiagnostics | None = None
-    pipeline: RecommendationPipelineStatus | None = None
+    pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     schema_version: str = DECISION_IDENTITY_SCHEMA_VERSION
     is_formal: bool = field(default=False, kw_only=True)
     version: str = field(init=False)
@@ -249,6 +253,10 @@ class ScoredDecision:
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("scored strategy must be tomorrow or d25")
+        if self.pipeline is not None and not isinstance(
+            self.pipeline, (RecommendationPipelineStatus, HistoricalPipelineAudit)
+        ):
+            raise ValueError("decision pipeline must be an active status or a historical audit")
         _validate_coordinates(self.trade_date, self.sequence, self.observed_at)
         _validate_scored_schema(self.schema_version, self.selection_diagnostics, self.items)
         if self.stage == "local" and self.parent_version is not None:
@@ -513,7 +521,9 @@ def _scored_payload(
         payload["population_count"] = decision.population_count
         payload["rejected_count"] = decision.rejected_count
     payload["selection_diagnostics"] = _selection_diagnostics_payload(decision.selection_diagnostics)
-    if decision.pipeline is not None:
+    if isinstance(decision.pipeline, HistoricalPipelineAudit):
+        payload["pipeline"] = _historical_pipeline_payload(decision.pipeline)
+    elif decision.pipeline is not None:
         payload["pipeline"] = _pipeline_payload(decision.pipeline)
     return payload
 
@@ -562,6 +572,62 @@ def PipelineSnapshotIdentityPayload(stage: PipelineStageSnapshot) -> dict[str, _
         "reasons": [
             {"code": reason.code, "label": reason.label, "count": reason.count, "severity": reason.severity.value}
             for reason in stage.reasons
+        ],
+        "source_health": {
+            "state": health.state.value,
+            "source_count": health.source_count,
+            "healthy_source_count": health.healthy_source_count,
+            "latest_success_at": health.latest_success_at.isoformat() if health.latest_success_at is not None else None,
+            "age_seconds": float(health.age_seconds) if health.age_seconds is not None else None,
+        },
+        "latency_ms": stage.latency_ms,
+        "degraded": stage.degraded,
+    }
+
+
+def _historical_pipeline_payload(pipeline: HistoricalPipelineAudit) -> dict[str, _Json]:
+    """Frozen persisted field whitelist; independent of the active pipeline encoder."""
+    payload: dict[str, _Json] = {
+        "current_stage": pipeline.current_stage,
+        "stages": [
+            {
+                "key": stage.key,
+                "state": stage.state,
+                "input_count": stage.input_count,
+                "output_count": stage.output_count,
+                "metric_ranges": [
+                    {"metric": item.metric, "minimum": item.minimum, "maximum": item.maximum}
+                    for item in stage.metric_ranges
+                ],
+                "threshold": stage.threshold,
+                "facets": [{"key": item.key, "count": item.count, "total": item.total} for item in stage.facets],
+                "reason_counts": [{"reason": item.reason, "count": item.count} for item in stage.reason_counts],
+            }
+            for stage in pipeline.stages
+        ],
+    }
+    if pipeline.stage_snapshots:
+        payload["stage_snapshots"] = [_historical_snapshot_payload(stage) for stage in pipeline.stage_snapshots]
+    return payload
+
+
+def _historical_snapshot_payload(stage: HistoricalStageSnapshot) -> dict[str, _Json]:
+    health = stage.source_health
+    return {
+        "stage": stage.stage.value,
+        "stage_order": stage.stage_order,
+        "input_batch_id": stage.input_batch_id,
+        "output_batch_id": stage.output_batch_id,
+        "as_of": stage.as_of.isoformat(),
+        "state": stage.state.value,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "rejected_count": stage.rejected_count,
+        "pending_count": stage.pending_count,
+        "failed_count": stage.failed_count,
+        "reasons": [
+            {"code": item.code, "label": item.label, "count": item.count, "severity": item.severity.value}
+            for item in stage.reasons
         ],
         "source_health": {
             "state": health.state.value,

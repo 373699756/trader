@@ -37,6 +37,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredTopSix,
     SelectionDiagnostics,
 )
+from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
@@ -165,7 +166,7 @@ class DecisionView:
     draft: DecisionDraftView | None = None
     selection_diagnostics: SelectionDiagnostics | None = None
     top_scores: tuple[DecisionItemView, ...] = ()
-    pipeline: RecommendationPipelineStatus | None = None
+    pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     outcome_summaries: tuple[OutcomeTierSummary, ...] = ()
     schema_version: str = DECISION_VIEW_SCHEMA_VERSION
 

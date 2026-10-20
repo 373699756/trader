@@ -23,6 +23,7 @@ from trader.recommendation.application.ports.decision_records import (
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence import decision_records as decision_records_module
+from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 
 
@@ -42,7 +43,8 @@ def test_fourteen_stage_audit_restarts_and_has_identical_get_sse_projections(tmp
     records.commit(expected)
     restarted = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     restored = restarted.load(Strategy.TOMORROW, current.trade_date)
-    assert restored == expected
+    assert restored.version == expected.version and restored.payload_hash == expected.payload_hash
+    assert CommittedRecordBytes(restored) == CommittedRecordBytes(expected)
     queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), restarted, Clock())
     history = SerializeDecisionView(queries.history(Strategy.TOMORROW, current.trade_date))
     event = SerializeEvent(UnifiedDecisionEventStream().publish_committed(BuildDecisionCommitted(restored.decision)))

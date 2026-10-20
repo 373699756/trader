@@ -8,23 +8,6 @@ from typing import Literal, TypeAlias, cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.serialization.fields import AsSequence
-from trader.recommendation.domain.evidence.pipeline import (
-    PipelineFacet,
-    PipelineMetricName,
-    PipelineMetricRange,
-    PipelineReasonCount,
-    PipelineStage,
-    PipelineStageKey,
-    PipelineStageSnapshot,
-    PipelineStageState,
-    PipelineStageStatus,
-    RecommendationPipelineStatus,
-    Severity,
-    SourceHealth,
-    SourceHealthState,
-    StageReasonAggregate,
-    StageState,
-)
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import ResearchComponentCoverage, ResearchComponentStatus
 from trader.recommendation.domain.publication.decision_identity import (
@@ -42,6 +25,20 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionStage,
     ScoredDecision,
     SelectionDiagnostics,
+)
+from trader.recommendation.domain.publication.historical_pipeline import (
+    HistoricalFacet,
+    HistoricalMetricRange,
+    HistoricalPipelineAudit,
+    HistoricalPipelineStage,
+    HistoricalReasonCount,
+    HistoricalSeverity,
+    HistoricalSourceHealth,
+    HistoricalSourceState,
+    HistoricalStageReason,
+    HistoricalStageSnapshot,
+    HistoricalStageState,
+    HistoricalStageStatus,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
@@ -340,7 +337,7 @@ def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None
     )
 
 
-def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
+def _pipeline_from_json(raw: object) -> HistoricalPipelineAudit | None:
     if raw is None:
         return None
     value = _object(raw, "recommendation pipeline", required=_PIPELINE_FIELDS, optional=frozenset({"stage_snapshots"}))
@@ -348,8 +345,8 @@ def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
     for raw_stage in _list(value.get("stages"), "pipeline stages"):
         stage = _object(raw_stage, "pipeline stage", required=_PIPELINE_STAGE_FIELDS)
         ranges = tuple(
-            PipelineMetricRange(
-                cast(PipelineMetricName, _text(item, "metric")),
+            HistoricalMetricRange(
+                _text(item, "metric"),
                 _number(item, "minimum"),
                 _number(item, "maximum"),
             )
@@ -359,7 +356,7 @@ def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
             )
         )
         facets = tuple(
-            PipelineFacet(
+            HistoricalFacet(
                 _text(item, "key"),
                 _integer(item, "count"),
                 _optional_integer(item.get("total"), "pipeline facet total"),
@@ -370,16 +367,16 @@ def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
             )
         )
         reasons = tuple(
-            PipelineReasonCount(_text(item, "reason"), _integer(item, "count"))
+            HistoricalReasonCount(_text(item, "reason"), _integer(item, "count"))
             for item in (
                 _object(raw_reason, "pipeline reason", required=_PIPELINE_REASON_FIELDS)
                 for raw_reason in _list(stage.get("reason_counts"), "pipeline reasons")
             )
         )
         stages.append(
-            PipelineStageStatus(
-                cast(PipelineStageKey, _text(stage, "key")),
-                cast(PipelineStageState, _text(stage, "state")),
+            HistoricalStageStatus(
+                _text(stage, "key"),
+                _text(stage, "state"),
                 _optional_integer(stage.get("input_count"), "pipeline input count"),
                 _optional_integer(stage.get("output_count"), "pipeline output count"),
                 ranges,
@@ -388,14 +385,14 @@ def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
                 reasons,
             )
         )
-    return RecommendationPipelineStatus(
-        cast(PipelineStageKey, _text(value, "current_stage")),
+    return HistoricalPipelineAudit(
+        _text(value, "current_stage"),
         tuple(stages),
         tuple(_snapshot_from_json(item) for item in _list(value.get("stage_snapshots", []), "stage snapshots")),
     )
 
 
-def _snapshot_from_json(raw: object) -> PipelineStageSnapshot:
+def _snapshot_from_json(raw: object) -> HistoricalStageSnapshot:
     value = _object(
         raw,
         "stage snapshot",
@@ -426,29 +423,32 @@ def _snapshot_from_json(raw: object) -> PipelineStageSnapshot:
     )
     success = _optional_text(health.get("latest_success_at"))
     reasons = tuple(
-        StageReasonAggregate(
-            _text(item, "code"), _text(item, "label"), _integer(item, "count"), Severity(_text(item, "severity"))
+        HistoricalStageReason(
+            _text(item, "code"),
+            _text(item, "label"),
+            _integer(item, "count"),
+            HistoricalSeverity(_text(item, "severity")),
         )
         for item in (
             _object(reason, "stage reason", required=frozenset({"code", "label", "count", "severity"}))
             for reason in _list(value.get("reasons"), "stage reasons")
         )
     )
-    return PipelineStageSnapshot(
-        PipelineStage(_text(value, "stage")),
+    return HistoricalStageSnapshot(
+        HistoricalPipelineStage(_text(value, "stage")),
         _integer(value, "stage_order"),
         _text(value, "input_batch_id"),
         _text(value, "output_batch_id"),
         _shanghai_datetime(_text(value, "as_of")),
-        StageState(_text(value, "state")),
+        HistoricalStageState(_text(value, "state")),
         _integer(value, "input_count"),
         _integer(value, "output_count"),
         _integer(value, "rejected_count"),
         _integer(value, "pending_count"),
         _integer(value, "failed_count"),
         reasons,
-        SourceHealth(
-            SourceHealthState(_text(health, "state")),
+        HistoricalSourceHealth(
+            HistoricalSourceState(_text(health, "state")),
             _integer(health, "source_count"),
             _integer(health, "healthy_source_count"),
             _shanghai_datetime(success) if success is not None else None,

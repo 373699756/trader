@@ -22,6 +22,14 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, DecisionQuote
+from trader.recommendation.domain.publication.historical_pipeline import (
+    HistoricalFacet,
+    HistoricalMetricRange,
+    HistoricalPipelineAudit,
+    HistoricalReasonCount,
+    HistoricalStageSnapshot,
+    HistoricalStageStatus,
+)
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -143,7 +151,9 @@ def _serialize_long_item(item: DecisionItemView) -> dict[str, object]:
     }
 
 
-def _serialize_pipeline(pipeline: RecommendationPipelineStatus | None) -> dict[str, object] | None:
+def _serialize_pipeline(
+    pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None,
+) -> dict[str, object] | None:
     if pipeline is None:
         return None
     return {
@@ -153,7 +163,7 @@ def _serialize_pipeline(pipeline: RecommendationPipelineStatus | None) -> dict[s
     }
 
 
-def _serialize_stage_snapshot(stage: PipelineStageSnapshot) -> dict[str, object]:
+def _serialize_stage_snapshot(stage: PipelineStageSnapshot | HistoricalStageSnapshot) -> dict[str, object]:
     return {
         "stage": stage.stage.value,
         "stage_order": stage.stage_order,
@@ -182,7 +192,7 @@ def _serialize_stage_snapshot(stage: PipelineStageSnapshot) -> dict[str, object]
     }
 
 
-def _serialize_pipeline_stage(stage: PipelineStageStatus) -> dict[str, object]:
+def _serialize_pipeline_stage(stage: PipelineStageStatus | HistoricalStageStatus) -> dict[str, object]:
     return {
         "key": stage.key,
         "state": stage.state,
@@ -192,20 +202,20 @@ def _serialize_pipeline_stage(stage: PipelineStageStatus) -> dict[str, object]:
         "threshold": stage.threshold,
         "facets": [_serialize_pipeline_facet(value) for value in stage.facets],
         "reason_counts": [_serialize_pipeline_reason(value) for value in stage.reason_counts],
-        "duration_ms": stage.duration_ms,
-        "rejected_count": stage.rejected_count,
+        "duration_ms": stage.duration_ms if isinstance(stage, PipelineStageStatus) else None,
+        "rejected_count": stage.rejected_count if isinstance(stage, PipelineStageStatus) else None,
     }
 
 
-def _serialize_pipeline_range(value: PipelineMetricRange) -> dict[str, object]:
+def _serialize_pipeline_range(value: PipelineMetricRange | HistoricalMetricRange) -> dict[str, object]:
     return {"metric": value.metric, "minimum": value.minimum, "maximum": value.maximum}
 
 
-def _serialize_pipeline_facet(value: PipelineFacet) -> dict[str, object]:
+def _serialize_pipeline_facet(value: PipelineFacet | HistoricalFacet) -> dict[str, object]:
     return {"key": value.key, "count": value.count, "total": value.total}
 
 
-def _serialize_pipeline_reason(value: PipelineReasonCount) -> dict[str, object]:
+def _serialize_pipeline_reason(value: PipelineReasonCount | HistoricalReasonCount) -> dict[str, object]:
     return {"reason": value.reason, "count": value.count}
 
 

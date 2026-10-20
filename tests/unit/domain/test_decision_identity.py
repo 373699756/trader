@@ -34,6 +34,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
     SelectionDiagnostics,
 )
+from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.infra.persistence.decision_record_codec import (
     CommittedRecordBytes,
@@ -137,7 +138,9 @@ def test_formal_record_round_trip_preserves_complete_recommendation_pipeline() -
     encoded = CommittedRecordBytes(record)
     restored = CommittedRecordFromBytes(encoded)
 
-    assert restored.decision.pipeline == current.pipeline
+    assert isinstance(restored.decision.pipeline, HistoricalPipelineAudit)
+    assert restored.decision.content_hash == record.decision.content_hash
+    assert CommittedRecordBytes(restored) == encoded
     assert json.loads(encoded)["decision"]["pipeline"]["current_stage"] == "concentration"
     assert len(json.loads(encoded)["decision"]["pipeline"]["stages"]) == len(PIPELINE_STAGE_ORDER)
 
@@ -170,8 +173,12 @@ def test_fourteen_stage_audit_survives_formal_codec_and_participates_in_hash() -
     current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=snapshots))
     record = CommittedDecisionRecord(FormalScoredDecision(current), NOW.replace(hour=15, minute=0), "scheduled")
     restored = CommittedRecordFromBytes(CommittedRecordBytes(record))
-    assert restored == record
-    assert restored.decision.pipeline.stage_snapshots == snapshots
+    assert isinstance(restored.decision.pipeline, HistoricalPipelineAudit)
+    assert restored.version == record.version and restored.payload_hash == record.payload_hash
+    assert CommittedRecordBytes(restored) == CommittedRecordBytes(record)
+    assert tuple(item.stage.value for item in restored.decision.pipeline.stage_snapshots) == tuple(
+        item.stage.value for item in snapshots
+    )
     changed = replace(
         current,
         pipeline=replace(current.pipeline, stage_snapshots=(replace(snapshots[0], latency_ms=11), *snapshots[1:])),

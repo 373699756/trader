@@ -60,6 +60,8 @@ class SourceHealth:
     age_seconds: float | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.state, SourceHealthState):
+            raise ValueError("active source health requires the active state type")
         if self.source_count < 0 or not 0 <= self.healthy_source_count <= self.source_count:
             raise ValueError("source health counts are invalid")
         if self.latest_success_at is not None:
@@ -80,6 +82,8 @@ class StageReasonAggregate:
     severity: Severity
 
     def __post_init__(self) -> None:
+        if not isinstance(self.severity, Severity):
+            raise ValueError("active stage reasons require the active severity type")
         if _PIPELINE_KEY.fullmatch(self.code) is None or not self.label.strip() or self.count < 1:
             raise ValueError("pipeline reason aggregate is invalid")
 
@@ -119,6 +123,12 @@ class PipelineStageSnapshot:
     degraded: bool
 
     def __post_init__(self) -> None:
+        if not isinstance(self.stage, PipelineStage):
+            raise ValueError("active stage snapshots require the active stage type")
+        if not isinstance(self.state, StageState) or not isinstance(self.source_health, SourceHealth):
+            raise ValueError("active stage snapshots require active state and health types")
+        if any(not isinstance(item, StageReasonAggregate) for item in self.reasons):
+            raise ValueError("active stage snapshots require active reason types")
         if self.stage_order != PIPELINE_STAGES.index(self.stage) + 1:
             raise ValueError("pipeline stage order does not match the stage")
         if not self.input_batch_id.strip() or not self.output_batch_id.strip():
@@ -148,6 +158,8 @@ def _require_unique_reason_codes(reasons: tuple[StageReasonAggregate, ...]) -> N
 
 def ValidateStageBatchContinuity(stages: tuple[PipelineStageSnapshot, ...]) -> None:
     """Reject a stage list whose immutable handoff identities do not line up."""
+    if any(not isinstance(item, PipelineStageSnapshot) for item in stages):
+        raise ValueError("active pipeline requires active stage snapshots")
     if tuple(item.stage for item in stages) != PIPELINE_STAGES:
         raise ValueError("pipeline stage snapshots must contain all stages in order")
     for previous, current in zip(stages, stages[1:], strict=False):
@@ -271,6 +283,12 @@ class PipelineStageStatus:
     rejected_count: int | None = None
 
     def __post_init__(self) -> None:
+        if (
+            any(not isinstance(item, PipelineMetricRange) for item in self.metric_ranges)
+            or any(not isinstance(item, PipelineFacet) for item in self.facets)
+            or any(not isinstance(item, PipelineReasonCount) for item in self.reason_counts)
+        ):
+            raise ValueError("active diagnostics require active evidence types")
         if self.input_count is not None and self.input_count < 0:
             raise ValueError("pipeline input count cannot be negative")
         if self.output_count is not None and self.output_count < 0:
@@ -300,6 +318,8 @@ class RecommendationPipelineStatus:
     stage_snapshots: tuple[PipelineStageSnapshot, ...] = ()
 
     def __post_init__(self) -> None:
+        if any(not isinstance(item, PipelineStageStatus) for item in self.stages):
+            raise ValueError("active pipeline requires active diagnostic types")
         keys = tuple(item.key for item in self.stages)
         if keys != PIPELINE_STAGE_ORDER or self.current_stage not in keys:
             raise ValueError("recommendation pipeline stages are invalid")

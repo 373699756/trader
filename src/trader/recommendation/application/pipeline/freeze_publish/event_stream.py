@@ -23,6 +23,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredTopSix,
     SelectionDiagnostics,
 )
+from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
 
 ResyncReason = Literal[
@@ -49,7 +50,7 @@ class DecisionReplacementPatch:
     degraded_reasons: tuple[str, ...]
     items: tuple[DecisionItem, ...]
     top_scores: tuple[DecisionItem, ...] = ()
-    pipeline: RecommendationPipelineStatus | None = None
+    pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
 
 
 @dataclass(frozen=True)

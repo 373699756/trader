@@ -328,7 +328,7 @@ class UnifiedDecisionIndex:
         with self._lock:
             existing = self._formal.get(record.strategy)
             if existing is not None:
-                return existing == record
+                return existing.version == record.version and existing.payload_hash == record.payload_hash
             seal = self._seals.get(record.strategy)
             if seal is None or seal.decision.version != record.decision.version:
                 return False
@@ -344,7 +344,11 @@ class UnifiedDecisionIndex:
             if current is not None and current.trade_date > record.trade_date:
                 return False
             existing = self._formal.get(record.strategy)
-            if existing is not None and existing.trade_date == record.trade_date and existing != record:
+            if (
+                existing is not None
+                and existing.trade_date == record.trade_date
+                and (existing.version != record.version or existing.payload_hash != record.payload_hash)
+            ):
                 return False
             self._current[record.strategy] = record.decision
             self._overlays.pop(record.strategy, None)
