@@ -1,243 +1,149 @@
 # A股策略看板
 
-本项目是在个人 PC 上运行的 A 股推荐研究工具。它从公开行情构建候选，执行确定性本地评分，可选使用 DeepSeek 结构化风险复核，并通过只读 Web 看板展示 Tomorrow、D25 和 Long 三类结果。
+个人PC上的A股研究工具：读取行情和本地资料，过滤、评分并通过只读Web展示Tomorrow、D25及Long。
+结果仅供研究，不提供真实下单或收益保证。
 
-结果只用于研究，不构成投资建议，不提供真实下单能力，也不保证收益。
+## 1. 运行环境
 
-## 运行范围
+| 项目 | 要求 |
+| --- | --- |
+| Python | 3.10–3.14 |
+| 浏览器 | 当前稳定版Chrome、Edge、Firefox桌面版 |
+| 默认地址 | http://127.0.0.1:5000 |
+| 持久数据 | data_dir，默认data/ |
+| 锁、日志和临时产物 | runtime_dir，默认.runtime/trader/ |
 
-- Python 3.10-3.14。
-- 当前稳定版 Chrome、Edge 或 Firefox 桌面浏览器。
-- 仅支持个人 PC；手机和平板浏览器不属于产品范围，也不纳入发布验收。
-- 默认仅监听 `127.0.0.1`，不提供远程身份认证。
-- 持久数据写入配置中的 `data_dir`（默认 `data/`）；`.runtime/trader` 保存进程锁、日志和临时产物。不需要 Redis、Celery、Node 或外部数据库。
+不需要Redis、Celery、Node或外部数据库。依赖和公开入口以[pyproject.toml](pyproject.toml)为准。
 
-## 一键启动
+## 2. 启动和准备数据
 
-Linux、macOS 或 WSL：
+### 2.1 一键启动
 
-```bash
+~~~bash
+# Linux、macOS或WSL
 chmod +x run.sh
 ./run.sh
-```
+~~~
 
-Windows PowerShell：
-
-```powershell
+~~~powershell
+# Windows PowerShell
 .\run.ps1
-```
+~~~
 
-Windows CMD：
+Windows CMD执行run.bat。脚本按需创建.venv并安装项目，默认启动V2。
+启动可以显示缺数据状态，不会自动训练；坏模型与缺模型分别报错，不能伪造预测。
 
-```bat
-run.bat
-```
+### 2.2 日常命令
 
-脚本在需要时创建 `.venv`，从 `pyproject.toml` 安装项目，然后使用绝对配置路径启动 `trader-server`。默认地址为 <http://127.0.0.1:5000>。
+| 任务 | 命令 |
+| --- | --- |
+| 查看帮助 | ./run.sh help |
+| 更新在线日线和公司资料 | ./run.sh sync |
+| 只更新在线日线 | ./run.sh sync market |
+| 只更新公司资料 | ./run.sh sync company |
+| 维护完整历史并联合训练V2/V3 | ./run.sh train |
+| 启动V3 | ./run.sh --profile v3 |
+| 同进程启动双档 | ./run.sh --profile both |
 
-常用命令与配置：
+首次使用建议：
 
-```bash
-TRADER_PORT=5050 ./run.sh
-DEEPSEEK_API_KEY=your-key ./run.sh
-TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
-.venv/bin/python3 scripts/diagnose_runtime.py --profile local --output -
-./run.sh --profile v2
-./run.sh --profile v3
-./run.sh --profile both
-./run.sh train
-./run.sh sync
-./run.sh sync market
-./run.sh sync company
-./run.sh help
-```
+1. 运行sync，准备在线短窗口和公司资料；待补时按原因修复或续传。
+2. 运行train，维护完整历史并训练双档双头模型；来源或样本不足时不会发布合格模型。
+3. 正常启动或重启服务，加载所选档位模型。
+4. 查看页面输入准备和诊断，确认是否真正达到评分条件。
 
-日常启动不需要参数，默认使用 V2 并加载 `data/training/models/v2/{tomorrow,d25}` 双头工件；
-追加 `--profile v2|v3` 可单独启动一档，`--profile both` 在同一进程启动两档；这些选择不会写回配置。双档模式的 Tomorrow/D25 结果、冻结和历史按档位隔离，Long 固定由 V2 单一采集并供两档页面只读。启动不执行训练，所选档位任一bundle损坏时失败关闭。
-`local`诊断检查配置、只读历史维护状态、研究状态和离线性能，支持`--scoring-profile v2|v3|both`。`train`先维护完整历史，验收后在同一进程联合训练V2/V3；双档工件与当前数据、配置、实现身份完整匹配时复用。`sync market`独立更新在线短窗口；`sync company`增量更新公司资料单库。`sync`共用一次官方总体与ST准备，顺序执行market和company；单项失败继续，取消、配置或公共准备失败停止。stdout仅最终JSON，进度走stderr，退出码0/1/2/130分别表示完成、失败或待补、参数/配置错误、取消。
+train可能下载大量历史，不是普通启动的前置脚本。
+sync单项失败仍执行另一项，取消或公共准备失败停止；stdout为最终JSON，进度走stderr。
+退出码0/1/2/130分别为完成、失败或待补、参数/配置错误、取消。
 
-`./run.sh train`使用Tencent取得完整历史的raw/qfq价格对，BaoStock只提供历史行业证据。已发布快照中的价格缺口会继续报告和补取；训练只使用有效样本，并由各档样本覆盖门禁判断能否发布。历史维护失败或参考数据不完整仍阻断训练；不跨来源拼价格。
+### 2.3 当前后台行为与目标
 
-`./run.sh sync market`：独立取得官方股票名单与 Tencent 日历，默认8个worker下载短窗口，不调用 BaoStock 网络。
-在线 V2/V3 共读 `data/market/daily_window.sqlite3`，按最近251/61个市场交易日范围读取真实raw/qfq价格对；价格、两档身份与完成断点在同一个WAL/FULL事务提交。下载与单写入者有界并行，失败保留有效窗口。后台仍仅在进程运行到15:10时尝试一次，晚启动或失败后由`sync market`续传。
-完整history继续用于训练、研究和结果结算；在线请求只读已有投影，不等待下载。
+| 事项 | 当前行为 |
+| --- | --- |
+| 公司资料 | 服务运行到09:15/12:45会执行独立增量任务 |
+| 在线短窗口 | 运行到15:10尝试一次；晚启动不补跑，失败后手动sync market |
+| 完整历史 | 已安装系统任务可在15:10/20:30检查周更；不自动训练 |
+| 模型更新 | 手工train后正常重启，不热加载或自动切档 |
 
-历史自动化固定为“每日检查、归档周更、训练到期只提醒”。当前版本不再提供公开的安装/卸载入口；已有系统任务仍可调用内部
-`trader.entrypoints.cli sync history` 零参数命令；旧任务须更新命令配置，模板已同步。每天按上海时间 15:10 和
-20:30唤醒同一维护命令，只有归档截止日落后至少7个自然日且上海时间不早于15:10才执行下载；未到期返回`not_due`，
-无归档返回`blocked`并等待手工`./run.sh train`初始化。手工下载不受周更门槛限制，失败后下次到期唤醒可续传。
-任务日志写入`.runtime/trader/logs/history-automation.log`并按大小轮转。同一训练due
-身份在每个上海日期最多通知一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会
-自动训练、切换档位或重启服务。只读 `history-automation-status` 仍可查看持久化 due、提醒和活动快照状态。
+目标是慢数据收盘后手动维护、启动加载本地投影；这些自动任务尚未在本轮文档整理中删除。
+目标缓存512 MiB、推荐进程RSS预算2 GiB也尚未生效；代码当前仍为248/384 MiB。原理和实现差距见[工程设计第7节](docs/2_工程设计.md#7-当前运行内存缓存与性能契约)。
 
-历史使用 `data/market/history/catalog.sqlite3` 与 `prices_YYYY.sqlite3` 年库；逐月逻辑摘要和观察序号保留旧快照隔离，绑定参考与发布指针同库提交。旧格式不参与活动读取，重建或真实切换另行授权。
+## 3. 配置与手动安装
 
-冻结、运行快照、共享预算、资格与研究持久证据统一归入`data/`；`.runtime`只保留进程锁、日志和临时产物。隔离迁移使用`scripts/migrate_runtime_data.py build --source <仓库外旧工作区副本> --target <仓库外新data目录> --default-profile v2`，不替换活动数据。`research-status`和研究诊断只读同一业务状态。
-
-启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 当前进程。
-
-## 荐股漏斗诊断
-
-优先使用统一入口一次执行 Web 漏斗、沪深交易所基础资料、历史源、腾讯实时报价和 Tushare 能力检查；各专项能力由
-`scripts/runtime_diagnostics/` 内部职责模块维护，不再保留多个顶层包装脚本：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py \
-  --profile live \
-  --base-url http://127.0.0.1:5000 \
-  --output -
-```
-
-`runtime` 只检查运行中的 Web，`sources` 只实测数据源，默认 `live` 合并两者；`full` 额外执行 Firefox
-刷新链与离线生产性能门禁。命令会在单项失败后继续扫描，最终报告使用
-`trader-runtime-diagnostics`，只保留聚合计数、延迟、状态和定位结论，不转发股票代码、价格、Token、
-供应商原始载荷或子进程 stderr。需要留档时，`--output` 只能指向仓库外绝对路径。
-也可执行 `make diagnose-live`；耗时更长的浏览器与性能组合必须显式执行 `make diagnose-full`。
-
-历史为空时可继续通过统一入口拆分生产组合路由和单一供应商；默认值为 `composite`，该参数只影响
-只读诊断，不改变运行服务的来源优先级：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py \
-  --profile history \
-  --history-source tencent \
-  --codes 688981 \
-  --output -
-```
-
-只复测单一边界时仍使用同一个入口，profile 可选 `web`、`security-master`、`history`、`tencent`、`tushare`、`browser`
-和 `performance`。例如只检查荐股漏斗：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py \
-  --profile web \
-  --base-url http://127.0.0.1:5000 \
-  --web-samples 6 \
-  --web-interval-seconds 5 \
-  --output -
-```
-
-脚本同时读取 status 与 tomorrow/d25 current，检测候选、特征、证券身份、历史和完整评分
-持续为 0、已形成阶段回退为 0、input quality 消失、release/schema 及 status/current 身份不一致。
-正式推荐或观察数量单独为 0 可以是合法业务空集，不会据此报警；合法空 current 缺少
-`selection_diagnostics.empty_reason` 才会报错。报告只包含聚合计数和版本身份，不输出股票代码。
-存在错误时进程退出码为 1；连接失败同样生成结构化 JSON，便于定时任务留证。
-
-## 关闭与重启
-
-在运行服务的终端按一次 Ctrl+C 会开始安全关闭，Web、冻结任务和后台资源共享一个最长
-30 秒的总期限；不是每个组件分别等待 30 秒。关闭期间再次按 Ctrl+C 会立即强制退出。
-Linux/macOS 的正常 `SIGTERM` 和 Windows `SIGBREAK` 使用相同规则。关闭浏览器不会停止
-服务。
-
-如果再次执行 `./run.sh` 时已有服务持有同一运行目录，脚本会返回非零并显示现有浏览器地址。
-这表示旧服务仍在运行，并不表示锁文件损坏或新代码已经加载；请在原启动终端按一次 Ctrl+C，
-等待正常退出后再启动，不要删除 `.runtime/trader/server.lock`。
-
-正常重启会重新预热行情、候选、观察池和研究/review 等纯内存状态；正式推荐、合法检查点、
-预算、统一数据平面和收盘 overlay 按各自持久化契约恢复。强制结束进程或断电属于异常终止，
-正式冻结会在下次启动时按恢复载荷和 SHA-256 校验恢复或 fail closed。
-
-## 手动安装
-
-```bash
+~~~bash
 python3 -m venv .venv
 .venv/bin/python3 -m pip install -e ".[dev]"
 .venv/bin/trader-cli --config "$PWD/config/runtime.json" validate-config
 .venv/bin/trader-server --config "$PWD/config/runtime.json"
-```
+~~~
 
-配置路径必须为绝对路径。`TRADER_CONFIG` 可代替 `--config`。DeepSeek 密钥优先从
-`DEEPSEEK_API_KEY` 读取，也可使用 `DEEPSEEK_API_KEY_FILE` 或项目根目录
-`.token_key` 的 `DEEPSEEK_API_KEY` 字段；密钥不写入配置、快照或日志。
+| 变量 | 用途 |
+| --- | --- |
+| TRADER_CONFIG | 本次使用的绝对配置路径 |
+| TRADER_HOST、TRADER_PORT | 本次服务监听地址、端口 |
+| DEEPSEEK_API_KEY / DEEPSEEK_API_KEY_FILE | 可选结构化风险复核密钥 |
+| TUSHARE_TOKEN / TUSHARE_TOKEN_FILE | 可选daily研究审计凭据 |
 
-## Tushare 慢数据
+配置也可指定.token_key中的对应字段；环境变量优先。POSIX下用chmod 600 .token_key限制权限，不将密钥提交到Git。
+Tushare不承担生产qfq或财务补缺；无密钥时按其职责降级，不阻塞合法本地结果。
+旧HOST/PORT不映射到启动进程。
 
-当前120积分档的Tushare只保留`daily`未复权日线的独立研究审计。生产股票身份使用交易所官方列表，qfq使用Tencent，公司财务和风险使用已发布公司资料；无消费者的Tushare估值、财务增强和前复权接口已删除。权限不足的参考能力不提交空任务，Token缺失仍明确报告。
-`scripts/diagnose_runtime.py --profile tushare --output -` 可只读实测当前 Token，统一报告输出延迟、
-能力和进程内配额计数，不会输出 Token、价格、逐股载荷或完整供应商响应。
+## 4. 诊断和常见问题
 
-已有完整日线归档时，可用下列研究命令只读审计历史行业事实；它不请求供应商、不修改归档，数据不足时以
-退出码 1 和 `historical_data_insufficient` 失败关闭。默认输出只有聚合结果；逐股票与逐事实 hash 必须配合
-`--include-details` 写到仓库外绝对路径。
+~~~bash
+# 不需要运行服务的本地检查
+.venv/bin/python3 scripts/diagnose_runtime.py --profile local --output -
 
-```bash
-.venv/bin/trader-cli --config "$PWD/config/runtime.json" research-industry-audit \
-  --history-root "$PWD/data/market/history" \
-  --required-sample-codes 300 \
-  --tushare-access-points 120 \
-  --output -
-```
+# 运行中的服务和数据源检查
+.venv/bin/python3 scripts/diagnose_runtime.py --profile live \
+  --base-url http://127.0.0.1:5000 --output -
+~~~
 
-项目根目录 `.token_key` 同时保存两个独立字段：
+统一脚本的专项参数见[scripts说明](scripts/README.md)。报告需要保存时使用显式仓库外路径。
 
-```bash
-DEEPSEEK_API_KEY=your-deepseek-key
-TUSHARE_TOKEN=your-tushare-token
-```
+| 现象 | 先检查什么 |
+| --- | --- |
+| 没有推荐 | 输入准备、主要阻断原因；区分数据不足和合法业务空集 |
+| 模型未就绪 | 所选档位双头是否完成训练、是否重启；文件存在不等于身份合格 |
+| 日线待更新 | sync market结果、窗口截止和逐股缺失；不依靠反复重启补下载 |
+| 公司风险覆盖不足 | sync company页/正文待补及来源失败，不能当作无风险 |
+| local诊断model_unavailable | 缺模型，未完成性能测试；不是性能通过 |
+| 旧进程持锁 | 在原终端正常关闭，不删除server.lock |
+| 源或DeepSeek失败 | 保留最近有效结果，查看来源年龄与明确降级原因 |
 
-Token 优先从 `TUSHARE_TOKEN` 读取，其次读取 `TUSHARE_TOKEN_FILE`，最后读取
-`config/market_data.json` 中 `market_data.tushare.token_file` 指向的赋值文件，默认即
-`.token_key`。POSIX 系统必须限制该文件仅属主可读写，例如：
+缺少qfq不触发评分线程现场下载；只读Web请求不抓行情、训练或评分。
 
-```bash
-chmod 600 .token_key
-./run.sh
-```
+## 5. 关闭与页面行为
 
-Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。服务从 `data/market/daily_window.sqlite3` 短窗口构造历史特征，
-后台短窗口维护与 `./run.sh sync market` 共用 Tencent 有界并发用例；不依赖 Tushare 或 BaoStock 网络。
-短窗口暂不可用时页面明确显示待下载/待更新，
-已有最近有效视图则继续降级使用。东方财富/新浪全市场实时行情、腾讯
-候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会写入配置、
-日志、SQLite、快照或 API。
+1. Ctrl+C开始共同最长30秒的安全关闭，再次中断可强制退出；关闭浏览器不停止服务。
+2. SIGTERM和Windows SIGBREAK使用同一正常关闭流程。
+3. 页面显示同轮评分前六及推荐/关注/回避状态；模型只作诊断和成本门，DeepSeek只作结构化风险否决。
+4. Tomorrow/D25在15:00首次正式冻结后不被迟到结果覆盖；后续报价更新不改变名单和分数。
+5. Long为固定研究名单当前行情，不评分、不冻结。
+6. 双档短线结果和历史分别隔离，Long由V2单一采集供只读展示。
 
-## Web API
+完整路由、ETag、SSE与恢复语义见[工程设计第9节](docs/2_工程设计.md#9-唯一-web-api-与-sse)。
 
-- `GET /api/decisions/<tomorrow|d25|long>/current`
-- `GET /api/decisions/<tomorrow|d25>/history?date=YYYY-MM-DD`
-- `GET /api/decisions/<tomorrow|d25>/dates`
-- `GET /api/status`
-- `GET /api/events`
+## 6. 检查与文档
 
-当前快照支持 ETag。SSE 使用单调事件 ID 和 `Last-Event-ID` 恢复；游标过旧时返回 `resync_required`。Web 请求只读取已发布快照，不抓行情、不评分、不调用 DeepSeek。
-Long 的三个固定分类和股票身份由打包资源立即显示；当前决策 只增强实时行情，服务或行情暂时
-不可用时不会把固定名单隐藏。
-
-## 关键契约
-
-Tomorrow/D25 的最终分使用已扣本地风险的 `local_score`，按 `ROUND_HALF_UP` 保留两位小数。模型只提供预测诊断和成本净效用门；DeepSeek 只提供经证据核验的结构化风险 veto，不参与数值评分。
-
-- tomorrow 和 d25 于 15:00 first-wins 冻结，运行与新研究评价锚点同为 15:00。
-- long 不冻结、不进入历史推荐。
-- DeepSeek 每日物理请求全局硬上限为 168。
-
-产品、架构、运行、API 与运维契约见
-[工程设计](docs/2_工程设计.md)，候选、过滤、评分、DeepSeek、融合与
-TopK 契约见[荐股策略文档](docs/1_评分逻辑.md)，协作与强制 review 流程见
-[AGENTS.md](AGENTS.md)。历史数据下载、Tomorrow 训练和训练工件参与实时荐股的完整说明见
-[下载训练文档](docs/4_下载训练.md)。
-
-## 质量检查
-
-```bash
+~~~bash
 make format-check
 make lint
 make type-check
-make test
+make test-full
 make package
-```
+~~~
 
-`make package` 构建 sdist 和 wheel。发布前还必须在仓库外安装 wheel，验证 console scripts、模板、CSS、JavaScript 和图标资源。
+make test是快速集，不代替全量。发布另需仓库外wheel安装及真实专项验收，不能只凭HTTP200或构建成功。
 
-## 目录
+| 需要了解 | 入口 |
+| --- | --- |
+| 过滤、因子、公式和收益验证 | [评分逻辑](docs/1_评分逻辑.md) |
+| 架构、内存、调度、API及发布 | [工程设计](docs/2_工程设计.md) |
+| 当前任务、证据和未完成项 | [工程实施](docs/3_工程实施.md) |
+| 下载、训练、数据布局和恢复 | [下载训练](docs/4_下载训练.md) |
+| 人工审查问题和判断方法 | [人工审查](docs/5_人工审查.md) |
+| 协作和Git规则 | [AGENTS.md](AGENTS.md) |
 
-```text
-config/          运行与策略配置
-docs/               工程设计、评分逻辑、工程实施与下载训练文档
-scripts/            工程辅助脚本
-src/trader/         唯一活动产品包
-tests/              单元、组件、契约和集成测试
-data/                  业务持久数据，不进入 Git
-.runtime/trader/        进程锁、日志和临时产物，不进入 Git
-```
+源码只在src/trader；config保存配置，tests保存测试，scripts保存既有诊断和维护工具。
+业务数据、虚拟环境、缓存、构建产物和临时报告不进入提交。

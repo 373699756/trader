@@ -112,7 +112,10 @@ With an annual-layout baseline, the same command compares shared-window
 publication reads and writes instead. `--download-sizes` accepts up to 5000
 synthetic securities, and `--history-days` sets the window length (capped at 251).
 Each worker publishes bounded batches, reads both profiles through `iter_windows`,
-and reports complete identity scans and elapsed time. Five alternating rounds
+and reports complete identity scans, connections, transactions, elapsed time,
+sampled WAL peak, and process RSS. It also measures history batch writes and
+narrow training reads, training sample writes/reads, and company publication
+writes/reads, using up to 1000 stocks and 20 dates per adapter fixture. Five alternating rounds
 must improve reads and keep initial/incremental writes within 10% of the baseline.
 For a focused identity-scan measurement use `--download-sizes 5000 --history-days 5`;
 this is a synthetic metadata workload, not full-market service acceptance.
