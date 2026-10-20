@@ -76,7 +76,7 @@ from trader.recommendation.infra.normalization.merge import (
 from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsMissingError
 from trader.training.application.scoring_hot_path_baseline import (
     BuildScoringHotPathBaseline,
     ScoringHotPathBaseline,
@@ -235,11 +235,22 @@ def _model_scoring_router(profile: LoadedScoringProfile, cost_policy: ExecutionC
 
 def Main(argv: list[str] | None = None) -> int:
     args = BuildParser().parse_args(argv)
-    report = Run(
-        args.config.resolve(),
-        baseline_path=args.baseline.resolve() if args.baseline else None,
-        scoring_profile=args.profile,
-    )
+    try:
+        report = Run(
+            args.config.resolve(),
+            baseline_path=args.baseline.resolve() if args.baseline else None,
+            scoring_profile=args.profile,
+        )
+    except ScoringModelsMissingError:
+        report = {
+            "schema_version": "production_performance",
+            "status": "failed",
+            "workload": {},
+            "measurements": {},
+            "memory": {},
+            "failures": ["model_unavailable"],
+            "network_calls": 0,
+        }
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if args.output is not None:
         args.output.write_text(f"{payload}\n", encoding="utf-8")

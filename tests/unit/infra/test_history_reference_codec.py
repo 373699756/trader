@@ -453,7 +453,7 @@ def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, da
     assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "completed"
     snapshot = HistoryControlIndex(root / "catalog.sqlite3").load_published_state().snapshot
     HistorySnapshotReader(root).reference_index(snapshot)
-    source = HistoryControlIndex(root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
+    HistoryControlIndex(root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
     with closing(OpenSqliteConnection(root / "catalog.sqlite3")) as connection, connection:
         if damage == "missing":
             connection.run("DELETE FROM bound_references")

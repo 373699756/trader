@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-from tests.helpers.qfq import publish_windows
-from trader.infra.settings.data_paths import DataPaths
-
 import hashlib
 import json
 import re
 import shutil
 import sqlite3
-import subprocess
-import sys
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
@@ -19,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.helpers.qfq import publish_windows
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import QfqPairPublicationError, UpdateQfqWindows
@@ -47,6 +43,7 @@ from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 from trader.entrypoints import cli
+from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
@@ -162,11 +159,12 @@ def test_invalid_code_creates_no_database(tmp_path, code):
     assert not cache.path.exists()
 
 
-def test_corrupt_prices_fail_closed(tmp_path):
+@pytest.mark.parametrize("corrupt_price", (999, b"invalid"))
+def test_corrupt_prices_fail_closed(tmp_path, corrupt_price):
     cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     publish_windows(cache, (_window(),), "fixture")
     with closing(OpenSqliteConnection(cache.path)) as connection, connection:
-        connection.run("UPDATE bars SET qfq_close=999 WHERE code='600001'")
+        connection.run("UPDATE bars SET qfq_close=? WHERE code='600001'", (corrupt_price,))
     with pytest.raises(RuntimeError, match="identity_mismatch"):
         cache.read_code("600001")
 
@@ -174,6 +172,7 @@ def test_corrupt_prices_fail_closed(tmp_path):
 def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, monkeypatch):
     import threading
     from concurrent.futures import ThreadPoolExecutor
+
     from trader.download.infra import qfq_sqlite as module
 
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")

@@ -15,7 +15,6 @@ import pytest
 from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
 from trader.bootstrap import BuildSystem
 from trader.infra.initialization import InitializeIfAvailable
-from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata

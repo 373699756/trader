@@ -6,6 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle, TrainedHeadModelBundle
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract

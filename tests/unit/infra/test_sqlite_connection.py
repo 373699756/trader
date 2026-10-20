@@ -4,8 +4,13 @@ from contextlib import closing
 
 import pytest
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteTransaction
-from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteSchema
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    OpenSqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteTransaction,
+)
 
 
 def test_schema_installation_is_atomic_and_driver_api_is_hidden(tmp_path):

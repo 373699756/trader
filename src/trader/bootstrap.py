@@ -178,7 +178,7 @@ from trader.recommendation.infra.runtime.initialization import FixedCacheTtl as 
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
 from trader.recommendation.infra.runtime.startup_readiness import WarnMissingLocalData
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringArtifactsMissingError
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsMissingError
 from trader.recommendation.infra.status_projection import RuntimeStatus as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.application.research_audit import TryBuildCommittedResearchAudit
@@ -603,7 +603,7 @@ def BuildSystem(
     profile_id = strategy.scoring_profile
     try:
         loaded_profile = LoadScoringProfile(profile_id, training_root=settings.data_paths.models)
-    except ScoringArtifactsMissingError:
+    except ScoringModelsMissingError:
         loaded_profile = None
     WarnMissingLocalData(settings.data_paths, profile_id, model_missing=loaded_profile is None)
     profile_contract = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE

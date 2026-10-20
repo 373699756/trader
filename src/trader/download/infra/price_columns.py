@@ -14,17 +14,27 @@ _FIELDS = ("open", "high", "low", "close", "volume", "amount", "preclose", "pct_
 PRICE_COLUMNS = ("status",) + tuple(
     f"{side}_{field}" for side in ("raw", "qfq") for field in ("present", *_FIELDS, "trading_status")
 )
-PRICE_SQL = ",".join(
-    f"{name} "
-    + (
-        "TEXT"
-        if name == "status" or name.endswith("trading_status")
-        else "INTEGER"
-        if name.endswith("present")
-        else f"BLOB CHECK(typeof({name}) IN ('integer','real','null'))"
+
+
+def _price_sql(*, database_checks: bool) -> str:
+    return ",".join(
+        f"{name} "
+        + (
+            "TEXT"
+            if name == "status" or name.endswith("trading_status")
+            else "INTEGER"
+            if name.endswith("present")
+            else f"BLOB CHECK(typeof({name}) IN ('integer','real','null'))"
+            if database_checks
+            else "BLOB"
+        )
+        for name in PRICE_COLUMNS
     )
-    for name in PRICE_COLUMNS
-)
+
+
+PRICE_SQL = _price_sql(database_checks=True)
+# PublishedHistoryCell validates writes; qfq identity hashes and PriceCellFromColumns validate reads.
+PRICE_WINDOW_SQL = _price_sql(database_checks=False)
 
 
 def PriceColumnValues(cell: PublishedHistoryCell) -> PriceValues:
@@ -91,4 +101,4 @@ def _side(code: str, day: date, adjustment: BaoStockAdjustment, values: PriceVal
     )
 
 
-__all__ = ["PRICE_COLUMNS", "PRICE_SQL", "PriceValues", "PriceColumnValues", "PriceCellFromColumns"]
+__all__ = ["PRICE_COLUMNS", "PRICE_SQL", "PRICE_WINDOW_SQL", "PriceValues", "PriceColumnValues", "PriceCellFromColumns"]

@@ -38,7 +38,6 @@ from tests.component.market_data_test_support import (
     _service,
     _tail_minute_bars,
     datetime,
-    replace,
     threading,
     time,
     timedelta,

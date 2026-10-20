@@ -30,8 +30,8 @@ from trader.recommendation.domain.market.eligibility import (
 from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordFromBytes
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
-from trader.training.infra.research.trace_storage import InitializeDatabase
 from trader.training.infra.research.trace_codec import DEFAULT_DECODED_PAYLOAD_BYTES, DecodedPayloadBytes
+from trader.training.infra.research.trace_storage import InitializeDatabase
 
 _READ = SqliteConnectionOptions(read_only=True, immutable=True)
 

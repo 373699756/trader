@@ -16,7 +16,7 @@ from trader.download.domain.published_history import PublishedHistoryManifest, P
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
 from trader.download.infra.price_columns import (
     PRICE_COLUMNS,
-    PRICE_SQL,
+    PRICE_WINDOW_SQL,
     PriceCellFromColumns,
     PriceColumnValues,
     PriceValues,
@@ -33,10 +33,14 @@ from trader.infra.sqlite_connection import (
 
 _Rows: TypeAlias = tuple[tuple[str, PriceValues], ...]
 _SELECT = ",".join(PRICE_COLUMNS)
+_BAR_ROW_PARAMETERS = len(PRICE_COLUMNS) + 2
+# 39 structured rows use 975 parameters, below SQLite's older 999-parameter limit.
+_INSERT_ROWS_PER_STATEMENT = 39
+_INSERT_ROW_PLACEHOLDERS = "(" + ",".join("?" for _ in range(_BAR_ROW_PARAMETERS)) + ")"
 _SCHEMA = SqliteSchema(
     version=1,
     statements=(
-        f"CREATE TABLE bars(code TEXT NOT NULL, day TEXT NOT NULL, {PRICE_SQL}, PRIMARY KEY(code,day)) WITHOUT ROWID",
+        f"CREATE TABLE bars(code TEXT NOT NULL, day TEXT NOT NULL, {PRICE_WINDOW_SQL}, PRIMARY KEY(code,day)) WITHOUT ROWID",
         "CREATE TABLE identities(profile TEXT NOT NULL, code TEXT NOT NULL, digest TEXT NOT NULL, "
         "source TEXT NOT NULL, first_day TEXT NOT NULL, cutoff TEXT NOT NULL, "
         "PRIMARY KEY(profile,code)) WITHOUT ROWID",
@@ -59,7 +63,11 @@ def _validate_code(code: str) -> None:
 
 
 def _digest(rows: _Rows) -> str:
-    return hashlib.sha256(json.dumps(rows, separators=(",", ":"), allow_nan=False).encode("ascii")).hexdigest()
+    try:
+        payload = json.dumps(rows, separators=(",", ":"), allow_nan=False).encode("ascii")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("qfq_code_identity_mismatch") from exc
+    return hashlib.sha256(payload).hexdigest()
 
 
 class SQLiteQfqWindowCache:
@@ -332,10 +340,14 @@ class SQLiteQfqWindowCache:
                             "DELETE FROM bars WHERE code=? AND day=?",
                             ((code, day) for day in before.keys() - after.keys()),
                         )
-                        connection.run_many(
-                            f"INSERT OR REPLACE INTO bars VALUES ({','.join('?' for _ in range(25))})",
-                            ((code, day, *values) for day, values in target if before.get(day) != values),
-                        )
+                        inserts = tuple((day, values) for day, values in target if before.get(day) != values)
+                        insert_command = "INSERT OR REPLACE INTO bars VALUES " if before else "INSERT INTO bars VALUES "
+                        for start in range(0, len(inserts), _INSERT_ROWS_PER_STATEMENT):
+                            batch = inserts[start : start + _INSERT_ROWS_PER_STATEMENT]
+                            connection.run(
+                                insert_command + ",".join(_INSERT_ROW_PLACEHOLDERS for _ in batch),
+                                tuple(value for day, values in batch for value in (code, day, *values)),
+                            )
                     for cache in (self, peer):
                         days = calendar[-cache.sessions :]
                         rows = tuple((day, values) for day, values in target if day >= days[0].isoformat())

@@ -1,6 +1,5 @@
-from datetime import date, timedelta
 from contextlib import closing
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from datetime import date, timedelta
 
 import pytest
 
@@ -17,6 +16,7 @@ from trader.download.infra.history_reference_codec import ReadHistoryReference
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 
 @pytest.fixture

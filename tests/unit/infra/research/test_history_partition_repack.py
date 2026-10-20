@@ -19,10 +19,9 @@ from trader.download.domain.history_control import (
     HistorySourceIdentity,
     HistoryUniverseIdentity,
 )
-from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_partition_repack import (
     HistoryPartitionRepackCoordinator,
     HistoryPartitionRepackFenceError,
@@ -32,6 +31,7 @@ from trader.download.infra.history_partition_repack_codec import ReadTomorrowTra
 from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackRequirements,
 )
+from trader.download.infra.history_prices import HistoryPricePartition
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.domain.publication.models import Strategy

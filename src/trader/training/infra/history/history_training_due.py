@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar as month_calendar
 from dataclasses import dataclass
 from datetime import date, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from trader.download.domain.history_control import (
     CalculateHistoryTrainingCacheInvalidationDates,

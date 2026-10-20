@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from tests.helpers.qfq import publish_windows
-
 import hashlib
 import shutil
 import threading
@@ -15,8 +13,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.training.infra.history.history_training_due as due_module
-from trader.infra.sqlite_connection import OpenSqliteConnection
 from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_sqlite_performance
+from tests.helpers.qfq import publish_windows
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
@@ -40,6 +38,7 @@ from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisi
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache

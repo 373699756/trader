@@ -11,19 +11,21 @@ It makes zero HTTP requests and cannot establish full-market supplier download s
 
 ## Retained tools
 
-This table is the sole declaration of the eight retained top-level tools.
+This table is the sole declaration of the nine retained top-level tools.
 `check_refactor_quality.py` checks its complete fields, unique inventory and
 agreement with the approved script manifest. Declarations describe actual
 behavior; they do not grant permission to write active data.
 
 | Tool | Owner | Network | Writes | Output | Resource boundary |
 | --- | --- | --- | --- | --- | --- |
+| `check_joint_training_performance.py` | Training performance evidence gate | None | Required external benchmark workspace and output; isolated training artifacts only | Aggregate benchmark JSON to explicit external output and stdout; progress to stderr | Three sequential V2/V3 fits against the same external history copy; accepts parallel fit only when at least 10% faster than best serial fit and process peak RSS at most 5 GiB; no hard deadline |
 | `check_refactor_quality.py` | Repository quality gate | None | None; Ruff runs with `--no-cache` | stdout success; stderr violations/failure | Two sequential Ruff subprocesses, 60 s timeout each; finite repository scan, no hard RSS/total I/O limit |
 | `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models and samples under required `--train-root` and `--sample-root`; explicit external `--output` | Result JSON to stdout and result file; progress to stderr | Two sequential full rebuilds; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; stage durations are recorded, with no artificial total deadline |
 | `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; history revision benchmarks and qfq integrity checks write only disposable system-temporary targets, while active qfq data remains read-only; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output and stock identities are not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq audits one shared bounded database and emits aggregate counts; child capture has no fixed byte/RSS cap |
 | `generate_long_watchlist_asset.py` | Packaged Long build asset | None | Without `--check`, writes only `src/trader/web/static/long_watchlist_data.js` from `config/long_watchlist.json`; `--check` is read-only | Stale-asset message to stdout; silent success | One JSON document and one asset; no hard byte/RSS/deadline cap; does not fetch quotes |
 | `migrate_runtime_data.py` | Explicit isolated layout migration; codecs in `runtime_migration.py` | None | Required external stopped workspace copy and a new target; rejects live WAL, symlinks, conflicting identities and existing targets/staging; failed staging is retained | Aggregate candidate manifest; `verify` is read-only; no active switch | Streaming file hashes, SQLite integrity, byte-preserved decisions/checkpoints, eligibility validation, budget union, sequence high-water preservation and research routing; regenerable history/windows/models/samples are listed explicitly |
 | `repack_history_partitions.py` | Explicit annual history compaction | None | Required source `history` and sibling target `history-repacked`; external maintenance lock and activation journal; build preserves snapshot identity, explicit activation swaps whole directories, rollback retains candidate, finalize requires training evidence | Aggregate status JSON; progress to stderr | Each annual file compacted once, every monthly logical proof verified; no automatic production execution |
+| `runtime_migration.py` | Internal codecs for `migrate_runtime_data.py`; no standalone command | None | Called by migration command on its isolated candidate only; no independent target selection | Typed migration results and errors to caller; no direct CLI output | Sequential SQLite and file-hash operations under the migration command; no independent hard RSS or deadline cap |
 | `verify_wheel_install.py` | Isolated installed-wheel release gate | Local wheel install with `--no-deps` and version check disabled; no supplier requests; pip index access is not explicitly disabled | Temporary external virtualenv and dependency `.pth`, removed on exit; input wheel/config/resources read-only | Aggregate verification JSON to stdout; exceptions can produce stderr traceback | One wheel and sequential CLI/resource checks; subprocesses and virtualenv creation have no timeout; no hard RSS/disk cap |
 
 Repeated download, training, scoring, or status workflows belong to
@@ -32,9 +34,9 @@ Every retained or newly added tool must have a bounded input/output contract,
 an explicit network/write declaration, and an entry in this table before it is
 used by a gate or documented command. Missing limits must be stated explicitly;
 an RSS acceptance threshold, SQLite busy timeout or HTTP socket timeout must not
-be described as a hard whole-job resource bound. Legacy conversion and repack
-do not enforce repository-external destinations; during refactor acceptance,
-pass explicit isolated external paths. For training evidence, also explicitly
+be described as a hard whole-job resource bound. Migration requires a
+repository-external destination; for repack acceptance, pass explicit isolated
+external paths. For training evidence, also explicitly
 set external `--history-root`, `--train-root` and `--output`.
 
 Makefile checks all of `src/trader`, `tests` and `scripts`, including internal

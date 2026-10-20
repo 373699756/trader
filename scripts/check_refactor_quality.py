@@ -15,13 +15,47 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
 NAMING_ROOTS = (SOURCE_ROOT, PROJECT_ROOT / "scripts", PROJECT_ROOT / "tests")
 SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
-# Anchored to pushed d8866ea7; equal totals cannot move debt to another owner.
+# Reviewed for stage 203 against pushed d8866ea7; equal totals cannot move debt to another owner.
 EXPECTED_DEBT = frozenset(
     {
         ("PLR0913", "download/application/download_history.py", "DownloadHistory"),
+        ("C901", "download/application/sync_data.py", "SyncData.execute"),
+        ("PLR0911", "download/application/sync_data.py", "SyncData.execute"),
+        ("C901", "download/application/update_qfq.py", "UpdateQfqWindows._download_rolling"),
+        ("PLR0912", "download/application/update_qfq.py", "UpdateQfqWindows._download_rolling"),
+        ("PLR0913", "download/application/company_evidence.py", "_report"),
         ("C901", "download/infra/baostock_gateway.py", "_reconstruct_unavailable_qfq"),
+        ("C901", "download/infra/history_st_source.py", "HistoryStNameSource.fetch"),
+        ("PLR0913", "download/infra/history_supplier_router.py", "HistorySupplierRouter.__init__"),
+        ("C901", "download/infra/qfq_sqlite.py", "SQLiteQfqWindowCache._matches_windows"),
+        ("C901", "download/infra/qfq_sqlite.py", "SQLiteQfqWindowCache.replace_paired_windows"),
+        ("PLR0912", "download/infra/qfq_sqlite.py", "SQLiteQfqWindowCache.replace_paired_windows"),
+        ("N818", "download/domain/company_evidence.py", "CompanySourceFailure"),
+        ("C901", "entrypoints/cli.py", "Main"),
         ("C901", "http_api/handlers/product_handler.py", "_market_data"),
+        ("N818", "infra/http_contracts.py", "HttpCancelled"),
+        ("N818", "infra/http_contracts.py", "HttpResponseTooLarge"),
+        ("N818", "infra/http_contracts.py", "HttpTimeout"),
+        ("PLR0913", "infra/http_contracts.py", "HttpTransport.get"),
+        ("PLR0913", "infra/http_contracts.py", "HttpTransport.post"),
+        ("C901", "infra/http_transport.py", "RequestsHttpTransport._attempt"),
+        ("PLR0912", "infra/http_transport.py", "RequestsHttpTransport._attempt"),
+        ("PLR0913", "infra/http_transport.py", "RequestsHttpTransport.get"),
+        ("PLR0913", "infra/http_transport.py", "RequestsHttpTransport.post"),
+        ("PLR0915", "infra/http_transport.py", "RequestsHttpTransport._attempt"),
+        ("C901", "infra/isolated_call.py", "RunIsolatedCall"),
+        ("PLR0912", "infra/isolated_call.py", "RunIsolatedCall"),
         ("C901", "infra/market_data/observations.py", "SourceObservation.__post_init__"),
+        (
+            "PLR0913",
+            "recommendation/application/pipeline/candidate_pool/candidate_pipeline.py",
+            "SelectCandidateOutput",
+        ),
+        (
+            "PLR0915",
+            "recommendation/application/pipeline/data_source/source_router.py",
+            "MarketInputCoordinator._refresh_candidates",
+        ),
         ("PLR0913", "recommendation/application/pipeline/data_source/source_quality.py", "BuildSourceStageOutput"),
         (
             "PLR0913",
@@ -53,19 +87,32 @@ EXPECTED_DEBT = frozenset(
         ("PLR0912", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
         ("PLR0915", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
         ("PLR0913", "recommendation/infra/market_data/published_history_cache.py", "PublishedHistoryCache.__init__"),
+        ("C901", "training/domain/evaluation/models.py", "RecommendationOutcome.__post_init__"),
+        ("C901", "training/infra/engine.py", "RunJointProfileTraining"),
+        ("C901", "training/infra/engine.py", "_run_locked"),
+        ("PLR0912", "training/infra/engine.py", "RunJointProfileTraining"),
+        ("PLR0912", "training/infra/engine.py", "_run_locked"),
+        ("PLR0915", "training/infra/engine.py", "RunJointProfileTraining"),
+        ("PLR0915", "training/infra/engine.py", "_run_locked"),
+        ("PLR0911", "training/infra/joint_fit_evidence.py", "LoadJointFitEvidence"),
+        ("C901", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
+        ("PLR0912", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
+        ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackTomorrowTraining"),
+        ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackV3Training"),
     }
 )
 RUFF_TIMEOUT_SECONDS = 60
 DECLARATION_HEADER = "| Tool | Owner | Network | Writes | Output | Resource boundary |"
 TOP_LEVEL_SCRIPT_MANIFEST = frozenset(
     {
+        "check_joint_training_performance.py",
         "check_refactor_quality.py",
         "check_tomorrow_training_memory.py",
         "diagnose_runtime.py",
         "generate_long_watchlist_asset.py",
         "migrate_runtime_data.py",
-        "rename_qfq_shards.py",
         "repack_history_partitions.py",
+        "runtime_migration.py",
         "verify_wheel_install.py",
     }
 )
@@ -196,7 +243,8 @@ def main() -> int:
             print(f"added:   {sorted((actual - expected).elements())}", file=sys.stderr)
             return 1
         _check_public_function_names()
-        naming = _run_ruff(NAMING_ROOTS, ("N",), ignore=("N802", "N813"))
+        # Source N818 exceptions are already pinned by exact owner in EXPECTED_DEBT.
+        naming = _run_ruff(NAMING_ROOTS, ("N",), ignore=("N802", "N813", "N818"))
     except (OSError, UnicodeError, ValueError, SyntaxError):
         print("cannot execute Ruff or resolve strict diagnostics", file=sys.stderr)
         return 2

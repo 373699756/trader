@@ -11,9 +11,9 @@ from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDai
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra import history_prices as partition_module
 from trader.download.infra.history_prices import (
+    HistoryPricePartition,
     HistoryPricePartitionConflictError,
     HistoryPricePartitionError,
-    HistoryPricePartition,
 )
 from trader.infra.sqlite_connection import OpenSqliteConnection
 

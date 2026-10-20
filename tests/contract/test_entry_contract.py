@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import trader.entrypoints.cli as cli_module
 import trader.entrypoints.server as server_module
 import trader.training.entrypoints.commands as research_commands
 from trader.entrypoints.cli import BuildParser, Main
@@ -507,7 +506,6 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
-    history_root = tmp_path / "history"
     config = _runtime_config(tmp_path)
 
     assert Main(["--config", str(config), "research-status"]) == 0

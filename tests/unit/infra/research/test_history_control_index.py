@@ -24,6 +24,7 @@ from trader.download.domain.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
+from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.infra.history_control_index import (
     HistoryControlConflictError,
     HistoryControlError,
@@ -34,7 +35,6 @@ from trader.download.infra.history_control_index import (
     InspectHistoryDisk,
 )
 from trader.infra.sqlite_connection import OpenSqliteConnection
-from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 REFERENCE = HistoryReferenceSnapshot(("600001",), (), (HistoryStEvidence("600001", NOW.date(), "clear"),))

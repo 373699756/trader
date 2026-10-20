@@ -22,8 +22,8 @@ from trader.download.domain.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.download.infra.history_control_index import (
     HistoryControlIndex,
     HistoryMaintenanceLock,
