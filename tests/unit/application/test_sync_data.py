@@ -1,74 +1,117 @@
-from datetime import date, datetime
+from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.reference_fixtures import PreparedFixture
 from trader.download.application.sync_data import SyncData
-from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
+_NOW = datetime(2026, 10, 16, tzinfo=ZoneInfo("Asia/Shanghai"))
 
-def test_common_preparation_once_and_independent_failure_continues():
-    population = (BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture"),)
+
+def _history(state="completed", reason="not_due"):
+    return HistoryMaintenanceStatus(
+        state,
+        None,
+        Path("history"),
+        "tencent",
+        None,
+        "a" * 64,
+        _NOW.date(),
+        _NOW.date(),
+        0,
+        False,
+        reason,
+        False,
+    )
+
+
+@pytest.mark.parametrize("target", ("all", "history", "market", "company"))
+def test_one_prepared_full_reference_is_shared_in_order(target):
+    reference = PreparedFixture(_NOW)
     calls = []
 
     def prepare():
         calls.append("prepare")
-        return population
+        return reference
+
+    def history(value):
+        assert value is reference
+        calls.append("history")
+        return _history()
 
     def market(value):
-        assert value is population
+        assert value is reference
         calls.append("market")
-        raise RuntimeError("supplier failed")
+        return QfqUpdateResult(_NOW.date(), 1)
 
     def company(value):
-        assert value is population
+        assert value is reference
         calls.append("company")
-        return CompanyEvidenceSyncResult(
-            datetime(2026, 10, 16, tzinfo=ZoneInfo("Asia/Shanghai")), 1, 1, 0, 0, 0, 0, (), 0.0
-        )
+        return CompanyEvidenceSyncResult(_NOW, 1, 1, 0, 0, 0, 0, (), 0)
 
-    result = SyncData(prepare, market, company, lambda: False).execute("all")
-    assert calls == ["prepare", "market", "company"]
+    result = SyncData(prepare, history, market, company, lambda: False).execute(target)
+    assert calls == ["prepare", *(("history", "market", "company") if target == "all" else (target,))]
+    assert result.exit_code == 0
+    assert ProjectSyncResult(result)["status"] == "completed"
+
+
+@pytest.mark.parametrize("pending", (False, True))
+def test_failed_or_incomplete_history_continues_market_and_company(pending):
+    calls = []
+
+    def history(value):
+        if pending:
+            return _history(reason="data_incomplete")
+        raise RuntimeError("history unavailable")
+
+    def market(value):
+        calls.append("market")
+        return QfqUpdateResult(_NOW.date(), 1)
+
+    def company(value):
+        calls.append("company")
+        return CompanyEvidenceSyncResult(_NOW, 1, 1, 0, 0, 0, 0, (), 0)
+
+    result = SyncData(lambda: PreparedFixture(_NOW), history, market, company, lambda: False).execute("all")
+    assert calls == ["market", "company"]
     assert result.exit_code == 1
-    assert tuple(task.status for task in result.tasks) == ("failed", "completed")
-    assert ProjectSyncResult(result)["status"] == "failed"
+    assert result.tasks[0].status == ("pending" if pending else "failed")
 
 
-@pytest.mark.parametrize("target", ("market", "company"))
+@pytest.mark.parametrize("target", ("all", "history", "market", "company"))
 def test_common_preparation_failure_stops_all_tasks(target):
     def fail():
         raise ValueError("invalid official population")
 
-    def forbidden(_population):
-        pytest.fail("task ran after common preparation failed")
+    def forbidden(value):
+        pytest.fail("dependent task ran after preparation failed")
 
-    result = SyncData(fail, forbidden, forbidden, lambda: False).execute(target)
+    result = SyncData(fail, forbidden, forbidden, forbidden, lambda: False).execute(target)
     assert result.tasks == () and result.exit_code == 1
-    assert ProjectSyncResult(result)["status"] == "failed"
 
 
-def test_cancellation_after_market_stops_company():
-    population = (BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture"),)
-    cancelled = False
+@pytest.mark.parametrize("interrupt", (False, True))
+def test_cancellation_stops_following_tasks(interrupt):
+    def history(value):
+        if interrupt:
+            raise KeyboardInterrupt
+        return _history(state="cancelled")
 
-    def market(_population):
-        nonlocal cancelled
-        cancelled = True
-        return QfqUpdateResult(date(2026, 10, 16), 1)
+    def forbidden(value):
+        pytest.fail("task ran after cancellation")
 
-    def company(_population):
-        pytest.fail("company started after cancellation")
-
-    result = SyncData(lambda: population, market, company, lambda: cancelled).execute("all")
+    result = SyncData(lambda: PreparedFixture(_NOW), history, forbidden, forbidden, lambda: False).execute("all")
     assert result.exit_code == 130 and result.cancelled
-    assert len(result.tasks) == 1
 
 
 def test_cancel_before_preparation_has_no_side_effects():
-    def forbidden(*_args):
+    def forbidden(*args):
         pytest.fail("cancelled work ran")
 
-    assert SyncData(forbidden, forbidden, forbidden, lambda: True).execute("all").exit_code == 130
+    assert SyncData(forbidden, forbidden, forbidden, forbidden, lambda: True).execute("all").exit_code == 130

@@ -88,7 +88,7 @@ from trader.recommendation.application.runtime.trading_session import SessionGua
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
-from trader.recommendation.domain.market.refresh import IntradayRefreshResult, ResearchRefreshResult
+from trader.recommendation.domain.market.refresh import IntradayRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
 
@@ -137,8 +137,6 @@ class _PendingQualityContext:
 class MarketReader(Protocol):
     def reference_version(self) -> str: ...
 
-    def risk_universe_codes(self, observed_at: datetime) -> tuple[str, ...]: ...
-
     def fetch_market_feature_batch(
         self,
         observed_at: datetime,
@@ -165,24 +163,7 @@ class MarketReader(Protocol):
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]: ...
 
-    def schedule_reference_data(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        force: bool = False,
-        security_master_codes: Sequence[str] | None = None,
-    ) -> None: ...
-
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
-
-    def refresh_stock_risk(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        deadline: datetime | None = None,
-    ) -> ResearchRefreshResult: ...
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult: ...
 
@@ -293,8 +274,6 @@ class MarketInputCoordinator(DataRefreshPort):
             PipelineTask.TOPK_QUOTES: self._refresh_topk,
             PipelineTask.INTRADAY_TAIL: self._refresh_intraday_tail,
             PipelineTask.INDUSTRY_HEAT: self._refresh_industry_heat,
-            PipelineTask.RESEARCH_SNAPSHOT: self._refresh_stock_risk,
-            PipelineTask.REFERENCE_DATA: self._refresh_reference_data,
         }.get(request.task)
         if handler is None:
             return RefreshOutcome(
@@ -328,11 +307,6 @@ class MarketInputCoordinator(DataRefreshPort):
         candidate_plans = candidate_pipeline.plans
         requested = candidate_plans.physical_union()
         quote_versions = _quote_versions(features)
-        self._schedule_reference_data(
-            requested,
-            tuple(feature.quote.code for feature in features),
-            request.observed_at,
-        )
         with SessionGuard(request.session), self._lock:
             self._quality_revision += 1
             changed = data_version != self._market_version
@@ -627,47 +601,6 @@ class MarketInputCoordinator(DataRefreshPort):
             False,
         )
 
-    def _refresh_stock_risk(
-        self,
-        request: PipelineTaskRequest,
-        deadline: datetime | None,
-    ) -> RefreshOutcome:
-        with SessionGuard(request.session):
-            requested = self._market.risk_universe_codes(request.observed_at)
-        _require_codes(requested, "research_universe_unavailable")
-        result = self._market.refresh_stock_risk(requested, request.observed_at, deadline=deadline)
-        return self._research_outcome(request, result)
-
-    def _refresh_reference_data(
-        self,
-        request: PipelineTaskRequest,
-        _deadline: datetime | None,
-    ) -> RefreshOutcome:
-        requested = self._requested_codes()
-        if requested:
-            self._schedule_reference_data(requested, requested, request.observed_at)
-        return RefreshOutcome(request.task, False, "reference:scheduled", (), request.observed_at, False)
-
-    def _research_outcome(
-        self,
-        request: PipelineTaskRequest,
-        result: ResearchRefreshResult,
-    ) -> RefreshOutcome:
-        version = result.data_version or f"research:{request.task.value}:empty"
-        changed = bool(result.changed_codes)
-        with SessionGuard(request.session), self._lock:
-            if changed:
-                self._research_version = version
-                self._invalidate_scoring_locked()
-        return RefreshOutcome(
-            request.task,
-            changed,
-            version,
-            result.changed_codes if changed else (),
-            result.completed_at or request.observed_at,
-            bool(result.failed_codes or result.deferred_codes or result.deadline_reached),
-        )
-
     def _requested_codes(self) -> tuple[str, ...]:
         with self._lock:
             return self._latest_requested_codes
@@ -844,23 +777,6 @@ class MarketInputCoordinator(DataRefreshPort):
     def _invalidate_scoring_locked(self) -> None:
         self._score_feature_batches.clear()
         self._quality_revision += 1
-
-    def _schedule_reference_data(
-        self,
-        codes: tuple[str, ...],
-        security_master_codes: tuple[str, ...],
-        observed_at: datetime,
-    ) -> None:
-        try:
-            self._market.schedule_reference_data(
-                codes,
-                observed_at,
-                force=False,
-                security_master_codes=security_master_codes,
-            )
-        except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError):
-            # Reference enrichment is best-effort; missing fields remain visible as controlled degradation.
-            return
 
     def batch(self, request: CycleRequest) -> InputBatch | None:
         with SessionGuard(request.session), self._lock:

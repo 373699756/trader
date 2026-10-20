@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from tests.reference_fixtures import PreparedFixture
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
@@ -27,7 +28,15 @@ def test_company_projection_is_incremental_and_reads_full_population_without_net
     started = time.monotonic()
     assert index.publish(codes, now) == len(codes)
     publish_seconds = time.monotonic() - started
-    reader = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: now)
+    reader = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(index.path),
+        wall_clock=lambda: now,
+        open_dates=lambda: PreparedFixture(now).open_dates,
+        monotonic=time.monotonic,
+    )
+    started = time.monotonic()
+    reader.initialize(codes, cancelled=lambda: False)
+    preload_seconds = time.monotonic() - started
     started = time.monotonic()
     observations = reader.load(codes, now, include_structured=True)
     read_seconds = time.monotonic() - started
@@ -43,6 +52,7 @@ def test_company_projection_is_incremental_and_reads_full_population_without_net
                 "fixture_announcements": len(rows),
                 "write_seconds": round(write_seconds, 3),
                 "publish_seconds": round(publish_seconds, 3),
+                "preload_seconds": round(preload_seconds, 3),
                 "read_seconds": round(read_seconds, 3),
                 "cache_seconds": round(cache_seconds, 3),
                 "database_bytes": index.path.stat().st_size,

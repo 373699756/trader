@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scripts.runtime_diagnostics.history_fallback import FallbackHistoryClient
+from tests.reference_fixtures import PreparedFixture
+from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra import tushare_records as tushare_records_module
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
 from trader.download.infra.exchange_security_master import ExchangeSecurityMasterClient
@@ -83,15 +85,11 @@ from trader.recommendation.infra.market_data.providers.eastmoney import Eastmone
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
 from trader.recommendation.infra.market_data.trading_calendar import (
     ChinaTradingCalendar,
     TradingCalendarUnavailableError,
-)
-from trader.recommendation.infra.market_data.tushare_reference_loader import (
-    ReferenceLoader,
-    ReferenceLoadRequest,
-    _ReferenceLoadOptions,
 )
 from trader.recommendation.infra.market_data.vendor_routing import Route, VendorRoute, VendorSeverity
 from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
@@ -215,6 +213,10 @@ class _FixtureHistory:
         return SimpleNamespace(
             state="active" if self._bars else "unavailable",
             snapshot_hash="fixture" if self._bars else None,
+            disk_snapshot_hash="fixture" if self._bars else None,
+            outcome_snapshot_hash=None,
+            outcome_disk_snapshot_hash=None,
+            restart_required=False,
             data_cutoff=None,
             entries=len(self._bars),
             raw_rows=sum(len(bars) for bars in self._bars.values()),
@@ -248,7 +250,7 @@ def _service(
     **kwargs: Any,
 ) -> MarketFeatureService:
     monotonic = kwargs.pop("monotonic", time.monotonic)
-    wall_clock = kwargs.pop("wall_clock", lambda: datetime.now(timezone.utc))
+    wall_clock = kwargs.pop("wall_clock", lambda: NOW)
     worker_pool = kwargs.pop("worker_pool", None)
     source_lanes = kwargs.pop("source_lanes", None)
     cache = kwargs.pop("cache", None)
@@ -268,37 +270,57 @@ def _service(
     kwargs.pop("history_workers", 6)
     kwargs.pop("history_ttl_seconds", 21_600)
     kwargs.pop("history_cache_limit", 360)
-    exchange_client = kwargs.pop("exchange_security_master_client", None)
-    references = ReferenceLoader(
-        gateway,
-        runner,
-        kwargs.pop("tushare_client", None),
-        security_master_client=exchange_client,
-        model_industry_client=kwargs.pop("model_industry_client", None),
-        data_plane=data_plane,
-        monotonic=monotonic,
-    )
-    # Explicit in-memory reference fixture; production never derives population from quotes.
-    if exchange_client is None and isinstance(gateway, StaticGateway) and gateway._quotes:
-        references._security_master = StaticMarketReference(
+    references = kwargs.pop("published_references", None)
+    if references is None:
+        # Explicit fixture population; the production reader never derives references from quotes.
+        population = (
             tuple(
-                StaticIssuer(q.code, q.name, q.board, q.exchange, q.listing_date, False, False) for q in gateway._quotes
-            ),
-            "fixture-official-population",
-            NOW,
+                BaoStockSecurity(
+                    q.code,
+                    q.name,
+                    "star" if q.code.startswith("688") else "chinext" if q.code.startswith(("300", "301")) else "main",
+                    q.listing_date or date(1999, 1, 1),
+                    None,
+                    "fixture-official",
+                )
+                for q in gateway._quotes
+            )
+            if isinstance(gateway, StaticGateway)
+            else ()
         )
-        references._reference_versions["security_master"] = "fixture-official-population"
+        reference = PreparedFixture(NOW, population) if population else None
+        references = PublishedReferences(
+            lambda: reference,
+            lambda: reference.identity if reference else None,
+            lambda _: (),
+            max_age_seconds=86400,
+        )
+    references.initialize()
     eligibility = kwargs.pop("eligibility", _AllowAllEligibility())
     historical_st_eligibility = kwargs.pop("historical_st_eligibility", None)
-    historical_st_source = (lambda: historical_st_eligibility) if historical_st_eligibility is not None else None
+    historical_st_source = (
+        (lambda: historical_st_eligibility)
+        if historical_st_eligibility is not None
+        else references.historical_st_eligibility
+    )
 
     class EmptyPublishedEvidence:
+        def publication_version(self):
+            return ""
+
         def visit(self, codes, consume):
             return None
 
     research = PublishedCompanyResearch(
         kwargs.pop("company_evidence_reader", EmptyPublishedEvidence()),
         wall_clock=wall_clock,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=monotonic,
+    )
+    reference = references.reference()
+    research.initialize(
+        tuple(item.code for item in reference.official_universe) if reference else (),
+        cancelled=lambda: False,
     )
     intraday_capacity = kwargs.pop("intraday_cache_limit", 360)
     candidate_quote_capacity = kwargs.pop("candidate_quote_cache_limit", 1080)

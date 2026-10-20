@@ -26,6 +26,8 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
+from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 from trader.web import CreateApp
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -448,6 +450,54 @@ def test_http_reads_do_not_invoke_external_io() -> None:
         "/api/status",
     ):
         assert client.get(path).status_code == 200
+
+
+def test_maintenance_status_projects_four_heads_and_restart_identity_without_io(monkeypatch):
+    _, queries, stream = _app()
+    heads = []
+    for profile in ("v2", "v3"):
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
+            loaded = ModelPublicationIdentity(profile, strategy, "a" * 64, "b" * 64, NOW.date(), "c" * 64, "d" * 64)
+            disk = replace(loaded, metadata_hash="e" * 64)
+            head = ProjectHeadTrainingStatus(
+                HeadTrainingStatus(profile, strategy, disk, None, loaded=loaded, owned=profile == "v3")
+            )
+            head["private_path"] = "must-not-leak"
+            head["disk"]["private_path"] = "must-not-leak"
+            heads.append(head)
+    runtime = {
+        "scoring_profile": {"profile_id": "v3", "heads": {}, "maintenance": heads},
+        "market_data": {
+            "restart_required": True,
+            "reference_publication": {
+                "loaded_identity": "old",
+                "disk_identity": "new",
+                "restart_required": True,
+                "private_path": "must-not-leak",
+            },
+        },
+    }
+    app = CreateApp(services=UnifiedWebServices(queries, stream, lambda: runtime))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("HTTP status must read only the memory projection")
+
+    monkeypatch.setattr("sqlite3.connect", forbidden)
+    monkeypatch.setattr("trader.training.infra.history.history_training_due.EvaluateAllHistoryTrainingDue", forbidden)
+    response = app.test_client().get("/api/status")
+    payload = response.get_json()
+    assert "must-not-leak" not in response.get_data(as_text=True)
+    projected = payload["scoring_profile"]["maintenance"]
+    assert [(head["profile_id"], head["strategy"]) for head in projected] == [
+        ("v2", "tomorrow"),
+        ("v2", "d25"),
+        ("v3", "tomorrow"),
+        ("v3", "d25"),
+    ]
+    assert [head["restart_required"] for head in projected] == [False, False, True, True]
+    assert all(head["loaded"]["publication_hash"] == "b" * 64 for head in projected)
+    assert all(head["disk"]["publication_hash"] == "e" * 64 for head in projected)
+    assert payload["market_data"]["reference_publication"]["restart_required"] is True
 
 
 def _app():

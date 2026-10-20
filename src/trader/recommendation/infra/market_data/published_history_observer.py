@@ -11,19 +11,21 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 
 
 class PublishedHistoryObserver:
-    """Rebuild the projection off market deadlines without acquiring a supplier."""
+    """Preload once, then observe publication identities without adopting content."""
 
     def __init__(
         self,
         history: PublishedHistoryCache,
         *,
         interval_seconds: float = 30.0,
-        observe_company: Callable[[], None] | None = None,
+        initialize: Callable[[Callable[[], bool]], None],
+        observers: tuple[Callable[[], None], ...] = (),
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("history observation interval must be positive")
         self._history = history
-        self._observe_company = observe_company
+        self._initialize = initialize
+        self._observers = observers
         self._interval = interval_seconds
         self._cancel = threading.Event()
         self._lock = threading.Lock()
@@ -55,14 +57,19 @@ class PublishedHistoryObserver:
         )
 
     def _run(self) -> None:
+        try:
+            self._initialize(self._cancel.is_set)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            self._history.record_maintenance("failed", type(exc).__name__, stage="startup_preload")
         while not self._cancel.is_set():
             try:
-                self._history.refresh()
-                self._history.record_projection_observation()
+                self._history.observe_publication()
+                for observe in self._observers:
+                    if self._cancel.is_set():
+                        return
+                    observe()
             except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
                 self._history.record_maintenance("failed", type(exc).__name__, stage="reading_active_snapshot")
-            if self._observe_company is not None:
-                self._observe_company()
             if self._cancel.wait(self._interval):
                 return
 

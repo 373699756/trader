@@ -47,7 +47,10 @@ def InspectActiveHeadBundle(
     if not head_root.is_dir() or head_root.is_symlink():
         raise ValueError("trained head directory is invalid")
     model_path = head_root / "model.json"
-    if {path.name for path in head_root.iterdir()} != {"model.json", "metadata.json"}:
+    files = {path.name for path in head_root.iterdir()}
+    if files < {"model.json", "metadata.json"}:
+        raise FileNotFoundError("trained head fixed files are missing")
+    if files != {"model.json", "metadata.json"}:
         raise ValueError("trained head fixed files are incomplete")
     for name in ("model.json", "metadata.json"):
         path = head_root / name

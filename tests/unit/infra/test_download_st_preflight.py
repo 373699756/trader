@@ -69,6 +69,19 @@ def st_sources(monkeypatch):
     monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: universe)
     monkeypatch.setattr(bootstrap, "OpenExternalHttp", Session)
     monkeypatch.setattr(bootstrap, "_utc_now", lambda: NOW)
+    monkeypatch.setattr(
+        bootstrap,
+        "FetchAkshareCalendar",
+        lambda *_args, **_kwargs: tuple(NOW.date() - timedelta(days=offset) for offset in range(250, -1, -1)),
+    )
+    monkeypatch.setattr(bootstrap.CurrentIndustryPublication, "fetch", lambda self, at: ())
+    monkeypatch.setattr(
+        bootstrap,
+        "LoadHistorySyncConfiguration",
+        lambda root, paths: HistorySyncConfiguration(
+            paths.history, paths.reference, training_root=paths.models, minimum_free_bytes=0
+        ),
+    )
     return calls, sessions
 
 

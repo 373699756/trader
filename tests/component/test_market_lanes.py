@@ -22,7 +22,6 @@ from tests.component.market_data_test_support import (
     Path,
     SourceLaneScheduler,
     SourceRequestSupersededError,
-    StaticGateway,
     StaticHistoryClient,
     StaticMarketClient,
     StaticTencentClient,
@@ -201,55 +200,6 @@ def test_source_lane_replaces_cancelled_pending_identity_with_newest_request() -
         pool.stop(wait=True, cancel_futures=True)
 
     assert calls == ["running", "newest"]
-
-
-def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -> None:
-    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneScheduler(pool)
-
-    class ReferenceGateway(StaticGateway):
-        @staticmethod
-        def update_reference_observations(_observations):
-            return None
-
-    class BlockingTushareClient:
-        def __init__(self) -> None:
-            self.started = threading.Event()
-            self.release = threading.Event()
-
-        def fetch_security_master(self, _observed_at):
-            self.started.set()
-            assert self.release.wait(1.0)
-            return ()
-
-        @staticmethod
-        def supports(_dataset):
-            return True
-
-    tushare = BlockingTushareClient()
-    service = _service(
-        ReferenceGateway((_quote(),)),
-        StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        tushare_client=tushare,
-        worker_pool=pool,
-        source_lanes=lanes,
-        wall_clock=lambda: NOW,
-    )
-    pool.start()
-
-    try:
-        started_at = time.perf_counter()
-        service.schedule_reference_data((), NOW)
-        scheduling_seconds = time.perf_counter() - started_at
-        assert tushare.started.wait(1.0)
-        fast = lanes.submit("eastmoney", "fast-market", NOW, lambda: "fast")
-        assert fast.result(timeout=1.0) == "fast"
-        assert scheduling_seconds < 0.1
-    finally:
-        tushare.release.set()
-        lanes.stop(wait=True, timeout_seconds=1.0)
-        pool.stop(wait=True, cancel_futures=True)
 
 
 def test_source_lane_records_bounded_queue_wait_telemetry() -> None:

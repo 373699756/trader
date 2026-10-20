@@ -14,6 +14,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.infra.model_bundles.bundle_codec import TrainedHeadModelBundle
 from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
 from trader.training.infra.profile.composition import SingleHeadCombiner
@@ -49,6 +50,18 @@ def BuildTrainedScoringProfile(
             strategy: HeadRuntime(strategy, predictor, SingleHeadCombiner(), _evidence(by_strategy[strategy]))
             for strategy, predictor in predictors.items()
         },
+        publications=tuple(
+            ModelPublicationIdentity(
+                profile_id,
+                bundle.strategy,
+                bundle.content_hash,
+                bundle.metadata_hash,
+                bundle.label_cutoff,
+                bundle.training_input_hash,
+                bundle.training_run_hash,
+            )
+            for bundle in bundles
+        ),
     )
 
 

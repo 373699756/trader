@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from trader.download.domain.history_control import HistoryTrainingDueReason
+from trader.training.domain.model_publication import HeadTrainingStatus
 
 HistoryMaintenanceState = Literal[
     "blocked",
@@ -50,6 +51,7 @@ class HistoryMaintenanceStatus:
     automatic_training: bool
     unresolved_price_cells: int = 0
     price_gap_summary: HistoryPriceGapSummary | None = None
+    training_heads: tuple[HeadTrainingStatus, ...] = ()
 
     def __post_init__(self) -> None:
         if self.matured_label_days_since_training < 0 or self.unresolved_price_cells < 0:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 
 
 def ProjectHistoryMaintenanceStatus(status: HistoryMaintenanceStatus) -> dict[str, object]:
@@ -20,6 +21,7 @@ def ProjectHistoryMaintenanceStatus(status: HistoryMaintenanceStatus) -> dict[st
         "training_due": status.training_due,
         "training_due_reason": status.training_due_reason,
         "automatic_training": status.automatic_training,
+        "training_heads": [ProjectHeadTrainingStatus(head) for head in status.training_heads],
         "unresolved_price_cells": status.unresolved_price_cells,
         "price_gaps": None
         if status.price_gap_summary is None

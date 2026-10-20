@@ -8,7 +8,7 @@ import pytest
 from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _plain_feedback, _updater, _window
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_sync import NOW
-from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _current_universe, _router
+from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _at, _current_universe, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
@@ -49,7 +49,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
         training_root=(tmp_path).parent / "models",
     )
     result = RunHistorySync(
-        config, _router(baseline, PartialPrices()), clock=lambda: NOW, progress=StderrHistorySyncProgress()
+        config, _router(baseline, PartialPrices()), clock=lambda: _at(days[-1]), progress=StderrHistorySyncProgress()
     )
     assert result.state == "completed"
     assert baseline.calls == []
@@ -71,7 +71,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
     baseline.calls.clear()
     retry_prices = Prices()
-    retried = RunHistorySync(config, _router(baseline, retry_prices), clock=lambda: NOW)
+    retried = RunHistorySync(config, _router(baseline, retry_prices), clock=lambda: _at(days[-1]))
     assert retried.unresolved_price_cells == (2 if mode == "invalid_qfq_price" else 0)
     assert baseline.calls == []
     if mode in {"missing", "pending"}:

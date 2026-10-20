@@ -230,6 +230,8 @@ class CompanyEvidenceSyncResult:
     failures: tuple[str, ...]
     elapsed_seconds: float
     pending_documents: int = 0
+    news_population_codes: int = 0
+    news_coverage: Literal["published_population", "uncovered"] = "uncovered"
 
     @property
     def needs_retry(self) -> bool:

@@ -18,7 +18,8 @@ function Show-Usage {
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
-  .\run.ps1 sync                    更新行情窗口与公司资料，自动续传
+  .\run.ps1 sync                    依次更新参考、完整历史、行情窗口与公司资料
+  .\run.ps1 sync history            单独更新完整历史，自动续传
   .\run.ps1 sync market             单独更新行情窗口
   .\run.ps1 sync company            单独更新公司资料
   .\run.ps1 train                   历史维护后联合训练或复用 V2/V3
@@ -78,8 +79,8 @@ if (($Mode -in @("sync", "train") -and $ScoringProfileSet) -or ($Mode -eq "train
 }
 
 if ($Mode -eq "sync" -and $ForwardArgs.Count -gt 0) {
-    if ($ForwardArgs.Count -ne 1 -or $ForwardArgs[0] -notin @("market", "company")) {
-        [Console]::Error.WriteLine("用法：.\run.ps1 sync [market|company]")
+    if ($ForwardArgs.Count -ne 1 -or $ForwardArgs[0] -notin @("history", "market", "company")) {
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]")
         exit 2
     }
 }

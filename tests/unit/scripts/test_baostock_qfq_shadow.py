@@ -31,7 +31,7 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive = _archive()
-    monkeypatch.setattr(shadow, "LoadActiveHistorySnapshot", lambda _root: archive)
+    monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", lambda _root: archive)
     monkeypatch.setattr(
         shadow,
         "HistorySnapshotReader",
@@ -51,7 +51,7 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
 
 def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch) -> None:
     archive = _archive()
-    monkeypatch.setattr(shadow, "LoadActiveHistorySnapshot", lambda _root: archive)
+    monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", lambda _root: archive)
     monkeypatch.setattr(
         shadow,
         "HistorySnapshotReader",
@@ -72,7 +72,7 @@ def test_missing_active_snapshot_fails_closed(monkeypatch: pytest.MonkeyPatch) -
     def unavailable(_root: object) -> None:
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
 
-    monkeypatch.setattr(shadow, "LoadActiveHistorySnapshot", unavailable)
+    monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", unavailable)
 
     with pytest.raises(HistorySnapshotInspectionError):
         shadow.build_shadow_report(None)  # type: ignore[arg-type]

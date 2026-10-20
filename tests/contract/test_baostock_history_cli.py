@@ -104,6 +104,13 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         return status
 
     monkeypatch.setattr("trader.download.infra.history_sync_runner.RunHistorySync", synchronize)
+    from tests.reference_fixtures import PreparedFixture
+    from tests.unit.infra.research.test_history_sync import NOW
+
+    monkeypatch.setattr(
+        "trader.bootstrap._prepare_reference",
+        lambda *_args, **_kwargs: PreparedFixture(NOW, industry_version="fixture"),
+    )
 
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
     monkeypatch.setattr(
@@ -128,6 +135,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "state": "completed",
         "training_due": False,
         "training_due_reason": "data_incomplete",
+        "training_heads": [],
         "unresolved_price_cells": 0,
         "price_gaps": None,
     }
@@ -186,7 +194,7 @@ def test_train_uses_valid_samples_despite_reported_price_gaps(
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
     monkeypatch.setattr(
         "trader.training.entrypoints.commands.RunJointTraining",
-        lambda runtime: calls.append(runtime) or 0,
+        lambda runtime, **kwargs: calls.append(runtime) or 0,
     )
 
     result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train"])

@@ -12,7 +12,7 @@ from trader.download.domain.published_history import PublishedHistoryManifest, P
 from trader.download.infra.history_snapshot_inspection import (
     ActiveHistorySnapshot,
     HistorySnapshotInspectionError,
-    LoadActiveHistorySnapshot,
+    LoadPublishedHistorySnapshot,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader, HistorySnapshotReadError
 
@@ -28,7 +28,7 @@ class SQLitePublishedHistorySnapshot:
 
     def manifest(self) -> PublishedHistoryManifest | None:
         try:
-            archive = LoadActiveHistorySnapshot(self._root)
+            archive = LoadPublishedHistorySnapshot(self._root)
         except HistorySnapshotInspectionError as exc:
             if str(exc) == "history_snapshot_unavailable":
                 return None
@@ -84,11 +84,16 @@ class SQLitePublishedHistorySnapshot:
 
     def _matching_snapshot(self, manifest: PublishedHistoryManifest) -> ActiveHistorySnapshot:
         try:
-            archive = LoadActiveHistorySnapshot(self._root)
+            archive = LoadPublishedHistorySnapshot(self._root, sequence=manifest.sequence)
         except HistorySnapshotInspectionError as exc:
             raise PublishedHistoryReadError(str(exc)) from exc
-        if archive.snapshot.content_hash != manifest.snapshot_hash:
-            raise PublishedHistoryReadError("history_snapshot_changed")
+        if (
+            archive.snapshot.content_hash != manifest.snapshot_hash
+            or archive.calendar.open_dates != manifest.calendar_dates
+            or tuple(item.code for item in archive.universe.securities) != manifest.universe_codes
+            or archive.snapshot.data_cutoff != manifest.data_cutoff
+        ):
+            raise PublishedHistoryReadError("history_snapshot_identity_conflict")
         return archive
 
 

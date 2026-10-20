@@ -275,10 +275,8 @@ def test_market_factor_profile_uses_unified_output_and_explicit_bounds() -> None
 
 
 def test_reference_probe_never_initializes_missing_runtime_database(tmp_path: Path) -> None:
-    snapshot = ReadReferences(
-        tmp_path / "snapshots.sqlite3", AT, tmp_path / "industry.sqlite3", tmp_path / "calendar.json"
-    )
-    assert not snapshot.observations
+    with pytest.raises(RuntimeError, match="published_reference_unavailable"):
+        ReadReferences(tmp_path, AT)
     assert not tuple(tmp_path.iterdir())
 
 
@@ -329,7 +327,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
             filter_codes=lambda codes, at: tuple(codes),
         ),
     )
-    monkeypatch.setattr(comparison, "ReadReferences", lambda path, at, industry_path, calendar_path: references)
+    monkeypatch.setattr(comparison, "ReadReferences", lambda path, at: references)
     monkeypatch.setattr(
         comparison, "ExchangeSecurityMasterClient", lambda **kwargs: SimpleNamespace(fetch=lambda at: ())
     )
@@ -625,6 +623,7 @@ def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unkno
             1,
             pool,
             company_database=Path("unused/evidence.sqlite3"),
+            open_dates=(AT.date(),),
         )
     finally:
         pool.stop(wait=True, cancel_futures=True)

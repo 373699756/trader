@@ -27,8 +27,6 @@ class MarketPhase(str, Enum):
 
 
 class SchedulePoint(str, Enum):
-    MORNING_RESEARCH = "morning_research"
-    AFTERNOON_RESEARCH = "afternoon_research"
     DEEPSEEK_CUTOFF = "deepseek_cutoff"
     AFTERNOON_CHECKPOINT = "afternoon_checkpoint"
     FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
@@ -157,8 +155,6 @@ def SchedulePointAt(value: datetime, *, is_trading_day: bool) -> SchedulePoint |
         return None
     current = ShanghaiNow(value).time().replace(tzinfo=None)
     points = {
-        time(9, 15): SchedulePoint.MORNING_RESEARCH,
-        time(12, 45): SchedulePoint.AFTERNOON_RESEARCH,
         time(14, 48): SchedulePoint.DEEPSEEK_CUTOFF,
         time(14, 59, 20): SchedulePoint.AFTERNOON_CHECKPOINT,
         time(14, 59, 50): SchedulePoint.FINAL_CANDIDATE_QUOTES,

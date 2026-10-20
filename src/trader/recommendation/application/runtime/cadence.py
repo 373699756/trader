@@ -40,8 +40,6 @@ class PipelineTask(str, Enum):
     LONG_QUOTES = "long_quotes"
     SCORE = "score"
     INDUSTRY_HEAT = "industry_heat"
-    RESEARCH_SNAPSHOT = "research_snapshot"
-    REFERENCE_DATA = "reference_data"
     DEEPSEEK_CUTOFF = "deepseek_cutoff"
     CHECKPOINT = "checkpoint"
     FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
@@ -107,8 +105,6 @@ def TaskExecutionBudgetSeconds(task: PipelineTask) -> float | None:
         PipelineTask.LONG_QUOTES: 3.0,
         PipelineTask.SCORE: 15.0,
         PipelineTask.INDUSTRY_HEAT: 20.0,
-        PipelineTask.RESEARCH_SNAPSHOT: 120.0,
-        PipelineTask.REFERENCE_DATA: 20.0,
         PipelineTask.DEEPSEEK_CUTOFF: 1.0,
         PipelineTask.CHECKPOINT: None,
         PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
@@ -204,7 +200,7 @@ class CadencePlanner:
         self._pending_scores: set[tuple[str, CadenceBand, PipelineTask]] = set()
         self._started_at = ShanghaiNow(started_at) if started_at is not None else None
         self._point_states: dict[SchedulePointKey, SchedulePointState] = {}
-        self._reference_dates: set[str] = set()
+        self._started_dates: set[str] = set()
 
     def plan(self, at: datetime, *, is_trading_day: bool) -> CadenceBatch:
         with self._lock:
@@ -415,9 +411,8 @@ class CadencePlanner:
 
         self._synchronize_schedule_points(local)
         tasks: list[ScheduledPipelineTask] = []
-        if trade_date not in self._reference_dates:
-            self._reference_dates.add(trade_date)
-            tasks.append(ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, local, phase))
+        if trade_date not in self._started_dates:
+            self._started_dates.add(trade_date)
             if band is CadenceBand.FINAL_WINDOW:
                 tasks.append(ScheduledPipelineTask(PipelineTask.CURRENT_QUOTES, local, phase))
         due_points = self._due_schedule_points(local)
@@ -425,10 +420,6 @@ class CadencePlanner:
             due_points = tuple(item for item in due_points if item[0] is not SchedulePoint.CLOSE_QUOTES)
         for point, strategies in due_points:
             for task in _point_tasks(point, local, phase, strategies=strategies):
-                if task.task is PipelineTask.REFERENCE_DATA and any(
-                    existing.task is PipelineTask.REFERENCE_DATA for existing in tasks
-                ):
-                    continue
                 tasks.append(task)
         tasks = list(_combine_freeze_tasks(tasks))
         self._append_periodic_tasks(tasks, local, phase, tuple(point for point, _strategies in due_points))
@@ -585,7 +576,7 @@ class CadencePlanner:
     def _discard_old_state(self, trade_date: str, band: CadenceBand) -> None:
         self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date and key[1] is band}
         self._pending_scores = {key for key in self._pending_scores if key[0] == trade_date and key[1] is band}
-        self._reference_dates = {value for value in self._reference_dates if value == trade_date}
+        self._started_dates = {value for value in self._started_dates if value == trade_date}
 
 
 def ResolveCadenceBand(phase: MarketPhase) -> CadenceBand:
@@ -619,8 +610,6 @@ def FreshnessLevel(age_seconds: float | None, interval_seconds: float | None) ->
 
 def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]], ...]:
     return (
-        (SchedulePoint.MORNING_RESEARCH, ("-",)),
-        (SchedulePoint.AFTERNOON_RESEARCH, ("-",)),
         (SchedulePoint.DEEPSEEK_CUTOFF, ("-",)),
         (SchedulePoint.AFTERNOON_CHECKPOINT, ("tomorrow", "d25")),
         (SchedulePoint.FINAL_CANDIDATE_QUOTES, ("-",)),
@@ -631,8 +620,6 @@ def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]],
 
 def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
     raw = {
-        SchedulePoint.MORNING_RESEARCH: time(9, 15),
-        SchedulePoint.AFTERNOON_RESEARCH: time(12, 45),
         SchedulePoint.DEEPSEEK_CUTOFF: time(14, 48),
         SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 59, 20),
         SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 59, 50),
@@ -655,11 +642,7 @@ def _initial_point_status(
     else:
         current = local.time().replace(tzinfo=None)
         started_before_boundary = started_at.date() < boundary.date() or started_at < boundary
-        if point is SchedulePoint.MORNING_RESEARCH:
-            eligible = current < time(9, 30)
-        elif point is SchedulePoint.AFTERNOON_RESEARCH:
-            eligible = current < time(13, 0)
-        elif point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
+        if point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
             eligible = current < time(15, 0) and started_at <= boundary
         elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
             eligible = current < time(15, 0)
@@ -674,10 +657,6 @@ def _initial_point_status(
 
 def _point_window_expired(point: SchedulePoint, local: datetime) -> bool:
     current = local.time().replace(tzinfo=None)
-    if point is SchedulePoint.MORNING_RESEARCH:
-        return current >= time(9, 30)
-    if point is SchedulePoint.AFTERNOON_RESEARCH:
-        return current >= time(13, 0)
     if point in {
         SchedulePoint.DEEPSEEK_CUTOFF,
         SchedulePoint.AFTERNOON_CHECKPOINT,
@@ -724,7 +703,6 @@ def _point_tasks(
         tasks = (
             ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),
             ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
-            ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, at, phase),
         )
     elif point is SchedulePoint.DEEPSEEK_CUTOFF:
         tasks = (ScheduledPipelineTask(PipelineTask.DEEPSEEK_CUTOFF, at, phase, (), point),)
@@ -732,8 +710,6 @@ def _point_tasks(
         tasks = (ScheduledPipelineTask(PipelineTask.CHECKPOINT, at, phase, strategies, point),)
     elif point is SchedulePoint.FINAL_CANDIDATE_QUOTES:
         tasks = (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
-    elif point in {SchedulePoint.MORNING_RESEARCH, SchedulePoint.AFTERNOON_RESEARCH}:
-        tasks = (ScheduledPipelineTask(PipelineTask.RESEARCH_SNAPSHOT, at, phase, (), point),)
     else:
         raise ValueError(f"unsupported schedule point: {point.value}")
     return tasks

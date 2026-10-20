@@ -1,12 +1,11 @@
-"""Typed state and decisions for unattended history synchronization."""
+"""Read-only projection of previously persisted history automation state."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.history_control import (
@@ -14,43 +13,11 @@ from trader.download.domain.history_control import (
     HistoryAutomationControlState,
     HistoryTrainingDueReason,
 )
-from trader.download.domain.history_maintenance import HistoryMaintenanceState
 
 HistoryAutomationState = Literal["ready", "data_incomplete"]
 HistoryReminderPhase = Literal["not_due", "pending", "claimed", "sent", "notification_degraded"]
-HistoryNotificationState = Literal[
-    "sent",
-    "notification_degraded",
-    "not_attempted",
-]
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_ERROR_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
-
-
-@dataclass(frozen=True)
-class HistoryWeeklyMaintenanceDecision:
-    state: Literal["due", "not_due", "blocked"]
-    reason: str | None
-
-
-def WeeklyHistoryMaintenanceDecision(
-    data_cutoff: date | None, observed_at: datetime
-) -> HistoryWeeklyMaintenanceDecision:
-    """Archive cadence, independent of feature eligibility and training due."""
-
-    if observed_at.tzinfo != _SHANGHAI:
-        raise ValueError("history maintenance observation must use Asia/Shanghai")
-    if data_cutoff is None:
-        return HistoryWeeklyMaintenanceDecision("blocked", "history_snapshot_unavailable")
-    age_days = (observed_at.date() - data_cutoff).days
-    if age_days < 0:
-        return HistoryWeeklyMaintenanceDecision("blocked", "history_snapshot_future")
-    if age_days < 7:
-        return HistoryWeeklyMaintenanceDecision("not_due", "weekly_cadence_not_due")
-    if observed_at.time() < time(15, 10):
-        return HistoryWeeklyMaintenanceDecision("not_due", "maintenance_window_not_open")
-    return HistoryWeeklyMaintenanceDecision("due", None)
 
 
 @dataclass(frozen=True)
@@ -81,56 +48,6 @@ class HistoryAutomationStatus:
             or (self.reminder_state == "notification_degraded") != (self.reminder_error_code is not None)
         ):
             raise ValueError("history automation status is inconsistent")
-
-
-@dataclass(frozen=True)
-class HistoryDesktopNotification:
-    title: str
-    body: str
-
-    def __post_init__(self) -> None:
-        if not self.title.strip() or not self.body.strip() or len(self.title) > 80 or len(self.body) > 500:
-            raise ValueError("history desktop notification is invalid")
-
-
-@dataclass(frozen=True)
-class HistoryNotificationResult:
-    state: Literal["sent", "notification_degraded"]
-    error_code: str | None
-
-    def __post_init__(self) -> None:
-        if (self.state == "sent") != (self.error_code is None) or (
-            self.error_code is not None and _ERROR_CODE.fullmatch(self.error_code) is None
-        ):
-            raise ValueError("history notification result is inconsistent")
-
-
-class HistoryDesktopNotifier(Protocol):
-    def notify(self, notification: HistoryDesktopNotification) -> HistoryNotificationResult: ...
-
-
-@dataclass(frozen=True)
-class HistoryAutomationRunStatus:
-    observed_at: datetime
-    archive_root: Path
-    maintenance_state: HistoryMaintenanceState | Literal["not_due"]
-    maintenance_reason: str | None
-    due_status: HistoryAutomationStatus
-    notification_state: HistoryNotificationState
-    notification_error_code: str | None
-    automatic_model_update: bool
-
-    def __post_init__(self) -> None:
-        if (
-            self.observed_at.tzinfo != _SHANGHAI
-            or self.automatic_model_update
-            or (self.notification_state == "notification_degraded") != (self.notification_error_code is not None)
-        ):
-            raise ValueError("history automation run status is inconsistent")
-
-    @property
-    def successful(self) -> bool:
-        return self.maintenance_state in {"completed", "already_current", "already_running", "not_due"}
 
 
 def DeriveHistoryAutomationStatus(
@@ -226,13 +143,6 @@ def _incomplete_status(
 
 __all__ = [
     "HistoryAutomationStatus",
-    "HistoryAutomationRunStatus",
-    "HistoryDesktopNotification",
-    "HistoryDesktopNotifier",
-    "HistoryNotificationResult",
-    "HistoryNotificationState",
     "HistoryReminderPhase",
     "DeriveHistoryAutomationStatus",
-    "HistoryWeeklyMaintenanceDecision",
-    "WeeklyHistoryMaintenanceDecision",
 ]

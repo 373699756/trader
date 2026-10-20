@@ -20,6 +20,7 @@ class UnavailableModelCapability:
 
     profile_id: ScoringProfileId
     history_required_sessions: int
+    reason: str = "production_model_missing"
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
         return False
@@ -30,7 +31,7 @@ class UnavailableModelCapability:
         *,
         context: ModelScoringContext | None = None,
     ) -> ModelScoreBatch:
-        raise RuntimeError("production_model_artifacts_missing")
+        raise RuntimeError(self.reason)
 
     def status(self) -> ScoringHeadRuntimeStatus:
         return ScoringHeadRuntimeStatus(
@@ -41,7 +42,7 @@ class UnavailableModelCapability:
             scoring_version="",
             activation_basis="trained_artifact",
             historical_status="historical_unavailable",
-            historical_failure_reasons=("production_model_artifacts_missing",),
+            historical_failure_reasons=(self.reason,),
             monitoring_mode="automatic_t1_outcome_settlement",
             automatic_model_update=False,
             loss_probability_status="not_modeled",

@@ -7,8 +7,8 @@ recommendation package.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 
 from trader.recommendation.application.ports.loaded_profile import (
     ModelScoreBatch,
@@ -18,6 +18,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
+from trader.training.domain.model_publication import HeadTrainingStatus
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class PublishedModelScoringService:
     """Delegate live scoring to already-loaded, immutable model capabilities."""
 
     capability: ModelScoringPort
+    maintenance: Callable[[], tuple[HeadTrainingStatus, ...]] | None = None
 
     def uses_model(self, strategy: Strategy) -> bool:
         """Report whether a published head is available for ``strategy``."""
@@ -51,7 +53,8 @@ class PublishedModelScoringService:
         return self.capability.score(strategy, features, context=context)
 
     def status(self) -> ScoringProfileRuntimeStatus | None:
-        return self.capability.status()
+        status = self.capability.status()
+        return replace(status, maintenance=self.maintenance()) if status is not None and self.maintenance else status
 
 
 __all__ = ["PublishedModelScoringService"]

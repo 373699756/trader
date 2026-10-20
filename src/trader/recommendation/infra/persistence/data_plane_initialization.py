@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
@@ -11,26 +10,19 @@ from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 _LOGGER = logging.getLogger(__name__)
 
 
-def _initialize_reference_data_plane(
-    market_data: MarketFeatureService,
-    data_plane: SQLiteDataPlane,
-    observed_at: datetime | None = None,
-) -> None:
-    try:
-        data_plane.initialize()
-        market_data.references.recover()
-        if observed_at is not None:
-            market_data.references.schedule_security_master_refresh(observed_at)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        _LOGGER.warning("data plane initialization degraded: %s", type(exc).__name__)
-
-
 def InitializeReferenceDataPlane(
     market_data: MarketFeatureService,
     data_plane: SQLiteDataPlane,
-    observed_at: datetime | None = None,
 ) -> None:
-    _initialize_reference_data_plane(market_data, data_plane, observed_at)
+    try:
+        data_plane.initialize()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        _LOGGER.warning("data plane initialization degraded: %s", type(exc).__name__)
+    try:
+        market_data.references.initialize()
+        market_data.quotes.gateway.update_reference_observations(market_data.references.security_observations())
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        _LOGGER.warning("reference initialization degraded: %s", type(exc).__name__)
 
 
-__all__ = ["InitializeReferenceDataPlane", "_initialize_reference_data_plane"]
+__all__ = ["InitializeReferenceDataPlane"]

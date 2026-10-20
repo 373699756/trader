@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import replace
 from datetime import date
 
@@ -12,11 +11,10 @@ from trader.download.domain.history_price_qualification import (
     HISTORY_UNIVERSE_CONTRACT,
 )
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.exchange_security_universe import SelectStEligibleUniverse
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 
 
@@ -25,24 +23,20 @@ class HistorySupplierRouter:
         self,
         baseline: BaoStockHistorySupplier,
         prices: TencentQfqSupplier,
-        load_universe: Callable[[], tuple[BaoStockSecurity, ...]],
-        st_source: HistoryStNameSource,
+        reference: PreparedReference,
         industry_cache: HistoryIndustryQueryCache | None = None,
-        eligibility_date: date | None = None,
     ) -> None:
         self._baseline = baseline
         self._prices = prices
-        self._load_universe = load_universe
-        self._st_source = st_source
+        self._reference = reference
         self._industry_cache = industry_cache
-        self._eligibility_date = eligibility_date
         self._calendar: tuple[date, ...] = ()
 
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
-        universe = self._load_universe()
-        evidence = self._st_source.fetch(universe, self._eligibility_date or as_of)
-        universe = SelectStEligibleUniverse(universe, evidence)
-        price_context = self._prices.load_history_context(as_of, sessions, universe)
+        universe = self._reference.eligible_universe
+        price_context = self._prices.load_history_context(
+            as_of, sessions, universe, calendar=self._reference.calendar(as_of, sessions)
+        )
         try:
             context = self._baseline.load_industry_context(
                 price_context.calendar,
@@ -57,7 +51,7 @@ class HistorySupplierRouter:
         versions = context.source_versions
         return replace(
             context,
-            st_evidence=evidence,
+            st_evidence=self._reference.st_evidence,
             source_versions=replace(
                 versions,
                 sdk_version=f"{versions.sdk_version}+tencent-history",

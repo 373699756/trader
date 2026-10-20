@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
 
 import pytest
@@ -44,11 +43,6 @@ from tests.component.market_data_test_support import (
 )
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
-from trader.infra.market_data.observations import SourceObservation
-from trader.recommendation.application.ports.data_plane_records import (
-    DataPlaneConflictError,
-    DataPlaneUnavailableError,
-)
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
@@ -80,7 +74,9 @@ def test_initial_history_projection_defers_market_io(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr(gateway, "fetch_market", fetch_market)
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), lookback_sessions=61
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
+        lookback_sessions=61,
+        monotonic=time.monotonic,
     )
     history.record_maintenance("loading", stage="reading_active_snapshot")
     service = _service(
@@ -132,61 +128,6 @@ def test_unknown_source_contract_fallback_uses_stable_cache_identity() -> None:
     )
 
     assert identity.source_contract_version == "unconfigured-source-component"
-
-
-def _security_master_observation() -> SourceObservation:
-    return SourceObservation(
-        source="eastmoney_security_master",
-        subject_key="600001",
-        observed_at=NOW,
-        source_time=NOW,
-        received_at=NOW,
-        effective_at=NOW,
-        data_version="fixture",
-        fields={"name": "fixture"},
-        missing_reasons={},
-        payload_hash="",
-        status="success",
-        error_code=None,
-    )
-
-
-def test_security_master_persistence_conflict_is_debug_only(caplog) -> None:
-    class ConflictingDataPlane:
-        def save_security_master_recent_records(self, records) -> None:
-            assert records
-            raise DataPlaneConflictError("recent save conflicts at the same observation time")
-
-    caplog.set_level(logging.DEBUG)
-    service = _service(
-        StaticGateway((_quote(),)),
-        StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        data_plane=ConflictingDataPlane(),
-    )
-    service.references._persist_security_masters(NOW, (_security_master_observation(),))
-
-    assert "security master persistence already committed" in caplog.text
-    assert "security master persistence failed" not in caplog.text
-
-
-def test_security_master_persistence_unavailable_remains_a_warning(caplog) -> None:
-    class UnavailableDataPlane:
-        def save_security_master_recent_records(self, _records) -> None:
-            raise DataPlaneUnavailableError("controlled unavailable")
-
-    caplog.set_level(logging.WARNING)
-    service = _service(
-        StaticGateway((_quote(),)),
-        StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        data_plane=UnavailableDataPlane(),
-    )
-
-    service.references._persist_security_masters(NOW, (_security_master_observation(),))
-
-    assert "security master persistence unavailable" in caplog.text
-    assert "security master persistence already committed" not in caplog.text
 
 
 def test_long_quote_circuit_does_not_open_candidate_quote_circuit() -> None:

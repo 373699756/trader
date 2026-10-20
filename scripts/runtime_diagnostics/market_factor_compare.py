@@ -887,12 +887,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
     settings = LoadRuntimeSettings(args.config)
     at = _now()
     started = time.monotonic()
-    local_references = ReadReferences(
-        settings.data_paths.recommendation(args.profiles[0]) / "snapshots.sqlite3",
-        at,
-        settings.data_paths.reference / "industry.sqlite3",
-        settings.data_paths.reference / "trading_calendar.json",
-    )
+    local_references = ReadReferences(settings.data_paths.reference, at)
     base_references = local_references
     baostock_capability: BaostockCapability | None = None
     active_references = base_references
@@ -972,6 +967,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
             args.timeout_seconds,
             auxiliary_pool,
             company_database=settings.data_paths.company,
+            open_dates=local_references.open_dates,
         )
         for size in args.sizes:
             codes = SelectCodes(official, size)

@@ -17,7 +17,6 @@ from trader.infra.market_data.history.history import (
 )
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot
 from trader.recommendation.domain.market.history_tail import HistoryQuality
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
@@ -53,6 +52,10 @@ class PublishedHistoryStatus:
     maintenance_total_units: int
     recovery: HistoryRecoveryStatus = HistoryRecoveryStatus(0, 0, 0, 0, None, None)
     tail: HistoryTailStatus = HistoryTailStatus()
+    disk_snapshot_hash: str | None = None
+    outcome_snapshot_hash: str | None = None
+    outcome_disk_snapshot_hash: str | None = None
+    restart_required: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,13 +72,15 @@ class PublishedHistoryCache:
         history: ReadPublishedHistoryUseCase,
         *,
         lookback_sessions: int,
+        monotonic: Callable[[], float],
         recovery: HistoryRecovery | None = None,
         tail_recovery: CandidateHistoryTailRecovery | None = None,
         outcome_history: ReadPublishedHistoryUseCase | None = None,
         open_dates: Callable[[], tuple[date, ...]] | None = None,
     ) -> None:
         self._history = history
-        self._outcome_history = outcome_history or history
+        self._outcome_history = outcome_history
+        self._monotonic = monotonic
         self._open_dates = open_dates
         self._lookback_sessions = max(61, lookback_sessions)
         self._recovery = recovery
@@ -83,7 +88,10 @@ class PublishedHistoryCache:
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._manifest: PublishedHistoryManifest | None = None
-        self._historical_st_eligibility = HistoricalStEligibilitySnapshot.unavailable()
+        self._outcome_manifest: PublishedHistoryManifest | None = None
+        self._disk_snapshot_hash: str | None = None
+        self._outcome_disk_snapshot_hash: str | None = None
+        self._initialized = False
         self._entries: dict[str, PublishedHistoryEntry] = {}
         self._universe_rows = 0
         self._covered_rows = 0
@@ -94,54 +102,63 @@ class PublishedHistoryCache:
         self._maintenance_completed_units = 0
         self._maintenance_total_units = 0
 
-    def refresh(self, *, wait: bool = True) -> bool:
-        if not self._refresh_lock.acquire(blocking=wait):
-            return False
-        try:
-            return self._rebuild_projection()
-        finally:
-            self._refresh_lock.release()
+    def initialize(self, *, cancelled: Callable[[], bool]) -> None:
+        with self._refresh_lock:
+            if self._initialized:
+                return
+            self._initialized = True
+            deadline = self._monotonic() + 30.0
+            try:
+                self._outcome_manifest = self._outcome_history.manifest() if self._outcome_history else None
+                self._outcome_disk_snapshot_hash = (
+                    self._outcome_manifest.snapshot_hash if self._outcome_manifest else None
+                )
+            except (OSError, RuntimeError, ValueError):
+                self._outcome_manifest = None
+            for _ in range(3):
+                if cancelled() or self._monotonic() >= deadline:
+                    self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
+                    break
+                if self._rebuild_projection(cancelled, deadline):
+                    break
+            self.record_projection_observation()
 
-    def _rebuild_projection(self) -> bool:
+    def observe_publication(self) -> None:
+        try:
+            manifest = self._history.manifest()
+            outcome = self._outcome_history.manifest() if self._outcome_history else None
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._record_error(type(exc).__name__)
+            self.record_projection_observation()
+            return
+        with self._lock:
+            self._disk_snapshot_hash = manifest.snapshot_hash if manifest else None
+            self._outcome_disk_snapshot_hash = outcome.snapshot_hash if outcome else None
+
+    def _rebuild_projection(self, cancelled: Callable[[], bool], deadline: float) -> bool:
         try:
             manifest = self._history.manifest()
         except RuntimeError as exc:
             self._record_error(type(exc).__name__)
             return False
-        eligibility = (
-            HistoricalStEligibilitySnapshot.ready(
-                manifest.snapshot_hash,
-                manifest.universe_codes,
-            )
-            if manifest is not None
-            else HistoricalStEligibilitySnapshot.unavailable()
-        )
         if manifest is None:
             with self._lock:
-                if self._historical_st_eligibility.status != "ready":
-                    self._historical_st_eligibility = eligibility
                 self._maintenance_reason = "history_snapshot_unavailable"
             return False
-        with self._lock:
-            if (
-                self._manifest is not None
-                and self._manifest.snapshot_hash == manifest.snapshot_hash
-                and self._maintenance_reason is None
-            ):
-                changed = self._historical_st_eligibility != eligibility
-                self._historical_st_eligibility = eligibility
-                return changed
         try:
-            entries = self._build_entries(manifest)
+            entries = self._build_entries(manifest, cancelled, deadline)
             confirmed = self._history.manifest()
         except (RuntimeError, ValueError) as exc:
             self._record_error(type(exc).__name__)
+            return False
+        if cancelled() or self._monotonic() >= deadline:
+            self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
             return False
         if not self._identity_stable(manifest, confirmed):
             return False
         with self._lock:
             self._manifest = manifest
-            self._historical_st_eligibility = eligibility
+            self._disk_snapshot_hash = manifest.snapshot_hash
             self._entries = entries
             self._universe_rows = len(manifest.universe_codes)
             self._covered_rows = sum(len(entry.bars) >= _RAW_RETENTION_SESSIONS for entry in entries.values())
@@ -153,10 +170,6 @@ class PublishedHistoryCache:
             self._record_error("history_snapshot_changed")
             return False
         return True
-
-    def historical_st_eligibility(self) -> HistoricalStEligibilitySnapshot:
-        with self._lock:
-            return self._historical_st_eligibility
 
     def record_maintenance(
         self,
@@ -194,10 +207,6 @@ class PublishedHistoryCache:
         observed_at: datetime | None = None,
         recover_tail: bool = True,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
-        # Deadline-bound market work consumes the background projection. A
-        # Full published-history verification/rebuild cannot fit its real-time budget.
-        if deadline is None:
-            self.refresh(wait=False)
         self.require_projection()
         result = self.cached(codes, observed_at=observed_at)
         if self._open_dates is not None and observed_at is not None:
@@ -368,6 +377,14 @@ class PublishedHistoryCache:
                     else HistoryRecoveryStatus(0, 0, 0, 0, None, None)
                 ),
                 tail=self._tail_recovery.status() if self._tail_recovery is not None else HistoryTailStatus(),
+                disk_snapshot_hash=self._disk_snapshot_hash,
+                outcome_snapshot_hash=self._outcome_manifest.snapshot_hash if self._outcome_manifest else None,
+                outcome_disk_snapshot_hash=self._outcome_disk_snapshot_hash,
+                restart_required=(
+                    (manifest.snapshot_hash if manifest else None) != self._disk_snapshot_hash
+                    or (self._outcome_manifest.snapshot_hash if self._outcome_manifest else None)
+                    != self._outcome_disk_snapshot_hash
+                ),
             )
 
     def entries(self) -> Mapping[str, PublishedHistoryEntry]:
@@ -381,8 +398,8 @@ class PublishedHistoryCache:
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
         del observed_at
         try:
-            manifest = self._outcome_history.manifest()
-            if manifest is None:
+            manifest = self._outcome_manifest
+            if manifest is None or self._outcome_history is None:
                 return {}
             windows = self._outcome_history.read_windows(
                 manifest,
@@ -394,9 +411,13 @@ class PublishedHistoryCache:
             return {}
         return {window.code: paired for window in windows if (paired := OutcomeBars(window.cells))}
 
-    def _build_entries(self, manifest: PublishedHistoryManifest) -> dict[str, PublishedHistoryEntry]:
+    def _build_entries(
+        self, manifest: PublishedHistoryManifest, cancelled: Callable[[], bool], deadline: float
+    ) -> dict[str, PublishedHistoryEntry]:
         entries: dict[str, PublishedHistoryEntry] = {}
         for window in self._history.iter_windows(manifest, sessions=self._lookback_sessions):
+            if cancelled() or self._monotonic() >= deadline:
+                raise RuntimeError("history_preload_cancelled" if cancelled() else "history_preload_deadline")
             bars = QfqBars(window)
             if not bars:
                 continue

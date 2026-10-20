@@ -268,10 +268,15 @@ class ResearchObservation:
     evidence: tuple[Evidence, ...] = ()
     source_errors: tuple[str, ...] = ()
     snapshot_at: datetime | None = None
+    loaded_at: datetime | None = None
+    unlock_window_start: date | None = None
+    unlock_window_end: date | None = None
 
     def __post_init__(self) -> None:
         if self.snapshot_at is not None and self.snapshot_at.utcoffset() is None:
             raise ValueError("research snapshot time must be timezone-aware")
+        if self.loaded_at is not None and self.loaded_at.utcoffset() is None:
+            raise ValueError("research load time must be timezone-aware")
         if self.announcements and not self.announcements_available:
             raise ValueError("announcement rows require an available announcement source")
         if self.financial is not None and self.financial_history and self.financial not in self.financial_history:
@@ -309,6 +314,8 @@ def ResearchComponentsFromObservation(observation: ResearchObservation | None) -
         for fact in observation.corporate_risk_facts
     ):
         announcements = "known_risk"
+    elif "risk_coverage:stale" in observation.source_errors:
+        announcements = "stale"
     else:
         announcements = "known_clear"
     pledge: ResearchComponentStatus = "known_clear" if observation.pledge_ratio_pct is not None else "unknown"

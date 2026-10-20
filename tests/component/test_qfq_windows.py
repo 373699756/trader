@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import sqlite3
+import time
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.qfq import publish_windows
+from tests.reference_fixtures import PreparedFixture
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import QfqPairPublicationError, UpdateQfqWindows
@@ -36,7 +38,6 @@ from trader.download.domain.qfq_window import (
     QfqWindowIncompleteError,
 )
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
-from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
@@ -94,6 +95,14 @@ def _fingerprints(root: Path) -> dict[str, tuple[str, int]]:
         for path in root.iterdir()
         if path.is_file() and path.suffix == ".sqlite3"
     }
+
+
+def _reference(codes=("600001",)):
+    return PreparedFixture(
+        datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI),
+        tuple(BaoStockSecurity(code, "fixture", "main", DAYS[0], None, "fixture") for code in codes),
+        open_dates=DAYS,
+    )
 
 
 def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_path):
@@ -364,9 +373,12 @@ def test_inferred_suspension_keeps_only_tencent_real_bars_without_backfill(tmp_p
     assert len(updater.v2.read_code("600001").cells) == 250
     assert len(updater.v3.read_code("600001").cells) == 60
     projection = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(updater.v2), lookback_sessions=251, open_dates=lambda: DAYS
+        ReadPublishedHistoryUseCase(updater.v2),
+        lookback_sessions=251,
+        open_dates=lambda: DAYS,
+        monotonic=time.monotonic,
     )
-    assert projection.refresh()
+    projection.initialize(cancelled=lambda: False)
     assert "600001" in projection.load(("600001",), observed_at=observed)
     resumed = updater.execute(observed)
     assert resumed.skipped_codes == 1 and resumed.pending_codes == 0
@@ -408,8 +420,9 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
         ReadPublishedHistoryUseCase(updater.v2),
         lookback_sessions=251,
         open_dates=lambda: (*DAYS, next_morning.date()),
+        monotonic=time.monotonic,
     )
-    assert projection.refresh()
+    projection.initialize(cancelled=lambda: False)
     assert not projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
 
     supplier.latest_missing = False
@@ -420,7 +433,16 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
     assert second.changed_rows > 0
     assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-1]
     assert updater.v3.read_code("600001").cells[-1].trade_date == DAYS[-1]
-    assert projection.refresh()
+    projection.observe_publication()
+    assert projection.status().restart_required
+    assert not projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
+    projection = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(updater.v2),
+        lookback_sessions=251,
+        open_dates=lambda: (*DAYS, next_morning.date()),
+        monotonic=time.monotonic,
+    )
+    projection.initialize(cancelled=lambda: False)
     assert "600001" in projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
     assert updater.execute(observed).skipped_codes == 1
 
@@ -854,6 +876,7 @@ def test_qfq_composition_never_constructs_baostock_for_incomplete_tencent(tmp_pa
     with HistoryMaintenanceLock(tmp_path / "data/market/.history.lock"):
         result = bootstrap.ExecuteQfqDownload(
             DataPaths(tmp_path / "data"),
+            reference=_reference(("600001", "600002")),
             report=lambda _message: None,
             now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
         )
@@ -903,6 +926,11 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
     result = bootstrap.ExecuteQfqDownload(
         DataPaths(tmp_path / "data"),
+        reference=PreparedFixture(
+            datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI),
+            (eligible, excluded),
+            open_dates=DAYS,
+        ),
         report=lambda _message: None,
         now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
     )
@@ -929,6 +957,7 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
     with HistoryMaintenanceLock(tmp_path / "data/market/daily_window.lock"):
         result = bootstrap.ExecuteQfqDownload(
             DataPaths(tmp_path / "data"),
+            reference=_reference(),
             report=lambda _message: None,
         )
     assert result.failure_reason == "HistoryMaintenanceAlreadyRunningError"
@@ -966,6 +995,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
         pending = pool.submit(
             bootstrap.ExecuteQfqDownload,
             DataPaths(tmp_path / "data"),
+            reference=_reference(),
             report=lambda _message: None,
             now=lambda: observed,
         )
@@ -1349,64 +1379,6 @@ def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path
     assert messages[-1] == "00:00:03 | qfq 准备失败 | RuntimeError"
 
 
-def test_running_service_updates_only_once_at_1510_even_after_failure() -> None:
-    now = datetime(2026, 10, 9, 15, 9, tzinfo=SHANGHAI)
-    calls: list[date] = []
-
-    def update(cancel):
-        assert not cancel()
-        calls.append(now.date())
-        return QfqUpdateResult(now.date(), pending_codes=1)
-
-    maintenance = QfqDailyMaintenance(update, now=lambda: now)
-    assert not maintenance.tick()
-    now = now.replace(minute=10)
-    assert maintenance.tick()
-    assert not maintenance.tick()
-    now = now.replace(minute=40)
-    assert not maintenance.tick()
-    now += timedelta(days=1)
-    now = now.replace(hour=9)
-    assert not maintenance.tick()
-    now = now.replace(hour=15, minute=10)
-    assert maintenance.tick()
-    assert calls == [date(2026, 10, 9), date(2026, 10, 10)]
-
-
-@pytest.mark.parametrize("hour,minute", ((8, 0), (12, 0), (15, 10), (15, 11), (21, 0)))
-def test_cold_start_never_catches_up_same_day(hour, minute) -> None:
-    now = datetime(2026, 10, 9, hour, minute, tzinfo=SHANGHAI)
-    calls = 0
-
-    def update(_cancel):
-        nonlocal calls
-        calls += 1
-        return QfqUpdateResult(now.date(), 1)
-
-    maintenance = QfqDailyMaintenance(update, now=lambda: now)
-    assert not maintenance.tick()
-    if hour >= 15 and minute >= 10:
-        now = now.replace(hour=15, minute=10)
-        assert not maintenance.tick()
-    assert calls == 0
-
-
-def test_start_after_1510_does_not_run_until_next_day() -> None:
-    now = datetime(2026, 10, 9, 16, 0, tzinfo=SHANGHAI)
-    calls: list[date] = []
-
-    def update(_cancel):
-        calls.append(now.date())
-        return QfqUpdateResult(now.date(), 1)
-
-    maintenance = QfqDailyMaintenance(update, now=lambda: now)
-    assert not maintenance.tick()
-    now += timedelta(days=1)
-    now = now.replace(hour=15, minute=10)
-    assert maintenance.tick()
-    assert calls == [date(2026, 10, 10)]
-
-
 def test_latest_day_missing_retries_only_when_the_batch_gap_is_widespread() -> None:
     assert not QfqUpdateResult(DAYS[-1], 4401, latest_missing_codes=44).needs_retry
     assert QfqUpdateResult(DAYS[-1], 4401, latest_missing_codes=45).needs_retry
@@ -1436,9 +1408,11 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
         lookback_sessions=251,
         outcome_history=reader,
         open_dates=dates,
+        monotonic=time.monotonic,
     )
-    original = PublishedHistoryCache(reader, lookback_sessions=251)
-    assert projection.refresh() and original.refresh()
+    original = PublishedHistoryCache(reader, lookback_sessions=251, monotonic=time.monotonic, outcome_history=reader)
+    projection.initialize(cancelled=lambda: False)
+    original.initialize(cancelled=lambda: False)
     restrictions = {}
     loaded = projection.load(("600001", "600002"), observed_at=NOW, action_restrictions=restrictions)
     assert tuple(loaded) == ("600001",)
@@ -1451,7 +1425,9 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
         ReadPublishedHistoryUseCase(SQLiteQfqWindowCache((tmp_path / "missing") / "daily_window.sqlite3", "v2")),
         lookback_sessions=251,
         outcome_history=reader,
+        monotonic=time.monotonic,
     )
+    missing.initialize(cancelled=lambda: False)
     assert missing.read_outcome_bars(("600001",), NOW) == original.read_outcome_bars(("600001",), NOW)
     assert missing.load(("600001",), observed_at=NOW) == {}
 

@@ -45,7 +45,7 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
-from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
+from trader.recommendation.infra.persistence.data_plane_initialization import InitializeReferenceDataPlane
 from trader.recommendation.infra.status_projection import InputQualityPayload, RuntimeStatus
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -278,27 +278,26 @@ def test_reference_data_plane_recovery_is_fail_open() -> None:
     market_data = Mock()
     data_plane = Mock()
     market_data.research = Mock()
-    market_data.references.recover.side_effect = RuntimeError("recover failed")
     data_plane.initialize.side_effect = RuntimeError("db unavailable")
 
-    _initialize_reference_data_plane(market_data, data_plane)
+    InitializeReferenceDataPlane(market_data, data_plane)
 
     data_plane.initialize.assert_called_once_with()
-    market_data.references.recover.assert_not_called()
-    market_data.research.load_report.assert_not_called()
+    market_data.references.initialize.assert_called_once_with()
 
 
-def test_reference_data_plane_recovery_schedules_official_security_master_on_startup() -> None:
+def test_reference_data_plane_loads_published_reference_into_quote_merge() -> None:
     from unittest.mock import Mock
 
-    observed_at = datetime(2026, 8, 30, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     market_data = Mock()
     data_plane = Mock()
 
-    _initialize_reference_data_plane(market_data, data_plane, observed_at)
+    InitializeReferenceDataPlane(market_data, data_plane)
 
-    market_data.references.recover.assert_called_once_with()
-    market_data.references.schedule_security_master_refresh.assert_called_once_with(observed_at)
+    market_data.references.initialize.assert_called_once_with()
+    market_data.quotes.gateway.update_reference_observations.assert_called_once_with(
+        market_data.references.security_observations.return_value
+    )
 
 
 def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -> None:
@@ -309,10 +308,9 @@ def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -
     database.write_bytes(b"not-a-sqlite-database")
     market_data = Mock()
 
-    _initialize_reference_data_plane(market_data, SQLiteDataPlane((tmp_path) / "snapshots.sqlite3"))
+    InitializeReferenceDataPlane(market_data, SQLiteDataPlane((tmp_path) / "snapshots.sqlite3"))
 
-    market_data.references.recover.assert_not_called()
-    market_data.research.load_report.assert_not_called()
+    market_data.references.initialize.assert_called_once_with()
 
 
 def test_research_trace_initialization_is_fail_open() -> None:
@@ -407,7 +405,6 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
 
     assert payload["observer"]["consumer_failure_count"] == 3
     assert payload["company_research"]["state"] == "idle"
-    assert payload["company_research"]["completed_batches"] == 0
     assert payload["health"] == {"level": "degraded", "issue_count": 1}
     assert payload["degraded_reasons"] == ["observer:ResearchTraceCapacityError"]
     assert payload["last_error"] == "observer:ResearchTraceCapacityError"

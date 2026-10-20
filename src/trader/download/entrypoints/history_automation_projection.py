@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from trader.download.domain.history_automation import HistoryAutomationRunStatus, HistoryAutomationStatus
-from trader.download.infra.history_automation_installation import HistoryAutomationInstallationResult
+from trader.download.domain.history_automation import HistoryAutomationStatus
 
 
 def ProjectHistoryAutomationStatus(status: HistoryAutomationStatus) -> dict[str, object]:
@@ -26,34 +25,4 @@ def ProjectHistoryAutomationStatus(status: HistoryAutomationStatus) -> dict[str,
     }
 
 
-def ProjectHistoryAutomationRunStatus(status: HistoryAutomationRunStatus) -> dict[str, object]:
-    return {
-        "schema_version": "history_automation_run_status",
-        "observed_at": status.observed_at.isoformat(),
-        "archive_root": str(status.archive_root),
-        "maintenance_state": status.maintenance_state,
-        "maintenance_reason": status.maintenance_reason,
-        "due": ProjectHistoryAutomationStatus(status.due_status),
-        "notification_state": status.notification_state,
-        "notification_error_code": status.notification_error_code,
-        "automatic_model_update": status.automatic_model_update,
-        "successful": status.successful,
-    }
-
-
-def ProjectHistoryAutomationInstallationResult(
-    result: HistoryAutomationInstallationResult,
-) -> dict[str, object]:
-    return {
-        "schema_version": "history_automation_installation_status",
-        "state": result.state,
-        "platform": result.platform,
-        "managed_paths": [str(path) for path in result.managed_paths],
-    }
-
-
-__all__ = [
-    "ProjectHistoryAutomationInstallationResult",
-    "ProjectHistoryAutomationRunStatus",
-    "ProjectHistoryAutomationStatus",
-]
+__all__ = ["ProjectHistoryAutomationStatus"]

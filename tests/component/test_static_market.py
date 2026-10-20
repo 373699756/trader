@@ -17,10 +17,13 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
 )
+from tests.reference_fixtures import PreparedFixture
+from tests.unit.infra.test_history_supplier_router import _current_universe
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 
 
 def test_static_baseline_reuses_identity_and_source_age_across_dynamic_changes() -> None:
@@ -47,7 +50,7 @@ def test_static_baseline_reuses_identity_and_source_age_across_dynamic_changes()
     assert first.baseline.records[0].name == quote.name
 
 
-def test_real_static_stages_leave_missing_identity_pending_before_history() -> None:
+def test_fixed_official_identity_survives_missing_quote_name_and_market_failure() -> None:
     class AdvancingClock:
         value = 0.0
 
@@ -66,12 +69,15 @@ def test_real_static_stages_leave_missing_identity_pending_before_history() -> N
             return super().fetch_market(**kwargs)
 
     gateway = RecordingGateway((_quote("600001"), replace(_quote("600002"), name=" ")))
+    reference = PreparedFixture(NOW, _current_universe("600001", "600002"))
+    references = PublishedReferences(lambda: reference, lambda: reference.identity, lambda _: (), max_age_seconds=86400)
     history = CountingHistoryClient(_history_bars())
     service = _service(
         gateway,
         history,
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         monotonic=AdvancingClock(),
+        published_references=references,
     )
     first = service.fetch_market_feature_batch(NOW)
 
@@ -79,22 +85,21 @@ def test_real_static_stages_leave_missing_identity_pending_before_history() -> N
     assert tuple((stage.input_count, stage.output_count) for stage in first.static_stages) == (
         (2, 2),
         (2, 2),
-        (2, 1),
-        (1, 1),
+        (2, 2),
+        (2, 2),
     )
     normalized = first.static_stages[2]
-    assert normalized.pending_count == 1
+    assert normalized.pending_count == 0
     assert normalized.rejected_count == 0
-    assert normalized.state is StageState.DEGRADED
-    assert [(reason.code, reason.count) for reason in normalized.reasons] == [("static_identity_pending", 1)]
+    assert normalized.state is StageState.READY
     assert all(stage.latency_ms > 0 for stage in first.static_stages)
-    assert tuple(feature.quote.code for feature in first.features) == ("600001",)
+    assert tuple(feature.quote.code for feature in first.features) == ("600001", "600002")
     assert first.dynamic_stage.records == first.features
     assert first.dynamic_stage.snapshot.input_batch_id == first.static_stages[-1].output_batch_id
     assert first.dynamic_stage.snapshot.input_count == first.static_stages[-1].output_count
     assert first.dynamic_stage.snapshot.latency_ms > 0
     assert first.dynamic_stage.snapshot.source_health.latest_success_at == NOW
-    assert history.calls == ["600001"]
+    assert history.calls == ["600001", "600002"]
     assert all(
         left.output_count == right.input_count and left.output_batch_id == right.input_batch_id
         for left, right in zip(first.static_stages, first.static_stages[1:], strict=False)
@@ -103,7 +108,7 @@ def test_real_static_stages_leave_missing_identity_pending_before_history() -> N
     cached = service.fetch_market_feature_batch(NOW + timedelta(seconds=1))
     assert gateway.calls == 1
     assert cached.static_stages[1].reasons[0].code == "static_baseline_reused"
-    assert cached.static_stages[2].pending_count == 1
+    assert cached.static_stages[2].pending_count == 0
     assert cached.static_stages[0].source_health.age_seconds == 1
     assert first.static_stages[0].source_health.age_seconds == 0
     assert cached.dynamic_stage.snapshot.source_health.age_seconds == 1
@@ -124,7 +129,7 @@ def test_real_static_stages_leave_missing_identity_pending_before_history() -> N
         service.fetch_market_feature_batch(NOW, force=True)
     retained = service.fetch_market_feature_batch(NOW + timedelta(seconds=11))
     assert retained.features == refreshed.features
-    assert retained.static_stages[2].pending_count == 1
+    assert retained.static_stages[2].pending_count == 0
     assert gateway.calls == 3
 
 

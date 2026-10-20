@@ -21,6 +21,15 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.training.infra.model_bundles.contracts import TrainedAlgorithm, TrainedProfileContract
 
+
+class ModelBundleIntegrityError(ValueError):
+    """A model document does not match its declared content digest."""
+
+
+class ModelBundleContractError(ValueError):
+    """A verified model document conflicts with the inference contract."""
+
+
 _MODEL_FIELDS = {"industries"}
 _METADATA_FIELDS = {
     "schema_version",
@@ -243,7 +252,7 @@ def DecodeHeadBundle(
         or report.training_input_document_hash != training_input.content_hash
         or _identity_tuple(report) != _identity_tuple(training_input)
     ):
-        raise ValueError("trained strategy-head metadata or model contract is invalid")
+        raise ModelBundleContractError("trained strategy-head metadata or model contract is invalid")
     input_codes = report.training_input_codes
     universe_codes = report.training_universe_codes
     if input_codes < 1 or universe_codes != input_codes:
@@ -309,7 +318,7 @@ def _decode_group_document(
         or _text(payload, "validation_scope") != "daily_close_engineering_proxy"
         or _boolean(payload, "production_authority")
     ):
-        raise ValueError("trained strategy-head group document contract is invalid")
+        raise ModelBundleContractError("trained strategy-head group document contract is invalid")
     if report and (
         _text(payload, "model_id") != contract.model_id
         or _text(payload, "training_anchor") != "15:00_close_proxy"
@@ -407,8 +416,10 @@ def _hashed_object(document: object, fields: set[str], label: str) -> tuple[dict
         raise TypeError(f"trained-head {label} must be a JSON object")
     payload = cast(dict[str, object], dict(document))
     declared_hash = payload.pop("content_hash", None)
-    if not isinstance(declared_hash, str) or ContentHash(payload) != declared_hash or set(payload) != fields:
-        raise ValueError(f"trained-head {label} fields or content hash are invalid")
+    if not isinstance(declared_hash, str) or ContentHash(payload) != declared_hash:
+        raise ModelBundleIntegrityError(f"trained-head {label} content hash is invalid")
+    if set(payload) != fields:
+        raise ModelBundleContractError(f"trained-head {label} fields are invalid")
     return payload, declared_hash
 
 
@@ -571,6 +582,8 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
 
 
 __all__ = [
+    "ModelBundleContractError",
+    "ModelBundleIntegrityError",
     "TrainedHeadModelBundle",
     "TrainedIndustryModelSnapshot",
     "TrainedRidgeModelSnapshot",

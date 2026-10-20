@@ -25,5 +25,5 @@ def test_v3_two_head_ridge_bundles_load_with_expected_identity(tmp_path: Path) -
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_profile_factory_fails_closed_without_shared_training_models(tmp_path: Path, profile: str) -> None:
-    with pytest.raises(RuntimeError, match="shared strategy-head training models are unavailable"):
+    with pytest.raises(RuntimeError, match="production_model_missing"):
         LoadScoringProfile(profile, training_root=tmp_path)

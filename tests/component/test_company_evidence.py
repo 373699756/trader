@@ -2,12 +2,14 @@
 
 import json
 import sqlite3
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import (
     CompanyRatio,
@@ -184,7 +186,10 @@ def test_publication_isolated_from_unpublished_changes_and_failure(tmp_path):
 
 def test_reader_does_not_initialize_or_write_missing_database(tmp_path):
     reader = SQLiteCompanyEvidenceReader(tmp_path / "missing.sqlite3")
-    research = PublishedCompanyResearch(reader, wall_clock=lambda: NOW)
+    research = PublishedCompanyResearch(
+        reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
+    )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     assert not research.load(("600001",), NOW, include_structured=True)
     assert not reader.path.exists()
 
@@ -212,11 +217,17 @@ def test_reader_releases_transaction_before_consumers_and_pins_all_requested_row
     assert reader.read(codes) != before
 
 
-def test_company_observer_adopts_manual_publication_without_supplier_or_restart(tmp_path):
+def test_company_observer_requires_restart_to_adopt_manual_publication(tmp_path):
     index = _index(tmp_path)
     source = Sources()
     SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
-    research = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: NOW)
+    research = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(index.path),
+        wall_clock=lambda: NOW,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=time.monotonic,
+    )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     before = research.load(("600001",), NOW, include_structured=True)
     research.observe_publication()
     index.commit_structured(
@@ -227,26 +238,45 @@ def test_company_observer_adopts_manual_publication_without_supplier_or_restart(
     index.publish(("600001",), NOW)
     research.observe_publication()
     after = research.cached(("600001",), include_structured=True)
-    assert after != before
-    assert after["600001"].pledge_ratio_pct == 80
+    assert after == before
+    assert research.status().restart_required
+    restarted = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(index.path),
+        wall_clock=lambda: NOW,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=time.monotonic,
+    )
+    restarted.initialize(("600001",), cancelled=lambda: False)
+    assert restarted.load(("600001",), NOW, include_structured=True)["600001"].pledge_ratio_pct == 80
 
 
-def test_company_observer_retries_missing_codes_after_later_publication(tmp_path):
+def test_company_observer_leaves_missing_codes_uncovered_after_later_publication(tmp_path):
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
-    research = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: NOW)
+    research = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(index.path),
+        wall_clock=lambda: NOW,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=time.monotonic,
+    )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     assert not research.load(("600002",), NOW, include_structured=True)
     research.observe_publication()
     index.publish(("600002",), NOW)
     research.observe_publication()
     assert research.status().entries == 1
+    assert research.status().restart_required
+    assert not research.cached(("600002",), include_structured=True)
 
 
 def test_company_observer_recovers_transient_read_error_with_unchanged_version(tmp_path, monkeypatch):
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
-    research = PublishedCompanyResearch(reader, wall_clock=lambda: NOW)
+    research = PublishedCompanyResearch(
+        reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
+    )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     research.load(("600001",), NOW, include_structured=True)
     research.observe_publication()
     original = reader.publication_version
@@ -271,8 +301,12 @@ def test_reader_and_candidate_load_never_invoke_background_download(tmp_path):
         raise AssertionError("hot path network")
 
     research = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: NOW, refresh=forbidden
+        SQLiteCompanyEvidenceReader(index.path),
+        wall_clock=lambda: NOW,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=time.monotonic,
     )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     observations = research.load(("600001",), NOW, include_structured=True)
     assert observations["600001"].corporate_risk_window_complete
     assert research.cached(("600001",), include_structured=True) == observations
@@ -383,17 +417,25 @@ def test_corrupt_read_model_is_rejected_and_previous_memory_is_retained(tmp_path
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
-    research = PublishedCompanyResearch(reader, wall_clock=lambda: NOW)
+    research = PublishedCompanyResearch(
+        reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
+    )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     before = research.load(("600001",), NOW, include_structured=True)
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE published SET payload=replace(payload,'window_incomplete','unexpected')")
     with pytest.raises(ValueError, match="digest"):
         reader.read(("600001",))
-    report = research.load_report(("600001",), NOW, include_structured=True)
-    assert report.observations["600001"].evidence == before["600001"].evidence
-    assert "company_snapshot:ValueError" in report.observations["600001"].source_errors
-    assert not report.observations["600001"].corporate_risk_window_complete
-    assert report.deferred_codes == ("600001",)
+    assert research.load(("600001",), NOW, include_structured=True) == before
+    restarted = PublishedCompanyResearch(
+        reader,
+        wall_clock=lambda: NOW,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=time.monotonic,
+    )
+    restarted.initialize(("600001",), cancelled=lambda: False)
+    assert not restarted.load(("600001",), NOW, include_structured=True)
+    assert "ValueError" in restarted.status().last_error
 
 
 def test_missing_pledge_record_becomes_zero_only_after_full_snapshot(tmp_path):
@@ -413,7 +455,10 @@ def test_cached_snapshot_ages_without_network_or_another_database_read(tmp_path,
     source = Sources()
     SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
-    research = PublishedCompanyResearch(reader, wall_clock=lambda: NOW)
+    research = PublishedCompanyResearch(
+        reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
+    )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     assert research.load(("600001",), NOW, include_structured=True)["600001"].corporate_risk_window_complete
 
     def forbidden(*args, **kwargs):
@@ -422,27 +467,32 @@ def test_cached_snapshot_ages_without_network_or_another_database_read(tmp_path,
     monkeypatch.setattr(reader, "visit", forbidden)
     restrictions = {}
     later = research.load(
-        ("600001",), NOW + timedelta(days=1), include_structured=True, action_restrictions=restrictions
+        ("600001",), NOW + timedelta(days=2), include_structured=True, action_restrictions=restrictions
     )
     assert not later["600001"].corporate_risk_window_complete
-    assert "company_snapshot:stale" in later["600001"].source_errors
+    assert "risk_coverage:stale" in later["600001"].source_errors
     assert restrictions == {"600001": {"research_data_degraded"}}
     assert not research.load(("600001",), NOW - timedelta(seconds=1), include_structured=True)
 
 
-def test_missing_published_row_invalidates_existing_memory_coverage(tmp_path):
+def test_content_removed_without_publication_change_preserves_loaded_memory(tmp_path):
     index = _index(tmp_path)
     source = Sources()
     SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
-    research = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: NOW)
+    research = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(index.path),
+        wall_clock=lambda: NOW,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=time.monotonic,
+    )
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     assert research.load(("600001",), NOW, include_structured=True)["600001"].corporate_risk_window_complete
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("DELETE FROM published")
-    report = research.load_report(("600001",), NOW, include_structured=True)
-    assert report.deferred_codes == ("600001",)
+    research.observe_publication()
     retained = research.cached(("600001",), include_structured=True)["600001"]
-    assert not retained.corporate_risk_window_complete
-    assert "company_snapshot:missing" in retained.source_errors
+    assert retained.corporate_risk_window_complete
+    assert not research.status().restart_required
 
 
 def test_access_denied_stops_pdf_requests_and_keeps_checkpoint(tmp_path):

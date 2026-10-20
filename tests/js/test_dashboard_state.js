@@ -188,6 +188,21 @@ state.renderSummary(
   {},
 );
 assert.strictEqual(scoreOnlySummary.inputQualityScoreTime.textContent, "评分于 19:53:30 完成");
+for (const historical of [false, true]) {
+  for (const status of [
+    { market_data: { restart_required: true } },
+    { scoring_profile: { maintenance: [{ restart_required: true }] } },
+  ]) {
+    const summary = summaryFixture();
+    const payload = { status: "ready", strategy: "tomorrow", historical, trade_date: "2026-10-20", items: [] };
+    state.renderSummary(summary, payload, [], "closed", null,
+      sandbox.window.TraderSelection, sandbox.window.TraderRender, status);
+    assert.strictEqual(summary.publicationMeta.textContent.includes("重启后采用"), !historical);
+    state.renderSummary(summary, payload, [], "closed", null,
+      sandbox.window.TraderSelection, sandbox.window.TraderRender, {});
+    assert(!summary.publicationMeta.textContent.includes("重启后采用"));
+  }
+}
 assert.strictEqual(
   sandbox.window.TraderDashboardDiagnostics.snapshot().webSnapshotRetentionMs,
   35000,

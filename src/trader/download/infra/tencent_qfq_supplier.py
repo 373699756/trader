@@ -49,6 +49,7 @@ class TencentQfqDependencies:
     session_factory: Callable[[], AbstractContextManager[HttpTransport]]
     load_universe: Callable[[date], tuple[BaoStockSecurity, ...]]
     cancel_requested: Callable[[], bool]
+    calendar: Callable[[date, int], BaoStockCalendar] | None = None
 
 
 @dataclass(frozen=True)
@@ -137,13 +138,19 @@ class TencentQfqSupplier:
         as_of: date,
         sessions: int,
         universe: tuple[BaoStockSecurity, ...],
+        *,
+        calendar: BaoStockCalendar | None = None,
     ) -> HistorySupplierContext:
         """Build the shared Tencent calendar and official-universe price context."""
 
         self._check_cancel()
         if not universe or len({security.code for security in universe}) != len(universe):
             raise ValueError("Tencent qfq universe is empty or duplicated")
-        calendar = self.load_calendar(as_of, sessions)
+        calendar = calendar or (
+            self._dependencies.calendar(as_of, sessions)
+            if self._dependencies.calendar is not None
+            else self.load_calendar(as_of, sessions)
+        )
         return HistorySupplierContext(
             calendar,
             tuple(sorted(universe, key=lambda security: security.code)),

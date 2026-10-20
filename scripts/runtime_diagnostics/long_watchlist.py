@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import sys
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -21,7 +22,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceReader  # noqa: E402
-from trader.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings  # noqa: E402
+from trader.download.infra.reference_publication import ReferencePublication  # noqa: E402
+from trader.infra.settings.loading import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings  # noqa: E402
 from trader.infra.sqlite_connection import SqliteConnectionOptions  # noqa: E402
 from trader.recommendation.domain.market.eligibility import (  # noqa: E402
     IsActivePermanentEligibilityReason,
@@ -114,10 +116,17 @@ def audit_code(
     timeout: float,
     exclusions: dict[str, tuple[str, ...]],
     evidence_database: Path,
+    open_dates: tuple[date, ...],
 ) -> Admission:
     if code in exclusions:
         return Admission(code, "excluded", ("existing_permanent_exclusion",), exclusions[code])
-    reader = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(evidence_database), wall_clock=lambda: observed_at)
+    reader = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(evidence_database),
+        wall_clock=lambda: observed_at,
+        open_dates=lambda: open_dates,
+        monotonic=time.monotonic,
+    )
+    reader.initialize((code,), cancelled=lambda: False)
     observation = reader.load((code,), observed_at, include_structured=True).get(code)
     if observation is None:
         return Admission(code, "pending", ("company_snapshot_missing",))
@@ -149,6 +158,7 @@ def main() -> int:
     parser.add_argument("--eligibility-evidence", type=Path, action="append", default=[])
     parser.add_argument("--evidence-output", type=Path)
     parser.add_argument("--company-evidence-database", type=Path, required=True)
+    parser.add_argument("--runtime-config", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--timeout-seconds", type=float, default=5)
     args = parser.parse_args()
@@ -162,6 +172,8 @@ def main() -> int:
     watchlist = LoadLongWatchlist(args.watchlist)
     policy = LoadStrategySettings(args.strategy).long_research
     exclusions = historical_exclusions(tuple(args.eligibility_evidence), observed_at)
+    reference = ReferencePublication(LoadRuntimeSettings(args.runtime_config).data_paths.reference).read()
+    open_dates = reference.open_dates if reference else ()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = tuple(
             pool.map(
@@ -172,6 +184,7 @@ def main() -> int:
                     timeout=args.timeout_seconds,
                     exclusions=exclusions,
                     evidence_database=args.company_evidence_database,
+                    open_dates=open_dates,
                 ),
                 watchlist.items,
             )

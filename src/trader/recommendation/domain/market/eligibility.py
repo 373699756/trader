@@ -52,7 +52,7 @@ def IsActivePermanentEligibilityReason(reason: IssuerEligibilityReason) -> bool:
 
 @dataclass(frozen=True)
 class HistoricalStEligibilitySnapshot:
-    """Published qfq population used as the online ST qualification gate."""
+    """Fixed published reference population used as the online ST qualification gate."""
 
     status: Literal["ready", "unavailable"]
     source_identity: str | None

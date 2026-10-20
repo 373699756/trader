@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -42,8 +43,10 @@ from trader.recommendation.application.ports.market_data import MarketDataUnavai
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.training.infra.history.history_training_due import (
+    EvaluateAllHistoryTrainingDue,
     EvaluateHistoryTrainingDue,
     HistoryTrainingDueQuery,
+    PublishedTrainingState,
     _revised_dates_since_bundle,
 )
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
@@ -212,9 +215,10 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(archive_root)),
         lookback_sessions=251,
+        monotonic=time.monotonic,
     )
 
-    assert history.refresh() is True
+    history.initialize(cancelled=lambda: False)
     loaded = history.load(("600001",))
     status = history.status()
 
@@ -227,10 +231,90 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     assert history.summaries(loaded, NOW)["600001"].profile.median_amount_20d == 1000.0
 
 
+def test_old_published_manifest_remains_readable_after_active_history_advances(tmp_path, prepared_history):
+    root = tmp_path / "history"
+    dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
+    prepared_history(root, dates)
+    reader = SQLitePublishedHistorySnapshot(root)
+    original = reader.manifest()
+    original_rows = reader.read_windows(original, ("600001",), sessions=61)
+    configuration = HistorySyncConfiguration(
+        root,
+        sessions=61,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=tmp_path / "reference",
+        training_root=tmp_path / "models",
+    )
+    advanced = (*dates[1:], dates[-1] + timedelta(days=1))
+    result = RunHistorySync(configuration, _Supplier(advanced), clock=lambda: NOW + timedelta(days=1))
+    assert result.state == "completed"
+    assert reader.manifest().snapshot_hash != original.snapshot_hash
+    assert reader.read_windows(original, ("600001",), sessions=61) == original_rows
+    assert tuple(reader.iter_windows(original, sessions=61)) == original_rows
+
+
+def test_four_heads_persist_distinct_due_states_and_observer_only_reads_them(tmp_path, prepared_history, monkeypatch):
+    root = tmp_path / "history"
+    dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
+    prepared_history(root, dates)
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW)
+    assert {(head.profile_id, head.strategy) for head in heads} == {
+        (profile, strategy) for profile in ("v2", "v3") for strategy in (Strategy.TOMORROW, Strategy.D25)
+    }
+    assert len({head.due.due_identity for head in heads}) == 4
+    assert all(head.due.training_due and head.failure == "missing" for head in heads)
+    for profile in ("v2", "v3"):
+        pair = [head for head in heads if head.profile_id == profile]
+        assert pair[0].due.current_label_cutoff > pair[1].due.current_label_cutoff
+    monkeypatch.setattr(
+        HistoryControlIndex, "save_due_state", lambda *args: pytest.fail("observer must never save due state")
+    )
+    monkeypatch.setattr(
+        due_module, "EvaluateHistoryTrainingDue", lambda *args: pytest.fail("observer must never calculate due state")
+    )
+    observer = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
+    observer.observe_publication()
+    assert tuple(head.due for head in observer.status()) == tuple(head.due for head in heads)
+    assert all(head.owned == (head.profile_id == "v3") for head in observer.status())
+    assert not any(head.restart_required for head in observer.status())
+
+
+def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(tmp_path, prepared_history):
+    root = tmp_path / "history"
+    dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
+    prepared_history(root, dates)
+    for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
+        head = tmp_path / "models" / profile.output_directory / profile.heads[0].directory_name
+        head.mkdir(parents=True)
+        (head / "model.json").write_text("{broken")
+        (head / "metadata.json").write_text("{}")
+    result = RunHistorySync(
+        HistorySyncConfiguration(
+            root,
+            tmp_path / "reference",
+            sessions=61,
+            reread_sessions=2,
+            minimum_free_bytes=0,
+            training_root=tmp_path / "models",
+        ),
+        _Supplier(dates),
+        clock=lambda: NOW,
+    )
+    assert result.state == "already_current"
+    assert result.training_due and result.training_due_reason == "initial_training_required"
+    assert len(result.training_heads) == 4
+    assert all(head.failure == "corrupt" and head.due.training_due for head in result.training_heads)
+    observer = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
+    observer.observe_publication()
+    assert tuple(head.due for head in observer.status()) == tuple(head.due for head in result.training_heads)
+
+
 def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricates_history(tmp_path: Path) -> None:
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
         lookback_sessions=61,
+        monotonic=time.monotonic,
     )
     restrictions: dict[str, set[str]] = {}
 
@@ -240,11 +324,9 @@ def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricat
 
 
 @pytest.mark.parametrize("deadline", (None, NOW + timedelta(seconds=20)))
-@pytest.mark.parametrize("previous_projection", (False, True))
 def test_history_consumers_do_not_wait_for_background_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    previous_projection: bool,
     deadline: datetime | None,
     prepared_history,
 ) -> None:
@@ -261,11 +343,10 @@ def test_history_consumers_do_not_wait_for_background_projection(
         ReadPublishedHistoryUseCase(short),
         lookback_sessions=61,
         outcome_history=ReadPublishedHistoryUseCase(archive),
+        monotonic=time.monotonic,
     )
     old_manifest = short.manifest()
     assert old_manifest is not None
-    if previous_projection:
-        assert history.refresh()
     # Publish a genuine new short-window identity while complete history stays stable.
     publish_windows(short, (window,), "tencent:fixture-updated")
     new_manifest = short.manifest()
@@ -280,17 +361,13 @@ def test_history_consumers_do_not_wait_for_background_projection(
 
     monkeypatch.setattr(short, "iter_windows", blocked_windows)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        refresh = pool.submit(history.refresh)
+        refresh = pool.submit(history.initialize, cancelled=lambda: False)
         try:
             assert entered.wait(2)
             load = pool.submit(history.load, ("600001",), deadline=deadline)
-            if previous_projection:
-                assert len(load.result(timeout=2)["600001"]) == 20
-                assert history.status().snapshot_hash == old_manifest.snapshot_hash
-            else:
-                with pytest.raises(MarketDataUnavailableError, match="history_projection_loading"):
-                    load.result(timeout=2)
-                assert history.status().snapshot_hash is None
+            with pytest.raises(MarketDataUnavailableError, match="history_projection_loading"):
+                load.result(timeout=2)
+            assert history.status().snapshot_hash is None
             outcomes = pool.submit(history.read_outcome_bars, ("600001",), NOW)
             bars = outcomes.result(timeout=2)["600001"]
             assert len(bars) == 61
@@ -302,11 +379,11 @@ def test_history_consumers_do_not_wait_for_background_projection(
             invalid_outcomes = pool.submit(history.read_outcome_bars, ("600001",), NOW)
             assert invalid_outcomes.result(timeout=2) == {}
             assert history.status().error_count == 1
-            assert bool(history.cached(("600001",))) is previous_projection
+            assert not history.cached(("600001",))
             assert not refresh.done()
         finally:
             release.set()
-        assert refresh.result(timeout=2)
+        assert refresh.result(timeout=2) is None
     assert history.status().snapshot_hash == new_manifest.snapshot_hash
     assert len(history.load(("600001",))["600001"]) == 20
 
@@ -327,8 +404,13 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
     monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(observed))
     archive = SQLitePublishedHistorySnapshot(tmp_path / "history")
     manifest = archive.manifest()
-    history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
-    assert history.refresh()
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(archive),
+        lookback_sessions=61,
+        monotonic=time.monotonic,
+        outcome_history=ReadPublishedHistoryUseCase(archive),
+    )
+    history.initialize(cancelled=lambda: False)
     initial_count = len(verified)
     assert initial_count > 0
     assert len(archive.read_windows(manifest, ("600001",), sessions=61)[0].cells) == 61
@@ -349,7 +431,9 @@ def test_deadline_bound_history_load_never_starts_an_archive_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive = SQLitePublishedHistorySnapshot(tmp_path / "history")
-    history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(archive), lookback_sessions=61, monotonic=time.monotonic
+    )
 
     def unexpected_manifest():
         pytest.fail("market deadline must not start archive verification")
@@ -369,13 +453,14 @@ def test_recommendation_retains_the_last_valid_projection_when_the_archive_becom
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(archive_root)),
         lookback_sessions=61,
+        monotonic=time.monotonic,
     )
-    assert history.refresh() is True
+    history.initialize(cancelled=lambda: False)
     before = history.entries()
 
     (archive_root / "catalog.sqlite3").write_bytes(b"invalid")
 
-    assert history.refresh() is False
+    history.observe_publication()
     assert history.entries() == before
     assert history.status().state == "active"
     assert history.status().error_count == 1

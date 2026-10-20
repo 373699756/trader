@@ -92,6 +92,7 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
         timeout=1,
         exclusions={},
         evidence_database=financial,
+        open_dates=(date(2026, 10, 8), date(2026, 10, 9)),
     )
 
     assert result.disposition == "excluded"

@@ -197,6 +197,14 @@
         ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
         : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
     renderPublicationStatus(els, payload, statusPayload);
+    if (payload && payload.historical !== true && statusPayload) {
+      const maintenance = statusPayload.scoring_profile && statusPayload.scoring_profile.maintenance;
+      const modelChanged = Array.isArray(maintenance)
+        && maintenance.some((head) => head && head.restart_required === true);
+      if (modelChanged || statusPayload.market_data && statusPayload.market_data.restart_required === true) {
+        els.publicationMeta.textContent += " · 本地资料或模型已有更新，重启后采用";
+      }
+    }
   }
 
   function pipelineHasProgress(pipeline) {

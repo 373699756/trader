@@ -10,13 +10,16 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 _LOGGER = logging.getLogger(__name__)
 
 
-def WarnMissingLocalData(paths: DataPaths, profile_id: ScoringProfileId, *, model_missing: bool) -> None:
+def WarnMissingLocalData(paths: DataPaths, profile_id: ScoringProfileId, *, model_failure: str | None) -> None:
     """Warn about absent files without claiming existing files are validated."""
 
-    if model_missing:
+    if model_failure is not None:
+        detail = "缺失" if model_failure == "production_model_missing" else f"不可用（{model_failure}）"
         _LOGGER.warning(
-            "警告：%s 双头模型工件缺失，看板继续启动，模型评分待就绪；请运行 ./run.sh train，完成后重启以加载模型。",
+            "警告：%s 双头模型工件%s，看板继续启动，模型评分待就绪；"
+            "请检查或运行 ./run.sh train，完成后重启以加载模型。",
             profile_id.upper(),
+            detail,
         )
     if not (paths.history / "catalog.sqlite3").is_file():
         _LOGGER.warning(

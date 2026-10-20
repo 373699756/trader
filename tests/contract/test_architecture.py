@@ -157,6 +157,13 @@ def test_active_dependency_direction() -> None:
                 )
                 continue
             for imported in _imports(path):
+                if imported == "trader.training.domain.model_publication" and path.relative_to(
+                    SOURCE_ROOT
+                ).as_posix() in {
+                    "recommendation/application/ports/loaded_profile.py",
+                    "recommendation/application/pipeline/local_score/model_capability.py",
+                }:
+                    continue  # Immutable cross-business publication/status values, no training implementation.
                 if imported in {
                     "trader.infra.shutdown",
                     "trader.infra.workers",
@@ -510,7 +517,6 @@ def test_market_component_suite_remains_partitioned_by_behavior() -> None:
     assert not (component_root / "test_market_data.py").exists()
     expected = {
         "test_market_features.py",
-        "test_market_exchange_references.py",
         "test_market_gateway.py",
         "test_market_intraday.py",
         "test_market_lanes.py",

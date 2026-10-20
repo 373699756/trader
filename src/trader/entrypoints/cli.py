@@ -42,12 +42,13 @@ def BuildParser() -> argparse.ArgumentParser:
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
     subparsers.add_parser("train", help="Maintain complete history and jointly train or reuse V2/V3.")
-    sync = subparsers.add_parser("sync", help="Synchronize market windows and company evidence.")
+    sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
     )
+    subparsers.add_parser("history-automation-uninstall", help="Explicitly remove retired Trader user scheduler tasks.")
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
         "research-scoring-hot-path-baseline",
@@ -87,8 +88,6 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             return 2
         if args.command == "train":
             return _run_history_download(config_path)
-        if args.target == "history":
-            return _run_scheduled_history_maintenance(config_path)
         from trader.bootstrap import ExecuteSync
         from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
@@ -96,7 +95,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set)
         print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True))
         return result.exit_code
-    if args.command == "history-automation-status":
+    if args.command in ("history-automation-status", "history-automation-uninstall"):
         from trader.download.entrypoints.commands import RunDownloadCommand
 
         return RunDownloadCommand(args.command, config_path=config_path)
@@ -158,12 +157,6 @@ def _run_history_download(config_path: Path) -> int:
             json.dumps({"schema_version": "joint_training_result", "status": "failed", "category": type(exc).__name__})
         )
         return 1
-
-
-def _run_scheduled_history_maintenance(config_path: Path) -> int:
-    from trader.download.entrypoints.commands import RunDownloadCommand
-
-    return RunDownloadCommand("sync history", config_path=config_path)
 
 
 def _shanghai_now() -> datetime:

@@ -3,8 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from tests.unit.infra.research.test_history_industry_cache import DATES, UNIVERSE, _IndustrySdk
-from tests.unit.infra.research.test_history_sync import NOW
-from tests.unit.infra.test_history_supplier_router import Prices, StSource
+from tests.unit.infra.test_history_supplier_router import Prices, _at, _prepared
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.infra import baostock_sync_supplier as supplier_module
@@ -143,8 +142,8 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
     prices = Prices()
     prices.dates = dates
     with supplier_module.BaoStockHistorySupplier(config) as source:
-        router = HistorySupplierRouter(source, prices, lambda: UNIVERSE, StSource(), cache)
-        assert RunHistorySync(config, router, clock=lambda: NOW).state == "completed"
+        router = HistorySupplierRouter(source, prices, _prepared(UNIVERSE, dates), cache)
+        assert RunHistorySync(config, router, clock=lambda: _at(dates[-1])).state == "completed"
         control = HistoryControlIndex(config.archive_root / "catalog.sqlite3")
         snapshot = control.load_published_state().snapshot
         identity = control.read_source(snapshot.source_identity_hash)
@@ -157,7 +156,7 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
                 connection.run("UPDATE bound_references SET payload_json='{}'")
         requests.clear()
         prices.calls.clear()
-        result = RunHistorySync(config, router, clock=lambda: NOW)
+        result = RunHistorySync(config, router, clock=lambda: _at(dates[-1]))
         if damage == "tampered":
             assert result.state == "failed" and result.reason == "history_reference_content_conflict"
             return

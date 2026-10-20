@@ -8,8 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
+from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
@@ -52,7 +51,6 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
     if config_path is None:
         raise ValueError("download command requires an explicit configuration")
     runtime = LoadRuntimeSettings(config_path)
-    repository_root = runtime.project_root
     if command == "history-automation-status":
         from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationStatus
         from trader.download.infra.history_automation_status import ReadHistoryAutomationStatus
@@ -66,56 +64,17 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
             )
         )
         return 0
-    if command != "sync history":
-        raise ValueError(f"unsupported download command: {command}")
-    from trader.bootstrap import ExecuteHistoryDownload
-    from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationRunStatus
-    from trader.download.infra.history_maintenance_runner import (
-        PlatformHistoryDesktopNotifier,
-        RotatingHistoryAutomationLog,
-        RunScheduledHistoryMaintenance,
-    )
+    if command == "history-automation-uninstall":
+        from trader.bootstrap import ExecuteHistoryAutomationRemoval
 
-    observed_at = _shanghai_now()
-    configuration = BuildHistorySyncConfiguration(repository_root, config_path)
-    task_log = RotatingHistoryAutomationLog(runtime.runtime_dir / "logs/history-automation.log")
-
-    def synchronize(progress: HistorySyncProgressPort | None) -> HistoryMaintenanceStatus:
-        return ExecuteHistoryDownload(
-            configuration,
-            supplier_progress=task_log,
-            clock=lambda: observed_at,
-            progress=progress,
-        )
-
-    try:
-        run_status = RunScheduledHistoryMaintenance(
-            configuration,
-            synchronize,
-            PlatformHistoryDesktopNotifier(),
-            observed_at,
-            progress=task_log,
-        )
         try:
-            task_log.publish_run(run_status)
-        except OSError:
-            print(
-                '{"reason":"log_write_failed","schema_version":"history_automation_log","state":"degraded"}',
-                file=sys.stderr,
-                flush=True,
-            )
-        print(
-            json.dumps(
-                ProjectHistoryAutomationRunStatus(run_status),
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
-        if run_status.maintenance_state == "cancelled":
-            return 130
-        return 0 if run_status.successful else 1
-    finally:
-        task_log.close()
+            removed = ExecuteHistoryAutomationRemoval()
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(json.dumps({"status": "failed", "category": type(exc).__name__}))
+            return 1
+        print(json.dumps({"status": "removed", "removed_files": len(removed)}))
+        return 0
+    raise ValueError(f"unsupported download command: {command}")
 
 
 def _shanghai_now() -> datetime:

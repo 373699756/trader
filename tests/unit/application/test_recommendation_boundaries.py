@@ -287,7 +287,17 @@ def test_recommendation_application_does_not_import_infrastructure_or_training()
                     name.startswith(forbidden_prefixes)
                     and name not in {"trader.infra.workers", "trader.infra.shutdown", "trader.infra.cache_contracts"}
                 )
-                or ".training" in name
+                or (
+                    ".training" in name
+                    and not (
+                        name == "trader.training.domain.model_publication"
+                        and path.relative_to(SOURCE_ROOT).as_posix()
+                        in {
+                            "recommendation/application/ports/loaded_profile.py",
+                            "recommendation/application/pipeline/local_score/model_capability.py",
+                        }
+                    )
+                )
                 or name.endswith(".download")
             )
     assert violations == []

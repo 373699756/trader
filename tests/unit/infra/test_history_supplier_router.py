@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.reference_fixtures import PreparedFixture
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier, _download
 from trader.download.domain.baostock_daily import (
@@ -57,8 +58,8 @@ class Prices:
         self.shift = shift
         self.dates = None
 
-    def load_history_context(self, as_of, sessions, universe):
-        dates = self.dates or tuple(as_of - timedelta(days=i) for i in reversed(range(sessions)))
+    def load_history_context(self, as_of, sessions, universe, *, calendar):
+        dates = calendar.open_dates
         return replace(FakeSupplier(dates).load_context(as_of, sessions, universe=universe), industry_intervals=())
 
     def fetch_window(self, security, dates, **kwargs):
@@ -107,7 +108,16 @@ def _router(
 ) -> HistorySupplierRouter:
     selected = universe or _current_universe("600001", "600002")
     prices.dates = baseline.dates
-    return HistorySupplierRouter(baseline, prices, lambda: selected, StSource())
+    return HistorySupplierRouter(baseline, prices, _prepared(selected, baseline.dates))
+
+
+def _at(day):
+    return NOW.replace(year=day.year, month=day.month, day=day.day)
+
+
+def _prepared(universe, dates, checked=None):
+    checked = checked or _at(dates[-1])
+    return PreparedFixture(checked, universe, open_dates=tuple(sorted(set((*dates, checked.date())))))
 
 
 def test_history_context_uses_the_current_exchange_universe() -> None:
@@ -126,7 +136,11 @@ def test_st_check_uses_current_check_day_instead_of_resumed_price_cutoff():
     prices = Prices()
     prices.dates = dates
     context = HistorySupplierRouter(
-        Baseline(dates), prices, lambda: _current_universe("600001"), StSource(), eligibility_date=checked
+        Baseline(dates),
+        prices,
+        _prepared(
+            _current_universe("600001"), dates, NOW.replace(year=checked.year, month=checked.month, day=checked.day)
+        ),
     ).load_context(dates[-1], len(dates))
     assert context.calendar.open_dates == dates
     assert context.st_evidence[0].checked_on == checked
@@ -145,15 +159,15 @@ def test_sparse_gap_request_count_covers_date_span(positions, expected):
     assert FetchTencentHistoryWindow(RecordingPrices(), _current_universe("600001")[0], requested, calendar)
 
 
-def test_history_calendar_is_loaded_from_tencent_before_industry_only_query() -> None:
+def test_prepared_calendar_is_shared_with_prices_and_industry_query() -> None:
     dates = (date(2026, 10, 8), date(2026, 10, 9))
     universe = _current_universe("600001")
     events = []
 
     class TencentCalendar(Prices):
-        def load_history_context(self, as_of, sessions, selected):
+        def load_history_context(self, as_of, sessions, selected, *, calendar):
             events.append("tencent_calendar")
-            return super().load_history_context(as_of, sessions, selected)
+            return super().load_history_context(as_of, sessions, selected, calendar=calendar)
 
     class IndustryOnly:
         def load_industry_context(self, calendar, selected, *, industry_cache=None):
@@ -162,7 +176,7 @@ def test_history_calendar_is_loaded_from_tencent_before_industry_only_query() ->
             assert selected == universe
             return FakeSupplier(dates).load_context(dates[-1], len(dates), universe=selected)
 
-    context = HistorySupplierRouter(IndustryOnly(), TencentCalendar(), lambda: universe, StSource()).load_context(
+    context = HistorySupplierRouter(IndustryOnly(), TencentCalendar(), _prepared(universe, dates)).load_context(
         dates[-1], len(dates)
     )
     assert events == ["tencent_calendar", "industry"]
@@ -175,7 +189,7 @@ def test_history_router_forwards_the_explicit_industry_query_cache(tmp_path) -> 
     baseline = Baseline(dates)
     universe = _current_universe("600001")
     cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
-    router = HistorySupplierRouter(baseline, Prices(), lambda: universe, StSource(), cache)
+    router = HistorySupplierRouter(baseline, Prices(), _prepared(universe, dates), cache)
     router.load_context(dates[-1], len(dates))
     assert baseline.industry_cache is cache
 
@@ -189,11 +203,11 @@ def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) ->
             raise RuntimeError("supplier_login_timeout")
 
     class TencentContext(Prices):
-        def load_history_context(self, as_of, sessions, selected):
+        def load_history_context(self, as_of, sessions, selected, *, calendar):
             context = FakeSupplier(dates).load_context(as_of, sessions, universe=selected)
             return replace(context, industry_intervals=())
 
-    router = HistorySupplierRouter(LoginTimeout(dates), TencentContext(), lambda: universe, StSource())
+    router = HistorySupplierRouter(LoginTimeout(dates), TencentContext(), _prepared(universe, dates))
     context = router.load_context(dates[-1], len(dates))
 
     assert context.calendar.open_dates == dates
@@ -209,7 +223,7 @@ def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) ->
             training_root=(tmp_path).parent / "models",
         ),
         router,
-        clock=lambda: NOW,
+        clock=lambda: _at(dates[-1]),
     )
     assert result.state == "completed"
     assert result.training_due is False and result.training_due_reason == "data_incomplete"
@@ -251,7 +265,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
         reference_root=(tmp_path).parent / "reference",
         training_root=(tmp_path).parent / "models",
     )
-    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
     before = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], before)
     new_dates = tuple(day + timedelta(days=1) for day in dates)
@@ -259,7 +273,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
     result = RunHistorySync(
         config,
         _router(baseline, Prices(shift=1.0, missing=incoming == "missing", conflict=incoming == "raw")),
-        clock=lambda: NOW,
+        clock=lambda: _at(new_dates[-1]),
     )
     state = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state()
     if incoming == "raw":
@@ -316,7 +330,8 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
             reference_root=(tmp_path).parent / "reference",
             training_root=(tmp_path).parent / "models",
         ),
-        clock=lambda: NOW,
+        reference=replace(_prepared(_current_universe("600001", "600002"), dates), industry_version="fixture"),
+        clock=lambda: _at(dates[-1]),
     )
     assert result.state == "completed"
     assert baseline.calls == []
@@ -340,10 +355,10 @@ def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
         reference_root=(tmp_path).parent / "reference",
         training_root=(tmp_path).parent / "models",
     )
-    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline, prices = Baseline(new_dates), Prices()
-    result = RunHistorySync(config, _router(baseline, prices), clock=lambda: NOW)
+    result = RunHistorySync(config, _router(baseline, prices), clock=lambda: _at(new_dates[-1]))
     assert result.state == "completed"
     assert prices.calls == [new_dates, new_dates]
     assert baseline.calls == []
@@ -364,12 +379,16 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     )
     full = _current_universe("600001", "600002")
     assert (
-        RunHistorySync(config, _router(Baseline(dates, industry="银行"), Prices(), full), clock=lambda: NOW).state
+        RunHistorySync(
+            config, _router(Baseline(dates, industry="银行"), Prices(), full), clock=lambda: _at(dates[-1])
+        ).state
         == "completed"
     )
 
     current = _current_universe("600001")
-    result = RunHistorySync(config, _router(Baseline(dates, industry="银行"), Prices(), current), clock=lambda: NOW)
+    result = RunHistorySync(
+        config, _router(Baseline(dates, industry="银行"), Prices(), current), clock=lambda: _at(dates[-1])
+    )
 
     assert result.state == "completed"
     archive = SQLitePublishedHistorySnapshot(config.archive_root)
@@ -405,48 +424,17 @@ def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
         reference_root=(tmp_path).parent / "reference",
         training_root=(tmp_path).parent / "models",
     )
-    assert RunHistorySync(config, Baseline(dates), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, Baseline(dates), clock=lambda: _at(dates[-1])).state == "completed"
 
     class Regressed(Baseline):
         def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
             context = super().load_context(as_of, sessions, universe=universe)
             return replace(context, universe=(context.universe[0],))
 
-    result = RunHistorySync(config, Regressed(dates), clock=lambda: NOW)
+    result = RunHistorySync(config, Regressed(dates), clock=lambda: _at(dates[-1]))
 
     assert result.state == "failed"
     assert result.reason == "supplier_universe_regressed"
-
-
-@pytest.mark.parametrize("failure", (TimeoutError, ValueError))
-def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failure) -> None:
-    dates = tuple(date(2026, 10, 7) + timedelta(days=i) for i in range(3))
-    config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
-    )
-    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
-    control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
-    before = control.load_state().active_snapshot
-
-    def unavailable():
-        raise failure("fixture official universe unavailable")
-
-    class NoContext(Baseline):
-        def load_context(self, *_args, **_kwargs):
-            raise AssertionError("BaoStock must not replace an unavailable official universe")
-
-    baseline, prices = NoContext(dates), Prices()
-    result = RunHistorySync(config, HistorySupplierRouter(baseline, prices, unavailable, StSource()), clock=lambda: NOW)
-
-    assert result.state == "failed"
-    assert control.load_state().active_snapshot == before
-    assert baseline.calls == []
-    assert prices.calls == []
 
 
 def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
@@ -480,11 +468,11 @@ def test_gap_longer_than_reread_window_includes_published_qfq_anchor(tmp_path):
         reference_root=(tmp_path).parent / "reference",
         training_root=(tmp_path).parent / "models",
     )
-    first = RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW)
+    first = RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1]))
     assert first.state == "completed"
     shifted = tuple(day + timedelta(days=6) for day in dates)
     prices = Prices()
-    result = RunHistorySync(config, _router(Baseline(shifted), prices), clock=lambda: NOW)
+    result = RunHistorySync(config, _router(Baseline(shifted), prices), clock=lambda: _at(shifted[-1]))
     assert result.state == "completed"
     assert prices.calls == [shifted[-8:], shifted[-8:]]
 

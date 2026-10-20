@@ -15,7 +15,6 @@ from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapsh
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, LiveQuote
 from trader.recommendation.domain.market.refresh import IntradayRefreshResult
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult as _ResearchRefreshResult
 
 
 class MarketDataUnavailableError(RuntimeError):
@@ -169,23 +168,8 @@ class QuoteReaderPort(Protocol):
 class ResearchReaderPort(Protocol):
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
 
-    def refresh_stock_risk(
-        self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None
-    ) -> _ResearchRefreshResult: ...
-
 
 class ReferenceDataPort(Protocol):
-    def refresh_reference_data(self, codes: Sequence[str], observed_at: datetime, *, force: bool = False) -> None: ...
-
-    def schedule_reference_data(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        force: bool = False,
-        security_master_codes: Sequence[str] | None = None,
-    ) -> None: ...
-
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult: ...
 
 

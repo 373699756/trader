@@ -230,6 +230,24 @@ class HistoryControlIndex:
     def save_due_state(self, value: HistoryTrainingDueState) -> None:
         self._save("due", value.due_identity, value.content_hash, _due_payload(value))
 
+    def read_due_state(self, identity: str, *, latest: bool = False) -> HistoryTrainingDueState | None:
+        try:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
+                row = connection.run(
+                    "SELECT content_hash,payload_json FROM immutable_records WHERE kind='due' "
+                    "AND (record_key=? OR record_key LIKE ?) "
+                    "ORDER BY json_extract(payload_json,'$.observed_at') DESC LIMIT 1",
+                    (identity, identity + ":%" if latest else identity),
+                ).fetchone()
+                if row is None:
+                    return None
+                value = _decode_record("due", row[1])
+                if not isinstance(value, HistoryTrainingDueState) or value.content_hash != row[0]:
+                    raise HistoryControlError("history due observation is invalid")
+                return value
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryControlError("history due observation read failed") from exc
+
     def claim_reminder(self, value: HistoryReminderClaim) -> bool:
         """Atomically claim one due identity on one Shanghai date.
 
@@ -409,8 +427,10 @@ class HistoryControlIndex:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryControlError("history source identity read failed") from exc
 
-    def load_published_state(self) -> HistoryPublishedControlState | None:
-        """Read and hash four publication records, never historical checkpoints."""
+    def load_published_state(self, *, sequence: int | None = None) -> HistoryPublishedControlState | None:
+        """Read one immutable published sequence, defaulting to the active pointer."""
+        if sequence is not None and sequence < 1:
+            raise ValueError("history publication sequence must be positive")
         try:
             with (
                 SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection,
@@ -422,11 +442,12 @@ class HistoryControlIndex:
                 active = connection.run(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
                 ).fetchone()
-                if active is None:
+                if active is None or (sequence is not None and sequence > active[1]):
                     return None
-                snapshot = _read_publication_record(connection, "snapshot", str(active[1]))
+                selected = sequence if sequence is not None else int(active[1])
+                snapshot = _read_publication_record(connection, "snapshot", str(selected))
                 if not isinstance(snapshot, HistoryActiveSnapshot) or (
-                    snapshot.content_hash != active[0] or snapshot.sequence != active[1]
+                    snapshot.sequence != selected or (selected == active[1] and snapshot.content_hash != active[0])
                 ):
                     raise HistoryControlError("history active snapshot pointer is inconsistent")
                 source = _read_publication_record(connection, "source", snapshot.source_identity_hash)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -111,8 +112,6 @@ class BlockingScoringInputs(DataRefresh):
         elif request.task is PipelineTask.CANDIDATE_QUOTES:
             self.candidate_started.set()
             assert self.release_candidate.wait(2.0)
-        elif request.task is PipelineTask.RESEARCH_SNAPSHOT:
-            raise DataRefreshUnavailableError("controlled_input_failure")
         return outcome
 
 
@@ -1534,6 +1533,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
         lookback_sessions=61,
+        monotonic=time.monotonic,
     )
     history.record_maintenance("loading", stage="reading_active_snapshot")
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -12,28 +11,26 @@ from types import MappingProxyType
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.bootstrap import BuildIndustrySource
+from trader.download.infra.current_industry_publication import CurrentIndustryCache
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.download.infra.reference_publication import ReferencePublication
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.ports.data_plane_records import SecurityMasterRecord
 from trader.recommendation.application.ports.loaded_profile import ModelPredictorPort
 from trader.recommendation.domain.market.industry import QuoteWithIndustry
 from trader.recommendation.domain.market.models import FeatureSnapshot, ModelIndustryReference
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.infra.market_data.local_industry_source import LocalIndustrySource
 from trader.recommendation.infra.market_data.published_history_bars import QfqBars
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.data_plane_codec import RowToRecord
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
@@ -78,58 +75,27 @@ class FactorInputs:
     history_sessions: int
 
 
-def ReadReferences(database: Path, at: datetime, industry_database: Path, calendar_path: Path) -> FixedReferences:
-    """Do not use SQLiteDataPlane.load: it initializes its active database."""
-    observations: list[SourceObservation] = []
-    industries: dict[str, ModelIndustryReference] = {}
-    if database.is_file():
-        with SqliteSession(database, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
-            for row in connection.run("SELECT * FROM security_master_recent WHERE status='committed'"):
-                record = RowToRecord("security_master_recent", row)
-                if not isinstance(record, SecurityMasterRecord):
-                    raise TypeError("unexpected reference record")
-                if record.observed_at > at or record.source_time > at:
-                    continue
-                fields = {
-                    key: value
-                    for key, value in record.payload.items()
-                    if value is None or isinstance(value, (str, int, float, bool))
-                }
-                observations.append(
-                    SourceObservation(
-                        source=record.source,
-                        subject_key=record.code,
-                        observed_at=record.observed_at,
-                        source_time=record.source_time,
-                        received_at=record.observed_at,
-                        effective_at=record.observed_at,
-                        data_version=record.data_version,
-                        fields=fields,
-                        missing_reasons={},
-                        payload_hash=record.payload_hash,
-                        status="success",
-                        error_code=None,
-                    )
-                )
-    industry_started = time.monotonic()
-    if industry_database is not None:
-        for item in LocalIndustrySource(industry_database, BuildIndustrySource()).load_cached(at):
-            industry_fields = item.fields
-            industries[item.subject_key] = ModelIndustryReference(
-                str(industry_fields["model_industry"]),
-                str(industry_fields["model_industry_classification"]),
-                date.fromisoformat(str(industry_fields["model_industry_effective_date"])),
-                str(industry_fields["model_industry_source"]),
-                str(industry_fields["model_industry_data_version"]),
-            )
-    calendar = json.loads(calendar_path.read_text()) if calendar_path.is_file() else {}
-    open_dates = tuple(sorted(date.fromisoformat(item) for item in calendar.get("dates", [])))
+def ReadReferences(reference_root: Path, at: datetime) -> FixedReferences:
+    """Read the same fixed publications as recommendation, without supplier clients."""
+    started = time.monotonic()
+    publication = ReferencePublication(reference_root)
+    references = PublishedReferences(
+        publication.read,
+        publication.identity,
+        CurrentIndustryCache(reference_root / "industry.sqlite3").load,
+        max_age_seconds=30 * 86400,
+    )
+    references.initialize()
+    reference = references.reference()
+    if reference is None or reference.checked_at > at:
+        raise RuntimeError("published_reference_unavailable")
+    observations = references.security_observations()
     return FixedReferences(
-        tuple(observations),
-        MappingProxyType(industries),
-        open_dates,
-        tuple(sorted({item.data_version for item in observations})),
-        (time.monotonic() - industry_started) * 1000 if industry_database is not None else 0.0,
+        observations,
+        references.model_industries(tuple(item.subject_key for item in observations)),
+        reference.open_dates,
+        tuple(sorted(references.versions().values())),
+        (time.monotonic() - started) * 1000,
     )
 
 

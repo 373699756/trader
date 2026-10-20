@@ -310,6 +310,18 @@ def _budget_mapping(raw: Mapping[object, object]) -> dict[str, object]:
     return budget
 
 
+def _reference_publication(raw: object) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        "reference_publication": {
+            field: raw[field]
+            for field in ("loaded_identity", "disk_identity", "restart_required", "failure")
+            if field in raw and _json_scalar(raw[field])
+        }
+    }
+
+
 def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
     raw = runtime.get("market_data")
     if not isinstance(raw, Mapping):
@@ -328,6 +340,10 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "history_error_count",
         "published_history_state",
         "published_history_snapshot_hash",
+        "published_history_disk_snapshot_hash",
+        "outcome_history_snapshot_hash",
+        "outcome_history_disk_snapshot_hash",
+        "restart_required",
         "published_history_data_cutoff",
         "history_maintenance_state",
         "history_maintenance_reason",
@@ -358,6 +374,7 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
     result.update(_history_tail_quality(raw.get("history_tail_quality_counts")))
     result.update(_issuer_eligibility(raw.get("issuer_eligibility")))
+    result.update(_reference_publication(raw.get("reference_publication")))
     for field in ("market_quote_age", "candidate_quote_age"):
         value = raw.get(field)
         if isinstance(value, Mapping):
@@ -414,6 +431,9 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
             "listing_date_rows",
             "last_error_code",
             "timeout_seconds",
+            "loaded_identity",
+            "disk_identity",
+            "restart_required",
         )
         for name, value in sorted(sources.items(), key=lambda item: str(item[0]))[:8]:
             if not isinstance(value, Mapping):
@@ -503,12 +523,56 @@ def _scoring_profile(runtime: Mapping[str, object]) -> dict[str, object]:
         return {"profile_id": None, "heads": {}}
     return {
         "profile_id": profile_id,
+        "maintenance": _training_maintenance(raw.get("maintenance")),
         "heads": {
             strategy: _scoring_head(head)
             for strategy, head in sorted(heads.items(), key=lambda item: str(item[0]))
             if strategy in {"tomorrow", "d25"} and isinstance(head, Mapping)
         },
     }
+
+
+def _training_maintenance(raw: object) -> list[dict[str, object]]:
+    if not isinstance(raw, (list, tuple)):
+        return []
+    result: list[dict[str, object]] = []
+    for row in raw[:4]:
+        if not isinstance(row, Mapping):
+            continue
+        item = {
+            key: row[key]
+            for key in (
+                "profile_id",
+                "strategy",
+                "owned",
+                "restart_required",
+                "training_due",
+                "training_due_reason",
+                "current_label_cutoff",
+                "matured_label_days_since_training",
+                "failure",
+            )
+            if key in row and _json_scalar(row[key])
+        }
+        for key in ("loaded", "disk"):
+            identity = row.get(key)
+            item[key] = (
+                {
+                    field: identity[field]
+                    for field in (
+                        "model_hash",
+                        "publication_hash",
+                        "label_cutoff",
+                        "training_history_hash",
+                        "training_run_hash",
+                    )
+                    if field in identity and _json_scalar(identity[field])
+                }
+                if isinstance(identity, Mapping)
+                else None
+            )
+        result.append(item)
+    return result
 
 
 def _scoring_head(raw: Mapping[object, object]) -> dict[str, object]:

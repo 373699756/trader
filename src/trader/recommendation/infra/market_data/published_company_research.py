@@ -1,19 +1,15 @@
-"""Read published company evidence; recommendation loads never call suppliers."""
-
-from __future__ import annotations
+"""Preload one company publication and qualify its facts against the startup calendar."""
 
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from functools import partial
 from types import MappingProxyType
 from typing import Protocol
 
-from trader.download.domain.company_evidence import (
-    CompanyEvidenceRequest,
-    CompanyEvidenceSnapshot,
-    CompanyEvidenceSyncResult,
-)
+from trader.download.domain.company_evidence import CompanyEvidenceSnapshot
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.market.research import (
     AnnouncementRiskVerified,
@@ -22,11 +18,7 @@ from trader.recommendation.domain.market.research import (
     ResearchAnnouncement,
     ResearchObservation,
 )
-from trader.recommendation.infra.market_data.research_load_status import (
-    ResearchComponentCoverage,
-    ResearchLoaderStatus,
-    ResearchLoadReport,
-)
+from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoaderStatus
 
 
 class CompanyEvidenceReadPort(Protocol):
@@ -35,48 +27,84 @@ class CompanyEvidenceReadPort(Protocol):
     def visit(self, codes: Sequence[str], consume: Callable[[CompanyEvidenceSnapshot], None]) -> None: ...
 
 
-class CompanyEvidenceRefreshPort(Protocol):
-    def __call__(self, request: CompanyEvidenceRequest) -> CompanyEvidenceSyncResult: ...
-
-
 class PublishedCompanyResearch:
     def __init__(
         self,
         reader: CompanyEvidenceReadPort,
         *,
         wall_clock: Callable[[], datetime],
-        refresh: CompanyEvidenceRefreshPort | None = None,
+        open_dates: Callable[[], tuple[date, ...]],
+        monotonic: Callable[[], float],
     ) -> None:
         self._reader = reader
         self._wall_clock = wall_clock
-        self._refresh = refresh
+        self._open_dates = open_dates
+        self._monotonic = monotonic
         self._lock = threading.RLock()
         self._observations: Mapping[str, ResearchObservation] = MappingProxyType({})
-        self._candidate_codes: tuple[str, ...] = ()
-        self._last_error = ""
-        self._refresh_error = ""
-        self._missing: frozenset[str] = frozenset()
+        self._last_error = "company_not_loaded"
         self._publication_version = ""
-        self._load_lock = threading.RLock()
+        self._disk_version = ""
+        self._initialized = False
+
+    def initialize(self, codes: Sequence[str], *, cancelled: Callable[[], bool]) -> None:
+        with self._lock:
+            if self._initialized:
+                return
+            self._initialized = True
+        requested = tuple(sorted(set(codes)))
+        if not requested or len(requested) > 12_000:
+            self._last_error = "company_population_unavailable"
+            return
+        deadline = self._monotonic() + 30.0
+        observed_at = ShanghaiNow(self._wall_clock())
+        for _ in range(3):
+            rows: dict[str, ResearchObservation] = {}
+
+            try:
+                before = self._reader.publication_version()
+                for offset in range(0, len(requested), 64):
+                    if cancelled() or self._monotonic() >= deadline:
+                        self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+                        return
+                    self._reader.visit(
+                        requested[offset : offset + 64], partial(_capture_published_observation, rows, observed_at)
+                    )
+                after = self._reader.publication_version()
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                self._last_error = f"company_snapshot:{type(exc).__name__}"
+                return
+            if cancelled() or self._monotonic() >= deadline:
+                self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+                return
+            if before != after:
+                continue
+            with self._lock:
+                self._observations = MappingProxyType(rows)
+                self._publication_version = self._disk_version = after
+                self._last_error = "" if rows else "company_snapshot:missing"
+            return
+        self._last_error = "company_publication_changed"
 
     def observe_publication(self) -> None:
-        """Called by the existing local-data observer, never by an HTTP request."""
-        with self._load_lock:
-            try:
-                version = self._reader.publication_version()
-            except (OSError, RuntimeError, ValueError) as exc:
-                with self._lock:
-                    self._last_error = f"company_snapshot:{type(exc).__name__}"
-                return
-            if version == self._publication_version and not self._last_error:
-                return
+        try:
+            version = self._reader.publication_version()
+        except (OSError, RuntimeError, ValueError):
             with self._lock:
-                codes = tuple(sorted(set(self._observations).union(self._missing)))
-            if codes:
-                self.load_report(codes, self._wall_clock(), include_structured=True)
-            with self._lock:
-                if not self._last_error:
-                    self._publication_version = version
+                self._last_error = "company_publication_unavailable"
+            return
+        with self._lock:
+            self._disk_version = version
+            if self._last_error == "company_publication_unavailable":
+                self._last_error = ""
+
+    def _required_coverage(self, now: datetime) -> date | None:
+        try:
+            dates = self._open_dates()
+        except (OSError, RuntimeError, ValueError):
+            return None
+        previous = tuple(day for day in dates if day < now.date())
+        return previous[-1] if previous and dates[-1] >= now.date() else None
 
     def cached(
         self,
@@ -87,32 +115,21 @@ class PublishedCompanyResearch:
         action_restrictions: dict[str, set[str]] | None = None,
         as_of: datetime | None = None,
     ) -> Mapping[str, ResearchObservation]:
-        now = as_of if as_of is not None else self._wall_clock()
+        now = ShanghaiNow(as_of if as_of is not None else self._wall_clock())
+        required = self._required_coverage(now)
+        result: dict[str, ResearchObservation] = {}
         with self._lock:
-            missing = tuple(code for code in codes if code not in self._observations and code not in self._missing)
-        if missing:
-            self.load_report(missing, now, include_structured=include_structured)
-        with self._lock:
-            today = now.date()
-            if action_restrictions is not None:
-                for code in codes:
-                    item = self._observations.get(code)
-                    if (
-                        item is None
-                        or item.source_errors
-                        or item.queried_on != today
-                        or (item.snapshot_at is not None and item.snapshot_at > now)
-                    ):
+            for code in codes:
+                original = self._observations.get(code)
+                if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
+                    original = None
+                item = _qualified(original, now, required) if original is not None else None
+                if item is None or not _action_ready(item):
+                    if action_restrictions is not None:
                         action_restrictions.setdefault(code, set()).add("research_data_degraded")
-            return MappingProxyType(
-                {
-                    code: _aged_observation(item, today)
-                    for code in codes
-                    if (item := self._observations.get(code)) is not None
-                    and (not fresh_only or item.queried_on == today)
-                    and (item.snapshot_at is None or item.snapshot_at <= now)
-                }
-            )
+                if item is not None and (not fresh_only or _action_ready(item)):
+                    result[code] = item
+        return MappingProxyType(result)
 
     def load(
         self,
@@ -122,107 +139,21 @@ class PublishedCompanyResearch:
         include_structured: bool,
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, ResearchObservation]:
-        # This call receives the current candidate/reserve population, but only records it in memory.
-        with self._lock:
-            self._candidate_codes = tuple(sorted(set(self._candidate_codes).union(codes)))
         return self.cached(
             codes, include_structured=include_structured, action_restrictions=action_restrictions, as_of=observed_at
         )
 
-    def load_report(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        include_structured: bool,
-        action_restrictions: dict[str, set[str]] | None = None,
-    ) -> ResearchLoadReport:
-        with self._load_lock:
-            return self._read_report(codes, observed_at, action_restrictions=action_restrictions)
-
-    def _read_report(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        action_restrictions: dict[str, set[str]] | None,
-    ) -> ResearchLoadReport:
-        observations: dict[str, ResearchObservation] = {}
-
-        def consume(snapshot: CompanyEvidenceSnapshot) -> None:
-            if snapshot.published_at <= observed_at:
-                observations[snapshot.code] = _observation(snapshot, observed_at)
-
-        try:
-            self._reader.visit(codes, consume)
-        except (OSError, RuntimeError, ValueError) as exc:
-            with self._lock:
-                self._last_error = f"company_snapshot:{type(exc).__name__}"
-                self._missing = self._missing.union(code for code in codes if code not in self._observations)
-                existing = MappingProxyType(
-                    {
-                        code: replace(
-                            _aged_observation(self._observations[code], observed_at.date()),
-                            corporate_risk_window_complete=False,
-                            financial_history_complete=False,
-                            source_errors=tuple(
-                                sorted(set((*self._observations[code].source_errors, self._last_error)))
-                            ),
-                        )
-                        for code in codes
-                        if code in self._observations
-                    }
-                )
-                self._observations = MappingProxyType({**self._observations, **existing})
-            return ResearchLoadReport(existing, deferred_codes=tuple(codes))
-        with self._lock:
-            changed = tuple(code for code, item in observations.items() if self._observations.get(code) != item)
-            unavailable = {
-                code: replace(
-                    _aged_observation(self._observations[code], observed_at.date()),
-                    corporate_risk_window_complete=False,
-                    financial_history_complete=False,
-                    source_errors=tuple(
-                        sorted(set((*self._observations[code].source_errors, "company_snapshot:missing")))
-                    ),
-                )
-                for code in codes
-                if code not in observations and code in self._observations
-            }
-            self._observations = MappingProxyType({**self._observations, **unavailable, **observations})
-            self._missing = self._missing.difference(observations).union(set(codes).difference(observations))
-            self._last_error = ""
-        if action_restrictions is not None:
-            for code in codes:
-                item = observations.get(code)
-                if item is None or item.source_errors:
-                    action_restrictions.setdefault(code, set()).add("research_data_degraded")
-        return ResearchLoadReport(
-            MappingProxyType(observations), changed, tuple(code for code in codes if code not in observations)
-        )
-
-    def refresh(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> None:
-        # Only the independent 09:15/12:45 background job invokes this injected download use case.
-        if self._refresh is None:
-            return
-        budget = min(120.0, (deadline - self._wall_clock()).total_seconds()) if deadline else 120.0
-        if budget <= 0:
-            return
-        with self._lock:
-            news_codes = self._candidate_codes
-        result = self._refresh(CompanyEvidenceRequest(tuple(codes), observed_at, news_codes, budget))
-        with self._lock:
-            self._refresh_error = ";".join(result.failures)
-            self._candidate_codes = ()
-
     def status(self) -> ResearchLoaderStatus:
+        now = ShanghaiNow(self._wall_clock())
+        required = self._required_coverage(now)
         with self._lock:
-            rows = tuple(_aged_observation(item, self._wall_clock().date()) for item in self._observations.values())
+            rows = tuple(_qualified(item, now, required) for item in self._observations.values())
             coverages = tuple(ResearchComponentCoverage(item) for item in rows)
             covered = tuple(sum(coverage[index] for coverage in coverages) for index in range(4))
-            verified = sum(all(item) for item in coverages)
-            partial = sum(any(item) and not all(item) for item in coverages)
-            latest = max((row.snapshot_at for row in rows if row.snapshot_at is not None), default=None)
+            verified = sum(_action_ready(item) for item in rows)
+            partial = sum(
+                any(coverage) and not _action_ready(item) for item, coverage in zip(rows, coverages, strict=True)
+            )
             return ResearchLoaderStatus(
                 entries=len(rows),
                 success_count=len(rows),
@@ -232,8 +163,8 @@ class PublishedCompanyResearch:
                 consecutive_failures=0,
                 circuit_open=False,
                 latencies_ms=(),
-                latest_source_time=latest,
-                last_error=self._last_error or self._refresh_error,
+                latest_source_time=max((row.snapshot_at for row in rows if row.snapshot_at is not None), default=None),
+                last_error=self._last_error,
                 out_of_order_count=0,
                 corporate_risk_covered_count=sum(item.corporate_risk_window_complete for item in rows),
                 corporate_risk_fact_count=sum(len(item.corporate_risk_facts) for item in rows),
@@ -245,20 +176,47 @@ class PublishedCompanyResearch:
                 announcements_covered_count=covered[1],
                 pledge_covered_count=covered[2],
                 unlock_covered_count=covered[3],
+                loaded_identity=self._publication_version,
+                disk_identity=self._disk_version,
+                restart_required=self._publication_version != self._disk_version,
             )
 
 
-def _aged_observation(observation: ResearchObservation, today: date) -> ResearchObservation:
-    if observation.queried_on is not None and observation.queried_on >= today:
-        return observation
+def _capture_published_observation(
+    rows: dict[str, ResearchObservation], observed_at: datetime, snapshot: CompanyEvidenceSnapshot
+) -> None:
+    if snapshot.published_at <= observed_at:
+        rows[snapshot.code] = _observation(snapshot, observed_at)
+
+
+def _action_ready(item: ResearchObservation) -> bool:
+    return (
+        item.financial_history_complete
+        and item.corporate_risk_window_complete
+        and item.pledge_ratio_pct is not None
+        and item.unlock_ratio_pct is not None
+        and not any(not failure.startswith("news:") for failure in item.source_errors)
+    )
+
+
+def _qualified(item: ResearchObservation, now: datetime, required: date | None) -> ResearchObservation:
+    fresh = (
+        required is not None
+        and item.risk_window_end is not None
+        and item.risk_window_end >= required
+        and item.snapshot_at is not None
+        and item.snapshot_at <= now
+    )
+    if fresh:
+        return item
+    # Keep verified facts and disclosed financial reports; missing coverage cannot erase a known risk.
     return replace(
-        observation,
+        item,
         corporate_risk_window_complete=False,
-        financial_history_complete=False,
         pledge_ratio_pct=None,
         unlock_ratio_pct=None,
         news_queried=False,
-        source_errors=tuple(sorted(set((*observation.source_errors, "company_snapshot:stale")))),
+        source_errors=tuple(sorted(set((*item.source_errors, "risk_coverage:stale")))),
     )
 
 
@@ -289,7 +247,7 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
             item.core_net_profit,
         )
         for item in snapshot.financials
-        if item.published_at <= now
+        if item.published_at <= now and item.report_date <= now.date()
     )
     evidence = tuple(
         Evidence(
@@ -297,8 +255,7 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
         )
         for item in snapshot.news
         if now - timedelta(days=7) <= item.published_at <= now
-    )
-    evidence += tuple(
+    ) + tuple(
         Evidence(
             item.announcement_id,
             "regulatory_filing",
@@ -311,29 +268,30 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
         for item in announcements
         if item.body_checked
     )
-    fresh = snapshot.window_end >= now.date()
-    failures = snapshot.failures + (() if fresh else ("company_snapshot:stale",))
-    observation = ResearchObservation(
+    failures = snapshot.failures
+    return ResearchObservation(
         data_version=snapshot.version,
         snapshot_at=snapshot.published_at,
-        queried_on=snapshot.published_at.date(),
+        loaded_at=now,
+        queried_on=snapshot.window_end,
         pledge_checked_on=snapshot.pledge.day if snapshot.pledge else None,
         financial=max(reports, key=lambda item: (item.report_date, item.published_at)) if reports else None,
         financial_history=reports,
-        financial_history_complete=bool(reports)
-        and fresh
-        and not any(item.startswith("financial:") for item in failures),
+        financial_history_complete=bool(reports) and not any(item.startswith("financial:") for item in failures),
         announcements=tuple(replace(item, body="", body_checked=False) for item in announcements),
         announcements_available=bool(announcements) or snapshot.announcement_complete,
         pledge_ratio_pct=snapshot.pledge.ratio_pct
-        if snapshot.pledge and fresh and not any(item.startswith("pledge:") for item in failures)
+        if snapshot.pledge
+        and snapshot.pledge.day <= now.date()
+        and not any(item.startswith("pledge:") for item in failures)
         else None,
         unlock_ratio_pct=min(100.0, sum(item.ratio_pct for item in snapshot.unlocks))
-        if snapshot.unlock_checked and fresh
+        if snapshot.unlock_checked and not any(item.startswith("unlock:") for item in failures)
         else None,
+        unlock_window_start=snapshot.window_end,
+        unlock_window_end=snapshot.window_end + timedelta(days=90),
         corporate_risk_facts=CorporateRiskFactsFromAnnouncements(announcements),
         corporate_risk_window_complete=snapshot.announcement_complete
-        and fresh
         and all(
             AnnouncementRiskVerified(item, tuple(row.announcement_id for row in announcements if row.announcement_id))
             for item in announcements
@@ -345,8 +303,6 @@ def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchOb
         evidence=evidence,
         source_errors=failures,
     )
-    # Partial window rows are still useful evidence; availability is not the same as complete risk coverage.
-    return observation
 
 
-__all__ = ["CompanyEvidenceReadPort", "CompanyEvidenceRefreshPort", "PublishedCompanyResearch"]
+__all__ = ["CompanyEvidenceReadPort", "PublishedCompanyResearch"]

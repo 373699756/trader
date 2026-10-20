@@ -21,7 +21,8 @@ usage() {
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh sync                    更新行情窗口与公司资料，自动续传" \
+    "  ./run.sh sync                    依次更新参考、完整历史、行情窗口与公司资料" \
+    "  ./run.sh sync history            单独更新完整历史，自动续传" \
     "  ./run.sh sync market             单独更新行情窗口" \
     "  ./run.sh sync company            单独更新公司资料" \
     "  ./run.sh train                   历史维护后联合训练或复用 V2/V3" \
@@ -91,8 +92,8 @@ if [[ "$MODE" == "train" ]] && (("${#FORWARD_ARGS[@]}" > 0)); then
   exit 2
 fi
 if [[ "$MODE" == "sync" ]] && ((${#FORWARD_ARGS[@]} > 0)); then
-  if ((${#FORWARD_ARGS[@]} != 1)) || [[ "${FORWARD_ARGS[0]}" != "market" && "${FORWARD_ARGS[0]}" != "company" ]]; then
-    printf '%s\n' '用法：./run.sh sync [market|company]' >&2
+  if ((${#FORWARD_ARGS[@]} != 1)) || [[ "${FORWARD_ARGS[0]}" != "history" && "${FORWARD_ARGS[0]}" != "market" && "${FORWARD_ARGS[0]}" != "company" ]]; then
+    printf '%s\n' '用法：./run.sh sync [history|market|company]' >&2
     exit 2
   fi
 fi

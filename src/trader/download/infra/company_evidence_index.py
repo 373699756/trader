@@ -484,24 +484,6 @@ class SQLiteCompanyEvidenceIndex:
             )
         return changes
 
-    def candidate_codes(self, observed_at: datetime) -> tuple[str, ...]:
-        with self._connect() as connection:
-            return tuple(
-                row[0]
-                for row in connection.run(
-                    "SELECT code FROM news_candidates WHERE selected_at>=? ORDER BY code",
-                    ((observed_at - timedelta(days=7)).isoformat(),),
-                )
-            )
-
-    def record_candidates(self, codes: Sequence[str], observed_at: datetime) -> None:
-        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-            connection.run("DELETE FROM news_candidates")
-            connection.run_many(
-                "INSERT OR REPLACE INTO news_candidates VALUES(?,?)",
-                ((code, observed_at.isoformat()) for code in codes),
-            )
-
     def publish(self, codes: Sequence[str], observed_at: datetime) -> int:
         # All normalized reads and the publication pointer share one transaction. No whole-file copy/merge.
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
@@ -537,9 +519,6 @@ class SQLiteCompanyEvidenceIndex:
             connection.run("DELETE FROM partition_rows WHERE end<?", (cutoff,))
             connection.run(
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
-            )
-            connection.run(
-                "DELETE FROM news_candidates WHERE selected_at<?", ((observed_at - timedelta(days=7)).isoformat(),)
             )
         return len(codes)
 

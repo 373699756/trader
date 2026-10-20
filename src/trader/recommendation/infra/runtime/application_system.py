@@ -16,7 +16,6 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.runtime.resource_orchestration import (
     ApplicationResources,
-    AuxiliaryRuntimeResource,
     StartApplicationResources,
     StopApplicationResources,
 )
@@ -29,7 +28,6 @@ from trader.recommendation.infra.persistence.decision_records import SQLiteDecis
 
 ResearchTraceT = TypeVar("ResearchTraceT")
 OutcomeEvidenceT = TypeVar("OutcomeEvidenceT")
-MaintenanceT = TypeVar("MaintenanceT", bound=AuxiliaryRuntimeResource)
 WebServicesT = TypeVar("WebServicesT")
 ApplicationT = TypeVar("ApplicationT")
 
@@ -50,7 +48,7 @@ class RuntimeWorkerResources:
 
 
 @dataclass(frozen=True)
-class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, WebServicesT, ApplicationT]):
+class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, ApplicationT]):
     settings: RuntimeSettings
     strategy: StrategySettings
     watchlist: LongWatchlist
@@ -72,7 +70,6 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, 
     research_trace: ResearchTraceT
     outcome_evidence: OutcomeEvidenceT
     history_observer: PublishedHistoryObserver
-    qfq_maintenance: MaintenanceT
     web_services: WebServicesT
 
     @property
@@ -87,7 +84,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, 
             self.quote_pool,
             self.market_quote_pool,
             self.research_pool,
-            (self.long_runtime, self.history_observer, self.qfq_maintenance),
+            (self.long_runtime, self.history_observer),
             self.market_cache,
         )
 

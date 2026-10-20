@@ -3,31 +3,15 @@ from __future__ import annotations
 from functools import partial
 
 from tests.component.market_data_test_support import (
-    FEATURE_WEIGHT_POLICY,
-    LONG_POLICY,
-    MARKET_REGIME_POLICY,
-    NEWS_POLICY,
     NOW,
-    TAIL_POLICY,
     BoundedExecutor,
-    BoundedLruCache,
     FakeTushareFrame,
     FakeTusharePro,
-    FeatureBuilder,
-    LoadRuntimeSettings,
     MutableMonotonic,
-    Path,
-    ReferenceLoadRequest,
     SourceLaneScheduler,
-    StaticGateway,
-    StaticHistoryClient,
     TushareClient,
-    _quote,
-    _ReferenceLoadOptions,
-    _service,
     date,
     pytest,
-    replace,
     threading,
     tushare_records_module,
 )
@@ -508,73 +492,3 @@ def test_tushare_daily_transport_preserves_only_numeric_provider_error_code(monk
 
     assert observations[0].error_code == "provider_error_-2002"
     assert "sensitive" not in str(observations[0])
-
-
-def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> None:
-    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
-    cache: BoundedLruCache[object] = BoundedLruCache(
-        runtime.market_data.cache_policy,
-        cadence_seconds=runtime.pipeline.cadence_seconds,
-        wall_clock=lambda: NOW,
-    )
-
-    class ToggleReferencePro(FakeTusharePro):
-        fail = False
-
-        def stock_basic(self, **kwargs):
-            if self.fail:
-                raise TimeoutError("timed out")
-            return super().stock_basic(**kwargs)
-
-    pro = ToggleReferencePro(
-        [
-            {
-                "ts_code": "600001.SH",
-                "symbol": "600001",
-                "name": "测试股份",
-                "industry": "工业",
-                "market": "主板",
-                "exchange": "SSE",
-                "list_status": "L",
-                "list_date": "20200102",
-            }
-        ]
-    )
-    client = TushareClient(
-        token="secret-token",
-        timeout_seconds=8,
-        sdk_factory=lambda _token, _timeout: pro,
-        wall_clock=lambda: NOW,
-    )
-    service = _service(
-        StaticGateway((_quote(),)),
-        StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        tushare_client=client,
-        cache=cache,
-        source_contracts=runtime.market_data.source_contracts,
-        config_version=runtime.config_version,
-        wall_clock=lambda: NOW,
-    )
-    request = {"dataset": "security_master", "market": "ashare"}
-
-    reference_request = ReferenceLoadRequest(
-        "security_master_calendar",
-        "security_master",
-        request,
-        _ReferenceLoadOptions(
-            observed_at=NOW,
-            function=client.fetch_security_master,
-            args=(NOW,),
-            force=False,
-            kwargs={},
-        ),
-    )
-    first = service.references.load(reference_request)
-    pro.fail = True
-    service.references.load(replace(reference_request, force=True))
-    preserved = service.references.load(reference_request)
-
-    assert "reference_data_degraded" not in first[0].fields
-    assert preserved[0].fields["board_reliability"] == "degraded"
-    assert preserved[0].fields["reference_data_degraded"] is True

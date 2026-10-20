@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -152,8 +153,10 @@ def _cache(sessions=61, gap=3, codes=("600001",), supplier=None, *, clock=None, 
         ),
         max_batch_size=max_batch_size,
     )
-    history = PublishedHistoryCache(reader, lookback_sessions=sessions, tail_recovery=tail)
-    assert history.refresh()
+    history = PublishedHistoryCache(
+        reader, lookback_sessions=sessions, tail_recovery=tail, outcome_history=reader, monotonic=time.monotonic
+    )
+    history.initialize(cancelled=lambda: False)
     return history, archive, supplier, tail, clock
 
 
@@ -231,7 +234,7 @@ def test_candidate_refresh_exposes_updated_features_and_isolates_one_conflicting
     assert "history_tail_codes" not in health
 
 
-def test_tail_cache_identity_expires_by_time_session_and_snapshot():
+def test_tail_cache_expires_by_time_and_session_but_keeps_startup_snapshot():
     history, archive, supplier, _, clock = _cache()
     history.load(("600001",), observed_at=NOW)
     clock[0] = 901.0
@@ -240,9 +243,10 @@ def test_tail_cache_identity_expires_by_time_session_and_snapshot():
     assert len(supplier.calls) == 2
     assert history.cached(("600001",), observed_at=NOW + timedelta(days=1), fresh_only=True) == {}
     archive.current = replace(archive.current, snapshot_hash="b" * 64)
-    assert history.refresh()
+    history.observe_publication()
     history.load(("600001",), observed_at=NOW)
-    assert len(supplier.calls) == 3
+    assert len(supplier.calls) == 2
+    assert history.status().restart_required
 
 
 @pytest.mark.parametrize("cancelled", (False, True))
@@ -329,7 +333,7 @@ def test_incomplete_base_cannot_acquire_model_eligibility_from_a_valid_tail():
 
 
 @pytest.mark.parametrize("sessions", (61, 251))
-def test_tail_expiry_reuses_verified_base_but_snapshot_change_reads_new_base(sessions):
+def test_tail_expiry_reuses_verified_startup_base_after_disk_snapshot_change(sessions):
     history, archive, supplier, _, clock = _cache(sessions=sessions)
     first = history.load(("600001",), observed_at=NOW)
     assert len(archive.reads) == 1
@@ -338,10 +342,11 @@ def test_tail_expiry_reuses_verified_base_but_snapshot_change_reads_new_base(ses
     assert len(supplier.calls) == 2
     assert len(archive.reads) == 1
     archive.current = replace(archive.current, snapshot_hash="b" * 64)
-    assert history.refresh()
+    history.observe_publication()
     assert history.load(("600001",), observed_at=NOW) == first
-    assert len(archive.reads) == 2
-    assert len(supplier.calls) == 3
+    assert len(archive.reads) == 1
+    assert len(supplier.calls) == 2
+    assert history.status().restart_required
 
 
 def test_base_window_cache_is_bounded_and_profile_specific():

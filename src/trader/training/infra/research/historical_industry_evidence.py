@@ -8,7 +8,7 @@ from pathlib import Path
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.infra.history_snapshot_inspection import (
     HistorySnapshotInspectionError,
-    LoadActiveHistorySnapshot,
+    LoadPublishedHistorySnapshot,
     VerifyActiveHistorySnapshot,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
@@ -34,7 +34,7 @@ def AuditPublishedHistoricalIndustryFacts(
 ) -> HistoricalIndustryDatasetReport:
     """Audit the immutable active snapshot without changing its partitions."""
 
-    archive = LoadActiveHistorySnapshot(history_root)
+    archive = LoadPublishedHistorySnapshot(history_root)
     VerifyActiveHistorySnapshot(archive)
     reference = HistorySnapshotReader(archive.root).reference_index(archive.snapshot).reference
     facts = _industry_facts(reference, archive.snapshot.content_hash)

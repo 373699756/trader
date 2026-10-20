@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -126,7 +127,9 @@ def test_recovery_rejects_invalid_qfq_supplier_rows(invalid: str) -> None:
 def test_published_history_uses_recovery_when_archive_has_no_snapshot() -> None:
     primary = _Source({"600001": _bars(61)})
     recovery = HistoryRecovery(primary, _Source({}), worker_pool=None, workers=1, wall_clock=lambda: NOW)
-    history = PublishedHistoryCache(_UnavailableArchive(), lookback_sessions=61, recovery=recovery)
+    history = PublishedHistoryCache(
+        _UnavailableArchive(), lookback_sessions=61, recovery=recovery, monotonic=time.monotonic
+    )
     restrictions: dict[str, set[str]] = {}
 
     loaded = history.load(("600001",), deadline=NOW + timedelta(seconds=5), action_restrictions=restrictions)
@@ -151,7 +154,9 @@ def test_recovery_rotates_failures_and_expired_successes_before_retrying(succeed
         monotonic_clock=lambda: monotonic[0],
         ttl_seconds=1,
     )
-    history = PublishedHistoryCache(_UnavailableArchive(), lookback_sessions=61, recovery=recovery)
+    history = PublishedHistoryCache(
+        _UnavailableArchive(), lookback_sessions=61, recovery=recovery, monotonic=time.monotonic
+    )
     for round_index in range(3):
         restrictions: dict[str, set[str]] = {}
         loaded = history.load(tuple(reversed(codes)) if round_index % 2 else codes, action_restrictions=restrictions)

@@ -79,8 +79,6 @@ _DATA_TASKS = (
     PipelineTask.TOPK_QUOTES,
     PipelineTask.INTRADAY_TAIL,
     PipelineTask.INDUSTRY_HEAT,
-    PipelineTask.RESEARCH_SNAPSHOT,
-    PipelineTask.REFERENCE_DATA,
     PipelineTask.FINAL_CANDIDATE_QUOTES,
     PipelineTask.CLOSE_QUOTES,
     PipelineTask.CURRENT_QUOTES,
@@ -94,7 +92,6 @@ _SCORING_INPUT_TASKS = frozenset(
     {
         PipelineTask.CANDIDATE_QUOTES,
         PipelineTask.FINAL_CANDIDATE_QUOTES,
-        PipelineTask.RESEARCH_SNAPSHOT,
         PipelineTask.INTRADAY_TAIL,
     }
 )

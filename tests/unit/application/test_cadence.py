@@ -7,8 +7,6 @@ from pathlib import Path
 import pytest
 
 from trader.infra.settings import LoadRuntimeSettings
-from trader.recommendation.application.pipeline.data_source.input_assembly import TaskDeadline
-from trader.recommendation.application.ports.runtime import PipelineTaskRequest
 from trader.recommendation.application.runtime.cadence import (
     PERIODIC_TASKS,
     CadencePlanner,
@@ -55,7 +53,6 @@ def test_restart_uses_current_recovery_only_before_close(restarted, expects_curr
 
     assert (PipelineTask.CURRENT_QUOTES in {task.task for task in first.tasks}) is expects_current_quotes
     assert (PipelineTask.CLOSE_QUOTES in {task.task for task in first.tasks}) == (not expects_current_quotes)
-    assert sum(task.task is PipelineTask.REFERENCE_DATA for task in first.tasks) == 1
     assert PipelineTask.CURRENT_QUOTES not in {task.task for task in second.tasks}
 
 
@@ -98,11 +95,9 @@ def test_frozen_and_after_close_only_plan_mutable_quote_projections() -> None:
     after_close = planner.plan(datetime(2026, 7, 16, 15, 5, tzinfo=SHANGHAI), is_trading_day=True)
 
     assert {task.task for task in frozen.tasks if task.schedule_point is None} == {
-        PipelineTask.REFERENCE_DATA,
         PipelineTask.TOPK_QUOTES,
     }
     assert {task.task for task in recovered.tasks if task.schedule_point is None} == {
-        PipelineTask.REFERENCE_DATA,
         PipelineTask.LONG_QUOTES,
     }
     assert {task.task for task in after_close.tasks} == {PipelineTask.TOPK_QUOTES}
@@ -256,48 +251,21 @@ def test_afternoon_checkpoint_is_a_retryable_strategy_scoped_schedule_point() ->
     assert retried.freeze_strategies == ("tomorrow",)
 
 
-def test_first_tick_after_warmup_still_initializes_reference_data_once() -> None:
-    late_start = datetime(2026, 7, 16, 9, 45, tzinfo=SHANGHAI)
-    planner = CadencePlanner(_policy(), started_at=late_start)
-
-    first = planner.plan(late_start, is_trading_day=True)
-    second = planner.plan(late_start + timedelta(seconds=1), is_trading_day=True)
-
-    assert [task.task for task in first.tasks].count(PipelineTask.REFERENCE_DATA) == 1
-    assert PipelineTask.REFERENCE_DATA not in {task.task for task in second.tasks}
-
-
 def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> None:
     assert TaskExecutionBudgetSeconds(PipelineTask.CLOSE_QUOTES) >= 180.0
 
 
-@pytest.mark.parametrize(
-    ("observed_at", "expected"),
-    (
-        (datetime(2026, 7, 16, 9, 25, tzinfo=SHANGHAI), datetime(2026, 7, 16, 9, 27, tzinfo=SHANGHAI)),
-        (datetime(2026, 7, 16, 12, 58, tzinfo=SHANGHAI), datetime(2026, 7, 16, 13, 0, tzinfo=SHANGHAI)),
-    ),
-)
-def test_research_snapshot_deadline_never_crosses_the_opening_boundary(observed_at, expected) -> None:
-    assert TaskDeadline(PipelineTaskRequest(PipelineTask.RESEARCH_SNAPSHOT, observed_at)) == expected
-    assert TaskExecutionBudgetSeconds(PipelineTask.RESEARCH_SNAPSHOT) == 120.0
-
-
-def test_research_schedule_point_retry_expires_at_the_opening_boundary() -> None:
-    started = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
-    planner = CadencePlanner(_policy(), started_at=started)
-    first = planner.plan(started, is_trading_day=True)
-    research = next(task for task in first.tasks if task.task is PipelineTask.RESEARCH_SNAPSHOT)
-    planner.record_submission(research, accepted=True, at=started)
-    planner.record_results(research, {"-": SchedulePointResult.RETRY}, at=started)
-
-    expired = planner.plan(started.replace(minute=30), is_trading_day=True)
-
-    assert PipelineTask.RESEARCH_SNAPSHOT not in {task.task for task in expired.tasks}
-    assert (
-        planner.schedule_point_status(started.date().isoformat(), SchedulePoint.MORNING_RESEARCH)
-        is SchedulePointStatus.MISSED
-    )
+@pytest.mark.parametrize("clock", ("09:15", "10:00", "12:00", "14:55", "15:05"))
+@pytest.mark.parametrize("cold", (False, True))
+def test_hot_and_cold_five_periods_only_schedule_online_work(clock, cold):
+    hour, minute = map(int, clock.split(":"))
+    at = datetime(2026, 7, 16, hour, minute, tzinfo=SHANGHAI)
+    start = at if cold else at.replace(hour=9, minute=15)
+    planner = CadencePlanner(_policy(), started_at=start)
+    if not cold:
+        planner.plan(start, is_trading_day=True)
+    tasks = planner.plan(at, is_trading_day=True).tasks
+    assert all(task.task.value not in {"reference_data", "research_snapshot", "qfq_maintenance"} for task in tasks)
 
 
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
@@ -329,8 +297,6 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
             PipelineTask.INTRADAY_TAIL: 1520,
             PipelineTask.LONG_QUOTES: 2719,
             PipelineTask.INDUSTRY_HEAT: 226,
-            PipelineTask.RESEARCH_SNAPSHOT: 2,
-            PipelineTask.REFERENCE_DATA: 2,
             PipelineTask.DEEPSEEK_CUTOFF: 1,
             PipelineTask.CHECKPOINT: 1,
             PipelineTask.FINAL_CANDIDATE_QUOTES: 1,

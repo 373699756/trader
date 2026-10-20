@@ -43,8 +43,6 @@ class CompanyEvidenceIndex(Protocol):
     ) -> int: ...
     def component_failure(self, component: str, scope: str, failure: str) -> None: ...
     def commit_news(self, code: str, rows: Sequence[Disclosure], observed_at: datetime) -> int: ...
-    def candidate_codes(self, observed_at: datetime) -> tuple[str, ...]: ...
-    def record_candidates(self, codes: Sequence[str], observed_at: datetime) -> None: ...
     def publish(self, codes: Sequence[str], observed_at: datetime) -> int: ...
 
 
@@ -96,8 +94,7 @@ def SyncCompanyEvidence(
     state = _SyncState()
     population = _validated_population(codes)
     index.initialize()
-    if news_codes:
-        index.record_candidates(tuple(code for code in news_codes if code in population), observed_at)
+    news_population = tuple(sorted(set(news_codes).intersection(population)))
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
         if any(item.endswith((":access_denied", ":rate_limited")) for item in state.failures):
@@ -109,7 +106,7 @@ def SyncCompanyEvidence(
     _report(dependencies, "publish", state, len(population), completed=0)
     published = index.publish(population, observed_at)
     _report(dependencies, "publish", state, len(population) - published, completed=published, status="complete")
-    news_updates = _news(dependencies, population, observed_at, deadline, state)
+    news_updates = _news(dependencies, news_population, observed_at, deadline, state)
     if news_updates:
         _report(dependencies, "publish", state, len(news_updates), completed=0)
         updated = index.publish(news_updates, observed_at)
@@ -141,6 +138,8 @@ def SyncCompanyEvidence(
         tuple(sorted(set(state.failures))),
         max(0.0, dependencies.monotonic() - started),
         pending_documents,
+        len(news_population),
+        "published_population" if news_population else "uncovered",
     )
 
 
@@ -255,7 +254,7 @@ def _news(
         item.startswith(("financial:", "pledge:", "unlock:")) and item.endswith((":access_denied", ":rate_limited"))
         for item in state.failures
     )
-    candidates = tuple(code for code in index.candidate_codes(observed_at) if code in population)
+    candidates = population
     total = len(candidates)
     if not candidates:
         _report(dependencies, "news", state, 0, completed=0, status="complete")

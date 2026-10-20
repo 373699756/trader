@@ -50,7 +50,6 @@ include = ["trader*"]
     "static/*.svg",
     "static/vendor/*",
 ]
-"trader.download.infra.history_automation_templates" = ["*.in", "linux.timer"]
 
 [tool.ruff]
 line-length = 120

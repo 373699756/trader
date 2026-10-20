@@ -26,7 +26,7 @@ from trader.recommendation.domain.market.tail import MinuteBar
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_version
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.normalization.features import StandardizedFeatureBuilder
 
 _AUXILIARY_ACTION_RESTRICTIONS = frozenset(
@@ -48,7 +48,7 @@ class QuoteCacheDependencies:
     gateway: MarketDataGateway
     feature_builder: StandardizedFeatureBuilder
     history: PublishedHistoryCache
-    references: ReferenceLoader
+    references: PublishedReferences
 
 
 class _CandidateFeatureRequiredOptions(TypedDict):

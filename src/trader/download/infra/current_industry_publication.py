@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo
 from trader.download.infra.baostock_industry import BaoStockIndustryClient
 from trader.infra.dated_query_cache import DatedQuery, SQLiteDatedQueryCache
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.source_health import ModelIndustrySourceHealth
 from trader.recommendation.domain.market.models import ModelIndustryReference
 
 _CONTRACT = "baostock_dated_industry_queries"
@@ -21,17 +20,14 @@ _REFRESH_DAYS = 7
 
 
 @dataclass(frozen=True)
-class LocalIndustrySource:
+class CurrentIndustryPublication:
     path: Path
     client: BaoStockIndustryClient
     minimum_rows: int = 4_000
 
-    def load_cached(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
-        query = self._query(observed_at)
-        return _query_observations(query) if query is not None else ()
-
     def fetch(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
-        query = self._query(observed_at)
+        cache = CurrentIndustryCache(self.path, self.minimum_rows)
+        query = cache.latest(observed_at)
         if query is not None and (observed_at.astimezone(_SHANGHAI).date() - query.day).days < _REFRESH_DAYS:
             return _query_observations(query)
         observations = self.client.fetch(observed_at)
@@ -53,21 +49,22 @@ class LocalIndustrySource:
             day,
             json.dumps(rows, ensure_ascii=False, separators=(",", ":")),
         )
-        return self.load_cached(observed_at)
+        return cache.load(observed_at)
 
-    def health(self) -> ModelIndustrySourceHealth:
-        return self.client.health()
 
-    def _query(self, observed_at: datetime) -> DatedQuery | None:
+@dataclass(frozen=True)
+class CurrentIndustryCache:
+    path: Path
+    minimum_rows: int = 4_000
+
+    def load(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
+        query = self.latest(observed_at)
+        return _query_observations(query) if query is not None else ()
+
+    def latest(self, observed_at: datetime) -> DatedQuery | None:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("industry query time must be timezone-aware")
-        historical = self._latest_valid_query(SQLiteDatedQueryCache(self.path, _CONTRACT), observed_at)
-        current = self._latest_valid_query(SQLiteDatedQueryCache(self.path, _CONTRACT, _CURRENT_TABLE), observed_at)
-        if historical is None:
-            return current
-        if current is None:
-            return historical
-        return max((historical, current), key=lambda query: (query.day, query.observed_on, query is current))
+        return self._latest_valid_query(SQLiteDatedQueryCache(self.path, _CONTRACT, _CURRENT_TABLE), observed_at)
 
     def _latest_valid_query(self, cache: SQLiteDatedQueryCache, observed_at: datetime) -> DatedQuery | None:
         cursor = observed_at.astimezone(_SHANGHAI).date()
@@ -129,4 +126,4 @@ def _query_observations(query: DatedQuery) -> tuple[SourceObservation, ...]:
     return tuple(result)
 
 
-__all__ = ["LocalIndustrySource"]
+__all__ = ["CurrentIndustryCache", "CurrentIndustryPublication"]

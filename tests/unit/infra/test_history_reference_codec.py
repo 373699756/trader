@@ -67,14 +67,17 @@ def test_st_name_rule_normalizes_current_and_historical_evidence(name, expected)
 
 
 def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(tmp_path):
-    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    from tests.unit.infra.test_history_supplier_router import _at, _prepared
 
-    class MixedSt:
-        def fetch(self, universe, as_of):
-            return tuple(
-                HistoryStEvidence(item.code, as_of, status)
-                for item, status in zip(universe, ("clear", "ever_st", "unknown"), strict=True)
-            )
+    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    reference = _prepared(_current_universe("600001", "600002", "600003"), dates)
+    reference = replace(
+        reference,
+        st_evidence=tuple(
+            replace(item, status=status)
+            for item, status in zip(reference.st_evidence, ("clear", "ever_st", "unknown"), strict=True)
+        ),
+    )
 
     class RecordingBaseline(Baseline):
         def load_context(self, as_of, sessions, *, universe, industry_cache=None):
@@ -92,8 +95,8 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
     baseline, prices = RecordingBaseline(dates), Prices()
     result = RunHistorySync(
         config,
-        HistorySupplierRouter(baseline, prices, lambda: _current_universe("600001", "600002", "600003"), MixedSt()),
-        clock=lambda: NOW,
+        HistorySupplierRouter(baseline, prices, reference),
+        clock=lambda: _at(dates[-1]),
     )
     assert result.state == "completed"
     assert baseline.calls == []

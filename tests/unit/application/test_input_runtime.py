@@ -256,28 +256,6 @@ def _prime_scoring_cache(adapter: CycleFixture, observed_at: datetime) -> None:
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
 
-def test_research_snapshot_uses_non_st_reference_universe_before_market_refresh(
-    application_feature_factory,
-) -> None:
-    observed_at = datetime(2026, 8, 12, 9, 15, tzinfo=SHANGHAI)
-    clear = application_feature_factory("600001", observed_at)
-    st = application_feature_factory("600002", observed_at)
-    st = replace(st, quote=replace(st.quote, is_st=True))
-    market = _Market((clear, st))
-    adapter = build_cycle_fixture(
-        market,
-        config_version="test-config",
-        candidate_pool_size=1,
-        decision_build=_decision_build(),
-    )
-
-    result = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.RESEARCH_SNAPSHOT, observed_at))
-
-    assert result.changed_codes == ("600001",)
-    assert market.research_requests == [("600001",)]
-    assert market.market_fetch_count == 0
-
-
 def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_change(
     application_feature_factory,
 ) -> None:
@@ -380,18 +358,6 @@ def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
 
     with pytest.raises(DataRefreshUnavailableError, match="long_refresh_rejected"):
         adapter.data.refresh(_request(observed_at, strategy=Strategy.LONG, phase="midday_recovery"))
-
-
-def test_reference_lane_can_start_before_the_full_market_universe_without_false_degradation() -> None:
-    observed_at = datetime(2026, 8, 12, 9, 15, tzinfo=SHANGHAI)
-    adapter = build_cycle_fixture(
-        _Market(()),
-        config_version="test-config",
-        candidate_pool_size=1,
-        decision_build=_decision_build(),
-    )
-
-    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.REFERENCE_DATA, observed_at))
 
 
 def test_production_adapter_rejects_transient_invalid_empty_projection(
@@ -1026,14 +992,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     assert market.market_fetch_count == 1
     assert market.candidate_quote_refresh_count == 1
     assert set(market.requested_codes) == {"600001", "300001", "688001"}
-    assert market.reference_requests == [
-        (
-            market.requested_codes,
-            tuple(feature.quote.code for feature in features),
-            observed_at,
-            False,
-        )
-    ]
+    assert market.reference_requests == []
     assert all(decision is not None for decision in decisions)
     assert len(market.candidate_reads) == 1
     assert market.candidate_reads[0][1] is True

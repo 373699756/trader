@@ -70,8 +70,8 @@ def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
 @pytest.mark.parametrize(
     ("clock", "point"),
     (
-        ("09:15:00", SchedulePoint.MORNING_RESEARCH),
-        ("12:45:00", SchedulePoint.AFTERNOON_RESEARCH),
+        ("09:15:00", None),
+        ("12:45:00", None),
         ("14:49:20", None),
         ("14:49:50", None),
         ("14:59:20", SchedulePoint.AFTERNOON_CHECKPOINT),

@@ -4,11 +4,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from trader.download.domain.history_automation import (
     DeriveHistoryAutomationStatus,
-    WeeklyHistoryMaintenanceDecision,
 )
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
@@ -105,28 +102,3 @@ def test_missing_control_state_fails_closed_without_fabricating_due_count() -> N
     assert status.matured_label_days_since_training == 0
     assert status.training_due is False
     assert status.reminder_state == "not_due"
-
-
-@pytest.mark.parametrize(
-    "cutoff,observed,state,reason",
-    (
-        (None, NOW, "blocked", "history_snapshot_unavailable"),
-        (date(2026, 9, 11), NOW, "blocked", "history_snapshot_future"),
-        (date(2026, 9, 4), NOW, "not_due", "weekly_cadence_not_due"),
-        (date(2026, 9, 3), NOW.replace(hour=15, minute=9), "not_due", "maintenance_window_not_open"),
-        (date(2026, 9, 3), NOW.replace(hour=15, minute=10), "due", None),
-        (date(2026, 9, 3), NOW, "due", None),
-        (date(2026, 9, 3), NOW.replace(day=12), "due", None),
-        (date(2026, 9, 3), NOW.replace(hour=0), "not_due", "maintenance_window_not_open"),
-        (date(2026, 9, 3), NOW.replace(month=10, day=1), "due", None),
-    ),
-)
-def test_weekly_archive_cadence_is_independent_of_training_due(cutoff, observed, state, reason) -> None:
-    decision = WeeklyHistoryMaintenanceDecision(cutoff, observed)
-
-    assert (decision.state, decision.reason) == (state, reason)
-
-
-def test_weekly_cadence_rejects_a_naive_business_clock() -> None:
-    with pytest.raises(ValueError, match="Asia/Shanghai"):
-        WeeklyHistoryMaintenanceDecision(NOW.date(), NOW.replace(tzinfo=None))

@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonObject
@@ -28,21 +27,19 @@ from trader.recommendation.domain.market.models import (
     LiveQuote,
     MarketQuote,
 )
-from trader.recommendation.domain.market.refresh import IntradayRefreshResult, ResearchRefreshResult
+from trader.recommendation.domain.market.refresh import IntradayRefreshResult
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _history_population_codes,
     _normalize_codes,
     _reference_epoch,
-    _research_data_version,
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoadReport
-from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.training.domain.evaluation.models import OutcomeBar
 
 
@@ -52,7 +49,7 @@ class MarketFeatureDependencies:
     history: PublishedHistoryCache
     research: PublishedCompanyResearch
     intraday: IntradayLoader
-    references: ReferenceLoader
+    references: PublishedReferences
     runner: MarketTaskRunner
     health: MarketDataHealth
     eligibility: IssuerEligibilityPort
@@ -409,59 +406,6 @@ class MarketFeatureService:
         )
         return self.quotes.publish_market_features(features, reference_epoch=self.reference_version())
 
-    def refresh_stock_risk(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        deadline: datetime | None = None,
-    ) -> ResearchRefreshResult:
-        requested = self._eligible_codes(codes, observed_at)
-        started_at = self.runner.wall_clock()
-        self.research.refresh(requested, observed_at, deadline=deadline)
-        report = self.research.load_report(
-            requested,
-            observed_at,
-            include_structured=True,
-        )
-        return _research_refresh_result(
-            requested,
-            report,
-            started_at,
-            self.runner.wall_clock(),
-            require_structured=True,
-        )
-
-    def refresh_reference_data(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        force: bool = False,
-    ) -> None:
-        self.references.refresh_reference_data(self._eligible_codes(codes, observed_at), observed_at, force=force)
-
-    def schedule_reference_data(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        force: bool = False,
-        security_master_codes: Sequence[str] | None = None,
-    ) -> None:
-        eligible = self._eligible_codes(codes, observed_at)
-        eligible_master = self._eligible_codes(
-            codes if security_master_codes is None else security_master_codes,
-            observed_at,
-        )
-        self.references.schedule_reference_data(
-            eligible,
-            observed_at,
-            force=force,
-            security_master_codes=eligible_master,
-        )
-        self.history.refresh()
-
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
         return self.intraday.refresh(self._eligible_codes(codes, observed_at), observed_at)
 
@@ -589,52 +533,6 @@ class MarketFeatureService:
 
     def snapshot_metadata(self, codes: Sequence[str] | None = None) -> MarketSnapshotMetadata:
         return self.health_reporter.snapshot_metadata(codes)
-
-
-def _research_refresh_result(
-    requested: tuple[str, ...],
-    report: ResearchLoadReport,
-    started_at: datetime,
-    completed_at: datetime,
-    *,
-    require_structured: bool,
-) -> ResearchRefreshResult:
-    if any(value.tzinfo is None or value.utcoffset() is None for value in (started_at, completed_at)):
-        raise ValueError("research refresh timestamps must be timezone-aware")
-    observations = report.observations
-    deferred = set(report.deferred_codes)
-    failed = tuple(
-        code
-        for code in requested
-        if code not in deferred
-        and (code not in observations or require_structured and not any(ResearchComponentCoverage(observations[code])))
-    )
-    failed_set = set(failed)
-    completed = tuple(
-        code for code in requested if code in observations and code not in deferred and code not in failed_set
-    )
-    completed_set = set(completed)
-    if require_structured:
-        covered = tuple(code for code in completed if all(ResearchComponentCoverage(observations[code])))
-        partial = tuple(code for code in completed if code not in covered)
-    else:
-        covered = completed
-        partial = ()
-    identity_fields = tuple((code, _research_data_version(observations[code])) for code in sorted(observations))
-    data_version = f"research-batch:{ContentHash(identity_fields)}"
-    return ResearchRefreshResult(
-        requested_codes=requested,
-        completed_codes=completed,
-        changed_codes=tuple(code for code in report.changed_codes if code in completed_set),
-        partial_codes=partial,
-        failed_codes=failed,
-        deferred_codes=report.deferred_codes,
-        covered_codes=covered,
-        data_version=data_version,
-        started_at=started_at.astimezone(SHANGHAI),
-        completed_at=completed_at.astimezone(SHANGHAI),
-        deadline_reached=report.deadline_reached,
-    )
 
 
 def _board_fair_codes(codes: Sequence[str], quotes: Sequence[MarketQuote]) -> tuple[str, ...]:

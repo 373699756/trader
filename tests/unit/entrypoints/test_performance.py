@@ -8,7 +8,7 @@ from trader.recommendation.infra.scoring.profile_factory import ScoringModelsMis
 
 def test_missing_model_produces_bounded_performance_report(tmp_path, monkeypatch, capsys) -> None:
     def unavailable(*_args, **_kwargs):
-        raise ScoringModelsMissingError("private model path")
+        raise ScoringModelsMissingError()
 
     monkeypatch.setattr(performance, "Run", unavailable)
     assert performance.Main(["--config", str(tmp_path / "runtime.json"), "--profile", "v2"]) == 1

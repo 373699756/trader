@@ -94,11 +94,6 @@ SCHEMA = SqliteSchema(
           singleton INTEGER PRIMARY KEY CHECK(singleton=1), version TEXT NOT NULL, published_at TEXT NOT NULL
         )
         """,
-        """
-        CREATE TABLE IF NOT EXISTS news_candidates (
-          code TEXT PRIMARY KEY, selected_at TEXT NOT NULL
-        ) WITHOUT ROWID
-        """,
     ),
 )
 

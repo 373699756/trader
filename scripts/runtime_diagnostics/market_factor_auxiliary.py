@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import MappingProxyType
 
@@ -34,17 +34,21 @@ def ProbeAuxiliary(
     pool: BoundedExecutor,
     *,
     company_database: Path,
+    open_dates: tuple[date, ...],
 ) -> AuxiliaryInputs:
     """Read the published risk snapshot; only minute probes contact a supplier."""
     research: dict[str, ResearchObservation] = {}
     minutes: dict[str, tuple[MinuteBar, ...]] = {}
     reports: list[dict[str, object]] = []
+    reader = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(company_database),
+        wall_clock=lambda: at,
+        open_dates=lambda: open_dates,
+        monotonic=time.monotonic,
+    )
+    reader.initialize(codes[:3], cancelled=lambda: False)
     for index, code in enumerate(codes[:3]):
         started = time.monotonic()
-        reader = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(company_database),
-            wall_clock=lambda: at,
-        )
         observation = reader.load((code,), at, include_structured=True).get(code)
         if observation is not None:
             research[code] = observation

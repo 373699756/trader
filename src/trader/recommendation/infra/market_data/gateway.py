@@ -171,8 +171,6 @@ class MarketDataGateway:
         self._latest_by_code: dict[str, MarketQuote] = {}
         self._latest_observations: dict[str, dict[str, SourceObservation]] = {}
         self._reference_observations: dict[str, SourceObservation] = {}
-        self._security_reference_persistence_sink: Callable[[Sequence[SourceObservation]], None] | None = None
-        self._reference_persistence_schedule_error_count = 0
         self._calendar_open_dates: set[date] = set()
         self._calendar_open_dates_sorted: tuple[date, ...] = ()
         self._listing_open_dates = options.get("listing_open_dates")
@@ -212,25 +210,6 @@ class MarketDataGateway:
         if not references:
             return
         self.update_reference_observations(references)
-        promoted = self.reference_observations(tuple(reference.subject_key for reference in references))
-        with self._state_lock:
-            persistence_sink = self._security_reference_persistence_sink
-        if persistence_sink is None:
-            return
-        try:
-            persistence_sink(promoted)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            with self._state_lock:
-                self._reference_persistence_schedule_error_count += 1
-
-    def set_security_reference_persistence_sink(
-        self,
-        sink: Callable[[Sequence[SourceObservation]], None],
-    ) -> None:
-        if not callable(sink):
-            raise TypeError("security reference persistence sink must be callable")
-        with self._state_lock:
-            self._security_reference_persistence_sink = sink
 
     def fetch_market(
         self,
@@ -784,7 +763,7 @@ class MarketDataGateway:
                     complete_rows=complete_rows,
                     provider="free_market+production_calendar",
                     tushare_required=False,
-                    persistence_schedule_error_count=self._reference_persistence_schedule_error_count,
+                    persistence_schedule_error_count=0,
                 ),
                 sources={
                     name: MarketSourceHealthStatus(

@@ -449,6 +449,8 @@ def build_commands(
                 str(min(options.source_timeout_seconds, 15)),
                 "--company-evidence-database",
                 str(options.company_evidence_database),
+                "--runtime-config",
+                str(options.runtime_config),
                 *(
                     argument
                     for path in options.eligibility_evidence

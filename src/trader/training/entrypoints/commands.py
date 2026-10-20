@@ -7,11 +7,13 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
+from trader.download.infra.history_control_index import HistoryControlError
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
 from trader.infra.settings import LoadStrategySettings, RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -29,6 +31,8 @@ from trader.training.application.tomorrow_research_orchestrator import (
 from trader.training.application.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
+from trader.training.domain.model_publication import HeadTrainingStatus
+from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 from trader.training.infra.research.h1_point_in_time_snapshot import (
     H1PointInTimeSnapshotConflictError,
     SQLiteH1PointInTimeSnapshot,
@@ -238,7 +242,7 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
-def RunJointTraining(runtime: RuntimeSettings) -> int:
+def RunJointTraining(runtime: RuntimeSettings, *, refresh_due: Callable[[], tuple[HeadTrainingStatus, ...]]) -> int:
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.infra.engine import ChooseJointFitMode, ProfileTrainingRequest, RunJointProfileTraining
     from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -285,6 +289,12 @@ def RunJointTraining(runtime: RuntimeSettings) -> int:
             failure = next((reason for head in profile_result.heads for reason in head.failure_reasons), None)
             progress.publish_result(profile_result.status, failure)
     process_io = _process_io_bytes()
+    due_failure: str | None = None
+    try:
+        training_heads = refresh_due()
+    except (HistoryControlError, OSError, ValueError) as exc:
+        training_heads = ()
+        due_failure = type(exc).__name__
     print(
         json.dumps(
             {
@@ -298,6 +308,8 @@ def RunJointTraining(runtime: RuntimeSettings) -> int:
                 "history_rows_read": result.history_rows_read,
                 "fit_mode": result.fit_mode,
                 "reused": result.reused,
+                "training_heads": [ProjectHeadTrainingStatus(head) for head in training_heads],
+                "training_due_failure": due_failure,
                 "preparation_seconds": round(result.preparation_seconds, 3),
                 "fit_seconds": round(result.fit_seconds, 3),
                 "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -310,7 +322,7 @@ def RunJointTraining(runtime: RuntimeSettings) -> int:
             sort_keys=True,
         )
     )
-    return 0 if result.status == "engineering_ready" else 1
+    return 0 if result.status == "engineering_ready" and due_failure is None else 1
 
 
 def _process_peak_rss_bytes() -> int | None:

@@ -21,6 +21,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
 )
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 
 
 def RuntimeStatus(
@@ -162,6 +163,7 @@ def _scoring_profile_payload(status: ScoringProfileRuntimeStatus | None) -> dict
         return {"profile_id": None, "heads": {}}
     return {
         "profile_id": status.profile_id,
+        "maintenance": [ProjectHeadTrainingStatus(item) for item in status.maintenance],
         "heads": {
             strategy.value: _scoring_head_payload(head)
             for strategy, head in sorted(status.heads.items(), key=lambda item: item[0].value)

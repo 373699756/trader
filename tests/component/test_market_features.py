@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from datetime import date, timedelta
 
 from tests.component.market_data_test_support import (
@@ -32,9 +33,11 @@ from tests.component.market_data_test_support import (
     pytest,
     replace,
 )
+from tests.reference_fixtures import PreparedFixture
 from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 
 
 def test_current_model_industry_enriches_features_and_replaces_display_sector() -> None:
@@ -45,14 +48,17 @@ def test_current_model_industry_enriches_features_and_replaces_display_sector() 
         timeout_seconds=1.0,
         minimum_rows=1,
     )
+    industries = client.fetch(NOW)
+    reference = PreparedFixture(NOW, industry_version=industries[0].data_version)
     service = _service(
         StaticGateway((_quote(industry="银行板块"),)),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        model_industry_client=client,
+        published_references=PublishedReferences(
+            lambda: reference, lambda: reference.identity, lambda _: industries, max_age_seconds=86400
+        ),
     )
 
-    service.schedule_reference_data((), NOW, security_master_codes=("600001",))
     feature = service.fetch_market_features(NOW, force=True)[0]
 
     assert feature.quote.industry == "J66货币金融服务"
@@ -179,7 +185,9 @@ def test_market_health_exposes_real_recovery_counts_without_stock_payloads() -> 
         max_batch_size=1,
         wall_clock=lambda: NOW,
     )
-    history = PublishedHistoryCache(_MissingHistory(), lookback_sessions=61, recovery=recovery)
+    history = PublishedHistoryCache(
+        _MissingHistory(), lookback_sessions=61, recovery=recovery, monotonic=time.monotonic
+    )
     history.load(("600001", "600002"))
     service = _service(
         StaticGateway((_quote(),)),

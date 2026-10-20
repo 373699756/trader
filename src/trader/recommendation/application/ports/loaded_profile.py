@@ -12,6 +12,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
+from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 
 
 @dataclass(frozen=True)
@@ -244,6 +245,7 @@ class HeadRuntime:
 class LoadedScoringProfile:
     profile_id: ScoringProfileId
     heads: Mapping[Strategy, HeadRuntime]
+    publications: tuple[ModelPublicationIdentity, ...] = ()
 
     def __post_init__(self) -> None:
         heads = dict(self.heads)
@@ -284,6 +286,7 @@ class ScoringHeadRuntimeStatus:
 class ScoringProfileRuntimeStatus:
     profile_id: ScoringProfileId
     heads: Mapping[Strategy, ScoringHeadRuntimeStatus]
+    maintenance: tuple[HeadTrainingStatus, ...] = ()
 
     def __post_init__(self) -> None:
         heads = dict(self.heads)

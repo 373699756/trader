@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
@@ -18,7 +17,7 @@ from trader.recommendation.infra.market_data.intraday_loader import IntradayLoad
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary, _reference_epoch
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
 
 
@@ -28,7 +27,7 @@ class MarketDataHealthDependencies:
     history: PublishedHistoryCache
     research: PublishedCompanyResearch
     intraday: IntradayLoader
-    references: ReferenceLoader
+    references: PublishedReferences
     eligibility: IssuerEligibilityPort
 
 
@@ -57,6 +56,7 @@ class MarketDataHealth:
         intraday = self._intraday.status()
         gateway_status = self._quotes.gateway.health()
         reference_epoch = _reference_epoch(self._references.versions())
+        reference_publication = self._references.status()
         gateway_health = _gateway_health_payload(gateway_status, reference_epoch=reference_epoch)
         sources = {
             name: _market_source_payload(source_status) for name, source_status in gateway_status.sources.items()
@@ -66,6 +66,9 @@ class MarketDataHealth:
         sources["company_evidence"] = {
             "measurement": "published_rows",
             "physical_http_requests": 0,
+            "loaded_identity": research.loaded_identity,
+            "disk_identity": research.disk_identity,
+            "restart_required": research.restart_required,
             "planned_count": research.planned_count,
             "success_count": research.success_count,
             "error_count": research.error_count,
@@ -80,9 +83,6 @@ class MarketDataHealth:
             if isinstance(latest_research, datetime)
             else None,
         }
-        reference_health = self._references.health()
-        if reference_health is not None:
-            sources["tushare"] = _tushare_payload(reference_health)
         security_master_health = self._references.security_master_health()
         if security_master_health is not None:
             sources["exchange"] = {
@@ -185,6 +185,18 @@ class MarketDataHealth:
                     "history_data_versions": history.data_versions,
                     "published_history_state": history.state,
                     "published_history_snapshot_hash": history.snapshot_hash,
+                    "published_history_disk_snapshot_hash": history.disk_snapshot_hash,
+                    "outcome_history_snapshot_hash": history.outcome_snapshot_hash,
+                    "outcome_history_disk_snapshot_hash": history.outcome_disk_snapshot_hash,
+                    "restart_required": history.restart_required
+                    or research.restart_required
+                    or reference_publication.restart_required,
+                    "reference_publication": {
+                        "loaded_identity": reference_publication.loaded_identity,
+                        "disk_identity": reference_publication.disk_identity,
+                        "restart_required": reference_publication.restart_required,
+                        "failure": reference_publication.failure,
+                    },
                     "published_history_data_cutoff": (
                         history.data_cutoff.isoformat() if history.data_cutoff is not None else None
                     ),
@@ -452,33 +464,6 @@ def _market_source_payload(status: MarketSourceHealthStatus) -> dict[str, JsonIn
         "p50_latency_ms": status.p50_latency_ms,
         "p95_latency_ms": status.p95_latency_ms,
         "last_error": status.last_error,
-        "data_age_seconds": status.data_age_seconds,
-    }
-
-
-def _tushare_payload(status: ReferenceSourceHealth) -> dict[str, JsonInput]:
-    return {
-        "enabled": status.enabled,
-        "access_points": status.access_points,
-        "history_mode": status.history_mode,
-        "minute_call_limit": status.minute_call_limit,
-        "daily_call_limit": status.daily_call_limit,
-        "process_api_attempts_last_minute": status.process_api_attempts_last_minute,
-        "process_api_attempts_today": status.process_api_attempts_today,
-        "process_remaining_calls_today": status.process_remaining_calls_today,
-        "local_rate_limit_count": status.local_rate_limit_count,
-        "planned_count": status.planned_count,
-        "success_count": status.success_count,
-        "error_count": status.error_count,
-        "consecutive_failures": status.consecutive_failures,
-        "circuit_open": status.circuit_open,
-        "timeout_count": status.timeout_count,
-        "last_latency_ms": status.last_latency_ms,
-        "p50_latency_ms": status.p50_latency_ms,
-        "p95_latency_ms": status.p95_latency_ms,
-        "degraded_reason": status.degraded_reason,
-        "last_error": status.degraded_reason,
-        "timeout_seconds": status.timeout_seconds,
         "data_age_seconds": status.data_age_seconds,
     }
 

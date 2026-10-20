@@ -76,7 +76,7 @@ from trader.recommendation.infra.normalization.merge import (
 from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsMissingError
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 from trader.training.application.scoring_hot_path_baseline import (
     BuildScoringHotPathBaseline,
     ScoringHotPathBaseline,
@@ -241,7 +241,7 @@ def Main(argv: list[str] | None = None) -> int:
             baseline_path=args.baseline.resolve() if args.baseline else None,
             scoring_profile=args.profile,
         )
-    except ScoringModelsMissingError:
+    except ScoringModelsUnavailableError:
         report = {
             "schema_version": "production_performance",
             "status": "failed",

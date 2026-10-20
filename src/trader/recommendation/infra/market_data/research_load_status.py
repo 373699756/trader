@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
@@ -49,14 +48,9 @@ class ResearchLoaderStatus:
     announcements_covered_count: int
     pledge_covered_count: int
     unlock_covered_count: int
-
-
-@dataclass(frozen=True)
-class ResearchLoadReport:
-    observations: Mapping[str, ResearchObservation]
-    changed_codes: tuple[str, ...] = ()
-    deferred_codes: tuple[str, ...] = ()
-    deadline_reached: bool = False
+    loaded_identity: str = ""
+    disk_identity: str = ""
+    restart_required: bool = False
 
 
 def ResearchComponentStatuses(observation: ResearchObservation) -> tuple[ResearchComponentStatus, ...]:
@@ -105,6 +99,5 @@ def ResearchComponentCoverage(
 
 __all__ = [
     "ResearchLoaderStatus",
-    "ResearchLoadReport",
     "ResearchComponentCoverage",
 ]

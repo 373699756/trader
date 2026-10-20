@@ -39,7 +39,7 @@ def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False) -> Hi
     if not (history_root / "catalog.sqlite3").is_file():
         return _unavailable()
     try:
-        active = LoadActiveHistorySnapshot(history_root)
+        active = LoadPublishedHistorySnapshot(history_root)
     except HistorySnapshotInspectionError as exc:
         reason = str(exc)
         return _unavailable() if reason == "history_snapshot_unavailable" else _invalid(reason)
@@ -51,13 +51,13 @@ def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False) -> Hi
     return _status(active, "active", None)
 
 
-def LoadActiveHistorySnapshot(root: Path) -> ActiveHistorySnapshot:
+def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None) -> ActiveHistorySnapshot:
     history_root = root
     control_path = history_root / "catalog.sqlite3"
     if not control_path.is_file():
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
-        state = HistoryControlIndex(control_path).load_published_state()
+        state = HistoryControlIndex(control_path).load_published_state(sequence=sequence)
     except HistoryControlError as exc:
         raise HistorySnapshotInspectionError("history_control_invalid") from exc
     if state is None:
@@ -113,6 +113,6 @@ __all__ = [
     "ActiveHistorySnapshot",
     "HistorySnapshotInspectionError",
     "InspectHistorySnapshot",
-    "LoadActiveHistorySnapshot",
+    "LoadPublishedHistorySnapshot",
     "VerifyActiveHistorySnapshot",
 ]

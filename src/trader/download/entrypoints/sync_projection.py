@@ -1,6 +1,7 @@
 """Public summary projection for the explicit sync command."""
 
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
+from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 
 
 def ProjectSyncResult(result: SyncResult) -> dict[str, object]:
@@ -21,6 +22,8 @@ def ProjectSyncResult(result: SyncResult) -> dict[str, object]:
 
 def _task(task: SyncTaskResult) -> dict[str, object]:
     summary: dict[str, object] = {"task": task.task, "status": task.status, "reason": task.reason}
+    if task.history is not None:
+        summary["history"] = ProjectHistoryMaintenanceStatus(task.history)
     if task.market is not None:
         market = task.market
         summary.update(
@@ -50,6 +53,8 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 "reused_partitions": company.reused_partitions,
                 "pending_partitions": company.pending_partitions,
                 "pending_documents": company.pending_documents,
+                "news_population_codes": company.news_population_codes,
+                "news_coverage": company.news_coverage,
                 "failures": company.failures,
                 "elapsed_seconds": round(company.elapsed_seconds, 3),
             }

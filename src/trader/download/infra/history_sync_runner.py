@@ -64,8 +64,7 @@ from trader.download.infra.history_sync_failure import (
 )
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.workers import InjectedExecutor, WorkerExecutor
-from trader.training.infra.history.history_training_due import EvaluateHistoryTrainingDue, HistoryTrainingDueQuery
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
 
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
@@ -500,16 +499,12 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     price_gap_summary: HistoryPriceGapSummary | None = None,
 ) -> HistoryMaintenanceStatus:
     root = configuration.archive_root
-    due = None
     reference_ready = snapshot is not None and _has_industry_reference(root, snapshot)
-    if reference_ready:
-        due = EvaluateHistoryTrainingDue(
-            HistoryTrainingDueQuery(root, configuration.training_root / "v3", observed_at, V3_TRAINING_PROFILE)
-        )
+    heads = EvaluateAllHistoryTrainingDue(root, configuration.training_root, observed_at) if reference_ready else ()
+    states = tuple(item.due for item in heads if item.due is not None)
+    complete = len(states) == 4 and all(item.reason != "data_incomplete" for item in states)
     due_state = (
-        due.state
-        if due is not None and snapshot is not None and due.active_snapshot.content_hash == snapshot.content_hash
-        else None
+        next((item for item in states if item.training_due), states[0] if states else None) if complete else None
     )
     return HistoryMaintenanceStatus(
         state=state,
@@ -526,6 +521,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         automatic_training=False,
         unresolved_price_cells=unresolved_price_cells,
         price_gap_summary=price_gap_summary,
+        training_heads=heads,
     )
 
 

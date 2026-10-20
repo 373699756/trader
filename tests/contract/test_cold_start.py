@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.unit.infra.test_decision_records import record
 from tests.unit.training.infra.profile.v3.test_profile import _publish_profile, _write_bundle
 from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
@@ -45,7 +46,7 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
         for head in scoring["heads"].values():
             assert head["active"] is False
             assert head["model_hash"] == ""
-            assert head["historical_failure_reasons"] == ["production_model_artifacts_missing"]
+            assert head["historical_failure_reasons"] == ["production_model_missing"]
         assert "./run.sh train" in caplog.text
     assert "./run.sh sync market" in caplog.text
     assert "缺少历史数据" in caplog.text
@@ -67,13 +68,20 @@ def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, cap
     assert "V3 双头模型工件缺失" not in caplog.text
 
 
-def test_partial_profile_disables_both_heads_and_corruption_is_not_swallowed(tmp_path):
+def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_failure(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 20, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
     config = _empty_config(tmp_path)
     contract = V3_TRAINING_PROFILE.heads[0]
     _write_bundle(tmp_path / "data/training/models/v3" / contract.directory_name, contract)
     system = BuildSystem(config, scoring_profile="v3")
     scoring = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
     assert all(head["active"] is False for head in scoring["heads"].values())
+    original = record()
+    system.records.initialize()
+    system.records.commit(original)
+    route = f"/api/decisions/tomorrow/history?date={original.trade_date.isoformat()}"
+    before = system.app.test_client().get(route).get_json()
 
     _publish_profile(tmp_path / "data/training/models", V3_TRAINING_PROFILE)
     metadata = (
@@ -81,8 +89,17 @@ def test_partial_profile_disables_both_heads_and_corruption_is_not_swallowed(tmp
         / "metadata.json"
     )
     metadata.write_text("{}", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="models are invalid"):
-        BuildSystem(config, scoring_profile="v3")
+    degraded = BuildSystem(config, scoring_profile="v3")
+    client = degraded.app.test_client()
+    assert client.get("/").status_code == 200
+    scoring = client.get("/api/status").get_json()["scoring_profile"]
+    assert scoring["profile_id"] == "v3"
+    for head in scoring["heads"].values():
+        assert head["active"] is False
+        assert head["historical_failure_reasons"] == ["production_model_integrity_conflict"]
+    after = client.get(route).get_json()
+    assert after == before
+    assert after["items"][0]["code"] == original.decision.items[0].code
 
 
 @pytest.mark.parametrize("profile,sessions", (("v2", 251), ("v3", 61)))
@@ -94,5 +111,5 @@ def test_unavailable_model_cannot_admit_or_fabricate_predictions(application_fea
         assert router.uses_model(strategy) is True
         assert router.history_required_sessions(strategy) == sessions
         assert router.is_input_eligible(strategy, feature) is False
-        with pytest.raises(RuntimeError, match="production_model_artifacts_missing"):
+        with pytest.raises(RuntimeError, match="production_model_missing"):
             router.score(strategy, (feature,))
