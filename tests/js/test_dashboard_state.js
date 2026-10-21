@@ -336,7 +336,9 @@ const stageSnapshots = stageKeys.map((stage, index) => ({
   rejected_count: index > 0 && index !== 8 ? outputs[index - 1] - outputs[index] : 0,
   pending_count: 0, failed_count: 0, not_selected_count: index === 8 ? 364 : 0,
   latency_ms: [135, 0, 1250, null][index % 4], reasons: [],
-  operation_durations: index === 0 ? [{ operation: "cache_reuse", duration_ms: 135 }] : [],
+  as_of: "2026-08-14T09:15:00+08:00",
+  operation_durations: index === 0 ? [{ operation: "cache_reuse", duration_ms: 135 }]
+    : index === 1 ? [{ operation: "startup_reuse", duration_ms: null }] : [],
 }));
 const pipelineFixture = {
   current_stage: "action_publish", elapsed_ms: 2000, stage_snapshots: stageSnapshots,
@@ -363,7 +365,7 @@ const renderPublished = (receipts, extra = {}) => state.renderSummary(
 renderPublished([matchingReceipt, { ...matchingReceipt, operation: "checkpoint_consume", content_hash: "old-hash" }]);
 assert.strictEqual((canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length, 11);
 for (const value of ["135 ms", "1.25 s", "0 ms", "未测量", "未入选 364", "固定评分前六",
-  "本轮缓存复用 135 ms", "文件或数据库读写失败（1次）"]) {
+  "本轮缓存复用 135 ms", "沿用启动结果", "本轮未重新执行", "文件或数据库读写失败（1次）"]) {
   assert(canonicalObservationElements.observationStageList.innerHTML.includes(value), value);
 }
 assert(canonicalObservationElements.funnelStages.textContent.includes("本轮至决策 2.00 s"));

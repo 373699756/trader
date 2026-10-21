@@ -306,6 +306,26 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
     )
 
 
+@pytest.mark.parametrize("clock", ("10:00:00", "14:47:59", "14:59:49"))
+@pytest.mark.parametrize("tick_first", (False, True))
+def test_production_scoring_keeps_ten_second_deadline_across_phase_and_final_quote_handoffs(clock, tick_first):
+    runtime = LoadRuntimeSettings(Path(__file__).parents[3] / "config" / "runtime.json")
+    start = datetime.fromisoformat(f"2026-07-16T{clock}").replace(tzinfo=SHANGHAI)
+    planner = CadencePlanner(CadencePolicy.from_seconds(runtime.pipeline.cadence_seconds), started_at=start)
+    assert planner.plan_score_after_input(start, is_trading_day=True) is not None
+    for seconds in range(1, 10):
+        at = start + timedelta(seconds=seconds)
+        if tick_first:
+            assert PipelineTask.SCORE not in {task.task for task in planner.plan(at, is_trading_day=True).tasks}
+        assert planner.plan_score_after_input(at, is_trading_day=True) is None
+        if not tick_first:
+            assert PipelineTask.SCORE not in {task.task for task in planner.plan(at, is_trading_day=True).tasks}
+    due = start + timedelta(seconds=10)
+    assert sum(task.task is PipelineTask.SCORE for task in planner.plan(due, is_trading_day=True).tasks) == 1
+    assert planner.plan_score_after_input(due, is_trading_day=True) is None
+    assert planner.plan_score_after_input(start.replace(hour=15, minute=0, second=0), is_trading_day=True) is None
+
+
 def _policy() -> CadencePolicy:
     return CadencePolicy.from_seconds(
         {

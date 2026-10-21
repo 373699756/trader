@@ -1,86 +1,57 @@
-"""Resident issuer projection of accepted references; no supplier or history I/O."""
+"""Process-owned immutable startup eligibility, shared by matching profiles."""
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
-from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.domain.evidence.pipeline import SourceHealth, SourceHealthState
+from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, IssuerEligibilityBatch
 from trader.recommendation.domain.market.static import StaticIssuer
 
 
 @dataclass(frozen=True, slots=True)
-class StaticIssuerBaseline:
-    records: tuple[StaticIssuer, ...]
-    reference_epoch: str
-    identity: str
-    latest_success_at: datetime | None
-    source_count: int
-
-    def health(
-        self, observed_at: datetime, *, refresh_failed: bool = False, ttl_seconds: float = 86_400
-    ) -> SourceHealth:
-        usable = self.latest_success_at is not None and self.latest_success_at <= observed_at
-        stale = (
-            self.latest_success_at is not None and (observed_at - self.latest_success_at).total_seconds() >= ttl_seconds
-        )
-        healthy = int(usable and not refresh_failed and not stale)
-        return SourceHealth(
-            SourceHealthState.READY
-            if healthy
-            else (SourceHealthState.DEGRADED if usable else SourceHealthState.UNAVAILABLE),
-            self.source_count,
-            healthy,
-            self.latest_success_at,
-            max(0.0, (observed_at - self.latest_success_at).total_seconds())
-            if self.latest_success_at is not None
-            else None,
-        )
+class StaticEligibilityInputs:
+    reference: StaticReferenceRead
+    historical_st: HistoricalStEligibilitySnapshot | None
+    blacklist_codes: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
-class StaticBaselineRead:
-    baseline: StaticIssuerBaseline
-    cache_hit: bool
+class StaticEligibilitySnapshot:
+    inputs: StaticEligibilityInputs
+    source: PipelineStageOutput[StaticIssuer]
+    filtered: PipelineStageOutput[StaticIssuer]
+    eligibility: IssuerEligibilityBatch
+    eligible_codes: frozenset[str]
 
 
 class StaticMarketCache:
-    """Reuse the accepted official population independently of quote availability."""
+    """Build once per startup input/filter identity; never rebuild on an online tick."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, reserve: Callable[[tuple[StaticEligibilitySnapshot, ...]], bool] | None = None) -> None:
         self._lock = threading.Lock()
-        self._baseline: StaticIssuerBaseline | None = None
-        self._sequence = 0
+        self._snapshots: tuple[StaticEligibilitySnapshot, ...] = ()
+        self._reserve = reserve
 
-    def read(self, source: StaticReferenceRead, observed_at: datetime) -> StaticBaselineRead:
-        reference = source.reference
-        if reference is not None and reference.source_time > observed_at:
-            reference = None
-        records = reference.records if reference is not None else ()
-        reference_epoch = source.reference_epoch
-        source_time = reference.source_time.astimezone(SHANGHAI) if reference is not None else None
+    def initialize(
+        self,
+        inputs: StaticEligibilityInputs,
+        build: Callable[[StaticEligibilityInputs], StaticEligibilitySnapshot],
+    ) -> StaticEligibilitySnapshot:
         with self._lock:
-            previous = self._baseline
-            if previous is not None and previous.reference_epoch == reference_epoch and previous.records == records:
-                if previous.latest_success_at == source_time:
-                    return StaticBaselineRead(previous, True)
-                baseline = StaticIssuerBaseline(records, reference_epoch, previous.identity, source_time, 1)
-                self._baseline = baseline
-                return StaticBaselineRead(baseline, True)
-            self._sequence += 1
-            identity = f"static:{self._sequence}"
-            baseline = StaticIssuerBaseline(
-                records,
-                reference_epoch,
-                identity,
-                source_time,
-                1,
-            )
-            self._baseline = baseline
-            return StaticBaselineRead(baseline, False)
+            for snapshot in self._snapshots:
+                if snapshot.inputs == inputs:
+                    return snapshot
+            snapshot = build(inputs)
+            snapshots = (*self._snapshots, snapshot)
+            if self._reserve is not None and not self._reserve(snapshots):
+                raise MarketDataUnavailableError("static_eligibility_preload_capacity")
+            self._snapshots = snapshots
+            return snapshot
 
 
-__all__ = ["StaticMarketCache", "StaticBaselineRead", "StaticIssuerBaseline"]
+__all__ = ["StaticMarketCache", "StaticEligibilityInputs", "StaticEligibilitySnapshot"]

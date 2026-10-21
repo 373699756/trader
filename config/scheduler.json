@@ -55,7 +55,7 @@
         "morning_late": 10,
         "afternoon": 10,
         "final_review": 10,
-        "final_window": 1
+        "final_window": 10
       },
       "industry_heat": {
         "warmup": 120,

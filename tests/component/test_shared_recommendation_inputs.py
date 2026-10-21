@@ -45,6 +45,7 @@ def test_both_shares_sources_and_budget_but_isolates_models_and_publication(tmp_
     assert v2.budget is v3.budget
     assert v2.market_data.quotes.gateway is v3.market_data.quotes.gateway
     assert v2.market_data.research is v3.market_data.research
+    assert v2.market_data.static_cache is v3.market_data.static_cache
     assert v2.market_data.references is v3.market_data.references
     assert v2.market_data.intraday is v3.market_data.intraday
     assert v2.market_data.history is not v3.market_data.history

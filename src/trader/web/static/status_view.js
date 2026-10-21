@@ -359,12 +359,15 @@
       const outputLabel = stageKeys.includes("market_features") && state === "not_ready" && pending > 0 && output === 0
         ? "待补充" : output == null ? "—" : displayCount(output);
       const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${outputLabel} · ${disposition} · 耗时 ${formatStageDuration(duration)}`;
-      const operationLabels = { processing: "处理与校验", review_wait: "复核等待", cache_reuse: "本轮缓存复用", local_read: "本地资料读取", acquisition: "行情采集", feature_assembly: "特征准备", feature_compute: "总体特征计算", quote_refresh: "行情更新", validation: "输入校验" };
-      const operationText = (stage.operation_durations || []).map((item) => `${operationLabels[item.operation] || item.operation} ${formatStageDuration(item.duration_ms)}`).join(" · ");
+      const operationLabels = { processing: "处理与校验", review_wait: "复核等待", startup_reuse: "沿用启动结果", cache_reuse: "本轮缓存复用", local_read: "本地资料读取", acquisition: "行情采集", feature_assembly: "特征准备", feature_compute: "总体特征计算", quote_refresh: "行情更新", validation: "输入校验" };
+      const reusedStartup = (stage.operation_durations || []).some((item) => item.operation === "startup_reuse");
+      const operationText = (stage.operation_durations || []).map((item) => item.operation === "startup_reuse"
+        ? `${operationLabels[item.operation]} · 启动于 ${window.TraderRender.formatTime(stage.as_of)}`
+        : `${operationLabels[item.operation] || item.operation} ${formatStageDuration(item.duration_ms)}`).join(" · ");
       const health = stage.source_health || {};
       const sourceState = ({ ready: "正常", degraded: "已降级", unavailable: "不可用" })[health.state] || "未知";
       const sourceText = `来源 ${sourceState} · 覆盖 ${displayCount(health.healthy_source_count)} / ${displayCount(health.source_count)} · 来源年龄 ${Number.isFinite(health.age_seconds) ? health.age_seconds.toFixed(1) + " s" : "未知"}`;
-      const detailMarkup = `<small>${escapeHtml(sourceText)}</small>${operationText ? `<small>${escapeHtml(operationText)} · 排队耗时未单独测量</small>` : ""}${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKeys.includes("action_publish") ? publicationIoMarkup(publicationReceipts) : ""}`;
+      const detailMarkup = `<small>${escapeHtml(sourceText)}</small>${operationText ? `<small>${escapeHtml(operationText)}${reusedStartup ? " · 本轮未重新执行" : " · 排队耗时未单独测量"}</small>` : ""}${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKeys.includes("action_publish") ? publicationIoMarkup(publicationReceipts) : ""}`;
       return `<article class="observation-stage${isExpanded ? " is-expanded" : ""}" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><button class="observation-stage-toggle" type="button" data-stage-toggle="true" aria-expanded="${isExpanded}" aria-controls="observation-stage-detail-${index}"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span></button><div id="observation-stage-detail-${index}" class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");
     if (list.innerHTML !== markup) list.innerHTML = markup;

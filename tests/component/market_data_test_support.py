@@ -35,6 +35,7 @@ from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.workers import BoundedExecutor, InjectedExecutor
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
+from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -360,11 +361,14 @@ def _service(
             monotonic,
             StaticMarketPipeline(
                 eligibility,
+                cache=StaticMarketCache(),
                 monotonic=monotonic,
                 historical_st_eligibility=historical_st_source,
             ),
         )
     )
+    # The fixture's startup timestamp is fixed; task clocks may be finite deadline sequences.
+    service._static_pipeline.initialize(references.static_reference(), NOW)
     return service
 
 

@@ -163,11 +163,17 @@ def stage_snapshots(observed_at: datetime = NOW, *, count: int = 1) -> tuple[Pip
     )
 
 
-def test_eleven_stage_audit_survives_formal_codec_and_participates_in_hash() -> None:
+@pytest.mark.parametrize("operation,latency", (("cache_reuse", 0), ("startup_reuse", None)))
+def test_eleven_stage_audit_survives_formal_codec_and_participates_in_hash(operation, latency) -> None:
     snapshots = stage_snapshots()
     snapshots = (
-        replace(snapshots[0], latency_ms=0, operation_durations=(("cache_reuse", 0),)),
-        replace(snapshots[1], latency_ms=None),
+        replace(
+            snapshots[0],
+            as_of=NOW - timedelta(hours=1),
+            latency_ms=latency,
+            operation_durations=((operation, latency),),
+        ),
+        replace(snapshots[1], as_of=NOW - timedelta(hours=1), latency_ms=None),
         *snapshots[2:],
     )
     current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=snapshots, elapsed_ms=1250))

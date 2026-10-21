@@ -198,8 +198,8 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["morning_main"] == 1
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["final_window"] == 1
     assert runtime.pipeline.cadence_seconds["topk_quotes"]["morning_main"] == 1
-    assert set(runtime.pipeline.cadence_seconds["score"].values()) == {1.0, 10.0}
-    assert runtime.pipeline.cadence_seconds["score"]["final_window"] == 1
+    assert set(runtime.pipeline.cadence_seconds["score"].values()) == {10.0}
+    assert runtime.pipeline.cadence_seconds["score"]["final_window"] == 10
     assert runtime.performance_budgets.data_age_p95_seconds["full_market_main"] == 10
     assert runtime.market_data.circuit_breaker_seconds == 30
     assert runtime.deepseek.daily_hard_limit == 168

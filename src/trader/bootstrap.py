@@ -65,6 +65,7 @@ from trader.infra.isolated_call import RunIsolatedCall
 from trader.infra.process_lock import ProcessLock
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.serialization.canonical import ContentHash
+from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.settings import (
     LoadLongWatchlist,
     LoadRuntimeSettings,
@@ -111,10 +112,8 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
 )
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
-from trader.recommendation.application.pipeline.static_market.static_pipeline import (
-    StaticCompanyInputs,
-    StaticMarketPipeline,
-)
+from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
+from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
@@ -1049,13 +1048,16 @@ def _build_market_data(
             time.monotonic,
             StaticMarketPipeline(
                 eligibility,
+                cache=StaticMarketCache(
+                    reserve=lambda snapshots: market_cache.reserve_resident(
+                        "security_master_calendar", "static_eligibility", len(CanonicalJsonBytes(snapshots))
+                    )
+                )
+                if shared_market is None
+                else shared_market.static_cache,
                 monotonic=time.monotonic,
                 historical_st_eligibility=references.historical_st_eligibility,
-                company=StaticCompanyInputs(
-                    lambda codes, at: research.cached(codes, include_structured=True, as_of=at),
-                    strategy.long_research,
-                    _recommendation_policy(strategy).hard_filter,
-                ),
+                blacklist_codes=frozenset(strategy.hard_filters.blacklist_codes),
             ),
         )
     )

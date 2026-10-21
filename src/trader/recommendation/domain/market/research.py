@@ -382,25 +382,6 @@ def DeriveLatestDisclosedReportLoss(
     return 0.0
 
 
-def CompanyRiskValues(
-    observation: ResearchObservation, observed_at: datetime, policy: LongResearchPolicy
-) -> Mapping[str, float | None]:
-    """Derive quote-independent risk facts from already qualified local evidence."""
-    return MappingProxyType(
-        {
-            **DeriveCorporateRiskFeatures(
-                observation.corporate_risk_facts,
-                observed_at,
-                window_complete=observation.corporate_risk_window_complete,
-            ),
-            "latest_disclosed_report_loss": DeriveLatestDisclosedReportLoss(observation, observed_at),
-            "financial_deterioration": _financial_deterioration(observation.financial, policy),
-            "pledge_risk": _severity(observation.pledge_ratio_pct, policy.pledge_thresholds),
-            "unlock_risk": _severity(observation.unlock_ratio_pct, policy.unlock_thresholds),
-        }
-    )
-
-
 def DeriveCorporateRiskFeatures(
     facts: tuple[CorporateRiskFact, ...],
     observed_at: datetime,
@@ -777,7 +758,6 @@ def _groups_overlap(groups: tuple[set[str], set[str], set[str]]) -> bool:
 
 
 __all__ = [
-    "CompanyRiskValues",
     "CorporateRiskCategory",
     "CorporateRiskFact",
     "MarketRegimePolicy",

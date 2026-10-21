@@ -221,8 +221,8 @@ class CadencePlanner:
         interval = self._policy.interval(PipelineTask.SCORE, band)
         if interval is None:
             return None
-        key = (local.date().isoformat(), band, PipelineTask.SCORE)
         with self._lock:
+            key = self._carry_score_deadline(local.date().isoformat(), band)
             due = self._next_due.get(key)
             if due is not None and local < due:
                 self._pending_scores.add(key)
@@ -574,9 +574,21 @@ class CadencePlanner:
         )
 
     def _discard_old_state(self, trade_date: str, band: CadenceBand) -> None:
+        self._carry_score_deadline(trade_date, band)
         self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date and key[1] is band}
         self._pending_scores = {key for key in self._pending_scores if key[0] == trade_date and key[1] is band}
         self._started_dates = {value for value in self._started_dates if value == trade_date}
+
+    def _carry_score_deadline(self, trade_date: str, band: CadenceBand) -> tuple[str, CadenceBand, PipelineTask]:
+        """A phase change changes policy, not the last accepted scoring trigger."""
+        current = (trade_date, band, PipelineTask.SCORE)
+        previous = next((key for key in self._next_due if key[0] == trade_date and key[2] is PipelineTask.SCORE), None)
+        if previous is not None and previous != current:
+            self._next_due[current] = self._next_due.pop(previous)
+            if previous in self._pending_scores:
+                self._pending_scores.remove(previous)
+                self._pending_scores.add(current)
+        return current
 
 
 def ResolveCadenceBand(phase: MarketPhase) -> CadenceBand:
