@@ -426,9 +426,7 @@ def _selection_policy_hash(policy: ScoredSelectionPolicy) -> str:
             board.value,
             value.policy_id,
             value.version,
-            tuple(sorted(value.candidate_weights.items())),
             tuple(sorted(value.local_weights.items())),
-            value.candidate_min_score,
             value.minimum_reliability,
         )
         for board, value in sorted(policy.board_policies.items(), key=lambda item: item[0].value)
@@ -441,9 +439,7 @@ def _selection_policy_hash(policy: ScoredSelectionPolicy) -> str:
             risk_rules,
             policy.max_age_seconds,
             policy.local_risk_cap,
-            policy.candidate_limit_per_board,
             policy.top_k,
-            policy.maximum_per_industry,
             policy.minimum_local_score,
             tuple(sorted(policy.hard_filter.blacklist_codes)),
             tuple(sorted(policy.hard_filter.structured_risk_thresholds.items())),

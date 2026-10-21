@@ -46,11 +46,6 @@ EXPECTED_DEBT = frozenset(
         ("PLR0912", "infra/isolated_call.py", "RunIsolatedCall"),
         ("C901", "infra/market_data/observations.py", "SourceObservation.__post_init__"),
         (
-            "PLR0913",
-            "recommendation/application/pipeline/candidate_pool/candidate_pipeline.py",
-            "SelectCandidateOutput",
-        ),
-        (
             "PLR0915",
             "recommendation/application/pipeline/data_source/source_router.py",
             "MarketInputCoordinator._refresh_candidates",
@@ -78,7 +73,6 @@ EXPECTED_DEBT = frozenset(
         ),
         ("PLR0913", "recommendation/application/pipeline/quality_check/pipeline_status.py", "BuildSupplyStatus"),
         ("PLR0913", "recommendation/application/pipeline/stage_output.py", "StageOutput"),
-        ("PLR0913", "recommendation/application/pipeline/static_market/static_market_loader.py", "LoadStaticMarket"),
         ("C901", "recommendation/domain/evidence/pipeline.py", "PipelineStageStatus.__post_init__"),
         ("C901", "recommendation/domain/market/refresh.py", "ResearchRefreshResult.__post_init__"),
         ("PLR0913", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.__init__"),

@@ -351,7 +351,8 @@ def test_active_formal_publication_still_persists_only_six_rows(tmp_path, strate
             replace(
                 current.items[0],
                 code=f"60000{rank}",
-                rank=rank,
+                selected=rank <= 6,
+                rank=rank if rank <= 6 else 0,
                 selection_rank=rank,
                 local_score=100.0 - rank,
                 final_score=100.0 - rank,

@@ -16,10 +16,10 @@ const statusHealthPath = path.join(path.dirname(dashboardPath), "status_health.j
 const errorDrawerPath = path.join(path.dirname(dashboardPath), "error_drawer.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
-assert(statusViewSource.includes('[["static_filter"], "ST预过滤", true]'));
-assert(statusViewSource.includes('[["dynamic_filter"], "一级市场过滤与二级公司风险过滤", true]'));
+assert(statusViewSource.includes('[["static_filter"], "静态资格过滤", true]'));
+assert(statusViewSource.includes('[["dynamic_filter"], "动态过滤", true]'));
 assert(!statusViewSource.includes('["一级稳定过滤", ["dynamic_filter"]]'));
-assert(statusViewSource.includes('stageKeys.includes("quality_check") && state === "not_ready"'));
+assert(statusViewSource.includes('stageKeys.includes("market_features") && state === "not_ready"'));
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
 const streamSource = fs.readFileSync(streamPath, "utf8");
@@ -327,153 +327,64 @@ assert.ok(switchingElements.tableHead.innerHTML.includes("<th>排名</th><th>状
 assert.strictEqual(switchingElements.longStockHeader.hidden, true);
 switchRenderer.renderMissingHistoricalDate("d25", "2026-10-13");
 assert.ok(switchingElements.tableHead.innerHTML.includes("<th>排名</th><th>状态</th><th>股票</th>"));
+const stageKeys = ["local_data", "static_filter", "dynamic_market", "dynamic_filter", "market_features",
+  "model_filter", "local_score", "local_risk", "fixed_selection", "risk_review", "action_publish"];
+const outputs = [5289, 4000, 4000, 390, 380, 370, 370, 370, 6, 6, 6];
+const stageSnapshots = stageKeys.map((stage, index) => ({
+  stage, state: "ready", input_count: index ? outputs[index - 1] : 5289, output_count: outputs[index],
+  input_batch_id: "round-a:" + index, output_batch_id: "round-a:" + (index + 1),
+  rejected_count: index > 0 && index !== 8 ? outputs[index - 1] - outputs[index] : 0,
+  pending_count: 0, failed_count: 0, not_selected_count: index === 8 ? 364 : 0,
+  latency_ms: [135, 0, 1250, null][index % 4], reasons: [],
+  operation_durations: index === 0 ? [{ operation: "cache_reuse", duration_ms: 135 }] : [],
+}));
 const pipelineFixture = {
-  current_stage: "action_gate",
-  stages: [
-    { key: "input_readiness", state: "completed", input_count: 5289, output_count: 320,
-      facets: [], reason_counts: [{ reason: "missing_liquidity_history", count: 4969 }] },
-    { key: "dynamic_filter", state: "completed", input_count: 320, output_count: 196,
-      facets: [], reason_counts: [] },
-    { key: "board_cross_section", state: "completed", input_count: 196, output_count: 196,
-      metric_ranges: [{ metric: "board_reliability", minimum: 0.72, maximum: 0.99 }],
-      facets: [{ key: "filter_observe", count: 125, total: 196 }] },
-    { key: "strategy_history", state: "completed", input_count: 196, output_count: 195,
-      metric_ranges: [{ metric: "history_sessions", minimum: 60, maximum: 248 }] },
-    { key: "model_input", state: "completed", input_count: 195, output_count: 188,
-      metric_ranges: [{ metric: "input_completeness", minimum: 0.84, maximum: 1 }] },
-    { key: "candidate_score", state: "completed", input_count: 188, output_count: 134, threshold: 50,
-      metric_ranges: [{ metric: "candidate_score", minimum: 43.18, maximum: 82.64 }] },
-    { key: "board_limit", state: "completed", input_count: 134, output_count: 134 },
-    { key: "candidate_refresh", state: "completed", input_count: 134, output_count: 125,
-      metric_ranges: [{ metric: "quote_age_seconds", minimum: 1.2, maximum: 8.6 }] },
-    { key: "input_coverage", state: "completed", input_count: 125, output_count: null,
-      facets: [
-        { key: "candidate_features", count: 125, total: 125 },
-        { key: "security_master", count: 125, total: 125 },
-        { key: "history", count: 125, total: 125 },
-      ] },
-    { key: "evidence_score", state: "completed", input_count: 125, output_count: 110,
-      metric_ranges: [{ metric: "base_score", minimum: 41.18, maximum: 67.42 }] },
-    { key: "model_cost_gate", state: "completed", input_count: 110, output_count: 0,
-      metric_ranges: [{ metric: "predicted_net_excess_pct", minimum: -0.38, maximum: -0.04 }] },
-    { key: "local_score", state: "completed", input_count: 110, output_count: 110,
-      metric_ranges: [{ metric: "local_score", minimum: 39.18, maximum: 65.42 }] },
-    { key: "deepseek_review", state: "not_applicable", input_count: 0, output_count: 0 },
-    { key: "fusion", state: "completed", input_count: 110, output_count: 110,
-      metric_ranges: [{ metric: "final_score", minimum: 39.18, maximum: 65.42 }] },
-    { key: "action_gate", state: "completed", input_count: 110, output_count: 0,
-      facets: [
-        { key: "observation_threshold_met", count: 2, total: 110 },
-        { key: "executable_threshold_met", count: 0, total: 110 },
-        { key: "action_executable", count: 0, total: 110 },
-        { key: "action_observe", count: 0, total: 110 },
-        { key: "action_unavailable", count: 110, total: 110 },
-      ], reason_counts: [{ reason: "model_net_utility_non_positive", count: 110 }] },
-    { key: "concentration", state: "completed", input_count: 0, output_count: 0,
-      facets: [{ key: "selected_executable", count: 0, total: 0 },
-        { key: "selected_observe", count: 0, total: 0 }] },
-  ],
+  current_stage: "action_publish", elapsed_ms: 2000, stage_snapshots: stageSnapshots,
+  stages: stageSnapshots.map((stage) => ({ ...stage, key: stage.stage, state: "completed",
+    facets: stage.stage === "action_publish" ? [
+      { key: "action_executable", count: 3 }, { key: "action_observe", count: 2 },
+      { key: "action_unavailable", count: 1 },
+    ] : [], reason_counts: [] })),
 };
+const publishedPayload = { status: "ready", strategy: "tomorrow", trade_date: "2026-08-14",
+  decision_version: "decision:tomorrow:immutable", content_hash: "hash-a",
+  coverage: { evaluated_count: 370 }, items: [], pipeline: pipelineFixture };
+const matchingReceipt = { operation: "formal_write", strategy: "tomorrow", trade_date: "2026-08-14",
+  state: "failed", input_count: 1, output_count: 0, rejected_count: 0, pending_count: 0, failed_count: 1,
+  latency_ms: 125, reasons: [{ code: "io_oserror", count: 1 }],
+  decision_version: "decision:tomorrow:immutable", content_hash: "hash-a",
+  source_health: { state: "unavailable", age_seconds: 20 } };
 const canonicalObservationElements = summaryFixture();
-state.renderSummary(
-  canonicalObservationElements,
-  { status: "not_ready", strategy: "tomorrow", trade_date: "2026-08-14", coverage: {}, items: [] },
-  [],
-  "open",
-  null,
-  sandbox.window.TraderSelection,
-  sandbox.window.TraderRender,
-  {
-    scheduler: {
-      publication_io: [
-        { operation: "formal_write", strategy: "tomorrow", trade_date: "2026-08-14", state: "failed",
-          input_count: 1, output_count: 0, rejected_count: 0, pending_count: 0, failed_count: 1,
-          latency_ms: 125, reasons: [{ code: "io_oserror", count: 1 }],
-          decision_version: "decision:tomorrow:immutable", output_version: null,
-          source_health: { state: "unavailable", age_seconds: 20 } },
-        { operation: "checkpoint_consume", strategy: "d25", trade_date: "2026-08-14", state: "failed" },
-        { operation: "formal_restore", strategy: "tomorrow", trade_date: "2026-08-13", state: "ready" },
-      ],
-      input_quality: {
-        tomorrow: {
-          summary: { trade_date: "2026-08-14" },
-          pipeline: pipelineFixture,
-          stage_snapshots: Array.from({ length: 14 }, (_value, index) => ({
-            stage: [
-              "data_source", "static_market", "static_standardize", "static_filter",
-              "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
-              "quality_check", "local_score", "risk_review", "score_merge", "downside_action",
-              "final_selection",
-            ][index],
-            state: "ready",
-            input_count: index === 0 ? 5289 : 320,
-            output_count: index === 3 ? 320 : index === 6 ? 129 : 320,
-            rejected_count: index === 3 ? 4969 : index === 6 ? 124 : 0,
-            pending_count: index === 6 ? 66 : 0,
-            failed_count: index === 6 ? 1 : 0,
-            reasons: [{ code: [
-              "static_reference_unavailable", "static_baseline_loaded", "static_identity_pending", "historical_st",
-              "refresh_pending", "invalid_quote_structure", "insufficient_liquidity", "board_limit",
-              "quality_pending", "not_scored", "deepseek_applied", "local_only", "below_score_threshold", "industry_limit",
-            ][index], count: 360 }],
-            latency_ms: 0,
-          })),
-        },
-      },
-    },
-  },
+const renderPublished = (receipts, extra = {}) => state.renderSummary(
+  canonicalObservationElements, publishedPayload, [], "open", null,
+  sandbox.window.TraderSelection, sandbox.window.TraderRender,
+  { scheduler: { publication_io: receipts, ...extra } },
 );
-assert.strictEqual(
-  (canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length,
-  12,
-);
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("ST预过滤"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级市场过滤与二级公司风险过滤"));
+renderPublished([matchingReceipt, { ...matchingReceipt, operation: "checkpoint_consume", content_hash: "old-hash" }]);
+assert.strictEqual((canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length, 11);
+for (const value of ["135 ms", "1.25 s", "0 ms", "未测量", "未入选 364", "固定评分前六",
+  "本轮缓存复用 135 ms", "文件或数据库读写失败（1次）"]) {
+  assert(canonicalObservationElements.observationStageList.innerHTML.includes(value), value);
+}
+assert(canonicalObservationElements.funnelStages.textContent.includes("本轮至决策 2.00 s"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="checkpoint_consume"'));
 assert.match(canonicalObservationElements.observationStageList.innerHTML,
-  /<button class="observation-stage-toggle"[^>]*aria-expanded="false"[^>]*>[\s\S]*?<\/button><div id="observation-stage-detail-0" class="observation-stage-detail">/);
-assert.doesNotMatch(canonicalObservationElements.observationStageList.innerHTML,
-  /<article[^>]*role="button"/);
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("320 → 129 · 淘汰 124 · 待补充 66 · 失败 1"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级数据与ST资格准备"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("腾讯行情采集与标准化"));
-const combinedObservationElements = summaryFixture();
-state.renderObservationStages(
-  combinedObservationElements,
-  Array.from({ length: 14 }, (_value, index) => ({
-    stage: ["data_source", "static_market", "static_standardize", "static_filter",
-      "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
-      "quality_check", "local_score", "risk_review", "score_merge", "downside_action", "final_selection"][index],
-    state: "ready", input_count: index === 1 ? 360 : 100, output_count: index === 2 ? 0 : 100,
-    rejected_count: 0, pending_count: 0, failed_count: 0, latency_ms: 10, reasons: [],
-  })),
-  null,
-  false,
-  [],
-);
-assert(combinedObservationElements.observationStageList.innerHTML.includes("一级数据与ST资格准备"));
-assert(combinedObservationElements.observationStageList.innerHTML.includes("360 → 0"));
-assert(combinedObservationElements.observationStageList.innerHTML.includes("腾讯行情采集与标准化"));
-const pendingQualityElements = summaryFixture();
-state.renderObservationStages(
-  pendingQualityElements,
-  Array.from({ length: 14 }, (_value, index) => ({
-    stage: ["data_source", "static_market", "static_standardize", "static_filter",
-      "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
-      "quality_check", "local_score", "risk_review", "score_merge", "downside_action", "final_selection"][index],
-    state: index === 8 ? "not_ready" : "ready",
-    input_count: index === 8 ? 360 : 100,
-    output_count: index === 8 ? 0 : 100,
-    pending_count: index === 8 ? 360 : 0,
-    rejected_count: 0, failed_count: 0, reasons: [],
-  })), null, false, [],
-);
-assert(pendingQualityElements.observationStageList.innerHTML.includes("360 → 待补充"));
+  /<button class="observation-stage-toggle"[^>]*aria-expanded="false"/);
+renderPublished([{ ...matchingReceipt, decision_version: "old-round" }]);
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
+renderPublished([{ ...matchingReceipt, trade_date: "2026-08-13" }]);
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
+renderPublished([{ ...matchingReceipt, state: "ready", failed_count: 0, output_count: 1, reasons: [] }], {
+  input_quality: { tomorrow: { stage_snapshots: [{ output_batch_id: "round-b" }] } },
+});
+assert(canonicalObservationElements.funnelStages.textContent.includes("新输入轮正在处理"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("未入选 364"));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes("文件或数据库读写失败"));
 const selectableObservationElements = summaryFixture();
-state.renderObservationStages(selectableObservationElements, null, null, false, []);
-selectableObservationElements.observationStageList.querySelectorAll = () => [
-  { dataset: { stageKeys: "dynamic_filter" } },
-];
-state.renderObservationStages(selectableObservationElements, null, null, false, []);
+state.renderObservationStages(selectableObservationElements, stageSnapshots, pipelineFixture, false, []);
+selectableObservationElements.observationStageList.querySelectorAll = () => [{ dataset: { stageKeys: "dynamic_filter" } }];
+state.renderObservationStages(selectableObservationElements, stageSnapshots, pipelineFixture, false, []);
 assert.match(selectableObservationElements.observationStageList.innerHTML,
   /class="observation-stage is-expanded"[^>]*data-stage-keys="dynamic_filter"[\s\S]*?aria-expanded="true"/);
 const selectedMarkup = selectableObservationElements.observationStageList.innerHTML;
@@ -482,59 +393,17 @@ sandbox.window.getSelection = () => ({ isCollapsed: false, anchorNode: {}, focus
 state.renderObservationStages(selectableObservationElements, [], null, false, []);
 assert.strictEqual(selectableObservationElements.observationStageList.innerHTML, selectedMarkup);
 delete sandbox.window.getSelection;
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("TopK、集中度、冻结与发布"));
-assert(!canonicalObservationElements.observationStageList.innerHTML.includes("择优入选、分散限制、冻结与发布"));
-assert(!canonicalObservationElements.observationStageList.innerHTML.includes("动态采集与清洗"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("输入 1 / 输出 0 / 业务拒绝 0 / 待补充 0 / 失败 1"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("耗时 125毫秒 · 来源 不可用 · 距最近成功 20.0秒"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("按操作次数统计，不是股票数量"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("说明与原因：仅使用本地评分（360只）"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("文件或数据库读写失败（1次）"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("版本核对（排查结果是否一致）"));
-assert(!canonicalObservationElements.observationStageList.innerHTML.includes("输入身份"));
-assert(!canonicalObservationElements.observationStageList.innerHTML.includes("local_only"));
-assert(!canonicalObservationElements.observationStageList.innerHTML.includes("static_baseline_loaded"));
-for (const label of [
-  "官方证券总体尚未取得", "已加载证券基础资料", "证券基础资料待补充", "历史记录存在特别处理风险",
-  "行情待刷新", "行情结构待校验", "成交活跃度不足", "超过板块候选名额",
-  "评分输入待补充", "尚未完成评分", "DeepSeek 复核已应用", "仅使用本地评分", "最终分低于观察线", "超过行业集中度上限",
-]) assert(canonicalObservationElements.observationStageList.innerHTML.includes(label), label);
-assert.strictEqual(sandbox.window.TraderRender.pipelineFacetLabel("action_unavailable"), "不可入选");
-assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("api_key_missing"), "不可用：未配置 API 密钥");
-assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("intraday_reversal_atr"), "日内回撤超过近期正常波动幅度");
-assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("new_unmapped_code"), "原因说明暂未提供");
+assert.strictEqual(state.pipelineFunnelSummary(stageSnapshots, 3, 2),
+  "荐股链路 5289→4000→4000→390→380→370→370→370→6→6→6 · 正式 3 · 观察 2");
+assert.strictEqual(state.pipelineFunnelSummary([{ state: "not_ready", output_count: 0 }], 0, "已关闭"), null);
+assert(state.inputPipelineDetails(pipelineFixture).includes("模型过滤 380→370"));
+assert(state.decisionPipelineDetails(pipelineFixture).includes("固定评分前六 370→6"));
 assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("<script>alert(1)</script>"), "原因说明暂未提供");
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("decision:tomorrow:immutable"));
-assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="checkpoint_consume"'));
-assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_restore"'));
-assert.strictEqual(
-  state.inputPipelineDetails(pipelineFixture),
-  "输入准备 5289→320〔主要原因 流动性历史待下载/更新4969〕 ｜ 动态过滤 320→196 ｜ 板内总体 196（可靠度0.72–0.99）（仅观察125） ｜ 策略历史 196→195（60–248日） ｜ 模型输入 195→188（完整率84.0%–100.0%） ｜ 候选分 188→134（43.18–82.64，门槛50.00） ｜ 板内限额 134→134 ｜ 定向行情 134→125（年龄1.2–8.6秒） ｜ 输入完整性 行情125/125 · 证券资料125/125 · 历史125/125 ｜ 完整评分 125→110（基础分41.18–67.42）",
-);
-assert.strictEqual(
-  state.pipelineFunnelSummary(
-    Array.from({ length: 14 }, (_value, index) => ({
-      state: "ready",
-      output_count: [5291, 5291, 5291, 4000, 4000, 3600, 3000, 360, 350, 56, 20, 20, 20, 2][index],
-    })),
-    0,
-    2,
-  ),
-  "荐股链路 5291→5291→4000→3600→3000→360→350→56→20→20→20→2 · 正式 0 · 观察 2",
-);
-assert.strictEqual(
-  state.pipelineFunnelSummary(
-    [{ state: "not_ready", pending_count: 12, output_count: 0 }],
-    0,
-    "已关闭",
-  ),
-  null,
-);
-assert.strictEqual(
-  state.decisionPipelineDetails(pipelineFixture),
-  "本地评分 110（39.18–65.42） ｜ DeepSeek 不适用 ｜ 最终评分 110（39.18–65.42）",
-);
+const legacyElements = summaryFixture();
+state.renderObservationStages(legacyElements, [{ stage: "data_source", output_count: 800 }], null, false, []);
+assert(legacyElements.observationStageList.innerHTML.includes("历史记录按原协议只读"));
+state.renderObservationStages(legacyElements, stageSnapshots, pipelineFixture, true, []);
+assert(legacyElements.observationStageList.innerHTML.includes("长期固定观察池不经过"));
 const summaryElements = summaryFixture();
 state.renderSummary(
   summaryElements,
@@ -573,13 +442,6 @@ assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "明 15:00 固化");
 const persistedPipelineElements = summaryFixture();
-pipelineFixture.stage_snapshots = Array.from({ length: 14 }, (_value, index) => ({
-  stage: ["data_source", "static_market", "static_standardize", "static_filter",
-    "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
-    "quality_check", "local_score", "risk_review", "score_merge", "downside_action", "final_selection"][index],
-  state: "ready", input_count: 110, output_count: 110,
-  rejected_count: 0, pending_count: 0, failed_count: 0, latency_ms: 10, reasons: [],
-}));
 state.renderSummary(
   persistedPipelineElements,
   {
@@ -600,11 +462,11 @@ state.renderSummary(
   sandbox.window.TraderRender,
   { scheduler: { input_quality: {} }, deepseek_budget: { limit: 168, used: 0, remaining: 168 } },
 );
-assert.strictEqual(persistedPipelineElements.inputQualityStatus.textContent, "可评分 110 / 输入候选 125");
-assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("输入准备 5289→320"));
-assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("动态过滤 320→196"));
-assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("完整评分 125→110"));
-assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "评分链路已完成");
+assert.strictEqual(persistedPipelineElements.inputQualityStatus.textContent, "已发布轮 · 评分 370");
+assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("本地资料加载 5289"));
+assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("动态过滤 4000→390"));
+assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("模型过滤 380→370"));
+assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "已发布本地结果");
 assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("模型成本门"));
 assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("最终入池"));
 state.renderSummary(
@@ -720,18 +582,9 @@ state.renderSummary(
     },
   },
 );
-assert.strictEqual(summaryElements.inputQualityStatus.textContent, "可评分 56 / 候选 360");
-assert.strictEqual(
-  summaryElements.inputQualityMeta.textContent,
-  "历史 78 / 360 · 21.7% · 证券资料 120 / 360",
-);
-assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 282 只 · 必要资料缺失 240 只");
-assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
-assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完成");
-assert.strictEqual(
-  summaryElements.funnelMeta.textContent,
-  "荐股链路计数待就绪 · 正式 2 · 观察 2",
-);
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "尚无已发布轮");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "尚无已发布轮");
+assert(!summaryElements.funnelMeta.textContent.includes("360"));
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
 assert.strictEqual(summaryElements.budgetMeta.textContent, "已用 / 剩余 · 上限 168 · 复核 0/0");
@@ -766,24 +619,9 @@ state.renderSummary(
     scheduler: { input_quality: {}, lanes: [{ strategy: "tomorrow", running: true, pending: true }] },
   },
 );
-assert.strictEqual(summaryElements.inputQualityStatus.textContent, "数据待就绪");
-assert.strictEqual(
-  summaryElements.inputQualityMeta.textContent,
-  "行情 360 / 360 · 基础资料与历史待就绪",
-);
-assert.strictEqual(summaryElements.funnelStatus.textContent, "等待评分输入");
-assert.strictEqual(
-  summaryElements.funnelStages.textContent,
-  "评分链路尚未开始",
-);
-assert.strictEqual(
-  summaryElements.funnelMeta.textContent,
-  "荐股链路待启动 · 正式 0 · 观察 已关闭",
-);
-assert.strictEqual(
-  summaryElements.inputQualityStages.textContent,
-  "动态过滤 待开始 ｜ 板内总体 — ｜ 策略历史 待开始 ｜ 模型输入 待开始 ｜ 候选分 待开始 ｜ 板内限额 待开始 ｜ 定向行情 360→360 ｜ 输入完整性 行情待确认 · 证券资料待确认 · 历史待确认 ｜ 完整评分 待开始",
-);
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "尚无已发布轮");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "等待本轮发布");
+assert.strictEqual(summaryElements.inputQualityStages.textContent, "运行中输入不与已发布名单拼接");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "采集中");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "等待本轮正式结果");

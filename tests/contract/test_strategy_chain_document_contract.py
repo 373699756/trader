@@ -95,7 +95,6 @@ def test_fixed_scoring_and_freeze_invariants_remain_explicit() -> None:
     content = STRATEGY.read_text(encoding="utf-8")
 
     for invariant in (
-        "candidate_score >= 50",
         "board_data_reliability >= 0.85",
         "local_score = clamp(base_score - local_risk_penalty, 0, 100)",
         "final_score = ROUND_HALF_UP(clamp(base_score - local_risk_penalty, 0, 100), 2)",
@@ -103,8 +102,10 @@ def test_fixed_scoring_and_freeze_invariants_remain_explicit() -> None:
         "deepseek_risk_penalty=0",
         "ROUND_HALF_UP",
         "Tomorrow/D25 15:00",
-        "单一板块最多 `ceil(top_n * 60%)`",
-        "同一行业最多 2 只",
+        "单一板块最多 `ceil(6 * 60%) = 4`",
+        "没有行业名额限制",
+        "没有候选分、50分线、每板120只或360只业务上限",
+        "复核veto、动作变化或封口不从第七名以后递补",
     ):
         assert invariant in content
 

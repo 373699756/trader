@@ -33,7 +33,6 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
     PIPELINE_STAGES,
-    StageState,
 )
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.refresh import (
@@ -160,7 +159,6 @@ def test_loading_local_history_is_pending_without_a_refresh_failure(application_
     adapter = build_cycle_fixture(
         LoadingMarket((application_feature_factory("600001", TEST_NOW),)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
 
@@ -177,7 +175,7 @@ class _RejectingLongRuntime:
 def _decision_build(
     drafts: UnifiedDecisionDraftIndex | None = None,
     *,
-    now=lambda: TEST_NOW,
+    now=lambda: TEST_NOW.replace(hour=9),
     monotonic=None,
 ) -> CycleFixtureDependencies:
     return CycleFixtureDependencies(
@@ -265,7 +263,6 @@ def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_chan
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
 
@@ -293,7 +290,6 @@ def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     _prime_scoring_cache(adapter, observed_at)
@@ -332,7 +328,6 @@ def test_refresh_outcome_normalizes_later_utc_completion_to_shanghai(
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
 
@@ -347,7 +342,6 @@ def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
     adapter = build_cycle_fixture(
         _Market(()),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=CycleFixtureDependencies(
             _RejectingLongRuntime(),
             _policy(),
@@ -369,7 +363,6 @@ def test_production_adapter_rejects_transient_invalid_empty_projection(
     adapter = build_cycle_fixture(
         _Market((stale,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at)
@@ -396,7 +389,6 @@ def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
     adapter = build_cycle_fixture(
         _Market((stale, history_incomplete)),
         config_version="test-config",
-        candidate_pool_size=2,
         decision_build=_decision_build(),
     )
     request = _request(observed_at)
@@ -407,13 +399,12 @@ def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
     with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
         adapter.decisions.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert status.pipeline.stage("candidate_refresh").input_count == 0
+    assert status.pipeline.stage("market_features").input_count == 1
     assert dict(status.population_filter_reason_counts)["stale_quote"] == 1
-    assert status.pipeline.stage("input_readiness").reason_counts[0].reason == "stale_quote"
-    assert status.pipeline.stage("input_readiness").reason_counts[0].count == 1
-    assert status.pipeline.stage("input_readiness").state == "degraded"
-    assert status.pipeline.stage("dynamic_filter").reason_counts == ()
-    assert status.primary_blocker == "market_population_stale"
+    assert status.pipeline.stage("dynamic_filter").reason_counts[0].reason == "stale_quote"
+    assert status.pipeline.stage("dynamic_filter").reason_counts[0].count == 1
+    assert status.pipeline.stage("dynamic_filter").state == "degraded"
+    assert status.primary_blocker == "stale_quote"
 
 
 def test_primary_blocker_reports_dominant_missing_market_liquidity_history(
@@ -429,7 +420,6 @@ def test_primary_blocker_reports_dominant_missing_market_liquidity_history(
     adapter = build_cycle_fixture(
         _Market(tuple(features)),
         config_version="test-config",
-        candidate_pool_size=2,
         decision_build=_decision_build(),
     )
     request = _request(observed_at)
@@ -440,9 +430,9 @@ def test_primary_blocker_reports_dominant_missing_market_liquidity_history(
     with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
         adapter.decisions.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert status.pipeline.stage("candidate_refresh").input_count == 0
+    assert status.pipeline.stage("market_features").input_count == 0
     assert dict(status.population_filter_reason_counts)["missing_liquidity_history"] == 2
-    assert status.primary_blocker == "market_liquidity_history_unavailable"
+    assert status.primary_blocker == "missing_liquidity_history"
 
 
 def test_production_adapter_preserves_publishable_business_empty_projection(
@@ -454,7 +444,6 @@ def test_production_adapter_preserves_publishable_business_empty_projection(
     adapter = build_cycle_fixture(
         _Market((blocked,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -493,7 +482,6 @@ def test_invalid_candidate_refresh_cannot_replace_the_previous_valid_projection(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(drafts, now=lambda: observed_at),
     )
     request = _request(observed_at, strategy=strategy, phase=phase)
@@ -530,7 +518,6 @@ def test_invalid_market_input_does_not_block_another_eligible_stock(application_
     adapter = build_cycle_fixture(
         _Market((complete, invalid)),
         config_version="test-config",
-        candidate_pool_size=2,
         decision_build=_decision_build(now=lambda: observed_at),
     )
     request = _request(observed_at, strategy=strategy, phase="afternoon")
@@ -562,7 +549,6 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
     adapter = build_cycle_fixture(
         _Market(features),
         config_version="test-config",
-        candidate_pool_size=2,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
@@ -624,7 +610,6 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(now=lambda: observed_at),
     )
     source = decision(Strategy.TOMORROW)
@@ -665,7 +650,6 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
     assert market.candidate_reads == []
     assert {quote.code: quote.data_version for quote in overlay.quotes} == {
         "600001": feature.quote.data_version,
-        "600002": visible_unselected_feature.quote.data_version,
     }
 
 
@@ -679,7 +663,6 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(monotonic=lambda: next(ticks)),
     )
 
@@ -689,18 +672,14 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     assert {status.strategy for status in statuses} == {Strategy.TOMORROW, Strategy.D25}
     assert all(status.status == "not_ready" for status in statuses)
     assert all(status.primary_blocker == "candidate_quotes_pending" for status in statuses)
-    assert all(status.pipeline.stage("candidate_refresh").input_count == 1 for status in statuses)
-    assert all(status.pipeline.stage("candidate_refresh").output_count is None for status in statuses)
-    assert all(status.pipeline.stage("candidate_refresh").state == "running" for status in statuses)
-    assert all(status.pipeline.stage("input_coverage").state == "pending" for status in statuses)
+    assert all(status.pipeline.stage("market_features").input_count == 1 for status in statuses)
+    assert all(status.pipeline.stage("market_features").output_count == 0 for status in statuses)
+    assert all(status.pipeline.stage("market_features").pending_count == 1 for status in statuses)
     assert all(tuple(stage.stage for stage in status.stage_snapshots) == PIPELINE_STAGES for status in statuses)
-    assert all(status.stage_snapshots[9].state is StageState.NOT_READY for status in statuses)
-    assert all(status.stage_snapshots[-1].stage.value == "final_selection" for status in statuses)
-    assert all(
-        tuple(stage.latency_ms for stage in status.stage_snapshots[:4]) == (11, 12, 13, 14) for status in statuses
-    )
+    assert all(status.stage_snapshots[-1].stage.value == "action_publish" for status in statuses)
+    assert all(tuple(stage.latency_ms for stage in status.stage_snapshots[:2]) == (11, 12) for status in statuses)
     assert all(status.stage_snapshots[0].input_batch_id == "observed-static-fixture" for status in statuses)
-    assert all(all(stage.latency_ms > 0 for stage in status.stage_snapshots[4:9]) for status in statuses)
+    assert all(status.stage_snapshots[5].latency_ms is None for status in statuses)
     assert all(
         all(
             left.output_batch_id == right.input_batch_id and left.output_count == right.input_count
@@ -734,7 +713,6 @@ def test_production_adapter_rejects_vendor_future_time_without_local_observation
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
@@ -776,7 +754,6 @@ def test_production_adapter_publishes_eligible_scores_with_partial_history_cover
     adapter = build_cycle_fixture(
         _Market((complete, incomplete)),
         config_version="test-config",
-        candidate_pool_size=2,
         decision_build=_decision_build(drafts),
     )
     request = _request(observed_at, phase="afternoon")
@@ -809,7 +786,6 @@ def test_production_adapter_does_not_publish_business_empty_when_all_candidate_h
     adapter = build_cycle_fixture(
         _Market((incomplete,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -823,12 +799,12 @@ def test_production_adapter_does_not_publish_business_empty_when_all_candidate_h
     assert status.candidate_scored_count == 0
     assert status.status == "transient_invalid_empty"
     assert status.publishable is False
-    assert status.primary_blocker == "strategy_history_unavailable"
-    quality_stage = status.stage_snapshots[8]
-    scoring_stage = status.stage_snapshots[9]
-    assert quality_stage.input_count == status.pipeline.stage("board_limit").output_count
+    assert status.primary_blocker == "strategy_history_insufficient"
+    quality_stage = next(item for item in status.stage_snapshots if item.stage.value == "market_features")
+    scoring_stage = next(item for item in status.stage_snapshots if item.stage.value == "local_score")
+    assert quality_stage.input_count == status.pipeline.stage("dynamic_filter").output_count
     assert (scoring_stage.input_count, scoring_stage.output_count) == (0, 0)
-    assert scoring_stage.state is StageState.NOT_READY
+    assert scoring_stage.output_count == 0
 
 
 def test_production_adapter_rejects_candidate_security_identity_degradation(
@@ -847,7 +823,6 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     adapter = build_cycle_fixture(
         _Market((degraded,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -863,8 +838,8 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     assert status.security_master_covered_count == 0
     assert status.security_master_coverage_ratio == 0.0
     assert "security_master_coverage_incomplete" in status.degraded_reasons
-    assert status.pipeline.stage("candidate_refresh").input_count == 1
-    assert _pipeline_facet(status, "input_coverage", "security_master") == 0
+    assert status.pipeline.stage("market_features").input_count == 1
+    assert _pipeline_facet(status, "market_features", "security_master") == 0
     assert status.primary_blocker == "security_master_coverage_incomplete"
     assert status.summary.quote_total_count == 1
     assert status.summary.trade_date == observed_at.date()
@@ -873,8 +848,7 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     assert status.summary.security_identity_missing_count == 1
     assert status.summary.latest_quote_source == degraded.quote.source
     assert status.summary.latest_quote_source_time == degraded.quote.source_time
-    assert status.summary.highest_final_score is not None
-    assert 0.0 <= status.summary.highest_final_score <= 100.0
+    assert status.summary.highest_final_score is None
 
 
 def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage(
@@ -895,7 +869,6 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     adapter = build_cycle_fixture(
         _Market(features),
         config_version="test-config",
-        candidate_pool_size=100,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -909,10 +882,10 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     assert status.history_covered_count == 99
     assert status.history_coverage_ratio == 0.99
     assert status.publishable is True
-    assert status.pipeline.stage("strategy_history").output_count == 99
-    assert status.pipeline.stage("input_readiness").output_count == 100
+    assert status.pipeline.stage("market_features").output_count == 99
+    assert status.pipeline.stage("local_data").output_count == 100
     assert status.pipeline.stage("dynamic_filter").output_count == 100
-    assert _pipeline_facet(status, "board_cross_section", "filter_reject") == 0
+    assert status.pipeline.stage("dynamic_filter").rejected_count == 0
 
 
 def test_production_adapter_rejects_partial_candidate_feature_response(
@@ -934,7 +907,6 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
     adapter = build_cycle_fixture(
         PartialCandidateMarket(features),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -948,9 +920,9 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
     assert status.candidate_count == 2
     assert status.candidate_feature_count == 1
     assert status.candidate_feature_coverage_ratio == 0.5
-    assert status.pipeline.stage("candidate_refresh").input_count == 2
-    assert _pipeline_facet(status, "input_coverage", "candidate_features") == 1
-    assert status.primary_blocker == "candidate_feature_coverage_incomplete"
+    assert status.pipeline.stage("market_features").input_count == 2
+    assert _pipeline_facet(status, "market_features", "candidate_features") == 1
+    assert status.primary_blocker == "candidate_quotes_pending"
     assert status.summary.quote_total_count == 2
     assert status.summary.quote_covered_count == 1
     assert status.summary.quote_missing_count == 1
@@ -971,7 +943,6 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(now=lambda: observed_at),
     )
     requests = tuple(
@@ -1028,7 +999,6 @@ def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_c
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -1063,9 +1033,7 @@ def test_intraday_changes_invalidate_scoring_only_for_content_or_qualification(a
             )
 
     market = MinuteMarket((application_feature_factory("600001", observed_at),))
-    adapter = build_cycle_fixture(
-        market, config_version="fixture", candidate_pool_size=120, decision_build=_decision_build()
-    )
+    adapter = build_cycle_fixture(market, config_version="test-config", decision_build=_decision_build())
     _prime_scoring_cache(adapter, observed_at)
     first = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, observed_at))
     assert first.changed and first.changed_codes == ("600001",)
@@ -1108,7 +1076,6 @@ def test_completed_immutable_input_remains_scoreable_after_a_new_quote_epoch(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, strategy=Strategy.D25, phase="afternoon")
@@ -1142,7 +1109,6 @@ def test_topk_refresh_reuses_returned_features_without_a_second_feature_read(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
 
@@ -1187,7 +1153,6 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     requests = tuple(
@@ -1220,7 +1185,6 @@ def test_decision_time_does_not_trust_a_future_vendor_source_time(
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(requested_at, phase="morning")
@@ -1232,7 +1196,7 @@ def test_decision_time_does_not_trust_a_future_vendor_source_time(
         adapter.decisions.build_local(request)
 
 
-def test_candidate_pool_limit_is_applied_per_supported_board(
+def test_complete_population_is_requested_for_each_supported_board(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1253,17 +1217,16 @@ def test_candidate_pool_limit_is_applied_per_supported_board(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
 
     _prime_scoring_cache(adapter, observed_at)
 
-    assert len(market.requested_codes) == 3
+    assert len(market.requested_codes) == 6
     assert {code[:3] for code in market.requested_codes} == {"600", "300", "688"}
 
 
-def test_candidate_qualification_precedes_board_limit_and_failed_quote_promotes_next_reserve(
+def test_qualification_precedes_one_complete_quote_request_without_refill(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1319,20 +1282,18 @@ def test_candidate_qualification_precedes_board_limit_and_failed_quote_promotes_
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(now=lambda: observed_at),
     )
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
-    assert market.candidate_requests == [("600002",), ("600003",)]
+    assert market.candidate_requests == [("600002", "600003")]
     statuses = {item.strategy: item for item in adapter.data.input_quality_status()}
-    assert all(item.pipeline.stage("board_limit").output_count == 1 for item in statuses.values())
-    assert all(item.pipeline.stage("candidate_refresh").output_count == 1 for item in statuses.values())
+    assert all(item.pipeline.stage("market_features").pending_count == 2 for item in statuses.values())
 
 
-def test_rank_one_quote_failure_promotes_exactly_rank_121_without_duplicate_requests(
+def test_all_121_inputs_are_requested_once_even_when_first_quote_fails(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1361,21 +1322,16 @@ def test_rank_one_quote_failure_promotes_exactly_rank_121_without_duplicate_requ
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=120,
         decision_build=_decision_build(now=lambda: observed_at),
     )
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
-    assert market.candidate_requests[0] == tuple(f"600{index:03d}" for index in range(120))
-    assert market.candidate_requests[1] == ("600120",)
+    assert market.candidate_requests == [tuple(f"600{index:03d}" for index in range(121))]
     assert len(tuple(code for wave in market.candidate_requests for code in wave)) == 121
     assert len(set(code for wave in market.candidate_requests for code in wave)) == 121
-    assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == (
-        *(f"600{index:03d}" for index in range(1, 120)),
-        "600120",
-    )
+    assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == tuple(f"600{index:03d}" for index in range(121))
 
 
 @pytest.mark.parametrize("quote_age", [0, 31])
@@ -1406,7 +1362,6 @@ def test_candidate_refresh_keeps_population_watermark_but_checks_raw_quote_age(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=120,
         decision_build=_decision_build(now=lambda: refresh_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -1414,7 +1369,9 @@ def test_candidate_refresh_keeps_population_watermark_but_checks_raw_quote_age(
     assert original is not None and original.physical_union()
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, refresh_at))
     statuses = adapter.data.input_quality_status()
-    assert all(item.candidate_feature_count == (120 if quote_age == 0 else 0) for item in statuses)
+    assert all(
+        item.pipeline.stage("market_features").output_count == (121 if quote_age == 0 else 0) for item in statuses
+    )
     assert adapter.data._candidate_plans.population_evaluated_at == observed_at
     assert all("stale_quote" not in plan.population_filter_reason_counts for plan in original.plans.values())
 
@@ -1451,7 +1408,6 @@ def test_candidate_refresh_checks_quotes_at_receipt_time_without_accepting_futur
     adapter = build_cycle_fixture(
         LaterCandidateMarket((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(now=lambda: current_time[0]),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, requested_at))
@@ -1461,8 +1417,8 @@ def test_candidate_refresh_checks_quotes_at_receipt_time_without_accepting_futur
     assert outcome.completed_at == received_at
     assert adapter.data._candidate_plans.population_evaluated_at == requested_at
     for status in statuses:
-        candidate = next(stage for stage in status.stage_snapshots if stage.stage.value == "candidate_pool")
-        quality = next(stage for stage in status.stage_snapshots if stage.stage.value == "quality_check")
+        candidate = next(stage for stage in status.stage_snapshots if stage.stage.value == "market_features")
+        quality = next(stage for stage in status.stage_snapshots if stage.stage.value == "market_features")
         if source_delay_seconds == 5:
             assert candidate.output_count == 1
             assert quality.output_count == 1
@@ -1470,7 +1426,7 @@ def test_candidate_refresh_checks_quotes_at_receipt_time_without_accepting_futur
         else:
             assert candidate.output_count == 0
             assert candidate.pending_count == 1
-            assert any(reason.code == "refresh_pending" for reason in candidate.reasons)
+            assert any(reason.code == "future_quote" for reason in candidate.reasons)
 
 
 def test_candidate_refresh_retains_unrequested_history_pending_reasons(application_feature_factory) -> None:
@@ -1480,21 +1436,20 @@ def test_candidate_refresh_retains_unrequested_history_pending_reasons(applicati
     adapter = build_cycle_fixture(
         _Market((ready, short)),
         config_version="test-config",
-        candidate_pool_size=2,
         decision_build=_decision_build(now=lambda: observed_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
     for status in adapter.data.input_quality_status():
-        stage = next(item for item in status.stage_snapshots if item.stage.value == "candidate_pool")
+        stage = next(item for item in status.stage_snapshots if item.stage.value == "market_features")
         assert stage.input_count == 2
         assert stage.output_count == 1
         assert stage.pending_count == 1
         assert any(reason.code == "strategy_history_insufficient" and reason.count == 1 for reason in stage.reasons)
 
 
-def test_deadline_stops_refill_and_preserves_the_last_complete_candidate_batch(
+def test_deadline_stops_refresh_and_preserves_the_last_complete_candidate_batch(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1528,7 +1483,6 @@ def test_deadline_stops_refill_and_preserves_the_last_complete_candidate_batch(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=120,
         decision_build=_decision_build(now=lambda: current_time[0]),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -1573,7 +1527,6 @@ def test_candidate_quote_exhaustion_is_reported_as_transient_empty(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -1582,10 +1535,10 @@ def test_candidate_quote_exhaustion_is_reported_as_transient_empty(
 
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
+    with pytest.raises(DecisionUnavailableError, match="not_ready"):
         adapter.decisions.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert status.status == "transient_invalid_empty"
+    assert status.status == "not_ready"
     assert status.publishable is False
 
 
@@ -1634,7 +1587,6 @@ def test_unrequested_vendor_candidate_is_discarded_before_scoring(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="morning")
@@ -1649,7 +1601,7 @@ def test_unrequested_vendor_candidate_is_discarded_before_scoring(
     assert all(item.code != "600999" for item in built.items)
 
 
-def test_stale_candidate_quote_promotes_next_same_board_reserve(
+def test_stale_candidate_quote_stays_pending_without_a_replacement(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1716,15 +1668,14 @@ def test_stale_candidate_quote_promotes_next_same_board_reserve(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(now=lambda: observed_at),
     )
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
-    assert market.candidate_requests == [("600002",), ("600003",), ("600004",)]
-    assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == ("600004",)
+    assert market.candidate_requests == [("600002", "600003", "600004")]
+    assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == ("600002", "600003", "600004")
 
 
 def test_two_strategy_candidate_windows_share_deduplicated_quote_io(
@@ -1777,7 +1728,6 @@ def test_two_strategy_candidate_windows_share_deduplicated_quote_io(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
 
@@ -1788,15 +1738,15 @@ def test_two_strategy_candidate_windows_share_deduplicated_quote_io(
     for request in requests:
         adapter.data.refresh(request)
 
-    assert set(market.candidate_requests[0]) == {"600002"}
-    requested_by_strategy = {request[0][0] for request in market.candidate_reads if request[0]}
-    assert requested_by_strategy == {"600002"}
-    assert any(codes == ("600002",) for codes, _tail, _research in market.candidate_reads)
+    assert set(market.candidate_requests[0]) == {"600001", "600002"}
+    requested_by_strategy = {code for request in market.candidate_reads for code in request[0]}
+    assert requested_by_strategy == {"600001", "600002"}
+    assert any(codes == ("600001", "600002") for codes, _tail, _research in market.candidate_reads)
     batches = {
         request.strategy: adapter.data._batches[(request.strategy, request.input_version)] for request in requests
     }
-    assert batches[Strategy.TOMORROW].requested_codes == ("600002",)
-    assert batches[Strategy.D25].requested_codes == ("600002",)
+    assert batches[Strategy.TOMORROW].requested_codes == ("600001", "600002")
+    assert batches[Strategy.D25].requested_codes == ("600001", "600002")
     assert all(
         {feature.quote.code for feature in batch.candidate_features} <= set(batch.requested_codes)
         for batch in batches.values()
@@ -1825,7 +1775,6 @@ def test_reference_refresh_scheduling_failure_does_not_block_local_decision(
     adapter = build_cycle_fixture(
         ReferenceFailureMarket((blocked,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -1870,7 +1819,6 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=2,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="afternoon")
@@ -1886,11 +1834,11 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     assert decision.pipeline is not None
     assert decision.pipeline == status.pipeline
     assert len(decision.pipeline.stages) == len(PIPELINE_STAGE_ORDER)
-    assert _pipeline_facet(status, "action_gate", "observation_threshold_met") == sum(
-        item.final_score >= diagnostics.observation_floor for item in decision.items
+    assert _pipeline_facet(status, "action_publish", "action_observe") == sum(
+        item.action.value == "observe" for item in decision.items
     )
-    assert _pipeline_facet(status, "action_gate", "executable_threshold_met") == sum(
-        item.final_score >= diagnostics.executable_threshold for item in decision.items
+    assert _pipeline_facet(status, "action_publish", "action_executable") == sum(
+        item.action.value == "executable" for item in decision.items
     )
     intent = adapter.decisions.research_intent(decision)
     assert intent.priority_codes == tuple(item.code for item in decision.items)
@@ -1913,7 +1861,6 @@ def test_close_fallback_can_use_sealed_market_quotes_before_candidate_refresh(ap
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(now=lambda: observed_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, observed_at))
@@ -1940,7 +1887,6 @@ def test_candidate_refresh_rejects_results_from_a_superseded_observed_population
     adapter = build_cycle_fixture(
         SupersedingMarket((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(now=lambda: observed_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -1971,7 +1917,6 @@ def test_unexpected_shared_input_failure_releases_single_flight_owner(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=_decision_build(),
     )
     request = _request(observed_at, phase="morning")

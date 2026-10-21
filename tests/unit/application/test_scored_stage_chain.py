@@ -39,8 +39,103 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
     ValidateStageBatchContinuity,
 )
-from trader.recommendation.domain.evidence.review import ReviewOutcome
+from trader.recommendation.domain.evidence.review import ReviewOutcome, RiskFact, RiskRule
+from trader.recommendation.domain.market.models import Board, Evidence
+from trader.recommendation.domain.publication.decision_identity import FormalScoredDecision, VisibleScoredSeats
 from trader.recommendation.domain.publication.models import Strategy
+
+
+@pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
+def test_full_population_places_former_121st_input_third_and_veto_never_refills(
+    application_feature_factory, native_type
+):
+    policy = _policy()
+    strategy = native_type.strategy
+    weights = {
+        board: {name: float(name == "entry_quality") for name in policy.board_local_strategy_weights[strategy][board]}
+        for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
+    }
+    policy = replace(
+        policy,
+        board_local_strategy_weights={**policy.board_local_strategy_weights, strategy: weights},
+        risk_rules={
+            "regulatory_risk": RiskRule(
+                "regulatory_risk",
+                "high",
+                0.0,
+                0.7,
+                "deepseek",
+                evidence_ttl_hours=24,
+                veto=True,
+                allowed_evidence_types=("regulatory_filing",),
+                local_trigger_enabled=False,
+            )
+        },
+    )
+    evidence = Evidence(
+        "official-risk",
+        "regulatory_filing",
+        "官方风险公告",
+        "exchange",
+        EVALUATED_AT - timedelta(hours=1),
+        received_at=EVALUATED_AT - timedelta(minutes=30),
+        data_version="research:full",
+    )
+    features = []
+    scores = {"600000": 81.0, "600001": 80.0, "600120": 79.0, "600002": 78.0, "300000": 77.0, "688000": 76.0}
+    for prefix, board in (("600", Board.MAIN), ("300", Board.CHINEXT), ("688", Board.STAR)):
+        for index in range(130):
+            code = f"{prefix}{index:03d}"
+            feature = _verified_feature(application_feature_factory(code, EVALUATED_AT - timedelta(seconds=10)))
+            features.append(
+                replace(
+                    feature,
+                    quote=replace(feature.quote, board=board, industry="同一行业"),
+                    values={**feature.values, "entry_quality": scores.get(code, 10.0)},
+                    evidence=(evidence,),
+                )
+            )
+    projection = BuildScoredLocal(_native_input(tuple(reversed(features)), native_type), policy, sequence=1)
+    assert len(projection.selection.scored_candidates) == 390
+    assert projection.stages.local_risk.snapshot.output_count == 390
+    assert projection.stages.fixed_selection.snapshot.not_selected_count == 384
+    expected = ("600000", "600001", "600120", "600002", "300000", "688000")
+    assert tuple(item.code for item in VisibleScoredSeats(projection.local)) == expected
+    assert tuple(item.local_score for item in VisibleScoredSeats(projection.local)) == (81, 80, 79, 78, 77, 76)
+    assert "600120" in {item.code for item in projection.review_candidates}
+    fact = RiskFact(
+        "risk:official",
+        "regulatory_risk",
+        "high",
+        0.0,
+        "deepseek",
+        EVALUATED_AT,
+        confidence=1.0,
+        evidence_ids=("official-risk",),
+        veto=True,
+    )
+    reviewed = replace(review("600120", 100), completed_at=EVALUATED_AT, risk_facts=(fact,))
+    hybrid = BuildScoredHybrid(
+        projection, policy, {"600120": reviewed}, review_deadline=EVALUATED_AT + timedelta(minutes=1)
+    )
+    assert hybrid is not None and hybrid.decision is not None
+    assert hybrid.stages.fixed_selection is projection.stages.fixed_selection
+    assert tuple(item.code for item in VisibleScoredSeats(hybrid.decision)) == expected
+    assert tuple(item.code for item in VisibleScoredSeats(FormalScoredDecision(hybrid.decision))) == expected
+    vetoed = next(item for item in hybrid.decision.items if item.code == "600120")
+    assert vetoed.action.value == "unavailable" and vetoed.selected and vetoed.rank == 3
+    assert vetoed.final_score == vetoed.local_score == 79.0
+    review_counts = {reason.code: reason.count for reason in hybrid.stages.risk_review.snapshot.reasons}
+    assert review_counts["deepseek_completed"] == 1
+    assert review_counts.get("deepseek_source_failed", 0) == len(projection.review_candidates) - 1
+    for stage in hybrid.stages.snapshots:
+        assert stage.input_count == (
+            stage.output_count
+            + stage.rejected_count
+            + stage.pending_count
+            + stage.failed_count
+            + stage.not_selected_count
+        )
 
 
 def _features(factory):
@@ -63,8 +158,8 @@ def test_real_scored_handoffs_measure_operations_and_match_selected_decision(app
     )
     stages = projection.stages
     assert features == before
-    assert stages.local_score.records == projection.selection.scored_candidates
-    assert tuple(item.code for item in stages.final_selection.records) == tuple(
+    assert stages.local_risk.records == projection.selection.scored_candidates
+    assert tuple(item.code for item in stages.action_publish.records) == tuple(
         item.code for item in sorted(projection.local.items, key=lambda item: item.rank) if item.selected
     )
     assert all(snapshot.latency_ms == 1000 for snapshot in stages.snapshots)
@@ -72,18 +167,23 @@ def test_real_scored_handoffs_measure_operations_and_match_selected_decision(app
     assert all(
         output.business_rejections is None
         for output in (
+            stages.model_filter,
             stages.local_score,
+            stages.local_risk,
+            stages.fixed_selection,
             stages.risk_review,
-            stages.score_merge,
-            stages.downside_action,
-            stages.final_selection,
+            stages.action_publish,
         )
     )
     assert all(
         left.output_batch_id == right.input_batch_id and left.output_count == right.input_count
         for left, right in zip(stages.snapshots, stages.snapshots[1:], strict=False)
     )
-    assert all(item.score.local_score == item.evaluation.local_score for item in stages.score_merge.records)
+    assert all(
+        item.score.local_score
+        == next(row.local_score for row in stages.fixed_selection.records if row.code == item.code)
+        for item in stages.action_publish.records
+    )
 
 
 def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(application_feature_factory):
@@ -110,9 +210,10 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
     assert result is not None and result.decision is not None
     assert result.stages.local_score is local.stages.local_score
     assert result.stages.risk_review.snapshot.latency_ms == 1073
-    assert all(snapshot.latency_ms == 1000 for snapshot in result.stages.snapshots[2:])
+    assert result.stages.fixed_selection is local.stages.fixed_selection
+    assert result.stages.action_publish.snapshot.latency_ms == 1000
     assert result.stages.risk_review.snapshot.output_batch_id != local.stages.risk_review.snapshot.output_batch_id
-    assert tuple(item.code for item in result.stages.final_selection.records) == tuple(
+    assert tuple(item.code for item in result.stages.action_publish.records) == tuple(
         item.code for item in sorted(result.decision.items, key=lambda item: item.rank) if item.selected
     )
     assert result.decision.parent_version == local.local.version
@@ -150,27 +251,28 @@ def test_unusable_reviews_leave_real_degraded_observation_without_new_decision(a
         else "deepseek_late"
     )
     assert expected in {reason.code for reason in snapshot.reasons}
-    assert snapshot.output_count == local.stages.local_score.snapshot.output_count
+    assert snapshot.output_count == local.stages.fixed_selection.snapshot.output_count
     assert snapshot.rejected_count == snapshot.failed_count == 0
     assert snapshot.latency_ms >= 73
-    assert all(not item.score.fusion_applied for item in result.stages.score_merge.records)
+    assert all(not item.score.fusion_applied for item in result.stages.action_publish.records)
     assert tuple(item.score.final_score for item in result.stages.entries) == tuple(
         item.score.final_score for item in local.stages.entries
     )
 
 
-def test_non_positive_model_utility_preserves_scores_and_leaves_action_output_empty(application_feature_factory):
+def test_non_positive_model_utility_skips_local_scoring_and_leaves_seats_empty(application_feature_factory):
     local = BuildScoredLocal(
         _native_input(_features(application_feature_factory)),
         _policy(),
         sequence=1,
         runtime=ScoredProjectionInputs(model_scoring=_router(_NonPositiveProductionPredictor())),
     )
-    assert local.stages.local_score.records
-    assert local.stages.downside_action.records == local.stages.final_selection.records == ()
+    assert local.stages.local_score.records == ()
+    assert local.stages.fixed_selection.records == local.stages.action_publish.records == ()
     assert not any(item.selected for item in local.local.items)
-    assert "model_net_utility_non_positive" in {reason.code for reason in local.stages.downside_action.snapshot.reasons}
-    assert all(snapshot.rejected_count == 0 for snapshot in local.stages.snapshots)
+    assert "model_net_utility_non_positive" in {reason.code for reason in local.stages.model_filter.snapshot.reasons}
+    assert local.stages.model_filter.snapshot.rejected_count == 100
+    assert all(snapshot.rejected_count == 0 for snapshot in local.stages.snapshots[1:])
 
 
 class _FailedReviewer:
@@ -211,7 +313,6 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     adapter = build_cycle_fixture(
         _Market(_features(application_feature_factory)),
         config_version="fixture",
-        candidate_pool_size=120,
         decision_build=_decision_build(now=lambda: EVALUATED_AT),
     )
     request = _request(EVALUATED_AT, phase="afternoon")
@@ -241,9 +342,15 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
         "manifest_exception": "deepseek_manifest_validation_failed",
         "time": "deepseek_review_time_invalid",
     }[failure]
-    assert expected in {reason.code for reason in status.stage_snapshots[10].reasons}
+    assert expected in {
+        reason.code
+        for reason in next(stage for stage in status.stage_snapshots if stage.stage.value == "risk_review").reasons
+    }
     if after_deadline:
-        assert "deepseek_late" in {reason.code for reason in status.stage_snapshots[10].reasons}
+        assert "deepseek_late" in {
+            reason.code
+            for reason in next(stage for stage in status.stage_snapshots if stage.stage.value == "risk_review").reasons
+        }
     assert status.summary.highest_final_score == max(item.final_score for item in local.items)
     assert adapter.decisions.projection(local.version) is projection
 
@@ -267,7 +374,6 @@ def test_review_writes_require_current_parent_input_session_and_open_day(
     adapter = build_cycle_fixture(
         _Market(_features(application_feature_factory)),
         config_version="fixture",
-        candidate_pool_size=120,
         decision_build=_decision_build(now=lambda: clock[0]),
     )
     request = _request(EVALUATED_AT, phase="afternoon")
@@ -344,7 +450,6 @@ def test_local_diagnostics_cannot_commit_after_inputs_advance_during_scoring(app
     adapter = build_cycle_fixture(
         _Market(_features(application_feature_factory)),
         config_version="fixture",
-        candidate_pool_size=120,
         decision_build=_decision_build(now=lambda: EVALUATED_AT),
     )
     request = _request(EVALUATED_AT, phase="afternoon")

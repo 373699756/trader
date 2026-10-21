@@ -22,6 +22,7 @@ from trader.recommendation.application.pipeline.final_selection.grouped_ranking 
 )
 from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import (
     CompleteScoredStages,
+    FixScoredSeats,
     ReasonAggregates,
     ScoredStageChain,
     ScoredStageContext,
@@ -78,7 +79,7 @@ from trader.recommendation.domain.risk.scored_fusion import (
     ScoredReviewCandidate,
     SelectScoredReviewCandidates,
 )
-from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.selection.scored_selection import ApplySelectionRisks, ScoredCandidateStageCounts
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class ScoredLocalProjection:
     model_diagnostics: tuple[tuple[str, ModelDiagnostics], ...] = ()
     downside_assessments: tuple[tuple[str, DownsideAssessment], ...] = ()
     cost_reference_version: str | None = None
+    started_monotonic: float | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +206,38 @@ def BuildScoredLocal(
         if model_scoring is not None and uses_model
         else None
     )
+    model_reasons = _model_execution_gate_reasons(model_batch, strategy)
+    quality_codes = frozenset(item.quote.code for item in quality_batch.output.records)
+    missing_model_codes = frozenset(
+        feature.quote.code
+        for feature in quality_batch.output.records
+        if uses_model and (model_batch is None or feature.quote.code not in model_batch.diagnostics)
+    )
+    model_records = tuple(
+        feature
+        for feature in quality_batch.output.records
+        if feature.quote.code not in model_reasons and feature.quote.code not in missing_model_codes
+    )
+    model_stage = MeasuredOutput(
+        StageOutput(
+            PipelineStage.MODEL_FILTER,
+            model_records,
+            input_batch_id=quality_batch.output.snapshot.output_batch_id,
+            as_of=native_input.evaluated_at,
+            input_count=len(quality_batch.output.records),
+            rejected_count=len(model_reasons),
+            pending_count=len(missing_model_codes),
+            reasons=ReasonAggregates(
+                Counter(model_reasons.values())
+                + Counter({"production_model_features_missing": len(missing_model_codes)})
+            ),
+            source_health=quality_batch.output.snapshot.source_health,
+            latency_ms=0,
+        ),
+        started,
+        runtime.monotonic,
+    )
+    started = runtime.monotonic()
     selection = ranking_selection.select(
         population,
         policy,
@@ -220,14 +254,41 @@ def BuildScoredLocal(
             strategy=strategy,
             minimum_history_sessions=minimum_history_sessions,
             model_input_eligible_codes=profile_history_qualified_codes,
-            candidate_limit_per_board=native_input.candidate_pool_size,
         ),
         ScoredSelectionIdentity(
             trade_date=native_input.trade_date,
             data_version=native_input.data_version,
             merge_epoch=native_input.input_version,
         ),
-        execution_gate_reasons=_model_execution_gate_reasons(model_batch, strategy),
+        execution_gate_reasons={
+            **{
+                feature.quote.code: "input_quality_pending"
+                for feature in native_input.candidate_features
+                if feature.quote.code not in quality_codes
+            },
+            **model_reasons,
+            **{code: "production_model_features_missing" for code in missing_model_codes},
+        },
+    )
+    scored_stage = _local_score_stage(
+        model_stage, selection, runtime.monotonic, started, f"{native_input.input_version}:{sequence}"
+    )
+    started = runtime.monotonic()
+    selection = ApplySelectionRisks(
+        selection, policy.risk_rules, policy.fusion.local_risk_cap, native_input.evaluated_at, strategy
+    )
+    risk_stage = MeasuredOutput(
+        StageOutput(
+            PipelineStage.LOCAL_RISK,
+            selection.scored_candidates,
+            input_batch_id=scored_stage.snapshot.output_batch_id,
+            as_of=native_input.evaluated_at,
+            input_count=len(scored_stage.records),
+            source_health=scored_stage.snapshot.source_health,
+            latency_ms=0,
+        ),
+        started,
+        runtime.monotonic,
     )
     quality = AssessScoredInputQuality(
         native_input,
@@ -239,10 +300,8 @@ def BuildScoredLocal(
             preselection_transient_invalid=runtime.preselection_transient_invalid,
         ),
     )
-    candidates = SelectScoredReviewCandidates(selection, decision_policy)
-    scored_stage = _local_score_stage(
-        quality_batch.output, selection, runtime.monotonic, started, f"{native_input.input_version}:{sequence}"
-    )
+    fixed = FixScoredSeats(risk_stage, decision_policy, native_input.evaluated_at, runtime.monotonic)
+    candidates = SelectScoredReviewCandidates(fixed.records, decision_policy)
     input_version = native_input.input_version
     decision_request = ScoredDecisionRequest(
         selection=selection,
@@ -263,9 +322,16 @@ def BuildScoredLocal(
         policy=decision_policy,
     )
     stages = CompleteScoredStages(
+        model_stage,
         scored_stage,
+        risk_stage,
         ScoredStageContext(
-            decision_policy, native_input.evaluated_at, decision_request.review_candidate_codes, (), f"local:{sequence}"
+            decision_policy,
+            native_input.evaluated_at,
+            decision_request.review_candidate_codes,
+            (),
+            f"local:{sequence}",
+            fixed,
         ),
         runtime.monotonic,
     )
@@ -325,7 +391,9 @@ def _local_score_stage(
             input_count=len(source.records),
             reasons=ReasonAggregates(reasons),
             pending_count=sum(
-                count for reason, count in reasons.items() if reason == "production_model_features_missing"
+                count
+                for reason, count in reasons.items()
+                if reason in {"production_model_features_missing", "strategy_history_insufficient"}
             ),
             source_health=source.snapshot.source_health,
             latency_ms=0,
@@ -409,17 +477,20 @@ def BuildScoredHybrid(
         )
     )
     stages = CompleteScoredStages(
+        projection.stages.model_filter,
         projection.stages.local_score,
+        projection.stages.local_risk,
         ScoredStageContext(
             decision_policy,
             observed_at,
             tuple(item.code for item in projection.review_candidates),
             tuple(normalized.values()),
             f"review:{projection.local.sequence + 1}",
+            projection.stages.fixed_selection,
+            review_latency_ms=review_latency_ms,
+            review_attempted=True,
         ),
         monotonic,
-        review_latency_ms=review_latency_ms,
-        review_attempted=True,
     )
     if not usable:
         return ScoredReviewProjection(None, stages)
@@ -462,7 +533,7 @@ def BuildScoredHybrid(
             cost_reference_version=projection.cost_reference_version,
         ),
     )
-    return ScoredReviewProjection(decision, stages)
+    return ScoredReviewProjection(replace(decision, input_versions=projection.local.input_versions), stages)
 
 
 def _scored_decision(
@@ -583,7 +654,9 @@ def _selection_diagnostics(
     maximum_final_score = max((item.score.final_score for item in epoch.entries), default=None)
     observation_floor = max(0.0, policy.executable_threshold - policy.observation_margin)
     empty_reason = None
-    if not epoch.entries:
+    if _has_no_positive_model_utility(epoch, context):
+        empty_reason = "no_positive_net_utility"
+    elif not epoch.entries:
         empty_reason = "no_scored_candidates"
     elif not selected:
         if _has_no_positive_model_utility(epoch, context):
@@ -602,7 +675,7 @@ def _selection_diagnostics(
         selected_observation_count=sum(item.action is RecommendationAction.OBSERVE for item in selected),
         review_candidate_count=len(epoch.review_candidate_codes),
         empty_reason=empty_reason,
-        evaluated_count=len(epoch.entries),
+        evaluated_count=epoch.evaluated_count - epoch.unscored_count,
     )
 
 
@@ -611,9 +684,7 @@ def _has_no_positive_model_utility(
     context: _DecisionProjectionContext,
 ) -> bool:
     return (
-        context.strategy is Strategy.TOMORROW
-        and context.model_diagnostics is not None
-        and bool(epoch.entries)
+        context.model_diagnostics is not None
         and bool(context.model_diagnostics)
         and all(item.predicted_net_excess_pct <= 0.0 for item in context.model_diagnostics.values())
     )

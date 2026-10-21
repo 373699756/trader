@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
@@ -16,11 +16,10 @@ from trader.recommendation.application.pipeline.static_filter.permanent_filter_s
     FilterPermanentEligibility,
 )
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
-from trader.recommendation.application.pipeline.static_market.static_market_loader import LoadStaticMarket
-from trader.recommendation.application.pipeline.static_standardize.normalization_service import NormalizeStaticMarket
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.domain.candidate.filters import HardFilterPolicy
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStage,
     PipelineStageSnapshot,
@@ -37,12 +36,21 @@ from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityReason,
     IssuerEligibilityReasonCount,
     IssuerEligibilityState,
+    ResolveIssuerEligibility,
 )
 from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
+from trader.recommendation.domain.market.research import CompanyRiskValues, LongResearchPolicy, ResearchObservation
 from trader.recommendation.domain.market.static import NormalizeStaticIssuer, StaticIssuer
+
+
+@dataclass(frozen=True)
+class StaticCompanyInputs:
+    read: Callable[[Sequence[str], datetime], Mapping[str, ResearchObservation]]
+    policy: LongResearchPolicy
+    hard_filter: HardFilterPolicy
 
 
 class StaticMarketPipeline:
@@ -54,10 +62,12 @@ class StaticMarketPipeline:
         *,
         monotonic: Callable[[], float],
         historical_st_eligibility: Callable[[], HistoricalStEligibilitySnapshot] | None = None,
+        company: StaticCompanyInputs | None = None,
     ) -> None:
         self.eligibility = eligibility
         self._monotonic = monotonic
         self._historical_st_eligibility = historical_st_eligibility
+        self._company = company
         self._static_market = StaticMarketCache()
         self._versions = InputVersionClock()
 
@@ -90,49 +100,34 @@ class StaticMarketPipeline:
                     "static_reference_degraded", "official population refresh failed or expired", 1, Severity.WARNING
                 ),
             )
+        normalized_records = tuple(
+            value for item in baseline.records if (value := NormalizeStaticIssuer(item)) is not None
+        )
+        companies = (
+            self._company.read(tuple(item.code for item in normalized_records), observed_at) if self._company else {}
+        )
         source = StageOutput(
-            PipelineStage.DATA_SOURCE,
-            baseline.records,
+            PipelineStage.LOCAL_DATA,
+            normalized_records,
             input_batch_id=root,
             as_of=observed_at,
             input_count=len(baseline.records),
+            pending_count=len(baseline.records) - len(normalized_records),
             reasons=reasons,
             source_health=health,
             latency_ms=0,
         )
         source = self._measured_stage(source, started)
-        started = self._monotonic()
-        collected = LoadStaticMarket(
-            source.records,
-            input_batch_id=source.snapshot.output_batch_id,
-            as_of=observed_at,
-            source_health=health,
-            expected_count=len(source.records),
-            pending_count=0,
-            reasons=(
-                StageReasonAggregate(
-                    "static_baseline_reused" if read.cache_hit else "static_baseline_loaded",
-                    "static baseline reused" if read.cache_hit else "static baseline loaded",
-                    1,
-                    Severity.INFO,
-                ),
-            )
-            if source.records
-            else (),
-            latency_ms=0,
+        source = replace(
+            source,
+            snapshot=replace(
+                source.snapshot,
+                operation_durations=(("cache_reuse" if read.cache_hit else "local_read", source.snapshot.latency_ms),),
+            ),
         )
-        collected = self._measured_stage(collected, started)
+        population = frozenset(item.code for item in source.records)
         started = self._monotonic()
-        normalized = NormalizeStaticMarket(
-            collected,
-            NormalizeStaticIssuer,
-            as_of=observed_at,
-            latency_ms=0,
-        )
-        normalized = self._measured_stage(normalized, started)
-        population = frozenset(item.code for item in normalized.records)
-        started = self._monotonic()
-        self._record_static_eligibility(normalized.records, observed_at)
+        self._record_static_eligibility(source.records, observed_at)
         self._record_quote_eligibility(tuple(quote for quote in quotes if quote.code in population), observed_at)
         self._refresh_eligibility_if_due(observed_at)
         exclusions = tuple(
@@ -146,6 +141,10 @@ class StaticMarketPipeline:
             }
         )
         exclusions_by_code = {item.code: item for item in exclusions}
+        for issuer in source.records:
+            facts = EligibilityFactsFromStaticIssuer(issuer, observed_at=observed_at)
+            if facts:
+                exclusions_by_code.setdefault(issuer.code, ResolveIssuerEligibility(facts, issuer.code, observed_at))
         reason_counts = Counter(item.reason for item in exclusions_by_code.values() if item.reason is not None)
         historical_st = self._historical_st_eligibility() if self._historical_st_eligibility is not None else None
         decisions = tuple(
@@ -157,11 +156,22 @@ class StaticMarketPipeline:
         eligible_codes = frozenset(
             decision.code for decision in decisions if decision.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
         )
-        filtered = FilterPermanentEligibility(normalized, decisions, as_of=observed_at, latency_ms=0)
+        company_exclusions = {
+            code: reason
+            for code in eligible_codes
+            if (reason := self._company_reason(code, companies.get(code), observed_at)) is not None
+        }
+        filtered = FilterPermanentEligibility(
+            source, decisions, as_of=observed_at, latency_ms=0, company_exclusions=company_exclusions
+        )
         filtered = self._measured_stage(filtered, started)
         batch = IssuerEligibilityBatch(
             input_count=len(population),
-            eligible_count=len(eligible_codes),
+            eligible_count=len(filtered.records),
+            company_reasons=tuple(
+                StageReasonAggregate(reason, reason.replace("_", " "), count, Severity.WARNING)
+                for reason, count in sorted(Counter(company_exclusions.values()).items())
+            ),
             reason_counts=tuple(
                 IssuerEligibilityReasonCount(reason, reason_counts[reason])
                 for reason in sorted(reason_counts, key=lambda item: item.value)
@@ -171,8 +181,25 @@ class StaticMarketPipeline:
         return (
             batch,
             frozenset(item.code for item in filtered.records),
-            (source.snapshot, collected.snapshot, normalized.snapshot, filtered.snapshot),
+            (source.snapshot, filtered.snapshot),
             filtered,
+        )
+
+    def _company_reason(self, code: str, observation: ResearchObservation | None, at: datetime) -> str | None:
+        if self._company is None:
+            return None
+        if code in self._company.hard_filter.blacklist_codes:
+            return "blacklisted"
+        if observation is None:
+            return None
+        values = CompanyRiskValues(observation, at, self._company.policy)
+        return next(
+            (
+                name
+                for name, threshold in self._company.hard_filter.structured_risk_thresholds.items()
+                if (value := values.get(name)) is not None and value > threshold
+            ),
+            None,
         )
 
     @staticmethod

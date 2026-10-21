@@ -448,16 +448,19 @@ def IdentityCodes(identity: DecisionIdentity) -> frozenset[str]:
     return frozenset(item.code for item in identity.items)
 
 
-def ScoredTopSix(items: tuple[DecisionItem, ...]) -> tuple[DecisionItem, ...]:
-    """Return the stable, score-ranked research six from one decision."""
-
-    return tuple(sorted(items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:6])
+def VisibleScoredSeats(decision: ScoredDecision) -> tuple[DecisionItem, ...]:
+    """Read fixed seats; retain the original display contract only for old records."""
+    audit = decision.pipeline
+    legacy = isinstance(audit, HistoricalPipelineAudit) and audit.stages[0].key != "local_data"
+    if legacy or (decision.is_formal and audit is None):
+        return tuple(sorted(decision.items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:6])
+    return tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
 
 
 def DisplayQuoteCodes(decision: ScoredDecision) -> frozenset[str]:
     """Return the scored codes visible in the current six-seat table."""
 
-    return frozenset(item.code for item in ScoredTopSix(decision.items))
+    return frozenset(item.code for item in VisibleScoredSeats(decision))
 
 
 def FormalScoredDecision(
@@ -468,7 +471,7 @@ def FormalScoredDecision(
 ) -> ScoredDecision:
     """Project an accepted scored identity to its immutable six-row close form."""
 
-    official_items = ScoredTopSix(decision.items)
+    official_items = VisibleScoredSeats(decision)
     return ScoredDecision(
         strategy=decision.strategy,
         trade_date=decision.trade_date,
@@ -549,6 +552,8 @@ def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, _Json
         ],
     }
     # Absence is part of legacy identities: never rehash old records by adding an empty audit.
+    if pipeline.elapsed_ms is not None:
+        payload["elapsed_ms"] = pipeline.elapsed_ms
     if pipeline.stage_snapshots:
         payload["stage_snapshots"] = [PipelineSnapshotIdentityPayload(stage) for stage in pipeline.stage_snapshots]
     return payload
@@ -569,6 +574,7 @@ def PipelineSnapshotIdentityPayload(stage: PipelineStageSnapshot) -> dict[str, _
         "rejected_count": stage.rejected_count,
         "pending_count": stage.pending_count,
         "failed_count": stage.failed_count,
+        "not_selected_count": stage.not_selected_count,
         "reasons": [
             {"code": reason.code, "label": reason.label, "count": reason.count, "severity": reason.severity.value}
             for reason in stage.reasons
@@ -580,6 +586,15 @@ def PipelineSnapshotIdentityPayload(stage: PipelineStageSnapshot) -> dict[str, _
             "latest_success_at": health.latest_success_at.isoformat() if health.latest_success_at is not None else None,
             "age_seconds": float(health.age_seconds) if health.age_seconds is not None else None,
         },
+        **(
+            {
+                "operation_durations": [
+                    {"operation": name, "duration_ms": duration} for name, duration in stage.operation_durations
+                ]
+            }
+            if stage.operation_durations
+            else {}
+        ),
         "latency_ms": stage.latency_ms,
         "degraded": stage.degraded,
     }
@@ -606,6 +621,8 @@ def _historical_pipeline_payload(pipeline: HistoricalPipelineAudit) -> dict[str,
             for stage in pipeline.stages
         ],
     }
+    if pipeline.elapsed_ms is not None:
+        payload["elapsed_ms"] = pipeline.elapsed_ms
     if pipeline.stage_snapshots:
         payload["stage_snapshots"] = [_historical_snapshot_payload(stage) for stage in pipeline.stage_snapshots]
     return payload
@@ -614,6 +631,7 @@ def _historical_pipeline_payload(pipeline: HistoricalPipelineAudit) -> dict[str,
 def _historical_snapshot_payload(stage: HistoricalStageSnapshot) -> dict[str, _Json]:
     health = stage.source_health
     return {
+        **({"not_selected_count": stage.not_selected_count} if stage.not_selected_count is not None else {}),
         "stage": stage.stage.value,
         "stage_order": stage.stage_order,
         "input_batch_id": stage.input_batch_id,
@@ -636,6 +654,15 @@ def _historical_snapshot_payload(stage: HistoricalStageSnapshot) -> dict[str, _J
             "latest_success_at": health.latest_success_at.isoformat() if health.latest_success_at is not None else None,
             "age_seconds": float(health.age_seconds) if health.age_seconds is not None else None,
         },
+        **(
+            {
+                "operation_durations": [
+                    {"operation": name, "duration_ms": duration} for name, duration in stage.operation_durations
+                ]
+            }
+            if stage.operation_durations
+            else {}
+        ),
         "latency_ms": stage.latency_ms,
         "degraded": stage.degraded,
     }
@@ -818,13 +845,13 @@ def _validate_score(value: float, label: str) -> None:
 
 
 def _validate_decision_item_selection(item: DecisionItem) -> None:
-    if item.selected and (item.rank < 1 or item.action is RecommendationAction.UNAVAILABLE):
-        raise ValueError("selected decisions require a positive rank and available action")
+    if item.selected and item.rank < 1:
+        raise ValueError("selected decisions require a positive fixed-seat rank")
     if not item.selected and item.rank != 0:
         raise ValueError("unselected decisions must use rank zero")
     if not isinstance(item.board, Board):
         raise ValueError("decision item board is invalid")
-    if item.action is RecommendationAction.UNAVAILABLE and item.selection_rank != 0:
+    if not item.selected and item.action is RecommendationAction.UNAVAILABLE and item.selection_rank != 0:
         raise ValueError("unavailable decisions must use selection rank zero")
     if item.action is not RecommendationAction.UNAVAILABLE and item.selection_rank < 1:
         raise ValueError("available decisions require a positive selection rank")
@@ -916,5 +943,5 @@ __all__ = [
     "FormalScoredDecision",
     "DisplayQuoteCodes",
     "IdentityCodes",
-    "ScoredTopSix",
+    "VisibleScoredSeats",
 ]

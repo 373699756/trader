@@ -1,9 +1,9 @@
-"""Strategy-owned candidate qualification, ranking, and bounded reserve planning."""
+"""Strategy-owned complete scoring-input qualification."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 
@@ -16,14 +16,7 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_norm
     NormalizeCandidateDiscoveryPopulation,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import HasTransientEvaluationGap
-from trader.recommendation.application.pipeline.stage_output import (
-    PipelineStageOutput,
-    RequirePreviousStage,
-    StageOutput,
-)
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
-from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidatePlan
@@ -34,7 +27,6 @@ SCORED_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
 @dataclass(frozen=True)
 class CandidatePlanSet:
     plans: Mapping[Strategy, ScoredCandidatePlan]
-    limit_per_board: int
     population_evaluated_at: datetime
 
     def __post_init__(self) -> None:
@@ -43,14 +35,10 @@ class CandidatePlanSet:
         plans = dict(self.plans)
         if set(plans) != set(SCORED_STRATEGIES):
             raise ValueError("candidate planning requires every scored strategy")
-        if not isinstance(self.limit_per_board, int) or isinstance(self.limit_per_board, bool):
-            raise ValueError("candidate planning board limit must be an integer")
-        if not 1 <= self.limit_per_board <= 120:
-            raise ValueError("candidate planning board limit must be between 1 and 120")
         object.__setattr__(self, "plans", MappingProxyType(plans))
 
     def strategy_codes(self, strategy: Strategy) -> tuple[str, ...]:
-        return self.plans[strategy].limited_codes(self.limit_per_board)
+        return self.plans[strategy].qualified_codes()
 
     def physical_union(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(code for strategy in SCORED_STRATEGIES for code in self.strategy_codes(strategy)))
@@ -87,7 +75,6 @@ class CandidatePlanningContext:
     data_version: str
     policy: RecommendationPolicy
     model_scoring: ModelScoringPort | None
-    limit_per_board: int
     apply_model_eligibility: bool = True
     population_evaluated_at: datetime | None = None
 
@@ -124,7 +111,6 @@ def BuildCandidatePlans(
                     strategy,
                     candidates if candidates is not None else features,
                 ),
-                candidate_limit_per_board=context.limit_per_board,
             ),
             ScoredSelectionIdentity(
                 trade_date=context.evaluated_at.date(),
@@ -134,7 +120,7 @@ def BuildCandidatePlans(
         )
         for strategy in SCORED_STRATEGIES
     }
-    return CandidatePlanSet(plans, context.limit_per_board, population_at)
+    return CandidatePlanSet(plans, population_at)
 
 
 def _maximum_age_seconds(strategy: Strategy) -> float:
@@ -156,136 +142,31 @@ def _model_eligible_codes(
     return frozenset(feature.quote.code for feature in features if model_scoring.is_input_eligible(strategy, feature))
 
 
-def RefreshCandidateReserves(
+def RefreshQualifiedInputs(
     population: tuple[FeatureSnapshot, ...],
     initial_plans: CandidatePlanSet,
     context: CandidatePlanningContext,
     refresh_quotes: Callable[[tuple[str, ...]], Sequence[FeatureSnapshot]],
     *,
-    can_refill: Callable[[], bool],
+    can_refresh: Callable[[], bool],
 ) -> CandidateRefreshPlan:
-    context = replace(context, population_evaluated_at=initial_plans.population_evaluated_at)
-    pending = initial_plans.physical_union()
-    if not pending:
-        return CandidateRefreshPlan(
-            (),
-            BuildCandidatePlans(
-                population,
-                (),
-                replace(
-                    context,
-                    evaluated_at=_planning_evaluated_at(context.evaluated_at, population),
-                    limit_per_board=initial_plans.limit_per_board,
-                ),
-            ),
-        )
-    attempted: set[str] = set()
-    refreshed: dict[str, FeatureSnapshot] = {}
-    final_plans = initial_plans
-    transient_invalid_strategies: set[Strategy] = set()
-    while pending:
-        requested = tuple(pending)
-        attempted.update(requested)
-        wave = tuple(refresh_quotes(requested))
-        requested_codes = set(requested)
-        wave_by_code = {feature.quote.code: feature for feature in wave if feature.quote.code in requested_codes}
-        missing_codes = requested_codes - set(wave_by_code)
-        transient_invalid_strategies.update(initial_plans.strategies_for_codes(missing_codes))
-        if wave_by_code:
-            refreshed.update(wave_by_code)
-        final_plans = BuildCandidatePlans(
-            population,
-            tuple(refreshed.values()),
-            replace(
-                context,
-                evaluated_at=_planning_evaluated_at(
-                    context.evaluated_at,
-                    population,
-                    tuple(refreshed.values()),
-                ),
-                limit_per_board=initial_plans.limit_per_board,
-            ),
-        )
-        transient_invalid_strategies.update(_transient_refresh_strategies(final_plans, requested))
-        pending = _replacement_codes(initial_plans, final_plans, attempted)
-        if pending and not can_refill():
-            return CandidateRefreshPlan(
-                tuple(refreshed.values()),
-                final_plans,
-                frozenset(transient_invalid_strategies),
-                deadline_reached=True,
-            )
-    return CandidateRefreshPlan(tuple(refreshed.values()), final_plans, frozenset(transient_invalid_strategies))
-
-
-def _transient_refresh_strategies(
-    plan: CandidatePlanSet,
-    requested: tuple[str, ...],
-) -> frozenset[Strategy]:
-    requested_codes = set(requested)
-    return frozenset(
-        strategy
-        for strategy in SCORED_STRATEGIES
-        if any(
-            HasTransientEvaluationGap(item) for item in plan.plans[strategy].evaluations if item.code in requested_codes
-        )
+    if initial_plans.population_evaluated_at.date() != context.evaluated_at.date():
+        raise ValueError("candidate_population_trade_date_mismatch")
+    requested = initial_plans.physical_union()
+    if requested and not can_refresh():
+        return CandidateRefreshPlan((), initial_plans, deadline_reached=True)
+    requested_codes = frozenset(requested)
+    features = (
+        tuple(item for item in refresh_quotes(requested) if item.quote.code in requested_codes) if requested else ()
     )
-
-
-def _replacement_codes(
-    initial: CandidatePlanSet,
-    current: CandidatePlanSet,
-    attempted: set[str],
-) -> tuple[str, ...]:
-    replacements: list[str] = []
-    for strategy in SCORED_STRATEGIES:
-        for board in initial.plans[strategy].reserves:
-            initial_reserve = initial.plans[strategy].reserves[board]
-            current_reserve = current.plans[strategy].reserves.get(board, ())
-            target = min(initial.limit_per_board, len(initial_reserve))
-            missing = max(0, target - min(current.limit_per_board, len(current_reserve)))
-            replacements.extend(tuple(code for code in initial_reserve if code not in attempted)[:missing])
-    return tuple(dict.fromkeys(replacements))
-
-
-def _planning_evaluated_at(
-    observed_at: datetime,
-    *feature_groups: tuple[FeatureSnapshot, ...],
-) -> datetime:
-    values = [observed_at]
-    for features in feature_groups:
-        for feature in features:
-            values.extend((feature.observed_at, feature.quote.received_time))
-    return max(value.astimezone(observed_at.tzinfo) for value in values)
-
-
-def BuildCandidateStageOutput(
-    source: PipelineStageOutput[FeatureSnapshot],
-    selected_codes: tuple[str, ...],
-    *,
-    as_of: datetime,
-    latency_ms: int,
-) -> PipelineStageOutput[FeatureSnapshot]:
-    """Bind the deterministic candidate order to the stage-8 observation."""
-
-    RequirePreviousStage(source, PipelineStage.CANDIDATE_POOL)
-    if len(selected_codes) != len(set(selected_codes)):
-        raise ValueError("candidate stage codes must be unique")
-    by_code = {item.quote.code: item for item in source.records}
-    if not set(selected_codes) <= set(by_code):
-        raise ValueError("candidate stage cannot select outside the dynamic eligible population")
-    records = tuple(by_code[code] for code in selected_codes)
-    limited = len(source.records) - len(records)
-    reasons = (StageReasonAggregate("board_limit", "board limit", limited, Severity.INFO),) if limited else ()
-    return StageOutput(
-        PipelineStage.CANDIDATE_POOL,
-        records,
-        input_batch_id=source.snapshot.output_batch_id,
-        as_of=as_of,
-        input_count=len(source.records),
-        reasons=reasons,
-        source_health=source.snapshot.source_health,
-        latency_ms=latency_ms,
+    missing = requested_codes - {item.quote.code for item in features}
+    # Preserve the complete requested population. Missing observations belong to
+    # the quality boundary and never trigger a reserve or a replacement request.
+    return CandidateRefreshPlan(
+        features,
+        initial_plans,
+        initial_plans.strategies_for_codes(missing),
+        deadline_reached=bool(requested and not can_refresh()),
     )
 
 
@@ -295,6 +176,5 @@ __all__ = [
     "CandidateRefreshPlan",
     "SCORED_STRATEGIES",
     "BuildCandidatePlans",
-    "BuildCandidateStageOutput",
-    "RefreshCandidateReserves",
+    "RefreshQualifiedInputs",
 ]

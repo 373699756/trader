@@ -9,7 +9,6 @@ from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     ReviewOutcome,
 )
-from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import (
     FusionMode,
     Recommendation,
@@ -23,9 +22,6 @@ from trader.recommendation.domain.selection.ranking import (
     ActionFor,
     ActionPolicy,
     MinimumSelectionScore,
-    PortfolioSelectionPolicy,
-    SelectTopK,
-    SelectTopKWithAudit,
 )
 
 
@@ -50,87 +46,6 @@ def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:
         )
         == 71.0
     )
-
-
-def test_top_k_enforces_industry_cap_and_stable_tie_break(feature_factory) -> None:
-    rows = [
-        _recommendation(feature_factory(code="600001", industry="A"), 90.0),
-        _recommendation(feature_factory(code="600002", industry="A"), 89.0),
-        _recommendation(feature_factory(code="600003", industry="A"), 88.0),
-        _recommendation(feature_factory(code="600004", industry="B"), 87.0),
-    ]
-
-    selected = _select_top_k(rows, top_k=3, maximum_per_industry=2)
-
-    assert [row.features.quote.code for row in selected] == ["600001", "600002", "600004"]
-    assert [row.rank for row in selected] == [1, 2, 3]
-    assert _select_top_k(rows, top_k=0, maximum_per_industry=2) == ()
-    with pytest.raises(ValueError, match="between 0 and 18"):
-        _select_top_k(rows, top_k=19, maximum_per_industry=2)
-
-
-def test_top_k_treats_missing_industry_as_one_unknown_group(feature_factory) -> None:
-    rows = [_recommendation(feature_factory(code=f"60000{index}", industry=""), 90.0 - index) for index in range(1, 5)]
-
-    selected, skips = _select_top_k_with_audit(rows, top_k=4, maximum_per_industry=2)
-
-    assert [item.features.quote.code for item in selected] == ["600001", "600002"]
-    assert [item.reason for item in skips] == ["industry_limit", "industry_limit"]
-
-
-def test_top_k_ignores_review_audit_fields_when_scores_tie(feature_factory) -> None:
-    rows = [
-        _recommendation(
-            feature_factory(code="600001", industry="A"),
-            final_score=90.0,
-            review=_review(
-                code="600001",
-                challenger_status="failed",
-                review_stage="secondary",
-                rating=Rating.BULLISH.value,
-                confidence=0.30,
-            ),
-        ),
-        _recommendation(
-            feature_factory(code="600002", industry="A"),
-            final_score=90.0,
-            review=_review(
-                code="600002",
-                challenger_status="passed",
-                review_stage="secondary",
-                rating=Rating.BULLISH.value,
-                confidence=0.10,
-            ),
-        ),
-        _recommendation(
-            feature_factory(code="600003", industry="A"),
-            final_score=90.0,
-            review=_review(
-                code="600003",
-                challenger_status="not_run",
-                review_stage="primary",
-                rating=Rating.BULLISH.value,
-                confidence=0.50,
-            ),
-        ),
-    ]
-
-    selected = _select_top_k(rows, top_k=2, maximum_per_industry=3)
-
-    assert [row.features.quote.code for row in selected] == ["600001", "600002"]
-
-
-def test_top_k_does_not_lower_minimum_score_to_fill(feature_factory) -> None:
-    rows = [
-        _recommendation(feature_factory(code="600001", industry="A"), 66.0),
-        _recommendation(feature_factory(code="600002", industry="B"), 64.99),
-        _recommendation(feature_factory(code="600003", industry="C"), 40.0),
-    ]
-
-    selected = _select_top_k(rows, top_k=10, maximum_per_industry=3, minimum_final_score=65.0)
-
-    assert [row.features.quote.code for row in selected] == ["600001"]
-    assert _select_top_k(rows, top_k=10, maximum_per_industry=3, minimum_final_score=90.0) == ()
 
 
 @pytest.mark.parametrize(
@@ -285,51 +200,6 @@ def test_action_policy_downgrades_only_executable_downside_failure(feature_facto
     assert reason == "downside_guard:trend_breakdown"
 
 
-@pytest.mark.parametrize(("top_k", "expected_main"), [(0, 0), (1, 1), (10, 6), (18, 11)])
-def test_board_fraction_uses_ceil_at_all_topk_boundaries(feature_factory, top_k: int, expected_main: int) -> None:
-    rows = []
-    for index in range(18):
-        board = Board.MAIN if index < 12 else Board.CHINEXT
-        code = f"600{index:03d}" if board is Board.MAIN else f"300{index:03d}"
-        feature = feature_factory(code=code, board=board, industry=f"I{index}")
-        feature = replace(feature, competition_group_id=f"G{index}")
-        rows.append(_recommendation(feature, 100.0 - index / 100.0))
-
-    selected, _ = _select_top_k_with_audit(
-        rows,
-        top_k=top_k,
-        maximum_per_industry=18,
-        maximum_board_fraction=0.6,
-        competition_group_limits={Board.MAIN: 3, Board.CHINEXT: 2, Board.STAR: 2},
-    )
-
-    assert sum(item.features.quote.board is Board.MAIN for item in selected) == expected_main
-
-
-@pytest.mark.parametrize(("board", "limit"), [(Board.MAIN, 3), (Board.CHINEXT, 2), (Board.STAR, 2)])
-def test_competition_group_mapping_does_not_override_final_industry_cap(
-    feature_factory, board: Board, limit: int
-) -> None:
-    prefix = {Board.MAIN: "600", Board.CHINEXT: "300", Board.STAR: "688"}[board]
-    rows = []
-    for index in range(limit + 1):
-        feature = feature_factory(code=f"{prefix}{index:03d}", board=board, industry="同业")
-        feature = replace(feature, competition_group_id="same", board_policy_version="board-policy-fixture")
-        rows.append(replace(_recommendation(feature, 90.0 - index), board_rank=index + 1))
-
-    selected, skips = _select_top_k_with_audit(
-        rows,
-        top_k=10,
-        maximum_per_industry=2,
-        maximum_board_fraction=1.0,
-        competition_group_limits={board: limit},
-    )
-
-    assert len(selected) == 2
-    assert skips[0].global_rank == 3
-    assert skips[0].reason == "industry_limit"
-
-
 def _action_for(
     recommendation: Recommendation,
     thresholds: dict[str, float],
@@ -347,48 +217,6 @@ def _action_for(
             is_stale=is_stale,
             observation_margin=observation_margin,
             minimum_board_reliability=minimum_board_reliability,
-        ),
-    )
-
-
-def _select_top_k(
-    recommendations,
-    *,
-    top_k: int,
-    maximum_per_industry: int,
-    minimum_final_score: float = 0.0,
-    maximum_board_fraction: float = 1.0,
-    competition_group_limits: dict[Board, int] | None = None,
-):
-    return SelectTopK(
-        recommendations,
-        PortfolioSelectionPolicy(
-            top_k=top_k,
-            maximum_per_industry=maximum_per_industry,
-            minimum_final_score=minimum_final_score,
-            maximum_board_fraction=maximum_board_fraction,
-            competition_group_limits=competition_group_limits or {},
-        ),
-    )
-
-
-def _select_top_k_with_audit(
-    recommendations,
-    *,
-    top_k: int,
-    maximum_per_industry: int,
-    minimum_final_score: float = 0.0,
-    maximum_board_fraction: float = 1.0,
-    competition_group_limits: dict[Board, int] | None = None,
-):
-    return SelectTopKWithAudit(
-        recommendations,
-        PortfolioSelectionPolicy(
-            top_k=top_k,
-            maximum_per_industry=maximum_per_industry,
-            minimum_final_score=minimum_final_score,
-            maximum_board_fraction=maximum_board_fraction,
-            competition_group_limits=competition_group_limits or {},
         ),
     )
 
@@ -416,26 +244,4 @@ def _recommendation(features, final_score: float, review: DeepSeekReview | None 
         action=RecommendationAction.OBSERVE,
         action_reason="fixture",
         veto=False,
-    )
-
-
-def _review(
-    code: str,
-    *,
-    challenger_status: str = "not_run",
-    review_stage: str = "primary",
-    rating: str = Rating.NEUTRAL.value,
-    confidence: float | None = None,
-) -> DeepSeekReview:
-    return DeepSeekReview(
-        code=code,
-        outcome=ReviewOutcome.APPLIED,
-        dimensions={},
-        risk_facts=(),
-        completed_at=datetime(2026, 7, 16, 10, tzinfo=timezone.utc),
-        challenger_status=challenger_status,
-        review_stage=review_stage,
-        rating=rating,
-        raw_confidence=confidence,
-        calibrated_confidence=confidence,
     )

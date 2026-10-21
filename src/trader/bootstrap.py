@@ -111,7 +111,10 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
 )
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
-from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
+from trader.recommendation.application.pipeline.static_market.static_pipeline import (
+    StaticCompanyInputs,
+    StaticMarketPipeline,
+)
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
@@ -660,7 +663,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         ),
         maintenance=model_publications.status,
     )
-    candidate_filtering = CandidateFilteringService(policy, model_scoring, settings.market_data.candidate_pool_size)
+    candidate_filtering = CandidateFilteringService(policy, model_scoring)
     local_scoring = LocalScoringService(model_scoring, RankingSelectionService(), RiskControlService())
     publication_io = PublicationIoTracker(now=ShanghaiClock(now).now, monotonic=time.monotonic)
     publication = _build_publication(
@@ -670,7 +673,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     native_data = MarketInputCoordinator(
         market_data,
-        candidate_pool_size=settings.market_data.candidate_pool_size,
         dependencies=InputRefreshDependencies(
             publication.long_runtime,
             policy,
@@ -683,7 +685,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     decision_builder = LocalDecisionBuilder(
         native_data,
         config_version=effective_config_version,
-        candidate_pool_size=settings.market_data.candidate_pool_size,
         dependencies=DecisionBuildDependencies(
             policy,
             publication.decision_drafts,
@@ -888,8 +889,7 @@ def _build_market_data(
     training_settings: ProfileTrainingSettings,
     shared_market: MarketFeatureService | None = None,
 ) -> MarketFeatureService:
-    settings = context.settings
-    strategy = context.strategy
+    settings, strategy = context.settings, context.strategy
     workers = context.workers
     now = context.now
     data_pool = workers.data_pool
@@ -1036,7 +1036,7 @@ def _build_market_data(
         MarketDataHealthDependencies(quote_cache, history_cache, research, intraday_loader, references, eligibility),
         wall_clock=now,
     )
-    market_data = MarketFeatureService(
+    return MarketFeatureService(
         MarketFeatureDependencies(
             quote_cache,
             history_cache,
@@ -1048,11 +1048,17 @@ def _build_market_data(
             eligibility,
             time.monotonic,
             StaticMarketPipeline(
-                eligibility, monotonic=time.monotonic, historical_st_eligibility=references.historical_st_eligibility
+                eligibility,
+                monotonic=time.monotonic,
+                historical_st_eligibility=references.historical_st_eligibility,
+                company=StaticCompanyInputs(
+                    lambda codes, at: research.cached(codes, include_structured=True, as_of=at),
+                    strategy.long_research,
+                    _recommendation_policy(strategy).hard_filter,
+                ),
             ),
         )
     )
-    return market_data
 
 
 def _build_persistence(
@@ -1069,8 +1075,6 @@ def _build_persistence(
         strategy_limits=settings.deepseek.strategy_limits,
         stage_targets=settings.deepseek.stage_targets,
         stage_limits=settings.deepseek.stage_limits,
-        challenger_limits=settings.deepseek.challenger_limits,
-        challenger_daily_limit=settings.deepseek.challenger_daily_limit,
         health_policy=DeepSeekHealthPolicy(
             consecutive_failure_limit=settings.deepseek.adaptive.consecutive_failure_limit,
             rolling_window=settings.deepseek.adaptive.rolling_window,

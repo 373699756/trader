@@ -736,6 +736,12 @@
       reconcileRecommendationIdentity(payload);
       if (state.payload && (previousPhase !== state.runtimePhase || state.payload.status === "not_ready")) {
         renderPayload(state.payload);
+      } else if (state.payload) {
+        statusView.renderSummary(
+          els, state.payload, selection.visibleRecommendations(state.payload),
+          selection.observationDisplayState(state.payload, state.runtimePhase, state.statusPayload),
+          selection.visibleRecommendations(state.payload)[0], selection, window.TraderRender, state.statusPayload,
+        );
       }
       const observationState = selection.observationDisplayState(state.payload, state.runtimePhase, state.statusPayload);
       if (

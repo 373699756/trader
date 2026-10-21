@@ -325,7 +325,6 @@ def _operations(
         candidates,
         30.0,
         30.0,
-        120,
     )
     candidate_input = replace(
         tomorrow_input,
@@ -379,7 +378,6 @@ def _operations(
                 data_version="performance-candidate-planning",
                 policy=policy,
                 model_scoring=model_scoring,
-                limit_per_board=120,
             ),
         )
 
@@ -631,13 +629,7 @@ def _fixtures(
     now = datetime(2026, 8, 25, 10, 0, tzinfo=SHANGHAI)
     market = tuple(_quote_input(index, now) for index in range(budgets.workload.market_rows))
     quotes = tuple(_complete_quote(BuildMarketQuote(item), now) for item in market)
-    candidate_indexes = (
-        *range(0, 120),
-        *range(2500, 2620),
-        *range(4000, 4120),
-    )
-    per_strategy_candidates = budgets.workload.candidate_rows // len(SCORED_STRATEGIES)
-    selected = tuple(candidate_indexes[:per_strategy_candidates])
+    selected = range(len(quotes))
     candidates = tuple(
         FeatureSnapshot(
             quotes[index],
@@ -651,23 +643,12 @@ def _fixtures(
 
 
 def _worst_case_candidate_plans(market_rows: int, observed_at: datetime) -> CandidatePlanSet:
-    if market_rows < 4360:
-        raise ValueError("performance market fixture cannot provide two disjoint strategy windows")
-    board_starts = {
-        Board.MAIN: 600000,
-        Board.CHINEXT: 300000,
-        Board.STAR: 688000,
-    }
-    strategy_offsets = {
-        Strategy.TOMORROW: 0,
-        Strategy.D25: 120,
-    }
+    population = tuple(_quote_input(index, observed_at) for index in range(market_rows))
     plans: dict[Strategy, ScoredCandidatePlan] = {}
     for strategy in SCORED_STRATEGIES:
-        offset = strategy_offsets[strategy]
         reserves = {
-            board: tuple(f"{start + offset + index:06d}" for index in range(120))
-            for board, start in board_starts.items()
+            board: tuple(item.code for item in population if item.board is board)
+            for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
         }
         plans[strategy] = ScoredCandidatePlan(
             evaluations=(),
@@ -678,15 +659,15 @@ def _worst_case_candidate_plans(market_rows: int, observed_at: datetime) -> Cand
                 input_ready_population=market_rows,
                 dynamic_filter_eligible=market_rows,
                 strategy_history_eligible=market_rows,
-                model_input_eligible=360,
-                candidate_score_eligible=360,
-                candidate_limit_selected=360,
+                model_input_eligible=market_rows,
+                scoring_input_eligible=market_rows,
+                scoring_input_count=market_rows,
             ),
             hard_filter_reason_counts={},
             population_rejected_count=0,
             population_filter_reason_counts={},
         )
-    return CandidatePlanSet(plans, limit_per_board=120, population_evaluated_at=observed_at)
+    return CandidatePlanSet(plans, population_evaluated_at=observed_at)
 
 
 def _candidate_union_quotes(

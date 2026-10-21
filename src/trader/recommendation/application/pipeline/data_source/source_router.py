@@ -7,7 +7,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Protocol
 
@@ -56,8 +56,8 @@ from trader.recommendation.application.pipeline.quality_check.input_quality_serv
     HasTransientCandidateGap,
 )
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
-    BuildPendingPipeline,
     BuildPendingStageSnapshots,
+    ProjectPipelineFacts,
 )
 from trader.recommendation.application.pipeline.stage_output import MeasuredOutput, PipelineStageOutput
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
@@ -106,6 +106,7 @@ class _SharedInputBatch:
     issuer_eligibility: IssuerEligibilityBatch
     input_stages: tuple[PipelineStageSnapshot, ...]
     candidate_stage: PipelineStageOutput[SelectedCandidateInput]
+    started_monotonic: float | None
 
 
 @dataclass(frozen=True)
@@ -184,12 +185,10 @@ class MarketInputCoordinator(DataRefreshPort):
         self,
         market: MarketReader,
         *,
-        candidate_pool_size: int,
         dependencies: InputRefreshDependencies,
     ) -> None:
         self._versions = InputVersionClock()
         self._market = market
-        self._candidate_pool_size = max(1, candidate_pool_size)
         self._long_runtime = dependencies.long_runtime
         self._policy = dependencies.policy
         self._now = dependencies.now
@@ -201,7 +200,6 @@ class MarketInputCoordinator(DataRefreshPort):
             else CandidateFilteringService(
                 self._policy,
                 self._model_scoring,
-                self._candidate_pool_size,
             )
         )
         self._lock = threading.RLock()
@@ -235,6 +233,7 @@ class MarketInputCoordinator(DataRefreshPort):
         self._score_feature_batches: dict[tuple[int, str, bool, tuple[str, ...]], tuple[FeatureSnapshot, ...]] = {}
         self._input_quality: dict[Strategy, InputQualityObservation] = {}
         self._quality_revision = 0
+        self._round_started: float | None = None
 
     def invalidate_history(self) -> None:
         with self._lock:
@@ -291,6 +290,7 @@ class MarketInputCoordinator(DataRefreshPort):
         request: PipelineTaskRequest,
         deadline: datetime | None,
     ) -> RefreshOutcome:
+        started = self._monotonic()
         market_batch = self._market.fetch_market_feature_batch(request.observed_at, force=True, deadline=deadline)
         features = market_batch.features
         issuer_eligibility = market_batch.issuer_eligibility
@@ -309,6 +309,7 @@ class MarketInputCoordinator(DataRefreshPort):
         quote_versions = _quote_versions(features)
         with SessionGuard(request.session), self._lock:
             self._quality_revision += 1
+            self._round_started = started
             changed = data_version != self._market_version
             changed_codes = _changed_version_codes(self._market_quote_versions, quote_versions)
             requested_changed = requested != self._latest_requested_codes
@@ -376,7 +377,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 force=True,
                 deadline=deadline,
             ),
-            can_refill=lambda: deadline is None or self._now() < deadline,
+            can_refresh=lambda: deadline is None or self._now() < deadline,
         )
         if refresh_plan.deadline_reached:
             if _candidate_batch_is_complete(previous_strategy_requested, previous_strategy_features):
@@ -409,13 +410,24 @@ class MarketInputCoordinator(DataRefreshPort):
             strategy: SelectCandidateOutput(
                 candidate_pipeline.filtered[strategy],
                 final_plans.plans[strategy],
-                final_plans.limit_per_board,
                 completed_at,
                 latency_ms=refresh_ms,
-                initial_plan=initial_plans.plans[strategy],
-                refreshed_codes=frozenset(features_by_code),
             )
             for strategy in SCORED_STRATEGIES
+        }
+        candidate_outputs = {
+            strategy: replace(
+                output,
+                snapshot=replace(
+                    output.snapshot,
+                    latency_ms=(candidate_pipeline.candidates[strategy].snapshot.latency_ms or 0) + refresh_ms,
+                    operation_durations=(
+                        ("feature_compute", candidate_pipeline.candidates[strategy].snapshot.latency_ms),
+                        ("quote_refresh", refresh_ms),
+                    ),
+                ),
+            )
+            for strategy, output in candidate_outputs.items()
         }
         with SessionGuard(request.session), self._lock:
             if candidate_pipeline is not self._candidate_pipeline:
@@ -466,15 +478,9 @@ class MarketInputCoordinator(DataRefreshPort):
     def _record_pending_quality_locked(self, context: _PendingQualityContext) -> None:
         for strategy in SCORED_STRATEGIES:
             stage_counts = context.candidate_plans.plans[strategy].stage_counts
-            requested_count = stage_counts.candidate_limit_selected
+            requested_count = stage_counts.scoring_input_count
             candidate_feature_count = min(requested_count, context.candidate_feature_counts[strategy])
             covered = candidate_feature_count
-            pipeline = BuildPendingPipeline(
-                stage_counts,
-                candidate_feature_count=candidate_feature_count,
-                primary_blocker=context.primary_blocker,
-                candidate_score_threshold=self._policy.selection.candidate_min_score,
-            )
             first_eight, candidates = self._observed_input_locked(strategy)
             started = self._monotonic()
             candidates = AssembleCandidateInputs(
@@ -485,7 +491,7 @@ class MarketInputCoordinator(DataRefreshPort):
                     f"quality:{strategy.value}", self._strategy_candidate_features[strategy]
                 ),
             )
-            first_eight = (*first_eight[:7], candidates.snapshot)
+            first_eight = (*first_eight[:-1], candidates.snapshot)
             quality_stage = AssessCandidateInputStage(
                 candidates,
                 as_of=context.observed_at,
@@ -496,7 +502,9 @@ class MarketInputCoordinator(DataRefreshPort):
                 hard_filter=self._policy.hard_filter,
             )
             quality_stage = MeasuredOutput(quality_stage, started, self._monotonic)
-            first_nine = (*first_eight, quality_stage.snapshot)
+            prepared = (*first_eight[:-1], quality_stage.snapshot)
+            snapshots = BuildPendingStageSnapshots(prepared)
+            pipeline = ProjectPipelineFacts(snapshots)
             quality = InputQualityStatus(
                 strategy=strategy,
                 status="not_ready",
@@ -509,7 +517,7 @@ class MarketInputCoordinator(DataRefreshPort):
                     security_identity_missing_count=0,
                 ),
                 pipeline=pipeline,
-                stage_snapshots=BuildPendingStageSnapshots(first_nine),
+                stage_snapshots=snapshots,
                 population_count=context.population_count,
                 candidate_count=requested_count,
                 candidate_feature_count=candidate_feature_count,
@@ -606,6 +614,7 @@ class MarketInputCoordinator(DataRefreshPort):
             return self._latest_requested_codes
 
     def refresh(self, request: CycleRequest) -> None:
+        preparation_started = self._monotonic()
         if request.strategy is Strategy.LONG:
             if not self._long_runtime.offer_refresh(
                 LongRefreshRequest(request.observed_at, request.phase, force=True, session=request.session)
@@ -619,7 +628,7 @@ class MarketInputCoordinator(DataRefreshPort):
             candidate_features = shared.candidate_features
             if request.strategy is Strategy.TOMORROW and shared.requested_codes:
                 scoring_batch = self._score_features(
-                    shared.requested_codes,
+                    tuple(item.quote.code for item in shared.candidate_features),
                     request.observed_at,
                     include_intraday_tail=True,
                     session=request.session,
@@ -644,6 +653,18 @@ class MarketInputCoordinator(DataRefreshPort):
         candidate_stage = AssembleCandidateInputs(
             shared.candidate_stage, candidate_features, as_of=request.observed_at, data_version=data_version
         )
+        preparation_ms = max(0, int((self._monotonic() - preparation_started) * 1000))
+        candidate_stage = replace(
+            candidate_stage,
+            snapshot=replace(
+                candidate_stage.snapshot,
+                latency_ms=(candidate_stage.snapshot.latency_ms or 0) + preparation_ms,
+                operation_durations=(
+                    *candidate_stage.snapshot.operation_durations,
+                    ("feature_assembly", preparation_ms),
+                ),
+            ),
+        )
         batch = InputBatch(
             request,
             shared.market_features,
@@ -654,7 +675,7 @@ class MarketInputCoordinator(DataRefreshPort):
             shared.candidate_quote_eligible,
             shared.preselection_transient_invalid,
             shared.issuer_eligibility,
-            (*shared.input_stages[:7], candidate_stage.snapshot),
+            (*shared.input_stages[:-1], candidate_stage.snapshot),
             candidate_stage,
             ScoringInputIdentity(
                 request.strategy,
@@ -664,6 +685,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 request.session.generation if request.session is not None else 0,
                 request.sequence,
             ),
+            shared.started_monotonic,
         )
         with SessionGuard(request.session), self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
@@ -680,12 +702,15 @@ class MarketInputCoordinator(DataRefreshPort):
             requested = self._strategy_requested_codes[request.strategy]
             candidate_features = self._strategy_candidate_features[request.strategy]
             candidate_plans = self._candidate_plans
+            started_monotonic = self._round_started
             preselection_transient_invalid = self._strategy_preselection_transient_invalid[request.strategy]
         if not market_features or candidate_plans is None or issuer_eligibility is None:
             raise DataRefreshUnavailableError("market_snapshot_unavailable")
         scoring_batch = (
             self._score_features(
-                requested,
+                requested
+                if request.phase == "close_fallback"
+                else tuple(item.quote.code for item in candidate_features),
                 request.observed_at,
                 include_intraday_tail=False,
                 session=request.session,
@@ -703,6 +728,7 @@ class MarketInputCoordinator(DataRefreshPort):
             issuer_eligibility,
             input_stages,
             candidate_stage,
+            started_monotonic,
         )
 
     def _observed_input_locked(
@@ -716,7 +742,6 @@ class MarketInputCoordinator(DataRefreshPort):
         return (
             (
                 *self._market_stages,
-                pipeline.normalized.snapshot,
                 pipeline.filtered[strategy].snapshot,
                 candidate.snapshot,
             ),

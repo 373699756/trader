@@ -145,7 +145,6 @@ class ScoredSelectionResult:
     evaluations: tuple[ScoredStockEvaluation, ...]
     scored_candidates: tuple[ScoredStockEvaluation, ...]
     observations: tuple[ScoredStockEvaluation, ...]
-    selected: tuple[ScoredStockEvaluation, ...]
     population_versions: Mapping[Board, str]
     hard_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
     population_rejected_count: int = 0
@@ -169,21 +168,12 @@ class BoardStrategyPolicy:
     version: str
     board: Board
     strategy: Strategy
-    candidate_weights: Mapping[str, float]
     local_weights: Mapping[str, float]
-    candidate_component_weights: Mapping[str, Mapping[str, float]]
     local_component_weights: Mapping[str, Mapping[str, float]]
-    candidate_min_score: float = 50.0
     minimum_reliability: float = 0.85
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "candidate_weights", _freeze_weight_vector("candidate", self.candidate_weights))
         object.__setattr__(self, "local_weights", _freeze_weight_vector("local", self.local_weights))
-        object.__setattr__(
-            self,
-            "candidate_component_weights",
-            _freeze_component_weights("candidate component", self.candidate_component_weights),
-        )
         object.__setattr__(
             self,
             "local_component_weights",
@@ -193,8 +183,6 @@ class BoardStrategyPolicy:
             raise ValueError("board strategy policy identity must not be empty")
         if self.board is Board.UNSUPPORTED or self.strategy is Strategy.LONG:
             raise ValueError("board strategy policies only support scored strategies")
-        if not math.isfinite(self.candidate_min_score) or not 0.0 <= self.candidate_min_score <= 100.0:
-            raise ValueError("candidate minimum score must be in [0, 100]")
         if not math.isfinite(self.minimum_reliability) or not 0.0 <= self.minimum_reliability <= 1.0:
             raise ValueError("minimum reliability must be in [0, 1]")
 

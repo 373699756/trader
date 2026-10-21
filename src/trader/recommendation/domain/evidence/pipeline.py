@@ -13,20 +13,17 @@ from zoneinfo import ZoneInfo
 
 
 class PipelineStage(str, Enum):
-    DATA_SOURCE = "data_source"
-    STATIC_MARKET = "static_market"
-    STATIC_STANDARDIZE = "static_standardize"
+    LOCAL_DATA = "local_data"
     STATIC_FILTER = "static_filter"
     DYNAMIC_MARKET = "dynamic_market"
-    DYNAMIC_STANDARDIZE = "dynamic_standardize"
     DYNAMIC_FILTER = "dynamic_filter"
-    CANDIDATE_POOL = "candidate_pool"
-    QUALITY_CHECK = "quality_check"
+    MARKET_FEATURES = "market_features"
+    MODEL_FILTER = "model_filter"
     LOCAL_SCORE = "local_score"
+    LOCAL_RISK = "local_risk"
+    FIXED_SELECTION = "fixed_selection"
     RISK_REVIEW = "risk_review"
-    SCORE_MERGE = "score_merge"
-    DOWNSIDE_ACTION = "downside_action"
-    FINAL_SELECTION = "final_selection"
+    ACTION_PUBLISH = "action_publish"
 
 
 PIPELINE_STAGES: tuple[PipelineStage, ...] = tuple(PipelineStage)
@@ -119,8 +116,10 @@ class PipelineStageSnapshot:
     failed_count: int
     reasons: tuple[StageReasonAggregate, ...]
     source_health: SourceHealth
-    latency_ms: int
+    latency_ms: int | None
     degraded: bool
+    not_selected_count: int = 0
+    operation_durations: tuple[tuple[str, int | None], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage, PipelineStage):
@@ -140,15 +139,28 @@ class PipelineStageSnapshot:
             self.rejected_count,
             self.pending_count,
             self.failed_count,
-            self.latency_ms,
+            self.not_selected_count,
         )
+        _validate_operation_timings(self.latency_ms, self.operation_durations)
         if any(value < 0 for value in counts):
             raise ValueError("pipeline stage counts and latency cannot be negative")
-        if self.output_count + self.rejected_count + self.pending_count + self.failed_count > self.input_count:
-            raise ValueError("pipeline stage outcomes cannot exceed input count")
+        if (
+            self.output_count + self.rejected_count + self.pending_count + self.failed_count + self.not_selected_count
+            != self.input_count
+        ):
+            raise ValueError("pipeline stage outcomes must partition the input count")
         if self.degraded != (self.state is StageState.DEGRADED):
             raise ValueError("pipeline degraded flag must match stage state")
         _require_unique_reason_codes(self.reasons)
+
+
+def _validate_operation_timings(latency_ms: int | None, operations: tuple[tuple[str, int | None], ...]) -> None:
+    if latency_ms is not None and latency_ms < 0:
+        raise ValueError("pipeline latency cannot be negative")
+    if len(dict(operations)) != len(operations) or any(
+        _PIPELINE_KEY.fullmatch(name) is None or (value is not None and value < 0) for name, value in operations
+    ):
+        raise ValueError("pipeline operation durations are invalid")
 
 
 def _require_unique_reason_codes(reasons: tuple[StageReasonAggregate, ...]) -> None:
@@ -180,22 +192,17 @@ def _require_shanghai(value: datetime, label: str) -> None:
 
 PipelineStageState = Literal["pending", "running", "completed", "degraded", "not_applicable"]
 PipelineStageKey = Literal[
-    "input_readiness",
+    "local_data",
+    "static_filter",
+    "dynamic_market",
     "dynamic_filter",
-    "board_cross_section",
-    "strategy_history",
-    "model_input",
-    "candidate_score",
-    "board_limit",
-    "candidate_refresh",
-    "input_coverage",
-    "evidence_score",
-    "model_cost_gate",
+    "market_features",
+    "model_filter",
     "local_score",
-    "deepseek_review",
-    "fusion",
-    "action_gate",
-    "concentration",
+    "local_risk",
+    "fixed_selection",
+    "risk_review",
+    "action_publish",
 ]
 PipelineMetricName = Literal[
     "board_reliability",
@@ -215,22 +222,17 @@ PipelineMetricName = Literal[
     "final_score",
 ]
 PIPELINE_STAGE_ORDER: tuple[PipelineStageKey, ...] = (
-    "input_readiness",
+    "local_data",
+    "static_filter",
+    "dynamic_market",
     "dynamic_filter",
-    "board_cross_section",
-    "strategy_history",
-    "model_input",
-    "candidate_score",
-    "board_limit",
-    "candidate_refresh",
-    "input_coverage",
-    "evidence_score",
-    "model_cost_gate",
+    "market_features",
+    "model_filter",
     "local_score",
-    "deepseek_review",
-    "fusion",
-    "action_gate",
-    "concentration",
+    "local_risk",
+    "fixed_selection",
+    "risk_review",
+    "action_publish",
 )
 _PIPELINE_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -281,6 +283,9 @@ class PipelineStageStatus:
     reason_counts: tuple[PipelineReasonCount, ...] = ()
     duration_ms: float | None = None
     rejected_count: int | None = None
+    pending_count: int | None = None
+    failed_count: int | None = None
+    not_selected_count: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -316,8 +321,11 @@ class RecommendationPipelineStatus:
     current_stage: PipelineStageKey
     stages: tuple[PipelineStageStatus, ...]
     stage_snapshots: tuple[PipelineStageSnapshot, ...] = ()
+    elapsed_ms: int | None = None
 
     def __post_init__(self) -> None:
+        if self.elapsed_ms is not None and self.elapsed_ms < 0:
+            raise ValueError("pipeline elapsed time cannot be negative")
         if any(not isinstance(item, PipelineStageStatus) for item in self.stages):
             raise ValueError("active pipeline requires active diagnostic types")
         keys = tuple(item.key for item in self.stages)

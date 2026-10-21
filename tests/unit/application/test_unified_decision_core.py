@@ -204,15 +204,15 @@ def test_paired_scored_publish_changes_both_strategies_or_neither() -> None:
     assert all(index.snapshot(item.strategy).current == item for item in next_pair)
 
 
-def test_visible_unselected_six_seat_quote_can_refresh_without_changing_score() -> None:
+def test_fixed_avoid_seat_quote_can_refresh_without_changing_score() -> None:
     index = UnifiedDecisionIndex()
     initial = decision()
     extra = replace(
         initial.items[0],
         code="600002",
-        selected=False,
-        rank=0,
-        selection_rank=0,
+        selected=True,
+        rank=2,
+        selection_rank=2,
         action=RecommendationAction.UNAVAILABLE,
         quote=replace(initial.items[0].quote, code="600002"),
     )
@@ -221,7 +221,12 @@ def test_visible_unselected_six_seat_quote_can_refresh_without_changing_score() 
     assert index.publish_scored(
         current,
         DecisionOverlay(
-            current.strategy, current.trade_date, current.version, NOW, (current.items[0].quote,), sequence=1
+            current.strategy,
+            current.trade_date,
+            current.version,
+            NOW,
+            (current.items[0].quote, extra.quote),
+            sequence=1,
         ),
         expected_version=None,
     ).accepted

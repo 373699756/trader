@@ -48,8 +48,8 @@ _MONITORED_PIPELINE_COUNTS = (
     "dynamic_filter_eligible",
     "strategy_history_eligible",
     "model_input_eligible",
-    "candidate_score_eligible",
-    "candidate_limit_selected",
+    "scoring_input_eligible",
+    "scoring_input_count",
     "requested_candidates",
     "candidate_features",
     "candidate_quote_eligible",
@@ -323,7 +323,11 @@ def _model_input_findings(
 ) -> list[Finding]:
     history_eligible = quality.pipeline.count("strategy_history_eligible") or 0
     model_eligible = quality.pipeline.count("model_input_eligible")
-    if quality.primary_blocker != "model_input_unavailable" or history_eligible <= 0 or model_eligible != 0:
+    if (
+        quality.primary_blocker not in {"model_input_unavailable", "production_model_features_missing"}
+        or history_eligible <= 0
+        or model_eligible != 0
+    ):
         return []
     return [
         _finding(
@@ -382,7 +386,7 @@ def _scoring_output_findings(
 ) -> list[Finding]:
     candidate_features = quality.pipeline.count("candidate_features") or 0
     full_scored = quality.pipeline.count("full_scored")
-    if quality.status == "ready" and candidate_features > 0 and full_scored == 0:
+    if quality.status == "ready" and (quality.pipeline.count("model_passed") or 0) > 0 and full_scored == 0:
         return [
             _finding(
                 "error",
@@ -696,7 +700,9 @@ def _pipeline_consistency_findings(
         "candidate_features": candidates > requested,
         "security_master": (pipeline.count("security_master") or 0) > requested,
         "history": (pipeline.count("history") or 0) > requested,
-        "filter_total": filtered > requested,
+        "filter_total": filtered > (pipeline.stage("dynamic_filter").input_count or 0)
+        if pipeline.stage("dynamic_filter")
+        else False,
         "full_scored": full_scored > candidates,
         "selected_total": selected > full_scored,
     }
@@ -840,15 +846,17 @@ def _eligible_zero(sample: WebSample, strategy: str, field_name: str) -> bool:
         "dynamic_filter_eligible": "input_ready_population",
         "strategy_history_eligible": "dynamic_filter_eligible",
         "model_input_eligible": "strategy_history_eligible",
-        "candidate_score_eligible": "model_input_eligible",
-        "candidate_limit_selected": "candidate_score_eligible",
-        "requested_candidates": "candidate_limit_selected",
+        "scoring_input_eligible": "model_input_eligible",
+        "scoring_input_count": "scoring_input_eligible",
+        "requested_candidates": "scoring_input_count",
         "candidate_quote_eligible": "candidate_features",
     }
     if field_name == "issuer_eligible_population":
         return _market_feature_rows(sample) > 0
     if upstream_field := upstream_fields.get(field_name):
         return (counts.get(upstream_field) or 0) > 0
+    if field_name == "full_scored":
+        return (pipeline.count("model_passed") or 0) > 0
     requested = pipeline.count("requested_candidates") or 0
     candidate_features = pipeline.count("candidate_features") or 0
     if field_name == "candidate_features":

@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.evidence.pipeline import StageReasonAggregate
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 
@@ -183,6 +184,7 @@ class IssuerEligibilityBatch:
     eligible_count: int
     reason_counts: tuple[IssuerEligibilityReasonCount, ...] = ()
     pending_count: int = 0
+    company_reasons: tuple[StageReasonAggregate, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -194,7 +196,7 @@ class IssuerEligibilityBatch:
         if len({item.reason for item in self.reason_counts}) != len(self.reason_counts):
             raise ValueError("issuer eligibility batch reasons must be unique")
         if (
-            sum(item.count for item in self.reason_counts)
+            sum(item.count for item in self.reason_counts) + sum(item.count for item in self.company_reasons)
             != self.input_count - self.eligible_count - self.pending_count
         ):
             raise ValueError("issuer eligibility batch reasons must explain every exclusion")

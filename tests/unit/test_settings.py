@@ -19,8 +19,6 @@ from trader.infra.settings import (
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
-    BoardCandidateComponents,
-    BoardCandidateScore,
     ScoreBoardStrategy,
 )
 from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
@@ -40,7 +38,6 @@ _RUNTIME_FILES = {
 _STRATEGY_FILES = {
     "selection.json": ("selection",),
     "filter.json": ("hard_filters",),
-    "candidate.json": ("board_candidate_weights", "candidate_component_weights"),
     "scoring.json": (
         "fusion",
         "board_local_strategy_weights",
@@ -185,7 +182,7 @@ def test_configuration_contract_is_valid() -> None:
         "published_date_index": False,
     }
     assert runtime.performance_budgets.workload.market_rows == 5500
-    assert runtime.performance_budgets.workload.candidate_rows == 1080
+    assert runtime.performance_budgets.workload.candidate_rows == 5500
     assert runtime.performance_budgets.rounds.warmup == 1
     assert runtime.performance_budgets.rounds.measurement == 5
     assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 250
@@ -219,9 +216,6 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.deepseek.timeout_seconds == 20
     assert runtime.deepseek.batch_size == 4
     assert runtime.deepseek.model == "deepseek-v4-flash"
-    assert runtime.deepseek.challenger_model == "deepseek-v4-pro"
-    assert runtime.deepseek.challenger_limits == {"tomorrow": 2, "d25": 0}
-    assert runtime.deepseek.challenger_daily_limit == 2
     assert runtime.deepseek.adaptive.cooldown_seconds == 900
     assert runtime.deepseek.adaptive.minimum_application_ratio == pytest.approx(0.4)
     assert strategy.hard_filters.blacklist_codes == ()
@@ -692,15 +686,12 @@ def test_fixed_review_and_observation_gates_cannot_drift(
         LoadStrategySettings(strategy_path)
 
 
-@pytest.mark.parametrize("weight_family", ("dimension", "board_candidate", "board_local"))
+@pytest.mark.parametrize("weight_family", ("dimension", "board_local"))
 def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_family: str) -> None:
     raw = _strategy_document()
     if weight_family == "dimension":
         weights = raw["dimension_weights"]["tomorrow"]
         first, second = "value_quality", "financial_health"
-    elif weight_family == "board_candidate":
-        weights = raw["board_candidate_weights"]["tomorrow"]["main"]
-        first, second = "liquidity", "trend"
     else:
         weights = raw["board_local_strategy_weights"]["tomorrow"]["main"]
         first, second = "trend", "stability"
@@ -712,27 +703,23 @@ def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_
 
     if weight_family == "dimension":
         actual = settings.dimension_weights["tomorrow"]
-    elif weight_family == "board_candidate":
-        actual = settings.board_candidate_weights["tomorrow"]["main"]
     else:
         actual = settings.board_local_strategy_weights["tomorrow"]["main"]
     assert actual[first] == pytest.approx(weights[first])
     assert actual[second] == pytest.approx(weights[second])
 
 
-def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
+def test_retired_candidate_configuration_is_absent() -> None:
     raw = _strategy_document()
-    settings = LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json")
-
-    assert "candidate_weights" not in raw
-    assert not hasattr(settings, "candidate_weights")
-    assert set(settings.board_candidate_weights) == {"tomorrow", "d25"}
+    assert "board_candidate_weights" not in raw
+    assert "candidate_component_weights" not in raw
+    assert not (PROJECT_ROOT / "config" / "candidate.json").exists()
 
 
 def test_strategy_config_requires_complete_component_weight_families(tmp_path) -> None:
     raw = _strategy_document()
 
-    assert set(raw["candidate_component_weights"]) == {"tomorrow", "d25"}
+    assert set(raw["local_component_weights"]) == {"tomorrow", "d25"}
     assert set(raw["local_component_weights"]) == {"tomorrow", "d25"}
     assert set(raw["feature_component_weights"]) == {
         "trend_score",
@@ -749,10 +736,10 @@ def test_strategy_config_requires_complete_component_weight_families(tmp_path) -
 
 def test_component_weight_sum_is_rejected(tmp_path) -> None:
     raw = _strategy_document()
-    raw["candidate_component_weights"]["tomorrow"]["stability"]["low_volatility_score"] = 0.6
+    raw["local_component_weights"]["tomorrow"]["stability"]["low_volatility_score"] = 0.6
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="candidate_component_weights.tomorrow.stability"):
+    with pytest.raises(ConfigurationError, match="local_component_weights.tomorrow.stability"):
         LoadStrategySettings(strategy_path)
 
 
@@ -802,7 +789,7 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
     source_path = PROJECT_ROOT / "config" / "strategy.json"
     source = LoadStrategySettings(source_path)
     raw = _strategy_document()
-    weights = raw["candidate_component_weights"]["tomorrow"]["stability"]
+    weights = raw["local_component_weights"]["tomorrow"]["stability"]
     weights["low_volatility_score"] -= 0.1
     weights["low_drawdown_score"] += 0.1
     changed_path = _write_strategy_config(tmp_path, raw)
@@ -819,8 +806,10 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
     assert source_policy is not None
     assert changed_policy is not None
     assert source.strategy_version != changed.strategy_version
-    assert changed_policy.candidate_component_weights["stability"] == weights
-    assert BoardCandidateComponents(feature, source_policy) != BoardCandidateComponents(feature, changed_policy)
+    assert changed_policy.local_component_weights["stability"] == weights
+    assert (
+        ScoreBoardStrategy(feature, source_policy).components != ScoreBoardStrategy(feature, changed_policy).components
+    )
 
 
 def test_configured_candidate_and_local_weights_preserve_two_strategy_golden_vectors(
@@ -845,10 +834,9 @@ def test_configured_candidate_and_local_weights_preserve_two_strategy_golden_vec
         Strategy.D25: (74.58333333333333, 70.55363321799307),
     }
 
-    for strategy, (candidate_score, local_score) in expected.items():
+    for strategy, (_candidate_score, local_score) in expected.items():
         board_policy = policy.board_policy(strategy, Board.MAIN)
         assert board_policy is not None
-        assert BoardCandidateScore(feature, board_policy) == pytest.approx(candidate_score)
         assert ScoreBoardStrategy(feature, board_policy).base_score == pytest.approx(local_score)
 
 

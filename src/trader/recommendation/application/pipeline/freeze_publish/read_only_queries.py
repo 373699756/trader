@@ -34,8 +34,8 @@ from trader.recommendation.domain.publication.decision_identity import (
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
-    ScoredTopSix,
     SelectionDiagnostics,
+    VisibleScoredSeats,
 )
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
@@ -223,7 +223,7 @@ class UnifiedDecisionQueries:
         source = self._industry_classifications
         if source is None:
             return {}
-        codes = tuple(item.code for item in ScoredTopSix(decision.items) if not item.industry.strip())
+        codes = tuple(item.code for item in VisibleScoredSeats(decision) if not item.industry.strip())
         references = source.model_industries(codes) if codes else {}
         return {
             code: reference.industry_id
@@ -243,7 +243,7 @@ class UnifiedDecisionQueries:
             return _empty_view(strategy, trade_date, "history", "scored", "formal_decision_unavailable")
         decision = record.decision
         selected = tuple(item for item in decision.items if item.selected)
-        top = ScoredTopSix(decision.items)
+        top = VisibleScoredSeats(decision)
         codes = tuple(sorted({item.code for item in (*selected, *top)}))
         cached = self._cached_quotes.cached_quotes(codes) if self._cached_quotes is not None else {}
         anchors = {item.code: item.quote for item in (*selected, *top)}
@@ -327,7 +327,7 @@ def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: dat
 def _observation_draft(decision: ScoredDecision, classified_industries: Mapping[str, str]) -> DecisionDraftView:
     top_scores = tuple(
         replace(_scored_item(item, None, classified_industry=classified_industries.get(item.code)), rank=rank)
-        for rank, item in enumerate(ScoredTopSix(decision.items), start=1)
+        for rank, item in enumerate(VisibleScoredSeats(decision), start=1)
     )
     return DecisionDraftView(
         decision.version,
@@ -362,7 +362,7 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
             ),
             rank=rank,
         )
-        for rank, item in enumerate(ScoredTopSix(decision.items), start=1)
+        for rank, item in enumerate(VisibleScoredSeats(decision), start=1)
     )
     items = top_scores
     coverage = ScoredDecisionCoverage(decision)

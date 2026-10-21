@@ -141,12 +141,14 @@ class MarketFeatureService:
         with self._eligibility_lock:
             cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
             original_quotes = self._latest_market_quotes
+        static_started = self._monotonic()
+        eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline.observe(
+            original_quotes, reference, observed_at
+        )
+        self.quotes.gateway.record_local_latency("static_eligibility", self._elapsed_ms(static_started))
         if cached is not None:
             quotes = original_quotes
             started = self._monotonic()
-            eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline.observe(
-                quotes, reference, observed_at
-            )
             eligible_quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
             cached_codes = tuple(quote.code for quote in eligible_quotes)
             cached_action_restrictions: dict[str, set[str]] = {}
@@ -177,6 +179,10 @@ class MarketFeatureService:
                 as_of=max(observed_at, self.runner.wall_clock().astimezone(SHANGHAI)),
                 latency_ms=self._elapsed_ms(started),
             )
+            dynamic = replace(
+                dynamic,
+                snapshot=replace(dynamic.snapshot, operation_durations=(("cache_reuse", dynamic.snapshot.latency_ms),)),
+            )
             return FullMarketFeatureBatch(features, eligibility_batch, static_stages, dynamic)
         acquisition_started = self._monotonic()
         quotes = tuple(
@@ -190,11 +196,6 @@ class MarketFeatureService:
             )
         )
         collection_ms = self._elapsed_ms(acquisition_started)
-        static_started = self._monotonic()
-        eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline.observe(
-            quotes, reference, observed_at
-        )
-        self.quotes.gateway.record_local_latency("static_eligibility", self._elapsed_ms(static_started))
         raw_quotes = quotes
         quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
         assembly_started = self._monotonic()
@@ -237,6 +238,16 @@ class MarketFeatureService:
             tuple(published),
             as_of=max(observed_at, self.runner.wall_clock().astimezone(SHANGHAI)),
             latency_ms=collection_ms + self._elapsed_ms(assembly_started),
+        )
+        dynamic = replace(
+            dynamic,
+            snapshot=replace(
+                dynamic.snapshot,
+                operation_durations=(
+                    ("acquisition", collection_ms),
+                    ("feature_assembly", (dynamic.snapshot.latency_ms or 0) - collection_ms),
+                ),
+            ),
         )
         return FullMarketFeatureBatch(tuple(published), eligibility_batch, static_stages, dynamic)
 

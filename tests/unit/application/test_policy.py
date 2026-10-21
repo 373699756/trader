@@ -25,23 +25,18 @@ def test_recommendation_policy_weight_maps_are_isolated_and_immutable() -> None:
     first = _recommendation_policy()
     second = _recommendation_policy()
 
-    assert first.board_candidate_weights == {}
     assert first.board_local_strategy_weights == {}
-    assert first.candidate_component_weights == {}
     assert first.local_component_weights == {}
-    assert first.board_candidate_weights is not second.board_candidate_weights
     assert first.board_local_strategy_weights is not second.board_local_strategy_weights
-    assert isinstance(first.board_candidate_weights, MappingProxyType)
     assert isinstance(first.board_local_strategy_weights, MappingProxyType)
     with pytest.raises(TypeError):
-        first.board_candidate_weights[Strategy.TOMORROW] = {}  # type: ignore[index]
+        first.board_local_strategy_weights[Strategy.TOMORROW] = {}  # type: ignore[index]
 
 
 def _selection_policy() -> RecommendationSelectionSettings:
     return RecommendationSelectionSettings(
         default_top_k=10,
         maximum_top_k=18,
-        maximum_per_industry=3,
         observation_margin=5.0,
         thresholds={"morning_main": 70.0},
     )
@@ -56,8 +51,6 @@ def _recommendation_policy() -> RecommendationPolicy:
         dimension_weights={},
         risk_rules={},
         board_policy_version="fixture",
-        board_candidate_weights={},
         board_local_strategy_weights={},
-        candidate_component_weights={},
         local_component_weights={},
     )

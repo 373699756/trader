@@ -81,14 +81,12 @@ def test_fixed_official_identity_survives_missing_quote_name_and_market_failure(
     )
     first = service.fetch_market_feature_batch(NOW)
 
-    assert tuple(stage.stage for stage in first.static_stages) == PIPELINE_STAGES[:4]
+    assert tuple(stage.stage for stage in first.static_stages) == PIPELINE_STAGES[:2]
     assert tuple((stage.input_count, stage.output_count) for stage in first.static_stages) == (
         (2, 2),
         (2, 2),
-        (2, 2),
-        (2, 2),
     )
-    normalized = first.static_stages[2]
+    normalized = first.static_stages[0]
     assert normalized.pending_count == 0
     assert normalized.rejected_count == 0
     assert normalized.state is StageState.READY
@@ -107,8 +105,8 @@ def test_fixed_official_identity_survives_missing_quote_name_and_market_failure(
 
     cached = service.fetch_market_feature_batch(NOW + timedelta(seconds=1))
     assert gateway.calls == 1
-    assert cached.static_stages[1].reasons[0].code == "static_baseline_reused"
-    assert cached.static_stages[2].pending_count == 0
+    assert cached.static_stages[0].operation_durations[0][0] == "cache_reuse"
+    assert cached.static_stages[0].pending_count == 0
     assert cached.static_stages[0].source_health.age_seconds == 1
     assert first.static_stages[0].source_health.age_seconds == 0
     assert cached.dynamic_stage.snapshot.source_health.age_seconds == 1
@@ -118,7 +116,7 @@ def test_fixed_official_identity_survives_missing_quote_name_and_market_failure(
         replace(quote, price=quote.price + 1, received_time=NOW + timedelta(seconds=10)) for quote in gateway._quotes
     )
     refreshed = service.fetch_market_feature_batch(NOW + timedelta(seconds=10), force=True)
-    assert refreshed.static_stages[1].reasons[0].code == "static_baseline_reused"
+    assert refreshed.static_stages[0].operation_durations[0][0] == "cache_reuse"
     assert refreshed.static_stages[0].source_health.age_seconds == 10
     assert refreshed.features[0].quote.price == first.features[0].quote.price + 1
     assert refreshed.dynamic_stage.snapshot.source_health.latest_success_at == NOW + timedelta(seconds=10)
@@ -129,7 +127,7 @@ def test_fixed_official_identity_survives_missing_quote_name_and_market_failure(
         service.fetch_market_feature_batch(NOW, force=True)
     retained = service.fetch_market_feature_batch(NOW + timedelta(seconds=11))
     assert retained.features == refreshed.features
-    assert retained.static_stages[2].pending_count == 0
+    assert retained.static_stages[0].pending_count == 0
     assert gateway.calls == 3
 
 
@@ -142,3 +140,55 @@ def test_empty_static_population_is_not_reported_as_completed() -> None:
     batch = service.fetch_market_feature_batch(NOW)
     assert all(stage.state is StageState.NOT_READY for stage in batch.static_stages)
     assert all(stage.source_health.state.value == "unavailable" for stage in batch.static_stages)
+
+
+def test_known_company_loss_and_st_are_rejected_once_before_current_quotes() -> None:
+    from trader.recommendation.application.pipeline.static_market.static_pipeline import (
+        StaticCompanyInputs,
+        StaticMarketPipeline,
+    )
+    from trader.recommendation.domain.candidate.filters import HardFilterPolicy
+    from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
+
+    service = _service(
+        StaticGateway((_quote(),)),
+        CountingHistoryClient(_history_bars()),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+    )
+    quote = _quote()
+    issuers = tuple(
+        StaticIssuer(code, code, quote.board, quote.exchange, quote.listing_date, index == 0, False)
+        for index, code in enumerate(("600001", "600002", "600003"))
+    )
+    reference = StaticReferenceRead(
+        StaticMarketReference(issuers, "static-company", NOW), "reference-company", False, 86400
+    )
+    loss = ResearchObservation(
+        financial=FinancialReport(NOW.date(), NOW - timedelta(hours=1), parent_net_profit=-1.0, core_net_profit=1.0)
+    )
+    reads = []
+
+    def read(codes, at):
+        reads.append((tuple(codes), at))
+        return {"600001": loss, "600002": loss}
+
+    pipeline = StaticMarketPipeline(
+        service._static_pipeline.eligibility,
+        monotonic=lambda: 1.0,
+        company=StaticCompanyInputs(
+            read, LONG_POLICY, HardFilterPolicy(structured_risk_thresholds={"latest_disclosed_report_loss": 0.0})
+        ),
+    )
+    batch, codes, stages, filtered = pipeline.observe((), reference, NOW)
+    assert reads == [(("600001", "600002", "600003"), NOW)]
+    assert codes == {"600003"} and tuple(item.code for item in filtered.records) == ("600003",)
+    assert batch.eligible_count == 1
+    assert stages[1].rejected_count == 2
+    assert {item.code: item.count for item in stages[1].reasons} == {
+        "historical_st": 1,
+        "latest_disclosed_report_loss": 1,
+    }
+    assert stages[0].latency_ms == 0
+    cached = pipeline.observe((), reference, NOW + timedelta(seconds=2))[2][0]
+    assert cached.operation_durations == (("cache_reuse", 0),)
+    assert cached.source_health.age_seconds == 2

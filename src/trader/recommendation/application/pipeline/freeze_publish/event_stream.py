@@ -20,8 +20,8 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionOverlay,
     DecisionQuote,
     LongProjection,
-    ScoredTopSix,
     SelectionDiagnostics,
+    VisibleScoredSeats,
 )
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
@@ -131,7 +131,7 @@ class UnifiedDecisionEventStream:
         decision = event.projection
         replacement = None
         if decision is not None:
-            top_scores = ScoredTopSix(decision.items)
+            top_scores = VisibleScoredSeats(decision)
             selected = top_scores
             replacement = DecisionReplacementPatch(
                 event.projection_version or event.decision_version,

@@ -4,12 +4,8 @@ import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from trader.infra.settings import DeepSeekSettings
-from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.evidence.review import (
-    ReviewCandidateContext,
     ReviewOutcome,
 )
 from trader.recommendation.domain.market.models import (
@@ -21,7 +17,6 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
-from trader.recommendation.infra.deepseek.challenger import ParseChallengerReviews
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.deepseek.schema import SCHEMA_VERSION
@@ -64,12 +59,11 @@ def test_finish_reason_length_uses_the_single_schema_repair_attempt(tmp_path) ->
             ),
         )
     )
-    budget = _budget(tmp_path / "runtime.sqlite3", hard_limit=2, challenger_limit=0)
+    budget = _budget(tmp_path / "runtime.sqlite3", hard_limit=2)
     reviewer = _reviewer(
         budget,
         post=lambda *_args, **_kwargs: next(responses),
         hard_limit=2,
-        challenger_limit=0,
     )
 
     result = reviewer.review(
@@ -83,247 +77,17 @@ def test_finish_reason_length_uses_the_single_schema_repair_attempt(tmp_path) ->
     assert budget.summary(NOW.date().isoformat())["used"] == 2
 
 
-def test_reviewer_runs_bounded_challenger_and_persists_model_audit(tmp_path) -> None:
-    candidate = _candidate()
-    database_path = tmp_path / "runtime.sqlite3"
-    budget = _budget(database_path, hard_limit=2, challenger_limit=1)
-    requested_models: list[str] = []
-
-    def post(*_args, **kwargs):
-        model = str(kwargs["json"]["model"])
-        requested_models.append(model)
-        payload = _challenger_payload() if model == "deepseek-v4-pro" else _primary_payload()
-        return _Response(
-            {
-                "choices": [{"message": {"content": json.dumps(payload)}, "finish_reason": "stop"}],
-                "model": f"{model}-202607",
-                "system_fingerprint": f"fp-{model}",
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "total_tokens": 15,
-                    "prompt_cache_hit_tokens": 3,
-                    "prompt_cache_miss_tokens": 7,
-                },
-            }
-        )
-
-    reviewer = _reviewer(budget, post=post, hard_limit=2, challenger_limit=1)
-    result = reviewer.review(
-        Strategy.TOMORROW,
-        (candidate,),
-        phase="morning_main",
-        deadline=NOW + timedelta(minutes=1),
-        contexts={candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)},
-    )
-
-    review = result[candidate.quote.code]
-    assert requested_models == ["deepseek-v4-flash", "deepseek-v4-pro"]
-    assert review.review_stage == "primary+challenger"
-    assert review.challenger_status == "applied"
-    assert review.actual_model == "deepseek-v4-flash-202607"
-    assert review.challenger_actual_model == "deepseek-v4-pro-202607"
-    assert review.dimensions["market_flow"].confidence == 0.6
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        rows = connection.run(
-            "SELECT model_role, requested_model, actual_model, reasoning_effort, total_tokens "
-            "FROM deepseek_calls ORDER BY rowid"
-        ).fetchall()
-    assert [tuple(row) for row in rows] == [
-        ("primary", "deepseek-v4-flash", "deepseek-v4-flash-202607", None, 15),
-        ("challenger", "deepseek-v4-pro", "deepseek-v4-pro-202607", "high", 15),
-    ]
-
-
-def test_reviewer_reuses_strategy_scoped_challenger_cache_without_physical_calls(tmp_path) -> None:
-    candidate = _candidate()
-    budget = _budget(tmp_path / "runtime.sqlite3", hard_limit=4, challenger_limit=2)
-    cache = ReviewCache()
-    requested_models: list[str] = []
-
-    def post(*_args, **kwargs):
-        model = str(kwargs["json"]["model"])
-        requested_models.append(model)
-        payload = _challenger_payload() if model == "deepseek-v4-pro" else _primary_payload()
-        return _Response(
-            {
-                "choices": [{"message": {"content": json.dumps(payload)}, "finish_reason": "stop"}],
-                "model": f"{model}-202607",
-            }
-        )
-
-    reviewer = _reviewer(budget, post=post, hard_limit=4, challenger_limit=2, cache=cache)
-    context = {candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)}
-
-    first = reviewer.review(
-        Strategy.TOMORROW,
-        (candidate,),
-        phase="morning_main",
-        deadline=NOW + timedelta(minutes=1),
-        contexts=context,
-    )
-    second = reviewer.review(
-        Strategy.TOMORROW,
-        (candidate,),
-        phase="morning_main",
-        deadline=NOW + timedelta(minutes=1),
-        contexts=context,
-    )
-
-    assert requested_models == ["deepseek-v4-flash", "deepseek-v4-pro"]
-    assert budget.summary(NOW.date().isoformat())["used"] == 2
-    assert first[candidate.quote.code] == second[candidate.quote.code]
-    assert second[candidate.quote.code].challenger_status == "applied"
-
-
-def test_challenger_schema_repair_round_trips_transient_reasoning_content(tmp_path) -> None:
-    candidate = _candidate()
-    budget = _budget(tmp_path / "runtime.sqlite3", hard_limit=3, challenger_limit=2)
-    challenger_payloads: list[dict[str, object]] = []
-
-    def post(*_args, **kwargs):
-        payload = kwargs["json"]
-        model = str(payload["model"])
-        if model == "deepseek-v4-flash":
-            return _Response({"choices": [{"message": {"content": json.dumps(_primary_payload())}}]})
-        challenger_payloads.append(payload)
-        if len(challenger_payloads) == 1:
-            return _Response(
-                {
-                    "choices": [
-                        {
-                            "message": {"content": "{}", "reasoning_content": "transient-reasoning"},
-                            "finish_reason": "stop",
-                        }
-                    ]
-                }
-            )
-        return _Response(
-            {"choices": [{"message": {"content": json.dumps(_challenger_payload())}, "finish_reason": "stop"}]}
-        )
-
-    reviewer = _reviewer(budget, post=post, hard_limit=3, challenger_limit=2)
-    result = reviewer.review(
-        Strategy.TOMORROW,
-        (candidate,),
-        phase="morning_main",
-        deadline=NOW + timedelta(minutes=1),
-        contexts={candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)},
-    )
-
-    repair_messages = challenger_payloads[1]["messages"]
-    assert isinstance(repair_messages, list)
-    assert repair_messages[-2]["reasoning_content"] == "transient-reasoning"
-    assert result[candidate.quote.code].challenger_status == "applied"
-
-
-def test_challenger_schema_failure_keeps_valid_primary_review(tmp_path) -> None:
-    candidate = _candidate()
-    budget = _budget(tmp_path / "runtime.sqlite3", hard_limit=3, challenger_limit=2)
-
-    def post(*_args, **kwargs):
-        model = str(kwargs["json"]["model"])
-        content = json.dumps(_primary_payload()) if model == "deepseek-v4-flash" else "{}"
-        return _Response({"choices": [{"message": {"content": content}, "finish_reason": "stop"}]})
-
-    reviewer = _reviewer(budget, post=post, hard_limit=3, challenger_limit=2)
-    result = reviewer.review(
-        Strategy.TOMORROW,
-        (candidate,),
-        phase="morning_main",
-        deadline=NOW + timedelta(minutes=1),
-        contexts={candidate.quote.code: ReviewCandidateContext(70.0, 1, 70.0, True)},
-    )
-
-    review = result[candidate.quote.code]
-    assert review.outcome is ReviewOutcome.APPLIED
-    assert review.review_stage == "primary"
-    assert review.challenger_status == "schema_invalid"
-    assert budget.summary(NOW.date().isoformat())["used"] == 3
-
-
-@pytest.mark.parametrize(
-    ("target", "field"),
-    (
-        ("result", "action"),
-        ("dimensions", "final_score"),
-        ("dimension", "score"),
-    ),
-)
-def test_challenger_schema_rejects_unknown_decision_fields(target: str, field: str) -> None:
-    candidate = _candidate()
-    payload = _challenger_payload()
-    result = payload["results"][0]
-    if target == "result":
-        result[field] = "buy"
-    elif target == "dimensions":
-        result["dimensions"][field] = 99
-    else:
-        result["dimensions"]["market_flow"][field] = 99
-
-    with pytest.raises(ValueError, match="unknown challenger"):
-        ParseChallengerReviews(json.dumps(payload), (candidate,), NOW)
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "error"),
-    (
-        ("code", 600001, "code must be a string"),
-        ("reason_code", 123, "reason_code"),
-    ),
-)
-def test_challenger_schema_rejects_non_string_text_fields(field: str, value: object, error: str) -> None:
-    candidate = _candidate()
-    payload = _challenger_payload()
-    result = payload["results"][0]
-    if field == "code":
-        result[field] = value
-    else:
-        result["dimensions"]["market_flow"][field] = value
-
-    with pytest.raises(ValueError, match=error):
-        ParseChallengerReviews(json.dumps(payload), (candidate,), NOW)
-
-
-def test_budget_enforces_challenger_limit_inside_strategy_bucket(tmp_path) -> None:
-    ledger = _budget(tmp_path / "runtime.sqlite3", hard_limit=2, challenger_limit=1)
-
-    first = ledger.reserve(
-        Strategy.TOMORROW,
-        phase="morning_main",
-        requested_at=NOW,
-        model_role="challenger",
-        requested_model="deepseek-v4-pro",
-        reasoning_effort="high",
-    )
-    second = ledger.reserve(
-        Strategy.TOMORROW,
-        phase="morning_main",
-        requested_at=NOW,
-        model_role="challenger",
-        requested_model="deepseek-v4-pro",
-        reasoning_effort="high",
-    )
-
-    assert first.allowed is True
-    assert (second.allowed, second.reason) == (False, "challenger_limit")
-    assert ledger.summary(NOW.date().isoformat())["by_model_role"] == {"primary": 0, "challenger": 1}
-
-
 def _reviewer(
     budget,
     *,
     post,
     hard_limit: int,
-    challenger_limit: int,
     cache: ReviewCache | None = None,
 ) -> DeepSeekReviewer:
     settings = DeepSeekSettings(
         enabled=True,
         base_url="https://api.deepseek.com",
         model="deepseek-v4-flash",
-        challenger_model="deepseek-v4-pro",
-        challenger_limits={"tomorrow": challenger_limit, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,
@@ -352,7 +116,7 @@ def _reviewer(
     )
 
 
-def _budget(path, *, hard_limit: int, challenger_limit: int) -> DeepSeekBudgetLedger:
+def _budget(path, *, hard_limit: int) -> DeepSeekBudgetLedger:
     ledger = DeepSeekBudgetLedger(
         path,
         daily_hard_limit=hard_limit,
@@ -364,7 +128,6 @@ def _budget(path, *, hard_limit: int, challenger_limit: int) -> DeepSeekBudgetLe
         },
         stage_targets={"tomorrow_morning": 0},
         stage_limits={"tomorrow_morning": hard_limit},
-        challenger_limits={"tomorrow": challenger_limit, "d25": 0},
     )
     ledger.initialize()
     return ledger
@@ -443,19 +206,6 @@ def _primary_payload() -> dict[str, object]:
             }
         ],
     }
-
-
-def _challenger_payload() -> dict[str, object]:
-    dimensions = {
-        name: {
-            "verdict": "confirm",
-            "raw_confidence": 0.6,
-            "evidence_ids": ["e-1"],
-            "reason_code": "supported",
-        }
-        for name in DIMENSION_NAMES
-    }
-    return {"results": [{"code": "600001", "dimensions": dimensions}]}
 
 
 class _Response:

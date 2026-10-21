@@ -61,6 +61,7 @@ def SerializeDecisionView(view: DecisionView) -> dict[str, object]:
             "selected_count": view.coverage.selected_count,
             "executable_count": view.coverage.executable_count,
             "observation_count": view.coverage.observation_count,
+            "unavailable_count": view.coverage.unavailable_count,
         },
         "filter_reason_counts": dict(view.filter_reason_counts),
         "pipeline": _serialize_pipeline(view.pipeline),
@@ -156,10 +157,14 @@ def _serialize_pipeline(
 ) -> dict[str, object] | None:
     if pipeline is None:
         return None
+    facts = (
+        {item.stage.value: item for item in pipeline.stage_snapshots} if pipeline.stages[0].key == "local_data" else {}
+    )
     return {
         "current_stage": pipeline.current_stage,
+        "elapsed_ms": pipeline.elapsed_ms,
         "stage_snapshots": [_serialize_stage_snapshot(stage) for stage in pipeline.stage_snapshots],
-        "stages": [_serialize_pipeline_stage(stage) for stage in pipeline.stages],
+        "stages": [_serialize_pipeline_stage(stage, facts.get(stage.key)) for stage in pipeline.stages],
     }
 
 
@@ -176,6 +181,7 @@ def _serialize_stage_snapshot(stage: PipelineStageSnapshot | HistoricalStageSnap
         "rejected_count": stage.rejected_count,
         "pending_count": stage.pending_count,
         "failed_count": stage.failed_count,
+        "not_selected_count": stage.not_selected_count,
         "reasons": [
             {"code": reason.code, "label": reason.label, "count": reason.count, "severity": reason.severity.value}
             for reason in stage.reasons
@@ -187,12 +193,24 @@ def _serialize_stage_snapshot(stage: PipelineStageSnapshot | HistoricalStageSnap
             "latest_success_at": _time(stage.source_health.latest_success_at),
             "age_seconds": stage.source_health.age_seconds,
         },
+        **(
+            {
+                "operation_durations": [
+                    {"operation": name, "duration_ms": duration} for name, duration in stage.operation_durations
+                ]
+            }
+            if stage.operation_durations
+            else {}
+        ),
         "latency_ms": stage.latency_ms,
         "degraded": stage.degraded,
     }
 
 
-def _serialize_pipeline_stage(stage: PipelineStageStatus | HistoricalStageStatus) -> dict[str, object]:
+def _serialize_pipeline_stage(
+    stage: PipelineStageStatus | HistoricalStageStatus,
+    snapshot: PipelineStageSnapshot | HistoricalStageSnapshot | None = None,
+) -> dict[str, object]:
     return {
         "key": stage.key,
         "state": stage.state,
@@ -202,8 +220,31 @@ def _serialize_pipeline_stage(stage: PipelineStageStatus | HistoricalStageStatus
         "threshold": stage.threshold,
         "facets": [_serialize_pipeline_facet(value) for value in stage.facets],
         "reason_counts": [_serialize_pipeline_reason(value) for value in stage.reason_counts],
-        "duration_ms": stage.duration_ms if isinstance(stage, PipelineStageStatus) else None,
-        "rejected_count": stage.rejected_count if isinstance(stage, PipelineStageStatus) else None,
+        "duration_ms": snapshot.latency_ms
+        if snapshot is not None
+        else stage.duration_ms
+        if isinstance(stage, PipelineStageStatus)
+        else None,
+        "rejected_count": snapshot.rejected_count
+        if snapshot is not None
+        else stage.rejected_count
+        if isinstance(stage, PipelineStageStatus)
+        else None,
+        "pending_count": snapshot.pending_count
+        if snapshot is not None
+        else stage.pending_count
+        if isinstance(stage, PipelineStageStatus)
+        else None,
+        "failed_count": snapshot.failed_count
+        if snapshot is not None
+        else stage.failed_count
+        if isinstance(stage, PipelineStageStatus)
+        else None,
+        "not_selected_count": snapshot.not_selected_count
+        if snapshot is not None
+        else stage.not_selected_count
+        if isinstance(stage, PipelineStageStatus)
+        else None,
     }
 
 
@@ -391,6 +432,7 @@ def _serialize_decision_replacement(
             "selected_count": replacement.coverage.selected_count,
             "executable_count": replacement.coverage.executable_count,
             "observation_count": replacement.coverage.observation_count,
+            "unavailable_count": replacement.coverage.unavailable_count,
         },
         "selection_diagnostics": (
             {

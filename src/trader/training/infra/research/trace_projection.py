@@ -142,6 +142,7 @@ def _risk_fact_audit_dict(item: ResearchRiskFactAudit) -> dict[str, object]:
 
 def _candidate_audit_dict(item: ResearchCandidateAudit) -> dict[str, object]:
     return {
+        **({"full_population_scored": item.full_population_scored} if item.full_population_scored is not None else {}),
         "code": item.code,
         "board": item.board,
         "industry": item.industry,

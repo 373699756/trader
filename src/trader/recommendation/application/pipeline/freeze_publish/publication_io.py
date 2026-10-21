@@ -41,10 +41,11 @@ class PublicationIoTarget:
     trade_date: date
     decision_version: str | None
     sequence: int
+    content_hash: str | None = None
 
     @classmethod
     def decision(cls, decision: ScoredDecision) -> PublicationIoTarget:
-        return cls(decision.strategy, decision.trade_date, decision.version, decision.sequence)
+        return cls(decision.strategy, decision.trade_date, decision.version, decision.sequence, decision.content_hash)
 
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:

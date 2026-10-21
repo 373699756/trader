@@ -41,7 +41,7 @@ def test_production_weight_numbers_have_no_validator_copy() -> None:
 
 def test_domain_weight_consumers_do_not_multiply_by_numeric_literals() -> None:
     scoring_path = "src/trader/recommendation/domain/scoring/scoring.py"
-    for function_name in ("BoardCandidateComponents", "ScoreBoardStrategy"):
+    for function_name in ("ScoreBoardStrategy",):
         function = _function(scoring_path, function_name)
         numeric_multipliers = [
             node

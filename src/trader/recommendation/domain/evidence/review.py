@@ -74,7 +74,6 @@ class DeepSeekReview:
     error: str = ""
     rating: str = "neutral"
     review_stage: str = "primary"
-    challenger_status: str = "not_run"
     requested_model: str | None = None
     actual_model: str | None = None
     thinking_mode: str | None = None
@@ -87,13 +86,7 @@ class DeepSeekReview:
     system_fingerprint: str | None = None
     prompt_cache_hit_tokens: int | None = None
     prompt_cache_miss_tokens: int | None = None
-    challenger_requested_model: str | None = None
-    challenger_actual_model: str | None = None
-    challenger_thinking_mode: str | None = None
-    challenger_reasoning_effort: str | None = None
-    challenger_system_fingerprint: str | None = None
-    challenger_prompt_cache_hit_tokens: int | None = None
-    challenger_prompt_cache_miss_tokens: int | None = None
+    cache_reused: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dimensions", MappingProxyType(dict(self.dimensions)))

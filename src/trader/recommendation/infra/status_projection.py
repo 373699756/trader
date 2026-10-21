@@ -128,13 +128,14 @@ def RuntimeStatus(
 def PublicationIoPayload(item: PublicationIoSnapshot) -> dict[str, object]:
     health = item.source_health
     return {
-        "stage": "final_selection",
+        "stage": "action_publish",
         "count_unit": "operation",
         "attempt_id": item.attempt_id,
         "operation": item.operation,
         "strategy": item.target.strategy.value,
         "trade_date": item.target.trade_date.isoformat(),
         "decision_version": item.target.decision_version,
+        "content_hash": item.target.content_hash,
         "sequence": item.target.sequence,
         "output_version": item.output_version,
         "as_of": item.as_of.isoformat(),
@@ -296,6 +297,7 @@ def InputQualityPayload(statuses: tuple[InputQualityStatus, ...]) -> dict[str, o
 
 def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, object]:
     return {
+        "elapsed_ms": pipeline.elapsed_ms,
         "current_stage": pipeline.current_stage,
         "stages": [_pipeline_stage_payload(stage) for stage in pipeline.stages],
     }
@@ -303,6 +305,7 @@ def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, objec
 
 def _stage_snapshot_payload(stage: PipelineStageSnapshot) -> dict[str, object]:
     return {
+        "not_selected_count": stage.not_selected_count,
         "stage": stage.stage.value,
         "stage_order": stage.stage_order,
         "input_batch_id": stage.input_batch_id,
@@ -334,6 +337,15 @@ def _stage_snapshot_payload(stage: PipelineStageSnapshot) -> dict[str, object]:
             ),
             "age_seconds": stage.source_health.age_seconds,
         },
+        **(
+            {
+                "operation_durations": [
+                    {"operation": name, "duration_ms": duration} for name, duration in stage.operation_durations
+                ]
+            }
+            if stage.operation_durations
+            else {}
+        ),
         "latency_ms": stage.latency_ms,
         "degraded": stage.degraded,
     }
@@ -341,6 +353,9 @@ def _stage_snapshot_payload(stage: PipelineStageSnapshot) -> dict[str, object]:
 
 def _pipeline_stage_payload(stage: PipelineStageStatus) -> dict[str, object]:
     return {
+        "pending_count": stage.pending_count,
+        "failed_count": stage.failed_count,
+        "not_selected_count": stage.not_selected_count,
         "key": stage.key,
         "state": stage.state,
         "input_count": stage.input_count,

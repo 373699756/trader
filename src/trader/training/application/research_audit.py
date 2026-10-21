@@ -14,7 +14,6 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
 from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 from trader.recommendation.domain.publication.models import ScoredDisposition
 from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionEntry
-from trader.recommendation.domain.scoring.scoring import CandidateFields
 
 LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit_legacy"
 RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"
@@ -50,6 +49,7 @@ class ResearchCandidateAudit:
     optimistic_upper_bound: float | None = None
     upper_bound_status: Literal["not_computed"] = "not_computed"
     upper_bound_protected: bool = False
+    full_population_scored: bool | None = None
 
     def __post_init__(self) -> None:
         if not all((self.code, self.board, self.industry, self.preselection_status)):
@@ -64,7 +64,7 @@ class ResearchCandidateAudit:
             raise ValueError("Research audit cannot mark upper-bound protection")
         if self.candidate_score is not None:
             _validate_scores(self.candidate_score)
-        components = _score_pairs(self.candidate_components, "candidate")
+        components = _score_pairs(self.candidate_components, "candidate") if self.candidate_components else ()
         object.__setattr__(self, "candidate_components", components)
         object.__setattr__(self, "missing_mask", tuple(sorted(set(self.missing_mask))))
 
@@ -357,28 +357,28 @@ def _hard_filter_aggregates(projection: ScoredLocalProjection) -> tuple[tuple[st
 
 
 def _candidate_audits(projection: ScoredLocalProjection) -> tuple[ResearchCandidateAudit, ...]:
-    required = CandidateFields(projection.local.strategy)
     result: list[ResearchCandidateAudit] = []
     for evaluation in projection.selection.evaluations:
         if evaluation.disposition is ScoredDisposition.REJECT:
             continue
         feature = evaluation.features
-        production_top120 = evaluation.candidate_rank > 0
+        full_population_scored = evaluation.local_score is not None
         result.append(
             ResearchCandidateAudit(
                 code=evaluation.code,
                 board=feature.quote.board.value,
                 industry=feature.quote.industry.strip() or "unknown",
                 candidate_components=tuple(evaluation.candidate_components.items()),
-                missing_mask=tuple(name for name in required if feature.optional_value(name) is None),
-                coverage_ratio=round(1.0 - feature.missing_ratio(required), 6),
+                missing_mask=feature.missing_fields,
+                coverage_ratio=round(feature.board_supported_weight, 6),
                 board_reliability=round(feature.board_data_reliability, 6),
                 candidate_score=evaluation.candidate_score,
                 candidate_rank=evaluation.candidate_audit_rank,
-                production_top120=production_top120,
+                production_top120=False,
+                full_population_scored=full_population_scored,
                 preselection_status=(
-                    "selected_for_full_scoring"
-                    if production_top120
+                    "full_population_scored"
+                    if full_population_scored
                     else evaluation.selection_skip_reason
                     or evaluation.candidate_audit_pruning_reason
                     or "eligible_not_loaded"
@@ -546,6 +546,11 @@ def _string_value(value: object) -> str:
 
 def _candidate_audit_payload(candidate: ResearchCandidateAudit) -> dict[str, object]:
     return {
+        **(
+            {"full_population_scored": candidate.full_population_scored}
+            if candidate.full_population_scored is not None
+            else {}
+        ),
         "code": candidate.code,
         "board": candidate.board,
         "industry": candidate.industry,

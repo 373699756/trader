@@ -14,7 +14,6 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
     BoardCrossSectionRequest,
     BuildBoardCrossSection,
-    CandidateFields,
 )
 from trader.recommendation.infra.normalization.merge import ObservationFromQuote
 
@@ -181,8 +180,6 @@ def FactorAudit(
     )
     consumers: dict[str, set[str]] = {}
     for strategy in (Strategy.TOMORROW, Strategy.D25):
-        for name in CandidateFields(strategy):
-            consumers.setdefault(name, set()).add(strategy.value + ":candidate")
         for weights in inputs.policy.local_component_weights[strategy].values():
             for name, weight in weights.items():
                 if weight > 0:

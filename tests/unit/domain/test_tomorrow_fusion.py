@@ -26,6 +26,7 @@ from trader.recommendation.domain.risk.scored_fusion import (
     DecisionSelectionLimits,
     ScoredDecisionPolicy,
     ScoredDecisionRequest,
+    SelectFixedScoredSeats,
     SelectScoredReviewCandidates,
 )
 
@@ -44,13 +45,13 @@ def test_review_candidates_are_deterministic_bounded_and_exclude_non_pass() -> N
     )
     selection = _selection(tuple(reversed(evaluations)))
 
-    forward = SelectScoredReviewCandidates(selection, _policy())
+    forward = SelectScoredReviewCandidates(SelectFixedScoredSeats(selection.scored_candidates, _policy()), _policy())
     reverse = SelectScoredReviewCandidates(
-        replace(selection, evaluations=tuple(reversed(selection.evaluations))),
+        SelectFixedScoredSeats(tuple(reversed(selection.scored_candidates)), _policy()),
         _policy(),
     )
 
-    assert len(forward) == 28
+    assert len(forward) == 2
     assert tuple(item.code for item in forward) == tuple(item.code for item in reverse)
     assert {"600000", "600001"}.isdisjoint(item.code for item in forward)
     assert all(item.context.near_action_threshold for item in forward)
@@ -66,14 +67,14 @@ def test_review_candidates_exclude_pass_rows_outside_every_documented_predicate(
         )
     )
 
-    assert SelectScoredReviewCandidates(selection, _policy()) == ()
+    assert SelectScoredReviewCandidates(SelectFixedScoredSeats(selection.scored_candidates, _policy()), _policy()) == ()
 
 
 def test_review_context_marks_only_actual_downside_protection_members() -> None:
     ordinary = _evaluation(0, local_score=78.0)
     protected = _evaluation(1, local_score=78.0, values={"trend_breakdown": 1.0})
 
-    selected = SelectScoredReviewCandidates(_selection((ordinary, protected)), _policy())
+    selected = SelectScoredReviewCandidates(SelectFixedScoredSeats((ordinary, protected), _policy()), _policy())
     contexts = {item.code: item.context for item in selected}
 
     assert contexts[ordinary.code].in_protection_set is False
@@ -272,46 +273,17 @@ def test_decision_rejects_risk_fact_from_after_its_observation_time() -> None:
         BuildScoredDecisionEpoch(_request(_selection((evaluation,))))
 
 
-def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
+def test_fixed_seats_keep_board_ceiling_and_allow_one_industry() -> None:
     evaluations = tuple(
-        _evaluation(
-            index,
-            local_score=95.0 - index,
-            board=Board.MAIN if index < 10 else Board.CHINEXT,
-            industry="concentrated" if index < 4 else f"industry-{index}",
-        )
+        _evaluation(index, local_score=95.0 - index, board=Board.MAIN if index < 10 else Board.CHINEXT, industry="same")
         for index in range(16)
     )
-
     epoch = BuildScoredDecisionEpoch(_request(_selection(tuple(reversed(evaluations)))))
-    selected = tuple(item for item in epoch.entries if item.selected)
-    executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
-    by_code = {item.code: item for item in epoch.entries}
-
-    assert len(executable) == 4
-    assert sum(item.features.quote.board is Board.MAIN for item in executable) <= 4
-    assert sum(item.features.quote.industry == "concentrated" for item in executable) <= 2
-    assert tuple(item.rank for item in selected) == tuple(range(1, len(selected) + 1))
-    assert tuple(item.code for item in executable) == ("600000", "600001", "600004", "600005")
-    assert (by_code["600002"].selection_rank, by_code["600002"].decision_skip_reason) == (
-        3,
-        "industry_limit",
-    )
-    assert (by_code["600003"].selection_rank, by_code["600003"].decision_skip_reason) == (
-        4,
-        "industry_limit",
-    )
-    assert (by_code["600006"].selection_rank, by_code["600006"].decision_skip_reason) == (
-        7,
-        "outside_score_top_six",
-    )
-    assert tuple(item.code for item in executable) == tuple(
-        item.code
-        for item in sorted(
-            executable,
-            key=lambda item: (-item.score.final_score, -item.score.local_score, item.code),
-        )
-    )
+    assert tuple(item.code for item in epoch.entries) == ("600000", "600001", "600002", "600003", "600010", "600011")
+    assert all(item.selected for item in epoch.entries)
+    assert [item.rank for item in epoch.entries] == [1, 2, 3, 4, 5, 6]
+    assert sum(item.features.quote.board is Board.MAIN for item in epoch.entries) == 4
+    assert {item.features.quote.industry for item in epoch.entries} == {"same"}
 
 
 def test_observe_only_candidate_still_requires_the_observation_score_floor() -> None:
@@ -331,7 +303,7 @@ def test_observe_only_candidate_still_requires_the_observation_score_floor() -> 
 
     assert by_code["600001"].action is RecommendationAction.UNAVAILABLE
     assert by_code["600001"].action_reason == "below_score_threshold"
-    assert by_code["600001"].selected is False
+    assert by_code["600001"].selected is True
     assert by_code["600002"].action is RecommendationAction.OBSERVE
     assert by_code["600002"].selected is True
 
@@ -371,11 +343,8 @@ def test_decision_epoch_carries_and_enforces_its_selection_limits() -> None:
     assert epoch.selection_limits == DecisionSelectionLimits(
         top_k=6,
         observation_limit=6,
-        maximum_per_industry=2,
         maximum_board_fraction=0.60,
     )
-    with pytest.raises(ValueError, match="exceed their decision limits"):
-        replace(epoch, selection_limits=replace(epoch.selection_limits, top_k=0))
     with pytest.raises(ValueError, match="board limit"):
         replace(epoch, selection_limits=replace(epoch.selection_limits, maximum_board_fraction=0.30))
 
@@ -400,16 +369,13 @@ def test_decision_epoch_rejects_pool_external_backfill_even_when_capacity_is_unc
         else:
             entries.append(item)
 
-    with pytest.raises(ValueError, match="outside its fixed top window"):
+    with pytest.raises(ValueError, match="selection rank must identify the fixed seat"):
         replace(epoch, entries=tuple(entries))
 
 
 @pytest.mark.parametrize(
     ("changes", "message"),
-    (
-        ({"maximum_per_industry": 3}, "industry limit"),
-        ({"maximum_board_fraction": 0.61}, "board fraction"),
-    ),
+    (({"maximum_board_fraction": 0.61}, "board fraction"),),
 )
 def test_decision_policy_cannot_relax_fixed_concentration_limits(
     changes: dict[str, object],
@@ -442,10 +408,9 @@ def _policy() -> ScoredDecisionPolicy:
         executable_threshold=78.0,
         observation_margin=5.0,
         fusion=FusionPolicy(25.0),
-        review_candidate_limit=28,
+        review_candidate_limit=6,
         top_k=6,
         observation_limit=6,
-        maximum_per_industry=2,
         maximum_board_fraction=0.60,
     )
 
@@ -483,7 +448,6 @@ def _selection(evaluations: tuple[ScoredStockEvaluation, ...]) -> ScoredSelectio
         evaluations=evaluations,
         scored_candidates=evaluations,
         observations=tuple(item for item in evaluations if item.disposition is ScoredDisposition.OBSERVE_ONLY),
-        selected=(),
         population_versions={},
     )
 

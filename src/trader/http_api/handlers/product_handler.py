@@ -31,7 +31,6 @@ _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
         "bucket_limit",
         "stage_limit",
         "daily_hard_limit",
-        "challenger_daily_limit",
         "circuit_open",
         "deadline_reached",
         "batch_skipped",

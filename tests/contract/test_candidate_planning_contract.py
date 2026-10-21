@@ -16,16 +16,16 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
     work = _read("docs/3_工程实施.md")
 
     compact_strategy = "".join(strategy.split())
-    assert "资格、候选分和稳定排序只有一个领域所有者" in compact_strategy
-    assert "某项定向行情缺失、过期、结构非法或刷新后不再满足资格/最低分时" in compact_strategy
-    assert "最坏并集为 720 只" in design
-    assert "最终 `ScoredNativeInput.requested_codes` 与候选特征按策略隔离" in design
+    assert "每轮每股只请求一次" in compact_strategy
+    assert "不维护按候选分排序的储备或失败补位" in compact_strategy
+    assert "不设720只并集上限" in design
+    assert "`ScoredNativeInput.requested_codes` 与特征按策略隔离" in design
     assert "candidate_eligibility_before_board_cap" not in work
 
 
 def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     runtime = _read("src/trader/recommendation/application/pipeline/data_source/source_router.py")
-    config = _read("config/strategy.json") + _read("config/candidate.json")
+    config = _read("config/strategy.json")
     settings = _read("src/trader/infra/settings/models.py")
     performance = _read("src/trader/entrypoints/performance.py")
 
@@ -36,13 +36,11 @@ def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     assert "candidate_score(" not in performance
     assert "_CANDIDATE_WEIGHTS" not in performance
     assert "trader.recommendation.application.pipeline.candidate_pool.candidate_builder import" in performance
-    assert "build_candidate_plans" in performance
+    assert "BuildCandidatePlans" in performance
     assert '"board_preselection"' in performance
-    assert "candidate_builder.build_candidate_plans" in performance
     assert '"candidate_union_projection"' in performance
     assert "CandidatePlanSet.physical_union" in performance
-    assert "normalization.merge.overlay_canonical_snapshot" in performance
-    assert '"candidate_rows": 1080' in _read("config/performance.json")
+    assert '"candidate_rows": 5500' in _read("config/performance.json")
 
 
 def test_candidate_quote_cache_is_sized_and_wired_for_the_physical_union() -> None:

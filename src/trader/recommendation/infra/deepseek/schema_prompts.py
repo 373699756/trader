@@ -136,8 +136,6 @@ def StrategyReviewCacheKey(
     dimension_weights = options["dimension_weights"]
     confidence_coverage_min = options["confidence_coverage_min"]
     minimum_known_dimensions = options["minimum_known_dimensions"]
-    challenger_identity = options.get("challenger_identity", "")
-    challenger_status = options.get("challenger_status", "not_run")
     payload = {
         "raw_key": raw_key,
         "strategy": strategy.value,
@@ -145,8 +143,6 @@ def StrategyReviewCacheKey(
         "dimension_weights": sorted((name, round(float(weight), 8)) for name, weight in dimension_weights.items()),
         "confidence_coverage_min": confidence_coverage_min,
         "minimum_known_dimensions": minimum_known_dimensions,
-        "challenger_identity": challenger_identity,
-        "challenger_status": challenger_status,
     }
     return RequestKey(payload)
 

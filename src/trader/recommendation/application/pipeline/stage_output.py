@@ -52,12 +52,15 @@ def StageOutput(
     rejected_count: int = 0,
     pending_count: int = 0,
     failed_count: int = 0,
+    not_selected_count: int = 0,
     reasons: tuple[StageReasonAggregate, ...] = (),
     business_reasons: tuple[StageReasonAggregate, ...] = (),
     source_health: SourceHealth,
-    latency_ms: int,
+    latency_ms: int | None,
     output_batch_id: str | None = None,
 ) -> PipelineStageOutput[_RecordT]:
+    if not isinstance(stage, PipelineStage):
+        raise ValueError("stage output requires an active stage type")
     values = tuple(records)
     state = _state(input_count, len(values), pending_count, failed_count, source_health)
     snapshot = PipelineStageSnapshot(
@@ -72,6 +75,7 @@ def StageOutput(
         rejected_count=rejected_count,
         pending_count=pending_count,
         failed_count=failed_count,
+        not_selected_count=not_selected_count,
         reasons=reasons,
         source_health=source_health,
         latency_ms=latency_ms,
@@ -101,7 +105,7 @@ def _state(
         return StageState.FAILED
     if pending_count and not output_count:
         return StageState.NOT_READY
-    if not input_count:
+    if not input_count and source_health.state.value == "unavailable":
         return StageState.NOT_READY
     if pending_count or failed_count or (output_count and source_health.state.value != "ready"):
         return StageState.DEGRADED
@@ -114,7 +118,10 @@ def MeasuredOutput(
     monotonic: Callable[[], float],
 ) -> PipelineStageOutput[_RecordT]:
     """Attach the elapsed time of the actual operation without mutating its output."""
-    return replace(output, snapshot=replace(output.snapshot, latency_ms=max(0, int((monotonic() - started) * 1000))))
+    elapsed = max(0, int((monotonic() - started) * 1000))
+    return replace(
+        output, snapshot=replace(output.snapshot, latency_ms=elapsed, operation_durations=(("processing", elapsed),))
+    )
 
 
 __all__ = ["PipelineStageOutput", "RequirePreviousStage", "StageOutput", "MeasuredOutput"]

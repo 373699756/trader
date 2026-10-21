@@ -340,7 +340,9 @@ def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None
 def _pipeline_from_json(raw: object) -> HistoricalPipelineAudit | None:
     if raw is None:
         return None
-    value = _object(raw, "recommendation pipeline", required=_PIPELINE_FIELDS, optional=frozenset({"stage_snapshots"}))
+    value = _object(
+        raw, "recommendation pipeline", required=_PIPELINE_FIELDS, optional=frozenset({"stage_snapshots", "elapsed_ms"})
+    )
     stages = []
     for raw_stage in _list(value.get("stages"), "pipeline stages"):
         stage = _object(raw_stage, "pipeline stage", required=_PIPELINE_STAGE_FIELDS)
@@ -389,6 +391,7 @@ def _pipeline_from_json(raw: object) -> HistoricalPipelineAudit | None:
         _text(value, "current_stage"),
         tuple(stages),
         tuple(_snapshot_from_json(item) for item in _list(value.get("stage_snapshots", []), "stage snapshots")),
+        _optional_integer(value.get("elapsed_ms"), "pipeline elapsed time"),
     )
 
 
@@ -396,6 +399,7 @@ def _snapshot_from_json(raw: object) -> HistoricalStageSnapshot:
     value = _object(
         raw,
         "stage snapshot",
+        optional=frozenset({"not_selected_count", "operation_durations"}),
         required=frozenset(
             {
                 "stage",
@@ -454,8 +458,16 @@ def _snapshot_from_json(raw: object) -> HistoricalStageSnapshot:
             _shanghai_datetime(success) if success is not None else None,
             _optional_number(health.get("age_seconds")),
         ),
-        _integer(value, "latency_ms"),
+        _optional_integer(value.get("latency_ms"), "latency_ms"),
         _boolean(value, "degraded"),
+        _optional_integer(value.get("not_selected_count"), "not_selected_count"),
+        tuple(
+            (_text(item, "operation"), _optional_integer(item.get("duration_ms"), "operation duration"))
+            for item in (
+                _object(raw, "operation timing", required=frozenset({"operation", "duration_ms"}))
+                for raw in _list(value.get("operation_durations", []), "operation durations")
+            )
+        ),
     )
 
 

@@ -161,7 +161,7 @@
     board_identity_degraded: "板块分类资料不完整", missing_listing_date: "上市日期缺失",
     missing_listing_age_sessions: "上市交易日数缺失", invalid_pct_change_value: "涨跌幅数据无效",
     board_limit: "超过板块候选名额", board_candidate_limit: "超过板块候选名额",
-    candidate_score_below_minimum: "候选分未达到入池门槛", candidate_core_missing: "候选核心数据缺失",
+    deepseek_eligible: "席内可复核", deepseek_submitted: "提交复核", deepseek_completed: "复核完成", deepseek_cache_reused: "复用已有证据", deepseek_veto: "证据否决", deepseek_source_failed: "复核来源失败",
     strategy_history_insufficient: "策略所需历史交易日不足", production_model_features_missing: "模型输入字段缺失",
     candidate_quotes_pending: "候选行情待补充", security_master_coverage_incomplete: "证券基础资料覆盖不完整",
     below_score_threshold: "最终分低于观察线", filter_observe_only: "数据或风险限制，仅供观察",

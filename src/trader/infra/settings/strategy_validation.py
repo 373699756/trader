@@ -75,14 +75,12 @@ def _validate_selection(settings: StrategySettings) -> None:
         raise ConfigurationError("unsupported board policy identity")
     if settings.selection.maximum_board_fraction != 0.6:
         raise ConfigurationError("maximum board fraction is fixed at 0.6")
-    if settings.selection.maximum_per_industry != 2:
-        raise ConfigurationError("final recommendation industry limit must be 2")
     if settings.selection.competition_group_limits:
         raise ConfigurationError("competition group limits must be disabled")
-    if settings.selection.candidate_min_score != 50.0 or settings.selection.minimum_board_reliability != 0.85:
-        raise ConfigurationError("candidate score and board reliability gates are fixed at 50 and 0.85")
-    if settings.selection.review_candidate_limit != 28:
-        raise ConfigurationError("DeepSeek review candidate limit must be 28")
+    if settings.selection.minimum_board_reliability != 0.85:
+        raise ConfigurationError("board reliability gate is fixed at 0.85")
+    if settings.selection.review_candidate_limit != 6:
+        raise ConfigurationError("DeepSeek review candidate limit must be 6")
     if settings.selection.observation_margin != 5.0:
         raise ConfigurationError("selection observation margin is fixed at 5")
 
@@ -412,12 +410,8 @@ def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> Non
 def _validate_board_weights(settings: StrategySettings) -> None:
     strategies = {"tomorrow", "d25"}
     boards = {"main", "chinext", "star"}
-    if set(settings.board_candidate_weights) != strategies or set(settings.board_local_strategy_weights) != strategies:
+    if set(settings.board_local_strategy_weights) != strategies:
         raise ConfigurationError("board weights must define tomorrow and d25")
-    candidate_components = {
-        "tomorrow": {"liquidity", "trend", "stability", "data_completeness"},
-        "d25": {"liquidity", "trend", "stability", "execution", "data_completeness"},
-    }
     local_components = {
         "tomorrow": {
             "tail_structure",
@@ -430,29 +424,16 @@ def _validate_board_weights(settings: StrategySettings) -> None:
         "d25": {"trend", "quality_value", "stability", "flow_liquidity", "entry_quality"},
     }
     for strategy in strategies:
-        candidate_boards = settings.board_candidate_weights[strategy]
         local_boards = settings.board_local_strategy_weights[strategy]
-        if set(candidate_boards) != boards or set(local_boards) != boards:
+        if set(local_boards) != boards:
             raise ConfigurationError(f"board weights for {strategy} must define all three boards")
         for board in boards:
-            _validate_weight_sum(f"board_candidate_weights.{strategy}.{board}", candidate_boards[board])
             _validate_weight_sum(f"board_local_strategy_weights.{strategy}.{board}", local_boards[board])
-            if set(candidate_boards[board]) != candidate_components[strategy]:
-                raise ConfigurationError(f"board candidate components for {strategy}.{board} are invalid")
             if set(local_boards[board]) != local_components[strategy]:
                 raise ConfigurationError(f"board local components for {strategy}.{board} are invalid")
 
 
 def _validate_component_weights(settings: StrategySettings, strategies: set[str]) -> None:
-    candidate_fields = {
-        "tomorrow": {
-            "stability": {"low_volatility_score", "low_drawdown_score"},
-        },
-        "d25": {
-            "stability": {"low_volatility_score", "low_drawdown_score"},
-            "execution": {"capacity_score", "moderate_amplitude", "price_executability"},
-        },
-    }
     local_fields = {
         "tomorrow": {
             "tail_structure": {"tail_return_30m", "tail_volume_ratio", "close_location"},
@@ -467,12 +448,6 @@ def _validate_component_weights(settings: StrategySettings, strategies: set[str]
             "flow_liquidity": {"amount_percentile_20d", "turnover_shock_score", "amount_shock_score"},
         },
     }
-    _validate_component_weight_family(
-        "candidate_component_weights",
-        settings.candidate_component_weights,
-        candidate_fields,
-        strategies,
-    )
     _validate_component_weight_family(
         "local_component_weights",
         settings.local_component_weights,

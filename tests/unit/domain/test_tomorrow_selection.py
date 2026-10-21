@@ -4,9 +4,11 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import BoardStrategyPolicy, ScoredDisposition, Strategy
+from trader.recommendation.domain.selection import scored_selection
 from trader.recommendation.domain.selection.scored_selection import (
     PlanScoredCandidates,
     ScoredSelectionPolicy,
@@ -51,9 +53,7 @@ def _board_policy(board: Board) -> BoardStrategyPolicy:
         version="tomorrow-policy",
         board=board,
         strategy=Strategy.TOMORROW,
-        candidate_weights=_CANDIDATE_WEIGHTS,
         local_weights=_LOCAL_WEIGHTS,
-        candidate_component_weights=_CANDIDATE_COMPONENT_WEIGHTS,
         local_component_weights=_LOCAL_COMPONENT_WEIGHTS,
     )
 
@@ -81,9 +81,7 @@ def _selection_policy(*, candidate_limit: int = 120, top_k: int = 10) -> ScoredS
         },
         max_age_seconds=60.0,
         local_risk_cap=25.0,
-        candidate_limit_per_board=candidate_limit,
         top_k=top_k,
-        maximum_per_industry=2,
         minimum_local_score=0.0,
     )
 
@@ -165,9 +163,9 @@ def test_tomorrow_selection_keeps_filter_tristate_and_bounds_each_board(
     assert tuple(reason.code for reason in by_code["600000"].filter_reasons) == ("st_or_delisting",)
     assert by_code["600001"].disposition is ScoredDisposition.OBSERVE_ONLY
     assert tuple(flag.code for flag in by_code["600001"].optional_flags) == ("cross_source_deviation",)
-    assert by_code["600002"].selection_skip_reason == "candidate_core_missing"
+    assert by_code["600002"].local_score is not None
     assert by_code["600003"].disposition is ScoredDisposition.OBSERVE_ONLY
-    assert len(result.scored_candidates) == 120
+    assert len(result.scored_candidates) == len(features) - 1
     assert tuple(item.code for item in result.evaluations) == tuple(sorted(item.code for item in result.evaluations))
 
 
@@ -192,12 +190,35 @@ def test_tomorrow_selection_deducts_local_risk_once_and_is_stable(
     assert risky.local_score == round(risky.local_base_score - 5.0, 2)
     assert risky.disposition is ScoredDisposition.OBSERVE_ONLY
     assert risky.selection_skip_reason == "local_risk_veto"
-    assert tuple(item.code for item in forward.selected) == tuple(item.code for item in reverse.selected)
-    # Local selection exposes every executable candidate; final TopK and
-    # concentration are owned by the post-fusion action-pool stage.
-    assert len(forward.selected) == 104
-    assert sum(item.features.quote.industry == "concentrated" for item in forward.selected) == 2
-    assert [item.rank for item in forward.selected] == list(range(1, 105))
+    assert tuple(item.code for item in forward.scored_candidates) == tuple(
+        item.code for item in reverse.scored_candidates
+    )
+    # Local scoring exposes the complete population; the fixed-seat boundary
+    # owns the six seats before optional review and action calculation.
+    assert len(forward.scored_candidates) == 105
+    assert sum(item.features.quote.industry == "concentrated" for item in forward.scored_candidates) == 3
+    assert all(item.rank == 0 for item in forward.scored_candidates)
+
+
+def test_risk_deduction_rounds_only_after_subtracting_unrounded_base(application_feature_factory, monkeypatch) -> None:
+    feature = _features(application_feature_factory, count=1)[0]
+    feature = replace(feature, values={**feature.values, "price_volume_divergence": 2.0})
+    policy = _selection_policy()
+    policy = replace(
+        policy,
+        risk_rules={"price_volume_divergence": replace(policy.risk_rules["price_volume_divergence"], penalty=0.006)},
+    )
+    monkeypatch.setattr(
+        scored_selection,
+        "ScoreBoardStrategy",
+        lambda feature, policy: LocalScoreResult(components={"trend": 82.344}, base_score=82.344),
+    )
+
+    result = SelectScored(_request((feature,), policy)).scored_candidates[0]
+
+    assert result.local_base_score == 82.34
+    assert result.local_risk_penalty == 0.01
+    assert result.local_score == 82.34  # ROUND_HALF_UP(82.344 - 0.006, 2), not 82.33.
 
 
 def test_production_model_ineligible_candidate_does_not_consume_board_limit(
@@ -244,8 +265,8 @@ def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_c
     assert plan.stage_counts.dynamic_filter_eligible == 3
     assert plan.stage_counts.strategy_history_eligible == 2
     assert plan.stage_counts.model_input_eligible == 2
-    assert plan.stage_counts.candidate_score_eligible == 1
-    assert plan.stage_counts.candidate_limit_selected == 1
+    assert plan.stage_counts.scoring_input_eligible == 2
+    assert plan.stage_counts.scoring_input_count == 2
 
 
 def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
@@ -318,7 +339,7 @@ def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
     plan = PlanScoredCandidates(request)
     by_code = {item.code: item for item in plan.evaluations}
 
-    assert plan.limited_codes(3) == tuple(item.quote.code for item in eligible)
+    assert plan.qualified_codes() == ("600012", *(item.quote.code for item in eligible))
     assert {reason.code for reason in by_code[unsupported.quote.code].filter_reasons} == {"unsupported_code"}
     assert {reason.code for reason in by_code[st.quote.code].filter_reasons} == {"st_or_delisting"}
     assert {reason.code for reason in by_code[delisting.quote.code].filter_reasons} == {"st_or_delisting"}
@@ -343,7 +364,7 @@ def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
     assert plan.population_rejected_count == 7
     assert by_code[no_strategy_history.quote.code].selection_skip_reason == "strategy_history_insufficient"
     assert by_code[no_model_input.quote.code].selection_skip_reason == "production_model_features_missing"
-    assert by_code[core_missing.quote.code].selection_skip_reason == "candidate_core_missing"
+    assert by_code[core_missing.quote.code].selection_skip_reason == ""
 
 
 def test_st_and_suspended_rough_leaders_do_not_displace_the_next_three_eligible_codes(
@@ -357,19 +378,15 @@ def test_st_and_suspended_rough_leaders_do_not_displace_the_next_three_eligible_
     plan = PlanScoredCandidates(request)
     repeated = PlanScoredCandidates(replace(request, features=tuple(reversed(features))))
 
-    assert plan.limited_codes(3) == ("600002", "600003", "600004")
-    assert repeated.limited_codes(3) == plan.limited_codes(3)
+    assert plan.qualified_codes() == ("600002", "600003", "600004")
+    assert repeated.qualified_codes() == plan.qualified_codes()
 
 
-def test_tomorrow_selection_records_local_threshold_exclusion(application_feature_factory) -> None:
+def test_local_scoring_does_not_apply_the_action_threshold(application_feature_factory) -> None:
     policy = replace(_selection_policy(top_k=1), minimum_local_score=100.0)
-
     result = SelectScored(_request(_features(application_feature_factory, count=100), policy))
-
-    assert result.selected == ()
-    assert {
-        item.selection_skip_reason for item in result.scored_candidates if item.disposition is ScoredDisposition.PASS
-    } == {"local_score_below_minimum"}
+    assert len(result.scored_candidates) == 100
+    assert all(item.selection_skip_reason != "local_score_below_minimum" for item in result.scored_candidates)
 
 
 def test_tomorrow_selection_uses_full_population_but_scores_only_explicit_candidates(
@@ -408,7 +425,7 @@ def test_explicit_refresh_keeps_candidates_inside_static_boundary(application_fe
 
     plan = PlanScoredCandidates(request)
     assert plan.stage_counts.dynamic_filter_eligible == 1
-    assert plan.limited_codes(3) == (population[1].quote.code,)
+    assert plan.qualified_codes() == (population[1].quote.code,)
     rejected = next(item for item in plan.evaluations if item.code == population[0].quote.code)
     assert rejected.disposition is ScoredDisposition.REJECT
 

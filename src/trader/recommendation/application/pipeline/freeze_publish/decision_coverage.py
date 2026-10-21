@@ -16,6 +16,7 @@ class DecisionCoverage:
     selected_count: int
     executable_count: int
     observation_count: int
+    unavailable_count: int = 0
 
     def __post_init__(self) -> None:
         counts = (
@@ -25,6 +26,7 @@ class DecisionCoverage:
             self.selected_count,
             self.executable_count,
             self.observation_count,
+            self.unavailable_count,
         )
         if any(value < 0 for value in counts):
             raise ValueError("decision coverage counts cannot be negative")
@@ -32,7 +34,7 @@ class DecisionCoverage:
             raise ValueError("decision coverage cannot exceed candidate count")
         if self.selected_count > self.candidate_count:
             raise ValueError("selected decision coverage cannot exceed candidate count")
-        if self.executable_count + self.observation_count != self.selected_count:
+        if self.executable_count + self.observation_count + self.unavailable_count != self.selected_count:
             raise ValueError("decision action coverage must partition selected count")
 
 
@@ -57,6 +59,7 @@ def ScoredDecisionCoverage(decision: ScoredDecision) -> DecisionCoverage:
         selected_count=len(selected),
         executable_count=sum(item.action is RecommendationAction.EXECUTABLE for item in selected),
         observation_count=sum(item.action is RecommendationAction.OBSERVE for item in selected),
+        unavailable_count=sum(item.action is RecommendationAction.UNAVAILABLE for item in selected),
     )
 
 

@@ -65,7 +65,7 @@ def _fixture(*, quotes=None, missing=False, population=None, **options):
 def test_official_population_survives_missing_and_foreign_quotes():
     _, gateway, history, service = _fixture(quotes=(_quote(), _quote("600999")))
     first = service.fetch_market_feature_batch(NOW)
-    assert [(s.input_count, s.output_count) for s in first.static_stages] == [(2, 2)] * 4
+    assert [(s.input_count, s.output_count) for s in first.static_stages] == [(2, 2)] * 2
     assert [f.quote.code for f in first.features] == ["600001"]
     assert history.calls == ["600001"]
     projected = _stage_snapshot_payload(first.dynamic_stage.snapshot)
@@ -74,7 +74,7 @@ def test_official_population_survives_missing_and_foreign_quotes():
     assert "300001" not in repr(projected) and "600999" not in repr(projected)
     gateway._quotes = ()
     empty = service.fetch_market_feature_batch(NOW + timedelta(seconds=10), force=True)
-    assert empty.static_stages[1].reasons[0].code == "static_baseline_reused"
+    assert empty.static_stages[0].operation_durations[0][0] == "cache_reuse"
     assert empty.static_stages[0].source_health.age_seconds == 10
     assert empty.dynamic_stage.snapshot.input_count == empty.dynamic_stage.snapshot.pending_count == 2
     assert empty.dynamic_stage.snapshot.state is StageState.NOT_READY

@@ -47,25 +47,20 @@ NOW = datetime(2026, 8, 11, 14, 40, tzinfo=SHANGHAI)
 
 def pipeline() -> RecommendationPipelineStatus:
     keys = (
-        "input_readiness",
+        "local_data",
+        "static_filter",
+        "dynamic_market",
         "dynamic_filter",
-        "board_cross_section",
-        "strategy_history",
-        "model_input",
-        "candidate_score",
-        "board_limit",
-        "candidate_refresh",
-        "input_coverage",
-        "evidence_score",
-        "model_cost_gate",
+        "market_features",
+        "model_filter",
         "local_score",
-        "deepseek_review",
-        "fusion",
-        "action_gate",
-        "concentration",
+        "local_risk",
+        "fixed_selection",
+        "risk_review",
+        "action_publish",
     )
     return RecommendationPipelineStatus(
-        "concentration",
+        "action_publish",
         tuple(PipelineStageStatus(key, "completed", 1, 1) for key in keys),
     )
 
@@ -141,7 +136,7 @@ def test_formal_record_round_trip_preserves_complete_recommendation_pipeline() -
     assert isinstance(restored.decision.pipeline, HistoricalPipelineAudit)
     assert restored.decision.content_hash == record.decision.content_hash
     assert CommittedRecordBytes(restored) == encoded
-    assert json.loads(encoded)["decision"]["pipeline"]["current_stage"] == "concentration"
+    assert json.loads(encoded)["decision"]["pipeline"]["current_stage"] == "action_publish"
     assert len(json.loads(encoded)["decision"]["pipeline"]["stages"]) == len(PIPELINE_STAGE_ORDER)
 
 
@@ -168,13 +163,21 @@ def stage_snapshots(observed_at: datetime = NOW, *, count: int = 1) -> tuple[Pip
     )
 
 
-def test_fourteen_stage_audit_survives_formal_codec_and_participates_in_hash() -> None:
+def test_eleven_stage_audit_survives_formal_codec_and_participates_in_hash() -> None:
     snapshots = stage_snapshots()
-    current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=snapshots))
+    snapshots = (
+        replace(snapshots[0], latency_ms=0, operation_durations=(("cache_reuse", 0),)),
+        replace(snapshots[1], latency_ms=None),
+        *snapshots[2:],
+    )
+    current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=snapshots, elapsed_ms=1250))
     record = CommittedDecisionRecord(FormalScoredDecision(current), NOW.replace(hour=15, minute=0), "scheduled")
     restored = CommittedRecordFromBytes(CommittedRecordBytes(record))
     assert isinstance(restored.decision.pipeline, HistoricalPipelineAudit)
     assert restored.version == record.version and restored.payload_hash == record.payload_hash
+    from trader.http_api.response.decision_projection import _serialize_pipeline
+
+    assert _serialize_pipeline(current.pipeline) == _serialize_pipeline(restored.decision.pipeline)
     assert CommittedRecordBytes(restored) == CommittedRecordBytes(record)
     assert tuple(item.stage.value for item in restored.decision.pipeline.stage_snapshots) == tuple(
         item.stage.value for item in snapshots
@@ -416,9 +419,9 @@ def test_formal_projection_retains_scored_leader_even_when_it_is_avoided() -> No
             replace(
                 decision().items[0],
                 action=RecommendationAction.UNAVAILABLE,
-                selected=False,
-                rank=0,
-                selection_rank=0,
+                selected=True,
+                rank=1,
+                selection_rank=1,
             ),
         ),
         selection_diagnostics=SelectionDiagnostics(
@@ -441,7 +444,7 @@ def test_formal_projection_retains_scored_leader_even_when_it_is_avoided() -> No
     )
 
     assert len(formal.items) == 1
-    assert formal.items[0].selected is False
+    assert formal.items[0].selected is True
     assert restored.decision.items == formal.items
     assert restored.decision.selection_diagnostics is not None
     assert restored.decision.selection_diagnostics.evaluated_count == 239

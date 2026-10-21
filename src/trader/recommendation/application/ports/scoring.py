@@ -27,7 +27,6 @@ class ScoredNativeInput:
     candidate_features: tuple[FeatureSnapshot, ...]
     preselect_max_age_seconds: float
     score_max_age_seconds: float
-    candidate_pool_size: int
     input_version: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -87,8 +86,6 @@ def _validate_identity_and_limits(
         raise ValueError("scored native input trade date must match evaluation time")
     if not native_input.phase or not native_input.data_version or not native_input.config_version:
         raise ValueError("scored native input identities must not be empty")
-    if native_input.candidate_pool_size < 1:
-        raise ValueError("scored native candidate pool size must be positive")
     if native_input.preselect_max_age_seconds < 0 or native_input.score_max_age_seconds < 0:
         raise ValueError("scored native quote age limits cannot be negative")
 

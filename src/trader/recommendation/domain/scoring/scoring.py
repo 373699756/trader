@@ -30,10 +30,8 @@ from trader.recommendation.domain.publication.models import (
 from trader.recommendation.domain.scoring.scoring_calculations import (
     MAX_FALLBACK_SESSIONS,
     MIN_BOARD_SAMPLE,
-    CandidateFields,
     SupportedWeight,
     _base_reliability,
-    _candidate_fields,
     _default_competition_group,
     _distributions,
     _liquidity_bucket,
@@ -350,55 +348,6 @@ def EnrichBoardFeatures(
     return ApplyBoardPolicy(cross_section, strategy, policy)
 
 
-def BoardCandidateScore(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> float:
-    return BoardCandidateScoreFromComponents(BoardCandidateComponents(snapshot, policy), policy)
-
-
-def BoardCandidateScoreFromComponents(
-    components: Mapping[str, float],
-    policy: BoardStrategyPolicy,
-) -> float:
-    """Compose already-derived candidate components with the configured board weights."""
-
-    return Compose(components, policy.candidate_weights).base_score
-
-
-def BoardCandidateComponents(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> Mapping[str, float]:
-    """Return the exact candidate components consumed by the board policy."""
-
-    if snapshot.quote.board is not policy.board or policy.strategy is Strategy.LONG:
-        raise ValueError("board candidate policy does not match snapshot")
-    completeness = 100.0 * (1.0 - snapshot.missing_ratio(tuple(_candidate_fields(policy.strategy))))
-    if policy.strategy is Strategy.TOMORROW:
-        values = {
-            "liquidity": snapshot.value("amount_percentile_20d"),
-            "trend": snapshot.value("trend_score"),
-            "stability": _weighted_known(
-                snapshot,
-                ("low_volatility_score", "low_drawdown_score"),
-                policy.candidate_component_weights["stability"],
-            ),
-            "data_completeness": completeness,
-        }
-    else:
-        values = {
-            "liquidity": snapshot.value("amount_percentile_20d"),
-            "trend": snapshot.value("trend_score"),
-            "stability": _weighted_known(
-                snapshot,
-                ("low_volatility_score", "low_drawdown_score"),
-                policy.candidate_component_weights["stability"],
-            ),
-            "execution": _weighted_known(
-                snapshot,
-                ("capacity_score", "moderate_amplitude", "price_executability"),
-                policy.candidate_component_weights["execution"],
-            ),
-            "data_completeness": completeness,
-        }
-    return values
-
-
 def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> LocalScoreResult:
     if snapshot.quote.board is not policy.board:
         raise ValueError("board score policy does not match snapshot board")
@@ -515,11 +464,7 @@ __all__ = [
     "MAX_FALLBACK_SESSIONS",
     "MIN_BOARD_SAMPLE",
     "ApplyBoardPolicy",
-    "BoardCandidateScore",
-    "BoardCandidateScoreFromComponents",
-    "BoardCandidateComponents",
     "BuildBoardCrossSection",
-    "CandidateFields",
     "EnrichBoardFeatures",
     "ProjectBoardPolicy",
     "ScoreBoardStrategy",

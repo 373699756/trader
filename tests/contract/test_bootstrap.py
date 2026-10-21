@@ -32,8 +32,6 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.schedule import SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import TradingCalendarRuntimeStatus
 from trader.recommendation.domain.evidence.pipeline import (
-    PipelineFacet,
-    PipelineMetricRange,
     PipelineStage,
     PipelineStageSnapshot,
     PipelineStageStatus,
@@ -95,7 +93,7 @@ def test_pipeline_batch_continuity_requires_matching_counts() -> None:
         for index, stage in enumerate(PipelineStage, start=1)
     )
     with pytest.raises(ValueError, match="counts are not continuous"):
-        ValidateStageBatchContinuity((*stages[:3], replace(stages[3], input_count=2), *stages[4:]))
+        ValidateStageBatchContinuity((*stages[:3], replace(stages[3], input_count=2, pending_count=1), *stages[4:]))
 
 
 def _config(tmp_path: Path) -> Path:
@@ -477,73 +475,23 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
             highest_final_score=74.25,
         ),
         pipeline=RecommendationPipelineStatus(
-            current_stage="action_gate",
-            stages=(
-                PipelineStageStatus("input_readiness", "completed", 5200, 5100),
-                PipelineStageStatus("dynamic_filter", "completed", 5100, 4800),
-                PipelineStageStatus("board_cross_section", "completed", 4800, 4800),
-                PipelineStageStatus("strategy_history", "completed", 4800, 4300),
-                PipelineStageStatus("model_input", "completed", 4300, 4200),
+            current_stage="action_publish",
+            stages=tuple(
                 PipelineStageStatus(
-                    "candidate_score",
+                    stage.value,
                     "completed",
-                    4200,
-                    900,
-                    metric_ranges=(PipelineMetricRange("candidate_score", 48.5, 82.25),),
-                    threshold=50.0,
-                ),
-                PipelineStageStatus("board_limit", "completed", 900, 360),
-                PipelineStageStatus(
-                    "candidate_refresh",
-                    "completed",
-                    360,
-                    352,
-                    duration_ms=128.5,
-                    rejected_count=3,
-                ),
-                PipelineStageStatus(
-                    "input_coverage",
-                    "degraded",
-                    360,
-                    None,
-                    facets=(
-                        PipelineFacet("candidate_features", 352, 360),
-                        PipelineFacet("security_master", 74, 360),
-                        PipelineFacet("history", 352, 360),
-                    ),
-                ),
-                PipelineStageStatus(
-                    "evidence_score",
-                    "completed",
-                    352,
-                    65,
-                    metric_ranges=(PipelineMetricRange("base_score", 44.5, 74.25),),
-                ),
-                PipelineStageStatus("model_cost_gate", "completed", 65, 54),
-                PipelineStageStatus("local_score", "completed", 65, 65),
-                PipelineStageStatus("deepseek_review", "pending", 20, None),
-                PipelineStageStatus("fusion", "completed", 65, 65),
-                PipelineStageStatus(
-                    "action_gate",
-                    "completed",
-                    65,
-                    2,
-                    facets=(
-                        PipelineFacet("executable_threshold_met", 3, 65),
-                        PipelineFacet("observation_threshold_met", 12, 65),
-                        PipelineFacet("action_executable", 0, 65),
-                        PipelineFacet("action_observe", 2, 65),
-                        PipelineFacet("action_unavailable", 63, 65),
-                    ),
-                ),
-                PipelineStageStatus(
-                    "concentration",
-                    "completed",
-                    2,
-                    2,
-                    facets=(PipelineFacet("selected_observe", 2, 2),),
-                ),
+                    1,
+                    1,
+                    duration_ms=135,
+                    rejected_count=0,
+                    pending_count=0,
+                    failed_count=0,
+                    not_selected_count=0,
+                )
+                for stage in PipelineStage
             ),
+            stage_snapshots=stage_snapshots,
+            elapsed_ms=1250,
         ),
         stage_snapshots=stage_snapshots,
         candidate_count=360,
@@ -569,26 +517,16 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         "highest_final_score": 74.25,
     }
     pipeline = payload["tomorrow"]["pipeline"]
-    assert pipeline["current_stage"] == "action_gate"
+    assert pipeline["current_stage"] == "action_publish"
+    assert pipeline["elapsed_ms"] == 1250
     stages = {stage["key"]: stage for stage in pipeline["stages"]}
-    assert stages["input_readiness"]["input_count"] == 5200
-    assert stages["input_readiness"]["output_count"] == 5100
-    assert stages["dynamic_filter"]["input_count"] == 5100
-    assert stages["dynamic_filter"]["output_count"] == 4800
-    assert stages["candidate_refresh"]["output_count"] == 352
-    assert stages["candidate_refresh"]["duration_ms"] == 128.5
-    assert stages["candidate_refresh"]["rejected_count"] == 3
-    assert stages["evidence_score"]["output_count"] == 65
-    assert stages["candidate_score"]["metric_ranges"] == [
-        {"metric": "candidate_score", "minimum": 48.5, "maximum": 82.25}
-    ]
+    assert tuple(stages) == tuple(stage.value for stage in PipelineStage)
+    assert stages["local_data"]["duration_ms"] == 135
+    assert stages["fixed_selection"]["not_selected_count"] == 0
     assert payload["tomorrow"]["history_required_sessions"] == 61
     snapshots = payload["tomorrow"]["stage_snapshots"]
     assert [stage["stage"] for stage in snapshots] == [stage.value for stage in PipelineStage]
-    assert snapshots[-1]["stage"] == "final_selection"
-    action_facets = {facet["key"]: facet for facet in stages["action_gate"]["facets"]}
-    assert action_facets["observation_threshold_met"]["count"] == 12
-    assert action_facets["executable_threshold_met"]["count"] == 3
+    assert snapshots[-1]["stage"] == "action_publish"
     assert payload["tomorrow"]["candidate_optional_reason_counts"] == {
         "missing_listing_age_sessions": 65,
         "missing_listing_date": 221,

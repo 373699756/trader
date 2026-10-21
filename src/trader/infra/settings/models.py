@@ -48,7 +48,6 @@ class MarketDataSettings:
     candidate_timeout_seconds: float
     research_timeout_seconds: float
     minimum_market_rows: int
-    candidate_pool_size: int
     single_flight: bool
     circuit_breaker_failures: int
     circuit_breaker_seconds: int
@@ -110,8 +109,6 @@ class DeepSeekSettings:
     enabled: bool
     base_url: str
     model: str
-    challenger_model: str
-    challenger_limits: Mapping[str, int]
     timeout_seconds: float
     batch_size: int
     max_tokens: int
@@ -120,7 +117,6 @@ class DeepSeekSettings:
     stage_targets: Mapping[str, int]
     stage_limits: Mapping[str, int]
     api_key: str = field(default="", repr=False)
-    challenger_daily_limit: int = 8
     adaptive: DeepSeekAdaptiveSettings = field(default_factory=DeepSeekAdaptiveSettings)
 
 
@@ -165,12 +161,10 @@ class FusionSettings:
 class SelectionSettings:
     default_top_k: int
     maximum_top_k: int
-    maximum_per_industry: int
     observation_margin: float
     thresholds: Mapping[str, float]
     maximum_board_fraction: float
     competition_group_limits: Mapping[str, int]
-    candidate_min_score: float
     minimum_board_reliability: float
     review_candidate_limit: int
 
@@ -233,9 +227,7 @@ class StrategySettings:
     long_research: LongResearchPolicy
     dimension_weights: Mapping[str, Mapping[str, float]]
     board_policy_version: str
-    board_candidate_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
     board_local_strategy_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
-    candidate_component_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
     local_component_weights: Mapping[str, Mapping[str, Mapping[str, float]]]
     feature_component_weights: FeatureComponentWeightPolicy
     risk_rules: tuple[RiskRuleSettings, ...]

@@ -282,7 +282,7 @@ def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons
     assert dict(view.filter_reason_counts) == {"hard_filter": 10}
 
 
-def test_frozen_empty_recommendations_keep_scored_leader_for_research() -> None:
+def test_formal_projection_does_not_promote_unselected_research_rows() -> None:
     trade_date = date(2026, 8, 8)
     item = replace(
         _decision(trade_date=trade_date).items[0],
@@ -320,7 +320,7 @@ def test_frozen_empty_recommendations_keep_scored_leader_for_research() -> None:
 
     history = queries.history(Strategy.TOMORROW, trade_date)
 
-    assert [(item.code, item.rank, item.selected) for item in history.items] == [("600000", 1, False)]
+    assert [(item.code, item.rank, item.selected) for item in history.items] == []
     assert history.coverage.evaluated_count == 239
     assert history.selection_diagnostics is not None
     assert history.selection_diagnostics.maximum_final_score == 97.44
@@ -328,27 +328,22 @@ def test_frozen_empty_recommendations_keep_scored_leader_for_research() -> None:
 
 def test_frozen_history_exposes_the_persisted_pipeline_without_runtime_status() -> None:
     keys = (
-        "input_readiness",
+        "local_data",
+        "static_filter",
+        "dynamic_market",
         "dynamic_filter",
-        "board_cross_section",
-        "strategy_history",
-        "model_input",
-        "candidate_score",
-        "board_limit",
-        "candidate_refresh",
-        "input_coverage",
-        "evidence_score",
-        "model_cost_gate",
+        "market_features",
+        "model_filter",
         "local_score",
-        "deepseek_review",
-        "fusion",
-        "action_gate",
-        "concentration",
+        "local_risk",
+        "fixed_selection",
+        "risk_review",
+        "action_publish",
     )
     decision = replace(
         _decision(trade_date=date(2026, 8, 8)),
         pipeline=RecommendationPipelineStatus(
-            "concentration",
+            "action_publish",
             tuple(PipelineStageStatus(key, "completed", 1, 1) for key in keys),
         ),
     )
@@ -392,7 +387,7 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
     ]
 
 
-def test_top_scores_break_final_score_ties_by_local_score_then_code() -> None:
+def test_top_scores_preserve_fixed_seat_rank() -> None:
     index = UnifiedDecisionIndex()
     parent = _decision()
     decision = replace(
@@ -413,7 +408,7 @@ def test_top_scores_break_final_score_ties_by_local_score_then_code() -> None:
         Strategy.TOMORROW
     )
 
-    assert [item.code for item in view.top_scores] == ["600002", "600003", "600001"]
+    assert [item.code for item in view.top_scores] == ["600001", "600002", "600003"]
 
 
 def test_not_ready_current_exposes_observation_draft_without_formal_items() -> None:

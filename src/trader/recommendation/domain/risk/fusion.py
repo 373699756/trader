@@ -88,6 +88,23 @@ def FuseScore(request: FusionRequest) -> FusionResult:
     _validate_policy(policy)
     local_risk_penalty = AggregateRiskPenalty(request.local_risk_facts, cap=policy.local_risk_cap)
     local_score = _bounded_decimal(Decimal(str(request.local.base_score)) - Decimal(str(local_risk_penalty)))
+    score = ScoreBreakdown(
+        components=request.local.components,
+        base_score=RoundScore(request.local.base_score),
+        local_risk_penalty=RoundScore(local_risk_penalty),
+        local_score=RoundScore(local_score),
+        deepseek_score=None,
+        confidence_coverage=0.0,
+        deepseek_risk_penalty=0.0,
+        final_score=RoundScore(local_score),
+        fusion_mode=request.fusion_mode,
+        fusion_applied=False,
+    )
+    return ApplyStructuredReview(score, request)
+
+
+def ApplyStructuredReview(score: ScoreBreakdown, request: FusionRequest) -> FusionResult:
+    """Apply evidence-backed review to an already risk-deducted local score."""
     mapped_risk_facts: tuple[RiskFact, ...] = ()
     veto = any(fact.veto for fact in request.local_risk_facts)
     if (
@@ -108,22 +125,7 @@ def FuseScore(request: FusionRequest) -> FusionResult:
         mapped_risk_facts = tuple(replace(fact, penalty=0.0) for fact in mapped_risk_facts)
         veto = veto or mapped_veto
 
-    return FusionResult(
-        score=ScoreBreakdown(
-            components=request.local.components,
-            base_score=RoundScore(request.local.base_score),
-            local_risk_penalty=RoundScore(local_risk_penalty),
-            local_score=RoundScore(local_score),
-            deepseek_score=None,
-            confidence_coverage=0.0,
-            deepseek_risk_penalty=0.0,
-            final_score=RoundScore(local_score),
-            fusion_mode=request.fusion_mode,
-            fusion_applied=False,
-        ),
-        deepseek_risk_facts=mapped_risk_facts,
-        veto=veto,
-    )
+    return FusionResult(score, mapped_risk_facts, veto)
 
 
 def _bounded_decimal(value: Decimal) -> Decimal:
@@ -144,4 +146,5 @@ __all__ = [
     "FusionRequest",
     "FusionResult",
     "FuseScore",
+    "ApplyStructuredReview",
 ]

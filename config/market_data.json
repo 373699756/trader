@@ -6,7 +6,6 @@
     "candidate_timeout_seconds": 3,
     "research_timeout_seconds": 8,
     "minimum_market_rows": 1000,
-    "candidate_pool_size": 120,
     "single_flight": true,
     "circuit_breaker_failures": 3,
     "circuit_breaker_seconds": 30,

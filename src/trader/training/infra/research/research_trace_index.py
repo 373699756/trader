@@ -692,6 +692,7 @@ def _candidate_audit(raw: dict[str, object]) -> ResearchCandidateAudit:
         candidate_score=_optional_number(raw.get("candidate_score")),
         candidate_rank=_integer(raw, "candidate_rank"),
         production_top120=_boolean(raw, "production_top120"),
+        full_population_scored=_boolean(raw, "full_population_scored") if "full_population_scored" in raw else None,
         preselection_status=_text(raw, "preselection_status"),
         optimistic_upper_bound=_optional_number(raw.get("optimistic_upper_bound")),
         upper_bound_status=cast(Literal["not_computed"], _text(raw, "upper_bound_status")),

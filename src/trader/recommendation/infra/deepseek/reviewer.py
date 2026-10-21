@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
 
@@ -291,18 +291,6 @@ class DeepSeekReviewer:
             self._budget.set_batch_cache_hits(batch_id, cache_hits)
             self._status.set_cache_hits(cache_hits)
             slice_statuses, physical_attempts, last_error = self._run_primary_batches(execution, missing, results)
-            challenger_attempts = self._requests.run_challenger(
-                strategy,
-                unique_candidates,
-                results,
-                contexts=contexts,
-                phase=phase,
-                deadline=deadline,
-                planned_bucket=planned_bucket,
-                emergency_reason=emergency_reason,
-                batch_id=batch_id,
-            )
-            physical_attempts += challenger_attempts
             batch_status = _aggregate_batch_status(slice_statuses, cache_hits=cache_hits)
             self._status.finish_batch(
                 BudgetBatchCompletion(
@@ -423,7 +411,9 @@ class DeepSeekReviewer:
             if classified is None:
                 classified = self._requests.classify(annotated, execution.strategy)
                 self._cache.put_fusion(fusion_key, classified)
-            results[candidate.quote.code] = self._annotate_primary(classified, candidate, execution)
+            results[candidate.quote.code] = replace(
+                self._annotate_primary(classified, candidate, execution), cache_reused=True
+            )
         ordered_missing = [item[2] for item in sorted(missing, key=lambda item: (item[0], item[1]))]
         cache_hits = sum(
             review.outcome in _SUCCESSFUL_CANDIDATE_OUTCOMES and review.error != "insufficient_structured_features"
@@ -577,7 +567,6 @@ class DeepSeekReviewer:
             review,
             candidate=candidate,
             review_stage="primary",
-            challenger_status="not_run",
             requested_model=execution.requested_model,
             actual_model=response.actual_model if response is not None else None,
             thinking_mode=execution.thinking_mode,

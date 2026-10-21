@@ -97,12 +97,10 @@ class LocalDecisionBuilder(DecisionBuilderPort):
         inputs: AcceptedScoringInputs,
         *,
         config_version: str,
-        candidate_pool_size: int,
         dependencies: DecisionBuildDependencies,
     ) -> None:
         self._inputs = inputs
         self._config_version = config_version
-        self._candidate_pool_size = max(1, candidate_pool_size)
         self._policy = dependencies.policy
         self._draft_index = dependencies.draft_index
         self._now = dependencies.now
@@ -149,6 +147,16 @@ class LocalDecisionBuilder(DecisionBuilderPort):
                 hard_filter=self._policy.hard_filter,
             )
             quality_stage = MeasuredOutput(quality_stage, started, self._monotonic)
+            validation_ms = quality_stage.snapshot.latency_ms
+            prepared = batch.candidate_stage.snapshot
+            quality_stage = replace(
+                quality_stage,
+                snapshot=replace(
+                    quality_stage.snapshot,
+                    latency_ms=(prepared.latency_ms or 0) + (validation_ms or 0),
+                    operation_durations=(*prepared.operation_durations, ("validation", validation_ms)),
+                ),
+            )
             native_input = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
                 batch.request.trade_date,
                 batch.request.phase,
@@ -160,7 +168,6 @@ class LocalDecisionBuilder(DecisionBuilderPort):
                 batch.candidate_features,
                 30.0,
                 30.0,
-                self._candidate_pool_size,
             )
             projection = self._local_scoring.score(
                 native_input,
@@ -180,12 +187,31 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             projection,
             batch.candidate_stage_counts,
             candidate_quote_eligible=batch.candidate_quote_eligible,
-            candidate_score_threshold=self._policy.selection.candidate_min_score,
-            input_stages=(*batch.input_stages, quality_stage.snapshot),
+            input_stages=(*batch.input_stages[:-1], quality_stage.snapshot),
+        )
+        quality_status = replace(
+            quality_status,
+            pipeline=replace(
+                quality_status.pipeline,
+                elapsed_ms=(
+                    max(0, int((self._monotonic() - batch.started_monotonic) * 1000))
+                    if batch.started_monotonic is not None
+                    else None
+                ),
+            ),
         )
         projection = replace(
             projection,
-            local=replace(projection.local, pipeline=quality_status.pipeline),
+            started_monotonic=batch.started_monotonic,
+            local=replace(
+                projection.local,
+                input_versions=(
+                    *projection.local.input_versions,
+                    ("session_generation", str(batch.quality_identity.generation)),
+                    ("source_revision", str(batch.quality_identity.source_revision)),
+                ),
+                pipeline=quality_status.pipeline,
+            ),
         )
         with SessionGuard(request.session), self._lock:
             accepted = self._inputs.replace_quality(
@@ -248,8 +274,18 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             current.quality,
             projection,
             decision,
-            candidate_score_threshold=self._policy.selection.candidate_min_score,
             scored_stages=review.stages,
+        )
+        quality = replace(
+            quality,
+            pipeline=replace(
+                quality.pipeline,
+                elapsed_ms=(
+                    max(0, int((self._monotonic() - projection.started_monotonic) * 1000))
+                    if projection.started_monotonic is not None
+                    else None
+                ),
+            ),
         )
         decision = replace(decision, pipeline=quality.pipeline)
         if not self._inputs.replace_quality(

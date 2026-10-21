@@ -23,25 +23,18 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError
-from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import ReviewOutcome
 from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.recommendation.domain.publication.models import FusionMode, Strategy
-from trader.recommendation.domain.risk.fusion import FuseScore, FusionPolicy, FusionRequest
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.rules import Rating
 from trader.recommendation.infra.deepseek.budget import SCHEMA_VERSION as BUDGET_SCHEMA_VERSION
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
 from trader.recommendation.infra.deepseek.cache import ReviewCache, ReviewCacheStatus
-from trader.recommendation.infra.deepseek.challenger import (
-    ChallengerDimensionVerdict,
-    ChallengerReview,
-    MergeChallengerReview,
-)
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.evidence_router import RoutePromptEvidence
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
@@ -216,81 +209,6 @@ def test_prompt_evidence_router_applies_slots_and_point_in_time_validation() -> 
     assert sum(item.evidence_type == "news" for item in routed.evidence) == 7
     assert "future_evidence" in routed.exclusion_reasons
     assert "missing_data_version" in routed.exclusion_reasons
-
-
-@pytest.mark.parametrize(
-    ("verdict", "expected_unknown", "expected_confidence"),
-    [("confirm", False, 0.6), ("contradict", True, 0.0), ("insufficient", False, 0.8)],
-)
-def test_challenger_merge_is_conservative(
-    verdict: str,
-    expected_unknown: bool,
-    expected_confidence: float,
-) -> None:
-    candidate = _candidate_with_evidence()
-    primary = ParseReviews(json.dumps(_valid_payload(candidate.quote.code)), [candidate], NOW)[candidate.quote.code]
-    dimension = replace(primary.dimensions["market_flow"], confidence=0.8)
-    primary = replace(primary, dimensions={**primary.dimensions, "market_flow": dimension})
-    challenge = ChallengerReview(
-        code=candidate.quote.code,
-        dimensions={
-            "market_flow": ChallengerDimensionVerdict(
-                verdict=verdict,
-                raw_confidence=0.6,
-                evidence_ids=(candidate.evidence[0].evidence_id,),
-                reason_code="evidence_check",
-            )
-        },
-        completed_at=NOW,
-    )
-
-    merged = MergeChallengerReview(primary, challenge, candidate)
-
-    assert merged.dimensions["market_flow"].is_unknown is expected_unknown
-    assert merged.dimensions["market_flow"].confidence == expected_confidence
-    assert merged.challenger_status == "applied"
-
-
-@pytest.mark.parametrize("verdict", ("confirm", "contradict"))
-def test_challenger_cannot_raise_negative_evidence_or_fused_score(verdict: str) -> None:
-    candidate = _candidate_with_evidence()
-    primary = ParseReviews(json.dumps(_valid_payload(candidate.quote.code)), [candidate], NOW)[candidate.quote.code]
-    negative = replace(primary.dimensions["market_flow"], score=20.0, confidence=0.8)
-    primary = replace(primary, dimensions={**primary.dimensions, "market_flow": negative})
-    challenge = ChallengerReview(
-        code=candidate.quote.code,
-        dimensions={
-            "market_flow": ChallengerDimensionVerdict(
-                verdict=verdict,
-                raw_confidence=0.9,
-                evidence_ids=(candidate.evidence[0].evidence_id,),
-                reason_code="evidence_check",
-            )
-        },
-        completed_at=NOW,
-    )
-
-    merged = MergeChallengerReview(primary, challenge, candidate)
-    policy = FusionPolicy(25.0)
-
-    def fused_score(review):
-        return FuseScore(
-            FusionRequest(
-                local=LocalScoreResult({"fixture": 80.0}, 80.0),
-                local_risk_facts=(),
-                review=review,
-                risk_rules={},
-                fusion_mode=FusionMode.HYBRID,
-                policy=policy,
-            )
-        ).score
-
-    before = fused_score(primary)
-    after = fused_score(merged)
-
-    assert merged.dimensions["market_flow"] == negative
-    assert after.deepseek_score == before.deepseek_score
-    assert after.final_score == before.final_score
 
 
 def test_http_retry_reserves_each_physical_attempt() -> None:
@@ -771,7 +689,6 @@ def test_reviewer_injects_audit_metadata_when_disabled(tmp_path) -> None:
     assert review.outcome is ReviewOutcome.REJECTED
     assert review.error == "disabled"
     assert review.review_stage == "primary"
-    assert review.challenger_status == "not_run"
     assert review.requested_model == _settings().model
     assert review.actual_model is None
     assert review.thinking_mode == "standard"
@@ -1329,8 +1246,6 @@ def _settings() -> DeepSeekSettings:
         enabled=True,
         base_url="https://api.deepseek.example/v1",
         model="deepseek-v4-flash",
-        challenger_model="deepseek-v4-pro",
-        challenger_limits={"tomorrow": 0, "d25": 0},
         timeout_seconds=1.0,
         batch_size=8,
         max_tokens=256,

@@ -177,12 +177,7 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
 
 
 def _policy(recommendation_policy):
-    candidate = {
-        "liquidity": 0.4,
-        "trend": 0.3,
-        "stability": 0.2,
-        "data_completeness": 0.1,
-    }
+
     local = {
         "tail_structure": 0.2,
         "turnover_flow": 0.1,
@@ -195,13 +190,7 @@ def _policy(recommendation_policy):
     return replace(
         recommendation_policy,
         board_policy_version="tomorrow-policy",
-        board_candidate_weights={Strategy.TOMORROW: {board: candidate for board in boards}},
         board_local_strategy_weights={Strategy.TOMORROW: {board: local for board in boards}},
-        candidate_component_weights={
-            Strategy.TOMORROW: {
-                "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
-            }
-        },
         local_component_weights={
             Strategy.TOMORROW: {
                 "tail_structure": {
@@ -220,7 +209,6 @@ def _policy(recommendation_policy):
         },
         selection=replace(
             recommendation_policy.selection,
-            candidate_min_score=50.0,
             minimum_board_reliability=0.85,
             thresholds={**recommendation_policy.selection.thresholds, "tomorrow": 0.0},
         ),

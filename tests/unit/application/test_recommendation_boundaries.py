@@ -159,12 +159,11 @@ def test_market_adapter_uses_candidate_and_local_boundaries(application_feature_
     observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
     feature = application_feature_factory("600001", observed_at - timedelta(seconds=1))
     policy = _runtime_policy()
-    candidate = _RecordingCandidateFiltering(CandidateFilteringService(policy, None, 1))
+    candidate = _RecordingCandidateFiltering(CandidateFilteringService(policy, None))
     local = _RecordingLocalScoring(LocalScoringService())
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        candidate_pool_size=1,
         decision_build=CycleFixtureDependencies(
             _decision_build().long_runtime,
             policy,

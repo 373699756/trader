@@ -2,7 +2,7 @@
   "performance_budgets": {
     "workload": {
       "market_rows": 5500,
-      "candidate_rows": 1080
+      "candidate_rows": 5500
     },
     "rounds": {
       "warmup": 1,

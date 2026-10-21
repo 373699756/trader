@@ -58,11 +58,10 @@ class CycleFixture:
 
 
 def build_cycle_fixture(
-    market: MarketReader, *, config_version: str, candidate_pool_size: int, decision_build: CycleFixtureDependencies
+    market: MarketReader, *, config_version: str, decision_build: CycleFixtureDependencies
 ) -> CycleFixture:
     inputs = MarketInputCoordinator(
         market,
-        candidate_pool_size=candidate_pool_size,
         dependencies=InputRefreshDependencies(
             decision_build.long_runtime,
             decision_build.policy,
@@ -75,7 +74,6 @@ def build_cycle_fixture(
     decisions = LocalDecisionBuilder(
         inputs,
         config_version=config_version,
-        candidate_pool_size=candidate_pool_size,
         dependencies=DecisionBuildDependencies(
             decision_build.policy,
             decision_build.draft_index,

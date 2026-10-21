@@ -30,7 +30,7 @@ from trader.recommendation.domain.publication.models import Strategy
 def observed_static_stages(population: int, as_of: datetime) -> tuple[PipelineStageSnapshot, ...]:
     snapshots = []
     input_id = "observed-static-fixture"
-    for index, stage in enumerate(PIPELINE_STAGES[:4]):
+    for index, stage in enumerate(PIPELINE_STAGES[:2]):
         output = StageOutput(
             stage,
             tuple(range(population)),
@@ -63,7 +63,7 @@ def observed_market_batch(features: Sequence[FeatureSnapshot], as_of: datetime) 
         ),
         snapshots[-1],
         StageOutput(
-            PIPELINE_STAGES[3],
+            PIPELINE_STAGES[1],
             records,
             input_batch_id=snapshots[-1].input_batch_id,
             as_of=as_of,
@@ -95,7 +95,7 @@ def observed_quality_input(
     ticks = iter(index / 100 for index in range(100))
     pipeline = ExecuteCandidatePipeline(
         batch.dynamic_stage,
-        CandidatePlanningContext(as_of, "fixture", policy, None, 120),
+        CandidatePlanningContext(as_of, "fixture", policy, None),
         lambda: next(ticks),
     )
     candidates = AssembleCandidateInputs(
@@ -105,8 +105,7 @@ def observed_quality_input(
     snapshots = (
         *batch.static_stages,
         batch.dynamic_stage.snapshot,
-        *pipeline.stages(strategy)[:2],
-        candidates.snapshot,
+        pipeline.filtered[strategy].snapshot,
         quality.snapshot,
     )
     return snapshots, quality

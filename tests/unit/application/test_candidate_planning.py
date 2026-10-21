@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from tests.unit.domain.test_decision_identity import NOW
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanSet
 from trader.recommendation.domain.market.models import Board
@@ -14,9 +12,9 @@ from trader.recommendation.domain.selection.scored_selection import (
 
 def _empty_plan(strategy: Strategy, start: int) -> ScoredCandidatePlan:
     del strategy
-    codes = iter(range(start, start + 360))
+    codes = iter(range(start, start + 603))
     reserves = {
-        board: tuple(f"{next(codes):06d}" for _ in range(120)) for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
+        board: tuple(f"{next(codes):06d}" for _ in range(201)) for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
     }
     return ScoredCandidatePlan(
         evaluations=(),
@@ -29,38 +27,21 @@ def _empty_plan(strategy: Strategy, start: int) -> ScoredCandidatePlan:
     )
 
 
-def test_physical_candidate_union_is_bounded_by_two_strategy_board_windows() -> None:
+def test_physical_candidate_union_contains_complete_populations_above_360() -> None:
     plans = CandidatePlanSet(
         {
             strategy: _empty_plan(strategy, offset)
             for strategy, offset in zip(
                 (Strategy.TOMORROW, Strategy.D25),
-                (0, 360),
+                (0, 603),
                 strict=True,
             )
         },
-        limit_per_board=120,
         population_evaluated_at=NOW,
     )
 
-    assert len(plans.physical_union()) == 2 * 3 * 120
-    assert all(len(plans.strategy_codes(strategy)) == 3 * 120 for strategy in plans.plans)
-
-
-def test_candidate_plan_rejects_a_board_window_larger_than_the_fixed_cap() -> None:
-    with pytest.raises(ValueError, match="between 1 and 120"):
-        CandidatePlanSet(
-            {
-                strategy: _empty_plan(strategy, offset)
-                for strategy, offset in zip(
-                    (Strategy.TOMORROW, Strategy.D25),
-                    (0, 360),
-                    strict=True,
-                )
-            },
-            limit_per_board=121,
-            population_evaluated_at=NOW,
-        )
+    assert len(plans.physical_union()) == 2 * 3 * 201
+    assert all(len(plans.strategy_codes(strategy)) == 3 * 201 for strategy in plans.plans)
 
 
 def test_candidate_plan_resolves_only_the_strategies_that_own_failed_codes() -> None:
@@ -69,13 +50,12 @@ def test_candidate_plan_resolves_only_the_strategies_that_own_failed_codes() -> 
             strategy: _empty_plan(strategy, offset)
             for strategy, offset in zip(
                 (Strategy.TOMORROW, Strategy.D25),
-                (0, 360),
+                (0, 603),
                 strict=True,
             )
         },
-        limit_per_board=120,
         population_evaluated_at=NOW,
     )
 
     assert plans.strategies_for_codes({"000000"}) == frozenset({Strategy.TOMORROW})
-    assert plans.strategies_for_codes({"000000", "000360"}) == frozenset({Strategy.TOMORROW, Strategy.D25})
+    assert plans.strategies_for_codes({"000000", "000603"}) == frozenset({Strategy.TOMORROW, Strategy.D25})

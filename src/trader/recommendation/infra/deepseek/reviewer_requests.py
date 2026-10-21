@@ -1,68 +1,36 @@
-"""DeepSeek primary/challenger HTTP execution and repair mixin."""
+"""DeepSeek primary HTTP execution and repair mixin."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, TypedDict
-
-if TYPE_CHECKING:
-    from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheRequestKey
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
-    ReviewCandidateContext,
     ReviewOutcome,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.deepseek.challenger import (
-    CHALLENGER_PROMPT_VERSION,
-    CHALLENGER_SCHEMA_VERSION,
-    BuildChallengerMessages,
-    BuildChallengerRepairMessages,
-    ChallengerReview,
-    MergeChallengerReview,
-    ParseChallengerReviews,
-)
 from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekHttpResult
 from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
 from trader.recommendation.infra.deepseek.reviewer_selection import (
-    _automatic_emergency_reason,
-    _challenger_failure_status,
     _combine_results,
     _in_deadline_timezone,
-    _mark_challenger_unavailable,
     _ReservationTracker,
-    _select_challenger_candidates,
-    _submission_deadline,
-    _thinking_mode,
     _usage_integer,
 )
 from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.recommendation.infra.deepseek.schema import (
-    RAW_FACTS_CACHE_GENERATION,
     BuildMessages,
     BuildRepairMessages,
     ClassifyReview,
     DeepSeekSchemaError,
     ParseReviews,
-    ReviewCacheKey,
     StrategyReviewCacheKey,
 )
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
-
-
-class _ChallengerOptions(TypedDict):
-    contexts: Mapping[str, ReviewCandidateContext]
-    phase: str
-    deadline: datetime
-    planned_bucket: str
-    emergency_reason: str
-    batch_id: str
 
 
 class ReviewerRequestExecutor:
@@ -77,186 +45,6 @@ class ReviewerRequestExecutor:
         self._minimum_known_dimensions = context.minimum_known_dimensions
         self._now = context.now
         self._status = status
-
-    def run_challenger(
-        self,
-        strategy: Strategy,
-        candidates: Sequence[FeatureSnapshot],
-        results: dict[str, DeepSeekReview],
-        **options: Unpack[_ChallengerOptions],
-    ) -> int:
-        contexts = options["contexts"]
-        phase = options["phase"]
-        deadline = options["deadline"]
-        planned_bucket = options["planned_bucket"]
-        emergency_reason = options["emergency_reason"]
-        batch_id = options["batch_id"]
-        call_limit = self._settings.challenger_limits.get(strategy.value, 0)
-        if call_limit <= 0 or planned_bucket == "shared_preheat":
-            return 0
-        self._restore_cached_challenger(strategy, candidates, results, phase=phase)
-        selected = _select_challenger_candidates(candidates, results, contexts)
-        challenger_batch_size = min(4, self._settings.batch_size)
-        selected = selected[: call_limit * challenger_batch_size]
-        if not selected:
-            return 0
-        submission_deadline = _submission_deadline(strategy, deadline)
-        tracker = _ReservationTracker(
-            budget=self._budget,
-            strategy=strategy,
-            phase=phase,
-            deadline=deadline,
-            now=self._now,
-            planned_bucket=planned_bucket,
-            batch_id=batch_id,
-            emergency_reason=emergency_reason,
-            model_role="challenger",
-            requested_model=self._settings.challenger_model,
-            reasoning_effort="high",
-            reservation_deadline=submission_deadline,
-        )
-        attempts = 0
-        for start in range(0, len(selected), challenger_batch_size):
-            candidate_batch = selected[start : start + challenger_batch_size]
-            tracker.candidate_count = len(candidate_batch)
-            tracker.emergency_reason = emergency_reason or _automatic_emergency_reason(candidate_batch, phase)
-            completed_at = _in_deadline_timezone(self._now(), deadline)
-            if completed_at >= deadline:
-                _mark_challenger_unavailable(results, candidate_batch, "late")
-                continue
-            primary = {candidate.quote.code: results[candidate.quote.code] for candidate in candidate_batch}
-            parsed, response, error = self._request_challenger(candidate_batch, primary, tracker)
-            attempts += response.attempts
-            self._status.record_attempt_status(response)
-            completed_at = _in_deadline_timezone(self._now(), deadline)
-            if parsed is None:
-                status = _challenger_failure_status(error, tracker.failure_reason, completed_at, deadline)
-                _mark_challenger_unavailable(results, candidate_batch, status)
-                continue
-            for candidate in candidate_batch:
-                challenge = parsed.get(candidate.quote.code)
-                if challenge is None:
-                    results[candidate.quote.code] = replace(
-                        results[candidate.quote.code],
-                        challenger_status="result_missing",
-                    )
-                    continue
-                merged = MergeChallengerReview(results[candidate.quote.code], challenge, candidate)
-                classified = self.classify(
-                    replace(
-                        merged,
-                        challenger_requested_model=self._settings.challenger_model,
-                        challenger_actual_model=response.actual_model,
-                        challenger_thinking_mode="reasoning",
-                        challenger_reasoning_effort="high",
-                        challenger_system_fingerprint=response.system_fingerprint,
-                        challenger_prompt_cache_hit_tokens=response.prompt_cache_hit_tokens,
-                        challenger_prompt_cache_miss_tokens=response.prompt_cache_miss_tokens,
-                    ),
-                    strategy,
-                )
-                results[candidate.quote.code] = classified
-                self._cache.put_fusion(
-                    self._challenger_fusion_cache_key(candidate, strategy, phase=phase),
-                    classified,
-                )
-        return attempts
-
-    def _restore_cached_challenger(
-        self,
-        strategy: Strategy,
-        candidates: Sequence[FeatureSnapshot],
-        results: dict[str, DeepSeekReview],
-        *,
-        phase: str,
-    ) -> None:
-        for candidate in candidates:
-            review = results.get(candidate.quote.code)
-            if review is None or review.outcome not in _SUCCESSFUL_CANDIDATE_OUTCOMES:
-                continue
-            cached = self._cache.get_fusion(self._challenger_fusion_cache_key(candidate, strategy, phase=phase))
-            if cached is not None and cached.completed_at == review.completed_at:
-                results[candidate.quote.code] = cached
-
-    def _challenger_fusion_cache_key(
-        self,
-        candidate: FeatureSnapshot,
-        strategy: Strategy,
-        *,
-        phase: str,
-    ) -> CacheRequestKey:
-        primary_key = ReviewCacheKey(
-            candidate,
-            model=self._settings.model,
-            generation=RAW_FACTS_CACHE_GENERATION,
-            model_role="primary",
-            thinking_mode=_thinking_mode(self._client, self._settings.model),
-            reasoning_effort=None,
-        )
-        challenger_identity = ReviewCacheKey(
-            candidate,
-            model=self._settings.challenger_model,
-            generation=phase,
-            model_role="challenger",
-            thinking_mode=_thinking_mode(self._client, self._settings.challenger_model),
-            reasoning_effort="high",
-            schema_version=CHALLENGER_SCHEMA_VERSION,
-            prompt_version=CHALLENGER_PROMPT_VERSION,
-        )
-        return self.fusion_cache_key(
-            primary_key,
-            strategy,
-            challenger_identity=challenger_identity,
-            challenger_status="applied",
-        )
-
-    def _request_challenger(
-        self,
-        candidates: Sequence[FeatureSnapshot],
-        primary_reviews: Mapping[str, DeepSeekReview],
-        tracker: _ReservationTracker,
-    ) -> tuple[dict[str, ChallengerReview] | None, DeepSeekHttpResult, str]:
-        first_offset = len(tracker.reservation_ids)
-        response = self._client.complete(
-            base_url=self._settings.base_url,
-            api_key=self._settings.api_key,
-            model=self._settings.challenger_model,
-            messages=BuildChallengerMessages(candidates, primary_reviews),
-            timeout_seconds=self._settings.timeout_seconds,
-            max_tokens=self._settings.max_tokens,
-            reserve_attempt=tracker.reserve,
-            maximum_attempts=1,
-        )
-        self._finish_attempts(tracker.reservation_ids[first_offset:], response)
-        completed_at = _in_deadline_timezone(self._now(), tracker.deadline)
-        parsed, parse_error = _parse_challenger_response(response, candidates, completed_at)
-        if parsed is not None or response.content is None or response.attempts >= 2 or completed_at >= tracker.deadline:
-            return parsed, response, parse_error
-        repair_offset = len(tracker.reservation_ids)
-        repaired = self._client.complete(
-            base_url=self._settings.base_url,
-            api_key=self._settings.api_key,
-            model=self._settings.challenger_model,
-            messages=BuildChallengerRepairMessages(
-                candidates,
-                primary_reviews,
-                response.content,
-                parse_error,
-                response.reasoning_content,
-            ),
-            timeout_seconds=self._settings.timeout_seconds,
-            max_tokens=self._settings.max_tokens,
-            reserve_attempt=tracker.reserve,
-            maximum_attempts=1,
-        )
-        self._finish_attempts(tracker.reservation_ids[repair_offset:], repaired)
-        combined = _combine_results(response, repaired)
-        parsed, repair_error = _parse_challenger_response(
-            repaired,
-            candidates,
-            _in_deadline_timezone(self._now(), tracker.deadline),
-        )
-        return parsed, combined, repair_error or parse_error
 
     def request_and_parse(
         self,
@@ -335,9 +123,6 @@ class ReviewerRequestExecutor:
         self,
         raw_key: str | CacheRequestKey,
         strategy: Strategy,
-        *,
-        challenger_identity: str | CacheRequestKey = "",
-        challenger_status: str = "not_run",
     ) -> CacheRequestKey:
         return StrategyReviewCacheKey(
             raw_key,
@@ -346,24 +131,7 @@ class ReviewerRequestExecutor:
             dimension_weights=self._dimension_weights[strategy],
             confidence_coverage_min=self._confidence_coverage_min,
             minimum_known_dimensions=self._minimum_known_dimensions,
-            challenger_identity=challenger_identity,
-            challenger_status=challenger_status,
         )
-
-
-def _parse_challenger_response(
-    response: DeepSeekHttpResult,
-    candidates: Sequence[FeatureSnapshot],
-    completed_at: datetime,
-) -> tuple[dict[str, ChallengerReview] | None, str]:
-    if response.content is None:
-        return None, response.error
-    if response.finish_reason == "length":
-        return None, "finish_reason_length"
-    try:
-        return ParseChallengerReviews(response.content, candidates, completed_at), ""
-    except ValueError as exc:
-        return None, str(exc)
 
 
 def _parse_primary_response(

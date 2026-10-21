@@ -3,12 +3,6 @@
     "enabled": true,
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-flash",
-    "challenger_model": "deepseek-v4-pro",
-    "challenger_limits": {
-      "tomorrow": 2,
-      "d25": 0
-    },
-    "challenger_daily_limit": 2,
     "timeout_seconds": 20,
     "batch_size": 4,
     "max_tokens": 1800,

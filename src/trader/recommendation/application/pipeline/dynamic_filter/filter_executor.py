@@ -29,6 +29,7 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
+    ScoreLocalEvidence,
     SelectScored,
 )
 
@@ -48,7 +49,6 @@ class ScoredSelectionOptions:
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
     model_input_eligible_codes: frozenset[str] | None = None
-    candidate_limit_per_board: int = 120
 
 
 @dataclass(frozen=True)
@@ -160,6 +160,19 @@ def SelectScoredFeatures(
     )
 
 
+def ScoreFeatureEvidence(
+    features: Sequence[FeatureSnapshot],
+    policy: RecommendationPolicy,
+    options: ScoredSelectionOptions,
+    identity: ScoredSelectionIdentity,
+    *,
+    execution_gate_reasons: Mapping[str, str] | None = None,
+) -> ScoredSelectionResult:
+    return ScoreLocalEvidence(
+        _selection_request(features, policy, options, identity, execution_gate_reasons=execution_gate_reasons)
+    )
+
+
 def PlanScoredFeatureCandidates(
     features: Sequence[FeatureSnapshot],
     policy: RecommendationPolicy,
@@ -235,9 +248,7 @@ def _selection_policy(
         risk_rules=policy.risk_rules,
         max_age_seconds=options.max_age_seconds,
         local_risk_cap=policy.fusion.local_risk_cap,
-        candidate_limit_per_board=options.candidate_limit_per_board,
         top_k=min(policy.selection.default_top_k, 10),
-        maximum_per_industry=policy.selection.maximum_per_industry,
         minimum_local_score=minimum_score if minimum_score is not None else 100.0,
         hard_filter=policy.hard_filter,
         strategy=options.strategy,

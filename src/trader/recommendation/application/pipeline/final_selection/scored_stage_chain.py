@@ -1,18 +1,14 @@
-"""Execute the immutable review, fusion, action and final-selection handoffs."""
+"""Execute fixed-seat review and action handoffs without reselection."""
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import (
-    MeasuredOutput,
-    PipelineStageOutput,
-    RequirePreviousStage,
-    StageOutput,
-)
+from trader.recommendation.application.pipeline.stage_output import MeasuredOutput, PipelineStageOutput, StageOutput
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStage,
     PipelineStageSnapshot,
@@ -23,16 +19,16 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
 )
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
-from trader.recommendation.domain.publication.models import RecommendationAction, ScoredStockEvaluation
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import ScoredStockEvaluation
 from trader.recommendation.domain.risk.scored_fusion import (
     ApplyScoredActions,
-    FusedScoredEvaluation,
     FuseScoredEvaluations,
     ReviewedScoredEvaluation,
     ReviewScoredEvaluations,
     ScoredDecisionEntry,
     ScoredDecisionPolicy,
-    SelectScoredActionPools,
+    SelectFixedScoredSeats,
 )
 
 
@@ -43,25 +39,33 @@ class ScoredStageContext:
     review_candidate_codes: tuple[str, ...]
     reviews: tuple[DeepSeekReview, ...]
     observation_identity: str
+    fixed_selection: PipelineStageOutput[ScoredStockEvaluation]
+    review_latency_ms: int | None = None
+    review_attempted: bool = False
 
 
 @dataclass(frozen=True)
 class ScoredStageChain:
+    model_filter: PipelineStageOutput[FeatureSnapshot]
     local_score: PipelineStageOutput[ScoredStockEvaluation]
+    local_risk: PipelineStageOutput[ScoredStockEvaluation]
+    fixed_selection: PipelineStageOutput[ScoredStockEvaluation]
     risk_review: PipelineStageOutput[ReviewedScoredEvaluation]
-    score_merge: PipelineStageOutput[FusedScoredEvaluation]
-    downside_action: PipelineStageOutput[ScoredDecisionEntry]
-    final_selection: PipelineStageOutput[ScoredDecisionEntry]
+    action_publish: PipelineStageOutput[ScoredDecisionEntry]
     entries: tuple[ScoredDecisionEntry, ...]
 
     @property
     def snapshots(self) -> tuple[PipelineStageSnapshot, ...]:
-        return (
-            self.local_score.snapshot,
-            self.risk_review.snapshot,
-            self.score_merge.snapshot,
-            self.downside_action.snapshot,
-            self.final_selection.snapshot,
+        return tuple(
+            output.snapshot
+            for output in (
+                self.model_filter,
+                self.local_score,
+                self.local_risk,
+                self.fixed_selection,
+                self.risk_review,
+                self.action_publish,
+            )
         )
 
 
@@ -74,46 +78,51 @@ def ReasonAggregates(counts: Counter[str]) -> tuple[StageReasonAggregate, ...]:
 
 
 def CompleteScoredStages(
-    source: PipelineStageOutput[ScoredStockEvaluation],
+    model_filter: PipelineStageOutput[FeatureSnapshot],
+    local_score: PipelineStageOutput[ScoredStockEvaluation],
+    local_risk: PipelineStageOutput[ScoredStockEvaluation],
     request: ScoredStageContext,
     monotonic: Callable[[], float],
-    *,
-    review_latency_ms: int = 0,
-    review_attempted: bool = False,
 ) -> ScoredStageChain:
-    RequirePreviousStage(source, PipelineStage.RISK_REVIEW)
-    if review_latency_ms < 0:
-        raise ValueError("review latency cannot be negative")
+    source = request.fixed_selection
+    review_latency_ms = request.review_latency_ms
+    review_attempted = request.review_attempted
+    seat_codes = frozenset(item.code for item in source.records)
+    if not set(request.review_candidate_codes) <= seat_codes:
+        raise ValueError("review candidates must belong to the fixed seats")
+    if any(item.code not in request.review_candidate_codes for item in request.reviews):
+        raise ValueError("review result exceeds its submitted fixed seats")
     started = monotonic()
     reviewed = ReviewScoredEvaluations(source.records, request.reviews, request.observed_at)
     review_reasons: Counter[str] = Counter()
+    review_reasons["deepseek_eligible"] = len(request.review_candidate_codes)
+    review_reasons["deepseek_submitted"] = len(request.review_candidate_codes) if review_attempted else 0
     for item in reviewed:
         if item.review is not None:
             review_reasons[f"deepseek_{item.review.outcome.value}"] += 1
-            if item.review.error in {
-                "deepseek_review_unavailable",
-                "deepseek_manifest_mismatch",
-                "deepseek_manifest_validation_failed",
-                "deepseek_review_time_invalid",
-            }:
+            if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item.review.error):
                 review_reasons[item.review.error] += 1
+            review_reasons["deepseek_cache_reused"] += int(item.review.cache_reused)
         elif item.evaluation.code in request.review_candidate_codes:
             review_reasons["deepseek_incomplete" if review_attempted else "deepseek_pending"] += 1
+    fused = FuseScoredEvaluations(reviewed, request.policy, request.observed_at)
+    review_reasons["deepseek_veto"] = sum(bool(item.deepseek_risk_facts) and item.veto for item in fused)
     reviews = tuple(item.review for item in reviewed if item.review is not None)
     successful = tuple(item for item in reviews if item.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
-    review_degraded = bool(review_reasons["deepseek_pending"] or review_reasons["deepseek_incomplete"]) or len(
+    review_reasons["deepseek_completed"] = len(successful)
+    review_reasons["deepseek_source_failed"] = len(reviews) - len(successful) + review_reasons["deepseek_incomplete"]
+    degraded = bool(review_reasons["deepseek_pending"] or review_reasons["deepseek_incomplete"]) or len(
         successful
     ) != len(reviews)
     latest = max((item.completed_at for item in successful), default=None)
+    expected = bool(request.review_candidate_codes)
     health = SourceHealth(
-        SourceHealthState.DEGRADED if review_degraded else SourceHealthState.READY,
-        1 if request.review_candidate_codes else 0,
-        1 if successful else 0,
+        SourceHealthState.DEGRADED if degraded else SourceHealthState.READY,
+        int(expected),
+        int(bool(successful) or (expected and not degraded)),
         latest,
         max(0.0, (request.observed_at - latest).total_seconds()) if latest is not None else None,
     )
-    # A legal local fallback remains an output. Review failure is a reason and
-    # source degradation, never a business rejection or a lost scoring record.
     risk = MeasuredOutput(
         StageOutput(
             PipelineStage.RISK_REVIEW,
@@ -129,72 +138,60 @@ def CompleteScoredStages(
         started,
         monotonic,
     )
-    risk = replace(risk, snapshot=replace(risk.snapshot, latency_ms=risk.snapshot.latency_ms + review_latency_ms))
-    if review_degraded and reviewed:
+    if review_latency_ms is not None:
+        risk = replace(
+            risk,
+            snapshot=replace(
+                risk.snapshot,
+                latency_ms=(risk.snapshot.latency_ms or 0) + review_latency_ms,
+                operation_durations=(*risk.snapshot.operation_durations, ("review_wait", review_latency_ms)),
+            ),
+        )
+    if degraded:
         risk = replace(risk, snapshot=replace(risk.snapshot, state=StageState.DEGRADED, degraded=True))
-
-    RequirePreviousStage(risk, PipelineStage.SCORE_MERGE)
     started = monotonic()
-    fused = FuseScoredEvaluations(risk.records, request.policy, request.observed_at)
-    merge = MeasuredOutput(
+    actions = ApplyScoredActions(fused, request.policy)
+    # A veto changes the action, never membership or rank.
+    entries = tuple(
+        replace(item, selected=True, rank=index, selection_rank=index, decision_skip_reason="")
+        for index, item in enumerate(actions, start=1)
+    )
+    action = MeasuredOutput(
         StageOutput(
-            PipelineStage.SCORE_MERGE,
-            fused,
+            PipelineStage.ACTION_PUBLISH,
+            entries,
             input_batch_id=risk.snapshot.output_batch_id,
             as_of=request.observed_at,
             input_count=len(risk.records),
-            reasons=ReasonAggregates(
-                Counter("hybrid" if item.score.fusion_applied else "local_only" for item in fused)
-            ),
+            reasons=ReasonAggregates(Counter(f"action_{item.action.value}" for item in entries)),
             source_health=risk.snapshot.source_health,
             latency_ms=0,
         ),
         started,
         monotonic,
     )
+    return ScoredStageChain(model_filter, local_score, local_risk, source, risk, action, entries)
 
-    RequirePreviousStage(merge, PipelineStage.DOWNSIDE_ACTION)
+
+def FixScoredSeats(
+    source: PipelineStageOutput[ScoredStockEvaluation],
+    policy: ScoredDecisionPolicy,
+    at: datetime,
+    monotonic: Callable[[], float],
+) -> PipelineStageOutput[ScoredStockEvaluation]:
     started = monotonic()
-    actions = ApplyScoredActions(merge.records, request.policy)
-    eligible = tuple(item for item in actions if item.action is not RecommendationAction.UNAVAILABLE)
-    action = MeasuredOutput(
+    seats = SelectFixedScoredSeats(source.records, policy)
+    return MeasuredOutput(
         StageOutput(
-            PipelineStage.DOWNSIDE_ACTION,
-            eligible,
-            input_batch_id=merge.snapshot.output_batch_id,
-            as_of=request.observed_at,
-            input_count=len(merge.records),
-            reasons=ReasonAggregates(Counter(item.action_reason.split(":", 1)[0] for item in actions)),
-            source_health=merge.snapshot.source_health,
+            PipelineStage.FIXED_SELECTION,
+            seats,
+            input_batch_id=source.snapshot.output_batch_id,
+            as_of=at,
+            input_count=len(source.records),
+            not_selected_count=len(source.records) - len(seats),
+            source_health=source.snapshot.source_health,
             latency_ms=0,
         ),
         started,
         monotonic,
     )
-
-    RequirePreviousStage(action, PipelineStage.FINAL_SELECTION)
-    started = monotonic()
-    ranked = SelectScoredActionPools(action.records, request.policy, scored_population=actions)
-    selected = tuple(sorted((item for item in ranked if item.selected), key=lambda item: item.rank))
-    final = MeasuredOutput(
-        StageOutput(
-            PipelineStage.FINAL_SELECTION,
-            selected,
-            input_batch_id=action.snapshot.output_batch_id,
-            as_of=request.observed_at,
-            input_count=len(action.records),
-            reasons=ReasonAggregates(
-                Counter(item.decision_skip_reason for item in ranked if item.decision_skip_reason)
-            ),
-            source_health=action.snapshot.source_health,
-            latency_ms=0,
-        ),
-        started,
-        monotonic,
-    )
-    # A completed action gate can legitimately leave nothing to rank. This is
-    # different from an upstream stage which never obtained usable input.
-    if not action.records and action.snapshot.state is StageState.READY:
-        final = replace(final, snapshot=replace(final.snapshot, state=StageState.READY, degraded=False))
-    unavailable = tuple(item for item in actions if item.action is RecommendationAction.UNAVAILABLE)
-    return ScoredStageChain(source, risk, merge, action, final, (*ranked, *unavailable))

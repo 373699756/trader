@@ -105,7 +105,6 @@ def _board_policy(board: Board) -> BoardStrategyPolicy:
         version="tomorrow-policy",
         board=board,
         strategy=Strategy.TOMORROW,
-        candidate_weights={"liquidity": 0.4, "trend": 0.3, "stability": 0.2, "data_completeness": 0.1},
         local_weights={
             "tail_structure": 0.2,
             "turnover_flow": 0.1,
@@ -113,9 +112,6 @@ def _board_policy(board: Board) -> BoardStrategyPolicy:
             "stability": 0.2,
             "market_state": 0.1,
             "entry_quality": 0.2,
-        },
-        candidate_component_weights={
-            "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
         },
         local_component_weights={
             "tail_structure": {"tail_return_30m": 0.35, "tail_volume_ratio": 0.3, "close_location": 0.35},
@@ -127,7 +123,6 @@ def _board_policy(board: Board) -> BoardStrategyPolicy:
             "trend": {"ma20_60_position": 0.375, "ma_slope": 0.375, "breakout_20d": 0.25},
             "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
         },
-        candidate_min_score=0.0,
     )
 
 
@@ -137,9 +132,7 @@ def _policy() -> ScoredSelectionPolicy:
         risk_rules={},
         max_age_seconds=60.0,
         local_risk_cap=25.0,
-        candidate_limit_per_board=1,
         top_k=1,
-        maximum_per_industry=2,
     )
 
 
@@ -301,7 +294,7 @@ def test_builder_reconstructs_population_labels_costs_and_keeps_holdout_unread(
     assert day.coverage.total_rows == 3
     assert day.coverage.benchmark_eligible_rows == 2
     assert by_code["600000"].first_rejection_boundary == "eligible"
-    assert by_code["600001"].first_rejection_boundary == "board_limit"
+    assert by_code["600001"].first_rejection_boundary == "eligible"
     assert by_code["600001"].benchmark_eligible is True
     assert by_code["600002"].first_rejection_boundary == "permanent_eligibility"
     assert tuple(item.cost_bps for item in by_code["600000"].outcomes) == (20, 50, 100)
@@ -315,7 +308,7 @@ def test_builder_reconstructs_population_labels_costs_and_keeps_holdout_unread(
     assert report.production_authority is False
 
 
-def test_candidate_threshold_does_not_change_the_point_in_time_benchmark(
+def test_complete_population_does_not_change_the_point_in_time_benchmark(
     application_feature_factory,
 ) -> None:
     source = _Source(application_feature_factory)
@@ -323,7 +316,9 @@ def test_candidate_threshold_does_not_change_the_point_in_time_benchmark(
     strict_policy = replace(
         request.selection_policy,
         board_policies={
-            board: replace(policy, candidate_min_score=100.0)
+            board: replace(
+                policy,
+            )
             for board, policy in request.selection_policy.board_policies.items()
         },
     )
@@ -331,8 +326,8 @@ def test_candidate_threshold_does_not_change_the_point_in_time_benchmark(
     report = PointInTimeDatasetBuilder(source).build(replace(request, selection_policy=strict_policy))
 
     by_code = {row.code: row for row in report.days[0].rows}
-    assert by_code["600000"].first_rejection_boundary == "candidate_threshold"
-    assert by_code["600001"].first_rejection_boundary == "candidate_threshold"
+    assert by_code["600000"].first_rejection_boundary == "eligible"
+    assert by_code["600001"].first_rejection_boundary == "eligible"
     assert by_code["600000"].benchmark_eligible is True
     assert by_code["600001"].benchmark_eligible is True
     assert by_code["600000"].outcomes[0].outcome.benchmark_return_pct == pytest.approx(0.0)

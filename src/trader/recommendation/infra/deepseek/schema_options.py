@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TypedDict
 
-from trader.infra.cache_contracts import CacheRequestKey
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -26,21 +25,12 @@ class ReviewCacheOptions(ReviewCacheRequiredOptions, ReviewCacheOptionalOptions)
     pass
 
 
-class StrategyCacheRequiredOptions(TypedDict):
+class StrategyCacheOptions(TypedDict):
     strategy: Strategy
     strategy_version: str
     dimension_weights: Mapping[str, float]
     confidence_coverage_min: float
     minimum_known_dimensions: int
-
-
-class StrategyCacheOptionalOptions(TypedDict, total=False):
-    challenger_identity: str | CacheRequestKey
-    challenger_status: str
-
-
-class StrategyCacheOptions(StrategyCacheRequiredOptions, StrategyCacheOptionalOptions):
-    pass
 
 
 __all__ = ["ReviewCacheOptions", "StrategyCacheOptions"]

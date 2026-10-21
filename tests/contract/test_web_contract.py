@@ -73,7 +73,7 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert [item["code"] for item in current.get_json()["top_scores"]] == ["600000"]
     assert current.get_json()["input_versions"]["score_scale"] == "weighted_evidence_quality_0_100"
     assert current.get_json()["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
-    assert current.get_json()["pipeline"]["current_stage"] == "concentration"
+    assert current.get_json()["pipeline"]["current_stage"] == "action_publish"
     assert [stage["key"] for stage in current.get_json()["pipeline"]["stages"]] == list(PIPELINE_STAGE_KEYS)
     assert current.get_json()["items"][0]["quote"] == {
         "price": 10.25,
@@ -243,6 +243,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "selected_count": 1,
         "executable_count": 1,
         "observation_count": 0,
+        "unavailable_count": 0,
     }
     assert decision_patch["coverage"] == client.get("/api/decisions/tomorrow/current").get_json()["coverage"]
     assert "filtered_count" not in decision_patch
@@ -824,7 +825,7 @@ def _decision() -> ScoredDecision:
         ),
         (("hard_filter", 10),),
         pipeline=RecommendationPipelineStatus(
-            "concentration",
+            "action_publish",
             tuple(PipelineStageStatus(key, "completed", 1, 1) for key in pipeline_keys),
         ),
     )

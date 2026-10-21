@@ -32,7 +32,6 @@ _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome
 class _AnnotateRequiredOptions(TypedDict):
     candidate: FeatureSnapshot
     review_stage: str
-    challenger_status: str
     requested_model: str
     actual_model: str | None
     thinking_mode: str
@@ -149,7 +148,6 @@ def _annotate_review(
     return replace(
         review,
         review_stage=options["review_stage"],
-        challenger_status=options["challenger_status"],
         requested_model=options["requested_model"] or None,
         actual_model=actual_model if actual_model is not None else review.actual_model,
         thinking_mode=options["thinking_mode"] or None,
@@ -225,83 +223,6 @@ def _review_priority(
 
 def _is_new_high_risk(fact: RiskFact) -> bool:
     return fact.severity == "high" and fact.confidence >= 0.7
-
-
-def _select_challenger_candidates(
-    candidates: Sequence[FeatureSnapshot],
-    reviews: Mapping[str, DeepSeekReview],
-    contexts: Mapping[str, ReviewCandidateContext],
-) -> list[FeatureSnapshot]:
-    prioritized: list[tuple[int, int, str, FeatureSnapshot]] = []
-    for candidate in candidates:
-        code = candidate.quote.code
-        review = reviews.get(code)
-        if review is None or review.outcome is not ReviewOutcome.APPLIED:
-            continue
-        if review.challenger_status == "applied":
-            continue
-        context = contexts.get(code)
-        high_risk = any(_is_new_high_risk(fact) for fact in (*candidate.external_risk_facts, *review.risk_facts))
-        near_boundary = bool(
-            context is not None
-            and context.action_threshold is not None
-            and abs(context.local_score - context.action_threshold) <= 5.0
-        )
-        deepseek_direction = sum(item.score for item in review.dimensions.values()) / max(
-            1,
-            len(review.dimensions),
-        )
-        direction_conflict = bool(
-            context is not None and (context.local_score - 50.0) * (deepseek_direction - 50.0) < 0.0
-        )
-        evidence_conflict = any(
-            "conflict" in flag.lower() or "contradict" in flag.lower() or "矛盾" in flag
-            for dimension in review.dimensions.values()
-            for flag in dimension.flags
-        )
-        protected = bool(context is not None and context.in_protection_set)
-        if not any((high_risk, near_boundary, direction_conflict, evidence_conflict, protected)):
-            continue
-        priority = next(
-            index
-            for index, matched in enumerate(
-                (high_risk, near_boundary, direction_conflict, evidence_conflict, protected)
-            )
-            if matched
-        )
-        rank = context.local_rank if context is not None else 10_000
-        prioritized.append((priority, rank, code, candidate))
-    prioritized.sort(key=lambda item: item[:3])
-    return [item[3] for item in prioritized]
-
-
-def _mark_challenger_unavailable(
-    results: dict[str, DeepSeekReview],
-    candidates: Sequence[FeatureSnapshot],
-    status: str,
-) -> None:
-    for candidate in candidates:
-        results[candidate.quote.code] = replace(results[candidate.quote.code], challenger_status=status)
-
-
-def _challenger_failure_status(
-    error: str,
-    reservation_error: str,
-    completed_at: datetime,
-    deadline: datetime,
-) -> str:
-    if completed_at >= deadline or reservation_error == "deadline_reached":
-        return "late"
-    if reservation_error in {
-        "challenger_limit",
-        "challenger_daily_limit",
-        "daily_hard_limit",
-        "bucket_limit",
-        "stage_limit",
-    }:
-        return "budget_exhausted"
-    schema_markers = ("JSON", "json", "schema", "dimensions", "result", "finish_reason")
-    return "schema_invalid" if any(marker in error for marker in schema_markers) else "failed"
 
 
 def _aggregate_batch_status(statuses: Sequence[str], *, cache_hits: int) -> str:
@@ -387,7 +308,6 @@ def _physical_call_acceptance(
         "bucket_limit",
         "stage_limit",
         "daily_hard_limit",
-        "challenger_daily_limit",
         "circuit_open",
     }:
         reason = last_error

@@ -17,7 +17,7 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     CandidatePlanningContext,
     CandidatePlanSet,
     CandidateRefreshPlan,
-    RefreshCandidateReserves,
+    RefreshQualifiedInputs,
 )
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
     CandidatePipelineResult,
@@ -30,7 +30,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
 class CandidateFilteringPort(Protocol):
-    """Qualification and bounded reserve operations used by market refresh."""
+    """Qualification and complete input operations used by market refresh."""
 
     def plan_observed(
         self,
@@ -52,7 +52,7 @@ class CandidateFilteringPort(Protocol):
         apply_model_eligibility: bool = True,
     ) -> CandidatePlanSet: ...
 
-    def refresh(  # noqa: PLR0913 - explicit refresh port includes deadline and refill capabilities
+    def refresh(  # noqa: PLR0913 - explicit refresh port includes deadline and refresh capabilities
         self,
         population: tuple[FeatureSnapshot, ...],
         initial_plans: CandidatePlanSet,
@@ -60,13 +60,13 @@ class CandidateFilteringPort(Protocol):
         evaluated_at: datetime,
         data_version: str,
         refresh_quotes: Callable[[tuple[str, ...]], Sequence[FeatureSnapshot]],
-        can_refill: Callable[[], bool],
+        can_refresh: Callable[[], bool],
     ) -> CandidateRefreshPlan: ...
 
 
 @dataclass(frozen=True)
 class CandidateFilteringService(CandidateFilteringPort):
-    """Build and refill strategy-owned candidate reserves.
+    """Prepare every qualified input for each scored strategy.
 
     The service is stateless.  A new call receives all observations it needs,
     which makes candidate qualification independently testable and prevents a
@@ -75,11 +75,6 @@ class CandidateFilteringService(CandidateFilteringPort):
 
     policy: RecommendationPolicy
     model_scoring: ModelScoringPort | None
-    limit_per_board: int
-
-    def __post_init__(self) -> None:
-        if self.limit_per_board < 1:
-            raise ValueError("candidate filtering board limit must be positive")
 
     def plan_observed(
         self,
@@ -97,7 +92,6 @@ class CandidateFilteringService(CandidateFilteringPort):
                 data_version,
                 self.policy,
                 self.model_scoring,
-                self.limit_per_board,
                 apply_model_eligibility,
             ),
             monotonic,
@@ -120,7 +114,6 @@ class CandidateFilteringService(CandidateFilteringPort):
                 data_version=data_version,
                 policy=self.policy,
                 model_scoring=self.model_scoring,
-                limit_per_board=self.limit_per_board,
                 apply_model_eligibility=apply_model_eligibility,
             ),
         )
@@ -133,9 +126,9 @@ class CandidateFilteringService(CandidateFilteringPort):
         evaluated_at: datetime,
         data_version: str,
         refresh_quotes: Callable[[tuple[str, ...]], Sequence[FeatureSnapshot]],
-        can_refill: Callable[[], bool],
+        can_refresh: Callable[[], bool],
     ) -> CandidateRefreshPlan:
-        return RefreshCandidateReserves(
+        return RefreshQualifiedInputs(
             population,
             initial_plans,
             CandidatePlanningContext(
@@ -143,10 +136,9 @@ class CandidateFilteringService(CandidateFilteringPort):
                 data_version=data_version,
                 policy=self.policy,
                 model_scoring=self.model_scoring,
-                limit_per_board=initial_plans.limit_per_board,
             ),
             refresh_quotes,
-            can_refill=can_refill,
+            can_refresh=can_refresh,
         )
 
 

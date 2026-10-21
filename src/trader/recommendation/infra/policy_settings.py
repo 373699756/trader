@@ -26,29 +26,20 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
         selection=RecommendationSelectionSettings(
             default_top_k=settings.selection.default_top_k,
             maximum_top_k=settings.selection.maximum_top_k,
-            maximum_per_industry=settings.selection.maximum_per_industry,
             observation_margin=settings.selection.observation_margin,
             thresholds=settings.selection.thresholds,
             maximum_board_fraction=settings.selection.maximum_board_fraction,
             competition_group_limits={
                 Board(name): limit for name, limit in settings.selection.competition_group_limits.items()
             },
-            candidate_min_score=settings.selection.candidate_min_score,
             minimum_board_reliability=settings.selection.minimum_board_reliability,
             review_candidate_limit=settings.selection.review_candidate_limit,
         ),
         dimension_weights={Strategy(name): weights for name, weights in settings.dimension_weights.items()},
         board_policy_version=settings.board_policy_version,
-        board_candidate_weights={
-            Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
-            for strategy, boards in settings.board_candidate_weights.items()
-        },
         board_local_strategy_weights={
             Strategy(strategy): {Board(board): weights for board, weights in boards.items()}
             for strategy, boards in settings.board_local_strategy_weights.items()
-        },
-        candidate_component_weights={
-            Strategy(strategy): weights for strategy, weights in settings.candidate_component_weights.items()
         },
         local_component_weights={
             Strategy(strategy): weights for strategy, weights in settings.local_component_weights.items()

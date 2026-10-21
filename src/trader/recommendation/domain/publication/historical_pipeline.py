@@ -29,6 +29,12 @@ class HistoricalPipelineStage(str, Enum):
     SCORE_MERGE = "score_merge"
     DOWNSIDE_ACTION = "downside_action"
     FINAL_SELECTION = "final_selection"
+    LOCAL_DATA = "local_data"
+    MARKET_FEATURES = "market_features"
+    MODEL_FILTER = "model_filter"
+    LOCAL_RISK = "local_risk"
+    FIXED_SELECTION = "fixed_selection"
+    ACTION_PUBLISH = "action_publish"
 
 
 class HistoricalStageState(str, Enum):
@@ -50,7 +56,21 @@ class HistoricalSourceState(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
-_STAGES = tuple(HistoricalPipelineStage)
+_STAGES = tuple(HistoricalPipelineStage)[:14]
+_COMPLETE_ORDER = (
+    "local_data",
+    "static_filter",
+    "dynamic_market",
+    "dynamic_filter",
+    "market_features",
+    "model_filter",
+    "local_score",
+    "local_risk",
+    "fixed_selection",
+    "risk_review",
+    "action_publish",
+)
+_COMPLETE_STAGES = tuple(HistoricalPipelineStage(key) for key in _COMPLETE_ORDER)
 _DIAGNOSTIC_ORDER = (
     "input_readiness",
     "dynamic_filter",
@@ -125,11 +145,16 @@ class HistoricalStageSnapshot:
     failed_count: int
     reasons: tuple[HistoricalStageReason, ...]
     source_health: HistoricalSourceHealth
-    latency_ms: int
+    latency_ms: int | None
     degraded: bool
+    not_selected_count: int | None = None
+    operation_durations: tuple[tuple[str, int | None], ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.stage, HistoricalPipelineStage) or self.stage_order != _STAGES.index(self.stage) + 1:
+        if not isinstance(self.stage, HistoricalPipelineStage) or not any(
+            self.stage in order and self.stage_order == order.index(self.stage) + 1
+            for order in (_STAGES, _COMPLETE_STAGES)
+        ):
             raise ValueError("historical stage order is invalid")
         if not isinstance(self.state, HistoricalStageState):
             raise ValueError("historical stage state is invalid")
@@ -146,7 +171,8 @@ class HistoricalStageSnapshot:
             self.rejected_count,
             self.pending_count,
             self.failed_count,
-            self.latency_ms,
+            self.latency_ms or 0,
+            self.not_selected_count or 0,
         )
         if any(value < 0 for value in counts):
             raise ValueError("historical stage counts and latency cannot be negative")
@@ -154,6 +180,11 @@ class HistoricalStageSnapshot:
             raise ValueError("historical stage outcomes exceed input count")
         if self.degraded != (self.state is HistoricalStageState.DEGRADED):
             raise ValueError("historical degraded flag does not match stage state")
+        if len({key for key, _ in self.operation_durations}) != len(self.operation_durations) or any(
+            _KEY.fullmatch(key) is None or (duration is not None and duration < 0)
+            for key, duration in self.operation_durations
+        ):
+            raise ValueError("historical operation timings are invalid")
         if len({item.code for item in self.reasons}) != len(self.reasons):
             raise ValueError("historical stage reasons must be unique")
 
@@ -206,7 +237,7 @@ class HistoricalStageStatus:
     reason_counts: tuple[HistoricalReasonCount, ...]
 
     def __post_init__(self) -> None:
-        if self.key not in _DIAGNOSTIC_ORDER or self.state not in _DIAGNOSTIC_STATES:
+        if self.key not in (*_DIAGNOSTIC_ORDER, *_COMPLETE_ORDER) or self.state not in _DIAGNOSTIC_STATES:
             raise ValueError("historical diagnostic key or state is invalid")
         if self.input_count is not None and self.input_count < 0:
             raise ValueError("historical diagnostic input count cannot be negative")
@@ -229,18 +260,49 @@ class HistoricalPipelineAudit:
     current_stage: str
     stages: tuple[HistoricalStageStatus, ...]
     stage_snapshots: tuple[HistoricalStageSnapshot, ...] = ()
+    elapsed_ms: int | None = None
 
     def __post_init__(self) -> None:
+        if self.elapsed_ms is not None and (
+            self.elapsed_ms < 0 or not self.stages or self.stages[0].key != "local_data"
+        ):
+            raise ValueError("historical elapsed time requires the complete pipeline protocol")
         if any(not isinstance(item, HistoricalStageStatus) for item in self.stages):
             raise ValueError("historical audit requires historical diagnostic types")
-        if tuple(item.key for item in self.stages) != _DIAGNOSTIC_ORDER or self.current_stage not in _DIAGNOSTIC_ORDER:
+        if tuple(item.key for item in self.stages) not in (
+            _DIAGNOSTIC_ORDER,
+            _COMPLETE_ORDER,
+        ) or self.current_stage not in {item.key for item in self.stages}:
             raise ValueError("historical diagnostic stages are invalid")
+        self._validate_snapshot_protocol()
+
+    def _validate_snapshot_protocol(self) -> None:
         if not self.stage_snapshots:
             return
         if any(not isinstance(item, HistoricalStageSnapshot) for item in self.stage_snapshots):
             raise ValueError("historical audit requires historical stage types")
-        if tuple(item.stage for item in self.stage_snapshots) != _STAGES:
+        if tuple(item.stage for item in self.stage_snapshots) not in (_STAGES, _COMPLETE_STAGES):
             raise ValueError("historical audit must contain all fourteen stages in order")
+        expected = _COMPLETE_STAGES if self.stages[0].key == "local_data" else _STAGES
+        if tuple(item.stage for item in self.stage_snapshots) != expected:
+            raise ValueError("historical diagnostics and snapshots must use the same protocol")
+        if expected == _STAGES and any(
+            item.not_selected_count is not None or item.operation_durations for item in self.stage_snapshots
+        ):
+            raise ValueError("legacy audit cannot gain new execution fields")
+        if expected == _COMPLETE_STAGES and any(
+            item.not_selected_count is None
+            or item.input_count
+            != (
+                item.output_count
+                + item.rejected_count
+                + item.pending_count
+                + item.failed_count
+                + item.not_selected_count
+            )
+            for item in self.stage_snapshots
+        ):
+            raise ValueError("complete pipeline outcomes must partition each input")
         for previous, current in zip(self.stage_snapshots, self.stage_snapshots[1:], strict=False):
             if previous.output_batch_id != current.input_batch_id or previous.output_count != current.input_count:
                 raise ValueError("historical audit handoffs must preserve identities and counts")

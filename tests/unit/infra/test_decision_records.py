@@ -31,7 +31,7 @@ def record(strategy: Strategy = Strategy.TOMORROW, *, sequence: int = 1) -> Comm
     return CommittedDecisionRecord(decision(strategy, sequence=sequence), NOW, "scheduled")
 
 
-def test_fourteen_stage_audit_restarts_and_has_identical_get_sse_projections(tmp_path: Path) -> None:
+def test_eleven_stage_audit_restarts_and_has_identical_get_sse_projections(tmp_path: Path) -> None:
     class Clock:
         def now(self) -> datetime:
             return NOW
@@ -49,7 +49,7 @@ def test_fourteen_stage_audit_restarts_and_has_identical_get_sse_projections(tmp
     history = SerializeDecisionView(queries.history(Strategy.TOMORROW, current.trade_date))
     event = SerializeEvent(UnifiedDecisionEventStream().publish_committed(BuildDecisionCommitted(restored.decision)))
     assert history["pipeline"] == event["pipeline"]
-    assert len(history["pipeline"]["stage_snapshots"]) == 14
+    assert len(history["pipeline"]["stage_snapshots"]) == 11
 
 
 def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_path: Path) -> None:

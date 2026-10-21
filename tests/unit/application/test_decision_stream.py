@@ -42,39 +42,34 @@ def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
 def test_scored_decision_event_serializes_complete_replace_patch_without_snapshot_get() -> None:
     base = _decision(Strategy.TOMORROW, 1)
     keys = (
-        "input_readiness",
+        "local_data",
+        "static_filter",
+        "dynamic_market",
         "dynamic_filter",
-        "board_cross_section",
-        "strategy_history",
-        "model_input",
-        "candidate_score",
-        "board_limit",
-        "candidate_refresh",
-        "input_coverage",
-        "evidence_score",
-        "model_cost_gate",
+        "market_features",
+        "model_filter",
         "local_score",
-        "deepseek_review",
-        "fusion",
-        "action_gate",
-        "concentration",
+        "local_risk",
+        "fixed_selection",
+        "risk_review",
+        "action_publish",
     )
     decision = replace(
         base,
         pipeline=RecommendationPipelineStatus(
-            "concentration",
+            "action_publish",
             tuple(PipelineStageStatus(key, "completed", 2, 2) for key in keys),
             stage_snapshots(NOW, count=2),
         ),
         items=(
-            base.items[0],
+            replace(base.items[0], rank=2, selection_rank=2),
             replace(
                 base.items[0],
                 code="600001",
                 action=RecommendationAction.UNAVAILABLE,
-                selected=False,
-                rank=0,
-                selection_rank=0,
+                selected=True,
+                rank=1,
+                selection_rank=1,
                 candidate_score=95.0,
                 local_score=91.0,
                 final_score=91.0,
@@ -97,19 +92,20 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
         "candidate_count": 12,
         "evaluated_count": 2,
         "rejected_count": 10,
-        "selected_count": 1,
+        "selected_count": 2,
         "executable_count": 1,
         "observation_count": 0,
+        "unavailable_count": 1,
     }
     assert "filtered_count" not in payload
     assert payload["input_versions"] == {
         "market": "market:1",
         "score_model": "daily_reconstructible_ensemble:model-hash",
     }
-    assert payload["pipeline"]["current_stage"] == "concentration"
+    assert payload["pipeline"]["current_stage"] == "action_publish"
     assert len(payload["pipeline"]["stages"]) == len(PIPELINE_STAGE_ORDER)
-    assert len(payload["pipeline"]["stage_snapshots"]) == 14
-    assert payload["pipeline"]["stage_snapshots"][-1]["stage"] == "final_selection"
+    assert len(payload["pipeline"]["stage_snapshots"]) == 11
+    assert payload["pipeline"]["stage_snapshots"][-1]["stage"] == "action_publish"
     assert [(item["code"], item["rank"], item["tier"]) for item in payload["upserts"]] == [
         ("600001", 1, "avoid"),
         ("600000", 2, "recommend"),
@@ -132,7 +128,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
         "rank": 2,
         "selected": True,
         "tier": "recommend",
-        "selection_rank": 1,
+        "selection_rank": 2,
         "research_coverage": None,
         "review_outcome": None,
         "risks": [],

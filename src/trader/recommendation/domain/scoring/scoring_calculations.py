@@ -18,22 +18,6 @@ from trader.recommendation.domain.publication.models import Strategy
 MIN_BOARD_SAMPLE = 100
 MAX_FALLBACK_SESSIONS = 5
 
-_CANDIDATE_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
-    Strategy.TOMORROW: {
-        "liquidity": ("amount_percentile_20d",),
-        "trend": ("trend_score",),
-        "stability": ("low_volatility_score", "low_drawdown_score"),
-        "data_completeness": (),
-    },
-    Strategy.D25: {
-        "liquidity": ("amount_percentile_20d",),
-        "trend": ("trend_score",),
-        "stability": ("low_volatility_score", "low_drawdown_score"),
-        "execution": ("capacity_score", "moderate_amplitude", "price_executability"),
-        "data_completeness": (),
-    },
-}
-
 _LOCAL_COMPONENT_INPUTS: Mapping[Strategy, Mapping[str, tuple[str, ...]]] = {
     Strategy.TOMORROW: {
         "tail_structure": ("tail_return_30m", "tail_volume_ratio", "close_location"),
@@ -171,19 +155,6 @@ def _band_or_none(
         if value is None or not math.isfinite(float(value))
         else BandScore(float(value), lower, optimal_low, optimal_high, upper)
     )
-
-
-def _candidate_fields(strategy: Strategy) -> tuple[str, ...]:
-    fields: set[str] = set()
-    for names in _CANDIDATE_INPUTS[strategy].values():
-        fields.update(names)
-    return tuple(sorted(fields))
-
-
-def CandidateFields(strategy: Strategy) -> tuple[str, ...]:
-    """Return the immutable quality-gate fields for one active strategy."""
-
-    return _candidate_fields(strategy)
 
 
 def SupportedWeight(

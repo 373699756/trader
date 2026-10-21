@@ -101,7 +101,7 @@ class FullMarketFeatureBatch:
         dynamic = self.dynamic_stage.snapshot
         if dynamic.stage is not PipelineStage.DYNAMIC_MARKET:
             raise ValueError("market batch requires an actual dynamic collection stage")
-        if tuple(item.stage for item in self.static_stages) != PIPELINE_STAGES[:4]:
+        if tuple(item.stage for item in self.static_stages) != PIPELINE_STAGES[:2]:
             raise ValueError("full-market batches require actual ordered static stages")
         if any(
             left.output_batch_id != right.input_batch_id or left.output_count != right.input_count

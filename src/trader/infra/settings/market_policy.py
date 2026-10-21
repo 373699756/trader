@@ -217,8 +217,8 @@ def ParsePerformanceBudgets(raw: Mapping[str, object]) -> PerformanceBudgetSetti
         market_rows=Integer(workload_raw, "market_rows", minimum=1),
         candidate_rows=Integer(workload_raw, "candidate_rows", minimum=1),
     )
-    if workload != PerformanceWorkloadSettings(5500, 1080):
-        raise ConfigurationError("performance workload must remain fixed at 5500 market rows and 1080 candidates")
+    if workload != PerformanceWorkloadSettings(5500, 5500):
+        raise ConfigurationError("performance workload must remain fixed at 5500 market rows and 5500 scoring inputs")
 
     rounds_raw = RequireMapping(raw, "rounds")
     RequireExactKeys(rounds_raw, {"warmup", "measurement"}, "performance_budgets.rounds")

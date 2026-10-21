@@ -48,6 +48,7 @@ class InputBatch:
     input_stages: tuple[PipelineStageSnapshot, ...] = ()
     candidate_stage: PipelineStageOutput[SelectedCandidateInput] | None = None
     quality_identity: ScoringInputIdentity | None = None
+    started_monotonic: float | None = None
 
 
 @dataclass(frozen=True)

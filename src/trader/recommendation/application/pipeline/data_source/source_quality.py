@@ -49,7 +49,7 @@ def BuildSourceStageOutput(
     if pending_count < 0:
         raise ValueError("source stage outcomes exceed the expected population")
     return StageOutput(
-        PipelineStage.DATA_SOURCE,
+        PipelineStage.LOCAL_DATA,
         received,
         input_batch_id=input_batch_id,
         as_of=as_of,

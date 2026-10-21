@@ -289,7 +289,6 @@ def recommendation_policy() -> RecommendationPolicy:
         selection=RecommendationSelectionSettings(
             default_top_k=6,
             maximum_top_k=12,
-            maximum_per_industry=2,
             observation_margin=5.0,
             thresholds={"tomorrow": 72.0, "d25": 70.0},
         ),
@@ -302,9 +301,7 @@ def recommendation_policy() -> RecommendationPolicy:
         },
         risk_rules=risk_rules,
         board_policy_version="fixture",
-        board_candidate_weights={},
         board_local_strategy_weights={},
-        candidate_component_weights={},
         local_component_weights={},
     )
 

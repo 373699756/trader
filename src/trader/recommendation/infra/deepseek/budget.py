@@ -70,8 +70,6 @@ class _BudgetLedgerRequiredOptions(TypedDict):
 
 
 class _BudgetLedgerOptionalOptions(TypedDict, total=False):
-    challenger_limits: Mapping[str, int] | None
-    challenger_daily_limit: int
     health_policy: DeepSeekHealthPolicy | None
     write_lock: AbstractContextManager[object] | None
 
@@ -150,11 +148,6 @@ class DeepSeekBudgetLedger:
         strategy_limits = options["strategy_limits"]
         stage_targets = options["stage_targets"]
         stage_limits = options["stage_limits"]
-        challenger_limits = options.get("challenger_limits")
-        challenger_daily_limit = options.get(
-            "challenger_daily_limit",
-            min(8, sum((challenger_limits or {}).values())),
-        )
         health_policy = options.get("health_policy")
         write_lock = options.get("write_lock")
         _validate_budget_envelopes(
@@ -168,9 +161,6 @@ class DeepSeekBudgetLedger:
         self._limits = dict(strategy_limits)
         self._stage_targets = dict(stage_targets)
         self._stage_limits = dict(stage_limits)
-        self._challenger_limits = dict(challenger_limits or {})
-        self._challenger_daily_limit = challenger_daily_limit
-        _validate_challenger_envelope(self._challenger_limits, challenger_daily_limit)
         self._daily_target = sum(stage_targets.values())
         self._write_lock = write_lock or threading.Lock()
         self._initialized = False
@@ -293,7 +283,7 @@ class DeepSeekBudgetLedger:
         checks = (
             (strategy.value not in self._limits and bucket in {strategy.value, "emergency"}, "unknown_strategy"),
             (bucket not in self._limits, "unknown_bucket"),
-            (model_role not in {"primary", "challenger"}, "invalid_model_role"),
+            (model_role != "primary", "invalid_model_role"),
             (candidate_count < 0, "invalid_candidate_count"),
             (stage not in self._stage_limits, "unknown_stage"),
             (bucket == "emergency" and emergency_reason not in _EMERGENCY_REASONS, "invalid_emergency_reason"),
@@ -321,12 +311,6 @@ class DeepSeekBudgetLedger:
         )
 
     def _limit_rejection(self, connection: SqliteConnection, context: _ReservationContext) -> str:
-        rejection = self._primary_limit_rejection(connection, context)
-        if rejection or context.model_role != "challenger":
-            return rejection
-        return self._challenger_limit_rejection(connection, context)
-
-    def _primary_limit_rejection(self, connection: SqliteConnection, context: _ReservationContext) -> str:
         trade_date = context.trade_date
         bucket = context.bucket
         if self._health is not None:
@@ -360,21 +344,6 @@ class DeepSeekBudgetLedger:
             (context.trade_date, context.stage),
         )
         return "stage_limit" if stage_used >= self._stage_limits[context.stage] else ""
-
-    def _challenger_limit_rejection(self, connection: SqliteConnection, context: _ReservationContext) -> str:
-        challenger_used = _count(
-            connection,
-            "trade_date = ? AND strategy = ? AND model_role = 'challenger'",
-            (context.trade_date, context.strategy.value),
-        )
-        if challenger_used >= self._challenger_limits.get(context.strategy.value, 0):
-            return "challenger_limit"
-        challenger_total = _count(
-            connection,
-            "trade_date = ? AND model_role = 'challenger'",
-            (context.trade_date,),
-        )
-        return "challenger_daily_limit" if challenger_total >= self._challenger_daily_limit else ""
 
     @staticmethod
     def _insert_reservation(
@@ -601,17 +570,6 @@ def _validate_budget_envelopes(
         raise ValueError("stage targets must fit within stage limits")
     if sum(stage_limits.values()) > sum(strategy_limits.values()):
         raise ValueError("stage limits cannot exceed strategy limits")
-
-
-def _validate_challenger_envelope(challenger_limits: Mapping[str, int], daily_limit: int) -> None:
-    if "long" in challenger_limits:
-        raise ValueError("challenger limits must not define long")
-    if any(value < 0 for value in challenger_limits.values()):
-        raise ValueError("challenger limits cannot be negative")
-    if daily_limit < 0:
-        raise ValueError("challenger daily limit cannot be negative")
-    if sum(challenger_limits.values()) < daily_limit:
-        raise ValueError("challenger strategy limits must cover the daily limit")
 
 
 __all__ = ["SCHEMA_VERSION", "BudgetReservation", "DeepSeekBudgetLedger"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Literal
@@ -25,7 +25,7 @@ from trader.recommendation.domain.candidate.filters import (
     HardFilterPolicy,
     LevelOneFilterRules,
 )
-from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate, StageState
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import (
     ScoredDisposition,
@@ -54,7 +54,7 @@ class QualityScoringBatch:
     native_input: ScoredNativeInput
 
     def __post_init__(self) -> None:
-        RequirePreviousStage(self.output, PipelineStage.LOCAL_SCORE)
+        RequirePreviousStage(self.output, PipelineStage.MODEL_FILTER)
         if any(item not in self.native_input.candidate_features for item in self.output.records):
             raise ValueError("quality scoring records must belong to the native candidate batch")
 
@@ -69,7 +69,7 @@ def PrepareNativeQualityBatch(
     started = monotonic()
     by_code = {item.quote.code: item for item in native_input.candidate_features}
     candidates = StageOutput(
-        PipelineStage.CANDIDATE_POOL,
+        PipelineStage.MARKET_FEATURES,
         tuple(SelectedCandidateInput(code, by_code.get(code)) for code in native_input.requested_codes),
         input_batch_id=native_input.input_version,
         as_of=native_input.evaluated_at,
@@ -107,7 +107,6 @@ _TRANSIENT_FILTER_REASONS = frozenset(
 )
 _TRANSIENT_SELECTION_REASONS = frozenset(
     {
-        "candidate_core_missing",
         "production_model_features_missing",
         "strategy_history_insufficient",
     }
@@ -396,7 +395,8 @@ def AssessCandidateInputStage(
     hard_filter: HardFilterPolicy | None = None,
 ) -> PipelineStageOutput[FeatureSnapshot]:
     """Assess the actual directed input for the selected reserve, including missing quotes."""
-    RequirePreviousStage(source, PipelineStage.QUALITY_CHECK)
+    if source.snapshot.stage is not PipelineStage.MARKET_FEATURES:
+        raise ValueError("quality assessment requires the current feature preparation batch")
     validation_rules = tuple(
         rule
         for rule in LevelOneFilterRules(max_age_seconds=30.0, policy=hard_filter)
@@ -404,7 +404,6 @@ def AssessCandidateInputStage(
     )
     accepted: list[FeatureSnapshot] = []
     pending: Counter[str] = Counter()
-    diagnostic: Counter[str] = Counter()
     for selected in source.records:
         feature = selected.features
         invalid = ApplyFilters(feature, validation_rules, now=as_of).deferred if feature is not None else ()
@@ -415,30 +414,38 @@ def AssessCandidateInputStage(
             pending[next((reason for reason in reasons if reason in {"stale_quote", "future_quote"}), reasons[0])] += 1
         elif not _history_complete(feature, minimum_history_sessions=minimum_history_sessions):
             pending["strategy_history_insufficient"] += 1
+        elif not _security_master_complete(feature):
+            pending["security_master_coverage_incomplete"] += 1
         else:
             accepted.append(feature)
-            if not _security_master_complete(feature):
-                # Preserve evidence scores for explanation. The publication gate
-                # still requires complete security identity for the whole batch.
-                diagnostic["security_master_coverage_incomplete"] += 1
     aggregates = tuple(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
-        for code, count in sorted((pending + diagnostic).items())
+        for code, count in sorted(pending.items())
     )
-    health = DynamicSourceHealth(tuple(item.features for item in source.records if item.features is not None), as_of)
+    health = (
+        DynamicSourceHealth(tuple(item.features for item in source.records if item.features is not None), as_of)
+        if source.records
+        else source.snapshot.source_health
+    )
     output = StageOutput(
-        PipelineStage.QUALITY_CHECK,
+        PipelineStage.MARKET_FEATURES,
         accepted,
-        input_batch_id=source.snapshot.output_batch_id,
+        input_batch_id=source.snapshot.input_batch_id,
         as_of=as_of,
-        input_count=len(source.records),
-        pending_count=sum(pending.values()),
-        reasons=aggregates,
+        input_count=source.snapshot.input_count,
+        pending_count=source.snapshot.pending_count + sum(pending.values()),
+        reasons=tuple(
+            StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
+            for code, count in sorted(
+                (
+                    Counter({item.code: item.count for item in source.snapshot.reasons})
+                    + Counter({item.code: item.count for item in aggregates})
+                ).items()
+            )
+        ),
         source_health=health,
         latency_ms=latency_ms,
     )
-    if diagnostic:
-        return replace(output, snapshot=replace(output.snapshot, state=StageState.DEGRADED, degraded=True))
     return output
 
 

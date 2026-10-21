@@ -136,7 +136,6 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "candidate_timeout_seconds",
         "research_timeout_seconds",
         "minimum_market_rows",
-        "candidate_pool_size",
         "single_flight",
         "circuit_breaker_failures",
         "circuit_breaker_seconds",
@@ -152,9 +151,6 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             "enabled",
             "base_url",
             "model",
-            "challenger_model",
-            "challenger_limits",
-            "challenger_daily_limit",
             "timeout_seconds",
             "batch_size",
             "max_tokens",
@@ -245,7 +241,6 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
                 maximum=8.0,
             ),
             minimum_market_rows=_integer(market_raw, "minimum_market_rows", minimum=1),
-            candidate_pool_size=_integer(market_raw, "candidate_pool_size", minimum=1, maximum=1000),
             single_flight=_boolean(market_raw, "single_flight"),
             circuit_breaker_failures=_integer(market_raw, "circuit_breaker_failures", minimum=1),
             circuit_breaker_seconds=_integer(market_raw, "circuit_breaker_seconds", minimum=1),
@@ -258,9 +253,6 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             enabled=_boolean(deepseek_raw, "enabled"),
             base_url=_text(deepseek_raw, "base_url").rstrip("/"),
             model=_text(deepseek_raw, "model"),
-            challenger_model=_text(deepseek_raw, "challenger_model"),
-            challenger_limits=_integer_mapping(deepseek_raw, "challenger_limits", minimum=0),
-            challenger_daily_limit=_integer(deepseek_raw, "challenger_daily_limit", minimum=0),
             timeout_seconds=_number(deepseek_raw, "timeout_seconds", minimum=0.1),
             batch_size=_integer(deepseek_raw, "batch_size", minimum=1, maximum=8),
             max_tokens=_integer(deepseek_raw, "max_tokens", minimum=64),
@@ -402,8 +394,6 @@ def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
         raise ConfigurationError("market_data.single_flight must remain enabled")
     if settings.market_data.cache_policy.total_bytes != settings.performance_budgets.memory.cache_logical_bytes:
         raise ConfigurationError("cache logical and performance logical byte budgets must match")
-    if settings.market_data.candidate_pool_size != 120:
-        raise ConfigurationError("market_data.candidate_pool_size must remain fixed at 120")
 
 
 def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
@@ -419,13 +409,6 @@ def _validate_deepseek_identity(deepseek: DeepSeekSettings) -> None:
         raise ConfigurationError("DeepSeek base_url must use the official https://api.deepseek.com endpoint")
     if deepseek.model != "deepseek-v4-flash":
         raise ConfigurationError("DeepSeek primary model must be deepseek-v4-flash")
-    if deepseek.challenger_model != "deepseek-v4-pro":
-        raise ConfigurationError("DeepSeek challenger model must be deepseek-v4-pro")
-    expected_challenger_limits = {"tomorrow": 2, "d25": 0}
-    if dict(deepseek.challenger_limits) != expected_challenger_limits:
-        raise ConfigurationError("DeepSeek challenger limits must match the section 11 allocation")
-    if deepseek.challenger_daily_limit != 2:
-        raise ConfigurationError("DeepSeek challenger daily limit must remain fixed at 2")
     if deepseek.batch_size != 4:
         raise ConfigurationError("DeepSeek primary batch size must remain fixed at 4")
     if deepseek.timeout_seconds != 20.0:

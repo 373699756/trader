@@ -74,9 +74,7 @@ _STRATEGY_KEYS = {
     "fusion",
     "selection",
     "hard_filters",
-    "board_candidate_weights",
     "board_local_strategy_weights",
-    "candidate_component_weights",
     "local_component_weights",
     "feature_component_weights",
     "news_signal",
@@ -91,7 +89,6 @@ _STRATEGY_KEYS = {
 _STRATEGY_SECTION_FILES = {
     "selection.json": {"selection"},
     "filter.json": {"hard_filters"},
-    "candidate.json": {"board_candidate_weights", "candidate_component_weights"},
     "scoring.json": {
         "fusion",
         "board_local_strategy_weights",
@@ -159,9 +156,7 @@ def LoadStrategySettings(
         raise ConfigurationError("risk_rules must be a list")
     risk_rules = tuple(_parse_risk_rule(item, index) for index, item in enumerate(rules_raw))
     dimension_weights = _nested_number_mapping(raw, "dimension_weights")
-    board_candidate_weights = _triple_nested_number_mapping(raw, "board_candidate_weights")
     board_local_strategy_weights = _triple_nested_number_mapping(raw, "board_local_strategy_weights")
-    candidate_component_weights = _triple_nested_number_mapping(raw, "candidate_component_weights")
     local_component_weights = _triple_nested_number_mapping(raw, "local_component_weights")
     feature_component_weights_raw = _mapping(raw, "feature_component_weights")
     _require_exact_keys(
@@ -205,14 +200,12 @@ def LoadStrategySettings(
         selection=SelectionSettings(
             default_top_k=_integer(selection_raw, "default_top_k", minimum=0, maximum=18),
             maximum_top_k=_integer(selection_raw, "maximum_top_k", minimum=0, maximum=18),
-            maximum_per_industry=_integer(selection_raw, "maximum_per_industry", minimum=1),
             observation_margin=_number(selection_raw, "observation_margin", minimum=0.0),
             thresholds=_number_mapping(selection_raw, "thresholds"),
             maximum_board_fraction=_number(selection_raw, "maximum_board_fraction", minimum=0.01, maximum=1.0),
             competition_group_limits={
                 name: int(value) for name, value in _number_mapping(selection_raw, "competition_group_limits").items()
             },
-            candidate_min_score=_number(selection_raw, "candidate_min_score", minimum=0.0, maximum=100.0),
             minimum_board_reliability=_number(selection_raw, "minimum_board_reliability", minimum=0.0, maximum=1.0),
             review_candidate_limit=_integer(selection_raw, "review_candidate_limit", minimum=1, maximum=120),
         ),
@@ -226,9 +219,7 @@ def LoadStrategySettings(
         long_research=long_research,
         dimension_weights=dimension_weights,
         board_policy_version="score_first",
-        board_candidate_weights=board_candidate_weights,
         board_local_strategy_weights=board_local_strategy_weights,
-        candidate_component_weights=candidate_component_weights,
         local_component_weights=local_component_weights,
         feature_component_weights=feature_component_weights,
         risk_rules=risk_rules,

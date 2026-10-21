@@ -17,7 +17,6 @@ from trader.recommendation.domain.publication.models import (
 from trader.recommendation.domain.risk.fusion import FuseScore, FusionPolicy, FusionRequest
 from trader.recommendation.domain.scoring.scoring import (
     ApplyBoardPolicy,
-    BoardCandidateComponents,
     BoardCrossSectionRequest,
     BuildBoardCrossSection,
     ProjectBoardPolicy,
@@ -108,36 +107,6 @@ def test_production_stability_missing_value_cannot_gain_known_weight(
     assert final.score.final_score == final.score.local_score == RoundScore(incomplete_score.base_score - 2.0)
 
 
-@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
-def test_candidate_stability_keeps_known_value_average(application_feature_factory, strategy):
-    names = (*_LOCAL_COMPONENT_WEIGHTS[strategy], "entry_quality")
-    if strategy is Strategy.TOMORROW:
-        names = (*names, "market_state")
-    policy = _policy(strategy, Board.MAIN, {name: 1 / len(names) for name in names})
-    feature = _features(application_feature_factory, 1, Board.MAIN)[0]
-    values = {
-        **feature.values,
-        "low_volatility_score": 100.0,
-    }
-    values.pop("low_drawdown_score", None)
-
-    components = BoardCandidateComponents(replace(feature, values=values, missing_fields=()), policy)
-
-    assert components["stability"] == 100.0
-
-
-_CANDIDATE_COMPONENT_WEIGHTS = {
-    Strategy.TOMORROW: {"stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5}},
-    Strategy.D25: {
-        "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
-        "execution": {
-            "capacity_score": 1 / 3,
-            "moderate_amplitude": 1 / 3,
-            "price_executability": 1 / 3,
-        },
-    },
-}
-
 _LOCAL_COMPONENT_WEIGHTS = {
     Strategy.TOMORROW: {
         "tail_structure": {"tail_return_30m": 0.35, "tail_volume_ratio": 0.3, "close_location": 0.35},
@@ -184,31 +153,12 @@ def _build_board_cross_section(
 
 
 def _policy(strategy: Strategy, board: Board, weights: dict[str, float]) -> BoardStrategyPolicy:
-    candidate = {
-        Strategy.TOMORROW: {
-            "liquidity": 0.35,
-            "peer_gap": 0.15,
-            "trend": 0.25,
-            "stability": 0.15,
-            "data_completeness": 0.10,
-        },
-        Strategy.D25: {
-            "liquidity": 0.30,
-            "residual_momentum": 0.20,
-            "trend": 0.20,
-            "stability": 0.15,
-            "execution": 0.10,
-            "data_completeness": 0.05,
-        },
-    }[strategy]
     return BoardStrategyPolicy(
         policy_id=f"board-policy-fixture:{strategy.value}:{board.value}",
         version="board-policy-fixture",
         board=board,
         strategy=strategy,
-        candidate_weights=candidate,
         local_weights=weights,
-        candidate_component_weights=_CANDIDATE_COMPONENT_WEIGHTS[strategy],
         local_component_weights=_LOCAL_COMPONENT_WEIGHTS[strategy],
     )
 

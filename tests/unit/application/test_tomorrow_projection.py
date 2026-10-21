@@ -33,7 +33,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     FormalScoredDecision,
-    ScoredTopSix,
+    VisibleScoredSeats,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import (
@@ -84,7 +84,7 @@ class _RecordingProductionPredictor(_ProductionPredictor):
 
 class _NonPositiveProductionPredictor(_ProductionPredictor):
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-        return tuple(ModelPrediction(item.code, 0.001 + index * 0.0001) for index, item in enumerate(inputs))
+        return tuple(ModelPrediction(item.code, 0.001 + (index % 3) * 0.0001) for index, item in enumerate(inputs))
 
 
 class _IndustryProductionPredictor(_ProductionPredictor):
@@ -121,9 +121,9 @@ def test_fourteenth_stage_cannot_select_beyond_the_global_score_six(application_
 
     assert stages[-2].output_count == 1
     assert stages[-1].input_count == 1
-    assert stages[-1].output_count == 0
-    assert ScoredDecisionCoverage(projection.local).selected_count == 0
-    assert not any(item.selected for item in ScoredTopSix(projection.local.items))
+    assert stages[-1].output_count == 1
+    assert ScoredDecisionCoverage(projection.local).selected_count == 1
+    assert all(item.selected for item in VisibleScoredSeats(projection.local))
 
 
 def _router(predictor: object) -> ModelScoringRouter:
@@ -192,7 +192,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert audit.production_local == audit.research_shadow
     assert audit.passed_candidates
     assert all(candidate.board and candidate.industry for candidate in audit.passed_candidates)
-    assert any(candidate.production_top120 for candidate in audit.passed_candidates)
+    assert any(candidate.full_population_scored for candidate in audit.passed_candidates)
     code = projection.review_candidates[0].code
     applied = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     hybrid = BuildScoredHybrid(
@@ -252,37 +252,30 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
 
     diagnostics = projection.local.selection_diagnostics
     assert diagnostics is not None
-    assert diagnostics.maximum_final_score == max(item.final_score for item in projection.local.items)
-    assert diagnostics.maximum_final_score < 90.0
-    assert diagnostics.evaluated_count == 3
+    assert diagnostics.maximum_final_score is None
+    assert diagnostics.evaluated_count == 0
     assert diagnostics.empty_reason == "no_positive_net_utility"
     assert projection.review_candidates == ()
-    assert not any(item.selected for item in projection.local.items)
-    assert {item.action.value for item in projection.local.items} == {"unavailable"}
-    assert {item.reason for item in projection.local.items} == {"model_net_utility_non_positive"}
-    assert len({item.local_score for item in projection.local.items}) == 1
-    assert {
-        item.model_diagnostics.signal_score for item in projection.local.items if item.model_diagnostics is not None
-    } == {0.0, 50.0, 100.0}
+    assert projection.local.items == ()
+    assert len(projection.model_diagnostics) == 3
+    assert projection.stages.model_filter.snapshot.rejected_count == 3
     complete_status = BuildSupplyStatus(projection, input_stages=input_stages)
-    assert complete_status.primary_blocker == "no_positive_net_utility"
+    assert complete_status.primary_blocker == "model_net_utility_non_positive"
     assert all(complete_status.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert tuple(stage.stage for stage in complete_status.stage_snapshots) == tuple(PipelineStage)
     ValidateStageBatchContinuity(complete_status.stage_snapshots)
-    updated = UpdateSupplyStatusDecision(
-        complete_status, projection, projection.local, candidate_score_threshold=90.0, scored_stages=projection.stages
-    )
+    updated = UpdateSupplyStatusDecision(complete_status, projection, projection.local, scored_stages=projection.stages)
     assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
-    assert complete_status.stage_snapshots[-1].stage is PipelineStage.FINAL_SELECTION
+    assert complete_status.stage_snapshots[-1].stage is PipelineStage.ACTION_PUBLISH
     assert complete_status.stage_snapshots[-1].state is StageState.READY
     assert complete_status.stage_snapshots[-1].input_count == 0
     assert complete_status.stage_snapshots[-1].output_count == 0
-    assert projection.stages.final_selection.snapshot.state is StageState.READY
-    assert complete_status.pipeline.stage("input_readiness").state == "completed"
-    assert complete_status.pipeline.stage("candidate_refresh").state == "completed"
+    assert projection.stages.action_publish.snapshot.state is StageState.READY
+    assert complete_status.pipeline.stage("local_data").state == "completed"
+    assert complete_status.pipeline.stage("market_features").state == "completed"
     degraded_status = BuildSupplyStatus(projection, candidate_quote_eligible=0, input_stages=input_stages)
-    assert degraded_status.pipeline.stage("candidate_refresh").state == "degraded"
-    assert degraded_status.pipeline.stage("candidate_refresh").output_count == 0
+    assert degraded_status.pipeline == complete_status.pipeline
+    assert degraded_status.pipeline.stage("market_features").output_count == 3
 
 
 def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
@@ -362,8 +355,8 @@ def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
         dynamic_filter_eligible=1,
         strategy_history_eligible=1,
         model_input_eligible=0,
-        candidate_score_eligible=0,
-        candidate_limit_selected=0,
+        scoring_input_eligible=0,
+        scoring_input_count=0,
     )
     native = _native_input((feature,))
     input_stages, quality_stage = observed_quality_input((feature,), policy, EVALUATED_AT)
@@ -380,9 +373,9 @@ def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
 
     status = BuildSupplyStatus(projection, stage_counts, input_stages=input_stages)
 
-    assert status.pipeline.stage("strategy_history").output_count == 1
-    assert status.pipeline.stage("model_input").output_count == 0
-    assert status.primary_blocker == "model_input_unavailable"
+    assert status.pipeline.stage("market_features").output_count == 1
+    assert status.pipeline.stage("model_filter").output_count == 0
+    assert status.primary_blocker == "production_model_features_missing"
 
 
 def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement(
@@ -548,7 +541,6 @@ def test_native_projection_scores_fresh_candidates_against_their_coherent_older_
         candidate_features=candidate_features,
         preselect_max_age_seconds=30.0,
         score_max_age_seconds=30.0,
-        candidate_pool_size=120,
     )
 
     projection = BuildScoredLocal(native_input, policy, sequence=1)
@@ -582,7 +574,6 @@ def test_native_projection_does_not_treat_stale_candidate_quotes_as_fresh_popula
         candidate_features=market_features,
         preselect_max_age_seconds=30.0,
         score_max_age_seconds=30.0,
-        candidate_pool_size=120,
     )
 
     projection = BuildScoredLocal(native_input, policy, sequence=1)
@@ -620,7 +611,7 @@ def test_native_projection_classifies_an_invalid_candidate_quote_as_transient(
     assert projection.input_quality.candidate_rejected_count == 0
     assert projection.input_quality.data_pending_count == 1
     assert projection.input_quality.candidate_transient_reason_counts[reason] == 1
-    stage = observed_input_stages((invalid,), policy, EVALUATED_AT)[6]
+    stage = observed_input_stages((invalid,), policy, EVALUATED_AT)[3]
     assert stage.rejected_count == 0
     assert stage.pending_count == 1
     assert stage.input_count == stage.output_count + stage.rejected_count + stage.pending_count + stage.failed_count
@@ -648,7 +639,7 @@ def test_business_rejection_takes_precedence_over_the_same_stocks_missing_input(
     assert quality.refresh_pending_count == 0
     assert quality.publishable is not separate_invalid
     assert quality.status == ("transient_invalid_empty" if separate_invalid else "business_empty")
-    stage = observed_input_stages(features, policy, EVALUATED_AT)[6]
+    stage = observed_input_stages(features, policy, EVALUATED_AT)[3]
     assert stage.rejected_count == 1
     assert stage.pending_count == int(separate_invalid)
     assert stage.input_count == stage.output_count + stage.rejected_count + stage.pending_count + stage.failed_count
@@ -739,7 +730,6 @@ def _native_input(
         candidate_features=features,
         preselect_max_age_seconds=30.0,
         score_max_age_seconds=30.0,
-        candidate_pool_size=120,
     )
 
 

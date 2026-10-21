@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
 
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import ScoredStageChain
@@ -13,35 +11,25 @@ from trader.recommendation.application.pipeline.quality_check.input_quality_serv
 from trader.recommendation.application.pipeline.stage_output import StageOutput
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.recommendation.domain.evidence.pipeline import (
+    PIPELINE_STAGE_ORDER,
     PIPELINE_STAGES,
     PipelineFacet,
-    PipelineMetricName,
-    PipelineMetricRange,
     PipelineReasonCount,
+    PipelineStage,
     PipelineStageKey,
     PipelineStageSnapshot,
-    PipelineStageState,
     PipelineStageStatus,
     RecommendationPipelineStatus,
     ValidateStageBatchContinuity,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
+from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 from trader.recommendation.domain.publication.models import (
     RecommendationAction,
-    ScoredDisposition,
-    ScoredStockEvaluation,
 )
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,
-    SplitFilterReasonCounts,
 )
-
-
-@dataclass(frozen=True)
-class _PipelineCompletionOptions:
-    candidate_quote_eligible: int
-    candidate_score_threshold: float | None
 
 
 def BuildSupplyStatus(
@@ -49,11 +37,12 @@ def BuildSupplyStatus(
     candidate_stage_counts: ScoredCandidateStageCounts | None = None,
     *,
     candidate_quote_eligible: int | None = None,
-    candidate_score_threshold: float | None = None,
     decision: ScoredDecision | None = None,
     input_stages: tuple[PipelineStageSnapshot, ...] = (),
     scored_stages: ScoredStageChain | None = None,
 ) -> InputQualityStatus:
+    if candidate_stage_counts is None and projection.selection.stage_counts is None:
+        raise ValueError("scored input status requires immutable candidate stage facts")
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
     evaluations = tuple(item for item in projection.selection.evaluations if item.code in requested)
@@ -62,26 +51,14 @@ def BuildSupplyStatus(
     if diagnostics is None:
         raise ValueError("scored input status requires selection diagnostics")
     decision_items = active_decision.items
-    if candidate_stage_counts is not None:
-        stage_counts = candidate_stage_counts
-    else:
-        selection_stage_counts = projection.selection.stage_counts
-        if selection_stage_counts is None:
-            raise ValueError("scored input status requires immutable candidate stage facts")
-        stage_counts = selection_stage_counts
-    reported_quote_eligible = (
-        quality.candidate_feature_count if candidate_quote_eligible is None else candidate_quote_eligible
+    scored_chain = scored_stages or projection.stages
+    snapshots = JoinStageSnapshots(input_stages, scored_chain.snapshots) if input_stages else ()
+    pipeline = ProjectPipelineFacts(
+        snapshots or scored_chain.snapshots,
+        decision=active_decision,
+        quality=quality,
+        stage_counts=candidate_stage_counts or projection.selection.stage_counts,
     )
-    quote_eligible = min(stage_counts.candidate_limit_selected, reported_quote_eligible)
-    pipeline = _completed_pipeline(
-        projection,
-        active_decision,
-        evaluations,
-        stage_counts,
-        _PipelineCompletionOptions(quote_eligible, candidate_score_threshold),
-    )
-    snapshots = JoinStageSnapshots(input_stages, (scored_stages or projection.stages).snapshots)
-    pipeline = replace(pipeline, stage_snapshots=snapshots)
     reasons: Counter[str] = Counter()
     for item in evaluations:
         reasons.update(reason.code for reason in item.filter_reasons)
@@ -124,28 +101,22 @@ def BuildSupplyStatus(
 
 
 def JoinStageSnapshots(
-    first_nine: tuple[PipelineStageSnapshot, ...],
+    prepared: tuple[PipelineStageSnapshot, ...],
     scored: tuple[PipelineStageSnapshot, ...],
 ) -> tuple[PipelineStageSnapshot, ...]:
-    snapshots = (*first_nine, *scored)
+    snapshots = (*prepared, *scored)
     ValidateStageBatchContinuity(snapshots)
     return snapshots
 
 
 def BuildPendingStageSnapshots(
-    first_nine: tuple[PipelineStageSnapshot, ...],
+    prepared: tuple[PipelineStageSnapshot, ...],
 ) -> tuple[PipelineStageSnapshot, ...]:
-    """Explicit unexecuted placeholders; never inferred from scoring submetrics."""
-    if tuple(item.stage for item in first_nine) != PIPELINE_STAGES[:9]:
-        raise ValueError("complete pipeline snapshots require the ordered first nine stages")
-    if any(
-        left.output_batch_id != right.input_batch_id or left.output_count != right.input_count
-        for left, right in zip(first_nine, first_nine[1:], strict=False)
-    ):
-        raise ValueError("input stage observations must preserve their immutable handoffs")
-    previous = first_nine[-1]
-    snapshots = list(first_nine)
-    for stage in PIPELINE_STAGES[9:]:
+    if tuple(item.stage for item in prepared) != PIPELINE_STAGES[: len(prepared)]:
+        raise ValueError("input observations must be an ordered pipeline prefix")
+    snapshots = list(prepared)
+    previous = prepared[-1]
+    for stage in PIPELINE_STAGES[len(prepared) :]:
         snapshot = StageOutput(
             stage,
             (),
@@ -154,104 +125,77 @@ def BuildPendingStageSnapshots(
             input_count=previous.output_count,
             pending_count=previous.output_count,
             source_health=previous.source_health,
-            latency_ms=0,
+            latency_ms=None,
         ).snapshot
         snapshots.append(snapshot)
         previous = snapshot
+    ValidateStageBatchContinuity(tuple(snapshots))
     return tuple(snapshots)
 
 
-def BuildPendingPipeline(
-    stage_counts: ScoredCandidateStageCounts,
+def ProjectPipelineFacts(
+    snapshots: tuple[PipelineStageSnapshot, ...],
     *,
-    candidate_feature_count: int,
-    primary_blocker: str,
-    candidate_score_threshold: float,
+    decision: ScoredDecision | None = None,
+    quality: ScoredInputQuality | None = None,
+    stage_counts: ScoredCandidateStageCounts | None = None,
 ) -> RecommendationPipelineStatus:
-    refreshing = primary_blocker == "candidate_quotes_pending"
-    refresh_output = None if refreshing else candidate_feature_count
-    refresh_state: PipelineStageState = "running" if refreshing else "completed"
-    current_stage: PipelineStageKey = "candidate_refresh" if refreshing else "evidence_score"
-    pending = tuple(
-        PipelineStageStatus(key, "pending", None, None)
-        for key in (
-            "evidence_score",
-            "model_cost_gate",
-            "local_score",
-            "deepseek_review",
-            "fusion",
-            "action_gate",
-            "concentration",
+    by_stage = {item.stage: item for item in snapshots}
+    diagnostics: list[PipelineStageStatus] = []
+    current: PipelineStageKey = "local_data"
+    for stage, key in zip(PIPELINE_STAGES, PIPELINE_STAGE_ORDER, strict=True):
+        fact = by_stage.get(stage)
+        if fact is None:
+            diagnostics.append(PipelineStageStatus(key, "pending", None, None))
+            continue
+        if fact.latency_ms is not None:
+            current = key
+        facets: tuple[PipelineFacet, ...] = ()
+        if stage is PipelineStage.MARKET_FEATURES and quality is not None:
+            facets = (
+                PipelineFacet("candidate_features", quality.candidate_feature_count),
+                PipelineFacet("security_master", quality.security_master_covered_count),
+                PipelineFacet("history", quality.history_covered_count),
+            )
+        if stage is PipelineStage.MARKET_FEATURES and stage_counts is not None:
+            facets += (PipelineFacet("strategy_history_eligible", stage_counts.strategy_history_eligible),)
+        if stage is PipelineStage.RISK_REVIEW:
+            counts = {item.code: item.count for item in fact.reasons}
+            facets = tuple(
+                PipelineFacet(key, counts.get(key, 0))
+                for key in (
+                    "deepseek_eligible",
+                    "deepseek_submitted",
+                    "deepseek_completed",
+                    "deepseek_cache_reused",
+                    "deepseek_veto",
+                    "deepseek_source_failed",
+                )
+            )
+        if stage is PipelineStage.ACTION_PUBLISH and decision is not None:
+            facets = tuple(
+                PipelineFacet(
+                    f"action_{action.value}", sum(item.action is action for item in decision.items), len(decision.items)
+                )
+                for action in RecommendationAction
+            )
+        diagnostics.append(
+            PipelineStageStatus(
+                key,
+                "pending" if fact.latency_ms is None else "completed" if fact.state.value == "ready" else "degraded",
+                fact.input_count,
+                fact.output_count,
+                facets=facets,
+                reason_counts=tuple(PipelineReasonCount(item.code, item.count) for item in fact.reasons),
+                duration_ms=fact.latency_ms,
+                rejected_count=fact.rejected_count,
+                pending_count=fact.pending_count,
+                failed_count=fact.failed_count,
+                not_selected_count=fact.not_selected_count,
+            )
         )
-    )
-    return RecommendationPipelineStatus(
-        current_stage=current_stage,
-        stages=(
-            PipelineStageStatus(
-                "input_readiness",
-                "completed",
-                stage_counts.issuer_eligible_population,
-                stage_counts.input_ready_population,
-            ),
-            PipelineStageStatus(
-                "dynamic_filter",
-                "completed",
-                stage_counts.input_ready_population,
-                stage_counts.dynamic_filter_eligible,
-            ),
-            PipelineStageStatus(
-                "board_cross_section",
-                "completed",
-                stage_counts.dynamic_filter_eligible,
-                stage_counts.dynamic_filter_eligible,
-            ),
-            PipelineStageStatus(
-                "strategy_history",
-                "completed",
-                stage_counts.dynamic_filter_eligible,
-                stage_counts.strategy_history_eligible,
-            ),
-            PipelineStageStatus(
-                "model_input",
-                "completed",
-                stage_counts.strategy_history_eligible,
-                stage_counts.model_input_eligible,
-            ),
-            PipelineStageStatus(
-                "candidate_score",
-                "completed",
-                stage_counts.model_input_eligible,
-                stage_counts.candidate_score_eligible,
-                threshold=candidate_score_threshold,
-            ),
-            PipelineStageStatus(
-                "board_limit",
-                "completed",
-                stage_counts.candidate_score_eligible,
-                stage_counts.candidate_limit_selected,
-            ),
-            PipelineStageStatus(
-                "candidate_refresh",
-                refresh_state,
-                stage_counts.candidate_limit_selected,
-                refresh_output,
-            ),
-            PipelineStageStatus(
-                "input_coverage",
-                "pending",
-                stage_counts.candidate_limit_selected,
-                None,
-                facets=(
-                    PipelineFacet(
-                        "candidate_features",
-                        candidate_feature_count,
-                        stage_counts.candidate_limit_selected,
-                    ),
-                ),
-            ),
-            *pending,
-        ),
-    )
+    complete = snapshots if tuple(item.stage for item in snapshots) == PIPELINE_STAGES else ()
+    return RecommendationPipelineStatus(current, tuple(diagnostics), complete)
 
 
 def UpdateSupplyStatusDecision(
@@ -259,316 +203,16 @@ def UpdateSupplyStatusDecision(
     projection: ScoredLocalProjection,
     decision: ScoredDecision,
     *,
-    candidate_score_threshold: float,
     scored_stages: ScoredStageChain,
 ) -> InputQualityStatus:
-    stage_counts = projection.selection.stage_counts
-    if stage_counts is None:
-        raise ValueError("decision update requires immutable candidate stage facts")
-    refresh = current.pipeline.stage("candidate_refresh")
-    scored_stage_keys = {snapshot.stage for snapshot in scored_stages.snapshots}
+    scoring_keys = {snapshot.stage for snapshot in scored_stages.snapshots}
     return BuildSupplyStatus(
         projection,
-        stage_counts,
-        candidate_quote_eligible=refresh.output_count,
-        candidate_score_threshold=candidate_score_threshold,
+        projection.selection.stage_counts,
+        candidate_quote_eligible=current.candidate_feature_count,
         decision=decision,
-        input_stages=tuple(snapshot for snapshot in current.stage_snapshots if snapshot.stage not in scored_stage_keys),
+        input_stages=tuple(snapshot for snapshot in current.stage_snapshots if snapshot.stage not in scoring_keys),
         scored_stages=scored_stages,
-    )
-
-
-def _completed_pipeline(
-    projection: ScoredLocalProjection,
-    decision: ScoredDecision,
-    evaluations: tuple[ScoredStockEvaluation, ...],
-    stage_counts: ScoredCandidateStageCounts,
-    options: _PipelineCompletionOptions,
-) -> RecommendationPipelineStatus:
-    quality = projection.input_quality
-    candidate_quote_eligible = options.candidate_quote_eligible
-    candidate_score_threshold = options.candidate_score_threshold
-    diagnostics = decision.selection_diagnostics
-    if diagnostics is None:
-        raise ValueError("recommendation pipeline requires selection diagnostics")
-    decision_items = decision.items
-    model_diagnostics = tuple(item.model_diagnostics for item in decision_items if item.model_diagnostics is not None)
-    model_positive = sum(item.predicted_net_excess_pct > 0.0 for item in model_diagnostics)
-    action_eligible = sum(item.action is not RecommendationAction.UNAVAILABLE for item in decision_items)
-    selected_executable = sum(
-        item.selected and item.action is RecommendationAction.EXECUTABLE for item in decision_items
-    )
-    selected_observe = sum(item.selected and item.action is RecommendationAction.OBSERVE for item in decision_items)
-    evaluated_count = len(evaluations)
-    disposition_facets = (
-        PipelineFacet(
-            "filter_pass", sum(item.disposition is ScoredDisposition.PASS for item in evaluations), evaluated_count
-        ),
-        PipelineFacet(
-            "filter_observe",
-            sum(item.disposition is ScoredDisposition.OBSERVE_ONLY for item in evaluations),
-            evaluated_count,
-        ),
-        PipelineFacet(
-            "filter_reject",
-            sum(item.disposition is ScoredDisposition.REJECT for item in evaluations),
-            evaluated_count,
-        ),
-    )
-    fusion_applied = sum(item.review_outcome == "applied" for item in decision_items)
-    review_completed = sum(item.review_outcome is not None for item in decision_items)
-    deepseek_ranges = _metric_ranges(
-        (
-            ("deepseek_score", (_component(item, "deepseek_score") for item in decision_items)),
-            ("deepseek_risk_penalty", (_component(item, "deepseek_risk_penalty") for item in decision_items)),
-        )
-    )
-    deepseek_state: PipelineStageState = (
-        "completed" if decision.stage == "hybrid" else "pending" if projection.review_candidates else "not_applicable"
-    )
-    deepseek_output = review_completed if decision.stage == "hybrid" else None if projection.review_candidates else 0
-    current_stage: PipelineStageKey = (
-        "concentration" if decision.stage == "hybrid" or not projection.review_candidates else "deepseek_review"
-    )
-    business_reason_counts, readiness_reason_counts = SplitFilterReasonCounts(quality.population_filter_reason_counts)
-    input_readiness_state: PipelineStageState = "degraded" if readiness_reason_counts else "completed"
-    candidate_refresh_state: PipelineStageState = (
-        "degraded" if candidate_quote_eligible < stage_counts.candidate_limit_selected else "completed"
-    )
-    return RecommendationPipelineStatus(
-        current_stage=current_stage,
-        stages=(
-            PipelineStageStatus(
-                "input_readiness",
-                input_readiness_state,
-                stage_counts.issuer_eligible_population,
-                stage_counts.input_ready_population,
-                reason_counts=_reasons(_expand_reason_counts(readiness_reason_counts)),
-            ),
-            PipelineStageStatus(
-                "dynamic_filter",
-                "completed",
-                stage_counts.input_ready_population,
-                stage_counts.dynamic_filter_eligible,
-                reason_counts=_reasons(_expand_reason_counts(business_reason_counts)),
-            ),
-            PipelineStageStatus(
-                "board_cross_section",
-                "degraded"
-                if any(item.disposition is ScoredDisposition.OBSERVE_ONLY for item in evaluations)
-                else "completed",
-                stage_counts.dynamic_filter_eligible,
-                stage_counts.dynamic_filter_eligible,
-                metric_ranges=_metric_ranges(
-                    (("board_reliability", (item.features.board_data_reliability for item in evaluations)),)
-                ),
-                facets=disposition_facets,
-                reason_counts=_reasons(flag.code for item in evaluations for flag in item.optional_flags),
-            ),
-            PipelineStageStatus(
-                "strategy_history",
-                "completed",
-                stage_counts.dynamic_filter_eligible,
-                stage_counts.strategy_history_eligible,
-                metric_ranges=_metric_ranges(
-                    (("history_sessions", (float(item.features.history_days) for item in evaluations)),)
-                ),
-                threshold=float(quality.history_required_sessions),
-                reason_counts=_selection_reasons(evaluations, {"strategy_history_insufficient"}),
-            ),
-            PipelineStageStatus(
-                "model_input",
-                "completed",
-                stage_counts.strategy_history_eligible,
-                stage_counts.model_input_eligible,
-                metric_ranges=_metric_ranges(
-                    (
-                        (
-                            "input_completeness",
-                            (
-                                1.0 - item.candidate_missing_ratio
-                                for item in evaluations
-                                if item.candidate_missing_ratio is not None
-                            ),
-                        ),
-                    )
-                ),
-                reason_counts=_selection_reasons(evaluations, {"production_model_features_missing"}),
-            ),
-            PipelineStageStatus(
-                "candidate_score",
-                "completed",
-                stage_counts.model_input_eligible,
-                stage_counts.candidate_score_eligible,
-                metric_ranges=_metric_ranges((("candidate_score", (item.candidate_score for item in evaluations)),)),
-                threshold=candidate_score_threshold,
-                reason_counts=_selection_reasons(
-                    evaluations,
-                    {"candidate_core_missing", "candidate_score_below_minimum"},
-                ),
-            ),
-            PipelineStageStatus(
-                "board_limit",
-                "completed",
-                stage_counts.candidate_score_eligible,
-                stage_counts.candidate_limit_selected,
-                facets=_board_facets(evaluations),
-                reason_counts=_selection_reasons(evaluations, {"board_candidate_limit"}),
-            ),
-            PipelineStageStatus(
-                "candidate_refresh",
-                candidate_refresh_state,
-                stage_counts.candidate_limit_selected,
-                candidate_quote_eligible,
-                metric_ranges=_quote_age_ranges(projection),
-                reason_counts=_reasons(_expand_reason_counts(quality.candidate_transient_reason_counts)),
-            ),
-            PipelineStageStatus(
-                "input_coverage",
-                "degraded"
-                if min(
-                    quality.candidate_feature_count,
-                    quality.security_master_covered_count,
-                    quality.history_covered_count,
-                )
-                < quality.candidate_count
-                else "completed",
-                quality.candidate_count,
-                None,
-                facets=(
-                    PipelineFacet("candidate_features", quality.candidate_feature_count, quality.candidate_count),
-                    PipelineFacet("security_master", quality.security_master_covered_count, quality.candidate_count),
-                    PipelineFacet("history", quality.history_covered_count, quality.candidate_count),
-                ),
-                reason_counts=_reasons(
-                    (
-                        *_expand_reason_counts(quality.candidate_filter_reason_counts),
-                        *_expand_reason_counts(quality.candidate_optional_reason_counts),
-                    )
-                ),
-            ),
-            PipelineStageStatus(
-                "evidence_score",
-                "completed",
-                quality.candidate_feature_count,
-                quality.candidate_scored_count,
-                metric_ranges=_metric_ranges((("base_score", (item.local_base_score for item in evaluations)),)),
-            ),
-            PipelineStageStatus(
-                "model_cost_gate",
-                "completed" if model_diagnostics else "not_applicable",
-                quality.candidate_scored_count,
-                model_positive if model_diagnostics else quality.candidate_scored_count,
-                metric_ranges=_metric_ranges(
-                    (
-                        ("model_signal_score", (item.signal_score for item in model_diagnostics)),
-                        (
-                            "predicted_excess_return_pct",
-                            (item.predicted_excess_return_pct for item in model_diagnostics),
-                        ),
-                        ("estimated_cost_pct", (item.estimated_cost_pct for item in model_diagnostics)),
-                        (
-                            "predicted_net_excess_pct",
-                            (item.predicted_net_excess_pct for item in model_diagnostics),
-                        ),
-                    )
-                ),
-                reason_counts=_reasons(
-                    item.reason for item in decision_items if item.reason == "model_net_utility_non_positive"
-                ),
-            ),
-            PipelineStageStatus(
-                "local_score",
-                "completed",
-                quality.candidate_scored_count,
-                len(decision_items),
-                metric_ranges=_metric_ranges(
-                    (
-                        ("local_risk_penalty", (item.local_risk_penalty for item in evaluations)),
-                        ("local_score", (item.local_score for item in evaluations)),
-                    )
-                ),
-                reason_counts=_selection_reasons(
-                    evaluations,
-                    {"local_risk_veto", "local_score_below_minimum"},
-                ),
-            ),
-            PipelineStageStatus(
-                "deepseek_review",
-                deepseek_state,
-                len(projection.review_candidates),
-                deepseek_output,
-                metric_ranges=deepseek_ranges,
-                facets=(PipelineFacet("review_completed", review_completed, len(projection.review_candidates)),),
-            ),
-            PipelineStageStatus(
-                "fusion",
-                "completed",
-                len(decision_items),
-                len(decision_items),
-                metric_ranges=_metric_ranges((("final_score", (item.final_score for item in decision_items)),)),
-                facets=(
-                    PipelineFacet("local_only", len(decision_items) - fusion_applied, len(decision_items)),
-                    PipelineFacet("hybrid", fusion_applied, len(decision_items)),
-                ),
-            ),
-            PipelineStageStatus(
-                "action_gate",
-                "completed",
-                len(decision_items),
-                action_eligible,
-                threshold=diagnostics.executable_threshold,
-                facets=(
-                    PipelineFacet(
-                        "executable_threshold_met",
-                        sum(item.final_score >= diagnostics.executable_threshold for item in decision_items),
-                        len(decision_items),
-                    ),
-                    PipelineFacet(
-                        "observation_threshold_met",
-                        sum(item.final_score >= diagnostics.observation_floor for item in decision_items),
-                        len(decision_items),
-                    ),
-                    PipelineFacet(
-                        "action_executable",
-                        sum(item.action is RecommendationAction.EXECUTABLE for item in decision_items),
-                        len(decision_items),
-                    ),
-                    PipelineFacet(
-                        "action_observe",
-                        sum(item.action is RecommendationAction.OBSERVE for item in decision_items),
-                        len(decision_items),
-                    ),
-                    PipelineFacet(
-                        "action_unavailable",
-                        sum(item.action is RecommendationAction.UNAVAILABLE for item in decision_items),
-                        len(decision_items),
-                    ),
-                ),
-                reason_counts=_reasons(item.reason for item in decision_items if item.reason),
-            ),
-            PipelineStageStatus(
-                "concentration",
-                "completed",
-                action_eligible,
-                selected_executable + selected_observe,
-                facets=(
-                    PipelineFacet("selected_executable", selected_executable, action_eligible),
-                    PipelineFacet("selected_observe", selected_observe, action_eligible),
-                ),
-                reason_counts=_reasons(
-                    item.reason
-                    for item in decision_items
-                    if item.reason
-                    in {
-                        "top_k_limit",
-                        "observation_limit",
-                        "board_concentration_limit",
-                        "industry_limit",
-                    }
-                ),
-            ),
-        ),
     )
 
 
@@ -620,128 +264,22 @@ def _primary_supply_blocker(
     *,
     empty_reason: str | None,
 ) -> str:
-    action_stage = pipeline.stage("action_gate")
-    action_observe = _facet_count(action_stage, "action_observe")
-    action_executable = _facet_count(action_stage, "action_executable")
-    selected_executable = _facet_count(pipeline.stage("concentration"), "selected_executable")
-    full_scored = pipeline.stage("evidence_score").output_count or 0
-    strategy_history = pipeline.stage("strategy_history").output_count or 0
-    dynamic_filter = pipeline.stage("dynamic_filter").output_count or 0
-    model_input = pipeline.stage("model_input").output_count or 0
-    requested_candidates = pipeline.stage("candidate_refresh").input_count or 0
-    review_eligible = pipeline.stage("deepseek_review").input_count or 0
-    action_blocker = "no_executable_candidates" if action_observe else "local_score_below_observation_floor"
-    population_reasons = dict(quality.population_filter_reason_counts)
-    stale_population = population_reasons.get("stale_quote", 0)
-    missing_liquidity_history = population_reasons.get("missing_liquidity_history", 0)
-    priorities = (
-        (
-            quality.candidate_count > 0 and quality.candidate_feature_coverage_ratio < 1.0,
-            "candidate_feature_coverage_incomplete",
-        ),
-        (
-            quality.candidate_count > 0 and quality.security_master_coverage_ratio < 1.0,
-            "security_master_coverage_incomplete",
-        ),
-        (
-            quality.status == "transient_invalid_empty"
-            and requested_candidates == 0
-            and stale_population > 0
-            and stale_population * 2 >= quality.population_count,
-            "market_population_stale",
-        ),
-        (
-            quality.status == "transient_invalid_empty"
-            and requested_candidates == 0
-            and missing_liquidity_history > 0
-            and missing_liquidity_history * 2 >= quality.population_count,
-            "market_liquidity_history_unavailable",
-        ),
-        (
-            quality.status == "transient_invalid_empty" and full_scored == 0 and strategy_history < dynamic_filter,
-            "strategy_history_unavailable",
-        ),
-        (
-            full_scored == 0 and strategy_history > 0 and model_input == 0,
-            "model_input_unavailable",
-        ),
-        (full_scored == 0, "no_scored_candidates"),
-        (empty_reason == "no_positive_net_utility", "no_positive_net_utility"),
-        (review_eligible == 0, "no_review_eligible_candidates"),
-        (action_executable == 0, action_blocker),
-        (selected_executable == 0, "selection_constraints"),
-    )
-    return next((reason for blocked, reason in priorities if blocked), "ready")
-
-
-def _metric_ranges(
-    groups: Iterable[tuple[PipelineMetricName, Iterable[float | None]]],
-) -> tuple[PipelineMetricRange, ...]:
-    result: list[PipelineMetricRange] = []
-    for metric, raw_values in groups:
-        values = tuple(float(value) for value in raw_values if value is not None and math.isfinite(float(value)))
-        if values:
-            result.append(PipelineMetricRange(metric, min(values), max(values)))
-    return tuple(result)
-
-
-def _reasons(values: Iterable[str]) -> tuple[PipelineReasonCount, ...]:
-    return tuple(PipelineReasonCount(reason, count) for reason, count in sorted(Counter(values).items()) if reason)
-
-
-def _expand_reason_counts(values: Mapping[str, int]) -> tuple[str, ...]:
-    return tuple(reason for reason, count in values.items() for _index in range(count))
-
-
-def _selection_reasons(
-    evaluations: tuple[ScoredStockEvaluation, ...],
-    accepted: set[str],
-) -> tuple[PipelineReasonCount, ...]:
-    return _reasons(item.selection_skip_reason for item in evaluations if item.selection_skip_reason in accepted)
-
-
-def _board_facets(evaluations: tuple[ScoredStockEvaluation, ...]) -> tuple[PipelineFacet, ...]:
-    counts = Counter(
-        item.features.quote.board.value
-        for item in evaluations
-        if item.candidate_rank > 0 and item.local_score is not None
-    )
-    total = sum(counts.values())
-    return tuple(PipelineFacet(f"board_{board}", count, total) for board, count in sorted(counts.items()))
-
-
-def _quote_age_ranges(projection: ScoredLocalProjection) -> tuple[PipelineMetricRange, ...]:
-    evaluated_at = projection.native_input.evaluated_at
-    return _metric_ranges(
-        (
-            (
-                "quote_age_seconds",
-                (
-                    max(0.0, (evaluated_at - feature.quote.source_time).total_seconds())
-                    for feature in projection.native_input.candidate_features
-                ),
-            ),
-        )
-    )
-
-
-def _component(item: DecisionItem, name: str) -> float | None:
-    return next((value for key, value in item.score_components if key == name), None)
-
-
-def _facet_count(stage: PipelineStageStatus, key: str) -> int:
-    return next((item.count for item in stage.facets if item.key == key), 0)
-
-
-def _required_count(value: int | None) -> int:
-    if value is None:
-        raise ValueError("completed recommendation pipeline count is missing")
-    return value
+    for stage in pipeline.stages:
+        if stage.pending_count or stage.failed_count:
+            return stage.reason_counts[0].reason if stage.reason_counts else f"{stage.key}_pending"
+        if stage.input_count and stage.output_count == 0:
+            return stage.reason_counts[0].reason if stage.reason_counts else f"{stage.key}_empty"
+    if empty_reason:
+        return empty_reason
+    actions = pipeline.stage("action_publish")
+    if not any(item.key == "action_executable" and item.count for item in actions.facets):
+        return "no_executable_candidates"
+    return "ready"
 
 
 __all__ = [
     "BuildPendingStageSnapshots",
-    "BuildPendingPipeline",
+    "ProjectPipelineFacts",
     "BuildSupplyStatus",
     "UpdateSupplyStatusDecision",
 ]

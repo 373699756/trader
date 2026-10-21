@@ -656,7 +656,7 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
         config_version="runtime-current",
     )
 
-    assert runtime._selected_overlay_codes(MarketPhase.AFTERNOON) == ("600001", "600002")
+    assert runtime._selected_overlay_codes(MarketPhase.AFTERNOON) == ("600001",)
     assert runtime._selected_overlay_codes(MarketPhase.MIDDAY) == ("600001",)
     runtime.start()
     runtime.submit_due(frozen_at)

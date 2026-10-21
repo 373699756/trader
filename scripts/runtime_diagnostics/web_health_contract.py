@@ -57,6 +57,8 @@ class PipelineSnapshot:
         return next((stage for stage in self.stages if stage.key == key), None)
 
     def count(self, name: str) -> int | None:
+        if tuple(stage.key for stage in self.stages) != _PIPELINE_STAGE_ORDER:
+            return None
         stage_key, source = _PIPELINE_COUNT_LOCATIONS[name]
         stage = self.stage(stage_key)
         if stage is None:
@@ -77,8 +79,8 @@ _MONITORED_PIPELINE_COUNTS = (
     "dynamic_filter_eligible",
     "strategy_history_eligible",
     "model_input_eligible",
-    "candidate_score_eligible",
-    "candidate_limit_selected",
+    "scoring_input_eligible",
+    "scoring_input_count",
     "requested_candidates",
     "candidate_features",
     "candidate_quote_eligible",
@@ -87,51 +89,35 @@ _MONITORED_PIPELINE_COUNTS = (
     "full_scored",
 )
 
-_PIPELINE_STAGE_ORDER = (
-    "input_readiness",
-    "dynamic_filter",
-    "board_cross_section",
-    "strategy_history",
-    "model_input",
-    "candidate_score",
-    "board_limit",
-    "candidate_refresh",
-    "input_coverage",
-    "evidence_score",
-    "model_cost_gate",
-    "local_score",
-    "deepseek_review",
-    "fusion",
-    "action_gate",
-    "concentration",
-)
+_PIPELINE_STAGE_ORDER = tuple(stage.value for stage in PIPELINE_STAGES)
 _PIPELINE_STAGE_STATES = frozenset({"pending", "running", "completed", "degraded", "not_applicable"})
 
 _PIPELINE_COUNT_LOCATIONS = {
-    "issuer_eligible_population": ("input_readiness", "input_count"),
-    "input_ready_population": ("input_readiness", "output_count"),
+    "issuer_eligible_population": ("local_data", "input_count"),
+    "input_ready_population": ("local_data", "output_count"),
     "dynamic_filter_eligible": ("dynamic_filter", "output_count"),
-    "strategy_history_eligible": ("strategy_history", "output_count"),
-    "model_input_eligible": ("model_input", "output_count"),
-    "candidate_score_eligible": ("candidate_score", "output_count"),
-    "candidate_limit_selected": ("board_limit", "output_count"),
-    "requested_candidates": ("candidate_refresh", "input_count"),
-    "candidate_features": ("input_coverage", "candidate_features"),
-    "candidate_quote_eligible": ("candidate_refresh", "output_count"),
-    "security_master": ("input_coverage", "security_master"),
-    "history": ("input_coverage", "history"),
-    "filter_pass": ("board_cross_section", "filter_pass"),
-    "filter_observe": ("board_cross_section", "filter_observe"),
-    "filter_reject": ("board_cross_section", "filter_reject"),
-    "full_scored": ("evidence_score", "output_count"),
-    "review_eligible": ("deepseek_review", "input_count"),
-    "observation_threshold_met_count": ("action_gate", "observation_threshold_met"),
-    "executable_threshold_met_count": ("action_gate", "executable_threshold_met"),
-    "action_executable": ("action_gate", "action_executable"),
-    "action_observe": ("action_gate", "action_observe"),
-    "action_unavailable": ("action_gate", "action_unavailable"),
-    "selected_executable": ("concentration", "selected_executable"),
-    "selected_observe": ("concentration", "selected_observe"),
+    "strategy_history_eligible": ("market_features", "strategy_history_eligible"),
+    "model_input_eligible": ("market_features", "output_count"),
+    "scoring_input_eligible": ("market_features", "output_count"),
+    "scoring_input_count": ("market_features", "output_count"),
+    "requested_candidates": ("market_features", "input_count"),
+    "candidate_features": ("market_features", "candidate_features"),
+    "candidate_quote_eligible": ("market_features", "output_count"),
+    "security_master": ("market_features", "security_master"),
+    "history": ("market_features", "history"),
+    "filter_pass": ("dynamic_filter", "filter_pass"),
+    "filter_observe": ("dynamic_filter", "filter_observe"),
+    "filter_reject": ("dynamic_filter", "filter_reject"),
+    "full_scored": ("local_score", "output_count"),
+    "model_passed": ("model_filter", "output_count"),
+    "review_eligible": ("risk_review", "deepseek_eligible"),
+    "observation_threshold_met_count": ("action_publish", "observation_threshold_met"),
+    "executable_threshold_met_count": ("action_publish", "executable_threshold_met"),
+    "action_executable": ("action_publish", "action_executable"),
+    "action_observe": ("action_publish", "action_observe"),
+    "action_unavailable": ("action_publish", "action_unavailable"),
+    "selected_executable": ("action_publish", "action_executable"),
+    "selected_observe": ("action_publish", "action_observe"),
 }
 
 
@@ -536,7 +522,25 @@ def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
         invalid_fields.extend(stage.invalid_fields)
     keys = tuple(stage.key for stage in stages)
     current_stage = _text(payload.get("current_stage"))
-    if keys != _PIPELINE_STAGE_ORDER:
+    legacy = keys == (
+        "input_readiness",
+        "dynamic_filter",
+        "board_cross_section",
+        "strategy_history",
+        "model_input",
+        "candidate_score",
+        "board_limit",
+        "candidate_refresh",
+        "input_coverage",
+        "evidence_score",
+        "model_cost_gate",
+        "local_score",
+        "deepseek_review",
+        "fusion",
+        "action_gate",
+        "concentration",
+    )
+    if keys != _PIPELINE_STAGE_ORDER and not legacy:
         invalid_fields.append("stages.order")
     if current_stage not in keys:
         invalid_fields.append("current_stage")
@@ -555,17 +559,32 @@ def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
     if not isinstance(value, (list, tuple)):
         return CommittedPipelineAudit(True, 0, ("stage_snapshots",))
     invalid: list[str] = []
-    if len(value) != len(PIPELINE_STAGES):
+    legacy_order = (
+        "data_source",
+        "static_market",
+        "static_standardize",
+        "static_filter",
+        "dynamic_market",
+        "dynamic_standardize",
+        "dynamic_filter",
+        "candidate_pool",
+        "quality_check",
+        "local_score",
+        "risk_review",
+        "score_merge",
+        "downside_action",
+        "final_selection",
+    )
+    legacy = _mapping(value[0]).get("stage") == "data_source"
+    order = legacy_order if legacy else _PIPELINE_STAGE_ORDER
+    if len(value) != len(order):
         invalid.append("stage_snapshots.length")
     previous: Mapping[str, object] | None = None
     stages: list[WebPipelineStageSnapshot] = []
-    for index, raw in enumerate(value[: len(PIPELINE_STAGES)]):
+    for index, raw in enumerate(value[: len(order)]):
         stage = _mapping(raw)
         prefix = f"stage_snapshots[{index}]"
-        if (
-            stage.get("stage") != PIPELINE_STAGES[index].value
-            or _nonnegative_int(stage.get("stage_order")) != index + 1
-        ):
+        if stage.get("stage") != order[index] or _nonnegative_int(stage.get("stage_order")) != index + 1:
             invalid.append(f"{prefix}.order")
         state = _text(stage.get("state"))
         if state not in {item.value for item in StageState}:
@@ -573,12 +592,26 @@ def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
             state = None
         counts = {
             key: _required_count(stage, key, invalid, prefix)
-            for key in ("input_count", "output_count", "rejected_count", "pending_count", "failed_count")
+            for key in (
+                "input_count",
+                "output_count",
+                "rejected_count",
+                "pending_count",
+                "failed_count",
+                *(() if legacy else ("not_selected_count",)),
+            )
         }
         inputs = counts["input_count"]
-        outcomes = tuple(counts[key] for key in ("output_count", "rejected_count", "pending_count", "failed_count"))
+        outcomes = tuple(
+            counts.get(key, 0)
+            for key in ("output_count", "rejected_count", "pending_count", "failed_count", "not_selected_count")
+        )
         if inputs is not None and all(count is not None for count in outcomes):
-            if sum(count for count in outcomes if count is not None) > inputs:
+            if (
+                sum(count for count in outcomes if count is not None) > inputs
+                if legacy
+                else sum(count for count in outcomes if count is not None) != inputs
+            ):
                 invalid.append(f"{prefix}.population")
         for key in ("input_batch_id", "output_batch_id"):
             identity = _text(stage.get(key))
@@ -590,7 +623,7 @@ def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
             if previous.get("output_count") != stage.get("input_count"):
                 invalid.append(f"{prefix}.count_continuity")
         previous = stage
-        stages.append(WebPipelineStageSnapshot(PIPELINE_STAGES[index].value, state, inputs, counts["output_count"], ()))
+        stages.append(WebPipelineStageSnapshot(order[index], state, inputs, counts["output_count"], ()))
     return CommittedPipelineAudit(True, len(value), tuple(invalid), tuple(stages))
 
 

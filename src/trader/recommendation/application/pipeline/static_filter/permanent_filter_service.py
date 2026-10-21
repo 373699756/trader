@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.stage_output import (
@@ -22,6 +22,7 @@ def FilterPermanentEligibility(
     *,
     as_of: datetime,
     latency_ms: int,
+    company_exclusions: Mapping[str, str] | None = None,
 ) -> PipelineStageOutput[StaticIssuer]:
     RequirePreviousStage(source, PipelineStage.STATIC_FILTER)
     by_code = {item.code: item for item in decisions}
@@ -36,6 +37,8 @@ def FilterPermanentEligibility(
             rejected[decision.reason.value if decision.reason is not None else "permanent_excluded"] += 1
         elif decision.state is IssuerEligibilityState.QUALIFICATION_PENDING:
             pending += 1
+        elif company_exclusions is not None and record.code in company_exclusions:
+            rejected[company_exclusions[record.code]] += 1
         else:
             accepted.append(record)
     business_reasons = tuple(

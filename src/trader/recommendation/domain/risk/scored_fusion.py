@@ -36,7 +36,7 @@ from trader.recommendation.domain.publication.models import (
 from trader.recommendation.domain.risk.downside import AssessDownside
 from trader.recommendation.domain.risk.fusion import (
     DIMENSION_NAMES,
-    FuseScore,
+    ApplyStructuredReview,
     FusionPolicy,
     FusionRequest,
 )
@@ -54,10 +54,9 @@ class ScoredDecisionPolicy:
     executable_threshold: float
     observation_margin: float
     fusion: FusionPolicy
-    review_candidate_limit: int = 28
+    review_candidate_limit: int = 6
     top_k: int = 10
     observation_limit: int = 8
-    maximum_per_industry: int = 2
     maximum_board_fraction: float = 0.60
     executable_enabled: bool = True
     strategy: Strategy = Strategy.TOMORROW
@@ -143,14 +142,11 @@ class _NormalizedDecisionPayload:
 class DecisionSelectionLimits:
     top_k: int
     observation_limit: int
-    maximum_per_industry: int
     maximum_board_fraction: float
 
     def __post_init__(self) -> None:
         if not 0 <= self.top_k <= 10 or not 0 <= self.observation_limit <= 8:
             raise ValueError("decision selection pool limits are invalid")
-        if not 1 <= self.maximum_per_industry <= 2:
-            raise ValueError("decision selection industry limit is invalid")
         if not math.isfinite(self.maximum_board_fraction) or not 0.0 < self.maximum_board_fraction <= 0.60:
             raise ValueError("decision selection board fraction is invalid")
 
@@ -266,14 +262,12 @@ def _validate_decision_limits(policy: ScoredDecisionPolicy) -> None:
         raise ValueError("scored executable threshold must be in [0, 100]")
     if not math.isfinite(policy.observation_margin) or policy.observation_margin < 0.0:
         raise ValueError("scored observation margin must be finite and non-negative")
-    if not 0 <= policy.review_candidate_limit <= 28:
-        raise ValueError("scored review candidate limit must be in [0, 28]")
+    if not 0 <= policy.review_candidate_limit <= 6:
+        raise ValueError("scored review candidate limit must be in [0, 6]")
     if not 0 <= policy.top_k <= 10:
         raise ValueError("scored TopK must be in [0, 10]")
     if not 0 <= policy.observation_limit <= 8:
         raise ValueError("scored observation limit must be in [0, 8]")
-    if not 1 <= policy.maximum_per_industry <= 2:
-        raise ValueError("scored industry limit must be in [1, 2]")
     if not 0.0 < policy.maximum_board_fraction <= 0.60:
         raise ValueError("scored board fraction must be in (0, 0.60]")
 
@@ -322,19 +316,15 @@ def _validate_decision_entries(
 ) -> None:
     if len(payload.entries) != len(payload.codes):
         raise ValueError("decision entries must contain unique codes")
-    if len(payload.entries) > 360:
-        raise ValueError("decision epoch cannot exceed 360 scored candidates")
     if any(item.features.observed_at > epoch.observed_at for item in payload.entries):
         raise ValueError("decision cannot contain future features")
     _validate_decision_risk_times(payload.entries, epoch.observed_at)
-    if len(payload.review_codes) > 28:
-        raise ValueError("decision epoch cannot exceed 28 review candidates")
+    if len(payload.review_codes) > 6:
+        raise ValueError("decision epoch cannot exceed six review candidates")
     if any(code not in payload.codes for code in payload.review_codes):
         raise ValueError("decision review candidates must reference decision entries")
     if [item.rank for item in payload.selected] != list(range(1, len(payload.selected) + 1)):
         raise ValueError("selected decision ranks must be contiguous")
-    if any(item.action is RecommendationAction.UNAVAILABLE for item in payload.selected):
-        raise ValueError("unavailable decisions cannot be selected")
     _validate_selection_ranks(payload.entries)
     _validate_stage_entries(epoch.projection_stage, payload.entries, set(payload.review_codes))
     _validate_selected_pools(list(payload.selected), epoch.selection_limits)
@@ -401,19 +391,19 @@ def _decision_epoch_hash(
 
 
 def SelectScoredReviewCandidates(
-    selection: ScoredSelectionResult,
+    fixed_seats: tuple[ScoredStockEvaluation, ...],
     policy: ScoredDecisionPolicy,
 ) -> tuple[ScoredReviewCandidate, ...]:
     eligible = tuple(
         item
-        for item in selection.scored_candidates
+        for item in fixed_seats
         if item.disposition is ScoredDisposition.PASS
         and not item.execution_gate_reason
         and item.local_score is not None
         and not any(fact.veto for fact in item.local_risk_facts)
     )
     ordered = sorted(eligible, key=_local_order)
-    contexts = {item.code: _review_context(item, index + 1, policy) for index, item in enumerate(ordered)}
+    contexts = {item.code: _review_context(item, index + 1, policy) for index, item in enumerate(fixed_seats)}
     reviewable = tuple(item for item in ordered if _primary_review_predicate(contexts[item.code]))
     prioritized = sorted(
         reviewable,
@@ -437,11 +427,13 @@ def BuildScoredDecisionEpoch(
     entries: tuple[ScoredDecisionEntry, ...] | None = None,
 ) -> DecisionEpoch:
     if entries is None:
-        reviewed = ReviewScoredEvaluations(
-            request.selection.scored_candidates, tuple(request.reviews.values()), request.observed_at
-        )
+        fixed = SelectFixedScoredSeats(request.selection.scored_candidates, request.policy)
+        reviewed = ReviewScoredEvaluations(fixed, tuple(request.reviews.values()), request.observed_at)
         fused = FuseScoredEvaluations(reviewed, request.policy, request.observed_at)
-        entries = SelectScoredActionPools(ApplyScoredActions(fused, request.policy), request.policy)
+        entries = tuple(
+            replace(item, selected=True, rank=rank, selection_rank=rank)
+            for rank, item in enumerate(ApplyScoredActions(fused, request.policy), start=1)
+        )
     reason_counts = _filter_reason_counts(request.selection)
     return DecisionEpoch(
         trade_date=request.trade_date,
@@ -465,7 +457,6 @@ def BuildScoredDecisionEpoch(
         selection_limits=DecisionSelectionLimits(
             top_k=request.policy.top_k,
             observation_limit=request.policy.observation_limit,
-            maximum_per_industry=request.policy.maximum_per_industry,
             maximum_board_fraction=request.policy.maximum_board_fraction,
         ),
         degraded_reasons=request.degraded_reasons,
@@ -505,7 +496,22 @@ def _fuse_evaluation(
     review = reviewed.review
     effective_review = review if review is not None and review.outcome is ReviewOutcome.APPLIED else None
     fusion_mode = FusionMode.HYBRID if effective_review is not None else FusionMode.LOCAL_DEGRADED
-    fused = FuseScore(
+    if evaluation.local_score is None or evaluation.local_risk_penalty is None:
+        raise ValueError("review requires an already risk-deducted score")
+    local = ScoreBreakdown(
+        local_components,
+        RoundScore(local_base),
+        evaluation.local_risk_penalty,
+        evaluation.local_score,
+        None,
+        0.0,
+        0.0,
+        evaluation.local_score,
+        fusion_mode,
+        False,
+    )
+    fused = ApplyStructuredReview(
+        local,
         FusionRequest(
             local=LocalScoreResult(components=local_components, base_score=local_base),
             local_risk_facts=evaluation.local_risk_facts,
@@ -515,7 +521,7 @@ def _fuse_evaluation(
             policy=policy.fusion,
             evidence=evaluation.features.evidence,
             evaluated_at=observed_at,
-        )
+        ),
     )
     if evaluation.local_score is not None and fused.score.local_score != RoundScore(evaluation.local_score):
         raise ValueError("scored local score changed before fusion")
@@ -598,70 +604,25 @@ def _unavailable_reason(
     return None
 
 
-def SelectScoredActionPools(
-    entries: tuple[ScoredDecisionEntry, ...],
+def SelectFixedScoredSeats(
+    evaluations: tuple[ScoredStockEvaluation, ...],
     policy: ScoredDecisionPolicy,
-    *,
-    scored_population: tuple[ScoredDecisionEntry, ...] | None = None,
-) -> tuple[ScoredDecisionEntry, ...]:
-    by_code = {item.code: item for item in entries}
-    population = scored_population if scored_population is not None else entries
-    if not set(by_code).issubset(item.code for item in population):
-        raise ValueError("action candidates must belong to the scored population")
-    leader_codes = {item.code for item in sorted(population, key=_decision_order)[:6]}
-    executable = _select_pool(
-        tuple(item for item in entries if item.action is RecommendationAction.EXECUTABLE),
-        limit=policy.top_k,
-        policy=policy,
-    )
-    observations = _select_pool(
-        tuple(item for item in entries if item.action is RecommendationAction.OBSERVE),
-        limit=policy.observation_limit,
-        policy=policy,
-    )
-    rank = 0
-    for item, skip_reason in (*executable, *observations):
-        if item.code not in leader_codes:
-            by_code[item.code] = replace(item, decision_skip_reason="outside_score_top_six")
+) -> tuple[ScoredStockEvaluation, ...]:
+    """Fix six seats before optional review and action evaluation."""
+    selected: list[ScoredStockEvaluation] = []
+    boards: Counter[Board] = Counter()
+    maximum_per_board = math.ceil(6 * policy.maximum_board_fraction)
+    for item in sorted(evaluations, key=_local_order):
+        if item.local_score is None or item.execution_gate_reason or item.disposition is ScoredDisposition.REJECT:
             continue
-        if skip_reason:
-            by_code[item.code] = replace(item, decision_skip_reason=skip_reason)
-            continue
-        rank += 1
-        by_code[item.code] = replace(item, selected=True, rank=rank, decision_skip_reason="")
-    return tuple(by_code[code] for code in sorted(by_code))
-
-
-def _select_pool(
-    entries: tuple[ScoredDecisionEntry, ...],
-    *,
-    limit: int,
-    policy: ScoredDecisionPolicy,
-) -> tuple[tuple[ScoredDecisionEntry, str], ...]:
-    ordered = sorted(entries, key=_decision_order)
-    board_counts: Counter[Board] = Counter()
-    industry_counts: Counter[str] = Counter()
-    maximum_per_board = math.ceil(limit * policy.maximum_board_fraction) if limit else 0
-    result: list[tuple[ScoredDecisionEntry, str]] = []
-    for selection_rank, original in enumerate(ordered, start=1):
-        item = replace(original, selection_rank=selection_rank)
         board = item.features.quote.board
-        industry = item.features.quote.industry.strip() or "unknown"
-        if selection_rank > limit:
-            result.append(
-                (item, "top_k_limit" if item.action is RecommendationAction.EXECUTABLE else "observation_limit")
-            )
+        if boards[board] >= maximum_per_board:
             continue
-        if board_counts[board] >= maximum_per_board:
-            result.append((item, "board_concentration_limit"))
-            continue
-        if industry_counts[industry] >= policy.maximum_per_industry:
-            result.append((item, "industry_limit"))
-            continue
-        board_counts[board] += 1
-        industry_counts[industry] += 1
-        result.append((item, ""))
-    return tuple(result)
+        selected.append(item)
+        boards[board] += 1
+        if len(selected) == 6:
+            break
+    return tuple(selected)
 
 
 def _review_context(
@@ -681,7 +642,7 @@ def _review_context(
             for fact in (*item.local_risk_facts, *item.features.external_risk_facts)
         ),
         near_action_threshold=abs(item.local_score - policy.executable_threshold) <= policy.observation_margin,
-        near_global_boundary=abs(rank - policy.top_k) <= 2,
+        near_global_boundary=abs(rank - 6) <= 2,
         evidence_conflict=any(
             value in {"cross_source_deviation", "board_classification_conflict"}
             for value in item.features.quote.execution_restrictions
@@ -736,40 +697,21 @@ def _validate_selected_pools(
     selected: list[ScoredDecisionEntry],
     limits: DecisionSelectionLimits,
 ) -> None:
-    executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
-    observations = tuple(item for item in selected if item.action is RecommendationAction.OBSERVE)
-    if len(executable) > limits.top_k or len(observations) > limits.observation_limit:
-        raise ValueError("decision selected pools exceed their decision limits")
-    if selected != [*executable, *observations]:
-        raise ValueError("selected executable decisions must precede observations")
-    for pool, pool_limit in ((executable, limits.top_k), (observations, limits.observation_limit)):
-        if tuple(sorted(pool, key=_decision_order)) != pool:
-            raise ValueError("selected decision pool order is unstable")
-        if any(item.selection_rank > pool_limit for item in pool):
-            raise ValueError("selected decision is outside its fixed top window")
-        board_limit = math.ceil(pool_limit * limits.maximum_board_fraction) if pool_limit else 0
-        board_counts = Counter(item.features.quote.board for item in pool)
-        industry_counts = Counter(item.features.quote.industry.strip() or "unknown" for item in pool)
-        if any(count > board_limit for count in board_counts.values()):
-            raise ValueError("selected decision pool exceeds its board limit")
-        if any(count > limits.maximum_per_industry for count in industry_counts.values()):
-            raise ValueError("selected decision pool exceeds its industry limit")
+    if len(selected) > 6 or tuple(selected) != tuple(sorted(selected, key=_decision_order)):
+        raise ValueError("fixed decision seats must preserve score order")
+    board_limit = math.ceil(6 * limits.maximum_board_fraction)
+    if any(count > board_limit for count in Counter(item.features.quote.board for item in selected).values()):
+        raise ValueError("fixed decision seats exceed the board limit")
 
 
 def _validate_selection_ranks(entries: tuple[ScoredDecisionEntry, ...]) -> None:
-    unavailable = tuple(item for item in entries if item.action is RecommendationAction.UNAVAILABLE)
-    if any(item.selection_rank != 0 for item in unavailable):
-        raise ValueError("unavailable decisions must use selection rank zero")
-    for action in (RecommendationAction.EXECUTABLE, RecommendationAction.OBSERVE):
-        pool = tuple(sorted((item for item in entries if item.action is action), key=lambda item: item.selection_rank))
-        if [item.selection_rank for item in pool] != list(range(1, len(pool) + 1)):
-            raise ValueError("decision selection ranks must be contiguous within each action pool")
-        if tuple(sorted(pool, key=_decision_order)) != pool:
-            raise ValueError("decision selection ranks must preserve the stable score order")
+    for item in entries:
+        if item.selection_rank != item.rank:
+            raise ValueError("selection rank must identify the fixed seat")
 
 
-def _local_order(item: ScoredStockEvaluation) -> tuple[float, float, str]:
-    return (-(item.local_score or 0.0), -(item.candidate_score or 0.0), item.code)
+def _local_order(item: ScoredStockEvaluation) -> tuple[float, str]:
+    return (-(item.local_score or 0.0), item.code)
 
 
 def _decision_order(item: ScoredDecisionEntry) -> tuple[float, float, str]:

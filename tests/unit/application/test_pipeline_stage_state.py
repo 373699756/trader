@@ -56,12 +56,12 @@ def test_real_dynamic_pass_preserves_input_and_measures_each_stage(application_f
     features = (valid, invalid, blocked)
     before = tuple(feature.quote for feature in features)
     snapshots = observed_input_stages(features, _policy(), AS_OF, strategy)
-    dynamic = snapshots[6]
+    dynamic = snapshots[3]
     assert tuple(feature.quote for feature in features) == before
     assert (dynamic.input_count, dynamic.output_count, dynamic.rejected_count, dynamic.pending_count) == (3, 1, 1, 1)
-    assert all(stage.latency_ms > 0 for stage in snapshots[4:9])
-    assert snapshots[4].source_health.age_seconds == 10.0
-    assert snapshots[4].source_health.latest_success_at != AS_OF
+    assert all(stage.latency_ms > 0 for stage in snapshots[2:5])
+    assert snapshots[2].source_health.age_seconds == 10.0
+    assert snapshots[2].source_health.latest_success_at != AS_OF
     assert all(
         left.output_batch_id == right.input_batch_id and left.output_count == right.input_count
         for left, right in zip(snapshots[:-1], snapshots[1:], strict=True)
@@ -73,11 +73,11 @@ def test_source_age_is_not_reset_by_discovery_normalization(application_feature_
     batch = observed_market_batch((old,), AS_OF)
     ticks = iter(index / 10 for index in range(100))
     result = ExecuteCandidatePipeline(
-        batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None, 1), lambda: next(ticks)
+        batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None), lambda: next(ticks)
     )
-    assert result.normalized.snapshot.source_health == batch.dynamic_stage.snapshot.source_health
-    assert result.normalized.snapshot.source_health.age_seconds == 600.0
-    assert result.normalized.snapshot.source_health.state is SourceHealthState.UNAVAILABLE
+    assert result.filtered[Strategy.TOMORROW].snapshot.source_health == batch.dynamic_stage.snapshot.source_health
+    assert result.filtered[Strategy.TOMORROW].snapshot.source_health.age_seconds == 600.0
+    assert result.filtered[Strategy.TOMORROW].snapshot.source_health.state is SourceHealthState.UNAVAILABLE
 
 
 def test_quality_checks_actual_missing_directed_quote(application_feature_factory) -> None:
@@ -85,7 +85,7 @@ def test_quality_checks_actual_missing_directed_quote(application_feature_factor
     batch = observed_market_batch((feature,), AS_OF)
     ticks = iter(index / 10 for index in range(100))
     result = ExecuteCandidatePipeline(
-        batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None, 1), lambda: next(ticks)
+        batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None), lambda: next(ticks)
     )
     candidate = result.candidates[Strategy.TOMORROW]
     output = AssessCandidateInputStage(candidate, as_of=AS_OF, minimum_history_sessions=20, latency_ms=13)
@@ -101,9 +101,9 @@ def test_business_empty_is_ready_after_actual_filtering(application_feature_fact
     feature = _verified_feature(application_feature_factory("600001", AS_OF - timedelta(seconds=10)))
     blocked = replace(feature, quote=replace(feature.quote, is_suspended=True))
     snapshots = observed_input_stages((blocked,), _policy(), AS_OF)
-    assert (snapshots[6].input_count, snapshots[6].output_count, snapshots[6].rejected_count) == (1, 0, 1)
-    assert snapshots[6].state is StageState.READY
-    assert snapshots[8].state is StageState.NOT_READY
+    assert (snapshots[3].input_count, snapshots[3].output_count, snapshots[3].rejected_count) == (1, 0, 1)
+    assert snapshots[3].state is StageState.READY
+    assert snapshots[4].state is StageState.READY
 
 
 def test_partial_dynamic_collection_retains_static_input_population(application_feature_factory) -> None:
@@ -144,7 +144,7 @@ def test_directed_quality_reads_new_immutable_candidate_batch(application_featur
     batch = observed_market_batch((feature,), AS_OF)
     ticks = iter(index / 10 for index in range(100))
     pipeline = ExecuteCandidatePipeline(
-        batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None, 1), lambda: next(ticks)
+        batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None), lambda: next(ticks)
     )
     original = pipeline.candidates[Strategy.TOMORROW]
     stale = replace(feature, quote=replace(feature.quote, source_time=AS_OF - timedelta(minutes=10)))
@@ -152,7 +152,7 @@ def test_directed_quality_reads_new_immutable_candidate_batch(application_featur
     result = AssessCandidateInputStage(directed, as_of=AS_OF, minimum_history_sessions=20, latency_ms=7)
     assert original.records[0].features is None
     assert directed.snapshot.output_batch_id != original.snapshot.output_batch_id
-    assert result.snapshot.input_batch_id == directed.snapshot.output_batch_id
+    assert result.snapshot.input_batch_id == directed.snapshot.input_batch_id
     assert (result.snapshot.output_count, result.snapshot.pending_count, result.snapshot.rejected_count) == (0, 1, 0)
     assert result.snapshot.reasons[0].code == "stale_quote"
     assert result.snapshot.source_health.age_seconds == 600

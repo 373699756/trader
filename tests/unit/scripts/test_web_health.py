@@ -18,8 +18,8 @@ def _funnel(**overrides: int) -> dict[str, object]:
         "dynamic_filter_eligible": 420,
         "strategy_history_eligible": 360,
         "model_input_eligible": 360,
-        "candidate_score_eligible": 360,
-        "candidate_limit_selected": 360,
+        "scoring_input_eligible": 360,
+        "scoring_input_count": 360,
         "requested_candidates": 360,
         "candidate_features": 360,
         "candidate_quote_eligible": 360,
@@ -40,53 +40,35 @@ def _funnel(**overrides: int) -> dict[str, object]:
     }
     values.update(overrides)
     values.setdefault("input_ready_population", values["issuer_eligible_population"])
+    seats = min(6, values["full_scored"])
     return {
-        "current_stage": "concentration",
+        "current_stage": "action_publish",
         "stages": [
-            _stage("input_readiness", values["issuer_eligible_population"], values["input_ready_population"]),
+            _stage("local_data", values["issuer_eligible_population"], values["input_ready_population"]),
+            _stage("static_filter", values["input_ready_population"], values["input_ready_population"]),
+            _stage("dynamic_market", values["input_ready_population"], values["input_ready_population"]),
             _stage("dynamic_filter", values["input_ready_population"], values["dynamic_filter_eligible"]),
             _stage(
-                "board_cross_section",
-                values["dynamic_filter_eligible"],
-                values["dynamic_filter_eligible"],
-                filter_pass=values["filter_pass"],
-                filter_observe=values["filter_observe"],
-                filter_reject=values["filter_reject"],
-            ),
-            _stage("strategy_history", values["dynamic_filter_eligible"], values["strategy_history_eligible"]),
-            _stage("model_input", values["strategy_history_eligible"], values["model_input_eligible"]),
-            _stage("candidate_score", values["model_input_eligible"], values["candidate_score_eligible"]),
-            _stage("board_limit", values["candidate_score_eligible"], values["candidate_limit_selected"]),
-            _stage("candidate_refresh", values["requested_candidates"], values["candidate_quote_eligible"]),
-            _stage(
-                "input_coverage",
+                "market_features",
                 values["requested_candidates"],
-                None,
+                values["model_input_eligible"],
                 candidate_features=values["candidate_features"],
                 security_master=values["security_master"],
                 history=values["history"],
+                strategy_history_eligible=values["strategy_history_eligible"],
             ),
-            _stage("evidence_score", values["candidate_features"], values["full_scored"]),
-            _stage("model_cost_gate", values["full_scored"], values["full_scored"]),
-            _stage("local_score", values["full_scored"], values["full_scored"]),
-            _stage("deepseek_review", values["review_eligible"], values["review_eligible"]),
-            _stage("fusion", values["full_scored"], values["full_scored"]),
+            _stage("model_filter", values["model_input_eligible"], values["candidate_features"]),
+            _stage("local_score", values["candidate_features"], values["full_scored"]),
+            _stage("local_risk", values["full_scored"], values["full_scored"]),
+            _stage("fixed_selection", values["full_scored"], seats),
+            _stage("risk_review", seats, seats),
             _stage(
-                "action_gate",
-                values["full_scored"],
-                values["action_executable"] + values["action_observe"],
-                observation_threshold_met=values["observation_threshold_met_count"],
-                executable_threshold_met=values["executable_threshold_met_count"],
-                action_executable=values["action_executable"],
-                action_observe=values["action_observe"],
-                action_unavailable=values["action_unavailable"],
-            ),
-            _stage(
-                "concentration",
-                values["action_executable"] + values["action_observe"],
-                values["selected_executable"] + values["selected_observe"],
-                selected_executable=values["selected_executable"],
-                selected_observe=values["selected_observe"],
+                "action_publish",
+                seats,
+                seats,
+                action_executable=min(seats, values["selected_executable"]),
+                action_observe=min(seats, values["selected_observe"]),
+                action_unavailable=max(0, seats - values["selected_executable"] - values["selected_observe"]),
             ),
         ],
     }
@@ -317,7 +299,7 @@ def test_restarted_frozen_decision_reports_its_persisted_pipeline_without_runtim
     )
 
     assert not any(item.code == "input_quality_persistently_missing" for item in findings)
-    assert report["samples"][0]["strategies"][_STRATEGY]["pipeline"]["current_stage"] == "concentration"
+    assert report["samples"][0]["strategies"][_STRATEGY]["pipeline"]["current_stage"] == "action_publish"
 
 
 def test_repeated_input_supersession_with_missed_checkpoint_is_reported() -> None:
@@ -429,8 +411,8 @@ def test_persistent_model_input_zero_is_checked_against_its_direct_upstream_stag
     stalled = _funnel(
         strategy_history_eligible=115,
         model_input_eligible=0,
-        candidate_score_eligible=0,
-        candidate_limit_selected=0,
+        scoring_input_eligible=0,
+        scoring_input_count=0,
         requested_candidates=0,
         candidate_features=0,
         candidate_quote_eligible=0,
@@ -459,7 +441,7 @@ def test_persistent_model_input_zero_is_checked_against_its_direct_upstream_stag
     codes = {finding.code for finding in findings}
 
     assert "pipeline_model_input_eligible_persistently_zero" in codes
-    assert "pipeline_candidate_score_eligible_persistently_zero" not in codes
+    assert "pipeline_scoring_input_eligible_persistently_zero" not in codes
 
 
 def test_dominant_stale_market_population_is_reported_at_the_first_broken_stage() -> None:
@@ -532,8 +514,8 @@ def test_model_input_gap_is_reported_at_the_first_broken_stage() -> None:
     stalled = _funnel(
         strategy_history_eligible=201,
         model_input_eligible=0,
-        candidate_score_eligible=0,
-        candidate_limit_selected=0,
+        scoring_input_eligible=0,
+        scoring_input_count=0,
         requested_candidates=0,
         candidate_features=0,
         candidate_quote_eligible=0,
@@ -569,8 +551,8 @@ def test_model_input_gap_identifies_an_empty_current_industry_reference() -> Non
     stalled = _funnel(
         strategy_history_eligible=201,
         model_input_eligible=0,
-        candidate_score_eligible=0,
-        candidate_limit_selected=0,
+        scoring_input_eligible=0,
+        scoring_input_count=0,
         requested_candidates=0,
         candidate_features=0,
         candidate_quote_eligible=0,
@@ -1015,8 +997,8 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert strategy["current_projection"]["maximum_final_score"] == 74.0
     assert strategy["current_projection"]["top_score_count"] == 1
     assert strategy["current_projection"]["highest_top_score"] == 74.0
-    assert strategy["pipeline"]["current_stage"] == "concentration"
-    evidence = next(stage for stage in strategy["pipeline"]["stages"] if stage["key"] == "evidence_score")
+    assert strategy["pipeline"]["current_stage"] == "action_publish"
+    evidence = next(stage for stage in strategy["pipeline"]["stages"] if stage["key"] == "local_score")
     assert evidence["input_count"] == 360
     assert evidence["output_count"] == 65
     assert strategy["population_filter_reason_counts"] == {"stale_quote": 5571}
@@ -1027,7 +1009,7 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
 
 
 @pytest.mark.parametrize("fault", (None, "batch", "count", "order", "length", "state", "negative", "population"))
-def test_committed_fourteen_stage_audit_is_checked_even_with_newer_live_input(fault: str | None) -> None:
+def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(fault: str | None) -> None:
     stages = [
         {
             "stage": stage.value,
@@ -1040,6 +1022,7 @@ def test_committed_fourteen_stage_audit_is_checked_even_with_newer_live_input(fa
             "rejected_count": 0,
             "pending_count": 0,
             "failed_count": 0,
+            "not_selected_count": 0,
         }
         for index, stage in enumerate(PIPELINE_STAGES)
     ]
