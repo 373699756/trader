@@ -18,6 +18,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageReasonAggregate,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
 from trader.recommendation.domain.market.static import StaticIssuer
 
 
@@ -58,12 +59,12 @@ def DynamicSourceHealth(features: tuple[FeatureSnapshot, ...], as_of: datetime) 
     invalid = {
         feature.quote.source
         for feature in features
-        if feature.quote.source and (feature.quote.source_time > as_of or feature.quote.age_seconds(as_of) > 30.0)
+        if feature.quote.source and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of) > 30.0
     }
     healthy = {
         feature.quote.source
         for feature in features
-        if feature.quote.source and feature.quote.source_time <= as_of and feature.quote.age_seconds(as_of) <= 30.0
+        if feature.quote.source and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of) <= 30.0
     } - invalid
     state = (
         SourceHealthState.READY

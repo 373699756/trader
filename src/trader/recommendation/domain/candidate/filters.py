@@ -13,6 +13,7 @@ from trader.recommendation.domain.market.models import (
     Board,
     FeatureSnapshot,
 )
+from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
 from trader.recommendation.domain.publication.models import FilterAudit
 
 
@@ -227,7 +228,7 @@ class _DefaultFilterRules:
             return _make_audit(snapshot, "invalid_quote_time", "timezone-aware", quote.source_time.isoformat())
         if quote.source_time > now:
             return _make_audit(snapshot, "future_quote", "<= evaluation time", quote.source_time.isoformat())
-        if quote.age_seconds(now) > self.max_age_seconds:
+        if QuoteFreshnessAgeSeconds(quote.source_time, now) > self.max_age_seconds:
             return _make_audit(
                 snapshot,
                 "stale_quote",

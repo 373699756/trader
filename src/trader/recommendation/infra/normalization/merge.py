@@ -17,6 +17,7 @@ from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
+from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
 from trader.recommendation.infra.normalization.columnar_merge import (
     ColumnarMergeError,
     TryMergeCompleteRealtime,
@@ -472,13 +473,9 @@ def _validate_observation_consistency(
         if inconsistent:
             continue
         for item in items:
-            # A fixture or replay may carry a historical source timestamp while
-            # the observation itself is freshly acquired. Freshness is enforced
-            # within the same trade date; cross-date age is surfaced in metadata.
-            same_trade_date = (
-                item.source_time.astimezone(timezone.utc).date() == observed_at.astimezone(timezone.utc).date()
-            )
-            age = max(0.0, (observed_at - item.source_time).total_seconds()) if same_trade_date else 0.0
+            # Closing eligibility is limited to the same Shanghai business day;
+            # a newly received previous-day quote must not become today's close.
+            age = QuoteFreshnessAgeSeconds(item.source_time, observed_at)
             # Realtime quote deadlines must not evict durable security-reference
             # observations. Reference validity is owned by the reference loader.
             if (
