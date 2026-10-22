@@ -3,9 +3,20 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.helpers.module_boundaries import (
+    ImportCycles,
+    LayerImportViolations,
+    SourceImportGraph,
+    SourceImports,
+    SourceImportTargets,
+    SourceModuleName,
+)
+from trader.recommendation.domain.publication.models import Strategy
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
-DESIGN = PROJECT_ROOT / "docs" / "2_工程设计.md"
 
 TARGET_PACKAGES = (
     "recommendation/domain/market",
@@ -20,7 +31,6 @@ TARGET_PACKAGES = (
     "recommendation/application/runtime",
     "recommendation/application/pipeline/freeze_publish",
     "infra/settings",
-    "infra/market_data/providers",
     "infra/market_data/history",
     "infra/market_data/references",
     "recommendation/infra/market_data",
@@ -33,7 +43,6 @@ TARGET_PACKAGES = (
     "training/application",
     "training/domain",
     "training/domain/evaluation",
-    "training/application",
     "training/infra",
     "training/infra/research",
     "training/entrypoints",
@@ -43,37 +52,26 @@ TARGET_PACKAGES = (
 
 
 def _imports(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    imports: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imports.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module)
-    return imports
+    return set(SourceImportTargets(path, SOURCE_ROOT))
 
 
-def test_final_target_packages_exist_under_documented_business_owners() -> None:
-    design = DESIGN.read_text(encoding="utf-8")
+def test_active_packages_exist_under_their_business_owners() -> None:
     missing_targets = [target for target in TARGET_PACKAGES if not (SOURCE_ROOT / target).is_dir()]
     assert missing_targets == []
-    for owner in ("download/", "training/", "recommendation/", "http_api/", "web/"):
-        assert f"`{owner}`" in design
     assert not (PROJECT_ROOT / "docs" / "plan.md").exists()
 
 
-def test_scoring_profile_capability_matrix_uses_one_quality_scale_and_d25_single_head() -> None:
-    design = DESIGN.read_text(encoding="utf-8")
-    strategy = (PROJECT_ROOT / "docs" / "1_评分逻辑.md").read_text(encoding="utf-8")
-
-    training = (PROJECT_ROOT / "docs" / "4_下载训练.md").read_text(encoding="utf-8")
-    assert "V2只产出LightGBM字段，V3只产出Ridge字段" in training
-    assert "两档各自拥有Tomorrow/D25双头" in strategy
-    assert "D25 是一个完整且唯一的 2–5 日生产策略头" in strategy
-    assert "四个观察点只用于 D25 的标签、终端留出、风险和稳定性评价" in strategy
-    assert "不得再由模型预测的同批百分位覆盖" in strategy
-    assert "应用层不复制profile实现" in design
-    assert "绝不读取或改名复用 Tomorrow 模型" in strategy
+def test_production_profiles_have_distinct_tomorrow_and_single_d25_heads() -> None:
+    assert (V2_TRAINING_PROFILE.algorithm, V3_TRAINING_PROFILE.algorithm) == ("lightgbm", "ridge")
+    for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
+        assert tuple(head.strategy for head in profile.heads) == (Strategy.TOMORROW, Strategy.D25)
+        tomorrow = profile.head_for_strategy(Strategy.TOMORROW)
+        d25 = profile.head_for_strategy(Strategy.D25)
+        assert tomorrow.model_id != d25.model_id
+        assert tomorrow.directory_name != d25.directory_name
+        assert tomorrow.target_column == "target_t1"
+        assert d25.target_column == "target_d25_aggregate"
+        assert d25.label_target == "pre_cost_mean_excess_return_t2_t5"
 
 
 def test_currently_retired_paths_remain_absent() -> None:
@@ -137,37 +135,8 @@ def test_shared_infrastructure_target_owners_exist() -> None:
     assert (SOURCE_ROOT / "training/infra/profile/composition.py").is_file()
 
 
-def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:
-    layers = ("domain", "application", "infra", "web", "entrypoints")
-    forbidden = {
-        "domain": {"application", "infra", "web", "entrypoints"},
-        "application": {"infra", "web", "entrypoints"},
-        "infra": {"web", "entrypoints"},
-        "web": {"infra", "entrypoints"},
-        "entrypoints": set(),
-    }
-    graph: dict[str, set[str]] = {layer: set() for layer in layers}
-    violations: list[str] = []
-    for layer in layers:
-        for path in (SOURCE_ROOT / layer).rglob("*.py"):
-            for imported in _imports(path):
-                prefix = imported.removeprefix("trader.").split(".", 1)[0]
-                if prefix not in graph or prefix == layer:
-                    continue
-                graph[layer].add(prefix)
-                if prefix in forbidden[layer]:
-                    violations.append(f"{path.relative_to(SOURCE_ROOT)} -> trader.{prefix}")
-
-    def visit(node: str, stack: tuple[str, ...] = ()) -> None:
-        if node in stack:
-            violations.append("cycle: " + " -> ".join((*stack, node)))
-            return
-        for child in graph[node]:
-            visit(child, (*stack, node))
-
-    for layer in layers:
-        visit(layer)
-    assert violations == []
+def test_active_import_time_graph_has_no_cycles() -> None:
+    assert ImportCycles(SourceImportGraph(SOURCE_ROOT, import_time_only=True)) == ()
 
 
 def test_market_provider_and_normalization_packages_are_partitioned() -> None:
@@ -175,7 +144,6 @@ def test_market_provider_and_normalization_packages_are_partitioned() -> None:
     provider_root = market_root / "providers"
     recommendation_provider_root = SOURCE_ROOT / "recommendation" / "infra" / "market_data" / "providers"
     normalization_root = SOURCE_ROOT / "recommendation" / "infra" / "normalization"
-    assert provider_root.is_dir()
     assert recommendation_provider_root.is_dir()
     assert normalization_root.is_dir()
     assert (normalization_root / "quote.py").is_file()
@@ -425,7 +393,6 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
     outcomes_root = application_root
     research_files = {
         "research_audit.py",
-        "research_coordination.py",
         "research_runtime.py",
     }
 
@@ -442,12 +409,9 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
         )
     )
 
-    forbidden_imports = ("trader.infra", "trader.web", "trader.entrypoints")
     violations = [
         f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
-        for package_root in (research_root, outcomes_root)
-        for path in package_root.rglob("*.py")
-        for imported in _imports(path)
-        if imported.startswith(forbidden_imports) and imported not in {"trader.infra.shutdown", "trader.infra.workers"}
+        for path in application_root.rglob("*.py")
+        for imported in LayerImportViolations(SourceModuleName(path, SOURCE_ROOT), SourceImports(path, SOURCE_ROOT))
     ]
     assert violations == []

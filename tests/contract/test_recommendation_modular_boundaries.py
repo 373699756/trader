@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.helpers.module_boundaries import SourceImports
+
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "trader"
 
@@ -32,18 +34,17 @@ def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> 
     assert "run_v3_training" not in local_builder
 
 
-def test_composition_root_explicitly_assembles_recommendation_capabilities() -> None:
-    bootstrap = (SOURCE / "bootstrap.py").read_text(encoding="utf-8")
-
+def test_composition_root_explicitly_imports_recommendation_capabilities() -> None:
+    imported = {item.member for item in SourceImports(SOURCE / "bootstrap.py", SOURCE)}
     for capability in (
-        "CandidateFilteringService(",
-        "LocalScoringService(",
-        "PublishedModelScoringService(",
-        "RankingSelectionService()",
-        "RiskControlService()",
-        "ScoreFusionService()",
+        "CandidateFilteringService",
+        "LocalScoringService",
+        "PublishedModelScoringService",
+        "RankingSelectionService",
+        "RiskControlService",
+        "ScoreFusionService",
     ):
-        assert capability in bootstrap
+        assert capability in imported
 
 
 def test_infrastructure_technical_capabilities_have_single_owners() -> None:
@@ -75,17 +76,16 @@ def test_infrastructure_technical_capabilities_have_single_owners() -> None:
     }
 
 
-def test_architecture_contract_documents_the_three_boundaries() -> None:
-    design = (ROOT / "docs" / "2_工程设计.md").read_text(encoding="utf-8")
+def test_recommendation_pipeline_capabilities_have_active_owners() -> None:
+    pipeline = SOURCE / "recommendation/application/pipeline"
     for name in (
-        "static_filter/",
-        "dynamic_filter/",
-        "candidate_pool/",
-        "quality_check/",
-        "local_score/",
-        "risk_review/",
-        "score_merge/",
-        "final_selection/",
+        "static_filter",
+        "dynamic_filter",
+        "candidate_pool",
+        "quality_check",
+        "local_score",
+        "risk_review",
+        "score_merge",
+        "final_selection",
     ):
-        assert name in design
-    assert "业务间只传有类型不可变对象，不共享可变缓存" in design
+        assert any(path.name != "__init__.py" for path in (pipeline / name).rglob("*.py")), name

@@ -1,59 +1,14 @@
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
 
+from tests.helpers.module_boundaries import LayerImportViolations, ParseSourceImports, SourceImports, SourceModuleName
+
 ROOT = Path(__file__).resolve().parents[2]
 DOWNLOAD_APPLICATION = ROOT / "src" / "trader" / "download" / "application"
 TRAINING_APPLICATION = ROOT / "src" / "trader" / "training" / "application"
-_SHARED_CAPABILITIES = {
-    "trader.infra.workers": {
-        "WorkerExecutor",
-        "ManagedWorkerExecutor",
-        "WorkerResourceRejectedError",
-        "SubmitOrReject",
-        "SubmitWithBackpressure",
-    },
-    "trader.infra.shutdown": {"ShutdownDeadline", "ShutdownStep"},
-}
-
-
-def application_import_violations(source: str, business: str) -> list[str]:
-    tree = ast.parse(source)
-    violations: list[str] = []
-    forbidden = (
-        "trader.infra",
-        "trader.download.infra",
-        "trader.training.infra",
-        "trader.recommendation.infra",
-        "trader.http_api",
-        "trader.web",
-        "trader.entrypoints",
-        "trader.download.entrypoints",
-        "trader.training.entrypoints",
-        "trader.recommendation.entrypoints",
-        "flask",
-    )
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            violations.extend(alias.name for alias in node.names if alias.name.startswith(forbidden))
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.level and "infra" in node.module.split("."):
-                violations.append(node.module)
-            elif node.module.startswith(forbidden):
-                allowed = _SHARED_CAPABILITIES.get(node.module, set())
-                violations.extend(f"{node.module}.{alias.name}" for alias in node.names if alias.name not in allowed)
-            else:
-                violations.extend(
-                    f"{node.module}.{alias.name}"
-                    for alias in node.names
-                    if f"{node.module}.{alias.name}".startswith(forbidden)
-                )
-        elif isinstance(node, ast.ImportFrom) and node.level:
-            violations.extend(alias.name for alias in node.names if node.module is None and alias.name == "infra")
-    return violations
 
 
 @pytest.mark.parametrize("business", ("download", "training"))
@@ -82,7 +37,11 @@ def application_import_violations(source: str, business: str) -> list[str]:
     ),
 )
 def test_application_guard_accepts_only_narrow_shared_capabilities(business, source, rejected) -> None:
-    assert bool(application_import_violations(source.replace("BUSINESS", business), business)) is rejected
+    module = f"trader.{business}.application.example"
+    assert (
+        bool(LayerImportViolations(module, ParseSourceImports(source.replace("BUSINESS", business), module)))
+        is rejected
+    )
 
 
 def test_history_application_package_exposes_split_use_cases_and_ports() -> None:
@@ -94,7 +53,10 @@ def test_history_application_package_exposes_split_use_cases_and_ports() -> None
     violations = [
         f"{path.relative_to(package)}: {imported}"
         for path in package.rglob("*.py")
-        for imported in application_import_violations(path.read_text(encoding="utf-8"), "download")
+        for imported in LayerImportViolations(
+            SourceModuleName(path, ROOT / "src/trader"),
+            SourceImports(path, ROOT / "src/trader"),
+        )
     ]
     assert violations == []
 
@@ -110,7 +72,10 @@ def test_training_application_package_is_profile_owned_and_infrastructure_free()
     violations = [
         f"{path.relative_to(package)}: {imported}"
         for path in package.rglob("*.py")
-        for imported in application_import_violations(path.read_text(encoding="utf-8"), "training")
+        for imported in LayerImportViolations(
+            SourceModuleName(path, ROOT / "src/trader"),
+            SourceImports(path, ROOT / "src/trader"),
+        )
     ]
     assert violations == []
 

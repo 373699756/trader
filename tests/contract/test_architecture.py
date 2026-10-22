@@ -6,7 +6,13 @@ from dataclasses import MISSING, fields
 from functools import cache
 from pathlib import Path
 
-from tests.contract.test_history_training_application_boundaries import application_import_violations
+from tests.helpers.module_boundaries import (
+    BusinessSourceFiles,
+    CoreIoViolations,
+    SourceBoundaryViolations,
+    SourceImportGraph,
+    SourceImportTargets,
+)
 from tests.helpers.python_source import source_tree
 from trader.recommendation.application.ports.runtime import DecisionBuilderPort
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
@@ -71,14 +77,7 @@ def test_active_product_tree_uses_precise_resource_and_state_names() -> None:
 
 @cache
 def _imports(path: Path) -> frozenset[str]:
-    tree = source_tree(path)
-    result: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            result.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            result.add(node.module)
-    return frozenset(result)
+    return SourceImportTargets(path, SOURCE_ROOT)
 
 
 def test_active_code_does_not_import_legacy_package() -> None:
@@ -116,64 +115,9 @@ def test_active_source_files_do_not_exceed_1200_lines() -> None:
 
 
 def test_active_dependency_direction() -> None:
-    forbidden = {
-        "download/application": ("trader.download.infra", "trader.infra", "trader.web", "trader.entrypoints"),
-        "domain": ("trader.application", "trader.infra", "trader.web", "trader.entrypoints"),
-        "application": ("trader.infra", "trader.web", "trader.entrypoints"),
-        "training/domain": (
-            "trader.training.application",
-            "trader.training.infra",
-            "trader.application",
-            "trader.infra",
-        ),
-        "training/application": ("trader.training.infra", "trader.infra", "trader.web", "trader.entrypoints"),
-        "training/infra": ("trader.training.entrypoints", "trader.entrypoints", "trader.web"),
-        "infra": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
-        "web": ("trader.infra",),
-        "recommendation/domain": (
-            "trader.recommendation.application",
-            "trader.infra",
-            "trader.web",
-            "trader.entrypoints",
-        ),
-        "recommendation/application": (
-            "stock_analyzer",
-            "trader.download",
-            "trader.infra",
-            "trader.web",
-            "trader.entrypoints",
-            "trader.training",
-        ),
-    }
-    violations: list[str] = []
-    for boundary, prefixes in forbidden.items():
-        for path in (SOURCE_ROOT / boundary).rglob("*.py"):
-            if boundary in {"download/application", "training/application"}:
-                violations.extend(
-                    f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
-                    for imported in application_import_violations(
-                        path.read_text(encoding="utf-8"), boundary.split("/")[0]
-                    )
-                )
-                continue
-            for imported in _imports(path):
-                if imported == "trader.training.domain.model_publication" and path.relative_to(
-                    SOURCE_ROOT
-                ).as_posix() in {
-                    "recommendation/application/ports/loaded_profile.py",
-                    "recommendation/application/pipeline/local_score/model_capability.py",
-                }:
-                    continue  # Immutable cross-business publication/status values, no training implementation.
-                if imported in {
-                    "trader.infra.shutdown",
-                    "trader.infra.workers",
-                    "trader.infra.cache_contracts",
-                    "trader.infra.serialization.canonical_codec",
-                }:
-                    continue
-                if imported.startswith(prefixes):
-                    violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
-    assert violations == []
+    BusinessSourceFiles(SOURCE_ROOT, "domain")
+    BusinessSourceFiles(SOURCE_ROOT, "application")
+    assert SourceBoundaryViolations(SOURCE_ROOT) == ()
 
 
 def test_shared_technical_primitives_have_one_infra_owner() -> None:
@@ -229,7 +173,6 @@ def test_shared_market_data_primitives_do_not_import_recommendation() -> None:
 
 
 def test_application_does_not_own_infrastructure_implementations() -> None:
-    application = SOURCE_ROOT / "application"
     forbidden_names = {
         "BoundedLruCache",
         "BoundedExecutor",
@@ -242,7 +185,7 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
         "ShutdownDeadline",
     }
     violations: list[str] = []
-    for path in application.rglob("*.py"):
+    for path in BusinessSourceFiles(SOURCE_ROOT, "application"):
         tree = source_tree(path)
         for node in ast.walk(tree):
             if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in forbidden_names:
@@ -384,11 +327,13 @@ def test_active_web_surface_and_fixed_long_tabs_use_unified_routes() -> None:
     assert '"low_price_potential"' in groups
 
 
-def test_domain_has_no_io_framework_imports() -> None:
-    forbidden = {"flask", "requests", "sqlite3", "subprocess", "socket"}
+def test_domain_has_no_external_io_or_clock_reads() -> None:
     violations = []
-    for path in (SOURCE_ROOT / "domain").rglob("*.py"):
-        violations.extend(f"{path}:{name}" for name in _imports(path) if name.split(".", 1)[0] in forbidden)
+    for path in BusinessSourceFiles(SOURCE_ROOT, "domain"):
+        violations.extend(
+            f"{path.relative_to(SOURCE_ROOT)}:{issue}"
+            for issue in CoreIoViolations(path.read_text(encoding="utf-8"), "domain")
+        )
     assert violations == []
 
 
@@ -397,8 +342,17 @@ def test_bootstrap_is_the_only_composition_root() -> None:
 
 
 def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
-    runtime_modules = {f"trader.application.{path.stem}" for path in (SOURCE_ROOT / "application").glob("*runtime.py")}
-    assert runtime_modules <= _imports(SOURCE_ROOT / "bootstrap.py")
+    graph = SourceImportGraph(SOURCE_ROOT)
+    runtime_modules = {module for module in graph if module.startswith("trader.recommendation.application.runtime.")}
+    assert runtime_modules
+    reachable: set[str] = set()
+    pending = ["trader.bootstrap"]
+    while pending:
+        module = pending.pop()
+        if module not in reachable:
+            reachable.add(module)
+            pending.extend(graph[module])
+    assert runtime_modules <= reachable
 
 
 def test_bootstrap_wires_overlay_events_into_the_unified_scheduler() -> None:
@@ -541,15 +495,6 @@ def test_dashboard_stream_transport_is_a_separate_packaged_dependency() -> None:
     assert template.index("dashboard_stream.js") < template.index("dashboard.js")
 
 
-def test_functional_package_final_cutover_contract_is_authoritative() -> None:
-    design = PROJECT_ROOT / "docs/2_工程设计.md"
-    content = design.read_text(encoding="utf-8")
-    assert "## 3. 架构与模块边界" in content
-    assert "entrypoints/infra -> application -> domain" in content
-    assert "每项迁移必须同时切换新owner、全部消费者并删除旧路径" in content
-    assert not (PROJECT_ROOT / "docs/plan.md").exists()
-
-
 def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> None:
     violations: list[str] = []
     forbidden_public_codecs = {
@@ -557,24 +502,15 @@ def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> Non
         "CommittedRecordFromBytes",
     }
     for boundary in ("domain", "application"):
-        for path in (SOURCE_ROOT / boundary).rglob("*.py"):
+        for path in BusinessSourceFiles(SOURCE_ROOT, boundary):
             relative = path.relative_to(SOURCE_ROOT)
             tree = source_tree(path)
+            violations.extend(
+                f"{relative}:{issue}" for issue in CoreIoViolations(path.read_text(encoding="utf-8"), boundary)
+            )
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in forbidden_public_codecs:
                     violations.append(f"{relative}:{node.lineno}: persistence codec belongs in infra")
-                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                    continue
-                if (
-                    isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "json"
-                    and node.func.attr
-                    in {
-                        "load",
-                        "loads",
-                    }
-                ):
-                    violations.append(f"{relative}:{node.lineno}: JSON decoding belongs at an explicit adapter")
     assert violations == []
 
 
