@@ -921,6 +921,9 @@ class _ChromeSession:
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--disable-background-networking",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-default-apps",
+                "--disable-extensions",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--remote-allow-origins=*",
@@ -942,7 +945,7 @@ class _ChromeSession:
             raise
 
     def _wait_debugger_url(self, port: int) -> str:
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
                 error = self._process.stderr.read() if self._process.stderr is not None else ""
