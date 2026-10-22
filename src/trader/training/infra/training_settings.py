@@ -47,6 +47,8 @@ class ProfileTrainingSettings:
 
 
 def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId) -> ProfileTrainingSettings:
+    if profile_id not in {"v2", "v3"}:
+        raise ValueError("industry training settings require v2 or v3; V1 owns learned-rank settings")
     document = ReadJsonObject(project_root / "config" / "training.json")
     RequireExactKeys(document, {"profiles"}, "training")
     profile = ProfileMapping(document.get("profiles"), profile_id, "training.profiles")

@@ -19,6 +19,7 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
     DecisionView,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 RouteResponse = Response | tuple[Response, int]
 _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
@@ -261,7 +262,7 @@ def _invalid_profile_response(services: WebServices | None) -> RouteResponse | N
     profile = request.args.get("profile")
     if profile is None or profile in services.profiles:
         return None
-    return _error("invalid_profile", "profile must be v2 or v3", 400)
+    return _error("invalid_profile", f"profile must be one of {', '.join(services.profiles)}", 400)
 
 
 def _strategy_status(view: DecisionView) -> dict[str, object]:
@@ -535,7 +536,7 @@ def _training_maintenance(raw: object) -> list[dict[str, object]]:
     if not isinstance(raw, (list, tuple)):
         return []
     result: list[dict[str, object]] = []
-    for row in raw[:4]:
+    for row in raw[: len(SCORING_PROFILE_IDS) * 2]:
         if not isinstance(row, Mapping):
             continue
         item = {
@@ -592,6 +593,9 @@ def _scoring_head(raw: Mapping[object, object]) -> dict[str, object]:
             "training_anchor",
             "runtime_anchor",
             "point_in_time_parity",
+            "score_scale",
+            "production_authority",
+            "training_label_cutoff",
         )
         if field in raw and _json_scalar(raw[field])
     }

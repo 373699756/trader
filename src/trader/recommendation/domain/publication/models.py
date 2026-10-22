@@ -128,8 +128,14 @@ class ScoredStockEvaluation:
     rank: int = 0
     selection_skip_reason: str = ""
     execution_gate_reason: str = ""
+    ranking_score: float | None = None
+    shadow_only: bool = False
 
     def __post_init__(self) -> None:
+        if self.ranking_score is not None and (
+            not math.isfinite(self.ranking_score) or not 0 <= self.ranking_score <= 100
+        ):
+            raise ValueError("ranking score must be finite and within [0, 100]")
         if self.execution_gate_reason and _STRUCTURED_REASON.fullmatch(self.execution_gate_reason) is None:
             raise ValueError("scored execution gate reason must be structured")
         object.__setattr__(self, "candidate_components", MappingProxyType(dict(self.candidate_components)))

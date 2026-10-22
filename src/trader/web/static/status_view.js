@@ -149,7 +149,8 @@
         els.funnelStatus.textContent = "等待评分输入";
         els.funnelStages.textContent = "评分链路尚未开始";
       } else {
-        els.funnelStatus.textContent = payload.stage === "hybrid" ? "已发布复核结果" : "已发布本地结果";
+        els.funnelStatus.textContent = payload.stage === "hybrid" ? "已发布复核结果"
+          : render.scorePresentation(payload).learnedRank ? "已发布模型排序" : "已发布本地结果";
         els.funnelStages.textContent = `轮次 ${payload.decision_version || "未知"} · 本轮至决策 ${formatStageDuration(pipeline.elapsed_ms)} · ${decisionPipelineDetails(pipeline)}`;
       }
       els.funnelMeta.textContent = pipelineFunnelSummary(
@@ -450,7 +451,9 @@
     const emptyReason = payload && payload.selection_diagnostics && payload.selection_diagnostics.empty_reason;
     const blocker = ({
       no_scored_candidates: "没有形成完整评分候选",
-      score_below_observation_floor: `最高 ${topScore}，未达到观察线`,
+      score_below_observation_floor: window.TraderRender.scorePresentation(payload).learnedRank
+        ? "本地评分未达到动作观察线；模型排序分不与动作线比较"
+        : `最高 ${topScore}，未达到观察线`,
       no_positive_net_utility: "成本后净效用门未通过",
       risk_or_execution_blocked: "达到分数线的候选受风险或执行门限制",
       selection_limits: "最终池容量或集中度限制",
@@ -556,6 +559,11 @@
   }
 
   function renderPublicationStatus(els, payload, statusPayload) {
+    if (window.TraderRender.scorePresentation(payload).shadow) {
+      els.publicationStatus.textContent = "Shadow 观察";
+      els.publicationMeta.textContent = "尚无生产授权，不计入正式推荐业绩";
+      return;
+    }
     if (!payload || payload.status === "not_ready") {
       const collecting = strategyLaneCollecting(payload, statusPayload);
       els.publicationStatus.textContent = collecting ? "采集中" : "未就绪";

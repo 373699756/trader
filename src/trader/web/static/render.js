@@ -254,7 +254,19 @@
     };
   }
 
-  function currentTable() {
+  function scorePresentation(snapshot) {
+    const versions = snapshot && snapshot.input_versions || {};
+    const learnedRank = Boolean(snapshot && snapshot.strategy !== "long"
+      && versions.score_scale === "learned_rank_percentile_0_100");
+    return {
+      learnedRank,
+      shadow: learnedRank && versions.execution_mode === "shadow",
+      finalLabel: learnedRank ? "模型排序分" : "最终评分",
+    };
+  }
+
+  function currentTable(snapshot) {
+    const finalLabel = scorePresentation(snapshot).learnedRank ? "模型排序" : "最终";
     return {
       columns: [
         '<col style="width:56px">',
@@ -269,7 +281,7 @@
         '<col style="width:95px">',
         '<col style="width:185px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>状态</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>本地 / 风险复核 / 最终</th><th class=\"action-heading\">动作</th><th class=\"reason-heading\">原因</th></tr>",
+      head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>本地 / 风险复核 / ${finalLabel}</th><th class="action-heading">动作</th><th class="reason-heading">原因</th></tr>`,
     };
   }
 
@@ -303,9 +315,9 @@
     };
   }
 
-  function rows(items, historical) {
+  function rows(items, historical, snapshot) {
     if (!Array.isArray(items) || items.length === 0) return "";
-    return items.map((item) => row(item, historical)).join("");
+    return items.map((item) => row(item, historical, snapshot)).join("");
   }
 
   function longRows(items) {
@@ -313,8 +325,8 @@
     return items.map(longRow).join("");
   }
 
-  function row(item, historical) {
-    return historical ? historyRow(item) : currentRow(item);
+  function row(item, historical, snapshot) {
+    return historical ? historyRow(item) : currentRow(item, snapshot);
   }
 
   function stock(item) {
@@ -330,12 +342,13 @@
     return `<span class="tier-tag" data-tier="${tier}">${label}</span>`;
   }
 
-  function currentRow(item) {
+  function currentRow(item, snapshot) {
     const change = pct(item.pct_change);
     const scores = item.scores || {};
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const review = reviewStatus(item);
+    const finalLabel = scorePresentation(snapshot).finalLabel;
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
@@ -345,7 +358,7 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span aria-label="本地评分"><b>${number(scores.local_score, 2)}</b></span><span aria-label="风险复核"><b>${review}</b></span><span aria-label="最终评分"><b>${number(scores.final_score, 2)}</b></span></div></td>
+      <td><div class="score-stack"><span aria-label="本地评分"><b>${number(scores.local_score, 2)}</b></span><span aria-label="风险复核"><b>${review}</b></span><span aria-label="${finalLabel}"><b>${number(scores.final_score, 2)}</b></span></div></td>
       <td class="action-cell"><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
@@ -379,13 +392,13 @@
   function tableDefinition(snapshot) {
     if (snapshot && snapshot.historical === true) return historyTable();
     if (snapshot && snapshot.strategy === "long") return longTable();
-    return currentTable();
+    return currentTable(snapshot);
   }
 
   function tableRows(items, snapshot) {
     if (snapshot && snapshot.historical === true) return rows(items, true);
     if (snapshot && snapshot.strategy === "long") return longRows(items);
-    return rows(items, false);
+    return rows(items, false, snapshot);
   }
 
   function tableColumnCount(snapshot) {
@@ -415,6 +428,7 @@
     const long = snapshot.strategy === "long";
     const action = String(item.action || "unavailable");
     const downside = item.downside || null;
+    const presentation = scorePresentation(snapshot);
     const conclusionValues = long
       ? [
         ["观察状态", ACTION_LABELS[action] || "观察"],
@@ -423,7 +437,7 @@
       : [
         ["推荐动作", ACTION_LABELS[action] || "动作状态未知"],
         ["入池状态", item.selected === false ? "未入池" : "已入池"],
-        ["最终评分", valueNumber(scores.final_score, 2)],
+        [presentation.finalLabel, valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
         ["入场形态", SETUP_LABELS[item.setup && item.setup.type] || "形态信息暂不可用"],
         ["下行保护", downside ? (downside.status === "pass" ? "通过" : "转观察") : null],
@@ -481,7 +495,13 @@
       ["旧版DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
     const scoreParts = [detailGrid(scoreValues)];
-    scoreParts.push(note(reviewResult(item), "muted"));
+    if (presentation.learnedRank) {
+      scoreParts.push(note("模型排序分为同轮合格总体内的排名百分位，不是上涨概率；动作资格依据本地评分和风险条件。", "muted"));
+    }
+    if (presentation.shadow) {
+      scoreParts.push(note("Shadow 仅供观察，尚未取得生产授权，不计入正式推荐业绩。", "warn"));
+    }
+    scoreParts.push(note(reviewResult(item, snapshot), "muted"));
     if (Array.isArray(item.risks) && item.risks.length > 0) {
       scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
     }
@@ -561,20 +581,23 @@
     return item.research_coverage && item.research_coverage.review_eligible === true ? "无结果" : "无记录";
   }
 
-  function reviewResult(item) {
+  function reviewResult(item, snapshot) {
+    const learnedRank = scorePresentation(snapshot).learnedRank;
+    const preserved = learnedRank ? "模型排序分保持不变" : "最终评分仍为本地分";
+    const unreviewed = learnedRank ? "模型排序分保持不变" : "最终评分为本地分";
     const outcome = item.review_outcome;
     if (outcome) return ({
-      applied: "结构化风险复核已完成；最终评分仍为本地分",
-      abstain: "风险复核弃权；最终评分仍为本地分",
+      applied: `结构化风险复核已完成；${preserved}`,
+      abstain: `风险复核弃权；${preserved}`,
       late: "风险复核结果迟到，未参与本次决策",
-      rejected: "风险复核未生效，保留本地决策",
-    })[outcome] || "复核结果未知；最终评分为本地分";
+      rejected: learnedRank ? "风险复核未生效，保留模型排序结果" : "风险复核未生效，保留本地决策",
+    })[outcome] || `复核结果未知；${unreviewed}`;
     if (item.research_coverage && item.research_coverage.review_eligible === false) {
-      return "未进入本次 DeepSeek 复核候选；最终评分为本地分";
+      return `未进入本次 DeepSeek 复核候选；${unreviewed}`;
     }
     return item.research_coverage && item.research_coverage.review_eligible === true
-      ? "本次 DeepSeek 复核无结果；最终评分为本地分"
-      : "未保存 DeepSeek 复核结果；最终评分为本地分";
+      ? `本次 DeepSeek 复核无结果；${unreviewed}`
+      : `未保存 DeepSeek 复核结果；${unreviewed}`;
   }
 
   function hasResearchCoverage(research) {
@@ -700,5 +723,6 @@
     tableRows,
     statusErrorLabel,
     sourceLabel,
+    scorePresentation,
   };
 })();

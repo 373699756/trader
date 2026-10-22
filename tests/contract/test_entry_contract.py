@@ -119,9 +119,10 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed
 
 
-def test_server_entrypoint_accepts_only_the_two_typed_scoring_profiles() -> None:
+def test_server_entrypoint_accepts_new_v1_and_the_two_production_profiles() -> None:
     parser = build_server_parser()
 
+    assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v1"]).profile == "v1"
     assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v2"]).profile == "v2"
     assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v3"]).profile == "v3"
     with pytest.raises(SystemExit) as error:
@@ -181,7 +182,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert (
-        "看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。"
+        "看板可追加 --profile v1|v2|v3|both；both 保持 V2/V3。本地检测使用 scripts/diagnose_runtime.py --profile local。"
         in completed.stdout
     )
     assert "./run.sh serve" not in completed.stdout
@@ -329,6 +330,7 @@ exit 99""",
         (("--profile=v2",), "v2"),
         (("--profile", "v3"), "v3"),
         (("--profile=v3",), "v3"),
+        (("--profile", "v1"), "v1"),
     ),
 )
 def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
@@ -355,7 +357,8 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
     assert completed.stdout == f"server:--config {config} --profile {profile}\n"
 
 
-def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Path) -> None:
+@pytest.mark.parametrize("profile_args", ((), ("--profile", "v1")))
+def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, profile_args: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python3", "exit 99")
@@ -365,7 +368,7 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "train"),
+        ("bash", str(ROOT / "run.sh"), "train", *profile_args),
         cwd=ROOT,
         env={
             **os.environ,
@@ -379,7 +382,8 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} train\n"
+    suffix = " --profile v1" if profile_args else ""
+    assert completed.stdout == f"cli:--config {config} train{suffix}\n"
 
 
 @pytest.mark.parametrize("download_result", (0, 1, 130))
@@ -470,7 +474,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "评分档位只能是 v2、v3 或 both: latest\n"
+    assert completed.stderr == "评分档位只能是 v1、v2、v3 或 both: latest\n"
     assert not missing_venv.exists()
 
 
@@ -491,10 +495,13 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert "--allow-partial-history" not in powershell
-    assert "看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。" in powershell
+    assert (
+        "看板可追加 --profile v1|v2|v3|both；both 保持 V2/V3。本地检测使用 scripts/diagnose_runtime.py --profile local。"
+        in powershell
+    )
     assert "& $SelectedEntryPoint --help" in powershell
     assert "$ProfileArgs = if ($ScoringProfileSet)" in powershell
-    assert '$ScoringProfile -notin @("v2", "v3", "both")' in powershell
+    assert '$ScoringProfile -notin @("v1", "v2", "v3", "both")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert '$PublicModes = @("help", "-h", "--help", "sync", "train")' in powershell

@@ -42,15 +42,15 @@ class DataPaths:
 
     def recommendation(self, profile: str) -> Path:
         _validate_profile(profile)
-        return self.root / "recommendation" / profile
+        return self.root / "recommendation" / ("learned_rank" if profile == "v1" else profile)
 
     def research(self, profile: str) -> Path:
         _validate_profile(profile)
-        return self.root / "research" / profile
+        return self.root / "research" / ("learned_rank" if profile == "v1" else profile)
 
 
 def _validate_profile(profile: str) -> None:
-    if profile not in ("v2", "v3"):
+    if profile not in ("v1", "v2", "v3"):
         raise ValueError("data_profile_invalid")
 
 

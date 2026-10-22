@@ -28,6 +28,11 @@ an action but cannot rewrite a score. DeepSeek free text cannot directly change 
 
 ## Preserve production invariants
 
+The invariants below describe V2/V3 production scoring. The authorized new V1 engineering Shadow uses
+`learned_rank_percentile_0_100` for ranking and retains `local_score` for action gates; it cannot execute, checkpoint,
+freeze formally, or enter official outcome history. Trace its model/contract/population identity through GET/SSE/Web,
+prove zero DeepSeek requests, and keep historical, qualified Shadow and production authorization gates separate.
+
 - New Tomorrow and D25 decisions identify the shared 0–100 evidence-quality scale with
   `score_scale=weighted_evidence_quality_0_100`. The 0/50/100 anchors keep the same adverse/neutral/favorable meaning even
   though each holding period owns different factors and weights.
@@ -43,7 +48,7 @@ an action but cannot rewrite a score. DeepSeek free text cannot directly change 
   records without `score_scale` keep their original relative-score meaning and are never relabeled, backfilled, or
   migrated in place.
 - Long remains outside the score, DeepSeek, TopK, and freeze chain.
-- Only V2/V3 may name user-selected scoring profiles. Do not create another project version identity for a score-scale,
+- Only V2/V3 and the authorized new V1 may name user-selected scoring profiles. Do not create another project version identity for a score-scale,
   API, event, report, cache, dataset, or runtime change.
 
 ## Choose proof by the changed meaning

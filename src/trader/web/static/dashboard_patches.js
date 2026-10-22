@@ -138,7 +138,9 @@
       const reasons = reasonCountSummary(inputQuality && inputQuality.supply_reason_counts, 3);
       const unifiedScale = payload.input_versions
         && payload.input_versions.score_scale === "weighted_evidence_quality_0_100";
-      const maximumSummary = unifiedScale
+      const maximumSummary = window.TraderRender.scorePresentation(payload).learnedRank
+        ? `最高模型排序分 ${maximum.toFixed(2)}（排名百分位，不是上涨概率）`
+        : unifiedScale
         ? `最高统一评分 ${maximum.toFixed(2)}`
         : `最高相对信号分 ${maximum.toFixed(2)}（仅表示 ${evaluated} 只已评分股票内的排序，不代表已通过成本门）`;
       return `评分已完成｜${maximumSummary}；${evaluated} 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓${reasons ? `；主要原因：${reasons}` : ""}`;
@@ -148,6 +150,14 @@
     const threshold = finiteNumber(diagnostics.executable_threshold);
     const observationCount = pipelineFacetCount(action, "observation_threshold_met");
     const executableCount = pipelineFacetCount(action, "executable_threshold_met");
+    if (window.TraderRender.scorePresentation(payload).learnedRank) {
+      if (maximum == null) return "";
+      const maximumSummary = `最高模型排序分 ${maximum.toFixed(2)}；`;
+      const counts = observationCount == null || executableCount == null ? ""
+        : `达到观察线 ${observationCount}只、正式线 ${executableCount}只；`;
+      const reasons = reasonCountSummary(inputQuality && inputQuality.supply_reason_counts, 3);
+      return `模型排序已完成｜${maximumSummary}${counts}动作资格按本地评分和风险条件判定，排名百分位不与本地动作线比较${reasons ? `；主要原因：${reasons}` : ""}`;
+    }
     if (maximum == null || threshold == null || observationCount == null || executableCount == null) return "";
     const gap = threshold - maximum;
     const position = gap > 0.005
@@ -310,10 +320,18 @@
       return { message: notReady.notice, level: notReady.level };
     }
     const reasons = Array.isArray(payload.degraded_reasons) ? payload.degraded_reasons : [];
-    const degraded = reasons.length ? reasonLabels(reasons, payload.frozen === true) : "";
+    const presentation = window.TraderRender.scorePresentation(payload);
+    const degraded = reasons.length ? reasonLabels(reasons, payload.frozen === true, payload) : "";
+    if (presentation.shadow) {
+      return {
+        level: payload.stale || degraded ? "warning" : "idle",
+        message: `Shadow · 模型排序仅供观察，尚无生产授权，不计入正式推荐业绩${payload.stale ? " · 行情已过期" : ""}${degraded ? ` · 降级：${degraded}` : ""}`,
+      };
+    }
+    const unreviewed = presentation.learnedRank ? "模型排序，未使用风险复核" : "仅本地评分";
     if (payload.historical === true) {
       const kind = payload.phase === "close_fallback"
-        ? "收盘补算结果（仅本地评分）"
+        ? `收盘补算结果（${unreviewed}）`
         : "名单与评分为当日冻结结果";
       return {
         level: degraded ? "warning" : "ok",
@@ -323,7 +341,7 @@
     if (payload.phase === "close_fallback") {
       return {
         level: degraded ? "warning" : "ok",
-        message: `已冻结 · 收盘补算 · 仅本地评分 · ${window.TraderRender.formatTime(payload.published_at)}${degraded ? ` · 固化时降级：${degraded}` : ""}`,
+        message: `已冻结 · 收盘补算 · ${unreviewed} · ${window.TraderRender.formatTime(payload.published_at)}${degraded ? ` · 固化时降级：${degraded}` : ""}`,
       };
     }
     if (payload.stale) {
@@ -353,16 +371,20 @@
     }
     return {
       level: degraded ? "warning" : "ok",
-      message: `快照 ${window.TraderRender.formatTime(payload.published_at)} · ${window.TraderRender.fusionModeLabel(payload.fusion_mode)}${degraded ? ` · 降级：${degraded}` : ""}`,
+      message: `快照 ${window.TraderRender.formatTime(payload.published_at)} · ${presentation.learnedRank ? "模型排序" : window.TraderRender.fusionModeLabel(payload.fusion_mode)}${degraded ? ` · 降级：${degraded}` : ""}`,
     };
   }
 
-  function reasonLabels(values, frozen) {
-    return [...new Set(values.map((value) => frozen ? frozenReasonLabel(value) : window.TraderRender.reasonLabel(value)))].join("、");
+  function reasonLabels(values, frozen, snapshot) {
+    return [...new Set(values.map((value) => frozen ? frozenReasonLabel(value, snapshot) : window.TraderRender.reasonLabel(value)))].join("、");
   }
 
-  function frozenReasonLabel(value) {
+  function frozenReasonLabel(value, snapshot) {
     const reason = String(value || "");
+    if (window.TraderRender.scorePresentation(snapshot).learnedRank
+      && ["deepseek_pending", "deepseek_deferred_until_afternoon", "model_unavailable"].includes(reason)) {
+      return "风险复核未生效，保留已固定的模型排序与动作";
+    }
     if (reason === "deepseek_pending") return "模型复核未在冻结前完成（已按本地评分固化）";
     if (reason === "deepseek_incomplete") return "模型复核未在冻结前全部完成（已按可用结果固化）";
     if (reason === "deepseek_deferred_until_afternoon") {

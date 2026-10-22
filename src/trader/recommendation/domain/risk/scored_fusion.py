@@ -526,7 +526,12 @@ def _fuse_evaluation(
     if evaluation.local_score is not None and fused.score.local_score != RoundScore(evaluation.local_score):
         raise ValueError("scored local score changed before fusion")
     veto = fused.veto or any(fact.veto for fact in evaluation.local_risk_facts)
-    return FusedScoredEvaluation(evaluation, fused.score, fused.deepseek_risk_facts, review, veto)
+    score = (
+        replace(fused.score, final_score=evaluation.ranking_score)
+        if evaluation.ranking_score is not None
+        else fused.score
+    )
+    return FusedScoredEvaluation(evaluation, score, fused.deepseek_risk_facts, review, veto)
 
 
 def ApplyScoredActions(
@@ -575,7 +580,7 @@ def _action_for(
         return RecommendationAction.OBSERVE, "filter_observe_only"
     if not policy.executable_enabled:
         return RecommendationAction.OBSERVE, "observation_phase"
-    if score.final_score >= policy.executable_threshold:
+    if score.local_score >= policy.executable_threshold:
         downside = AssessDownside(
             evaluation.features,
             policy.strategy,
@@ -583,6 +588,8 @@ def _action_for(
         )
         if downside.status == "observe":
             return RecommendationAction.OBSERVE, f"downside_guard:{','.join(downside.reasons)}"
+        if evaluation.shadow_only:
+            return RecommendationAction.OBSERVE, "learned_rank_shadow_only"
         return RecommendationAction.EXECUTABLE, "score_threshold_met"
     return RecommendationAction.OBSERVE, "near_score_threshold"
 
@@ -599,7 +606,7 @@ def _unavailable_reason(
         return evaluation.execution_gate_reason
     if veto:
         return "risk_veto"
-    if score.final_score < policy.executable_threshold - policy.observation_margin:
+    if score.local_score < policy.executable_threshold - policy.observation_margin:
         return "below_score_threshold"
     return None
 
@@ -711,11 +718,12 @@ def _validate_selection_ranks(entries: tuple[ScoredDecisionEntry, ...]) -> None:
 
 
 def _local_order(item: ScoredStockEvaluation) -> tuple[float, str]:
-    return (-(item.local_score or 0.0), item.code)
+    score = item.ranking_score if item.ranking_score is not None else item.local_score or 0.0
+    return (-score, item.code)
 
 
-def _decision_order(item: ScoredDecisionEntry) -> tuple[float, float, str]:
-    return (-item.score.final_score, -item.score.local_score, item.code)
+def _decision_order(item: ScoredDecisionEntry) -> tuple[float, str]:
+    return (-item.score.final_score, item.code)
 
 
 def _decision_entry_identity(item: ScoredDecisionEntry) -> dict[str, object]:

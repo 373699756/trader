@@ -18,6 +18,7 @@ usage() {
     "  ./run.sh                         以默认 V2 启动并加载共享双头模型" \
     "  ./run.sh --profile v2|v3         单独启动 V2 或 V3" \
     "  ./run.sh --profile both          同一进程同时启动 V2 和 V3" \
+    "  ./run.sh --profile v1            单独启动全新 V1 Shadow（需先显式训练）" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
@@ -26,8 +27,9 @@ usage() {
     "  ./run.sh sync market             单独更新行情窗口" \
     "  ./run.sh sync company            单独更新公司资料" \
     "  ./run.sh train                   历史维护后联合训练或复用 V2/V3" \
+    "  ./run.sh train --profile v1      历史维护后训练全新 V1 双头 Shadow 工件" \
     "" \
-    "看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。" \
+    "看板可追加 --profile v1|v2|v3|both；both 保持 V2/V3。本地检测使用 scripts/diagnose_runtime.py --profile local。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -43,7 +45,7 @@ while (($#)); do
   case "$1" in
     --profile)
       if (($# < 2)); then
-        printf '%s\n' '缺少 --profile 的值（v2、v3 或 both）。' >&2
+        printf '%s\n' '缺少 --profile 的值（v1、v2、v3 或 both）。' >&2
         exit 2
       fi
       SCORING_PROFILE="$2"
@@ -78,12 +80,12 @@ while (($#)); do
   esac
 done
 
-if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" && "$SCORING_PROFILE" != "both" ]]; then
-  printf '评分档位只能是 v2、v3 或 both: %s\n' "$SCORING_PROFILE" >&2
+if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v1" && "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" && "$SCORING_PROFILE" != "both" ]]; then
+  printf '评分档位只能是 v1、v2、v3 或 both: %s\n' "$SCORING_PROFILE" >&2
   exit 2
 fi
 
-if [[ "$MODE" == "sync" || "$MODE" == "train" ]] && ((SCORING_PROFILE_SET)); then
+if [[ "$MODE" == "sync" || ( "$MODE" == "train" && "$SCORING_PROFILE" != "v1" ) ]] && ((SCORING_PROFILE_SET)); then
   printf '%s\n' "$MODE 不接受 --profile。" >&2
   exit 2
 fi
@@ -187,10 +189,10 @@ if [[ "$MODE" == "train" ]]; then
         --property=MemorySwapMax=2048M \
         --property=CPUWeight=20 \
         --property=IOWeight=20 \
-        -- "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
+        -- "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${PROFILE_ARGS[@]}"
     fi
     printf '%s\n' '警告：当前用户 systemd scope 不可用；联合下载训练仍使用有界资源，但不能提供 cgroup 硬隔离。' >&2
   fi
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${PROFILE_ARGS[@]}"
 fi
 exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${PROFILE_ARGS[@]}" "$MODE" "${FORWARD_ARGS[@]}"

@@ -65,12 +65,12 @@
   function configuredScoringProfile() {
     if (typeof document.querySelector !== "function") return "";
     const meta = document.querySelector('meta[name="trader-default-scoring-profile"]');
-    return meta && ["v2", "v3"].includes(meta.content) ? meta.content : "";
+    return meta && ["v1", "v2", "v3"].includes(meta.content) ? meta.content : "";
   }
   function configuredLongProfile() {
     if (typeof document.querySelector !== "function") return "v2";
     const meta = document.querySelector('meta[name="trader-long-scoring-profile"]');
-    return meta && ["v2", "v3"].includes(meta.content) ? meta.content : "v2";
+    return meta && ["v1", "v2", "v3"].includes(meta.content) ? meta.content : "v2";
   }
   function deliveryProfile(strategy) {
     return strategy === "long" ? state.longProfile : state.profile;
@@ -192,7 +192,7 @@
   }
 
   async function selectProfile(profile) {
-    if (!["v2", "v3"].includes(profile) || profile === state.profile) return;
+    if (!["v1", "v2", "v3"].includes(profile) || profile === state.profile) return;
     const strategy = state.strategy;
     state.profile = profile;
     document.querySelectorAll(".profile-tab").forEach((button) => {
@@ -611,13 +611,17 @@
     for (const item of recommendations) {
       if (Object.hasOwn(counts, item.tier)) counts[item.tier] += 1;
     }
+    const shadow = window.TraderRender.scorePresentation(payload).shadow;
     els.sixSeatStatus.textContent = payload.status === "not_ready" && recommendations.length === 0
       ? "待评分" : recommendations.length ? `${recommendations.length} / 6 只` : "合法空榜";
-    els.sixSeatMeta.textContent = `推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`;
+    els.sixSeatMeta.textContent = shadow
+      ? `Shadow 仅观察 · 关注 ${counts.watch} · 回避 ${counts.avoid}`
+      : `推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`;
   }
   function renderOutcomeSummary(payload) {
     if (!els.outcomeSummary) return;
-    const historical = payload && payload.historical === true && payload.strategy !== "long";
+    const historical = payload && payload.historical === true && payload.strategy !== "long"
+      && !window.TraderRender.scorePresentation(payload).shadow;
     els.outcomeSummary.hidden = !historical;
     if (!historical) return;
     const summaries = Array.isArray(payload.outcome_summaries) ? payload.outcome_summaries : [];

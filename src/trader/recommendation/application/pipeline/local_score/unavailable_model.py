@@ -10,8 +10,9 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringContext,
     ScoringHeadRuntimeStatus,
 )
+from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE, ScoringProfileId
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,8 @@ class UnavailableModelCapability:
             monitoring_mode="automatic_t1_outcome_settlement",
             automatic_model_update=False,
             loss_probability_status="not_modeled",
+            score_scale=LEARNED_RANK_SCORE_SCALE if self.profile_id == "v1" else WEIGHTED_EVIDENCE_SCORE_SCALE,
+            production_authority=self.profile_id != "v1",
         )
 
 

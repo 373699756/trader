@@ -188,6 +188,13 @@ def _scoring_head_payload(status: ScoringHeadRuntimeStatus) -> dict[str, object]
         "training_anchor": status.training_anchor,
         "runtime_anchor": status.runtime_anchor,
         "point_in_time_parity": status.point_in_time_parity,
+        "score_scale": status.score_scale,
+        "production_authority": status.production_authority,
+        **(
+            {"training_label_cutoff": status.training_label_cutoff.isoformat()}
+            if status.training_label_cutoff is not None
+            else {}
+        ),
         "computation": {
             "candidate_count": status.computation.candidate_count,
             "request_count": status.computation.request_count,

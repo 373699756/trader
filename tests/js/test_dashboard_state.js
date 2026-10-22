@@ -63,7 +63,7 @@ vm.runInNewContext(fs.readFileSync(errorDrawerPath, "utf8"), sandbox, { filename
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
-vm.runInNewContext(source.replace(suffix, "\n  window.TraderDashboardTest = Object.freeze({ normalizeDecisionPayload });\n})();"), sandbox, { filename: dashboardPath });
+vm.runInNewContext(source.replace(suffix, "\n  window.TraderDashboardTest = Object.freeze({ normalizeDecisionPayload, configuredScoringProfile });\n})();"), sandbox, { filename: dashboardPath });
 const missingPatchSandbox = {
   URLSearchParams,
   console,
@@ -153,6 +153,49 @@ assert.strictEqual(
 );
 assert.match(state.drawer(unselectedLeader, { strategy: "tomorrow" }), /未入池/);
 assert.match(state.drawer(unselectedLeader, { strategy: "tomorrow" }), /超过行业集中度上限/);
+const rankSnapshot = {
+  strategy: "tomorrow",
+  status: "ready",
+  input_versions: {
+    score_scale: "learned_rank_percentile_0_100",
+    score_model_id: "learned_rank",
+    execution_mode: "shadow",
+    production_authority: "false",
+  },
+  selection_diagnostics: { maximum_final_score: 99.5, executable_threshold: 78, observation_floor: 73 },
+};
+const rankItem = {
+  code: "600001", rank: 1, action: "observe", tier: "watch", review_outcome: "applied",
+  scores: { local_score: 65, final_score: 99.5 },
+};
+assert.match(sandbox.window.TraderRender.tableDefinition(rankSnapshot).head, /模型排序/);
+assert.match(sandbox.window.TraderRender.tableRows([rankItem], rankSnapshot), /aria-label="模型排序分"/);
+const rankDrawer = state.drawer(rankItem, rankSnapshot);
+assert.match(rankDrawer, /模型排序分/);
+assert.match(rankDrawer, /本地评分/);
+assert.match(rankDrawer, /65\.00/);
+assert.match(rankDrawer, /99\.50/);
+assert.match(rankDrawer, /排名百分位，不是上涨概率/);
+assert.match(rankDrawer, /Shadow 仅供观察/);
+assert(!rankDrawer.includes("最终评分仍为本地分"));
+assert.match(state.drawer(rankItem, { strategy: "tomorrow", scoring_profile: "v1" }), /最终评分/);
+assert(!state.drawer(rankItem, { strategy: "tomorrow", scoring_profile: "v1" }).includes("模型排序分"),
+  "profile name alone must not reinterpret a historical score scale");
+assert(!sandbox.window.TraderRender.tableDefinition({ ...rankSnapshot, strategy: "long" }).head.includes("模型排序"));
+const rankEmpty = state.emptyRecommendationMessage(rankSnapshot, 0, null);
+assert.match(rankEmpty, /排名百分位不与本地动作线比较/);
+assert(!rankEmpty.includes("距离正式线"));
+assert(!rankEmpty.includes("已达到正式线"));
+const rankNotice = state.snapshotNotice(rankSnapshot, null);
+assert.match(rankNotice.message, /Shadow/);
+assert.match(rankNotice.message, /不计入正式推荐业绩/);
+const rankPublication = summaryFixture();
+state.renderPublicationStatus(rankPublication, rankSnapshot, null);
+assert.strictEqual(rankPublication.publicationStatus.textContent, "Shadow 观察");
+const previousQuerySelector = sandbox.document.querySelector;
+sandbox.document.querySelector = () => ({ content: "v1" });
+assert.strictEqual(sandbox.window.TraderDashboardTest.configuredScoringProfile(), "v1");
+sandbox.document.querySelector = previousQuerySelector;
 const configuredLongDetail = state.longGroupDisplayPayload(state.longGroupStaticFallbackPayload("pending"));
 assert.strictEqual(state.detailItem(configuredLongDetail, "600001").name, "配置名称");
 assert.strictEqual(state.detailItem(configuredLongDetail, "600001").action, "observe");

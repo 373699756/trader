@@ -96,6 +96,11 @@ class ScoredLocalProjection:
     downside_assessments: tuple[tuple[str, DownsideAssessment], ...] = ()
     cost_reference_version: str | None = None
     started_monotonic: float | None = None
+    score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
+    score_model_id: str | None = None
+    score_contract_hash: str | None = None
+    production_authority: bool = True
+    rank_population_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,11 @@ class _DecisionProjectionContext:
     score_model_version: str | None = None
     model_diagnostics: Mapping[str, ModelDiagnostics] | None = None
     cost_reference_version: str | None = None
+    score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
+    score_model_id: str | None = None
+    score_contract_hash: str | None = None
+    production_authority: bool = True
+    rank_population_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,8 +172,12 @@ def BuildScoredLocal(
     )
     population = tuple(PreselectionReplayFeature(feature) for feature in native_input.market_features)
     model_scoring = runtime.model_scoring
+    profile_status = model_scoring.status() if model_scoring is not None else None
+    learned_rank = profile_status is not None and profile_status.profile_id == "v1"
     uses_model = (
-        model_scoring is not None and native_input.phase != "close_fallback" and model_scoring.uses_model(strategy)
+        model_scoring is not None
+        and (native_input.phase != "close_fallback" or learned_rank)
+        and model_scoring.uses_model(strategy)
     )
     model_batch = (
         model_scoring.score(
@@ -197,6 +211,12 @@ def BuildScoredLocal(
     minimum_history_sessions = (
         model_scoring.history_required_sessions(strategy) if model_scoring is not None and uses_model else 20
     )
+    if learned_rank and (
+        model_batch is None
+        or model_batch.score_scale != "learned_rank_percentile_0_100"
+        or model_batch.production_authority
+    ):
+        raise ValueError("learned_rank_shadow_model_unavailable")
     profile_history_qualified_codes = (
         frozenset(
             feature.quote.code
@@ -277,6 +297,17 @@ def BuildScoredLocal(
     selection = ApplySelectionRisks(
         selection, policy.risk_rules, policy.fusion.local_risk_cap, native_input.evaluated_at, strategy
     )
+    if learned_rank and model_batch is not None:
+        ranked = {
+            item.code: replace(item, ranking_score=model_batch.diagnostics[item.code].signal_score, shadow_only=True)
+            for item in selection.scored_candidates
+        }
+        selection = replace(
+            selection,
+            evaluations=tuple(ranked.get(item.code, item) for item in selection.evaluations),
+            scored_candidates=tuple(ranked[item.code] for item in selection.scored_candidates),
+            observations=tuple(ranked[item.code] for item in selection.observations),
+        )
     risk_stage = MeasuredOutput(
         StageOutput(
             PipelineStage.LOCAL_RISK,
@@ -355,12 +386,22 @@ def BuildScoredLocal(
                 score_model_version=model_version,
                 model_diagnostics=model_batch.diagnostics if model_batch is not None else None,
                 cost_reference_version=model_batch.cost_reference_version if model_batch is not None else None,
+                score_scale=model_batch.score_scale if model_batch is not None else WEIGHTED_EVIDENCE_SCORE_SCALE,
+                score_model_id=model_batch.score_model_id if model_batch is not None else None,
+                score_contract_hash=model_batch.score_contract_hash if model_batch is not None else None,
+                production_authority=model_batch.production_authority if model_batch is not None else True,
+                rank_population_version=model_batch.rank_population_version if model_batch is not None else None,
             ),
         ),
         score_model_version=model_version,
         model_diagnostics=tuple(sorted(model_batch.diagnostics.items())) if model_batch is not None else (),
         downside_assessments=downside_assessments,
         cost_reference_version=model_batch.cost_reference_version if model_batch is not None else None,
+        score_scale=model_batch.score_scale if model_batch is not None else WEIGHTED_EVIDENCE_SCORE_SCALE,
+        score_model_id=model_batch.score_model_id if model_batch is not None else None,
+        score_contract_hash=model_batch.score_contract_hash if model_batch is not None else None,
+        production_authority=model_batch.production_authority if model_batch is not None else True,
+        rank_population_version=model_batch.rank_population_version if model_batch is not None else None,
     )
 
 
@@ -531,6 +572,11 @@ def BuildScoredHybrid(
             score_model_version=projection.score_model_version,
             model_diagnostics=dict(projection.model_diagnostics),
             cost_reference_version=projection.cost_reference_version,
+            score_scale=projection.score_scale,
+            score_model_id=projection.score_model_id,
+            score_contract_hash=projection.score_contract_hash,
+            production_authority=projection.production_authority,
+            rank_population_version=projection.rank_population_version,
         ),
     )
     return ScoredReviewProjection(replace(decision, input_versions=projection.local.input_versions), stages)
@@ -555,8 +601,13 @@ def _scored_decision(
                 ("market", epoch.market_epoch_version),
                 ("candidate", epoch.candidate_epoch_version),
                 ("research", epoch.research_epoch_version),
-                ("score_scale", WEIGHTED_EVIDENCE_SCORE_SCALE),
+                ("score_scale", context.score_scale),
                 ("score_model", context.score_model_version),
+                ("score_model_id", context.score_model_id),
+                ("score_contract_hash", context.score_contract_hash),
+                ("production_authority", "false" if not context.production_authority else None),
+                ("execution_mode", "shadow" if not context.production_authority else None),
+                ("rank_population", context.rank_population_version),
                 ("cost_reference", context.cost_reference_version),
             )
             if value is not None

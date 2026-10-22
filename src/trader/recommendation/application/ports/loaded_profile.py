@@ -5,9 +5,11 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from types import MappingProxyType
 from typing import Literal, Protocol
 
+from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -58,12 +60,15 @@ class HeadPredictorPort(Protocol):
 class ModelPrediction:
     code: str
     predicted_excess_return: float
+    rank_raw: float | None = None
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
             raise ValueError("model prediction code is invalid")
         if not math.isfinite(self.predicted_excess_return):
             raise ValueError("model prediction must be finite")
+        if self.rank_raw is not None and not math.isfinite(self.rank_raw):
+            raise ValueError("raw model rank must be finite")
 
 
 class ModelPredictorPort(Protocol):
@@ -84,6 +89,13 @@ class ModelPredictorPort(Protocol):
 
     @property
     def industry_ids(self) -> tuple[str, ...]: ...
+
+    def predict(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]: ...
+
+
+class LearnedRankPredictorPort(HeadPredictorPort, Protocol):
+    @property
+    def feature_ids(self) -> tuple[str, ...]: ...
 
     def predict(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]: ...
 
@@ -124,6 +136,11 @@ class ModelScoreBatch:
     predictions: tuple[HeadPrediction, ...]
     missing_codes: tuple[str, ...]
     cost_reference_version: str | None = None
+    score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
+    score_model_id: str | None = None
+    score_contract_hash: str | None = None
+    production_authority: bool = True
+    rank_population_version: str | None = None
 
     def __post_init__(self) -> None:
         diagnostics = dict(self.diagnostics)
@@ -135,6 +152,7 @@ class ModelScoreBatch:
             or len(self.missing_codes) != len(set(self.missing_codes))
             or set(self.missing_codes).intersection(prediction_codes)
             or self.cost_reference_version == ""
+            or self.rank_population_version == ""
         ):
             raise ValueError("model score batch identity is invalid")
         object.__setattr__(self, "diagnostics", MappingProxyType(diagnostics))
@@ -231,6 +249,8 @@ class ProfileEvidence:
     training_anchor: Literal["15:00_close", "15:00_close_proxy", "15:00_point_in_time"] = "15:00_close"
     runtime_anchor: Literal["15:00"] = "15:00"
     point_in_time_parity: bool = False
+    production_authority: bool = True
+    training_label_cutoff: date | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +300,9 @@ class ScoringHeadRuntimeStatus:
     training_anchor: Literal["15:00_close", "15:00_close_proxy", "15:00_point_in_time"] = "15:00_close"
     runtime_anchor: Literal["15:00"] = "15:00"
     point_in_time_parity: bool = False
+    score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
+    production_authority: bool = True
+    training_label_cutoff: date | None = None
 
 
 @dataclass(frozen=True)
@@ -339,6 +362,7 @@ __all__ = [
     "HeadPredictorPort",
     "HeadRuntime",
     "LoadedScoringProfile",
+    "LearnedRankPredictorPort",
     "ModelDiagnostics",
     "ModelComputationStageStatus",
     "ModelComputationStatus",

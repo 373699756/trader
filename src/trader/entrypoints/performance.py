@@ -103,7 +103,7 @@ class _CandidateUnionFixture:
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--profile", choices=("v2", "v3"))
+    parser.add_argument("--profile", choices=("v1", "v2", "v3"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
     return parser
@@ -120,6 +120,8 @@ def Run(
         settings.strategy_config_path,
         scoring_profile=scoring_profile,
     )
+    if strategy_settings.scoring_profile == "v1":
+        return _unavailable_report("learned_rank_shadow_workload_unverified")
     budgets = settings.performance_budgets
     market_inputs, market_quotes, candidates = _fixtures(budgets)
     context = _OperationContext(
@@ -242,20 +244,24 @@ def Main(argv: list[str] | None = None) -> int:
             scoring_profile=args.profile,
         )
     except ScoringModelsUnavailableError:
-        report = {
-            "schema_version": "production_performance",
-            "status": "failed",
-            "workload": {},
-            "measurements": {},
-            "memory": {},
-            "failures": ["model_unavailable"],
-            "network_calls": 0,
-        }
+        report = _unavailable_report("model_unavailable")
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if args.output is not None:
         args.output.write_text(f"{payload}\n", encoding="utf-8")
     print(payload)
     return 0 if report["status"] == "passed" else 1
+
+
+def _unavailable_report(reason: str) -> dict[str, object]:
+    return {
+        "schema_version": "production_performance",
+        "status": "failed",
+        "workload": {},
+        "measurements": {},
+        "memory": {},
+        "failures": [reason],
+        "network_calls": 0,
+    }
 
 
 def _operations(

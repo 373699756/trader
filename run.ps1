@@ -15,6 +15,7 @@ function Show-Usage {
 日常使用（不做离线研究）:
   .\run.ps1                         以默认 V2 启动并加载共享双头模型
   .\run.ps1 --profile v2|v3         显式使用 V2 或 V3 启动
+  .\run.ps1 --profile v1            单独启动全新 V1 Shadow（需先显式训练）
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
@@ -23,8 +24,9 @@ function Show-Usage {
   .\run.ps1 sync market             单独更新行情窗口
   .\run.ps1 sync company            单独更新公司资料
   .\run.ps1 train                   历史维护后联合训练或复用 V2/V3
+  .\run.ps1 train --profile v1      历史维护后训练全新 V1 双头 Shadow 工件
 
-看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。
+看板可追加 --profile v1|v2|v3|both；both 保持 V2/V3。本地检测使用 scripts/diagnose_runtime.py --profile local。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -43,7 +45,7 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
     if ($Argument -eq "--profile") {
         if ($Index + 1 -ge $args.Count) {
-            [Console]::Error.WriteLine("缺少 --profile 的值（v2 或 v3）。")
+            [Console]::Error.WriteLine("缺少 --profile 的值（v1、v2、v3 或 both）。")
             exit 2
         }
         $Index++
@@ -69,11 +71,11 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     }
 }
 
-if ($ScoringProfileSet -and $ScoringProfile -notin @("v2", "v3", "both")) {
-    [Console]::Error.WriteLine("评分档位只能是 v2 或 v3: $ScoringProfile")
+if ($ScoringProfileSet -and $ScoringProfile -notin @("v1", "v2", "v3", "both")) {
+    [Console]::Error.WriteLine("评分档位只能是 v1、v2、v3 或 both: $ScoringProfile")
     exit 2
 }
-if (($Mode -in @("sync", "train") -and $ScoringProfileSet) -or ($Mode -eq "train" -and $ForwardArgs.Count -gt 0)) {
+if (($Mode -eq "sync" -and $ScoringProfileSet) -or ($Mode -eq "train" -and $ScoringProfileSet -and $ScoringProfile -ne "v1") -or ($Mode -eq "train" -and $ForwardArgs.Count -gt 0)) {
     [Console]::Error.WriteLine("$Mode 不接受任何参数；请只运行 .\run.ps1 $Mode。")
     exit 2
 }

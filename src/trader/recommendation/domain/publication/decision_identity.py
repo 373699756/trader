@@ -19,6 +19,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
     HistoricalStageSnapshot,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
 
 DecisionStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "checkpoint_recovery", "close_fallback"]
@@ -275,7 +276,20 @@ class ScoredDecision:
         selected = sorted((item for item in items if item.selected), key=lambda item: item.rank)
         if [item.rank for item in selected] != list(range(1, len(selected) + 1)):
             raise ValueError("selected decision ranks must be contiguous")
-        if self.stage == "local" and any(item.final_score != item.local_score for item in items):
+        learned_rank = dict(versions).get("score_scale") == LEARNED_RANK_SCORE_SCALE
+        if learned_rank:
+            if (
+                dict(versions).get("execution_mode") != "shadow"
+                or dict(versions).get("production_authority") != "false"
+                or dict(versions).get("score_model_id") != "learned_rank"
+                or not all(
+                    dict(versions).get(name) for name in ("score_model", "score_contract_hash", "rank_population")
+                )
+                or self.is_formal
+                or any(item.action is RecommendationAction.EXECUTABLE for item in items)
+            ):
+                raise ValueError("learned rank decisions require a complete non-executable shadow identity")
+        elif self.stage == "local" and any(item.final_score != item.local_score for item in items):
             raise ValueError("local decision final scores must equal local scores")
         if any(item.quote is not None and item.quote.source_time > self.observed_at for item in items):
             raise ValueError("decision cannot contain a future quote")
@@ -420,6 +434,8 @@ class CommittedDecisionRecord:
     def __post_init__(self) -> None:
         if self.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
             raise ValueError(f"record schema_version must be {COMMITTED_RECORD_SCHEMA_VERSION}")
+        if IsShadowDecision(self.decision):
+            raise ValueError("shadow decisions cannot become formal records")
         _require_shanghai(self.committed_at, "decision committed_at")
         if self.committed_at.date() != self.decision.trade_date:
             raise ValueError("formal record and decision must share a trade date")
@@ -448,6 +464,12 @@ def IdentityCodes(identity: DecisionIdentity) -> frozenset[str]:
     return frozenset(item.code for item in identity.items)
 
 
+def IsShadowDecision(decision: ScoredDecision) -> bool:
+    """Read explicit execution identity without reinterpreting a profile name."""
+
+    return ("execution_mode", "shadow") in decision.input_versions
+
+
 def VisibleScoredSeats(decision: ScoredDecision) -> tuple[DecisionItem, ...]:
     """Read fixed seats; retain the original display contract only for old records."""
     audit = decision.pipeline
@@ -470,6 +492,9 @@ def FormalScoredDecision(
     input_versions: tuple[tuple[str, str], ...] = (),
 ) -> ScoredDecision:
     """Project an accepted scored identity to its immutable six-row close form."""
+
+    if IsShadowDecision(decision):
+        raise ValueError("shadow decisions cannot become formal decisions")
 
     official_items = VisibleScoredSeats(decision)
     return ScoredDecision(
@@ -921,6 +946,7 @@ def _validate_coverage_counts(population_count: int | None, rejected_count: int 
 
 
 __all__ = [
+    "IsShadowDecision",
     "COMMITTED_RECORD_SCHEMA_VERSION",
     "DECISION_IDENTITY_SCHEMA_VERSION",
     "LONG_PROJECTION_SCHEMA_VERSION",

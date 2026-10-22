@@ -66,12 +66,7 @@ from trader.infra.isolated_call import RunIsolatedCall
 from trader.infra.process_lock import ProcessLock
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.serialization.canonical import ContentHash
-from trader.infra.settings import (
-    LoadLongWatchlist,
-    LoadRuntimeSettings,
-    LoadStrategySettings,
-    RuntimeSettings,
-)
+from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
@@ -104,13 +99,6 @@ from trader.recommendation.application.pipeline.local_score.local_decision_build
     DecisionBuildDependencies,
     LocalDecisionBuilder,
 )
-from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
-from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import (
-    ProductionModelScoringService,
-    SharedModelFeatureCache,
-)
-from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
@@ -173,13 +161,16 @@ from trader.recommendation.infra.runtime.composition_inputs import (
 from trader.recommendation.infra.runtime.initialization import FixedCacheTtl as _fixed_cache_ttl
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
 from trader.recommendation.infra.runtime.startup_readiness import WarnMissingLocalData
+from trader.recommendation.infra.scoring import profile_factory
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 from trader.recommendation.infra.status_projection import RuntimeStatus as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.application.research_audit import TryBuildCommittedResearchAudit
 from trader.training.application.research_runtime import ResearchRuntime
+from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue, PublishedTrainingState
+from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
@@ -283,11 +274,7 @@ def _sync_company_evidence(
                     timeout_seconds=timeout_seconds,
                     cancel_requested=cancel_requested,
                 ),
-                EastmoneyCompanySource(
-                    structured_session,
-                    monotonic=time.monotonic,
-                    timeout_seconds=timeout_seconds,
-                ),
+                EastmoneyCompanySource(structured_session, monotonic=time.monotonic, timeout_seconds=timeout_seconds),
                 time.monotonic,
                 heartbeat,
                 cancel_requested,
@@ -347,16 +334,36 @@ def _prepare_reference(
             raise RuntimeError("history ST worker shutdown exceeded 30 seconds")
 
 
-def ExecuteDownloadTrain(config_path: Path) -> int:
+def ExecuteDownloadTrain(config_path: Path, *, scoring_profile: ScoringProfileId | None = None) -> int:
     """One process, history validation before training, no server resources."""
     from trader.download.entrypoints.commands import RunDownload
     from trader.training.entrypoints.commands import ConfigureTrainingResources, RunJointTraining
 
+    if scoring_profile is not None and scoring_profile != "v1":
+        raise ValueError("joint training accepts only an explicit v1 override")
     runtime = LoadRuntimeSettings(config_path)
     ConfigureTrainingResources()
     result = RunDownload(runtime.project_root, config_path, quiet_success=True)
     if result:
         return result
+    if scoring_profile == "v1":
+        from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+        from trader.training.entrypoints.v1.training import RunLearnedRankTraining
+        from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+        from trader.training.infra.profile.v1.training import RunV1Training
+
+        return RunLearnedRankTraining(
+            runtime,
+            execute=lambda cancelled: RunV1Training(
+                partial(SQLiteHistoryTrainingInputSnapshot.open, runtime.data_paths.history),
+                runtime.data_paths.models,
+                sample_root=runtime.data_paths.samples,
+                history_root=runtime.data_paths.history,
+                settings=LoadV1TrainingSettings(runtime.project_root),
+                progress=StderrTomorrowTrainingProgress(),
+                cancel_requested=cancelled,
+            ),
+        )
     return RunJointTraining(
         runtime,
         refresh_due=lambda: EvaluateAllHistoryTrainingDue(
@@ -575,11 +582,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
 ) -> ApplicationSystem[SQLiteResearchTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
-        settings = replace(
-            settings,
-            runtime_dir=settings.runtime_dir / "profiles" / runtime_scope,
-        )
+        settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=scoring_profile)
+    paths = settings.data_paths
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)
     cost_policy = LoadExecutionCostPolicy(Path(config_path).expanduser().resolve().parent)
     effective_config_version = (
@@ -602,14 +607,14 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         settings.data_paths.budget,
         owns_shared_runtime,
     )
-    reference_publication = ReferencePublication(settings.data_paths.reference)
+    reference_publication = ReferencePublication(paths.reference)
     references = (
         shared_inputs.market.references
         if shared_inputs
         else PublishedReferences(
             reference_publication.read,
             reference_publication.identity,
-            CurrentIndustryCache(settings.data_paths.reference / "industry.sqlite3").load,
+            CurrentIndustryCache(paths.reference / "industry.sqlite3").load,
             max_age_seconds=_fixed_cache_ttl(settings, "security_master_calendar"),
             reserve_bytes=partial(
                 workers.market_cache.reserve_resident, "security_master_calendar", "startup_reference"
@@ -621,15 +626,18 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     profile_id = strategy.scoring_profile
     model_failure = "production_model_missing"
     try:
-        loaded_profile = LoadScoringProfile(profile_id, training_root=settings.data_paths.models)
+        loaded_profile = LoadScoringProfile(profile_id, training_root=paths.models)
     except ScoringModelsUnavailableError as exc:
         loaded_profile = None
         model_failure = f"production_model_{exc.reason}"
-    WarnMissingLocalData(
-        settings.data_paths, profile_id, model_failure=model_failure if loaded_profile is None else None
+    WarnMissingLocalData(paths, profile_id, model_failure=model_failure if loaded_profile is None else None)
+    training_settings = (
+        LoadV1TrainingSettings(settings.project_root)
+        if profile_id == "v1"
+        else LoadProfileTrainingSettings(settings.project_root, profile_id)
     )
-    training_settings = LoadProfileTrainingSettings(settings.project_root, profile_id)
-    training_settings.require_profile(V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE)
+    if isinstance(training_settings, ProfileTrainingSettings):
+        training_settings.require_profile(V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE)
     market_data = _build_market_data(
         context,
         calendar,
@@ -639,27 +647,20 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     reviewer = _build_reviewer(context, persistence.budget)
     policy = _recommendation_policy(context.strategy)
-    shared_model_features = SharedModelFeatureCache()
     model_publications = PublishedTrainingState(
-        settings.data_paths.history,
-        settings.data_paths.models,
+        paths.history,
+        paths.models,
         loaded_profile.publications if loaded_profile else (),
         owned_profile=profile_id,
         wall_clock=ShanghaiClock(now).now,
     )
-    model_scoring = PublishedModelScoringService(
-        ModelScoringRouter(
-            profile_id,
-            {
-                strategy: ProductionModelScoringService(
-                    loaded_profile, strategy, cost_policy=cost_policy, shared_features=shared_model_features
-                )
-                if loaded_profile is not None
-                else UnavailableModelCapability(profile_id, training_settings.history_sessions, model_failure)
-                for strategy in (Strategy.TOMORROW, Strategy.D25)
-            },
-        ),
-        maintenance=model_publications.status,
+    model_scoring = profile_factory.BuildProfileScoring(
+        profile_id,
+        loaded_profile,
+        history_sessions=training_settings.history_sessions,
+        model_failure=model_failure,
+        cost_policy=cost_policy,
+        maintenance=model_publications.status if profile_id != "v1" else None,
     )
     candidate_filtering = CandidateFilteringService(policy, model_scoring)
     local_scoring = LocalScoringService(model_scoring, RankingSelectionService(), RiskControlService())
@@ -746,7 +747,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             model_version=ContentHash(loaded_profile.publications) if loaded_profile else model_failure,
             config_version=effective_config_version,
         )
-        if not cancelled():
+        if not cancelled() and profile_id != "v1":
             model_publications.initialize()
 
     supervisor = RuntimeSupervisor(
@@ -883,10 +884,11 @@ def _build_market_data(
     calendar: ChinaTradingCalendar,
     references: PublishedReferences,
     *,
-    training_settings: ProfileTrainingSettings,
+    training_settings: ProfileTrainingSettings | V1TrainingSettings,
     shared_market: MarketFeatureService | None = None,
 ) -> MarketFeatureService:
     settings, strategy = context.settings, context.strategy
+    paths = settings.data_paths
     workers = context.workers
     now = context.now
     data_pool = workers.data_pool
@@ -901,9 +903,13 @@ def _build_market_data(
         model_momentum_horizons=training_settings.momentum_horizons,
         cache=market_cache,
     )
-    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(settings.data_paths.history))
+    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history))
     history_cache = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache(settings.data_paths.daily_window, strategy.scoring_profile)),
+        ReadPublishedHistoryUseCase(
+            SQLiteQfqWindowCache(
+                paths.daily_window, "v2" if strategy.scoring_profile == "v1" else strategy.scoring_profile
+            )
+        ),
         lookback_sessions=training_settings.history_sessions,
         monotonic=time.monotonic,
         outcome_history=published_history,
@@ -912,6 +918,7 @@ def _build_market_data(
             market_cache.reserve_resident, "security_master_calendar", f"qfq_{strategy.scoring_profile}"
         ),
         require_input_binding=True,
+        learned_rank_inputs=strategy.scoring_profile == "v1",
     )
     if shared_market is None:
         intraday_client = EastmoneyClient(
@@ -986,9 +993,7 @@ def _build_market_data(
             schema_version="market_snapshot",
             wall_clock=now,
         )
-        eligibility_index = SQLiteIssuerEligibilityIndex(
-            settings.data_paths.eligibility, read_only=not context.owns_shared_runtime
-        )
+        eligibility_index = SQLiteIssuerEligibilityIndex(paths.eligibility, read_only=not context.owns_shared_runtime)
         if context.owns_shared_runtime:
             try:
                 eligibility_index.record_manual_blacklist(
@@ -999,7 +1004,7 @@ def _build_market_data(
                 pass
         eligibility: IssuerEligibilityPort = eligibility_index
         research = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(settings.data_paths.company.parent / "evidence.sqlite3"),
+            SQLiteCompanyEvidenceReader(paths.company.parent / "evidence.sqlite3"),
             wall_clock=now,
             open_dates=calendar.open_dates,
             monotonic=time.monotonic,

@@ -23,6 +23,7 @@ from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.decision_identity import (
     CommitKind,
     CommittedDecisionRecord,
+    IsShadowDecision,
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import Strategy
@@ -86,6 +87,8 @@ class ScoredFreezeCoordinator:
             return existing
         checkpoint, checkpoint_failed = self._checkpoint(now.date(), boundary)
         current = self._current(now.date())
+        if current is not None and IsShadowDecision(current):
+            return FreezeOperationResult("shadow_only")
         if current is not None and not self._runtime_identity.matches(current):
             return FreezeOperationResult("runtime_identity_mismatch")
         with ObservePublicationIo(
@@ -167,6 +170,8 @@ class ScoredFreezeCoordinator:
         official_close_version: str,
         now: datetime,
     ) -> str | None:
+        if IsShadowDecision(decision):
+            return "shadow_only"
         current = self._current(now.date())
         rejections = (
             (

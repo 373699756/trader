@@ -137,6 +137,81 @@ def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
     assert 'name="trader-long-scoring-profile" content="v2"' in page
 
 
+def test_new_v1_lane_keeps_rank_scale_and_shadow_identity_in_get_and_sse() -> None:
+    _, existing_queries, existing_stream = _app()
+    source = _decision()
+    decision = replace(
+        source,
+        input_versions=(
+            ("score_scale", "learned_rank_percentile_0_100"),
+            ("score_model_id", "learned_rank"),
+            ("score_model", "learned_rank:" + "b" * 64),
+            ("score_contract_hash", "a" * 64),
+            ("rank_population", "learned-rank-population:" + "c" * 64),
+            ("execution_mode", "shadow"),
+            ("production_authority", "false"),
+        ),
+        items=(replace(source.items[0], action=RecommendationAction.OBSERVE, final_score=99.5),),
+    )
+    index = UnifiedDecisionIndex()
+    assert index.publish(decision, expected_version=None).accepted
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock())
+    stream = UnifiedDecisionEventStream()
+    stream.publish_committed(BuildDecisionCommitted(decision))
+    status = {
+        "scoring_profile": {
+            "profile_id": "v1",
+            "heads": {
+                "tomorrow": {
+                    "score_scale": "learned_rank_percentile_0_100",
+                    "production_authority": False,
+                    "private_internal": "must-not-leak",
+                }
+            },
+        }
+    }
+    services = ProfiledWebServices(
+        {
+            "v1": UnifiedWebServices(queries, stream, lambda: status, profile_id="v1"),
+            "v2": UnifiedWebServices(existing_queries, existing_stream, lambda: {}, profile_id="v2"),
+            "v3": UnifiedWebServices(existing_queries, existing_stream, lambda: {}, profile_id="v3"),
+        },
+        default_profile="v2",
+        long_profile="v2",
+    )
+    client = CreateApp(services=services).test_client()
+
+    response = client.get("/api/decisions/tomorrow/current?profile=v1")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["scoring_profile"] == "v1"
+    assert payload["input_versions"] == dict(decision.input_versions)
+    assert payload["items"][0]["scores"]["local"] == 84.0
+    assert payload["items"][0]["scores"]["final"] == 99.5
+    assert payload["items"][0]["action"] == "observe"
+    assert client.get("/api/decisions/tomorrow/current?profile=v2").get_json()["items"][0]["scores"]["final"] == 84.0
+    long = client.get("/api/decisions/long/current?profile=v1").get_json()
+    assert long["scoring_profile"] == "v2"
+    assert long["score_status"] == "not_applicable"
+    assert "scores" not in long["items"][0]
+    status_response = client.get("/api/status?profile=v1")
+    head = status_response.get_json()["scoring_profile"]["heads"]["tomorrow"]
+    assert head == {"score_scale": "learned_rank_percentile_0_100", "production_authority": False}
+    assert "must-not-leak" not in status_response.get_data(as_text=True)
+    page = client.get("/").get_data(as_text=True)
+    assert 'data-profile="v1"' in page
+    assert "V1 · Shadow" in page
+
+    events = client.get("/api/events?profile=v1", headers={"Last-Event-ID": "0"}, buffered=False)
+    iterator = iter(events.response)
+    next(iterator)
+    event = json.loads(next(iterator).decode().split("data: ", 1)[1])
+    events.close()
+    assert event["input_versions"] == payload["input_versions"]
+    assert event["upserts"][0]["scores"]["local_score"] == 84.0
+    assert event["upserts"][0]["scores"]["final_score"] == 99.5
+
+
 def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_fields() -> None:
     client = _app()[0].test_client()
 
@@ -453,10 +528,10 @@ def test_http_reads_do_not_invoke_external_io() -> None:
         assert client.get(path).status_code == 200
 
 
-def test_maintenance_status_projects_four_heads_and_restart_identity_without_io(monkeypatch):
+def test_maintenance_status_projects_six_heads_and_restart_identity_without_io(monkeypatch):
     _, queries, stream = _app()
     heads = []
-    for profile in ("v2", "v3"):
+    for profile in ("v1", "v2", "v3"):
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             loaded = ModelPublicationIdentity(profile, strategy, "a" * 64, "b" * 64, NOW.date(), "c" * 64, "d" * 64)
             disk = replace(loaded, metadata_hash="e" * 64)
@@ -490,12 +565,14 @@ def test_maintenance_status_projects_four_heads_and_restart_identity_without_io(
     assert "must-not-leak" not in response.get_data(as_text=True)
     projected = payload["scoring_profile"]["maintenance"]
     assert [(head["profile_id"], head["strategy"]) for head in projected] == [
+        ("v1", "tomorrow"),
+        ("v1", "d25"),
         ("v2", "tomorrow"),
         ("v2", "d25"),
         ("v3", "tomorrow"),
         ("v3", "d25"),
     ]
-    assert [head["restart_required"] for head in projected] == [False, False, True, True]
+    assert [head["restart_required"] for head in projected] == [False, False, False, False, True, True]
     assert all(head["loaded"]["publication_hash"] == "b" * 64 for head in projected)
     assert all(head["disk"]["publication_hash"] == "e" * 64 for head in projected)
     assert payload["market_data"]["reference_publication"]["restart_required"] is True

@@ -21,6 +21,11 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.epochs import DailyFeaturePack, DailyFeatureRow, DataPlaneCoverageEvidence
 from trader.recommendation.domain.market.history_tail import HistoryQuality
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
+from trader.recommendation.domain.market.v1.features import (
+    LEARNED_RANK_FEATURE_IDS,
+    CalculateLearnedRankFeatures,
+    LearnedRankDailyPoint,
+)
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,
@@ -65,6 +70,7 @@ class PublishedHistoryStatus:
 class PublishedHistoryEntry:
     bars: tuple[DailyBar, ...]
     context: HistoryContext
+    learned_rank_values: tuple[float, ...] | None = None
 
 
 class PublishedHistoryCache:
@@ -82,6 +88,7 @@ class PublishedHistoryCache:
         open_dates: Callable[[], tuple[date, ...]] | None = None,
         reserve_bytes: Callable[[int], bool] | None = None,
         require_input_binding: bool = False,
+        learned_rank_inputs: bool = False,
     ) -> None:
         self._history = history
         self._outcome_history = outcome_history
@@ -89,6 +96,7 @@ class PublishedHistoryCache:
         self._open_dates = open_dates
         self._reserve_bytes = reserve_bytes
         self._require_input_binding = require_input_binding
+        self._learned_rank_inputs = learned_rank_inputs
         self._lookback_sessions = max(61, lookback_sessions)
         self._recovery = recovery
         self._tail_recovery = tail_recovery
@@ -406,6 +414,31 @@ class PublishedHistoryCache:
             if bars
         }
 
+    def completed_model_features(
+        self, codes: Sequence[str], observed_at: datetime
+    ) -> Mapping[str, tuple[tuple[str, float], ...]]:
+        """Project startup-only complete-session inputs without reading the database."""
+        if not self._learned_rank_inputs:
+            return {}
+        day = observed_at.astimezone(SHANGHAI).date()
+        previous = (
+            max((value for value in self._open_dates() if value < day), default=None) if self._open_dates else None
+        )
+        if previous is None:
+            return {}
+        with self._lock:
+            return {
+                code: tuple(zip(LEARNED_RANK_FEATURE_IDS, entry.learned_rank_values, strict=True))
+                for code in codes
+                if (entry := self._entries.get(code)) is not None
+                and entry.context.latest_trade_date == previous.isoformat()
+                and entry.learned_rank_values is not None
+            }
+
+    @property
+    def completed_features_enabled(self) -> bool:
+        return self._learned_rank_inputs
+
     def update_coverage(self, codes: Sequence[str], data_versions: Sequence[str] | None = None) -> None:
         del data_versions
         requested = tuple(dict.fromkeys(codes))
@@ -489,6 +522,11 @@ class PublishedHistoryCache:
             entries[window.code] = PublishedHistoryEntry(
                 bars=bars[-_RAW_RETENTION_SESSIONS:],
                 context=BuildHistoryContext(bars, lookback_sessions=self._lookback_sessions),
+                learned_rank_values=(
+                    _completed_model_values(bars, self._open_dates() if self._open_dates else ())
+                    if self._learned_rank_inputs
+                    else None
+                ),
             )
         return entries
 
@@ -496,6 +534,21 @@ class PublishedHistoryCache:
         with self._lock:
             self._error_count += 1
             self._maintenance_reason = reason
+
+
+def _completed_model_values(bars: tuple[DailyBar, ...], open_dates: tuple[date, ...]) -> tuple[float, ...] | None:
+    if len(bars) < 251:
+        return None
+    selected = bars[-251:]
+    if any(bar.close <= 0.0 or bar.amount <= 0.0 for bar in selected):
+        return None
+    dates = tuple(date.fromisoformat(bar.trade_date) for bar in selected)
+    expected = tuple(day for day in open_dates if day <= dates[-1])[-251:]
+    if dates != expected:
+        return None
+    return CalculateLearnedRankFeatures(
+        tuple(LearnedRankDailyPoint(day, bar.close, bar.amount) for day, bar in zip(dates, selected, strict=True))
+    )
 
 
 def _daily_row(

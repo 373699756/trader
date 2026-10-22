@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from typing import Literal
 
-ScoringProfileId = Literal["v2", "v3"]
-SCORING_PROFILE_IDS: tuple[ScoringProfileId, ...] = ("v2", "v3")
+ScoringProfileId = Literal["v1", "v2", "v3"]
+SCORING_PROFILE_IDS: tuple[ScoringProfileId, ...] = ("v1", "v2", "v3")
+LEARNED_RANK_SCORE_SCALE = "learned_rank_percentile_0_100"
 
 
 def ParseScoringProfile(value: str) -> ScoringProfileId:
     if value not in SCORING_PROFILE_IDS:
-        raise ValueError("scoring profile must be v2 or v3")
+        raise ValueError("scoring profile must be v1, v2 or v3")
     return value
 
 
-__all__ = ["SCORING_PROFILE_IDS", "ScoringProfileId", "ParseScoringProfile"]
+__all__ = ["LEARNED_RANK_SCORE_SCALE", "SCORING_PROFILE_IDS", "ScoringProfileId", "ParseScoringProfile"]

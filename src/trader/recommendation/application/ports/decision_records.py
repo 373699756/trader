@@ -7,7 +7,11 @@ from datetime import date, datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, ScoredDecision
+from trader.recommendation.domain.publication.decision_identity import (
+    CommittedDecisionRecord,
+    IsShadowDecision,
+    ScoredDecision,
+)
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -37,6 +41,8 @@ class DecisionCheckpoint:
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if IsShadowDecision(self.decision):
+            raise ValueError("shadow decisions cannot become formal checkpoints")
         if self.boundary_at.tzinfo is None or self.boundary_at.utcoffset() is None:
             raise ValueError("decision checkpoint boundary must be timezone-aware")
         if not (isinstance(self.boundary_at.tzinfo, ZoneInfo) and self.boundary_at.tzinfo.key == "Asia/Shanghai"):

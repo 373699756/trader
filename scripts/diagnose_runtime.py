@@ -115,7 +115,7 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="isolated checkout for five alternating history-write or download-performance comparisons",
     )
-    parser.add_argument("--scoring-profile", choices=("v2", "v3", "both"), default=None)
+    parser.add_argument("--scoring-profile", choices=("v1", "v2", "v3", "both"), default=None)
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument("--market-sources", nargs="+", choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
     parser.add_argument("--market-profiles", nargs="+", choices=("v2", "v3"), default=("v2", "v3"))
@@ -941,6 +941,11 @@ def _scoring_profile_summary(value: object) -> dict[str, object]:
             "active": head.get("active") if isinstance(head.get("active"), bool) else None,
             "model_id": _safe_text(head.get("model_id")),
             "model_hash": _safe_text(head.get("model_hash")),
+            "score_scale": _safe_text(head.get("score_scale")),
+            "production_authority": head.get("production_authority")
+            if isinstance(head.get("production_authority"), bool)
+            else None,
+            "training_label_cutoff": _safe_text(head.get("training_label_cutoff")),
             "request_count": _safe_nonnegative_int(head.get("request_count")),
             "candidate_count": _safe_nonnegative_int(head.get("candidate_count")),
             "predictor_batch_count": _safe_nonnegative_int(head.get("predictor_batch_count")),

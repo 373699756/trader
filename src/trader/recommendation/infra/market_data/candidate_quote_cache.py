@@ -179,9 +179,17 @@ class QuoteCache:
         features: Sequence[FeatureSnapshot],
     ) -> tuple[FeatureSnapshot, ...]:
         references = self._references.model_industries(tuple(feature.quote.code for feature in features))
+        by_time: dict[datetime, list[str]] = {}
+        if self._history.completed_features_enabled:
+            for feature in features:
+                by_time.setdefault(feature.observed_at, []).append(feature.quote.code)
+        completed: dict[str, tuple[tuple[str, float], ...]] = {}
+        for observed_at, codes in by_time.items():
+            completed.update(self._history.completed_model_features(codes, observed_at))
         return tuple(
             replace(
                 feature,
+                values={**feature.values, **dict(completed.get(feature.quote.code, ()))},
                 quote=QuoteWithIndustry(
                     feature.quote, references.get(feature.quote.code), ShanghaiNow(feature.observed_at).date()
                 ),

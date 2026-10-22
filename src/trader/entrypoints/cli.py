@@ -39,7 +39,10 @@ def BuildParser() -> argparse.ArgumentParser:
     )
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
-    subparsers.add_parser("train", help="Maintain complete history and jointly train or reuse V2/V3.")
+    training = subparsers.add_parser("train", help="Maintain history; train V2/V3 by default or explicitly train V1.")
+    training.add_argument(
+        "--profile", choices=("v1",), default=argparse.SUPPRESS, help="Train the new V1 Shadow model."
+    )
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
     subparsers.add_parser(
@@ -77,7 +80,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         return 2
     profile_override = cast(ScoringProfileId | None, args.profile)
     if args.command in ("sync", "train"):
-        if args.profile is not None:
+        if args.profile is not None and not (args.command == "train" and args.profile == "v1"):
             parser.error(f"{args.command} does not accept --profile")
         try:
             _configuration_payload(runtime, None)
@@ -86,7 +89,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             return 2
         print(f"{args.command}: 正在准备官方总体、ST资格、交易日历及当前行业。", file=sys.stderr)
         if args.command == "train":
-            return _run_history_download(config_path)
+            return _run_history_download(config_path, profile_override)
         from trader.bootstrap import ExecuteSync
         from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
@@ -140,14 +143,16 @@ def _run_training_command(
     )
 
 
-def _run_history_download(config_path: Path) -> int:
+def _run_history_download(config_path: Path, profile: ScoringProfileId | None = None) -> int:
     from trader.training.entrypoints.commands import ConfigureTrainingResources
 
     ConfigureTrainingResources()
     from trader.bootstrap import ExecuteDownloadTrain
 
     try:
-        return ExecuteDownloadTrain(config_path)
+        return (
+            ExecuteDownloadTrain(config_path, scoring_profile=profile) if profile else ExecuteDownloadTrain(config_path)
+        )
     except KeyboardInterrupt:
         print(json.dumps({"schema_version": "joint_training_result", "status": "cancelled"}))
         return 130
@@ -178,6 +183,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         LoadEvaluationCostScenarios,
         LoadExecutionCostPolicy,
     )
+    from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
     from trader.training.infra.research_settings import LoadResearchSettings
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
@@ -185,6 +191,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
     download = LoadHistorySyncConfiguration(runtime.project_root, runtime.data_paths)
     training_v2 = LoadProfileTrainingSettings(runtime.project_root, "v2")
     training_v3 = LoadProfileTrainingSettings(runtime.project_root, "v3")
+    training_v1 = LoadV1TrainingSettings(runtime.project_root)
     research = LoadResearchSettings(config_dir)
     cost = LoadExecutionCostPolicy(config_dir)
     cost_scenarios = LoadEvaluationCostScenarios(config_dir)
@@ -197,7 +204,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "runtime_dir": str(runtime.runtime_dir),
         "data_dir": str(runtime.data_paths.root),
         "history_sessions": download.sessions,
-        "training_fit_dates": {"v2": training_v2.fit_dates, "v3": training_v3.fit_dates},
+        "training_fit_dates": {"v1": training_v1.fit_dates, "v2": training_v2.fit_dates, "v3": training_v3.fit_dates},
         "research_arms": len(research.ablation_arms),
         "terminal_holdout_sessions": research.terminal_holdout_sessions,
         "online_round_trip_base_rate": cost.round_trip_base_rate,

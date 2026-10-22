@@ -22,7 +22,11 @@ from trader.recommendation.application.ports.runtime import (
     SharedDeepSeekRuntimeContract,
 )
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
-from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, ScoredDecision
+from trader.recommendation.domain.publication.decision_identity import (
+    DecisionIdentity,
+    IsShadowDecision,
+    ScoredDecision,
+)
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -49,6 +53,8 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
         return SharedDeepSeekRuntimeContract(168, True, True)
 
     def build_hybrid(self, local: ScoredDecision, request: CycleRequest) -> ScoredDecision | None:
+        if IsShadowDecision(local):
+            return None
         projection = self._data.projection(local.version)
         if projection is None:
             return None
@@ -151,7 +157,7 @@ class FreezeAdapter(FreezePort):
             recovery_path=recovery_path,
             official_close_version=official_close_version,
         )
-        if result.status not in {"frozen", "already_frozen"}:
+        if result.status not in {"frozen", "already_frozen", "shadow_only"}:
             raise FreezeUnavailableError(result.status)
 
 

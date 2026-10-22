@@ -1,6 +1,26 @@
 {
   "profiles": [
     {
+      "profile": "v1",
+      "fit_dates": 750,
+      "early_stopping_dates": 20,
+      "calibration_dates": 20,
+      "validation_dates": 20,
+      "embargo_dates": 5,
+      "minimum_training_rows": 1000,
+      "learning_rate": 0.05,
+      "max_depth": 3,
+      "num_leaves": 7,
+      "minimum_leaf_rows": 20,
+      "boosting_rounds": 200,
+      "early_stopping_rounds": 20,
+      "maximum_bins": 63,
+      "histogram_pool_mib": 64,
+      "seed": 0,
+      "ridge_penalty": 10.0,
+      "ranking_round_trip_cost": 0.002
+    },
+    {
       "profile": "v2",
       "fit_dates": 1000,
       "minimum_industry_training_rows": 20000,
