@@ -153,7 +153,13 @@ class HistoryDownloadIndex:
             for code, dates, done, attempts, failure in rows
         )
 
-    def rebind_context(self, previous: HistoryDownloadBatch, current: HistoryDownloadBatch) -> None:
+    def rebind_context(
+        self,
+        previous: HistoryDownloadBatch,
+        current: HistoryDownloadBatch,
+        *,
+        tasks: tuple[HistoryDownloadTask, ...] | None = None,
+    ) -> None:
         """Replace only an unpublished batch's parents, preserving all durable progress."""
         if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
             raise ValueError("history_download_identity_conflict")
@@ -177,6 +183,16 @@ class HistoryDownloadIndex:
             )
             if updated.rowcount != 1:
                 raise RuntimeError("history_download_identity_conflict")
+            if tasks is not None:
+                codes = {task.code for task in tasks}
+                existing = tuple(row[0] for row in connection.run("SELECT code FROM download_tasks"))
+                connection.run_many(
+                    "DELETE FROM download_tasks WHERE code=?", ((code,) for code in existing if code not in codes)
+                )
+                connection.run_many(
+                    "INSERT OR IGNORE INTO download_tasks(code,dates_json) VALUES(?,?)",
+                    ((task.code, json.dumps([day.isoformat() for day in task.dates])) for task in tasks),
+                )
 
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""

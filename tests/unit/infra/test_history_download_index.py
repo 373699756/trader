@@ -44,7 +44,8 @@ def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresol
     assert index.gap_summary((task.code,)).cells == 0
 
 
-def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path):
+@pytest.mark.parametrize("change_population", [False, True])
+def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path, change_population):
     path = tmp_path / "catalog.sqlite3"
     HistoryControlIndex(path).initialize()
     index = HistoryDownloadIndex(path)
@@ -56,15 +57,17 @@ def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path):
     index.finish((HistoryDownloadCompletion(tasks[0], days, "tencent_qfq_invalid_price", days[:1]),))
     before = index.tasks()
     current = replace(previous, source_hash="d" * 64, calendar_hash="e" * 64, universe_hash="f" * 64)
-    index.rebind_context(previous, current)
+    population = (tasks[0], HistoryDownloadTask("600003", days)) if change_population else None
+    index.rebind_context(previous, current, tasks=population)
+    expected = (before[0], population[1]) if population else before
     assert index.pending(0) == current
-    assert index.tasks() == before
+    assert index.tasks() == expected
     assert index.gaps_by_code().get("600001", ()) == days
     assert index.gaps_by_code(days).get("600001", ()) == days[1:]
     with pytest.raises(RuntimeError, match="history_download_identity_conflict"):
-        index.rebind_context(previous, current)
+        index.rebind_context(previous, current, tasks=(HistoryDownloadTask("600004", days),))
     for invalid in (replace(current, sequence=2), replace(current, cutoff=days[0])):
         with pytest.raises(ValueError, match="history_download_identity_conflict"):
             index.rebind_context(current, invalid)
     assert index.pending(0) == current
-    assert index.tasks() == before
+    assert index.tasks() == expected

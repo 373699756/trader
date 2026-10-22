@@ -200,10 +200,14 @@ class _HistorySync:
             raise RuntimeError("history_resume_calendar_changed")
         if pending.cutoff != calendar.open_dates[-1]:
             raise RuntimeError("history_resume_cutoff_changed")
-        if tuple(item.code for item in universe.securities) != tuple(item.code for item in current_universe.securities):
-            raise RuntimeError("history_resume_codes_changed")
-        for previous_security, current_security in zip(universe.securities, current_universe.securities, strict=True):
-            if IsStSecurityName(current_security.name) or IsStSecurityName(previous_security.name):
+        previous_by_code = {item.code: item for item in universe.securities}
+        for current_security in current_universe.securities:
+            if IsStSecurityName(current_security.name):
+                raise RuntimeError("history_resume_st_conflict")
+            previous_security = previous_by_code.get(current_security.code)
+            if previous_security is None:
+                continue
+            if IsStSecurityName(previous_security.name):
                 raise RuntimeError("history_resume_st_conflict")
             if replace(previous_security, name=current_security.name) != current_security:
                 raise RuntimeError("history_resume_security_changed")
@@ -214,8 +218,8 @@ class _HistorySync:
             source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
             or universe.securities != current_universe.securities
         ):
-            # Execution versions and display names do not change the verified price identity.
-            # Persist the new parents before switching the unpublished batch; never reset tasks.
+            # Bind the current reference while retaining progress only for common codes.
+            # Persist immutable parents before atomically switching the unpublished batch.
             reference = HistoryReferenceSnapshot(
                 tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
             )
@@ -230,7 +234,17 @@ class _HistorySync:
                 current_universe.content_hash,
                 pending.cutoff,
             )
-            self.index.rebind_context(pending, current)
+            if previous_by_code.keys() != {item.code for item in current_universe.securities}:
+                self.index.rebind_context(
+                    pending,
+                    current,
+                    tasks=tuple(
+                        HistoryDownloadTask(item.code, context.calendar.expected_dates(item))
+                        for item in context.universe
+                    ),
+                )
+            else:
+                self.index.rebind_context(pending, current)
             return _BatchInput(context, current_source, current_calendar, current_universe, reference, current, False)
         return _BatchInput(context, source, calendar, universe, reference, pending, False)
 

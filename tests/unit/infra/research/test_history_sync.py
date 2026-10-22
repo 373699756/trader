@@ -789,7 +789,6 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
         ("board", "history_resume_security_changed"),
         ("listed_on", "history_resume_security_changed"),
         ("delisted_on", "history_resume_security_changed"),
-        ("codes", "history_resume_codes_changed"),
         ("name", "history_resume_st_conflict"),
     ),
 )
@@ -826,3 +825,29 @@ def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monke
     assert result.reason == reason
     assert not changed.calls
     assert index.pending(0) == pending and index.tasks() == tasks
+
+
+@pytest.mark.parametrize("codes", [("600001",), ("600001", "600003")])
+def test_pending_population_changes_preserve_progress_and_publish_current_reference(tmp_path, monkeypatch, codes):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    publish = history_sync_module.PublishHistorySnapshot
+
+    def fail(*args):
+        raise OSError("interrupted_publication")
+
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
+    assert RunHistorySync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "failed"
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", publish)
+
+    class Changed(FakeSupplier):
+        def load_context(self, as_of, sessions):
+            securities = tuple(BaoStockSecurity(code, code, "main", date(2000, 1, 1), None, "test") for code in codes)
+            return super().load_context(as_of, sessions, universe=securities)
+
+    supplier = Changed(days)
+    result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    assert result.state == "completed", result.reason
+    assert supplier.calls == ([("600003", days)] if "600003" in codes else [])
+    assert {task.code for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks()} == set(codes)
+    snapshot = _snapshot(tmp_path)
+    assert {cell.code for cell in HistorySnapshotReader(tmp_path).read_day(days[-1], snapshot)} == set(codes)
