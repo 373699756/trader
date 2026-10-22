@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar as month_calendar
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -299,7 +299,7 @@ def EvaluateAllHistoryTrainingDue(
 
 
 class PublishedTrainingState:
-    """Memory projection of the existing due owner; observers never calculate or persist due state."""
+    """Fixed startup projection of persisted due state, without calculation or writes."""
 
     def __init__(
         self,
@@ -316,9 +316,18 @@ class PublishedTrainingState:
         self._owned_profile = owned_profile
         self._clock = wall_clock
         self._lock = threading.Lock()
+        self._initialization_lock = threading.Lock()
+        self._initialized = False
         self._status: tuple[HeadTrainingStatus, ...] = ()
 
-    def observe_publication(self) -> None:
+    def initialize(self) -> None:
+        with self._initialization_lock:
+            if self._initialized:
+                return
+            self._initialized = True
+            self._initialize()
+
+    def _initialize(self) -> None:
         control = HistoryControlIndex(self._history_root / "catalog.sqlite3")
         try:
             history = control.load_published_state()
@@ -370,14 +379,7 @@ class PublishedTrainingState:
                     )
                 )
         with self._lock:
-            # A busy publisher provides no evidence that the prior disk identity disappeared.
-            previous = {(item.profile_id, item.strategy): item for item in self._status}
-            self._status = tuple(
-                replace(previous[(item.profile_id, item.strategy)], failure=item.failure)
-                if item.failure == "publication_busy" and (item.profile_id, item.strategy) in previous
-                else item
-                for item in results
-            )
+            self._status = tuple(results)
 
     def status(self) -> tuple[HeadTrainingStatus, ...]:
         with self._lock:

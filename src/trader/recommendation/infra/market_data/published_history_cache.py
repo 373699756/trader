@@ -132,18 +132,6 @@ class PublishedHistoryCache:
                     break
             self.record_projection_observation()
 
-    def observe_publication(self) -> None:
-        try:
-            manifest = self._history.manifest()
-            outcome = self._outcome_history.manifest() if self._outcome_history else None
-        except (OSError, RuntimeError, ValueError) as exc:
-            self._record_error(type(exc).__name__)
-            self.record_projection_observation()
-            return
-        with self._lock:
-            self._disk_snapshot_hash = manifest.snapshot_hash if manifest else None
-            self._outcome_disk_snapshot_hash = outcome.snapshot_hash if outcome else None
-
     def _rebuild_projection(self, cancelled: Callable[[], bool], deadline: float) -> bool:
         try:
             manifest = self._history.manifest()

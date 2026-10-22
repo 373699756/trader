@@ -56,6 +56,7 @@ from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
+from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.clock.utc import UtcNow as _utc_now
 from trader.infra.http_contracts import HttpAttempt, HttpParameter, HttpRequest, HttpResponse, HttpTransport
@@ -65,7 +66,6 @@ from trader.infra.isolated_call import RunIsolatedCall
 from trader.infra.process_lock import ProcessLock
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.serialization.canonical import ContentHash
-from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.settings import (
     LoadLongWatchlist,
     LoadRuntimeSettings,
@@ -148,7 +148,7 @@ from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient, TencentFullMarketSource
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
+from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.normalization.features import FeatureBuilder
@@ -628,9 +628,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     WarnMissingLocalData(
         settings.data_paths, profile_id, model_failure=model_failure if loaded_profile is None else None
     )
-    profile_contract = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
     training_settings = LoadProfileTrainingSettings(settings.project_root, profile_id)
-    training_settings.require_profile(profile_contract)
+    training_settings.require_profile(V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE)
     market_data = _build_market_data(
         context,
         calendar,
@@ -741,16 +740,15 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
     )
 
-    history_observer = PublishedHistoryObserver(
-        market_data.history,
-        initialize=partial(
-            market_data.initialize_published_inputs,
+    def initialize_published_inputs(cancelled: Callable[[], bool]) -> None:
+        market_data.initialize_published_inputs(
+            cancelled,
             model_version=ContentHash(loaded_profile.publications) if loaded_profile else model_failure,
             config_version=effective_config_version,
-        ),
-        observers=(model_publications.observe_publication,)
-        + ((market_data.research.observe_publication, references.observe_publication) if shared_inputs is None else ()),
-    )
+        )
+        if not cancelled():
+            model_publications.initialize()
+
     supervisor = RuntimeSupervisor(
         scheduler,
         RuntimeSupervisorConfig(
@@ -803,7 +801,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         tomorrow_records=publication.tomorrow_records,
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
-        history_observer=history_observer,
+        input_preloader=PublishedInputPreloader(market_data.history, initialize=initialize_published_inputs),
         web_services=web_services,
         workers=workers,
         market_data=market_data,

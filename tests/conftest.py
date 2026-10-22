@@ -37,7 +37,7 @@ _HISTORY_PATHS = frozenset(
         "unit/scripts/test_tencent_history_coverage.py",
         "component/test_qfq_windows.py",
         "component/test_qfq_layout_migration.py",
-        "component/test_published_history_observer.py",
+        "component/test_published_input_preloader.py",
         "unit/infra/test_history_st_merge.py",
         "unit/infra/test_history_supplier_router.py",
         "unit/infra/test_history_reference_codec.py",

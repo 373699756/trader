@@ -22,7 +22,7 @@ from tests.component.market_data_test_support import (
     _tail_minute_bars,
 )
 from tests.component.test_company_startup import _AT, _DATES, _Reader, _snapshot
-from tests.component.test_published_history_observer import NOW, _Archive, _cache
+from tests.component.test_published_input_preloader import NOW, _Archive, _cache
 from tests.contract.test_cold_start import _empty_config
 from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase

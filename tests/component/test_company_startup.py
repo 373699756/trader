@@ -96,8 +96,9 @@ def test_changed_publication_retries_without_accepting_mixed_rows():
     assert research.status().loaded_identity == "second"
     assert research.load(("600001",), _AT, include_structured=True)["600001"].data_version == "second"
     reader.snapshot = replace(reader.snapshot, version="third", pledge=CompanyRatio("600001", _AT.date(), 80.0))
-    research.observe_publication()
-    assert research.status().restart_required
+    research.initialize(("600001",), cancelled=lambda: False)
+    assert not research.status().restart_required
+    assert research.status().disk_identity == "second"
     assert research.load(("600001",), _AT, include_structured=True)["600001"].pledge_ratio_pct == 10.0
     assert reader.visits == 2
 

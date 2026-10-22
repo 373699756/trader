@@ -1,4 +1,4 @@
-"""Fixed startup references; background observation reads only published identities."""
+"""Fixed startup references with publication identity checks during preload."""
 
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -103,18 +103,6 @@ class PublishedReferences:
                 self._failure = None
             return
         self._failure = "reference_publication_changed"
-
-    def observe_publication(self) -> None:
-        try:
-            identity = self._read_identity()
-        except (OSError, RuntimeError, ValueError, TypeError) as exc:
-            with self._lock:
-                self._failure = f"reference_publication_{type(exc).__name__}"
-            return
-        with self._lock:
-            self._disk_identity = identity
-            if self._reference is not None and self._failure and self._failure.startswith("reference_publication_"):
-                self._failure = None
 
     def reference(self) -> PreparedReference | None:
         with self._lock:

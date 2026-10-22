@@ -196,14 +196,14 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     native_data = system.scheduler._dependencies.data
     assert isinstance(native_data, MarketInputCoordinator)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
-    assert system.history_observer._history is native_data._market.history  # noqa: SLF001
+    assert system.input_preloader._history is native_data._market.history  # noqa: SLF001
     configuration = LoadHistorySyncConfiguration(system.settings.project_root, system.settings.data_paths)
     assert native_data._market.history._history.publication.path == system.settings.data_paths.daily_window  # noqa: SLF001
     assert native_data._market.history._outcome_history.publication._root == configuration.archive_root  # noqa: SLF001
 
 
 @pytest.mark.parametrize("hour,minute", ((8, 0), (10, 0), (12, 0), (14, 59), (15, 10), (20, 30)))
-def test_startup_history_observer_never_downloads_and_keeps_web_readable(
+def test_startup_input_preloader_never_downloads_and_keeps_web_readable(
     tmp_path,
     monkeypatch,
     hour,
@@ -218,20 +218,29 @@ def test_startup_history_observer_never_downloads_and_keeps_web_readable(
     monkeypatch.setattr(
         "trader.download.application.download_history.DownloadHistoryUseCase.execute", unexpected_download
     )
+    monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", unexpected_download)
     now = datetime(2026, 10, 9, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
     system = BuildSystem(_config(tmp_path))
-    observer = system.history_observer
-    assert observer.start() is True
+    preloader = system.input_preloader
+    assert preloader.start() is True
     try:
+        assert preloader._thread is not None
+        preloader._thread.join(2)
+        assert not preloader._thread.is_alive()
         client = system.app.test_client()
         assert client.get("/").status_code == 200
-        payload = client.get("/api/status").get_json()
+        with monkeypatch.context() as scope:
+            scope.setattr(sqlite3, "connect", lambda *args, **kwargs: pytest.fail("status reread a database"))
+            scope.setattr(Path, "read_bytes", lambda *args, **kwargs: pytest.fail("status reread a file"))
+            scope.setattr(Path, "read_text", lambda *args, **kwargs: pytest.fail("status reread a file"))
+            payload = client.get("/api/status").get_json()
         assert payload["market_data"]["published_history_snapshot_hash"] is None
+        assert len(payload["scoring_profile"]["maintenance"]) == 4
         assert not (tmp_path / "data/history").exists()
     finally:
-        assert observer.stop(wait=True).completed is True
-    assert observer.start() is False
+        assert preloader.stop(wait=True).completed is True
+    assert preloader.start() is False
 
 
 def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:

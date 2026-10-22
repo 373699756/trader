@@ -254,7 +254,7 @@ def test_old_published_manifest_remains_readable_after_active_history_advances(t
     assert tuple(reader.iter_windows(original, sessions=61)) == original_rows
 
 
-def test_four_heads_persist_distinct_due_states_and_observer_only_reads_them(tmp_path, prepared_history, monkeypatch):
+def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_path, prepared_history, monkeypatch):
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
@@ -268,16 +268,24 @@ def test_four_heads_persist_distinct_due_states_and_observer_only_reads_them(tmp
         pair = [head for head in heads if head.profile_id == profile]
         assert pair[0].due.current_label_cutoff > pair[1].due.current_label_cutoff
     monkeypatch.setattr(
-        HistoryControlIndex, "save_due_state", lambda *args: pytest.fail("observer must never save due state")
+        HistoryControlIndex, "save_due_state", lambda *args: pytest.fail("startup must never save due state")
     )
     monkeypatch.setattr(
-        due_module, "EvaluateHistoryTrainingDue", lambda *args: pytest.fail("observer must never calculate due state")
+        due_module, "EvaluateHistoryTrainingDue", lambda *args: pytest.fail("startup must never calculate due state")
     )
-    observer = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
-    observer.observe_publication()
-    assert tuple(head.due for head in observer.status()) == tuple(head.due for head in heads)
-    assert all(head.owned == (head.profile_id == "v3") for head in observer.status())
-    assert not any(head.restart_required for head in observer.status())
+    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
+    projection.initialize()
+    assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
+    assert all(head.owned == (head.profile_id == "v3") for head in projection.status())
+    assert not any(head.restart_required for head in projection.status())
+    monkeypatch.setattr(
+        HistoryControlIndex, "load_published_state", lambda *args: pytest.fail("startup status must not reread history")
+    )
+    monkeypatch.setattr(
+        due_module, "_inspect_profile", lambda *args: pytest.fail("startup status must not reread models")
+    )
+    projection.initialize()
+    assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
 
 
 def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(tmp_path, prepared_history):
@@ -305,9 +313,9 @@ def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(
     assert result.training_due and result.training_due_reason == "initial_training_required"
     assert len(result.training_heads) == 4
     assert all(head.failure == "corrupt" and head.due.training_due for head in result.training_heads)
-    observer = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
-    observer.observe_publication()
-    assert tuple(head.due for head in observer.status()) == tuple(head.due for head in result.training_heads)
+    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
+    projection.initialize()
+    assert tuple(head.due for head in projection.status()) == tuple(head.due for head in result.training_heads)
 
 
 def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricates_history(tmp_path: Path) -> None:
@@ -460,10 +468,10 @@ def test_recommendation_retains_the_last_valid_projection_when_the_archive_becom
 
     (archive_root / "catalog.sqlite3").write_bytes(b"invalid")
 
-    history.observe_publication()
+    history.initialize(cancelled=lambda: False)
     assert history.entries() == before
     assert history.status().state == "active"
-    assert history.status().error_count == 1
+    assert history.status().error_count == 0
 
 
 def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_active_history(

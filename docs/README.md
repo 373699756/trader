@@ -2,6 +2,8 @@
 
 同一合同只在所属权威文档定义，其余文档引用。
 
+流程图使用Mermaid代码块。Typora需在“偏好设置 → Markdown → 图表”启用图表支持；内置Mermaid版本随Typora版本变化，配置说明见[Typora官方图表文档](https://support.typora.io/Draw-Diagrams-With-Markdown/)。
+
 | 文档 | 唯一职责 |
 | --- | --- |
 | [1_评分逻辑.md](1_评分逻辑.md) | 过滤、字段与因子、评分、风险、排名、收益准入 |

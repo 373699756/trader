@@ -10,7 +10,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
+from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 
 
 def _cache(source, *, outcomes=None, monotonic=time.monotonic):
@@ -22,7 +22,7 @@ def _cache(source, *, outcomes=None, monotonic=time.monotonic):
     )
 
 
-def test_observer_loads_once_then_only_reports_new_identity(monkeypatch):
+def test_preloader_finishes_after_one_read_and_new_process_adopts_changed_identity(monkeypatch):
     source = _Archive(61, 1, ("600001",))
     history = _cache(source)
     ready = threading.Event()
@@ -31,22 +31,32 @@ def test_observer_loads_once_then_only_reports_new_identity(monkeypatch):
         history.initialize(cancelled=cancelled)
         ready.set()
 
-    observer = PublishedHistoryObserver(history, initialize=initialize, interval_seconds=0.01)
-    assert observer.start()
+    preloader = PublishedInputPreloader(history, initialize=initialize)
+    assert preloader.start()
     try:
         assert ready.wait(2)
+        assert preloader._thread is not None
+        preloader._thread.join(2)
+        assert not preloader._thread.is_alive()
         before = history.entries()
-        monkeypatch.setattr(source, "iter_windows", lambda *args, **kwargs: pytest.fail("observer adopted content"))
         source.current = replace(source.current, snapshot_hash="b" * 64)
-        history.observe_publication()
+        with monkeypatch.context() as scope:
+            scope.setattr(source, "manifest", lambda: pytest.fail("finished preloader reread disk identity"))
+            scope.setattr(
+                source, "iter_windows", lambda *args, **kwargs: pytest.fail("finished preloader read content")
+            )
+            assert not preloader.start()
+            history.initialize(cancelled=lambda: False)
+            assert history.cached(("600001",))
+            assert history.entries() == before
         assert history.status().snapshot_hash == "a" * 64
-        assert history.status().disk_snapshot_hash == "b" * 64
-        assert history.status().restart_required
-        assert history.entries() == before
-        history.initialize(cancelled=lambda: False)
-        assert history.entries() == before
+        assert history.status().disk_snapshot_hash == "a" * 64
+        assert not history.status().restart_required
+        restarted = _cache(source)
+        restarted.initialize(cancelled=lambda: False)
+        assert restarted.status().snapshot_hash == "b" * 64
     finally:
-        assert observer.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
+        assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
 
 
 def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_active_io(monkeypatch):
@@ -61,17 +71,17 @@ def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_active_io
         yield from windows(manifest, sessions=sessions)
 
     monkeypatch.setattr(source, "iter_windows", blocked)
-    observer = PublishedHistoryObserver(history, initialize=lambda cancelled: history.initialize(cancelled=cancelled))
-    observer.start()
+    preloader = PublishedInputPreloader(history, initialize=lambda cancelled: history.initialize(cancelled=cancelled))
+    preloader.start()
     try:
         assert entered.wait(2)
         with pytest.raises(MarketDataPendingError, match="history_projection_loading"):
             history.load(("600001",), deadline=NOW + timedelta(seconds=1))
-        report = observer.stop(wait=True, deadline=ShutdownDeadline.start(0.01))
+        report = preloader.stop(wait=True, deadline=ShutdownDeadline.start(0.01))
         assert not report.completed and report.timed_out
     finally:
         release.set()
-        assert observer.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
+        assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
     assert not history.entries()
 
 
@@ -125,7 +135,7 @@ def test_missing_short_window_does_not_hide_independent_outcomes(monkeypatch):
     assert len(history.read_outcome_bars(("600001",), NOW)["600001"]) == 61
 
 
-def test_failed_identity_observation_preserves_loaded_history(monkeypatch):
+def test_finished_preload_keeps_loaded_history_when_disk_becomes_unreadable(monkeypatch):
     source = _Archive(61, 1, ("600001",))
     history = _cache(source)
     history.initialize(cancelled=lambda: False)
@@ -135,7 +145,31 @@ def test_failed_identity_observation_preserves_loaded_history(monkeypatch):
         raise RuntimeError("unreadable")
 
     monkeypatch.setattr(source, "manifest", unavailable)
-    history.observe_publication()
+    history.initialize(cancelled=lambda: False)
+    assert history.cached(("600001",))
     assert history.entries() == before
-    assert history.status().maintenance_state == "failed"
-    assert history.status().error_count == 1
+    assert history.status().maintenance_state == "ready"
+    assert history.status().error_count == 0
+
+
+def test_preload_failure_is_recorded_once_and_thread_finishes():
+    history = _cache(_Archive(61, 1, ("600001",)))
+    calls = []
+
+    def unavailable(cancelled):
+        calls.append(cancelled())
+        raise OSError("unreadable")
+
+    preloader = PublishedInputPreloader(history, initialize=unavailable)
+    assert preloader.start()
+    try:
+        assert preloader._thread is not None
+        preloader._thread.join(2)
+        assert not preloader._thread.is_alive()
+        assert history.status().maintenance_state == "failed"
+        assert history.status().maintenance_reason == "OSError"
+        assert history.status().maintenance_stage == "startup_preload"
+        assert not preloader.start()
+        assert calls == [False]
+    finally:
+        assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed

@@ -247,7 +247,7 @@ def test_reader_releases_transaction_before_consumers_and_pins_all_requested_row
     assert reader.read(codes) != before
 
 
-def test_company_observer_requires_restart_to_adopt_manual_publication(tmp_path):
+def test_company_inputs_require_restart_to_adopt_manual_publication(tmp_path):
     index = _index(tmp_path)
     source = Sources()
     SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
@@ -259,17 +259,17 @@ def test_company_observer_requires_restart_to_adopt_manual_publication(tmp_path)
     )
     research.initialize(("600001", "600002"), cancelled=lambda: False)
     before = research.load(("600001",), NOW, include_structured=True)
-    research.observe_publication()
     index.commit_structured(
         StructuredCompanyQuery("pledge", NOW.date(), NOW.date()),
         StructuredCompanyPage("pledge", 1, 1, 1, ratios=(CompanyRatio("600001", NOW.date(), 80),)),
         NOW,
     )
     index.publish(("600001",), NOW)
-    research.observe_publication()
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     after = research.cached(("600001",), include_structured=True)
     assert after == before
-    assert research.status().restart_required
+    assert not research.status().restart_required
+    assert research.status().disk_identity == research.status().loaded_identity
     restarted = PublishedCompanyResearch(
         SQLiteCompanyEvidenceReader(index.path),
         wall_clock=lambda: NOW,
@@ -280,7 +280,7 @@ def test_company_observer_requires_restart_to_adopt_manual_publication(tmp_path)
     assert restarted.load(("600001",), NOW, include_structured=True)["600001"].pledge_ratio_pct == 80
 
 
-def test_company_observer_leaves_missing_codes_uncovered_after_later_publication(tmp_path):
+def test_fixed_company_inputs_leave_missing_codes_uncovered_after_later_publication(tmp_path):
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
     research = PublishedCompanyResearch(
@@ -291,15 +291,14 @@ def test_company_observer_leaves_missing_codes_uncovered_after_later_publication
     )
     research.initialize(("600001", "600002"), cancelled=lambda: False)
     assert not research.load(("600002",), NOW, include_structured=True)
-    research.observe_publication()
     index.publish(("600002",), NOW)
-    research.observe_publication()
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     assert research.status().entries == 1
-    assert research.status().restart_required
+    assert not research.status().restart_required
     assert not research.cached(("600002",), include_structured=True)
 
 
-def test_company_observer_recovers_transient_read_error_with_unchanged_version(tmp_path, monkeypatch):
+def test_company_reads_do_not_revisit_disk_after_preload(tmp_path, monkeypatch):
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
@@ -308,18 +307,16 @@ def test_company_observer_recovers_transient_read_error_with_unchanged_version(t
     )
     research.initialize(("600001", "600002"), cancelled=lambda: False)
     research.load(("600001",), NOW, include_structured=True)
-    research.observe_publication()
-    original = reader.publication_version
+    before = research.status()
 
     def unavailable():
-        raise RuntimeError("temporarily_unavailable")
+        pytest.fail("loaded company facts must not reread publication identity")
 
     monkeypatch.setattr(reader, "publication_version", unavailable)
-    research.observe_publication()
-    assert research.status().last_error
-    monkeypatch.setattr(reader, "publication_version", original)
-    research.observe_publication()
-    assert not research.status().last_error
+    monkeypatch.setattr(reader, "visit", lambda *args: pytest.fail("loaded company facts must not reread content"))
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
+    assert research.load(("600001",), NOW, include_structured=True)
+    assert research.status() == before
 
 
 def test_reader_and_candidate_load_never_invoke_background_download(tmp_path):
@@ -519,7 +516,7 @@ def test_content_removed_without_publication_change_preserves_loaded_memory(tmp_
     assert research.load(("600001",), NOW, include_structured=True)["600001"].corporate_risk_window_complete
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("DELETE FROM published")
-    research.observe_publication()
+    research.initialize(("600001", "600002"), cancelled=lambda: False)
     retained = research.cached(("600001",), include_structured=True)["600001"]
     assert retained.corporate_risk_window_complete
     assert not research.status().restart_required

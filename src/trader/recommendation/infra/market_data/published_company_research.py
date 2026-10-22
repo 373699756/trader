@@ -143,18 +143,6 @@ class PublishedCompanyResearch:
         with self._lock:
             return self._epoch.input_identity if self._epoch is not None else "company:unavailable"
 
-    def observe_publication(self) -> None:
-        try:
-            version = self._reader.publication_version()
-        except (OSError, RuntimeError, ValueError):
-            with self._lock:
-                self._last_error = "company_publication_unavailable"
-            return
-        with self._lock:
-            self._disk_version = version
-            if self._last_error == "company_publication_unavailable":
-                self._last_error = ""
-
     def _required_coverage(self, now: datetime) -> date | None:
         try:
             dates = self._open_dates()

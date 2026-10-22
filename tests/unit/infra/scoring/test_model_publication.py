@@ -85,15 +85,16 @@ def test_reader_wait_is_bounded_during_the_directory_switch(tmp_path, monkeypatc
     assert LoadScoringProfile("v3", training_root=tmp_path).publications == original
 
 
-def test_publication_observer_reports_restart_without_constructing_new_predictors(tmp_path, monkeypatch):
+def test_model_publication_state_is_fixed_until_restart_without_constructing_new_predictors(tmp_path, monkeypatch):
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)
     loaded = LoadScoringProfile("v3", training_root=tmp_path)
     now = datetime(2026, 10, 20, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
-    observer = PublishedTrainingState(
+    projection = PublishedTrainingState(
         tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", wall_clock=lambda: now
     )
-    observer.observe_publication()
-    assert not any(head.restart_required for head in observer.status())
+    projection.initialize()
+    before = projection.status()
+    assert not any(head.restart_required for head in before)
     staged = []
     for contract in V3_TRAINING_PROFILE.heads:
         path = tmp_path / f"staging-v3-{contract.strategy.value}"
@@ -106,9 +107,16 @@ def test_publication_observer_reports_restart_without_constructing_new_predictor
     PublishProfileBundles(tmp_path / "v3", V3_TRAINING_PROFILE, tuple(staged))
     with monkeypatch.context() as scope:
         scope.setattr(profile_factory, "BuildTrainedScoringProfile", lambda *args: pytest.fail("no hot model loading"))
-        observer.observe_publication()
-    current = tuple(head for head in observer.status() if head.owned)
-    assert len(current) == 2 and all(head.restart_required for head in current)
+        projection.initialize()
+    assert projection.status() == before
+    current = tuple(head for head in projection.status() if head.owned)
+    assert len(current) == 2 and not any(head.restart_required for head in current)
     assert tuple(head.loaded for head in current) == loaded.publications
-    assert tuple(head.disk for head in current) != loaded.publications
-    assert LoadScoringProfile("v3", training_root=tmp_path).publications == tuple(head.disk for head in current)
+    assert tuple(head.disk for head in current) == loaded.publications
+    updated = LoadScoringProfile("v3", training_root=tmp_path)
+    assert updated.publications != loaded.publications
+    restarted = PublishedTrainingState(
+        tmp_path / "history", tmp_path, updated.publications, owned_profile="v3", wall_clock=lambda: now
+    )
+    restarted.initialize()
+    assert tuple(head.disk for head in restarted.status() if head.owned) == updated.publications

@@ -433,8 +433,8 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
     assert second.changed_rows > 0
     assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-1]
     assert updater.v3.read_code("600001").cells[-1].trade_date == DAYS[-1]
-    projection.observe_publication()
-    assert projection.status().restart_required
+    projection.initialize(cancelled=lambda: False)
+    assert not projection.status().restart_required
     assert not projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
     projection = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(updater.v2),

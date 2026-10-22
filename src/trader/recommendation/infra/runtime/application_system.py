@@ -25,7 +25,7 @@ from trader.recommendation.application.runtime.supervisor import RuntimeSupervis
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
-from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
+from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 
 ResearchTraceT = TypeVar("ResearchTraceT")
@@ -71,7 +71,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     tomorrow_records: SQLiteDecisionRecords
     research_trace: ResearchTraceT
     outcome_evidence: OutcomeEvidenceT
-    history_observer: PublishedHistoryObserver
+    input_preloader: PublishedInputPreloader
     web_services: WebServicesT
     workers: RuntimeWorkerResources
     market_data: MarketFeatureService
@@ -90,7 +90,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             self.quote_pool,
             self.market_quote_pool,
             self.minute_pool,
-            (self.long_runtime, self.history_observer),
+            (self.long_runtime, self.input_preloader),
             self.market_cache,
             self.owns_shared_resources,
         )

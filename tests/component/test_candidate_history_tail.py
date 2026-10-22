@@ -243,10 +243,10 @@ def test_tail_cache_expires_by_time_and_session_but_keeps_startup_snapshot():
     assert len(supplier.calls) == 2
     assert history.cached(("600001",), observed_at=NOW + timedelta(days=1), fresh_only=True) == {}
     archive.current = replace(archive.current, snapshot_hash="b" * 64)
-    history.observe_publication()
+    history.initialize(cancelled=lambda: False)
     history.load(("600001",), observed_at=NOW)
     assert len(supplier.calls) == 2
-    assert history.status().restart_required
+    assert not history.status().restart_required
 
 
 @pytest.mark.parametrize("cancelled", (False, True))
@@ -342,11 +342,11 @@ def test_tail_expiry_reuses_verified_startup_base_after_disk_snapshot_change(ses
     assert len(supplier.calls) == 2
     assert len(archive.reads) == 1
     archive.current = replace(archive.current, snapshot_hash="b" * 64)
-    history.observe_publication()
+    history.initialize(cancelled=lambda: False)
     assert history.load(("600001",), observed_at=NOW) == first
     assert len(archive.reads) == 1
     assert len(supplier.calls) == 2
-    assert history.status().restart_required
+    assert not history.status().restart_required
 
 
 def test_base_window_cache_is_bounded_and_profile_specific():

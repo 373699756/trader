@@ -88,7 +88,7 @@ def test_no_official_reference_never_substitutes_quote_population():
     assert batch.static_stages[0].reasons[0].code == "static_reference_unavailable"
 
 
-def test_new_publication_changes_only_restart_hint_until_new_process():
+def test_new_publication_is_adopted_only_by_new_process():
     state, _, history, service = _fixture(quotes=(_quote(), _quote("600002")))
     first = service.fetch_market_feature_batch(NOW)
     original = service.references.static_reference()
@@ -99,11 +99,11 @@ def test_new_publication_changes_only_restart_hint_until_new_process():
             replace(_population()[1], code="600002"),
         ),
     )
-    service.references.observe_publication()
     service.references.initialize()
     retained = service.fetch_market_feature_batch(NOW + timedelta(seconds=1), force=True)
     assert service.references.static_reference().reference is original.reference
-    assert service.references.status().restart_required
+    assert not service.references.status().restart_required
+    assert service.references.status().disk_identity == original.reference.data_version
     assert [item.quote.code for item in retained.features] == ["600001"]
     assert first.features[0].quote == retained.features[0].quote
     assert set(history.calls) == {"600001"}
@@ -113,17 +113,17 @@ def test_new_publication_changes_only_restart_hint_until_new_process():
     assert not restarted.status().restart_required
 
 
-def test_failed_publication_observation_retains_original_population_and_age():
+def test_loaded_population_and_age_do_not_depend_on_later_disk_access():
     _, _, _, service = _fixture()
     original = service.references.static_reference()
 
     def broken_identity():
-        raise ValueError("corrupt publication")
+        pytest.fail("loaded references must not read the publication again")
 
     service.references._read_identity = broken_identity
-    service.references.observe_publication()
+    service.references.initialize()
     assert service.references.static_reference().reference is original.reference
-    assert service.references.status().failure == "reference_publication_ValueError"
+    assert service.references.status().failure is None
     stale = service.fetch_market_feature_batch(NOW + timedelta(days=1))
     assert stale.static_stages[0].source_health.state is SourceHealthState.DEGRADED
     assert stale.static_stages[0].source_health.age_seconds == 86400
@@ -172,8 +172,8 @@ def test_reference_st_revision_is_adopted_only_on_restart_before_history_reads(t
     reference = _reader(state)
     reference.initialize()
     state["reference"] = revised
-    reference.observe_publication()
-    assert reference.status().restart_required
+    reference.initialize()
+    assert not reference.status().restart_required
     assert reference.historical_st_eligibility().eligible_codes == ("300001", "600001")
     restarted = _reader(state)
     history = CountingHistoryClient(_history_bars())
