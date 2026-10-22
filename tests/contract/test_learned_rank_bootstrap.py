@@ -1,3 +1,5 @@
+"""V1 composition contracts without colliding with the general bootstrap test module."""
+
 from __future__ import annotations
 
 import threading

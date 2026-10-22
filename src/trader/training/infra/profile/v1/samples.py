@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import mmap
-import sqlite3
 import struct
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -17,6 +16,13 @@ from typing import Protocol, cast
 import numpy as np
 
 from trader.download.domain.history_revision import HistoryTrainingRow
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    OpenSqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteTransaction,
+)
 from trader.recommendation.domain.market.v1.features import (
     LEARNED_RANK_FEATURE_IDS,
     CalculateLearnedRankFeatures,
@@ -91,14 +97,24 @@ class LearnedRankSampleIndex:
     """Own a disposable sample database; no production/history writes occur here."""
 
     def __init__(self, path: Path) -> None:
-        self._connection = sqlite3.connect(path)
-        self._connection.execute("PRAGMA journal_mode=OFF")
-        self._connection.execute("PRAGMA synchronous=OFF")
-        self._connection.execute("PRAGMA cache_size=-16384")
-        self._connection.execute(
-            "CREATE TABLE samples (day TEXT NOT NULL, code TEXT NOT NULL, industry TEXT NOT NULL, "
-            "features BLOB NOT NULL, target_t1 REAL, target_d25 REAL, PRIMARY KEY(day, code)) WITHOUT ROWID"
+        self._connection = OpenSqliteConnection(
+            path, SqliteConnectionOptions(journal_mode="OFF", durability="rebuildable", cache_kib=16384)
         )
+        try:
+            EnsureSqliteSchema(
+                self._connection,
+                SqliteSchema(
+                    None,
+                    (
+                        "CREATE TABLE samples (day TEXT NOT NULL, code TEXT NOT NULL, industry TEXT NOT NULL, "
+                        "features BLOB NOT NULL, target_t1 REAL, target_d25 REAL, PRIMARY KEY(day, code)) WITHOUT ROWID",
+                    ),
+                ),
+                allow_create=True,
+            )
+        except BaseException:
+            self._connection.close()
+            raise
 
     def close(self) -> None:
         self._connection.close()
@@ -112,34 +128,34 @@ class LearnedRankSampleIndex:
             )
         )
         converted = missing_t1 = missing_d25 = 0
-        for item in candidates:
-            excess = tuple(
-                value - benchmark if value is not None and benchmark is not None else None
-                for value, benchmark in zip(item.future, benchmarks, strict=True)
-            )
-            t1 = excess[0]
-            d25 = (
-                math.fsum(cast(float, value) for value in excess[1:]) / 4.0
-                if all(value is not None for value in excess[1:])
-                else None
-            )
-            missing_t1 += t1 is None
-            missing_d25 += d25 is None
-            if t1 is None and d25 is None:
-                continue
-            self._connection.execute(
-                "INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    pending.trade_date.isoformat(),
-                    item.code,
-                    item.industry,
-                    _FEATURE_BYTES.pack(*item.features),
-                    t1,
-                    d25,
-                ),
-            )
-            converted += 1
-        self._connection.commit()
+        with SqliteTransaction(self._connection):
+            for item in candidates:
+                excess = tuple(
+                    value - benchmark if value is not None and benchmark is not None else None
+                    for value, benchmark in zip(item.future, benchmarks, strict=True)
+                )
+                t1 = excess[0]
+                d25 = (
+                    math.fsum(cast(float, value) for value in excess[1:]) / 4.0
+                    if all(value is not None for value in excess[1:])
+                    else None
+                )
+                missing_t1 += t1 is None
+                missing_d25 += d25 is None
+                if t1 is None and d25 is None:
+                    continue
+                self._connection.run(
+                    "INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        pending.trade_date.isoformat(),
+                        item.code,
+                        item.industry,
+                        _FEATURE_BYTES.pack(*item.features),
+                        t1,
+                        d25,
+                    ),
+                )
+                converted += 1
         return converted, missing_t1, missing_d25
 
     def matrix(
@@ -149,10 +165,10 @@ class LearnedRankSampleIndex:
         if strategy not in {Strategy.TOMORROW, Strategy.D25} or not dates:
             raise ValueError("learned-rank matrix requires one scored strategy and date partition")
         rows = int(
-            self._connection.execute(
+            self._connection.run(
                 f"SELECT COUNT(*) FROM samples WHERE day BETWEEN ? AND ? AND {column} IS NOT NULL",
                 (dates[0].isoformat(), dates[-1].isoformat()),
-            ).fetchone()[0]
+            ).require_one()[0]
         )
         if rows == 0:
             raise ValueError("learned_rank_sample_partition_empty")
@@ -174,7 +190,7 @@ class LearnedRankSampleIndex:
         industry_values: dict[str, str] = {}
         date_values = {day.isoformat(): day for day in dates}
         with closing(
-            self._connection.execute(
+            self._connection.run(
                 f"SELECT day, code, industry, features, {column} FROM samples "
                 f"WHERE day BETWEEN ? AND ? AND {column} IS NOT NULL ORDER BY day, code",
                 (dates[0].isoformat(), dates[-1].isoformat()),

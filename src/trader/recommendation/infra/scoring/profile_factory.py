@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from trader.infra.process_lock import ProcessLockError
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
@@ -47,7 +48,7 @@ def BuildProfileScoring(
         ModelScoringRouter(
             profile_id,
             {
-                strategy: LearnedRankScoringService(loaded, strategy, cost_policy=cost_policy)
+                strategy: LearnedRankScoringService(loaded, strategy, cost_policy=cost_policy, content_hash=ContentHash)
                 if loaded is not None and profile_id == "v1"
                 else ProductionModelScoringService(loaded, strategy, cost_policy=cost_policy, shared_features=shared)
                 if loaded is not None

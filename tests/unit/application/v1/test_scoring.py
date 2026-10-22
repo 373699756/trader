@@ -8,6 +8,7 @@ import pytest
 
 from tests.unit.application.test_input_runtime import _policy
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     BuildScoredLocal,
     ScoredProjectionInputs,
@@ -49,7 +50,10 @@ def _service(strategy: Strategy = Strategy.TOMORROW, predictor=None) -> LearnedR
         ProfileEvidence("historical_unavailable", (), "trained_artifact", production_authority=False),
     )
     return LearnedRankScoringService(
-        LoadedScoringProfile("v1", {strategy: head}), strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0)
+        LoadedScoringProfile("v1", {strategy: head}),
+        strategy,
+        cost_policy=ExecutionCostPolicy(0.002, 1.0),
+        content_hash=ContentHash,
     )
 
 

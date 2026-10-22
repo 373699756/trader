@@ -72,10 +72,7 @@ from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
-from trader.recommendation.application.pipeline.data_source.source_router import (
-    InputRefreshDependencies,
-    MarketInputCoordinator,
-)
+from trader.recommendation.application.pipeline.data_source import source_router
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
@@ -587,9 +584,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     paths = settings.data_paths
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)
     cost_policy = LoadExecutionCostPolicy(Path(config_path).expanduser().resolve().parent)
-    effective_config_version = (
-        f"{settings.config_version}+{strategy.strategy_version}+cost_{ContentHash(cost_policy)[:16]}"
-    )
+    cost_version = ContentHash(cost_policy)[:16]
+    effective_config_version = f"{settings.config_version}+{strategy.strategy_version}+cost_{cost_version}"
     now = _utc_now
     latency = LatencyWaterfall()
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
@@ -631,11 +627,11 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         loaded_profile = None
         model_failure = f"production_model_{exc.reason}"
     WarnMissingLocalData(paths, profile_id, model_failure=model_failure if loaded_profile is None else None)
-    training_settings = (
-        LoadV1TrainingSettings(settings.project_root)
-        if profile_id == "v1"
-        else LoadProfileTrainingSettings(settings.project_root, profile_id)
-    )
+    training_settings: ProfileTrainingSettings | V1TrainingSettings
+    if profile_id == "v1":
+        training_settings = LoadV1TrainingSettings(settings.project_root)
+    else:
+        training_settings = LoadProfileTrainingSettings(settings.project_root, profile_id)
     if isinstance(training_settings, ProfileTrainingSettings):
         training_settings.require_profile(V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE)
     market_data = _build_market_data(
@@ -670,9 +666,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         RuntimePublicationDependencies(persistence.sequence, persistence.records, market_data, persistence.outcomes),
         publication_io=publication_io,
     )
-    native_data = MarketInputCoordinator(
+    native_data = source_router.MarketInputCoordinator(
         market_data,
-        dependencies=InputRefreshDependencies(
+        dependencies=source_router.InputRefreshDependencies(
             publication.long_runtime,
             policy,
             ShanghaiClock(now).now,
@@ -904,12 +900,9 @@ def _build_market_data(
         cache=market_cache,
     )
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history))
+    published_profile = "v2" if strategy.scoring_profile == "v1" else strategy.scoring_profile
     history_cache = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(
-            SQLiteQfqWindowCache(
-                paths.daily_window, "v2" if strategy.scoring_profile == "v1" else strategy.scoring_profile
-            )
-        ),
+        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache(paths.daily_window, published_profile)),
         lookback_sessions=training_settings.history_sessions,
         monotonic=time.monotonic,
         outcome_history=published_history,

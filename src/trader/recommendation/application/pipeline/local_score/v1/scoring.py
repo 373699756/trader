@@ -7,7 +7,6 @@ import time
 from collections.abc import Callable, Sequence
 from typing import cast
 
-from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.ports.loaded_profile import (
     LearnedRankPredictorPort,
     LoadedScoringProfile,
@@ -37,6 +36,7 @@ class LearnedRankScoringService:
         strategy: Strategy,
         *,
         cost_policy: ExecutionCostPolicy,
+        content_hash: Callable[[object], str],
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if profile.profile_id != "v1" or strategy not in profile.heads:
@@ -47,8 +47,9 @@ class LearnedRankScoringService:
         self._predictor = cast(LearnedRankPredictorPort, self._head.predictor)
         self._strategy = strategy
         self._cost_policy = cost_policy
+        self._content_hash = content_hash
         self._monotonic = monotonic
-        self._contract_hash = ContentHash(
+        self._contract_hash = content_hash(
             (
                 "completed_daily_251",
                 self._predictor.model_hash,
@@ -141,7 +142,7 @@ class LearnedRankScoringService:
             selected,
             tuple(sorted(requested - set(population_codes))),
             cost_reference_version="learned-rank-cost:"
-            + ContentHash(
+            + self._content_hash(
                 (
                     population_codes,
                     tuple((item.quote.board.value, item.optional_value("qfq_amihud_20d")) for item in population),
@@ -152,7 +153,7 @@ class LearnedRankScoringService:
             score_contract_hash=self._contract_hash,
             production_authority=False,
             rank_population_version="learned-rank-population:"
-            + ContentHash(
+            + self._content_hash(
                 (
                     self.model_version,
                     context.population_identity if context else "",

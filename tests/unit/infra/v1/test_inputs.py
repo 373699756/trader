@@ -21,6 +21,7 @@ def test_completed_v1_inputs_are_read_once_and_invalid_stock_does_not_block_the_
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(source),
         lookback_sessions=251,
+        monotonic=lambda: 0.0,
         open_dates=lambda: CALENDAR,
         learned_rank_inputs=True,
     )
