@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
@@ -20,9 +22,9 @@ from tests.component.market_data_test_support import (
 )
 from tests.reference_fixtures import PreparedFixture
 from tests.unit.infra.test_history_supplier_router import _current_universe
+from trader.recommendation.application.pipeline.static_market import static_pipeline
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
-from trader.recommendation.application.pipeline.static_market import static_pipeline
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
@@ -78,6 +80,49 @@ def test_static_eligibility_is_built_once_shared_by_matching_profiles_and_rebuil
                 rejected.initialize(source, NOW)
             with pytest.raises(RuntimeError, match="static_eligibility_not_initialized"):
                 rejected.observe(NOW)
+
+
+def test_matching_profiles_initialize_static_eligibility_concurrently_once() -> None:
+    cache = StaticMarketCache()
+    quote = _quote()
+    source = StaticReferenceRead(
+        StaticMarketReference(
+            (StaticIssuer(quote.code, quote.name, quote.board, quote.exchange, quote.listing_date, False, False),),
+            "official-shared",
+            NOW,
+        ),
+        "reference-shared",
+        False,
+        86400,
+    )
+    service = _service(
+        StaticGateway((quote,)),
+        CountingHistoryClient(_history_bars()),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+    )
+    pipelines = tuple(StaticMarketPipeline(service.eligibility, cache=cache, monotonic=lambda: 1.0) for _ in range(2))
+    ready = Barrier(2)
+
+    def initialize(pipeline):
+        ready.wait(timeout=5)
+        pipeline.initialize(source, NOW)
+        return pipeline.observe(NOW)
+
+    with (
+        patch.object(
+            static_pipeline, "NormalizeStaticIssuer", wraps=static_pipeline.NormalizeStaticIssuer
+        ) as normalize,
+        patch.object(
+            static_pipeline, "FilterPermanentEligibility", wraps=static_pipeline.FilterPermanentEligibility
+        ) as qualify,
+        ThreadPoolExecutor(max_workers=2) as workers,
+    ):
+        first, second = tuple(workers.map(initialize, pipelines))
+    assert normalize.call_count == qualify.call_count == 1
+    assert first[1] == second[1] == {quote.code}
+    assert first[3].records is second[3].records
+    assert first[2] == second[2]
+    assert all(stage.operation_durations == (("startup_reuse", None),) for stage in first[2])
 
 
 def test_fixed_official_identity_survives_missing_quote_name_and_market_failure() -> None:

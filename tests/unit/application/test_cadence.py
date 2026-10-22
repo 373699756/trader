@@ -43,6 +43,23 @@ def test_uniform_ten_second_market_and_scoring_cycle(clock):
     assert PipelineTask.SCORE in {t.task for t in due.tasks}
 
 
+@pytest.mark.parametrize("boundary", ("11:30:00", "12:45:00", "13:00:00", "14:46:00", "14:48:00", "14:59:20"))
+def test_input_changes_across_former_time_bands_keep_one_pending_score(boundary):
+    crossed = datetime.fromisoformat("2026-07-16T" + boundary).replace(tzinfo=SHANGHAI)
+    at = crossed - timedelta(seconds=5)
+    planner = CadencePlanner(_policy(), started_at=at)
+    planner.plan(at, is_trading_day=True)
+    assert planner.plan_score_after_input(at, is_trading_day=True) is not None
+    assert planner.plan_score_after_input(crossed, is_trading_day=True) is None
+    assert PipelineTask.SCORE not in {item.task for item in planner.plan(crossed, is_trading_day=True).tasks}
+    assert planner.plan_score_after_input(crossed + timedelta(seconds=4), is_trading_day=True) is None
+    due_at = at + timedelta(seconds=10)
+    due = planner.plan(due_at, is_trading_day=True)
+    assert sum(item.task is PipelineTask.SCORE for item in due.tasks) == 1
+    assert PipelineTask.SCORE not in {item.task for item in planner.plan(due_at, is_trading_day=True).tasks}
+    assert planner.plan_score_after_input(due_at, is_trading_day=True) is None
+
+
 @pytest.mark.parametrize(
     "clock,minute,industry",
     [
