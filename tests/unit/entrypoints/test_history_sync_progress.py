@@ -275,7 +275,8 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
     assert _compact_log(capsys.readouterr().err).splitlines() == [
         "00:00:00 | sync history 股票进度 | 29/4400（0.66%） | 股票 600001 — | 处理 Tencent下载 | 结果 失败 "
         "| raw -/2000 | qfq -/2000 | 完整配对 -/2000 | 缺日 未知 "
-        "| 网络 -/4400 | 落库 29/4400 | 待写 - | 下载 --:--:-- | 落库耗时 --:--:-- | 回压 --:--:-- "
+        "| 网络 -/4400 | 落库 29/4400 | 待写 - | 下载 --:--:-- "
+        "| 恢复读库累计 --:--:-- | 校验累计 --:--:-- | 落库耗时 --:--:-- | 本批待确认 --:--:-- | 回压 --:--:-- "
         "| 总计 00:00:00 | 原因 history_tencent_overlap_conflict",
         "00:00:00 | Tencent下载 | 完成 | 4400/4400 | 完整 4371 股 | 部分 0 股 | 失败 29 股 "
         "| 其中待重试 0 股 | 其中本地复用 0 股 "
@@ -304,7 +305,8 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
         "00:23:06 | sync history 股票进度 | 388/4400（8.82%） | 股票 000952 — | 处理 Tencent下载 | 结果 部分 "
         "| raw 1980/2000 | qfq 1980/2000 | 完整配对 1980/2000 | 缺日 20 "
         "| 网络 404/4400 | 落库 388/4400 | 待写 16 | 下载 00:14:03 "
-        "| 落库耗时 00:38:20 | 回压 00:37:38 | 总计 00:23:06 | 原因 无\n"
+        "| 恢复读库累计 00:00:00 | 校验累计 00:00:00 | 落库耗时 00:38:20 "
+        "| 本批待确认 00:00:00 | 回压 00:37:38 | 总计 00:23:06 | 原因 无\n"
     )
 
 
@@ -325,6 +327,9 @@ def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
                 inflight_codes=8,
                 pending_codes=4201,
                 oldest_inflight_seconds=50.0,
+                read_seconds=12.0,
+                validation_seconds=3.0,
+                unconfirmed_write_seconds=8.0,
             ),
         )
     )
@@ -336,6 +341,9 @@ def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
     assert "在途 8" in _compact_log(output)
     assert "待派发 4201" in _compact_log(output)
     assert "最久在途 00:00:50" in output
+    assert "恢复读库累计 00:00:12" in output
+    assert "校验累计 00:00:03" in output
+    assert "本批待确认 00:00:08" in output
 
 
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:

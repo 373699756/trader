@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
+from trader.infra.signal_cancellation import ManualCancellation
 
 
 def RunDownload(repository_root: Path, config_path: Path, *, quiet_success: bool = False) -> int:
@@ -21,7 +23,16 @@ def RunDownload(repository_root: Path, config_path: Path, *, quiet_success: bool
 
     configuration = BuildHistorySyncConfiguration(repository_root, config_path)
     progress = StderrHistorySyncProgress()
-    status = ExecuteHistoryDownload(configuration, progress=progress)
+    with ManualCancellation() as cancelled:
+        try:
+            status = ExecuteHistoryDownload(configuration, progress=progress, cancel_requested=cancelled.is_set)
+        except (OSError, RuntimeError, ValueError) as exc:
+            if not cancelled.is_set():
+                raise
+            # Public reference preparation precedes the typed history result.
+            raise KeyboardInterrupt from exc
+        if cancelled.is_set() and status.state != "cancelled":
+            status = replace(status, state="cancelled", reason="cancelled")
     progress.publish_result(status)
     # Published price gaps remain visible; training checks effective samples per head.
     ready = status.state in {"completed", "already_current"} and status.training_due_reason != "data_incomplete"

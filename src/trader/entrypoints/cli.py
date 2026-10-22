@@ -5,16 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
-import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
+from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
@@ -86,12 +84,13 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         except (OSError, RuntimeError, ValueError) as exc:
             print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}))
             return 2
+        print(f"{args.command}: 正在准备官方总体、ST资格、交易日历及当前行业。", file=sys.stderr)
         if args.command == "train":
             return _run_history_download(config_path)
         from trader.bootstrap import ExecuteSync
         from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
-        with _sync_cancellation() as cancelled:
+        with ManualCancellation() as cancelled:
             result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set)
         print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True))
         return result.exit_code
@@ -259,21 +258,6 @@ def _run_performance_report(
         output.write_text(f"{payload}\n", encoding="utf-8")
     print(payload)
     return 0 if report["status"] == "passed" else 1
-
-
-@contextmanager
-def _sync_cancellation() -> Iterator[threading.Event]:
-    cancelled = threading.Event()
-
-    def request_cancel(_signal: int, _frame: object) -> None:
-        cancelled.set()
-
-    previous = {signum: signal.signal(signum, request_cancel) for signum in (signal.SIGINT, signal.SIGTERM)}
-    try:
-        yield cancelled
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
 
 
 def _absolute_config_path(raw_path: str) -> Path:

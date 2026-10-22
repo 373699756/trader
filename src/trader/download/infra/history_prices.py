@@ -362,10 +362,23 @@ class HistoryPricePartition:
             self._activity.watch(connection) if self._activity else nullcontext(),
         ):
             self._require_metadata(connection)
-            for start in range(0, len(keys), 200):
+            present_codes: set[str] = set()
+            for code in sorted({code for code, _day in keys}):
+                if (
+                    connection.run(
+                        "SELECT 1 FROM daily_records INDEXED BY history_price_code_date_idx WHERE code=? LIMIT 1",
+                        (code,),
+                    ).fetchone()
+                    is not None
+                ):
+                    present_codes.add(code)
+            # Interrupted first builds usually leave whole stocks unwritten. One
+            # compact index lookup avoids thousands of scattered date-key misses.
+            readable = tuple(key for key in keys if key[0] in present_codes)
+            for start in range(0, len(readable), 200):
                 if self._activity is not None:
                     self._activity.tick()
-                batch = keys[start : start + 200]
+                batch = readable[start : start + 200]
                 values = ",".join("(?,?)" for _ in batch)
                 sql = (
                     "WITH requested(code,day) AS (VALUES "
@@ -762,6 +775,32 @@ class HistoryPricePartition:
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
 
+    @staticmethod
+    def _can_insert_disjoint(connection: SqliteConnection, prepared: tuple[_EncodedRevision, ...]) -> bool:
+        # A resumed initial batch can contain stocks never written to this year.
+        # Prove absence under the writer transaction using the compact code indexes,
+        # rather than probing every date across the large date-ordered tables.
+        if len({item.observation_key for item in prepared}) != len(prepared) or len(
+            {item.revision_key for item in prepared}
+        ) != len(prepared):
+            return False
+        codes = tuple(sorted({item.value.code for item in prepared}))
+        for offset in range(0, len(codes), 200):
+            batch = codes[offset : offset + 200]
+            placeholders = ",".join("?" for _ in batch)
+            if (
+                connection.run(
+                    "SELECT 1 FROM daily_records INDEXED BY history_price_code_date_idx "
+                    f"WHERE code IN ({placeholders}) UNION ALL "
+                    "SELECT 1 FROM daily_observations INDEXED BY history_price_observation_code_date_idx "
+                    f"WHERE code IN ({placeholders}) LIMIT 1",
+                    (*batch, *batch),
+                ).fetchone()
+                is not None
+            ):
+                return False
+        return True
+
     def _save_batch(
         self,
         connection: SqliteConnection,
@@ -953,7 +992,7 @@ class HistoryPriceWriteSession:
                         raise HistoryPricePartitionError("disk_space_insufficient")
                     with SqliteTransaction(self._connection, immediate=True):
                         prepared = self._prices._prepare_revisions(batch)
-                        if self._fresh:
+                        if self._fresh or self._prices._can_insert_disjoint(self._connection, prepared):
                             self._prices._insert_fresh_batch(self._connection, prepared)
                         else:
                             self._prices._save_batch(

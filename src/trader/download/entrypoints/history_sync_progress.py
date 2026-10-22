@@ -121,7 +121,10 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
             f"待派发 {ProgressNumber(pipeline.pending_codes)}",
             f"最久在途 {_format_duration(pipeline.oldest_inflight_seconds)}",
             f"下载 {_format_duration(pipeline.download_seconds)}",
+            f"恢复读库累计 {_format_duration(pipeline.read_seconds)}",
+            f"校验累计 {_format_duration(pipeline.validation_seconds)}",
             f"落库耗时 {_format_duration(pipeline.write_seconds)}",
+            f"本批待确认 {_format_duration(pipeline.unconfirmed_write_seconds)}",
             f"回压 {_format_duration(pipeline.backpressure_seconds)}",
         )
     return _download_summary_parts(progress)
@@ -277,7 +280,10 @@ class StderrHistorySyncProgress:
             f"落库 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
             f"待写 {ProgressNumber(pipeline.queued_codes if pipeline else None)}",
             f"下载 {_format_duration(pipeline.download_seconds) if pipeline else '--:--:--'}",
+            f"恢复读库累计 {_format_duration(pipeline.read_seconds) if pipeline else '--:--:--'}",
+            f"校验累计 {_format_duration(pipeline.validation_seconds) if pipeline else '--:--:--'}",
             f"落库耗时 {_format_duration(pipeline.write_seconds) if pipeline else '--:--:--'}",
+            f"本批待确认 {_format_duration(pipeline.unconfirmed_write_seconds) if pipeline else '--:--:--'}",
             f"回压 {_format_duration(pipeline.backpressure_seconds) if pipeline else '--:--:--'}",
             f"总计 {_format_duration(now - self._phase_started[phase_key])}",
             *_reuse_summary_parts(progress),

@@ -30,6 +30,37 @@ from trader.training.infra.sample_builder import _SampleBuildState
 DAYS = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
 
+def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, monkeypatch):
+    from trader.download.infra import history_sync_runner as runner
+
+    cancelled = False
+    tunings = []
+    initialize = module.HistoryDownloadFlow.__init__
+
+    def tracked_initialize(flow, resources):
+        tunings.append(resources.tuning)
+        initialize(flow, resources)
+
+    class Interrupted:
+        def publish(self, progress):
+            nonlocal cancelled
+            if progress.stage == "tencent_history" and progress.state == "completed":
+                cancelled = True
+
+    monkeypatch.setattr(runner, "ClassifyHistoryStorage", lambda root: "hdd")
+    monkeypatch.setattr(module.HistoryDownloadFlow, "__init__", tracked_initialize)
+    configuration = _configuration(tmp_path)
+    first = RunHistorySync(
+        configuration, FakeSupplier(DAYS), clock=lambda: NOW, cancel_requested=lambda: cancelled, progress=Interrupted()
+    )
+    assert first.state == "cancelled"
+    assert HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot is None
+    resumed = RunHistorySync(configuration, FakeSupplier(DAYS), clock=lambda: NOW)
+    assert resumed.state == "completed"
+    assert len(tunings) == 2 and tunings[0] == tunings[1]
+    assert tunings[1].flush_cells == 16384
+
+
 def test_recovery_reads_each_physical_year_once_and_keeps_sequence_visibility(tmp_path, monkeypatch):
     days = (date(2025, 1, 2), date(2025, 2, 3), date(2025, 12, 4), date(2026, 1, 5))
     cells = _download("600001", days).batch.cells

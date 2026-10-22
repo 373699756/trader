@@ -270,7 +270,7 @@ class _HistorySync:
                 self.index,
                 self.executor,
                 self.writer,
-                self.write_tuning or ChooseHistoryWriteTuning(self.storage_kind, fresh=inputs.fresh),
+                self.write_tuning or ChooseHistoryWriteTuning(self.storage_kind, fresh=active is None),
                 self.cancel,
                 self.progress,
             )

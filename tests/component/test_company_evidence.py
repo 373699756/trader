@@ -84,6 +84,102 @@ def test_second_run_reuses_baseline_without_redownloading(tmp_path):
     assert snapshot.window_start == NOW.date() - timedelta(days=365)
 
 
+@pytest.mark.parametrize(
+    "phase",
+    (
+        "before_start",
+        "financial",
+        "financial_page",
+        "pledge",
+        "unlock",
+        "announcements",
+        "announcement_page",
+        "risk_documents",
+        "publish",
+        "news",
+    ),
+)
+def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp_path, monkeypatch, phase):
+    index = _index(tmp_path)
+    source = Sources()
+    index.publish(("600001",), NOW)
+    reader = SQLiteCompanyEvidenceReader(index.path)
+    previous = reader.publication_version()
+    cancelled = phase == "before_start"
+    publications = []
+    publish = index.publish
+
+    def tracked_publish(codes, observed_at):
+        publications.append(tuple(codes))
+        return publish(codes, observed_at)
+
+    def progress(event):
+        nonlocal cancelled
+        page_cancel = event.scope is not None and (
+            (phase == "financial_page" and event.component == "financial")
+            or (phase == "announcement_page" and event.component == "announcements")
+        )
+        if event.status == "running" and (event.component == phase or page_cancel):
+            cancelled = True
+
+    def partitions(*args):
+        assert not cancelled
+        return (DisclosurePartition("sse", NOW.date(), NOW.date()),) if phase == "announcement_page" else ()
+
+    fetch = source.fetch
+
+    def checked_fetch(*args, **kwargs):
+        assert not cancelled
+        return fetch(*args, **kwargs)
+
+    monkeypatch.setattr(index, "partitions", partitions)
+    monkeypatch.setattr(source, "fetch", checked_fetch)
+    monkeypatch.setattr(index, "publish", tracked_publish)
+    if phase == "before_start":
+        monkeypatch.setattr(index, "initialize", lambda: pytest.fail("cancelled task initialized the database"))
+    result = SyncCompanyEvidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0.0, progress, lambda: cancelled),
+        ("600001",),
+        NOW + timedelta(days=1),
+        news_codes=("600001",),
+    )
+    assert "task:cancelled" in result.failures and result.needs_retry
+    assert len(publications) == (1 if phase == "news" else 0)
+    assert result.published_codes == (1 if phase == "news" else 0)
+    if phase != "news":
+        assert reader.publication_version() == previous
+
+
+def test_company_cancellation_saves_the_last_page_and_resumes_it(tmp_path, monkeypatch):
+    index = _index(tmp_path)
+    monkeypatch.setattr(index, "partitions", lambda *args: ())
+    cancelled = False
+
+    class PagedFinancials(Sources):
+        def fetch(self, first, *args, **kwargs):
+            nonlocal cancelled
+            if isinstance(first, StructuredCompanyQuery) and first.component == "financial":
+                self.calls.append(first)
+                if first.page == 1:
+                    cancelled = True
+                return StructuredCompanyPage("financial", first.page, 2, 2, raw_count=1)
+            return super().fetch(first, *args, **kwargs)
+
+    source = PagedFinancials()
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, cancel_requested=lambda: cancelled)
+    first = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    assert first.published_codes == 0 and first.failures == ("task:cancelled",)
+    assert len(source.calls) == 1
+    cancelled = False
+    source.calls.clear()
+    resumed = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    financial = [
+        item for item in source.calls if isinstance(item, StructuredCompanyQuery) and item.component == "financial"
+    ]
+    assert [item.page for item in financial] == [2]
+    assert not resumed.needs_retry and resumed.published_codes == 1
+
+
 def test_page_rows_and_cursor_rollback_together(tmp_path):
     index = _index(tmp_path)
     partition = index.partitions(("sse",), NOW)[0]

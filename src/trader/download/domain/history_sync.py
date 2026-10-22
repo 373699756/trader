@@ -178,6 +178,9 @@ class HistoryPipelineProgress:
     inflight_codes: int = 0
     pending_codes: int = 0
     oldest_inflight_seconds: float = 0.0
+    read_seconds: float = 0.0
+    validation_seconds: float = 0.0
+    unconfirmed_write_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if any(
@@ -195,6 +198,9 @@ class HistoryPipelineProgress:
                 self.write_seconds,
                 self.backpressure_seconds,
                 self.oldest_inflight_seconds,
+                self.read_seconds,
+                self.validation_seconds,
+                self.unconfirmed_write_seconds,
             )
         ):
             raise ValueError("history_pipeline_progress_invalid")

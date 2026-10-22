@@ -90,6 +90,14 @@ No service or supplier is required. Invalid configuration marks dependent checks
 as unexecuted. Insufficient research evidence is degraded locally; the standalone
 research profile remains strict. Performance results are separate for each profile.
 
+`--profile history-write --download-sizes 16 --history-days 2000` also measures
+`initial_resume`: it first commits half the stocks without publishing the initial
+snapshot, then times the restart against the populated annual files. Reports split
+the Tencent pipeline and sealing/publication wall time from cumulative supplier and
+writer time. This is an offline synthetic workload; it does not modify active data
+or establish full-market download speed. Run comparisons sequentially to avoid
+competing for the same disk.
+
 Compare the annual layout with an isolated checkout of the pre-migration monthly
 layout (for example, commit `c235ffa3` extracted outside this repository):
 

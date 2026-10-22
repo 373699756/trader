@@ -93,29 +93,42 @@ def SyncCompanyEvidence(
     index = dependencies.index
     state = _SyncState()
     population = _validated_population(codes)
-    index.initialize()
+    if not _cancelled(dependencies):
+        index.initialize()
     news_population = tuple(sorted(set(news_codes).intersection(population)))
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
+        if _cancelled(dependencies):
+            break
         if any(item.endswith((":access_denied", ":rate_limited")) for item in state.failures):
             _report(dependencies, component, state, None, completed=0, status="deferred")
             continue
         _structured(dependencies, component, observed_at, min(deadline, dependencies.monotonic() + 600), state)
-    pending = _announcements(dependencies, population, observed_at, started + budget_seconds * 0.7, state)
-    _documents(dependencies, population, observed_at, started + budget_seconds * 0.95, state)
-    _report(dependencies, "publish", state, len(population), completed=0)
-    published = index.publish(population, observed_at)
-    _report(dependencies, "publish", state, len(population) - published, completed=published, status="complete")
-    news_updates = _news(dependencies, news_population, observed_at, deadline, state)
-    if news_updates:
+    pending = published = 0
+    if not _cancelled(dependencies):
+        pending = _announcements(dependencies, population, observed_at, started + budget_seconds * 0.7, state)
+    if not _cancelled(dependencies):
+        _documents(dependencies, population, observed_at, started + budget_seconds * 0.95, state)
+    if not _cancelled(dependencies):
+        _report(dependencies, "publish", state, len(population), completed=0)
+        if not _cancelled(dependencies):
+            published = index.publish(population, observed_at)
+            _report(dependencies, "publish", state, len(population) - published, completed=published, status="complete")
+    news_updates = (
+        () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, deadline, state)
+    )
+    if news_updates and not _cancelled(dependencies):
         _report(dependencies, "publish", state, len(news_updates), completed=0)
-        updated = index.publish(news_updates, observed_at)
-        _report(dependencies, "publish", state, len(news_updates) - updated, completed=updated, status="complete")
+        if not _cancelled(dependencies):
+            updated = index.publish(news_updates, observed_at)
+            _report(dependencies, "publish", state, len(news_updates) - updated, completed=updated, status="complete")
     if dependencies.monotonic() >= deadline:
         state.failures += ("task:deadline",)
-    if dependencies.cancel_requested is not None and dependencies.cancel_requested():
+    if _cancelled(dependencies):
         state.failures += ("task:cancelled",)
-    pending_documents = len(_unique_documents(index.pending_documents(population, observed_at)))
+    pending_documents = (
+        0 if _cancelled(dependencies) else len(_unique_documents(index.pending_documents(population, observed_at)))
+    )
     if pending_documents:
         state.failures += ("risk_documents:pending",)
     _report(
@@ -162,10 +175,15 @@ def _announcements(
     index = dependencies.index
     markets = tuple(sorted({EvidenceMarket(code) for code in population}))
     _report(dependencies, "announcements", state, None)
+    if _cancelled(dependencies):
+        return 0
     partitions = deque(index.partitions(markets, observed_at))
     while partitions and _running(dependencies, deadline):
         partition = partitions.popleft()
         _report(dependencies, "announcements", state, len(partitions) + 1, scope=partition)
+        if _cancelled(dependencies):
+            partitions.appendleft(partition)
+            break
         try:
             page = dependencies.disclosures.fetch(partition, deadline=deadline)
             state.pages += 1
@@ -309,6 +327,8 @@ def _structured(
     pending: int | None = None
     query: StructuredCompanyQuery | None = None
     try:
+        if _cancelled(dependencies):
+            return
         if component == "financial":
             start, end = index.component_since(component, "market", now), now.date()
         elif component == "pledge":
@@ -320,6 +340,8 @@ def _structured(
         while _running(dependencies, deadline):
             completed = query.page - 1
             _report(dependencies, component, state, pending, completed=completed, scope=query)
+            if _cancelled(dependencies):
+                break
             page = dependencies.structured.fetch(query, observed_at=now, deadline=deadline)
             state.pages += 1
             state.changes += index.commit_structured(query, page, now)
@@ -336,6 +358,9 @@ def _structured(
             query = replace(
                 query, received_rows=query.received_rows + page.row_count, expected_rows=page.total, page=page.page + 1
             )
+        if _cancelled(dependencies):
+            _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
+            return
         raise TimeoutError("company_source_deadline")
     except (OSError, RuntimeError, ValueError) as exc:
         failure = _failure(exc)
@@ -370,9 +395,11 @@ def _failure(exc: BaseException) -> str:
 
 
 def _running(dependencies: CompanyEvidenceDependencies, deadline: float) -> bool:
-    return dependencies.monotonic() < deadline and (
-        dependencies.cancel_requested is None or not dependencies.cancel_requested()
-    )
+    return dependencies.monotonic() < deadline and not _cancelled(dependencies)
+
+
+def _cancelled(dependencies: CompanyEvidenceDependencies) -> bool:
+    return dependencies.cancel_requested is not None and dependencies.cancel_requested()
 
 
 def _report(

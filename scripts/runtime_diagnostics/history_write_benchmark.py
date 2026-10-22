@@ -26,7 +26,12 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncProgress
+from trader.download.domain.history_sync import (
+    HistoryPipelineProgress,
+    HistorySupplierContext,
+    HistorySyncConfiguration,
+    HistorySyncProgress,
+)
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_storage_profile import (
@@ -89,12 +94,24 @@ class _StageTimes:
     starts: dict[str, float] = field(default_factory=dict)
     ends: dict[str, float] = field(default_factory=dict)
     lock: LockType = field(default_factory=Lock)
+    cancel_after: int | None = None
+    cancelled: bool = False
+    pipeline: HistoryPipelineProgress | None = None
 
     def publish(self, progress: HistorySyncProgress) -> None:
         if progress.stage not in {"loading_context", "tencent_history", "sealing_partitions", "publishing_snapshot"}:
             return
         with self.lock:
             now = time.monotonic()
+            if progress.pipeline is not None:
+                self.pipeline = progress.pipeline
+            if (
+                self.cancel_after is not None
+                and progress.stage == "tencent_history"
+                and progress.state == "completed"
+                and progress.completed_units >= self.cancel_after
+            ):
+                self.cancelled = True
             if progress.state in {"started", "waiting"}:
                 self.starts.setdefault(progress.stage, now)
             if progress.state == "completed":
@@ -108,6 +125,9 @@ class _StageTimes:
             result["sealing_partitions"] = round(
                 self.starts["publishing_snapshot"] - self.starts["sealing_partitions"], 3
             )
+        if self.pipeline is not None:
+            result["writer_cumulative"] = round(self.pipeline.write_seconds, 3)
+            result["supplier_attempts_cumulative"] = round(self.pipeline.download_seconds, 3)
         return result
 
 
@@ -120,6 +140,39 @@ def _write_bytes() -> int:
 
 def _clock(observed: datetime) -> Callable[[], datetime]:
     return lambda: observed
+
+
+def _measure_case(
+    name: str,
+    config: HistorySyncConfiguration,
+    supplier: _FixtureSupplier,
+    tuning: HistoryWriteTuning | None,
+) -> dict[str, object]:
+    supplier.requests.clear()
+    now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
+    started, written = time.monotonic(), _write_bytes()
+    stage_times = _StageTimes()
+    result = RunHistorySync(config, supplier, clock=_clock(now), write_tuning=tuning, progress=stage_times)
+    rows = 0
+    for path in config.archive_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
+        with (
+            SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
+            rows += connection.run("SELECT COUNT(*) FROM daily_records").require_one()[0]
+    return {
+        "case": name,
+        "seconds": round(time.monotonic() - started, 3),
+        "physical_write_bytes": _write_bytes() - written,
+        "state": result.state,
+        "reason": result.reason,
+        "requests": len(supplier.requests),
+        "requested_rows": sum(supplier.requests),
+        "rows": rows,
+        "gaps": result.unresolved_price_cells,
+        "files_bytes": sum(path.stat().st_size for path in config.archive_root.rglob("*") if path.is_file()),
+        "phase_seconds": stage_times.summary(),
+    }
 
 
 def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) -> dict[str, object]:
@@ -139,33 +192,23 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
         for name, added in (("initial", 0), ("next_day", 1), ("two_weeks", 10), ("same_day", 0)):
             if added:
                 supplier.days += tuple(supplier.days[-1] + timedelta(days=i + 1) for i in range(added))
-            supplier.requests.clear()
-            now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
-            started, written = time.monotonic(), _write_bytes()
-            stage_times = _StageTimes()
-            result = RunHistorySync(config, supplier, clock=_clock(now), write_tuning=tuning, progress=stage_times)
-            rows = 0
-            for path in root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
-                with (
-                    SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
-                    SqliteTransaction(connection),
-                ):
-                    rows += connection.run("SELECT COUNT(*) FROM daily_records").require_one()[0]
-            results.append(
-                {
-                    "case": name,
-                    "seconds": round(time.monotonic() - started, 3),
-                    "physical_write_bytes": _write_bytes() - written,
-                    "state": result.state,
-                    "reason": result.reason,
-                    "requests": len(supplier.requests),
-                    "requested_rows": sum(supplier.requests),
-                    "rows": rows,
-                    "gaps": result.unresolved_price_cells,
-                    "files_bytes": sum(path.stat().st_size for path in root.rglob("*") if path.is_file()),
-                    "phase_seconds": stage_times.summary(),
-                }
-            )
+            results.append(_measure_case(name, config, supplier, tuning))
+        # Seed committed annual rows without publishing the first snapshot.
+        # The measured restart includes disjoint stocks, unlike an empty-file write probe.
+        resume_config = replace(config, archive_root=Path(scratch) / "resume")
+        interrupted = _StageTimes(cancel_after=max(1, size // 2))
+        now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
+        seeded = RunHistorySync(
+            resume_config,
+            supplier,
+            clock=_clock(now),
+            cancel_requested=lambda: interrupted.cancelled,
+            write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions),
+            progress=interrupted,
+        )
+        if seeded.state != "cancelled":
+            raise RuntimeError("history_write_resume_seed_failed")
+        results.append(_measure_case("initial_resume", resume_config, supplier, tuning))
         storage_kind = ClassifyHistoryStorage(root)
     return {
         "schema_version": "history-write-benchmark",

@@ -79,6 +79,8 @@ class _PreparedResult:
     price: HistoryPriceResult
     dates: tuple[date, ...]
     seconds: float
+    read_seconds: float
+    validation_seconds: float
 
 
 @dataclass(frozen=True)
@@ -243,13 +245,17 @@ class HistoryDownloadFlow:
 
     def _fetch_task(self, task: HistoryDownloadTask) -> _PreparedResult:
         self._check()
+        read_started = time.monotonic()
         previous = self._resources.prices.read_for_download(task.code, task.dates)
+        read_seconds = time.monotonic() - read_started
         obtained = {cell.trade_date for cell in previous if cell.obtained}
         missing = set(task.dates) - obtained
         dates = tuple(sorted(missing | set(sorted(obtained)[-5:]))) if missing else ()
         empty = PublishedHistoryWindow(task.code, ())
         if not dates:
-            return _PreparedResult(self._tencent_result(_TencentResult(task, (), previous, empty)), (), 0.0)
+            started = time.monotonic()
+            price = self._tencent_result(_TencentResult(task, (), previous, empty))
+            return _PreparedResult(price, (), 0.0, read_seconds, time.monotonic() - started)
         started = time.monotonic()
         failure: str | None = None
         unusable_qfq_dates: tuple[date, ...] = ()
@@ -269,8 +275,9 @@ class HistoryDownloadFlow:
         ):
             raise RuntimeError("history_supplier_identity_conflict")
         download_seconds = time.monotonic() - started
+        validation_started = time.monotonic()
         price = self._tencent_result(_TencentResult(task, dates, previous, window, failure, unusable_qfq_dates))
-        return _PreparedResult(price, dates, download_seconds)
+        return _PreparedResult(price, dates, download_seconds, read_seconds, time.monotonic() - validation_started)
 
     def _tencent_result(self, result: _TencentResult) -> HistoryPriceResult:
         task = result.task
@@ -324,6 +331,8 @@ class _TencentPipeline:
         self._writing: Future[_WriteResult] | None = None
         self._writing_cells = self._writing_codes = 0
         self._download_seconds = self._write_seconds = self._backpressure_seconds = 0.0
+        self._read_seconds = self._validation_seconds = 0.0
+        self._write_started: float | None = None
         self._exhausted = False
         self._writer_closed = False
         self._last_commit = self._last_report = time.monotonic()
@@ -361,6 +370,7 @@ class _TencentPipeline:
             raise HistorySyncFailureError(exc, "persisting_partitions") from exc
         self._write_seconds += saved.seconds
         self._writing = None
+        self._write_started = None
         self._writing_cells = self._writing_codes = 0
         if self._exhausted and not self._jobs and not self._futures and not self._buffered:
             self._close_writer()
@@ -385,6 +395,8 @@ class _TencentPipeline:
             self._buffered.append(result)
             self._downloaded += 1
             self._download_seconds += result.seconds
+            self._read_seconds += result.read_seconds
+            self._validation_seconds += result.validation_seconds
             if not result.dates:
                 self._flow._reused_codes.add(result.price.task.code)
 
@@ -417,6 +429,7 @@ class _TencentPipeline:
         batch = tuple(self._buffered)
         self._buffered.clear()
         self._writing_cells, self._writing_codes = cells, len(batch)
+        self._write_started = time.monotonic()
         self._writing = SubmitWithBackpressure(self._flow._resources.writer, self._flow._commit, batch)
         self._last_commit = time.monotonic()
 
@@ -452,6 +465,9 @@ class _TencentPipeline:
             inflight_codes=len(self._futures),
             pending_codes=len(self._jobs),
             oldest_inflight_seconds=max((now - started for started in self._dispatched_at.values()), default=0.0),
+            read_seconds=self._read_seconds,
+            validation_seconds=self._validation_seconds,
+            unconfirmed_write_seconds=0.0 if self._write_started is None else now - self._write_started,
         )
 
     def _cancel_pending(self) -> None:

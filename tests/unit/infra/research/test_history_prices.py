@@ -57,6 +57,22 @@ def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> Non
     assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 1
 
 
+def test_resume_read_skips_absent_stocks_and_preserves_partial_and_sequence_views(tmp_path: Path) -> None:
+    statements: list[str] = []
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)
+    month.initialize()
+    first = _revision(date(2026, 9, 10), 1, 10.0)
+    later = _revision(date(2026, 9, 11), 2, 11.0)
+    month.save_revisions((first, later))
+    absent = (("600002", first.trade_date), ("600002", later.trade_date))
+    statements.clear()
+    assert month.read_price_keys(absent, 2) == ()
+    assert not any("WITH requested(code,day)" in sql for sql in statements)
+    mixed = ((first.code, first.trade_date), *absent, (later.code, later.trade_date))
+    assert month.read_price_keys(mixed, 1) == (first,)
+    assert month.read_price_keys(mixed, 2) == (first, later)
+
+
 def test_first_build_insert_rejects_duplicate_without_changing_durable_rows(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     month = HistoryPricePartition(path, 2026, 9)
@@ -71,6 +87,59 @@ def test_first_build_insert_rejects_duplicate_without_changing_durable_rows(tmp_
         session.close()
     assert month.read_day(revision.trade_date, snapshot_sequence=1) == (revision,)
     assert month.seal(1).row_count == 1
+
+
+def test_resumed_writer_inserts_absent_stocks_without_per_date_probes(tmp_path: Path) -> None:
+    statements: list[str] = []
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)
+    month.initialize()
+    original = _revision(date(2026, 9, 10), 1, 10.0)
+    month.save_revisions((original,))
+    assert original.cell.unadjusted is not None and original.cell.qfq is not None
+    incoming = replace(
+        original,
+        cell=replace(
+            original.cell,
+            code="600002",
+            unadjusted=replace(original.cell.unadjusted, code="600002"),
+            qfq=replace(original.cell.qfq, code="600002"),
+        ),
+    )
+    statements.clear()
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        session.save_revision_batches((incoming,))
+    assert not any("requested_history_revisions" in sql for sql in statements)
+    assert month.read_day(original.trade_date, snapshot_sequence=1) == (original, incoming)
+    assert month.seal(1).row_count == 2
+    # Replaying a stock already on disk must retain conflict/idempotency validation.
+    statements.clear()
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        session.save_revision_batches((incoming, incoming))
+    assert any("CREATE TEMP TABLE requested_history_revisions" in sql for sql in statements)
+    assert month.read_day(original.trade_date, snapshot_sequence=1) == (original, incoming)
+
+
+def test_resumed_writer_does_not_assume_orphaned_records_are_absent(tmp_path: Path) -> None:
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    month.initialize()
+    original = _revision(date(2026, 9, 10), 1, 10.0)
+    month.save_revisions((original,))
+    with SqliteSession(month._path) as connection, SqliteTransaction(connection):
+        connection.run("DELETE FROM daily_observations")
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        session.save_revision_batches((original,))
+    assert month.read_day(original.trade_date, snapshot_sequence=1) == (original,)
+
+
+def test_resumed_writer_reuses_new_revision_content_across_observation_sequences(tmp_path: Path) -> None:
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    month.initialize()
+    original = _revision(date(2026, 9, 10), 1, 10.0)
+    with closing(month.open_write_session(pending_sequence=2)) as session:
+        session.save_revision_batches((original, replace(original, first_seen_sequence=2)))
+    assert month.read_day(original.trade_date, snapshot_sequence=1) == (original,)
+    assert month.read_day(original.trade_date, snapshot_sequence=2) == (original,)
+    assert month.seal(2).row_count == 1
 
 
 def test_only_unpublished_unknown_observation_can_gain_a_price_in_same_sequence(tmp_path: Path) -> None:
