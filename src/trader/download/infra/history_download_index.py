@@ -153,24 +153,11 @@ class HistoryDownloadIndex:
             for code, dates, done, attempts, failure in rows
         )
 
-    def rebind_context(
-        self,
-        previous: HistoryDownloadBatch,
-        current: HistoryDownloadBatch,
-        *,
-        removed_codes: frozenset[str] = frozenset(),
-        added_tasks: tuple[HistoryDownloadTask, ...] = (),
-    ) -> None:
-        """Rebind an unpublished batch and reconcile its task population atomically."""
+    def rebind_context(self, previous: HistoryDownloadBatch, current: HistoryDownloadBatch) -> None:
+        """Replace only an unpublished batch's parents, preserving all durable progress."""
         if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
             raise ValueError("history_download_identity_conflict")
-        added_codes = frozenset(task.code for task in added_tasks)
-        if len(added_codes) != len(added_tasks) or removed_codes & added_codes:
-            raise ValueError("history_download_task_population_conflict")
         with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
-            existing_codes = frozenset(row[0] for row in connection.run("SELECT code FROM download_tasks"))
-            if not removed_codes.issubset(existing_codes) or added_codes & existing_codes:
-                raise RuntimeError("history_download_task_population_conflict")
             updated = connection.run(
                 """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?
                    WHERE singleton=1 AND sequence=? AND cutoff=?
@@ -190,14 +177,6 @@ class HistoryDownloadIndex:
             )
             if updated.rowcount != 1:
                 raise RuntimeError("history_download_identity_conflict")
-            if removed_codes:
-                ordered_removed_codes = tuple(sorted(removed_codes))
-                placeholders = ",".join("?" for _ in ordered_removed_codes)
-                connection.run(f"DELETE FROM download_tasks WHERE code IN ({placeholders})", ordered_removed_codes)
-            connection.run_many(
-                "INSERT INTO download_tasks(code,dates_json) VALUES(?,?)",
-                ((task.code, json.dumps([day.isoformat() for day in task.dates])) for task in added_tasks),
-            )
 
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""

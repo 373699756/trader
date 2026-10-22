@@ -782,96 +782,6 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
     assert len(HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))) == 2
 
 
-def test_pending_batch_reconciles_added_and_removed_securities(tmp_path, monkeypatch):
-    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    config = replace(_configuration(tmp_path), history_workers=1)
-    original_finish = HistoryDownloadIndex.finish
-
-    def interrupt_after_confirmation(self, completions):
-        original_finish(self, completions)
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(HistoryDownloadIndex, "finish", interrupt_after_confirmation)
-    tuning = HistoryWriteTuning(1, 3, max_codes=1, max_cells=3)
-    first = FakeSupplier(days)
-    assert RunHistorySync(config, first, clock=lambda: NOW, write_tuning=tuning).state == "cancelled"
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
-    assert [(task.code, task.tencent_done) for task in index.tasks()] == [("600001", True), ("600002", False)]
-
-    monkeypatch.setattr(HistoryDownloadIndex, "finish", original_finish)
-    securities = (
-        BaoStockSecurity("600001", "600001", "main", date(2000, 1, 1), None, "test"),
-        BaoStockSecurity("600003", "600003", "main", date(2000, 1, 1), None, "test"),
-    )
-
-    class Changed(FakeSupplier):
-        def load_context(self, as_of, sessions):
-            return super().load_context(as_of, sessions, universe=securities)
-
-    changed = Changed(days)
-    result = RunHistorySync(config, changed, clock=lambda: NOW, write_tuning=tuning)
-
-    assert result.state == "completed", result.reason
-    assert changed.calls == [("600003", days)]
-    assert [task.code for task in index.tasks()] == ["600001", "600003"]
-    state = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state()
-    active = state.active_snapshot
-    assert active is not None
-    latest_universe = next(item for item in state.universes if item.content_hash == active.universe_hash)
-    assert tuple(item.code for item in latest_universe.securities) == ("600001", "600003")
-
-
-def test_pending_batch_does_not_remove_st_identity_from_recovery(tmp_path, monkeypatch):
-    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    first = BaoStockSecurity("600001", "*ST风险", "main", date(2000, 1, 1), None, "test")
-    second = BaoStockSecurity("600002", "600002", "main", date(2000, 1, 1), None, "test")
-
-    class Initial(FakeSupplier):
-        def load_context(self, as_of, sessions):
-            return super().load_context(as_of, sessions, universe=(first, second))
-
-    def fail_publication(*_args):
-        raise OSError("interrupted_publication")
-
-    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail_publication)
-    assert RunHistorySync(_configuration(tmp_path), Initial(days), clock=lambda: NOW).state == "failed"
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
-    pending, tasks = index.pending(0), index.tasks()
-
-    class WithoutSt(FakeSupplier):
-        def load_context(self, as_of, sessions):
-            return super().load_context(as_of, sessions, universe=(second,))
-
-    changed = WithoutSt(days)
-    result = RunHistorySync(_configuration(tmp_path), changed, clock=lambda: NOW)
-
-    assert result.reason == "history_resume_st_conflict"
-    assert not changed.calls
-    assert index.pending(0) == pending and index.tasks() == tasks
-
-
-def test_pending_initial_batch_rejects_incomplete_task_dates(tmp_path, monkeypatch):
-    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-
-    def fail_publication(*_args):
-        raise OSError("interrupted_publication")
-
-    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail_publication)
-    assert RunHistorySync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "failed"
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
-    pending = index.pending(0)
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
-        connection.execute("UPDATE download_tasks SET dates_json='[]' WHERE code='600001'")
-
-    changed = FakeSupplier(days)
-    result = RunHistorySync(_configuration(tmp_path), changed, clock=lambda: NOW)
-
-    assert result.reason == "history_resume_task_dates_conflict"
-    assert not changed.calls
-    assert index.pending(0) == pending
-    assert index.tasks()[0].dates == ()
-
-
 @pytest.mark.parametrize(
     ("change", "reason"),
     (
@@ -879,6 +789,7 @@ def test_pending_initial_batch_rejects_incomplete_task_dates(tmp_path, monkeypat
         ("board", "history_resume_security_changed"),
         ("listed_on", "history_resume_security_changed"),
         ("delisted_on", "history_resume_security_changed"),
+        ("codes", "history_resume_codes_changed"),
         ("name", "history_resume_st_conflict"),
     ),
 )

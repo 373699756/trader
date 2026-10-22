@@ -1,6 +1,5 @@
 """The durable gap index distinguishes retryable gaps from source-unusable qfq dates."""
 
-import sqlite3
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -67,48 +66,5 @@ def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path):
     for invalid in (replace(current, sequence=2), replace(current, cutoff=days[0])):
         with pytest.raises(ValueError, match="history_download_identity_conflict"):
             index.rebind_context(current, invalid)
-    assert index.pending(0) == current
-    assert index.tasks() == before
-
-
-def test_rebinding_reconciles_tasks_atomically_and_rolls_back_failures(tmp_path):
-    path = tmp_path / "catalog.sqlite3"
-    HistoryControlIndex(path).initialize()
-    index = HistoryDownloadIndex(path)
-    days = (date(2026, 10, 12), date(2026, 10, 13))
-    previous = HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, days[-1])
-    retained = HistoryDownloadTask("600001", days)
-    removed = HistoryDownloadTask("600002", days)
-    index.begin(previous, (retained, removed))
-    index.begin_attempt(retained.code)
-    index.finish((HistoryDownloadCompletion(retained, days, None),))
-    current = replace(previous, source_hash="d" * 64, calendar_hash="e" * 64, universe_hash="f" * 64)
-
-    index.rebind_context(
-        previous,
-        current,
-        removed_codes=frozenset({removed.code}),
-        added_tasks=(HistoryDownloadTask("600003", days),),
-    )
-    assert index.pending(0) == current
-    assert index.tasks() == (
-        replace(retained, tencent_done=True, attempts=1),
-        HistoryDownloadTask("600003", days),
-    )
-
-    with sqlite3.connect(path) as connection:
-        connection.execute(
-            "CREATE TRIGGER reject_task_insert BEFORE INSERT ON download_tasks "
-            "WHEN NEW.code='600004' BEGIN SELECT RAISE(ABORT, 'injected failure'); END"
-        )
-    next_context = replace(current, source_hash="1" * 64, calendar_hash="2" * 64, universe_hash="3" * 64)
-    before = index.tasks()
-    with pytest.raises(sqlite3.IntegrityError, match="injected failure"):
-        index.rebind_context(
-            current,
-            next_context,
-            removed_codes=frozenset({"600003"}),
-            added_tasks=(HistoryDownloadTask("600004", days),),
-        )
     assert index.pending(0) == current
     assert index.tasks() == before
