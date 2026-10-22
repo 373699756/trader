@@ -380,7 +380,8 @@ assert(!canonicalObservationElements.observationStageList.innerHTML.includes('da
 renderPublished([{ ...matchingReceipt, trade_date: "2026-08-13" }]);
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
 renderPublished([{ ...matchingReceipt, state: "ready", failed_count: 0, output_count: 1, reasons: [] }], {
-  input_quality: { tomorrow: { stage_snapshots: [{ output_batch_id: "round-b" }] } },
+  input_quality: { tomorrow: { summary: { trade_date: publishedPayload.trade_date },
+    stage_snapshots: [{ output_batch_id: "round-b" }] } },
 });
 assert(canonicalObservationElements.funnelStages.textContent.includes("新输入轮正在处理"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("未入选 364"));
@@ -428,6 +429,23 @@ assert.strictEqual(chainCount(), 11);
 renderCloseChain({ ...pendingClosePayload, historical: true }, pendingQuality);
 assert.strictEqual(chainCount(), 11);
 assert(!closeChainElements.observationStageList.innerHTML.includes("4000"));
+const nextRoundQuality = {
+  ...pendingQuality, stage_snapshots: [{ ...stageSnapshots[0], output_batch_id: "round-b" }],
+};
+renderCloseChain(publishedPayload, nextRoundQuality);
+assert(closeChainElements.funnelStages.textContent.includes("新输入轮正在处理"));
+for (const payload of [frozenClosePayload, { ...publishedPayload, historical: true },
+  { ...publishedPayload, view: "history" }]) {
+  renderCloseChain(payload, nextRoundQuality);
+  assert(!closeChainElements.funnelStages.textContent.includes("新输入轮正在处理"),
+    "frozen and historical chains must not display a current scoring round");
+  assert(closeChainElements.observationStageList.innerHTML.includes("未入选 364"));
+}
+renderCloseChain(publishedPayload, {
+  ...nextRoundQuality, summary: { trade_date: "2026-08-13" },
+});
+assert(!closeChainElements.funnelStages.textContent.includes("新输入轮正在处理"),
+  "a different trade date must not appear as the next round");
 const selectableObservationElements = summaryFixture();
 state.renderObservationStages(selectableObservationElements, stageSnapshots, pipelineFixture, false, []);
 selectableObservationElements.observationStageList.querySelectorAll = () => [{ dataset: { stageKeys: "dynamic_filter" } }];

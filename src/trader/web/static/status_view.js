@@ -158,8 +158,8 @@
         observed,
         hasFunnelProgress,
       ) || pendingFunnelSummary(executableCount, observed, hasFunnelProgress);
-      const nextQuality = statusPayload && statusPayload.scheduler && statusPayload.scheduler.input_quality
-        && statusPayload.scheduler.input_quality[payload.strategy];
+      const nextQuality = payload.frozen || payload.view === "history"
+        ? null : strategyInputQuality(payload, statusPayload);
       const nextStages = nextQuality && nextQuality.stage_snapshots;
       if (Array.isArray(nextStages) && nextStages.length && Array.isArray(stageSnapshots)
         && nextStages[0].output_batch_id !== stageSnapshots[0]?.output_batch_id) {

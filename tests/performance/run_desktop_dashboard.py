@@ -40,6 +40,18 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
     UnifiedDecisionIndex,
 )
 from trader.recommendation.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary  # noqa: E402
+from trader.recommendation.domain.evidence.pipeline import (  # noqa: E402
+    PIPELINE_STAGES,
+    PipelineFacet,
+    PipelineStage,
+    PipelineStageSnapshot,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+    SourceHealth,
+    SourceHealthState,
+    StageState,
+)
 from trader.recommendation.domain.market.models import Board, ModelIndustryReference  # noqa: E402
 from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
     DecisionItem,
@@ -50,6 +62,7 @@ from trader.recommendation.domain.publication.decision_identity import (  # noqa
     SelectionDiagnostics,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
+from trader.recommendation.infra.status_projection import InputQualityPayload  # noqa: E402
 from trader.web import CreateApp  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
@@ -88,9 +101,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--filter-counts-only", action="store_true", help="check filter disposition counts")
+    parser.add_argument("--chrome-binary", type=Path, help="use an explicit Chrome binary for desktop acceptance")
     args = parser.parse_args()
     try:
-        report = _run(args.output.parent, filter_counts_only=args.filter_counts_only)
+        report = _run(args.output.parent, filter_counts_only=args.filter_counts_only, chrome_binary=args.chrome_binary)
     except Exception as exc:
         report = {
             "schema_version": REPORT_SCHEMA,
@@ -103,7 +117,7 @@ def main() -> int:
     return 0 if report["passed"] else 1
 
 
-def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, object]:
+def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: Path | None = None) -> dict[str, object]:
     driver_binary = shutil.which("geckodriver")
     app_port = _free_port()
     services, publish_empty_draft = _browser_services()
@@ -115,7 +129,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
     chrome: _ChromeSession | None = None
     session_id: str | None = None
     try:
-        if driver_binary is not None and shutil.which("firefox") is not None:
+        if chrome_binary is None and driver_binary is not None and shutil.which("firefox") is not None:
             driver = subprocess.Popen(
                 [driver_binary, "--host", "127.0.0.1", "--port", str(driver_port)],
                 stdout=subprocess.DEVNULL,
@@ -139,10 +153,14 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
             base: str | _ChromeSession = f"http://127.0.0.1:{driver_port}/session/{session_id}"
             browser_name = "firefox-headless"
         else:
-            chrome_binary = shutil.which("google-chrome") or shutil.which("chromium")
-            if chrome_binary is None:
+            selected_chrome = (
+                shutil.which(str(chrome_binary))
+                if chrome_binary is not None
+                else shutil.which("google-chrome") or shutil.which("chromium")
+            )
+            if selected_chrome is None:
                 raise RuntimeError("Firefox/geckodriver or Google Chrome is required for the desktop gate")
-            chrome = _ChromeSession(chrome_binary, driver_port)
+            chrome = _ChromeSession(selected_chrome, driver_port)
             base = chrome
             browser_name = "chrome-headless"
         _navigate(base, f"http://127.0.0.1:{app_port}/")
@@ -204,6 +222,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
         avoided = _six_seat_snapshot(base)
         observation_copy = _observation_copyability(base)
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
+        close_chain = _close_chain(base, output_dir)
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
         _wait(
             lambda: bool(_execute(base, 'return Boolean(document.querySelector("#tableBody tr[data-code]"));')),
@@ -224,7 +243,8 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
         )
         passed = (
             all(
-                item.get("headers", [])[:3] == ["排名", "状态", "股票"]
+                isinstance(headers := item.get("headers"), list)
+                and headers[:3] == ["排名", "状态", "股票"]
                 and item.get("codes") == expected_codes
                 and item.get("ranks") == [1, 2]
                 and item.get("tiers") == ["关注", "关注"]
@@ -241,6 +261,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
             and avoided.get("tiers") == ["回避", "回避"]
             and avoided.get("six_seat_meta") == "推荐 0 · 关注 0 · 回避 2"
             and observation_copy.get("passed") is True
+            and close_chain.get("passed") is True
             and profile_switch == {"selected": "v3", "before_date": True, "rows": 2}
             and all(_viewport_passed(viewport) for viewport in viewports)
             and isinstance(long_state, dict)
@@ -253,9 +274,11 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
             "schema_version": REPORT_SCHEMA,
             "passed": passed,
             "browser": browser_name,
+            "browser_version": _execute(base, "return navigator.userAgent;"),
             "snapshots": snapshots,
             "avoided": avoided,
             "observation_copy": observation_copy,
+            "close_chain": close_chain,
             "profile_switch": profile_switch,
             "long": long_state,
             "viewports": viewports,
@@ -294,20 +317,22 @@ def _filter_counts(base: str | _ChromeSession, browser_name: str) -> dict[str, o
             const list = document.querySelector('#observationStageList');
             const drawer = document.querySelector('#observationDrawer');
             drawer.classList.add('is-open');
-            const stages = ['data_source', 'static_market', 'static_standardize', 'static_filter',
-              'dynamic_market', 'dynamic_standardize', 'dynamic_filter', 'candidate_pool',
-              'quality_check', 'local_score', 'risk_review', 'score_merge', 'downside_action', 'final_selection'];
+            const stages = ['local_data', 'static_filter', 'dynamic_market', 'dynamic_filter',
+              'market_features', 'model_filter', 'local_score', 'local_risk', 'fixed_selection',
+              'risk_review', 'action_publish'];
             window.TraderStatusView.renderObservationStages({observationStageList: list}, stages.map(stage =>
               ({stage, state: 'degraded', input_count: 4391, output_count: 129,
                 rejected_count: 1079, pending_count: 3182, failed_count: 1, latency_ms: 1000})
             ), null, false, []);
             const row = list.querySelector('[data-stage-keys="dynamic_filter"]');
             const text = row.querySelector('span');
-            const expected = '4391 → 129 · 淘汰 1079 · 待补充 3182 · 失败 1';
+            const expected = '4391 → 129 · 淘汰 1079 · 待补 3182 · 失败 1';
             return {text: text.textContent, passed: text.textContent.includes(expected)
               && text.scrollWidth <= text.clientWidth && row.getBoundingClientRect().width > 0};
         """,
         )
+        if not isinstance(result, dict):
+            raise RuntimeError("browser filter counts must be an object")
         results.append({"viewport": [width, height], **result})
     return {
         "schema_version": REPORT_SCHEMA,
@@ -384,6 +409,112 @@ def _observation_copyability(base: str | _ChromeSession) -> dict[str, object]:
     return result
 
 
+def _close_chain(base: str | _ChromeSession, output_dir: Path) -> dict[str, object]:
+    result = _execute(
+        base,
+        """
+        return (async () => {
+          const response = await fetch('/api/decisions/tomorrow/current?profile=v2');
+          const published = {...await response.json(), historical: false};
+          const full = published.pipeline?.stage_snapshots;
+          if (!Array.isArray(full) || full.length !== 11) return {passed: false, reason: 'missing_api_stages'};
+          const els = Object.fromEntries(Array.from(document.querySelectorAll('[id]'), (el) => [el.id, el]));
+          const list = els.observationStageList;
+          const pending = {...published, status: 'not_ready', frozen: false, pipeline: null, items: [],
+            draft: null, coverage: {}};
+          const quality = {summary: {trade_date: published.trade_date},
+            pipeline: published.pipeline, stage_snapshots: full.slice(0, 3)};
+          const next = {...quality, stage_snapshots: quality.stage_snapshots.map((stage) => ({...stage,
+            output_batch_id: 'next:' + stage.output_batch_id,
+            output_count: stage.stage === 'dynamic_market' ? 3333 : stage.output_count,
+            rejected_count: stage.stage === 'dynamic_market' ? 667 : stage.rejected_count}))};
+          const draw = (payload, input, phase = 'after_close') => {
+            window.TraderStatusView.renderSummary(els, payload, [], 'closed_market', null,
+              window.TraderSelection, window.TraderRender,
+              {phase, scheduler: {input_quality: input ? {tomorrow: input} : {}}});
+            return {count: list.querySelectorAll('.observation-stage').length,
+              dynamic: list.querySelector('[data-stage-keys="dynamic_market"] button span')?.textContent,
+              unknown: (list.textContent.match(/缺失字段不代表零/g) || []).length,
+              next_round: els.funnelStages.textContent.includes('新输入轮正在处理')};
+          };
+          const cases = [];
+          const check = (name, payload, input, phase, expected) => {
+            const actual = draw(payload, input, phase);
+            cases.push({name, ...actual, passed: actual.count === 11 && expected(actual)});
+          };
+          check('morning_hot', published, null, 'before_close', (s) => s.unknown === 0);
+          check('morning_cold', pending, null, 'before_close', (s) => s.unknown === 11);
+          check('midday_cold', pending, quality, 'before_close', (s) => s.unknown === 8
+            && s.dynamic.includes('4000 → 4000'));
+          check('close_boundary', pending, quality, 'after_close', (s) => s.unknown === 8);
+          check('after_close_progress', pending, next, 'after_close', (s) => s.unknown === 8
+            && s.dynamic.includes('4000 → 3333'));
+          const frozen = {...published, frozen: true};
+          check('formal_hit', frozen, next, 'after_close', (s) => s.unknown === 0
+            && s.dynamic.includes('4000 → 4000') && !s.next_round);
+          check('close_fallback', {...frozen, freeze_kind: 'close_fallback'}, next, 'after_close',
+            (s) => s.unknown === 0 && !s.next_round);
+          check('history', {...frozen, historical: true, view: 'history'}, next, 'after_close',
+            (s) => s.unknown === 0 && !s.next_round);
+          check('missing_history', {...pending, historical: true, view: 'history'}, next, 'after_close',
+            (s) => s.unknown === 11);
+          check('different_date', pending, {...quality, summary: {trade_date: '2000-01-01'}}, 'after_close',
+            (s) => s.unknown === 11);
+          check('different_strategy', {...pending, strategy: 'd25'}, quality, 'after_close',
+            (s) => s.unknown === 11);
+          check('next_round_same_date', published, next, 'before_close', (s) => s.next_round);
+          check('next_round_different_date', published,
+            {...next, summary: {trade_date: '2000-01-01'}}, 'before_close', (s) => !s.next_round);
+          const legacy = {current_stage: 'final_selection', stages: [{key: 'input_readiness'}],
+            stage_snapshots: [{stage: 'stage_1', output_count: 5291}]};
+          check('legacy_history', {...frozen, historical: true, view: 'history', pipeline: legacy}, next,
+            'after_close', (s) => s.unknown === 11 && !list.textContent.includes('5291'));
+          draw(frozen, next);
+          if (!els.observationDrawer.classList.contains('is-open')) els.errorDetailsButton.click();
+          await Promise.all(els.observationDrawer.getAnimations().map((animation) => animation.finished));
+          const stage = list.querySelector('[data-stage-keys="dynamic_market"]');
+          const button = stage.querySelector('button');
+          if (!stage.classList.contains('is-expanded')) button.click();
+          const detail = stage.querySelector('.observation-stage-detail');
+          const range = document.createRange();
+          range.selectNodeContents(detail);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          const copied = selection.toString();
+          draw(frozen, next);
+          const preserved = stage.isConnected && copied.length > 0 && selection.toString() === copied;
+          selection.removeAllRanges();
+          draw(pending, next);
+          const expanded = list.querySelector('[data-stage-keys="dynamic_market"]');
+          const updated = expanded.classList.contains('is-expanded')
+            && expanded.querySelector('button').getAttribute('aria-expanded') === 'true'
+            && expanded.textContent.includes('4000 → 3333');
+          draw(frozen, next);
+          const readable = Array.from(list.querySelectorAll('button span')).every((text) =>
+            text.getBoundingClientRect().width > 0 && text.scrollWidth <= text.clientWidth
+            && text.getBoundingClientRect().right <= window.innerWidth);
+          const durations = list.textContent.includes('0 ms') && list.textContent.includes('1.25 s')
+            && list.textContent.includes('未测量') && list.textContent.includes('沿用启动结果');
+          const long = draw({...published, strategy: 'long'}, next);
+          const longExcluded = long.count === 0 && list.textContent.includes('不经过荐股评分链路');
+          draw(frozen, next);
+          list.querySelector('[data-stage-keys="dynamic_market"] button').click();
+          const errors = window.TraderDashboardDiagnostics.snapshot().browserErrors;
+          return {passed: cases.every((item) => item.passed) && preserved && updated && readable
+            && durations && longExcluded && errors.length === 0,
+            cases, selection_preserved: preserved, expanded_after_update: updated, readable,
+            durations, long_excluded: longExcluded, browser_errors: errors};
+        })();
+        """,
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("browser close-chain result must be an object")
+    (output_dir / "close-chain.png").write_bytes(base64.b64decode(str(_screenshot(base))))
+    _execute(base, "document.querySelector('#observationDrawerClose').click(); return true;")
+    return result
+
+
 def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
     index = UnifiedDecisionIndex()
     drafts = UnifiedDecisionDraftIndex()
@@ -409,6 +540,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             "fusion:browser",
             items,
             (),
+            pipeline=_browser_pipeline(),
         )
         decisions[strategy] = decision
     if not drafts.publish(decisions[Strategy.D25]).accepted:
@@ -452,7 +584,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
         return {
             "status": "running",
             "runtime_started": True,
-            "phase": "midday",
+            "phase": "before_close",
             "deepseek_budget": {"used": 0, "remaining": 168, "planned_limit": 71},
             "market_data": {
                 "active_source": "eastmoney",
@@ -517,9 +649,6 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             tuple(
                 replace(
                     _observation_item(code, rank=rank, final_score=score),
-                    selected=False,
-                    rank=0,
-                    selection_rank=0,
                     action=RecommendationAction.UNAVAILABLE,
                     reason="risk_veto",
                 )
@@ -542,6 +671,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
                 0,
                 "risk_or_execution_blocked",
             ),
+            pipeline=_browser_pipeline(empty=True),
         )
         result = index.publish(empty, expected_version=None)
         if not result.accepted:
@@ -572,102 +702,73 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
 
 
 def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
-    status = {
-        "status": "not_ready",
-        "population_count": 5291,
-        "data_pending_count": 4291,
-        "candidate_optional_reason_counts": {
-            "missing_listing_date": 221,
-            "missing_listing_age_sessions": 65,
-        },
-        "pipeline": {
-            "current_stage": "concentration",
-            "stages": [
-                _browser_stage("input_readiness", 5291, 1000),
-                _browser_stage("dynamic_filter", 1000, 500),
-                _browser_stage("board_cross_section", 500, 500, filter_pass=56, filter_observe=2, filter_reject=216),
-                _browser_stage("strategy_history", 500, 400, history_sessions=(61.0, 248.0)),
-                _browser_stage("model_input", 400, 360, input_completeness=(0.82, 1.0)),
-                _browser_stage("candidate_score", 360, 360, candidate_score=(49.0, 82.0), threshold=50.0),
-                _browser_stage("board_limit", 360, 360),
-                _browser_stage("candidate_refresh", 360, 360, quote_age_seconds=(1.0, 3.0)),
-                _browser_stage("input_coverage", 360, None, candidate_features=360, security_master=120, history=78),
-                _browser_stage("evidence_score", 360, 56, base_score=(42.0, 76.0)),
-                _browser_stage("model_cost_gate", 56, 20, predicted_net_excess_pct=(-0.2, 0.8)),
-                _browser_stage("local_score", 56, 56, local_score=(40.0, 74.25)),
-                _browser_stage("deepseek_review", 20, 20, deepseek_score=(40.0, 76.0)),
-                _browser_stage("fusion", 56, 56, final_score=(40.0, 74.25)),
-                _browser_stage(
-                    "action_gate",
-                    56,
-                    2,
-                    observation_threshold_met=2,
-                    executable_threshold_met=0,
-                    action_executable=0,
-                    action_observe=2,
-                    action_unavailable=54,
-                ),
-                _browser_stage(
-                    "concentration", 2, 0 if empty else 2, selected_executable=0, selected_observe=0 if empty else 2
-                ),
-            ],
-        },
-        "stage_snapshots": _browser_stage_snapshots(empty=empty),
-        "supply_reason_counts": {
-            "below_score_threshold": 54,
-            "risk_veto": 2,
-            "corporate_risk_window_unavailable": 1,
-            "stale_quote": 1,
-        },
-        "primary_blocker": "security_master_coverage_incomplete",
-        "summary": {
-            "trade_date": _NOW.date().isoformat(),
-            "quote_total_count": 360,
-            "quote_covered_count": 360,
-            "quote_missing_count": 0,
-            "security_identity_missing_count": 240,
-            "latest_quote_source": "tencent",
-            "latest_quote_source_time": _NOW.replace(hour=10, minute=0).isoformat(),
-            "highest_final_score": 74.25,
-        },
-    }
-    return {strategy: status for strategy in ("tomorrow", "d25")}
+    pipeline = _browser_pipeline(empty=empty)
+    return InputQualityPayload(
+        tuple(
+            InputQualityStatus(
+                strategy,
+                "not_ready",
+                False,
+                SupplySummary(_NOW.date(), 360, 360, 0, 240, "tencent", _NOW.replace(hour=10, minute=0), 74.25),
+                pipeline,
+                pipeline.stage_snapshots,
+                population_count=5291,
+                data_pending_count=4291,
+                candidate_optional_reason_counts=(("missing_listing_date", 221), ("missing_listing_age_sessions", 65)),
+                supply_reason_counts=(("risk_veto", 2), ("corporate_risk_window_unavailable", 1), ("stale_quote", 1)),
+                primary_blocker="security_master_coverage_incomplete",
+            )
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
+        )
+    )
 
 
-def _browser_stage_snapshots(*, empty: bool) -> list[dict[str, object]]:
-    outputs = [5291, 5291, 5291, 1000, 1000, 1000, 500, 360, 350, 56, 20, 20, 20, 0 if empty else 2]
-    return [
-        {"stage": f"stage_{index}", "stage_order": index, "state": "completed", "output_count": output}
-        for index, output in enumerate(outputs, start=1)
-    ]
-
-
-def _browser_stage(
-    key: str,
-    input_count: int,
-    output_count: int | None,
-    *,
-    threshold: float | None = None,
-    **details: int | tuple[float, float],
-) -> dict[str, object]:
-    metrics = [
-        {"metric": name, "minimum": value[0], "maximum": value[1]}
-        for name, value in details.items()
-        if isinstance(value, tuple)
-    ]
-    facets = [
-        {"key": name, "count": value, "total": input_count} for name, value in details.items() if isinstance(value, int)
-    ]
-    return {
-        "key": key,
-        "state": "completed",
-        "input_count": input_count,
-        "output_count": output_count,
-        "metric_ranges": metrics,
-        "threshold": threshold,
-        "facets": facets,
-        "reason_counts": [],
-    }
+def _browser_pipeline(*, empty: bool = False) -> RecommendationPipelineStatus:
+    observed_at = _NOW.replace(hour=11, minute=15)
+    outputs = (5291, 4000, 4000, 1000, 400, 360, 360, 360, 2, 2, 2)
+    snapshots = tuple(
+        PipelineStageSnapshot(
+            stage,
+            index + 1,
+            f"browser:{index}",
+            f"browser:{index + 1}",
+            observed_at,
+            StageState.READY,
+            outputs[index - 1] if index else outputs[0],
+            output,
+            outputs[index - 1] - output if index and stage is not PipelineStage.FIXED_SELECTION else 0,
+            0,
+            0,
+            (),
+            SourceHealth(SourceHealthState.READY, 1, 1, observed_at, 0.0),
+            None if index < 2 else 1250 if index == 2 else 0 if index == 3 else 10,
+            False,
+            not_selected_count=358 if stage is PipelineStage.FIXED_SELECTION else 0,
+            operation_durations=(("startup_reuse", None),) if index < 2 else (),
+        )
+        for index, (stage, output) in enumerate(zip(PIPELINE_STAGES, outputs, strict=True))
+    )
+    return RecommendationPipelineStatus(
+        "action_publish",
+        tuple(
+            PipelineStageStatus(
+                snapshot.stage.value,
+                "completed",
+                snapshot.input_count,
+                snapshot.output_count,
+                facets=(
+                    PipelineFacet("action_executable", 0),
+                    PipelineFacet("action_observe", 0 if empty else 2),
+                    PipelineFacet("action_unavailable", 2 if empty else 0),
+                )
+                if snapshot.stage is PipelineStage.ACTION_PUBLISH
+                else (),
+            )
+            for snapshot in snapshots
+        ),
+        snapshots,
+        elapsed_ms=2000,
+    )
 
 
 def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionItem:
@@ -818,7 +919,10 @@ class _ChromeSession:
                 "--headless=new",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-gpu",
                 "--disable-background-networking",
+                "--no-first-run",
+                "--no-default-browser-check",
                 "--remote-allow-origins=*",
                 f"--remote-debugging-port={port}",
                 f"--user-data-dir={self._profile.name}",
@@ -852,8 +956,9 @@ class _ChromeSession:
                     targets = response.json()
                 if isinstance(targets, list):
                     page = next((target for target in targets if target.get("type") == "page"), None)
-                    if isinstance(page, dict) and isinstance(page.get("webSocketDebuggerUrl"), str):
-                        return page["webSocketDebuggerUrl"]
+                    debugger_url = page.get("webSocketDebuggerUrl") if isinstance(page, dict) else None
+                    if isinstance(debugger_url, str):
+                        return debugger_url
             except (OSError, json.JSONDecodeError):
                 pass
             time.sleep(0.05)
