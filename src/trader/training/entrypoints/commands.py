@@ -127,6 +127,9 @@ def RunResearchCommand(
         LoadResearchSettings(config_path.parent)
         LoadEvaluationCostScenarios(config_path.parent)
     if command == "research-status":
+        from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
+        from trader.training.domain.evaluation.selection_experiment import SELECTION_RESEARCH_IDENTITY
+
         trace = SQLiteResearchTraceIndex(research_root)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
@@ -152,7 +155,17 @@ def RunResearchCommand(
                     "schema_version": "research_readiness",
                     "production_authority": False,
                     "validation_mode": "historical_only",
-                    "blockers": [] if screening_ready else ["score_h0_archive_coverage_incomplete"],
+                    "blockers": ["target_selection_external_validation_required"],
+                    "target_selection": {
+                        "research_identity": SELECTION_RESEARCH_IDENTITY,
+                        "status": "external_validation_required",
+                        "strategies": ["tomorrow", "d25"],
+                        "pipeline_stages": list(PIPELINE_STAGE_ORDER),
+                        "population": "full_eligible_population",
+                        "validation_command": "research-selection",
+                        "blockers": ["target_selection_external_validation_required"],
+                        "production_authority": False,
+                    },
                     "tomorrow_historical": tomorrow_historical,
                     "tomorrow_historical_risk": tomorrow_risk,
                     "tomorrow_research": tomorrow_research,
@@ -174,6 +187,8 @@ def RunResearchCommand(
                     "historical_screening": {
                         **asdict(screening_snapshot),
                         "coverage_ratio": round(screening_coverage, 6),
+                        "ready": screening_ready,
+                        "target_selection_evidence": False,
                         "research_spec_hash": HISTORICAL_SCREENING_SPEC.content_hash,
                         "training_window": {
                             "start": HISTORICAL_SCREENING_SPEC.training_start.isoformat(),

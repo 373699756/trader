@@ -15,6 +15,7 @@ from trader.infra.http_contracts import HttpError, HttpTimeout
 if TYPE_CHECKING:
     from trader.training.application.capability_completion import CapabilityExecution
     from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
+    from trader.training.application.selection_execution import SelectionResearchExecution
     from trader.training.domain.evaluation.historical_industry_facts import HistoricalIndustryDatasetReport
     from trader.training.domain.evaluation.point_in_time_data_qualification import PointInTimeDataQualificationReport
 
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
         | CrossStrategyConclusion
         | HistoricalIndustryDatasetReport
         | PointInTimeDataQualificationReport
+        | SelectionResearchExecution
     )
 
 
@@ -56,12 +58,20 @@ class HoldoutCommand:
     output_dir: Path
 
 
-ResearchEvidenceCommand = CapabilityCommand | QualificationCommand | IndustryAuditCommand | HoldoutCommand
+@dataclass(frozen=True)
+class SelectionCommand:
+    evidence_dir: Path
+
+
+ResearchEvidenceCommand = (
+    CapabilityCommand | QualificationCommand | IndustryAuditCommand | HoldoutCommand | SelectionCommand
+)
 COMMAND_SCHEMAS = {
     "research-h1-capability": ("h1_capability_execution", "probe_failed"),
     "research-data-qualification": ("point_in_time_data_qualification", "probe_failed"),
     "research-industry-audit": ("historical_industry_dataset", "audit_failed"),
     "research-terminal-holdout": ("terminal_holdout_execution", "execution_failed"),
+    "research-selection": ("full_population_selection_validation", "execution_failed"),
 }
 
 
@@ -74,6 +84,10 @@ def AddResearchEvidenceParsers(subparsers: argparse._SubParsersAction) -> None:
             "Audit archived industry facts offline; detailed output requires an external path.",
         ),
         ("research-terminal-holdout", "Seal two terminal reports and a conclusion outside the repository; offline."),
+        (
+            "research-selection",
+            "Validate the full-population eleven-layer selection study from external sealed evidence; offline.",
+        ),
     )
     for name, description in descriptions:
         parser = subparsers.add_parser(name, help=description, description=description)
@@ -93,6 +107,10 @@ def AddResearchEvidenceParsers(subparsers: argparse._SubParsersAction) -> None:
         elif name == "research-terminal-holdout":
             parser.add_argument("--parent-artifact-dir", type=Path, required=True)
             parser.add_argument("--output-dir", type=Path, required=True)
+        elif name == "research-selection":
+            parser.add_argument(
+                "--evidence-dir", type=Path, required=True, help="external plan.json and rows.jsonl directory"
+            )
         else:
             parser.add_argument("--history-root", type=Path, required=True, help="explicit read-only history root")
         if name == "research-industry-audit":
@@ -112,6 +130,10 @@ def ExternalPath(value: Path, *, repository_root: Path, option: str) -> Path:
 
 
 def ParseEvidenceCommand(args: argparse.Namespace, *, repository_root: Path) -> ResearchEvidenceCommand:
+    if args.command == "research-selection":
+        return SelectionCommand(
+            ExternalPath(args.evidence_dir, repository_root=repository_root, option="--evidence-dir")
+        )
     if args.command in {"research-h1-capability", "research-data-qualification"}:
         from trader.training.domain.evaluation.h1_point_in_time import H1_SOURCE_CUTOFF
 
@@ -171,7 +193,12 @@ def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path) -> i
         _validate_output_separation(command, output)
         report = ExecuteResearchEvidence(command)
         payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
-        _write(payload, output)
+        if args.command == "research-selection" and output is not None:
+            from trader.training.infra.research.selection_reports import PublishSelectionReport
+
+            PublishSelectionReport(output, payload)
+        else:
+            _write(payload, output)
         return exit_code
     except (OSError, RuntimeError, TypeError, ValueError, HttpError) as exc:
         schema, status = COMMAND_SCHEMAS[args.command]
@@ -196,6 +223,8 @@ def _validate_output_separation(command: ResearchEvidenceCommand, summary: Path 
             raise ValueError("H1 input and artifact directories must be separate")
     elif isinstance(command, HoldoutCommand):
         roots = (command.parent_artifact_dir, command.output_dir)
+    elif isinstance(command, SelectionCommand):
+        roots = (command.evidence_dir,)
     else:
         roots = (command.history_root,)
     if summary is not None and any(summary == root or root in summary.parents for root in roots):
@@ -225,11 +254,16 @@ def _error_code(exc: BaseException, command: str) -> str:
         return "artifact_io_failed"
     if command == "research-industry-audit" and any(word in str(exc).lower() for word in ("manifest", "partition")):
         return "daily_archive_invalid"
-    if isinstance(exc, RuntimeError) and command in {"research-h1-capability", "research-terminal-holdout"}:
+    if isinstance(exc, RuntimeError) and command in {
+        "research-h1-capability",
+        "research-terminal-holdout",
+        "research-selection",
+    }:
         return "artifact_conflict"
     return {
         "research-h1-capability": "invalid_capability_evidence",
         "research-data-qualification": "invalid_qualification_evidence",
         "research-industry-audit": "invalid_industry_evidence",
         "research-terminal-holdout": "invalid_parent_artifacts",
+        "research-selection": "invalid_selection_evidence",
     }[command]

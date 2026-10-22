@@ -531,7 +531,10 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     assert "baostock_history" not in payload
     assert payload["recorded_trade_dates"] == []
     assert payload["outcomes"]["initialized"] is False
-    assert payload["blockers"] == ["score_h0_archive_coverage_incomplete"]
+    assert payload["blockers"] == ["target_selection_external_validation_required"]
+    assert payload["target_selection"]["research_identity"] == "eleven_layer_full_population"
+    assert payload["target_selection"]["strategies"] == ["tomorrow", "d25"]
+    assert payload["historical_screening"]["target_selection_evidence"] is False
     assert payload["tomorrow_historical"]["validation_mode"] == "historical_only"
     assert payload["tomorrow_historical_risk"] == {
         "model_artifact_hash": "",

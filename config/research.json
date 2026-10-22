@@ -1,7 +1,7 @@
 {
   "terminal_holdout_sessions": 200,
   "embargo_sessions": {
-    "tomorrow": 1,
+    "tomorrow": 5,
     "d25": 5
   },
   "fit_date_candidates": [
@@ -9,18 +9,13 @@
     {"profile": "v3", "dates": [500, 750, 1000]}
   ],
   "ablation_arms": [
-    "current_chain",
-    "without_input_completeness_bonus",
-    "without_d25_execution_bonus",
-    "without_tomorrow_flow_bonus",
-    "without_preselection_stability_bonus",
-    "without_d25_quality_valuation_bonus",
-    "equal_weight_local_components",
-    "fixed_20bp_round_trip_cost"
+    "rule_only",
+    "rule_model_gate",
+    "industry_model_utility",
+    "pooled_model_utility"
   ],
   "deepseek_comparison_arms": [
     "local_only",
-    "structured_facts_veto",
-    "fixed_68_32"
+    "structured_facts_veto"
   ]
 }

@@ -29,10 +29,14 @@ class ConstrainedOracleCandidate:
 class ConstrainedOraclePolicy:
     top_k: int
     max_per_board: int
-    max_per_industry: int
+    max_per_industry: int | None
 
     def __post_init__(self) -> None:
-        if not 1 <= self.top_k <= 6 or not 1 <= self.max_per_board <= self.top_k or not 1 <= self.max_per_industry <= 2:
+        if (
+            not 1 <= self.top_k <= 6
+            or not 1 <= self.max_per_board <= self.top_k
+            or (self.max_per_industry is not None and not 1 <= self.max_per_industry <= 2)
+        ):
             raise ValueError("constrained oracle policy exceeds the bounded research limits")
 
 
@@ -47,6 +51,21 @@ def ConstrainedOracle(
 ) -> ConstrainedOracleResult:
     if len({item.code for item in candidates}) != len(candidates):
         raise ValueError("constrained oracle requires unique candidate codes")
+    if policy.max_per_industry is None:
+        # Board partitions plus a uniform TopK form a matroid: descending
+        # positive returns give the exact optimum, including the cash option.
+        optimal: list[ConstrainedOracleCandidate] = []
+        for item in sorted(candidates, key=lambda item: (-item.net_return, item.code)):
+            if item.net_return <= 0.0:
+                break
+            if sum(prior.board == item.board for prior in optimal) >= policy.max_per_board:
+                continue
+            optimal.append(item)
+            if len(optimal) == policy.top_k:
+                break
+        return ConstrainedOracleResult(
+            math.fsum(item.net_return for item in optimal), tuple(sorted(item.code for item in optimal))
+        )
     industries = tuple(sorted({item.industry for item in candidates}))
     states: dict[tuple[int, ...], tuple[Decimal, tuple[str, ...]]] = {(0, 0, 0): (Decimal(0), ())}
     for industry in industries:
@@ -77,6 +96,8 @@ def ConstrainedOracle(
 def _industry_options(
     candidates: tuple[ConstrainedOracleCandidate, ...], industry: str, policy: ConstrainedOraclePolicy
 ) -> tuple[tuple[ConstrainedOracleCandidate, ...], ...]:
+    if policy.max_per_industry is None:
+        raise ValueError("industry options require an explicit industry limit")
     # Identical board/industry exposure makes all but the best cap-sized subset dominated.
     pool = tuple(
         item

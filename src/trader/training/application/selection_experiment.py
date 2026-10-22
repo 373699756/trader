@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.selection_experiment import (
     EvaluatePairedSelectionExperiment,
     InsufficientPairedSelectionExperimentReport,
@@ -33,6 +33,8 @@ class SelectionExperimentParentRowIdentity:
 
 @dataclass(frozen=True)
 class SelectionExperimentPrerequisite:
+    specification_hash: str
+    qualification_hash: str
     dataset_status: Literal["historical_point_in_time_parity", "historical_data_insufficient"]
     candidate_recall_status: Literal["candidate_recall_attributed", "historical_data_insufficient"]
     dataset_hash: str
@@ -53,7 +55,13 @@ class SelectionExperimentPrerequisite:
             raise ValueError("selection experiment candidate recall status is invalid")
         if any(
             _HASH.fullmatch(value) is None
-            for value in (self.dataset_hash, self.dataset_manifest_hash, self.candidate_recall_hash)
+            for value in (
+                self.specification_hash,
+                self.qualification_hash,
+                self.dataset_hash,
+                self.dataset_manifest_hash,
+                self.candidate_recall_hash,
+            )
         ):
             raise ValueError("selection experiment prerequisite hashes are invalid")
         if any(_REASON.fullmatch(value) is None for value in reasons):
@@ -70,7 +78,7 @@ class SelectionExperimentPrerequisite:
             raise ValueError("selection experiment prerequisite parent rows must be unique")
         object.__setattr__(self, "population_rows", rows)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", CanonicalDigest(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def ready(self) -> bool:
@@ -100,7 +108,8 @@ class PairedSelectionExperimentBuilder:
         prerequisite: SelectionExperimentPrerequisite,
     ) -> PairedSelectionExperimentReport:
         if (
-            prerequisite.dataset_hash != specification.dataset_hash
+            prerequisite.specification_hash != specification.content_hash
+            or prerequisite.dataset_hash != specification.dataset_hash
             or prerequisite.dataset_manifest_hash != specification.dataset_manifest_hash
             or prerequisite.candidate_recall_hash != specification.candidate_recall_hash
         ):

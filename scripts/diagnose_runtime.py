@@ -1138,14 +1138,17 @@ def _research_details(result: DiagnosticResult, source: Mapping[str, object], pa
     tomorrow = _mapping(source.get("tomorrow_research"))
     input_blockers = _safe_string_list(tomorrow.get("input_blockers"), limit=20)
     production_blockers = _safe_string_list(tomorrow.get("production_blockers"), limit=20)
-    blockers = input_blockers + production_blockers
+    target = _mapping(source.get("target_selection"))
+    target_blockers = _safe_string_list(target.get("blockers"), limit=20)
+    blockers = target_blockers + input_blockers + production_blockers
     if blockers:
         payload["findings"] = [
             {
                 "severity": "error",
                 "code": blockers[0],
-                "message": "Tomorrow V3 research remains blocked by its sealed prerequisite gates.",
+                "message": "Research requires qualified evidence for its declared selection identity.",
                 "evidence": {
+                    "target_blockers": target_blockers,
                     "input_blockers": input_blockers,
                     "production_blockers": production_blockers,
                     "production_authority": tomorrow.get("production_authority"),
@@ -1153,6 +1156,15 @@ def _research_details(result: DiagnosticResult, source: Mapping[str, object], pa
             }
         ]
     payload["summary"] = {
+        "target_selection": {
+            "research_identity": target.get("research_identity"),
+            "status": target.get("status"),
+            "strategies": _safe_string_list(target.get("strategies"), limit=2),
+            "population": target.get("population"),
+            "validation_command": target.get("validation_command"),
+            "blockers": target_blockers,
+            "production_authority": target.get("production_authority"),
+        },
         "history_archive": {
             "state": history.get("state"),
             "active_snapshot_hash": history.get("active_snapshot_hash"),
@@ -1273,6 +1285,8 @@ def _status(result: DiagnosticResult) -> CheckStatus:
     if result.name == "research_readiness" and not _valid_research_status(result.payload):
         return "failed"
     if result.name == "research_readiness":
+        if _safe_string_list(result.payload.get("blockers"), limit=1):
+            return "failed"
         tomorrow = _mapping(result.payload.get("tomorrow_research"))
         if tomorrow.get("status") == "blocked":
             return "failed"

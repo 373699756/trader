@@ -583,7 +583,7 @@ def test_research_source_compare_projects_bounded_component_errors() -> None:
     assert "raw_payload" not in str(summary)
 
 
-def test_research_status_projection_uses_the_active_monthly_archive_and_v3_blockers() -> None:
+def test_research_status_projects_target_selection_separately_from_previous_research() -> None:
     report = build_report(
         "research",
         (
@@ -616,6 +616,16 @@ def test_research_status_projection_uses_the_active_monthly_archive_and_v3_block
                     },
                     "production_authority": False,
                     "recorded_trade_dates": ["2026-08-21", "2026-08-20"],
+                    "blockers": ["target_selection_external_validation_required"],
+                    "target_selection": {
+                        "research_identity": "eleven_layer_full_population",
+                        "status": "external_validation_required",
+                        "strategies": ["tomorrow", "d25"],
+                        "population": "full_eligible_population",
+                        "validation_command": "research-selection",
+                        "blockers": ["target_selection_external_validation_required"],
+                        "production_authority": False,
+                    },
                 },
                 None,
             ),
@@ -646,7 +656,9 @@ def test_research_status_projection_uses_the_active_monthly_archive_and_v3_block
         "production_authority": False,
     }
     assert summary["production_authority"] is False
-    assert report["findings"][0]["code"] == "tomorrow_h1_historical_data_insufficient"
+    assert summary["target_selection"]["research_identity"] == "eleven_layer_full_population"
+    assert summary["target_selection"]["strategies"] == ["tomorrow", "d25"]
+    assert report["findings"][0]["code"] == "target_selection_external_validation_required"
     assert "2026-08-20" not in str(report["checks"][0])
 
 

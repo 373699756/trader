@@ -509,12 +509,7 @@ def ExecuteQfqDownload(
 
 def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
     """Lazily assemble one offline research use case; never build the server runtime."""
-    from trader.training.entrypoints.research_evidence import (
-        CapabilityCommand,
-        HoldoutCommand,
-        IndustryAuditCommand,
-        QualificationCommand,
-    )
+    from trader.training.entrypoints import research_evidence
     from trader.training.infra.research.command_evidence import (
         CapabilityEvidencePublisher,
         HistoricalIndustryEvidenceReader,
@@ -522,13 +517,18 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenc
         TerminalHoldoutParentsReader,
     )
 
-    if isinstance(command, IndustryAuditCommand):
+    if isinstance(command, research_evidence.SelectionCommand):
+        from trader.training.application.selection_execution import ExecuteSelectionResearch
+        from trader.training.infra.research.selection_evidence import SelectionEvidenceReader
+
+        return ExecuteSelectionResearch(SelectionEvidenceReader(command.evidence_dir))
+    if isinstance(command, research_evidence.IndustryAuditCommand):
         from trader.training.application.historical_industry_audit import AuditHistoricalIndustry
 
         return AuditHistoricalIndustry(HistoricalIndustryEvidenceReader(command.history_root)).execute(
             required_sample_codes=command.required_sample_codes, tushare_access_points=command.tushare_access_points
         )
-    if isinstance(command, HoldoutCommand):
+    if isinstance(command, research_evidence.HoldoutCommand):
         from trader.training.application.terminal_holdout_execution import ExecuteTerminalHoldout
 
         return ExecuteTerminalHoldout(
@@ -544,7 +544,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenc
         probe = FreeSourceH1CapabilityProbe(
             FreeHistorySourceCapability(transport), timeout_seconds=command.timeout_seconds
         )
-        if isinstance(command, CapabilityCommand):
+        if isinstance(command, research_evidence.CapabilityCommand):
             from trader.training.application.capability_completion import CompleteCapabilityEvidence
             from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
@@ -553,7 +553,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenc
                 SQLiteH1PointInTimeSnapshot(command.runtime_dir),
                 CapabilityEvidencePublisher(command.artifact_dir),
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
-        if isinstance(command, QualificationCommand):
+        if isinstance(command, research_evidence.QualificationCommand):
             from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
             from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 

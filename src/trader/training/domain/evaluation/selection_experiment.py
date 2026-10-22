@@ -11,12 +11,20 @@ from datetime import date
 from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
 from trader.recommendation.domain.market.factors import RoundScore
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.baseline import PopulationSpearman
+from trader.training.domain.evaluation.constrained_oracle import (
+    ConstrainedOracle,
+    ConstrainedOracleCandidate,
+    ConstrainedOraclePolicy,
+)
+from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDateSplit
 
 SelectionStrategy = Literal["tomorrow", "d25"]
 SelectionArm = Literal["rule_only", "rule_model_gate", "industry_model_utility", "pooled_model_utility"]
-SelectionMode = Literal["fixed_score_top6", "gate_then_constrained_top6"]
+SelectionMode = Literal["fixed_score_top6", "model_gate_then_fixed_top6"]
 PooledModelFamily = Literal["ridge", "lightgbm"]
 SelectionTarget = Literal["tomorrow", "mean_t2_t5", "fixed_t5", "predefined_exit", "multi_horizon"]
 SelectionEvidenceTarget = Literal["t1", "t2", "t3", "t4", "t5", "predefined_exit"]
@@ -28,8 +36,8 @@ SELECTION_ARMS: tuple[SelectionArm, ...] = (
     "industry_model_utility",
     "pooled_model_utility",
 )
-SELECTION_MODES: tuple[SelectionMode, ...] = ("fixed_score_top6", "gate_then_constrained_top6")
-SELECTION_CAPACITIES: tuple[int | None, ...] = (60, 120, 180, 240, None)
+SELECTION_MODES: tuple[SelectionMode, ...] = ("fixed_score_top6", "model_gate_then_fixed_top6")
+SELECTION_RESEARCH_IDENTITY = "eleven_layer_full_population"
 D25_SELECTION_TARGETS: tuple[SelectionTarget, ...] = (
     "mean_t2_t5",
     "fixed_t5",
@@ -77,7 +85,6 @@ class PairedSelectionRow:
     board: Literal["main", "chinext", "star"]
     industry: str
     parent_row_hash: str
-    candidate_rank_by_board: int
     rule_score: float
     estimated_round_trip_cost: float
     risk_eligible: bool
@@ -97,7 +104,6 @@ class PairedSelectionRow:
             or self.board not in _BOARDS
             or not self.industry.strip()
             or _HASH.fullmatch(self.parent_row_hash) is None
-            or self.candidate_rank_by_board < 1
         ):
             raise ValueError("paired selection row identity is invalid")
         if any(
@@ -107,6 +113,8 @@ class PairedSelectionRow:
             raise ValueError("paired selection row values must be finite")
         if self.estimated_round_trip_cost < 0.0 or self.execution_capacity < 0.0 or self.mae_atr20 > 0.0:
             raise ValueError("paired selection cost, capacity or MAE is invalid")
+        if not 0.0 <= self.rule_score <= 100.0:
+            raise ValueError("paired selection rule score must be the risk-adjusted local score")
         targets = tuple(item.target for item in evidence)
         if len(set(targets)) != len(targets):
             raise ValueError("paired selection target evidence must be unique")
@@ -129,16 +137,25 @@ class PairedSelectionSpecification:
     pooled_lightgbm_model_hash: str
     research_dates: tuple[date, ...]
     predefined_exit_identity: str
+    profile_id: ScoringProfileId
+    date_split: PointInTimeDateSplit
+    partition: Literal["calibration", "confirmation"]
+    configuration_hash: str
+    cost_reference_hash: str
+    bootstrap_master_seed: int
     pooled_exposures: tuple[str, ...] = ("market", "board", "industry", "log_average_amount_20d")
-    capacities: tuple[int | None, ...] = SELECTION_CAPACITIES
     selection_modes: tuple[SelectionMode, ...] = SELECTION_MODES
     cost_bps: tuple[int, int, int] = SELECTION_COST_BPS
     top_k: int = 6
     maximum_board_count: int = 4
-    maximum_industry_count: int = 2
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "paired_selection_experiment"
+    schema_version: str = "full_population_selection_experiment"
+    research_identity: str = field(init=False, default=SELECTION_RESEARCH_IDENTITY)
+    pipeline_stages: tuple[str, ...] = field(init=False, default=PIPELINE_STAGE_ORDER)
+    bootstrap_block_days: int = field(init=False)
+    bootstrap_repetitions: int = field(init=False, default=10_000)
+    partition_hash: str = field(init=False)
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -150,41 +167,57 @@ class PairedSelectionSpecification:
             self.industry_model_hash,
             self.pooled_ridge_model_hash,
             self.pooled_lightgbm_model_hash,
+            self.configuration_hash,
+            self.cost_reference_hash,
         )
         model_ids = (self.industry_model_id, self.pooled_ridge_model_id, self.pooled_lightgbm_model_id)
         if self.strategy not in {"tomorrow", "d25"} or any(_HASH.fullmatch(value) is None for value in hashes):
             raise ValueError("paired selection specification identity is invalid")
         if any(_MODEL_ID.fullmatch(value) is None for value in model_ids) or not dates:
             raise ValueError("paired selection model identity or date set is invalid")
-        if len(set(model_ids)) != len(model_ids) or len(set(hashes[3:])) != len(hashes[3:]):
+        if len(set(model_ids)) != len(model_ids) or len(set(hashes[3:6])) != 3:
             raise ValueError("paired selection models must have distinct identities")
+        if self.profile_id not in {"v2", "v3"} or self.partition not in {"calibration", "confirmation"}:
+            raise ValueError("selection research requires a profile and a development or confirmation partition")
+        partition_dates = (
+            self.date_split.calibration_dates if self.partition == "calibration" else self.date_split.confirmation_dates
+        )
+        if dates != self.research_dates or dates != partition_dates or self.bootstrap_master_seed < 1:
+            raise ValueError("selection research dates must exactly match the sealed partition")
+        if self.date_split.terminal_holdout_opened or self.date_split.production_authority:
+            raise ValueError("selection research cannot reuse an opened terminal partition")
         if self.strategy == "d25" and not self.predefined_exit_identity.strip():
             raise ValueError("D25 predefined exit identity is required")
-        if self.capacities != SELECTION_CAPACITIES or self.selection_modes != SELECTION_MODES:
-            raise ValueError("paired selection grid must use the preregistered capacities and modes")
+        if self.selection_modes != SELECTION_MODES:
+            raise ValueError("paired selection grid must use the preregistered modes")
         if self.cost_bps != SELECTION_COST_BPS or self.top_k != 6:
             raise ValueError("paired selection costs and TopK are fixed")
-        if self.maximum_board_count != 4 or self.maximum_industry_count != 2:
+        if self.maximum_board_count != 4:
             raise ValueError("paired selection concentration constraints are fixed")
         if self.pooled_exposures != ("market", "board", "industry", "log_average_amount_20d"):
             raise ValueError("pooled selection models require market, board, industry and liquidity exposures")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("paired selection research cannot open terminal data or authorize production")
+        if self.schema_version != "full_population_selection_experiment":
+            raise ValueError("selection research cannot use a retired schema")
         object.__setattr__(self, "research_dates", dates)
+        object.__setattr__(self, "bootstrap_block_days", 5 if self.strategy == "tomorrow" else 10)
+        object.__setattr__(
+            self, "partition_hash", CanonicalDigest((self.date_split.content_hash, self.partition, dates))
+        )
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
 class SelectionExperimentVariant:
     arm: SelectionArm
-    capacity_per_board: int | None
     selection_mode: SelectionMode
     target: SelectionTarget
     pooled_model_family: PooledModelFamily | None
 
     def __post_init__(self) -> None:
-        if self.arm not in SELECTION_ARMS or self.capacity_per_board not in SELECTION_CAPACITIES:
-            raise ValueError("selection experiment arm or capacity is invalid")
+        if self.arm not in SELECTION_ARMS:
+            raise ValueError("selection experiment arm is invalid")
         if self.selection_mode not in SELECTION_MODES:
             raise ValueError("selection experiment mode is invalid")
         if (self.arm == "pooled_model_utility") != (self.pooled_model_family is not None):
@@ -197,7 +230,6 @@ class SelectionExperimentVariant:
 class SelectionExperimentMetrics:
     evaluated_trade_dates: int
     population_rows: int
-    candidate_rows: int
     selected_rows: int
     empty_portfolio_days: int
     mean_six_slot_net_excess_returns: tuple[float, float, float]
@@ -212,15 +244,14 @@ class SelectionExperimentMetrics:
     exit_untradable_rate: float | None
     mean_execution_capacity: float
     capacity_shortfall_rate: float | None
-    candidate_oracle_top6_recall: float
     selected_oracle_top6_recall: float
     horizon_mean_net_excess_returns_20bp: tuple[float, ...] = ()
+    mean_selected_net_excess_returns: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         counts = (
             self.evaluated_trade_dates,
             self.population_rows,
-            self.candidate_rows,
             self.selected_rows,
             self.empty_portfolio_days,
         )
@@ -229,7 +260,6 @@ class SelectionExperimentMetrics:
         if (
             self.selected_rows > self.evaluated_trade_dates * 6
             or self.empty_portfolio_days > self.evaluated_trade_dates
-            or self.candidate_rows > self.population_rows
         ):
             raise ValueError("selection experiment count relationships are invalid")
         if any(len(values) != 3 for values in (self.mean_six_slot_net_excess_returns, self.paired_control_increments)):
@@ -241,9 +271,9 @@ class SelectionExperimentMetrics:
             self.maximum_drawdown_20bp,
             self.turnover,
             self.mean_execution_capacity,
-            self.candidate_oracle_top6_recall,
             self.selected_oracle_top6_recall,
             *self.horizon_mean_net_excess_returns_20bp,
+            *self.mean_selected_net_excess_returns,
         )
         optional = (
             self.rank_ic,
@@ -264,7 +294,6 @@ class SelectionExperimentMetrics:
             self.severe_loss_rate,
             self.exit_untradable_rate,
             self.capacity_shortfall_rate,
-            self.candidate_oracle_top6_recall,
             self.selected_oracle_top6_recall,
         )
         if any(value is not None and not 0.0 <= value <= 1.0 for value in rates):
@@ -276,9 +305,43 @@ class SelectionExperimentMetrics:
 
 
 @dataclass(frozen=True)
+class SelectionExperimentDay:
+    trade_date: date
+    fixed_codes: tuple[str, ...]
+    selected_codes: tuple[str, ...]
+    six_slot_net_excess_returns: tuple[float, float, float]
+    selected_mean_net_excess_returns: tuple[float, ...]
+    horizon_six_slot_returns: tuple[tuple[float, float, float], ...]
+
+    def __post_init__(self) -> None:
+        if (
+            len(self.fixed_codes) > 6
+            or len(set(self.fixed_codes)) != len(self.fixed_codes)
+            or len(set(self.selected_codes)) != len(self.selected_codes)
+            or not set(self.selected_codes).issubset(self.fixed_codes)
+        ):
+            raise ValueError("selection day must preserve fixed seats without refill")
+        if len(self.six_slot_net_excess_returns) != 3 or len(self.horizon_six_slot_returns) not in {1, 4}:
+            raise ValueError("selection day requires all costs and strategy horizons")
+        if len(self.selected_mean_net_excess_returns) != (3 if self.selected_codes else 0):
+            raise ValueError("selection day selected mean must keep its own denominator")
+        if any(len(values) != 3 for values in self.horizon_six_slot_returns) or any(
+            not math.isfinite(value)
+            for values in (
+                self.six_slot_net_excess_returns,
+                self.selected_mean_net_excess_returns,
+                *self.horizon_six_slot_returns,
+            )
+            for value in values
+        ):
+            raise ValueError("selection day returns must be finite")
+
+
+@dataclass(frozen=True)
 class SelectionExperimentResult:
     variant: SelectionExperimentVariant
     metrics: SelectionExperimentMetrics
+    days: tuple[SelectionExperimentDay, ...]
 
 
 @dataclass(frozen=True)
@@ -291,9 +354,10 @@ class PairedSelectionExperimentReport:
     status: SelectionExperimentStatus
     results: tuple[SelectionExperimentResult, ...]
     failure_reasons: tuple[str, ...]
+    research_identity: str = SELECTION_RESEARCH_IDENTITY
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "paired_selection_experiment_report"
+    schema_version: str = "full_population_selection_experiment_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -324,7 +388,6 @@ class PairedSelectionExperimentReport:
         result_keys = tuple(
             (
                 item.variant.arm,
-                item.variant.capacity_per_board,
                 item.variant.selection_mode,
                 item.variant.target,
                 item.variant.pooled_model_family,
@@ -332,7 +395,11 @@ class PairedSelectionExperimentReport:
             for item in self.results
         )
         expected_targets = set(D25_SELECTION_TARGETS if self.strategy == "d25" else ("tomorrow",))
-        expected_count = len(SELECTION_CAPACITIES) * len(SELECTION_MODES) * len(expected_targets) * 5
+        expected_count = len(SELECTION_MODES) * len(expected_targets) * 5
+        if self.research_identity != SELECTION_RESEARCH_IDENTITY:
+            raise ValueError("selection report cannot relabel historical research")
+        if self.schema_version != "full_population_selection_experiment_report":
+            raise ValueError("selection report cannot use a retired schema")
         if self.results and (
             len(result_keys) != expected_count
             or len(set(result_keys)) != len(result_keys)
@@ -364,30 +431,26 @@ def EvaluatePairedSelectionExperiment(
 ) -> PairedSelectionExperimentReport:
     """Evaluate every preregistered arm on exactly the same rows and dates."""
 
-    ordered = tuple(
-        sorted(rows, key=lambda item: (item.trade_date, item.board, item.candidate_rank_by_board, item.code))
-    )
+    ordered = tuple(sorted(rows, key=lambda item: (item.trade_date, item.board, item.code)))
     _validate_rows(specification, ordered)
     targets: tuple[SelectionTarget, ...] = D25_SELECTION_TARGETS if specification.strategy == "d25" else ("tomorrow",)
-    results_by_key: dict[tuple[int | None, SelectionMode, SelectionTarget], SelectionExperimentMetrics] = {}
+    results_by_key: dict[tuple[SelectionMode, SelectionTarget], SelectionExperimentMetrics] = {}
     results: list[SelectionExperimentResult] = []
-    for capacity in specification.capacities:
-        for mode in specification.selection_modes:
-            for target in targets:
-                for arm in SELECTION_ARMS:
-                    families: tuple[PooledModelFamily | None, ...] = (
-                        ("ridge", "lightgbm") if arm == "pooled_model_utility" else (None,)
-                    )
-                    for family in families:
-                        variant = SelectionExperimentVariant(arm, capacity, mode, target, family)
-                        metrics = _evaluate_variant(specification, ordered, variant)
-                        control_key = (capacity, mode, target)
-                        if arm == "rule_only":
-                            results_by_key[control_key] = metrics
-                        else:
-                            control = results_by_key[control_key]
-                            metrics = _with_control_increment(metrics, control)
-                        results.append(SelectionExperimentResult(variant, metrics))
+    for mode in specification.selection_modes:
+        for target in targets:
+            for arm in SELECTION_ARMS:
+                families: tuple[PooledModelFamily | None, ...] = (
+                    ("ridge", "lightgbm") if arm == "pooled_model_utility" else (None,)
+                )
+                for family in families:
+                    variant = SelectionExperimentVariant(arm, mode, target, family)
+                    metrics, days = _evaluate_variant(specification, ordered, variant)
+                    control_key = (mode, target)
+                    if arm == "rule_only":
+                        results_by_key[control_key] = metrics
+                    else:
+                        metrics = _with_control_increment(metrics, results_by_key[control_key])
+                    results.append(SelectionExperimentResult(variant, metrics, days))
     return PairedSelectionExperimentReport(
         specification.content_hash,
         specification.dataset_hash,
@@ -408,15 +471,12 @@ def _validate_rows(specification: PairedSelectionSpecification, rows: tuple[Pair
     if len({(row.trade_date, row.code) for row in rows}) != len(rows):
         raise ValueError("paired selection rows must be unique by date and code")
     for row in rows:
+        if row.severe_loss != (row.mae_atr20 <= (-1.5 if specification.strategy == "tomorrow" else -2.5)):
+            raise ValueError("selection severe-loss label must match strategy MAE/ATR20 units")
         targets = tuple(item.target for item in row.target_evidence)
         expected = ("t1",) if specification.strategy == "tomorrow" else (*_D25_HORIZONS, "predefined_exit")
         if targets != expected:
             raise ValueError("paired selection target evidence does not match the strategy")
-    grouped: dict[tuple[date, str], list[int]] = defaultdict(list)
-    for row in rows:
-        grouped[(row.trade_date, row.board)].append(row.candidate_rank_by_board)
-    if any(tuple(sorted(ranks)) != tuple(range(1, len(ranks) + 1)) for ranks in grouped.values()):
-        raise ValueError("paired selection board candidate ranks must be contiguous")
 
 
 @dataclass
@@ -430,38 +490,32 @@ class _SelectionAccumulator:
     untradable: list[float] = field(default_factory=list)
     capacities: list[float] = field(default_factory=list)
     shortfalls: list[float] = field(default_factory=list)
-    candidate_oracle_hits: int = 0
     selected_oracle_hits: int = 0
     oracle_total: int = 0
-    candidate_rows: int = 0
     selected_rows: int = 0
     empty_days: int = 0
     horizon_daily: list[tuple[float, float, float, float]] = field(default_factory=list)
+    days: list[SelectionExperimentDay] = field(default_factory=list)
+    selected_returns: list[tuple[float, float, float]] = field(default_factory=list)
 
 
 def _evaluate_variant(
     specification: PairedSelectionSpecification,
     rows: tuple[PairedSelectionRow, ...],
     variant: SelectionExperimentVariant,
-) -> SelectionExperimentMetrics:
+) -> tuple[SelectionExperimentMetrics, tuple[SelectionExperimentDay, ...]]:
     grouped: dict[date, list[PairedSelectionRow]] = defaultdict(list)
     for row in rows:
         grouped[row.trade_date].append(row)
     accumulator = _SelectionAccumulator()
     for trade_date in specification.research_dates:
         day = tuple(grouped[trade_date])
-        candidates = tuple(
-            row
-            for row in day
-            if variant.capacity_per_board is None or row.candidate_rank_by_board <= variant.capacity_per_board
-        )
-        selected = _select(candidates, variant, specification)
-        _accumulate_day(accumulator, day, candidates, selected, variant)
+        fixed, selected = _select(day, variant, specification)
+        _accumulate_day(accumulator, day, selected, fixed, variant)
     means = _mean_costs(accumulator.daily_returns)
-    return SelectionExperimentMetrics(
+    metrics = SelectionExperimentMetrics(
         len(grouped),
         len(rows),
-        accumulator.candidate_rows,
         accumulator.selected_rows,
         accumulator.empty_days,
         means,
@@ -476,26 +530,29 @@ def _evaluate_variant(
         _mean(tuple(accumulator.untradable)) if accumulator.untradable else None,
         _mean(tuple(accumulator.capacities)),
         _mean(tuple(accumulator.shortfalls)) if accumulator.shortfalls else None,
-        accumulator.candidate_oracle_hits / accumulator.oracle_total,
-        accumulator.selected_oracle_hits / accumulator.oracle_total,
+        accumulator.selected_oracle_hits / accumulator.oracle_total if accumulator.oracle_total else 1.0,
         tuple(_mean(tuple(day[index] for day in accumulator.horizon_daily)) for index in range(4))
         if accumulator.horizon_daily
         else (),
+        _mean_costs(accumulator.selected_returns) if accumulator.selected_returns else (),
     )
+    return metrics, tuple(accumulator.days)
 
 
 def _select(
     candidates: tuple[PairedSelectionRow, ...],
     variant: SelectionExperimentVariant,
     specification: PairedSelectionSpecification,
-) -> tuple[PairedSelectionRow, ...]:
+) -> tuple[tuple[PairedSelectionRow, ...], tuple[PairedSelectionRow, ...]]:
     ordered = tuple(sorted(candidates, key=lambda row: (-_ranking_value(row, variant), row.code)))
-    if variant.selection_mode == "fixed_score_top6":
-        leaders = ordered[: specification.top_k]
-        eligible_leaders = tuple(row for row in leaders if _passes_gates(row, variant))
-        return _constrained_top_k(eligible_leaders, specification)
-    eligible = tuple(row for row in ordered if _passes_gates(row, variant))
-    return _constrained_top_k(eligible, specification)
+    # Both modes fix a board-constrained six before optional veto/action. Only
+    # the model gate moves across selection; a rejected fixed seat is never refilled.
+    model_eligible = tuple(row for row in ordered if _passes_model_gate(row, variant))
+    fixed = _constrained_top_k(
+        model_eligible if variant.selection_mode == "model_gate_then_fixed_top6" else ordered, specification
+    )
+    selected = tuple(row for row in fixed if _passes_gates(row, variant))
+    return fixed, selected
 
 
 def _constrained_top_k(
@@ -503,15 +560,11 @@ def _constrained_top_k(
 ) -> tuple[PairedSelectionRow, ...]:
     selected: list[PairedSelectionRow] = []
     board_counts: dict[str, int] = defaultdict(int)
-    industry_counts: dict[str, int] = defaultdict(int)
     for row in rows:
         if board_counts[row.board] >= specification.maximum_board_count:
             continue
-        if industry_counts[row.industry] >= specification.maximum_industry_count:
-            continue
         selected.append(row)
         board_counts[row.board] += 1
-        industry_counts[row.industry] += 1
         if len(selected) == specification.top_k:
             break
     return tuple(selected)
@@ -520,9 +573,11 @@ def _constrained_top_k(
 def _passes_gates(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> bool:
     if not (row.risk_eligible and row.action_eligible and row.capacity_sufficient):
         return False
-    if variant.arm == "rule_only":
-        return True
-    return _model_utility(row, variant) > 0.0
+    return _passes_model_gate(row, variant)
+
+
+def _passes_model_gate(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> bool:
+    return variant.arm == "rule_only" or _model_utility(row, variant) > 0.0
 
 
 def _ranking_value(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> float:
@@ -586,35 +641,81 @@ def _target_untradable(row: PairedSelectionRow, target: SelectionTarget) -> bool
 def _accumulate_day(
     accumulator: _SelectionAccumulator,
     population: tuple[PairedSelectionRow, ...],
-    candidates: tuple[PairedSelectionRow, ...],
     selected: tuple[PairedSelectionRow, ...],
+    fixed: tuple[PairedSelectionRow, ...],
     variant: SelectionExperimentVariant,
 ) -> None:
     costs = tuple(value / 10_000.0 for value in SELECTION_COST_BPS)
     accumulator.daily_returns.append(
         tuple(math.fsum(_target_actual(row, variant.target) - cost for row in selected) / 6.0 for cost in costs)  # type: ignore[arg-type]
     )
+    selected_means = (
+        tuple(
+            math.fsum(_target_actual(row, variant.target) - cost for row in selected) / len(selected) for cost in costs
+        )
+        if selected
+        else ()
+    )
+    if selected_means:
+        accumulator.selected_returns.extend(
+            (
+                _target_actual(row, variant.target) - costs[0],
+                _target_actual(row, variant.target) - costs[1],
+                _target_actual(row, variant.target) - costs[2],
+            )
+            for row in selected
+        )
+    horizons = ("t1",) if variant.target == "tomorrow" else _D25_HORIZONS
+    horizon_returns = tuple(
+        tuple(
+            math.fsum(
+                next(item for item in row.target_evidence if item.target == horizon).actual_pre_cost_excess_return
+                - cost
+                for row in selected
+            )
+            / 6.0
+            for cost in costs
+        )
+        for horizon in horizons
+    )
+    accumulator.days.append(
+        SelectionExperimentDay(
+            population[0].trade_date,
+            tuple(row.code for row in fixed),
+            tuple(row.code for row in selected),
+            accumulator.daily_returns[-1],
+            selected_means,
+            horizon_returns,  # type: ignore[arg-type]
+        )
+    )
     accumulator.selection_sets.append(frozenset(row.code for row in selected))
-    accumulator.candidate_rows += len(candidates)
     accumulator.selected_rows += len(selected)
     accumulator.empty_days += not selected
-    accumulator.shortfalls.extend(float(not row.capacity_sufficient) for row in candidates)
+    accumulator.shortfalls.extend(float(not row.capacity_sufficient) for row in population)
     actuals = {row.code: _target_actual(row, variant.target) for row in population}
-    oracle = tuple(row.code for row in sorted(population, key=lambda row: (-actuals[row.code], row.code))[:6])
-    candidate_codes = {row.code for row in candidates}
+    oracle_result = ConstrainedOracle(
+        tuple(
+            ConstrainedOracleCandidate(row.code, row.board, row.industry, actuals[row.code] - costs[0])
+            for row in population
+            if _passes_gates(row, variant)
+        ),
+        ConstrainedOraclePolicy(6, 4, None),
+    )
+    if accumulator.daily_returns[-1][0] * 6 > oracle_result.net_return_sum + 1e-12:
+        raise ValueError("selection oracle cannot be below the legal selected portfolio")
+    oracle = oracle_result.selected_codes
     selected_codes = {row.code for row in selected}
     accumulator.oracle_total += len(oracle)
-    accumulator.candidate_oracle_hits += sum(code in candidate_codes for code in oracle)
     accumulator.selected_oracle_hits += sum(code in selected_codes for code in oracle)
-    pairs = tuple((_ranking_value(row, variant), actuals[row.code]) for row in candidates)
+    pairs = tuple((_ranking_value(row, variant), actuals[row.code]) for row in population)
     rank_ic = PopulationSpearman(pairs)
     if rank_ic is not None:
         accumulator.rank_ics.append(rank_ic)
-    ndcg = _ndcg_at_6(candidates, variant)
+    ndcg = _ndcg_at_6(population, variant)
     if ndcg is not None:
         accumulator.ndcgs.append(ndcg)
     if selected:
-        accumulator.severe.append(sum(row.severe_loss for row in selected) / len(selected))
+        accumulator.severe.extend(float(row.severe_loss) for row in selected)
         accumulator.maes.extend(row.mae_atr20 for row in selected)
         accumulator.untradable.extend(float(_target_untradable(row, variant.target)) for row in selected)
     accumulator.capacities.append(math.fsum(row.execution_capacity for row in selected))
@@ -685,7 +786,7 @@ def _mean(values: tuple[float, ...]) -> float:
 __all__ = [
     "D25_SELECTION_TARGETS",
     "SELECTION_ARMS",
-    "SELECTION_CAPACITIES",
+    "SELECTION_RESEARCH_IDENTITY",
     "SELECTION_COST_BPS",
     "SELECTION_MODES",
     "EvaluatePairedSelectionExperiment",
@@ -697,6 +798,7 @@ __all__ = [
     "SelectionArm",
     "SelectionExperimentMetrics",
     "SelectionExperimentResult",
+    "SelectionExperimentDay",
     "SelectionExperimentStatus",
     "SelectionExperimentVariant",
     "SelectionMode",

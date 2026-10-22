@@ -78,6 +78,7 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
             "research-data-qualification",
             "research-industry-audit",
             "research-terminal-holdout",
+            "research-selection",
         )
         for command in evidence_commands:
             subprocess.run(
@@ -87,6 +88,7 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=30,
             )
         missing_history = temporary / "missing-history"
         smoke = subprocess.run(
@@ -112,6 +114,32 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
             or missing_history.exists()
         ):
             raise RuntimeError("installed industry audit did not fail closed without archive writes")
+        missing_selection = temporary / "missing-selection"
+        selection_smoke = subprocess.run(
+            (
+                str(cli),
+                "--config",
+                str(runtime_config.resolve()),
+                "research-selection",
+                "--evidence-dir",
+                str(missing_selection),
+            ),
+            cwd=temporary,
+            env=clean_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        selection_report = json.loads(selection_smoke.stdout)
+        if (
+            selection_smoke.returncode != 2
+            or selection_report.get("schema_version") != "full_population_selection_validation"
+            or selection_report.get("status") != "execution_failed"
+            or selection_report.get("production_authority") is not False
+            or missing_selection.exists()
+        ):
+            raise RuntimeError("installed selection study did not fail closed without evidence writes")
         subprocess.run(
             (str(python), "-m", "pip", "check"),
             cwd=temporary,
@@ -139,6 +167,7 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
         "installed_outside_repository": payload["installed_outside_repository"],
         "research_evidence_commands_verified": len(evidence_commands),
         "missing_history_read_only_smoke": "passed",
+        "missing_selection_read_only_smoke": "passed",
     }
 
 

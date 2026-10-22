@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from trader.training.application.selection_experiment import (
     PairedSelectionExperimentBuilder,
     SelectionExperimentParentRowIdentity,
     SelectionExperimentPrerequisite,
 )
+from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDateSplit
 from trader.training.domain.evaluation.selection_experiment import (
     PairedSelectionRow,
     PairedSelectionSpecification,
@@ -28,6 +29,20 @@ def _specification() -> PairedSelectionSpecification:
         pooled_lightgbm_model_hash="e" * 64,
         research_dates=(date(2026, 1, 5),),
         predefined_exit_identity="not_used_for_tomorrow",
+        profile_id="v2",
+        partition="confirmation",
+        configuration_hash="2" * 64,
+        cost_reference_hash="3" * 64,
+        bootstrap_master_seed=20261022,
+        date_split=PointInTimeDateSplit(
+            (date(2025, 1, 2),),
+            (date(2025, 2, 3),),
+            (date(2025, 3, 3),),
+            tuple(date(2025, 4, 1) + timedelta(days=index) for index in range(5)),
+            (date(2026, 1, 5),),
+            tuple(date(2026, 1, 6) + timedelta(days=index) for index in range(5)),
+            tuple(date(2026, 1, 12) + timedelta(days=index) for index in range(200)),
+        ),
     )
 
 
@@ -57,7 +72,6 @@ def _row(parent_row_hash: str = "1" * 64) -> PairedSelectionRow:
         board="main",
         industry="bank",
         parent_row_hash=parent_row_hash,
-        candidate_rank_by_board=1,
         rule_score=80.0,
         estimated_round_trip_cost=0.002,
         risk_eligible=True,
@@ -73,6 +87,8 @@ def _row(parent_row_hash: str = "1" * 64) -> PairedSelectionRow:
 
 def _ready_prerequisite(parent_row_hash: str = "1" * 64) -> SelectionExperimentPrerequisite:
     return SelectionExperimentPrerequisite(
+        specification_hash=_specification().content_hash,
+        qualification_hash="4" * 64,
         dataset_status="historical_point_in_time_parity",
         candidate_recall_status="candidate_recall_attributed",
         dataset_hash="a" * 64,
@@ -90,6 +106,8 @@ def test_selection_experiment_does_not_read_returns_before_point_in_time_and_rec
     report = PairedSelectionExperimentBuilder(evidence).build(
         _specification(),
         SelectionExperimentPrerequisite(
+            specification_hash=_specification().content_hash,
+            qualification_hash="4" * 64,
             dataset_status="historical_data_insufficient",
             candidate_recall_status="historical_data_insufficient",
             dataset_hash="a" * 64,

@@ -6,17 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from trader.infra.settings.parser import Integer, ProfileMapping, ReadJsonObject, RequireExactKeys, RequireMapping
+from trader.training.domain.evaluation.selection_experiment import SELECTION_ARMS
 
-_ARMS = (
-    "current_chain",
-    "without_input_completeness_bonus",
-    "without_d25_execution_bonus",
-    "without_tomorrow_flow_bonus",
-    "without_preselection_stability_bonus",
-    "without_d25_quality_valuation_bonus",
-    "equal_weight_local_components",
-    "fixed_20bp_round_trip_cost",
-)
+_ARMS = SELECTION_ARMS
 
 
 @dataclass(frozen=True)
@@ -27,7 +19,7 @@ class ResearchSettings:
     v2_fit_date_candidates: tuple[int, ...]
     v3_fit_date_candidates: tuple[int, ...]
     ablation_arms: tuple[str, ...]
-    deepseek_comparison_arms: tuple[str, str, str]
+    deepseek_comparison_arms: tuple[str, str]
 
 
 def LoadResearchSettings(config_dir: Path) -> ResearchSettings:
@@ -54,14 +46,14 @@ def LoadResearchSettings(config_dir: Path) -> ResearchSettings:
     v3 = _positive_integers(v3_profile.get("dates"), "research.fit_date_candidates.v3")
     arms_raw = document.get("ablation_arms")
     if not isinstance(arms_raw, list) or tuple(arms_raw) != _ARMS:
-        raise ValueError("research.ablation_arms must match the pre-registered eight-arm contract")
+        raise ValueError("research.ablation_arms must match the full-population four-arm contract")
     deepseek_raw = document.get("deepseek_comparison_arms")
-    deepseek_arms = ("local_only", "structured_facts_veto", "fixed_68_32")
+    deepseek_arms = ("local_only", "structured_facts_veto")
     if not isinstance(deepseek_raw, list) or tuple(deepseek_raw) != deepseek_arms:
-        raise ValueError("research.deepseek_comparison_arms must match the three-arm contract")
+        raise ValueError("research.deepseek_comparison_arms must match the structured-veto comparison")
     return ResearchSettings(
         terminal_holdout_sessions=Integer(document, "terminal_holdout_sessions", minimum=200),
-        tomorrow_embargo_sessions=Integer(embargo, "tomorrow", minimum=1),
+        tomorrow_embargo_sessions=Integer(embargo, "tomorrow", minimum=5),
         d25_embargo_sessions=Integer(embargo, "d25", minimum=5),
         v2_fit_date_candidates=v2,
         v3_fit_date_candidates=v3,
