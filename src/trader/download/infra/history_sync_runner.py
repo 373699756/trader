@@ -200,11 +200,29 @@ class _HistorySync:
             raise RuntimeError("history_resume_calendar_changed")
         if pending.cutoff != calendar.open_dates[-1]:
             raise RuntimeError("history_resume_cutoff_changed")
-        if tuple(item.code for item in universe.securities) != tuple(item.code for item in current_universe.securities):
-            raise RuntimeError("history_resume_codes_changed")
-        for previous_security, current_security in zip(universe.securities, current_universe.securities, strict=True):
-            if IsStSecurityName(current_security.name) or IsStSecurityName(previous_security.name):
-                raise RuntimeError("history_resume_st_conflict")
+        previous_securities = {item.code: item for item in universe.securities}
+        current_securities = {item.code: item for item in current_universe.securities}
+        tasks = self.index.tasks()
+        if {task.code for task in tasks} != set(previous_securities):
+            raise RuntimeError("history_resume_task_population_conflict")
+        for task in tasks:
+            security = previous_securities[task.code]
+            expected_dates = {
+                day
+                for day in calendar.open_dates
+                if day >= security.listed_on and (security.delisted_on is None or day < security.delisted_on)
+            }
+            if not set(task.dates).issubset(expected_dates) or (
+                active is None and task.dates != tuple(sorted(expected_dates))
+            ):
+                raise RuntimeError("history_resume_task_dates_conflict")
+        if any(IsStSecurityName(item.name) for item in previous_securities.values()) or any(
+            IsStSecurityName(item.name) for item in current_securities.values()
+        ):
+            raise RuntimeError("history_resume_st_conflict")
+        for code in previous_securities.keys() & current_securities.keys():
+            previous_security = previous_securities[code]
+            current_security = current_securities[code]
             if replace(previous_security, name=current_security.name) != current_security:
                 raise RuntimeError("history_resume_security_changed")
         if (source.source, source.dataset) != (current_source.source, current_source.dataset):
@@ -214,8 +232,11 @@ class _HistorySync:
             source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
             or universe.securities != current_universe.securities
         ):
-            # Execution versions and display names do not change the verified price identity.
-            # Persist the new parents before switching the unpublished batch; never reset tasks.
+            added_codes = current_securities.keys() - previous_securities.keys()
+            removed_codes = previous_securities.keys() - current_securities.keys()
+            planned_tasks = _download_tasks(
+                context, self.control, active, self.index, self.configuration.reread_sessions
+            )
             reference = HistoryReferenceSnapshot(
                 tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
             )
@@ -230,7 +251,12 @@ class _HistorySync:
                 current_universe.content_hash,
                 pending.cutoff,
             )
-            self.index.rebind_context(pending, current)
+            self.index.rebind_context(
+                pending,
+                current,
+                removed_codes=frozenset(removed_codes),
+                added_tasks=tuple(task for task in planned_tasks if task.code in added_codes),
+            )
             return _BatchInput(context, current_source, current_calendar, current_universe, reference, current, False)
         return _BatchInput(context, source, calendar, universe, reference, pending, False)
 
