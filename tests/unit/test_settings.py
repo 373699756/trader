@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import trader.infra.settings.runtime_loader as runtime_loader
 from trader.infra.settings import (
     ConfigurationError,
     LoadLongWatchlist,
@@ -494,6 +495,87 @@ def test_runtime_settings_prefers_deepseek_environment_key(tmp_path, monkeypatch
     runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
 
     assert runtime.deepseek.api_key == "secret-from-environment"
+
+
+@pytest.mark.parametrize("enabled", (False, True))
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    (
+        ("missing", "DEEPSEEK_API_KEY_FILE does not exist"),
+        ("insecure", "must not be accessible by group or other users"),
+        ("malformed", "unsupported assignment"),
+    ),
+)
+def test_deepseek_key_file_errors_apply_only_when_enabled(tmp_path, monkeypatch, enabled, failure, message) -> None:
+    if failure == "insecure" and os.name != "posix":
+        pytest.skip("POSIX permission contract")
+    key_file = tmp_path / "deepseek.key"
+    if failure != "missing":
+        key_file.write_text("UNKNOWN=value\n" if failure == "malformed" else "fixture-key\n", encoding="utf-8")
+        key_file.chmod(0o644 if failure == "insecure" else 0o600)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(key_file))
+    monkeypatch.setenv("TUSHARE_TOKEN", "fixture-token")
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = enabled
+    config_path = _write_runtime_config(tmp_path, raw)
+
+    if enabled:
+        with pytest.raises(ConfigurationError, match=message):
+            LoadRuntimeSettings(config_path)
+    else:
+        runtime = LoadRuntimeSettings(config_path)
+        assert not runtime.deepseek.enabled
+        assert runtime.deepseek.api_key == ""
+
+
+def test_disabled_deepseek_does_not_consult_credential_environment_or_loader(tmp_path, monkeypatch) -> None:
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = False
+    config_path = _write_runtime_config(tmp_path, raw)
+    monkeypatch.setenv("TUSHARE_TOKEN", "fixture-token")
+    environment_get = os.environ.get
+
+    def guarded_environment_get(name, default=None):
+        if name in {"DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY_FILE"}:
+            pytest.fail("disabled DeepSeek consulted credential environment")
+        return environment_get(name, default)
+
+    monkeypatch.setattr(os.environ, "get", guarded_environment_get)
+    monkeypatch.setattr(
+        runtime_loader,
+        "_load_deepseek_api_key",
+        lambda *args: pytest.fail("disabled DeepSeek invoked credential file loading"),
+    )
+    runtime = LoadRuntimeSettings(config_path)
+    assert runtime.deepseek.api_key == ""
+
+
+def test_deepseek_toggle_changes_configuration_identity_and_takes_effect_on_reload(tmp_path, monkeypatch) -> None:
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = False
+    config_path = _write_runtime_config(tmp_path, raw)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-key")
+    monkeypatch.setenv("TUSHARE_TOKEN", "fixture-token")
+    disabled = LoadRuntimeSettings(config_path)
+    assert disabled.deepseek.api_key == ""
+    raw["deepseek"]["enabled"] = True
+    _write_runtime_config(tmp_path, raw)
+
+    enabled = LoadRuntimeSettings(config_path)
+    assert enabled.config_version != disabled.config_version
+    assert enabled.deepseek.enabled and enabled.deepseek.api_key == "fixture-key"
+    assert not disabled.deepseek.enabled and disabled.deepseek.api_key == ""
+
+
+def test_deepseek_enabled_requires_boolean_even_when_credentials_are_unavailable(tmp_path, monkeypatch) -> None:
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = "false"
+    config_path = _write_runtime_config(tmp_path, raw)
+    monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(tmp_path / "missing.key"))
+    monkeypatch.setenv("TUSHARE_TOKEN", "fixture-token")
+    with pytest.raises(ConfigurationError, match="enabled must be a boolean"):
+        LoadRuntimeSettings(config_path)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission contract")

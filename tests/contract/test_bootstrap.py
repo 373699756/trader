@@ -178,6 +178,36 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert 'content="35000"' in page
 
 
+def test_deepseek_toggle_rebuilds_with_new_configuration_identity_and_readable_status(tmp_path, monkeypatch) -> None:
+    config_path = _config(tmp_path)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-deepseek-key")
+    enabled = BuildSystem(config_path)
+    assert enabled.settings.deepseek.enabled is True
+    enabled_response = enabled.app.test_client().get("/api/status")
+    assert enabled_response.status_code == 200
+    assert enabled_response.get_json()["deepseek"]["enabled"] is True
+
+    deepseek_path = config_path.parent / "deepseek.json"
+    document = json.loads(deepseek_path.read_text(encoding="utf-8"))
+    document["deepseek"]["enabled"] = False
+    deepseek_path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(tmp_path / "missing-deepseek-key"))
+
+    disabled = BuildSystem(config_path)
+
+    assert disabled.settings.config_version != enabled.settings.config_version
+    assert disabled.settings.deepseek.enabled is False
+    response = disabled.app.test_client().get("/api/status")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["deepseek"]["enabled"] is False
+    assert payload["deepseek"]["physical_attempts"] == 0
+    assert payload["deepseek"]["zero_call_reason"] == "disabled"
+    assert not (tmp_path / "runtime").exists()
+    assert not (tmp_path / "data/recommendation").exists()
+
+
 def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_path) -> None:
     system = BuildSystem(_config(tmp_path))
 

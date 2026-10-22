@@ -193,6 +193,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     data_paths = DataPaths(_resolve_project_path(project_root, _text(raw, "data_dir")))
     strategy_config_path = _resolve_config_path(config_dir, _text(raw, "strategy_config"))
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
+    deepseek_enabled = _boolean(deepseek_raw, "enabled")
 
     cadence_seconds = _nested_positive_number_mapping(
         pipeline_raw,
@@ -250,7 +251,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         ),
         performance_budgets=_parse_performance_budgets(performance_raw),
         deepseek=DeepSeekSettings(
-            enabled=_boolean(deepseek_raw, "enabled"),
+            enabled=deepseek_enabled,
             base_url=_text(deepseek_raw, "base_url").rstrip("/"),
             model=_text(deepseek_raw, "model"),
             timeout_seconds=_number(deepseek_raw, "timeout_seconds", minimum=0.1),
@@ -260,7 +261,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             strategy_limits=_integer_mapping(deepseek_raw, "strategy_limits", minimum=0),
             stage_targets=_integer_mapping(deepseek_raw, "stage_targets", minimum=0),
             stage_limits=_integer_mapping(deepseek_raw, "stage_limits", minimum=0),
-            api_key=_load_deepseek_api_key(project_root),
+            api_key=_load_deepseek_api_key(project_root) if deepseek_enabled else "",
             adaptive=DeepSeekAdaptiveSettings(
                 consecutive_failure_limit=_integer(
                     deepseek_adaptive_raw,

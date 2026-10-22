@@ -658,33 +658,53 @@ def test_long_review_is_empty_and_does_not_reuse_deepseek_raw_cache(tmp_path) ->
     assert reviewer.status()["last_strategy"] == "long"
 
 
-def test_reviewer_injects_audit_metadata_when_disabled(tmp_path) -> None:
+@pytest.mark.parametrize("entrypoint", ("review", "preheat", "emergency"))
+def test_reviewer_injects_audit_metadata_when_disabled(tmp_path, entrypoint) -> None:
     candidate = _candidate_with_evidence()
-    budget = _budget(tmp_path / "runtime.sqlite3")
-    calls = 0
-
-    def fail(*_args: object, **_kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        raise AssertionError("should not call deepseek when disabled")
+    database_path = tmp_path / "runtime.sqlite3"
+    budget = _budget(database_path)
+    post = Mock(side_effect=AssertionError("should not call deepseek when disabled"))
+    sleep = Mock(side_effect=AssertionError("should not retry deepseek when disabled"))
 
     reviewer = DeepSeekReviewer(
         replace(_settings(), enabled=False),
         budget,
-        DeepSeekHttpClient(post=fail, sleep=lambda _seconds: None),
+        DeepSeekHttpClient(post=post, sleep=sleep),
         ReviewCache(),
         **_reviewer_policy(),
         now=lambda: NOW,
     )
 
-    result = reviewer.review(
-        Strategy.TOMORROW,
-        (candidate,),
-        phase="morning_main",
-        deadline=NOW + timedelta(minutes=1),
-    )
+    if entrypoint == "review":
+        result = reviewer.review(
+            Strategy.TOMORROW,
+            (candidate,),
+            phase="morning_main",
+            deadline=NOW + timedelta(minutes=1),
+        )
+    elif entrypoint == "preheat":
+        result = reviewer.preheat(
+            (candidate,),
+            phase="morning_main",
+            deadline=NOW + timedelta(minutes=1),
+        )
+    else:
+        result = reviewer.review_emergency(
+            Strategy.TOMORROW,
+            (candidate,),
+            phase="morning_main",
+            deadline=NOW + timedelta(minutes=1),
+            reason="freeze_boundary_change",
+        )
 
-    assert calls == 0
+    post.assert_not_called()
+    sleep.assert_not_called()
+    assert budget.summary(NOW.date().isoformat())["used"] == 0
+    status = reviewer.status()
+    assert status["enabled"] is False
+    assert status["last_physical_attempts"] == 0
+    assert status["physical_call_acceptance"]["applicable"] is False
+    assert status["physical_call_acceptance"]["zero_call_reason"] == "disabled"
     review = result[candidate.quote.code]
     assert review.outcome is ReviewOutcome.REJECTED
     assert review.error == "disabled"
@@ -693,6 +713,10 @@ def test_reviewer_injects_audit_metadata_when_disabled(tmp_path) -> None:
     assert review.actual_model is None
     assert review.thinking_mode == "standard"
     assert review.rating == Rating.NEUTRAL.value
+    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
+        assert tuple(
+            connection.run("SELECT status, physical_attempts, error FROM deepseek_review_batches").fetchone()
+        ) == ("skipped", 0, "disabled")
 
 
 def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> None:
