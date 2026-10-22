@@ -21,19 +21,19 @@ from trader.recommendation.application.runtime.schedule import (
     ("clock", "expected"),
     [
         ("09:14:59", MarketPhase.CLOSED),
-        ("09:15:00", MarketPhase.WARMUP),
-        ("09:30:00", MarketPhase.MORNING_OBSERVE),
-        ("09:35:59", MarketPhase.MORNING_OBSERVE),
-        ("09:36:00", MarketPhase.MORNING_MAIN),
-        ("10:30:00", MarketPhase.MORNING_LATE),
-        ("11:20:00", MarketPhase.MIDDAY),
-        ("13:00:00", MarketPhase.AFTERNOON),
-        ("14:20:00", MarketPhase.FINAL_REVIEW),
-        ("14:48:00", MarketPhase.DEEPSEEK_CUTOFF),
-        ("14:49:50", MarketPhase.DEEPSEEK_CUTOFF),
-        ("14:59:50", MarketPhase.FINAL_QUOTE),
-        ("14:59:59", MarketPhase.FINAL_QUOTE),
-        ("14:50:00", MarketPhase.DEEPSEEK_CUTOFF),
+        ("09:15:00", MarketPhase.BEFORE_CLOSE),
+        ("09:30:00", MarketPhase.BEFORE_CLOSE),
+        ("09:35:59", MarketPhase.BEFORE_CLOSE),
+        ("09:36:00", MarketPhase.BEFORE_CLOSE),
+        ("10:30:00", MarketPhase.BEFORE_CLOSE),
+        ("11:20:00", MarketPhase.BEFORE_CLOSE),
+        ("13:00:00", MarketPhase.BEFORE_CLOSE),
+        ("14:20:00", MarketPhase.BEFORE_CLOSE),
+        ("14:48:00", MarketPhase.BEFORE_CLOSE),
+        ("14:49:50", MarketPhase.BEFORE_CLOSE),
+        ("14:59:50", MarketPhase.BEFORE_CLOSE),
+        ("14:59:59", MarketPhase.BEFORE_CLOSE),
+        ("14:50:00", MarketPhase.BEFORE_CLOSE),
         ("15:00:00", MarketPhase.AFTER_CLOSE),
     ],
 )
@@ -61,10 +61,10 @@ def test_freeze_due_survives_a_missed_exact_window() -> None:
     assert FreezeDueAt(after_freeze, is_trading_day=False) == ()
 
 
-def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
+def test_removed_submission_cutoff_does_not_interrupt_ten_second_cycle() -> None:
     before_afternoon_cutoff = datetime(2026, 7, 16, 14, 45, 59, tzinfo=SHANGHAI)
 
-    assert SecondsUntilNextScheduleBoundary(before_afternoon_cutoff, maximum_seconds=60) == 1
+    assert SecondsUntilNextScheduleBoundary(before_afternoon_cutoff, maximum_seconds=10) == 10
 
 
 @pytest.mark.parametrize(
@@ -74,8 +74,8 @@ def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
         ("12:45:00", None),
         ("14:49:20", None),
         ("14:49:50", None),
-        ("14:59:20", SchedulePoint.AFTERNOON_CHECKPOINT),
-        ("14:59:50", SchedulePoint.FINAL_CANDIDATE_QUOTES),
+        ("14:59:20", None),
+        ("14:59:50", None),
         ("15:00:00", SchedulePoint.AFTERNOON_FREEZE),
     ),
 )
@@ -84,14 +84,14 @@ def test_final_schedule_points_match_the_freeze_acceptance_window(clock, point) 
     assert SchedulePointAt(at, is_trading_day=True) is point
 
 
-def test_deepseek_cutoff_keeps_local_scoring_open_without_model_review() -> None:
+def test_review_and_scoring_continue_until_close() -> None:
     cutoff = datetime(2026, 7, 16, 14, 59, 20, tzinfo=SHANGHAI)
 
     decision = DecisionAt(cutoff, is_trading_day=True)
 
     assert decision.should_score is True
-    assert decision.should_review is False
-    assert SecondsUntilNextScheduleBoundary(cutoff.replace(second=19), maximum_seconds=60) == 1
+    assert decision.should_review is True
+    assert SecondsUntilNextScheduleBoundary(cutoff.replace(second=19), maximum_seconds=60) == 41
 
 
 @pytest.mark.parametrize(

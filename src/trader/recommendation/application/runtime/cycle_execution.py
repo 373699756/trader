@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
 
 from trader.recommendation.application.pipeline.freeze_publish.current_publisher import (
     PublishCurrentPair,
@@ -54,7 +53,6 @@ class CycleExecutionHooks:
     overlay_success: Callable[[Strategy, bool], None]
     published: Callable[[bool, DecisionCommitted | None, DecisionIdentity], None]
     rejected: Callable[[str, Strategy], None]
-    long_handoff: Callable[[date], None]
 
 
 class RecommendationCycleExecutor:
@@ -263,8 +261,6 @@ class RecommendationCycleExecutor:
                 self._hooks.failure("overlay", outcome.error_code, outcome.strategy)
             elif outcome.status != "skipped":
                 self._hooks.overlay_success(outcome.strategy, outcome.status == "published")
-        if request.phase == "midday_recovery" and request.strategy is Strategy.LONG:
-            self._hooks.long_handoff(request.trade_date)
         return True
 
     def _build_local(self, request: CycleRequest) -> DecisionIdentity | None:

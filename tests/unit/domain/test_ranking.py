@@ -51,6 +51,8 @@ def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:
 @pytest.mark.parametrize(
     ("strategy", "phase", "score", "expected", "reason"),
     (
+        (Strategy.TOMORROW, "before_close", 72.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
+        (Strategy.D25, "before_close", 70.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.TOMORROW, "afternoon", 72.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.D25, "final_quote", 70.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),
         (Strategy.TOMORROW, "morning_main", 100.0, RecommendationAction.EXECUTABLE, "score_threshold_met"),

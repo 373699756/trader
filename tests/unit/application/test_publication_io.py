@@ -152,7 +152,7 @@ def test_cleanup_failure_is_visible_without_revoking_formal_record(tmp_path, mon
     records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     freezer = _freezer(index, records, clock, tracker, Strategy.TOMORROW)
-    assert freezer.capture_checkpoint().status == "checkpoint_saved"
+    records.save_checkpoint(DecisionCheckpoint(FormalScoredDecision(current), _at(15, 0)))
 
     def fail_cleanup(*_args, **_kwargs):
         raise OSError("controlled_cleanup_failure")

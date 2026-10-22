@@ -24,6 +24,7 @@ CORE_FIELDS = (
 _EXECUTION_PHASES = {
     Strategy.TOMORROW: frozenset(
         {
+            "before_close",
             "morning_observe",
             "morning_main",
             "morning_late",
@@ -36,6 +37,7 @@ _EXECUTION_PHASES = {
     ),
     Strategy.D25: frozenset(
         {
+            "before_close",
             "morning_observe",
             "morning_main",
             "morning_late",

@@ -96,7 +96,7 @@ def _sample(
     empty_reason: str | None = "risk_or_execution_blocked",
     projection_version: str = "projection-1",
     event_sequence: int | None = None,
-    phase: str = "morning_main",
+    phase: str = "before_close",
     items: list[dict[str, object]] | None = None,
     include_quality_trade_date: bool = True,
     warmup: tuple[int, int, int, int] = (20, 15, 0, 5),
@@ -795,25 +795,25 @@ def test_stale_candidate_quote_majority_is_reported_during_scoring() -> None:
         finding.code == "candidate_quotes_stale"
         and finding.severity == "error"
         and finding.evidence.get("p95_seconds") == 505.0
-        and finding.evidence.get("limit_seconds") == 20.0
+        and finding.evidence.get("limit_seconds") == 30.0
         for finding in findings
     )
 
 
-def test_candidate_quote_age_limit_follows_strategy_phase() -> None:
+def test_candidate_quote_age_limit_is_uniform_before_close() -> None:
     today_findings = analyze_samples(
-        (_sample(1, phase="morning_main", candidate_quote_age=(19.0, 21.0, 22.0)),),
+        (_sample(1, phase="before_close", candidate_quote_age=(29.0, 31.0, 32.0)),),
         strategies=(_STRATEGY,),
         consecutive_zero_threshold=3,
     )
     afternoon_findings = analyze_samples(
-        (_sample(1, phase="afternoon", candidate_quote_age=(25.0, 29.0, 31.0)),),
+        (_sample(1, phase="before_close", candidate_quote_age=(25.0, 29.0, 31.0)),),
         strategies=(_STRATEGY,),
         consecutive_zero_threshold=3,
     )
 
     assert any(
-        finding.code == "candidate_quotes_stale" and finding.evidence.get("limit_seconds") == 20.0
+        finding.code == "candidate_quotes_stale" and finding.evidence.get("limit_seconds") == 30.0
         for finding in today_findings
     )
     assert not any(finding.code == "candidate_quotes_stale" for finding in afternoon_findings)

@@ -51,7 +51,7 @@ class CloseControlHooks:
 
 
 class CloseControlCoordinator:
-    """Own close-input recovery and the bounded checkpoint/freeze/settlement reservations."""
+    """Own close-input recovery and the bounded freeze/settlement reservations."""
 
     def __init__(self, dependencies: RuntimeDependencies, hooks: CloseControlHooks) -> None:
         self._dependencies = dependencies
@@ -155,66 +155,6 @@ class CloseControlCoordinator:
             self._hooks.failure("freeze", "freeze_capacity_rejected", strategy)
             return False
         return True
-
-    def submit_checkpoint(
-        self,
-        strategy: Strategy,
-        at: datetime,
-        *,
-        scheduled: ScheduledPipelineTask,
-    ) -> bool:
-        generation = scheduled.session.generation if scheduled.session is not None else 0
-        key = f"checkpoint:{at.date().isoformat()}:{strategy.value}:{generation}"
-        if not self._reserve_control(key):
-            return False
-        future = self._control.submit_urgent(self._run_checkpoint, key, strategy, at, scheduled)
-        if future is None:
-            self._finish_control(key, success=False)
-            self._hooks.failure("checkpoint", "checkpoint_capacity_rejected", strategy)
-            return False
-        return True
-
-    def _run_checkpoint(
-        self,
-        key: str,
-        strategy: Strategy,
-        at: datetime,
-        scheduled: ScheduledPipelineTask,
-    ) -> None:
-        success = False
-        try:
-            with SessionGuard(scheduled.session):
-                current = self._dependencies.index.snapshot(strategy).current
-                if (
-                    scheduled.session is not None
-                    and scheduled.session.generation > 1
-                    and (current is None or not scheduled.session.allows_version(current.version))
-                ):
-                    raise StaleSessionError("checkpoint_requires_current_session")
-                self._dependencies.freezes.capture_checkpoint(strategy, at)
-        except StaleSessionError:
-            return
-        except FreezeUnavailableError as exc:
-            self._hooks.failure("checkpoint", FailureCode(exc, "checkpoint_unavailable"), strategy)
-        except Exception as exc:
-            self._hooks.failure("checkpoint", f"checkpoint_unexpected:{type(exc).__name__}", strategy)
-        else:
-            success = True
-            with self._lock:
-                self._hooks.success("checkpoint", strategy)
-        finally:
-            self._finish_control(key, success=success)
-            try:
-                with SessionGuard(scheduled.session):
-                    self._dependencies.cadence.record_point_result(
-                        at.date().isoformat(),
-                        scheduled.schedule_point or SchedulePoint.AFTERNOON_CHECKPOINT,
-                        strategy.value,
-                        SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
-                        at=ShanghaiNow(self._dependencies.clock.now()),
-                    )
-            except StaleSessionError:
-                pass
 
     def _run_freeze(
         self,

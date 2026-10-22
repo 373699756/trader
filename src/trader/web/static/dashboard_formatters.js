@@ -29,6 +29,7 @@
   function phaseLabel(value) {
     return ({
       closed: "休市",
+      before_close: "收盘前刷新",
       warmup: "共享预热",
       current: "当前行情",
       continuous: "连续交易",

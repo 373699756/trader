@@ -266,10 +266,8 @@ class MarketInputCoordinator(DataRefreshPort):
     ) -> RefreshOutcome:
         handler: Callable[[PipelineTaskRequest, datetime | None], RefreshOutcome] | None = {
             PipelineTask.FULL_MARKET: self._refresh_full_market,
-            PipelineTask.CURRENT_QUOTES: self._refresh_full_market,
             PipelineTask.CLOSE_QUOTES: self._refresh_full_market,
             PipelineTask.CANDIDATE_QUOTES: self._refresh_candidates,
-            PipelineTask.FINAL_CANDIDATE_QUOTES: self._refresh_candidates,
             PipelineTask.TOPK_QUOTES: self._refresh_topk,
             PipelineTask.INTRADAY_TAIL: self._refresh_intraday_tail,
             PipelineTask.INDUSTRY_HEAT: self._refresh_industry_heat,

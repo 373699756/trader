@@ -31,17 +31,7 @@ from .web_health_contract import (
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _STRATEGIES = ("tomorrow", "d25")
-_SCORING_PHASES = frozenset(
-    {
-        "morning_observe",
-        "morning_main",
-        "morning_late",
-        "afternoon",
-        "final_review",
-        "final_quote",
-    }
-)
-_MORNING_SCORING_PHASES = frozenset({"morning_observe", "morning_main", "morning_late"})
+_SCORING_PHASES = frozenset({"before_close"})
 _MONITORED_PIPELINE_COUNTS = (
     "issuer_eligible_population",
     "input_ready_population",
@@ -58,8 +48,7 @@ _MONITORED_PIPELINE_COUNTS = (
     "full_scored",
 )
 _MAX_RESPONSE_BYTES = 1_048_576
-_MORNING_QUOTE_MAX_AGE_SECONDS = 20.0
-_OTHER_SHORT_QUOTE_MAX_AGE_SECONDS = 30.0
+_QUOTE_MAX_AGE_SECONDS = 30.0
 _REPORT_SCHEMA_VERSION = "web_recommendation_health"
 _EvidenceValue = str | int | float | bool | None
 
@@ -162,11 +151,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
         )
     if status.phase in _SCORING_PHASES and (status.candidate_quote_entries or 0) > 0:
         candidate_age = status.candidate_quote_age
-        age_limit = (
-            _MORNING_QUOTE_MAX_AGE_SECONDS
-            if status.phase in _MORNING_SCORING_PHASES
-            else _OTHER_SHORT_QUOTE_MAX_AGE_SECONDS
-        )
+        age_limit = _QUOTE_MAX_AGE_SECONDS
         if candidate_age.p95_seconds is None:
             findings.append(
                 _finding(
@@ -696,13 +681,12 @@ def _pipeline_consistency_findings(
         + (pipeline.count("filter_observe") or 0)
         + (pipeline.count("filter_reject") or 0)
     )
+    dynamic_filter = pipeline.stage("dynamic_filter")
     inconsistent = {
         "candidate_features": candidates > requested,
         "security_master": (pipeline.count("security_master") or 0) > requested,
         "history": (pipeline.count("history") or 0) > requested,
-        "filter_total": filtered > (pipeline.stage("dynamic_filter").input_count or 0)
-        if pipeline.stage("dynamic_filter")
-        else False,
+        "filter_total": filtered > (dynamic_filter.input_count or 0) if dynamic_filter else False,
         "full_scored": full_scored > candidates,
         "selected_total": selected > full_scored,
     }

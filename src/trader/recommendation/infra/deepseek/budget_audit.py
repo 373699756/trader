@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.domain.publication.models import Strategy
 
 
-def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:
+def _stage_key(strategy: Strategy, phase: str, bucket: str, requested_at: datetime) -> str:
+    # Accounting buckets retain their daily allocations independently of scheduling.
+    if phase == "before_close":
+        clock = requested_at.time().replace(tzinfo=None)
+        phase = "morning_main" if clock < time(13) else ("afternoon" if clock < time(14, 20) else "final_review")
     bucket_key = {"shared_preheat": "shared_preheat", "emergency": "emergency"}.get(bucket)
     stage_key = {
         (Strategy.TOMORROW, "morning_observe"): "tomorrow_morning",

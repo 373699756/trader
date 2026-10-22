@@ -79,19 +79,12 @@ _DATA_TASKS = (
     PipelineTask.TOPK_QUOTES,
     PipelineTask.INTRADAY_TAIL,
     PipelineTask.INDUSTRY_HEAT,
-    PipelineTask.FINAL_CANDIDATE_QUOTES,
     PipelineTask.CLOSE_QUOTES,
-    PipelineTask.CURRENT_QUOTES,
 )
-_DATA_LANES = tuple(
-    task
-    for task in _DATA_TASKS
-    if task not in {PipelineTask.FINAL_CANDIDATE_QUOTES, PipelineTask.CLOSE_QUOTES, PipelineTask.CURRENT_QUOTES}
-)
+_DATA_LANES = tuple(task for task in _DATA_TASKS if task not in {PipelineTask.CLOSE_QUOTES})
 _SCORING_INPUT_TASKS = frozenset(
     {
         PipelineTask.CANDIDATE_QUOTES,
-        PipelineTask.FINAL_CANDIDATE_QUOTES,
         PipelineTask.INTRADAY_TAIL,
     }
 )
@@ -195,7 +188,6 @@ class SchedulerRuntime:
         self._settlement_completed_count = 0
         self._settlement_failure_count = 0
         self._issues = RuntimeIssueIndex()
-        self._midday_long_handoff_date: date | None = None
         self._calendar_state: Literal["unknown", "ready", "unavailable"] = "unknown"
         self._calendar_trade_date: date | None = None
         self._calendar_is_trading_day: bool | None = None
@@ -224,7 +216,6 @@ class SchedulerRuntime:
                 lambda strategy, published: self._record_overlay_success(strategy, published=published),
                 lambda hybrid, event, identity: self._record_publish(hybrid=hybrid, event=event, identity=identity),
                 self._record_publish_rejection,
-                self._record_long_handoff,
             ),
         )
 
@@ -364,7 +355,6 @@ class SchedulerRuntime:
         if scheduled.session is None:
             scheduled = replace(scheduled, session=self._session.capture())
         self._dependencies.cadence.record_submission(scheduled, accepted=True, at=scheduled.scheduled_at)
-        completed_immediately = False
         rejected_freezes: tuple[str, ...] = ()
         if scheduled.task is PipelineTask.SCORE:
             accepted = self._submit_scoring(scheduled)
@@ -387,20 +377,6 @@ class SchedulerRuntime:
             }
             accepted = any(submissions.values())
             rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
-        elif scheduled.task is PipelineTask.CHECKPOINT:
-            submissions = {
-                strategy: self._close_control.submit_checkpoint(
-                    Strategy(strategy),
-                    scheduled.scheduled_at,
-                    scheduled=scheduled,
-                )
-                for strategy in scheduled.freeze_strategies
-            }
-            accepted = any(submissions.values())
-            rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
-        elif scheduled.task is PipelineTask.DEEPSEEK_CUTOFF:
-            accepted = True
-            completed_immediately = True
         else:
             offer = self._task_lanes[PipelineLane(scheduled.task)].offer(scheduled)
             accepted = offer is not LatestWinsOffer.REJECTED
@@ -412,12 +388,6 @@ class SchedulerRuntime:
                 scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
                 strategy,
                 SchedulePointResult.RETRY,
-                at=scheduled.scheduled_at,
-            )
-        if completed_immediately:
-            self._dependencies.cadence.record_results(
-                scheduled,
-                {"-": SchedulePointResult.COMPLETED},
                 at=scheduled.scheduled_at,
             )
 
@@ -442,15 +412,15 @@ class SchedulerRuntime:
 
     def _submit_scoring(self, scheduled: ScheduledPipelineTask) -> bool:
         with self._lock:
-            state = self._score_lane.status()
-            if state.running or state.pending:
-                return False
             return self._score_lane.offer(scheduled) is not LatestWinsOffer.REJECTED
 
     def _process_score_wave(self, scheduled: ScheduledPipelineTask) -> None:
         try:
             with SessionGuard(scheduled.session):
                 pass
+            now = ShanghaiNow(self._dependencies.clock.now())
+            if now.date() != scheduled.scheduled_at.date() or now.time() >= wall_time(15, 0):
+                return
             decision = DecisionAt(scheduled.scheduled_at, is_trading_day=True)
             strategies = self._due_strategies(decision, None, scheduled.scheduled_at)
             if not {Strategy.TOMORROW, Strategy.D25}.issubset(strategies):
@@ -529,7 +499,7 @@ class SchedulerRuntime:
     ) -> None:
         if scheduled.task is PipelineTask.TOPK_QUOTES and outcome.changed:
             self._refresh_selected_overlays(scheduled, observed_at)
-        elif scheduled.task in {PipelineTask.FULL_MARKET, PipelineTask.CURRENT_QUOTES}:
+        elif scheduled.task is PipelineTask.FULL_MARKET:
             completed_at = ShanghaiNow(self._dependencies.clock.now())
             if completed_at.date() == scheduled.scheduled_at.date() and completed_at.time() < wall_time(15, 0):
                 self._dispatch_pipeline_task(
@@ -537,16 +507,6 @@ class SchedulerRuntime:
                         PipelineTask.CANDIDATE_QUOTES,
                         completed_at,
                         scheduled.phase,
-                        session=scheduled.session,
-                    )
-                )
-        elif scheduled.task is PipelineTask.CANDIDATE_QUOTES and scheduled.phase is MarketPhase.MIDDAY:
-            for strategy in self._midday_recovery_strategies(scheduled.scheduled_at):
-                if strategy is Strategy.LONG:
-                    continue
-                self.submit_cycle(
-                    replace(
-                        self._scheduled_request(strategy, scheduled.scheduled_at, "midday_recovery"),
                         session=scheduled.session,
                     )
                 )
@@ -580,15 +540,7 @@ class SchedulerRuntime:
 
     def _selected_overlay_codes(self, phase: MarketPhase) -> tuple[str, ...]:
         codes: list[str] = []
-        visible_six = phase in {
-            MarketPhase.MORNING_OBSERVE,
-            MarketPhase.MORNING_MAIN,
-            MarketPhase.MORNING_LATE,
-            MarketPhase.AFTERNOON,
-            MarketPhase.FINAL_REVIEW,
-            MarketPhase.DEEPSEEK_CUTOFF,
-            MarketPhase.FINAL_QUOTE,
-        }
+        visible_six = phase is MarketPhase.BEFORE_CLOSE
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = self._dependencies.index.snapshot(strategy)
             identity = snapshot.formal.decision if snapshot.formal is not None else snapshot.current
@@ -734,7 +686,7 @@ class SchedulerRuntime:
             self._sequences[strategy] = sequence + 1
         deadline_time = wall_time(15, 0)
         review_deadline = datetime.combine(observed_at.date(), deadline_time, tzinfo=SHANGHAI)
-        allow_review = strategy is not Strategy.LONG and phase != "midday_recovery" and observed_at < review_deadline
+        allow_review = strategy is not Strategy.LONG and observed_at < review_deadline
         return CycleRequest(
             strategy=strategy,
             trade_date=observed_at.date(),
@@ -822,42 +774,12 @@ class SchedulerRuntime:
     ) -> tuple[Strategy, ...]:
         if decision.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
             return self._after_close_recovery_strategies(observed_at)
-        if decision.phase is MarketPhase.MIDDAY:
-            return self._midday_recovery_strategies(observed_at)
         strategies: tuple[Strategy, ...] = ()
         if decision.should_score:
             strategies = (Strategy.TOMORROW, Strategy.D25)
         if decision.phase is not MarketPhase.AFTER_CLOSE and decision.should_refresh_market:
             strategies = (*strategies, Strategy.LONG)
         return strategies
-
-    def _midday_recovery_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:
-        strategies: list[Strategy] = []
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
-            current = self._dependencies.index.snapshot(strategy).current
-            if current is not None and current.trade_date == observed_at.date():
-                continue
-            if self._dependencies.decisions.has_local_draft(strategy, observed_at.date()):
-                continue
-            lane = self._lanes[strategy].status()
-            if not lane.running and not lane.pending:
-                strategies.append(strategy)
-        long_current = self._dependencies.index.snapshot(Strategy.LONG).current
-        with self._lock:
-            long_handed_off = self._midday_long_handoff_date == observed_at.date()
-        long_lane = self._lanes[Strategy.LONG].status()
-        if (
-            (long_current is None or long_current.trade_date != observed_at.date())
-            and not long_handed_off
-            and not long_lane.running
-            and not long_lane.pending
-        ):
-            strategies.append(Strategy.LONG)
-        return tuple(strategies)
-
-    def _record_long_handoff(self, trade_date: date) -> None:
-        with self._lock:
-            self._midday_long_handoff_date = trade_date
 
     def _record_control_success(self, stage: str, strategy: Strategy | None) -> None:
         with self._lock:

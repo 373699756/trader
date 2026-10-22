@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from typing import cast
 
 from trader.recommendation.application.ports.runtime import CycleRequest, DecisionUnavailableError
 from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
@@ -16,9 +15,7 @@ from trader.recommendation.domain.publication.models import Strategy
 def CyclePhase(strategy: Strategy, phase: MarketPhase) -> str:
     if strategy in {Strategy.TOMORROW, Strategy.D25} and phase is MarketPhase.AFTER_CLOSE:
         return "close_fallback"
-    if phase is MarketPhase.MIDDAY:
-        return "midday_recovery"
-    return cast(str, phase.value)
+    return phase.value
 
 
 def ValidateCycleIdentity(request: CycleRequest, identity: DecisionIdentity) -> None:
@@ -47,10 +44,8 @@ def PipelineTaskCorrelationId(request: ScheduledPipelineTask) -> str:
 
 
 def PipelineLane(task: PipelineTask) -> PipelineTask:
-    if task in {PipelineTask.CURRENT_QUOTES, PipelineTask.CLOSE_QUOTES}:
+    if task is PipelineTask.CLOSE_QUOTES:
         return PipelineTask.FULL_MARKET
-    if task is PipelineTask.FINAL_CANDIDATE_QUOTES:
-        return PipelineTask.CANDIDATE_QUOTES
     return task
 
 

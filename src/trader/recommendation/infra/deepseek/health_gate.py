@@ -12,9 +12,6 @@ from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema, Sqlit
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_MORNING_HALF_OPEN_CUTOFF = time(11, 15)
-_AFTERNOON_START = time(13, 0)
-_AFTERNOON_HALF_OPEN_CUTOFF = time(14, 43)
 
 
 @dataclass(frozen=True)
@@ -323,7 +320,7 @@ class DeepSeekHealthGate:
 
 def _half_open_allowed(value: datetime) -> bool:
     local = value.astimezone(_SHANGHAI).time().replace(tzinfo=None)
-    return local < _MORNING_HALF_OPEN_CUTOFF or _AFTERNOON_START <= local < _AFTERNOON_HALF_OPEN_CUTOFF
+    return time(9, 15) <= local < time(15, 0)
 
 
 __all__ = ["HEALTH_SCHEMA", "DeepSeekHealthGate", "DeepSeekHealthPolicy"]

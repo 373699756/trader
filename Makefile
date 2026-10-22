@@ -100,7 +100,7 @@ performance-check:
 	$(PYTHON) -m trader.entrypoints.performance --config config/runtime.json
 
 browser-performance-check:
-	$(PYTHON) scripts/diagnose_runtime.py --profile browser --browser-duration-seconds 8 --browser-minimum-updates 3 --output -
+	$(PYTHON) scripts/diagnose_runtime.py --profile browser --browser-duration-seconds 35 --browser-minimum-updates 3 --output -
 
 diagnose-live:
 	$(PYTHON) scripts/diagnose_runtime.py --profile live --output -

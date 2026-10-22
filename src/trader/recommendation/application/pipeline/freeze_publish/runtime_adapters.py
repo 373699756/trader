@@ -127,15 +127,6 @@ class FreezeAdapter(FreezePort):
             Strategy.D25: d25,
         }
 
-    def capture_checkpoint(self, strategy: Strategy, at: datetime) -> None:
-        del at
-        freezer = self._freezers.get(strategy)
-        if freezer is None:
-            raise FreezeUnavailableError("checkpoint is only available for tomorrow and d25")
-        result = freezer.capture_checkpoint()
-        if result.status != "checkpoint_saved":
-            raise FreezeUnavailableError(result.status)
-
     def freeze(self, strategy: Strategy, at: datetime, current: DecisionIdentity | None) -> None:
         del at, current
         result = self._freezers[strategy].freeze_scheduled()

@@ -93,19 +93,7 @@
     if (payload.historical === true) return "hidden_history";
     if (payload.frozen === true) return "closed_frozen";
     if (typeof runtimePhase !== "string" || !runtimePhase) return "unknown";
-    const morningPhases = new Set([
-      "morning_observe",
-      "morning_main",
-      "morning_late",
-    ]);
-    const afternoonPhases = new Set([
-      "midday",
-      "afternoon",
-      "final_review",
-      "deepseek_cutoff",
-      "final_quote",
-    ]);
-    const active = morningPhases.has(runtimePhase) || afternoonPhases.has(runtimePhase);
+    const active = runtimePhase === "before_close";
     if (!active) return "closed_market";
     if (payload.status === "not_ready") {
       if (payload.draft) {

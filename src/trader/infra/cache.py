@@ -444,7 +444,10 @@ class BoundedLruCache(Generic[_T]):
         if policy.cadence_task is None:
             return cast(float, policy.refresh_ttl_seconds), cast(float, policy.action_max_age_seconds)
         try:
-            refresh = float(self._cadence_seconds[policy.cadence_task][identity.phase])
+            # Closing recovery uses the same quote TTL while retaining its
+            # separate phase in the cache key; it is not a periodic market task.
+            band = "before_close" if identity.phase == "after_close" else identity.phase
+            refresh = float(self._cadence_seconds[policy.cadence_task][band])
         except KeyError as exc:
             raise ValueError(
                 f"missing cadence for cache dataset {identity.dataset}: {policy.cadence_task}.{identity.phase}"

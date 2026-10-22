@@ -237,14 +237,7 @@ def BuildCacheIdentity(spec: CacheIdentitySpec) -> CacheIdentity:
 
 
 def NormalizeCachePhase(phase: str) -> str:
-    normalized = phase.strip().lower()
-    aliases = {
-        "morning_observe": "morning_main",
-        "deepseek_cutoff": "final_window",
-        "final_quote": "final_window",
-        "frozen": "final_window",
-    }
-    return aliases.get(normalized, normalized)
+    return phase.strip().lower()
 
 
 def RequestKey(request: Mapping[str, object]) -> CacheRequestKey:

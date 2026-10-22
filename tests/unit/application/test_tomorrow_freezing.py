@@ -18,7 +18,12 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
 )
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, ScoredDecision
+from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
+from trader.recommendation.domain.publication.decision_identity import (
+    CommittedDecisionRecord,
+    FormalScoredDecision,
+    ScoredDecision,
+)
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 
@@ -66,7 +71,7 @@ def test_checkpoint_recovers_same_decision_identity_after_restart(tmp_path: Path
     _publish(before, current)
     clock = _Clock(_at(14, 59, 40))
 
-    assert _coordinator(before, records, clock, strategy).capture_checkpoint().status == "checkpoint_saved"
+    records.save_checkpoint(DecisionCheckpoint(FormalScoredDecision(current), _at(15, 0)))
 
     records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     restored = UnifiedDecisionIndex()
@@ -330,8 +335,7 @@ def test_d25_checkpoint_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
         observed_at=_at(14, 59, 35),
     )
     _publish(index, current)
-    coordinator = _coordinator(index, records, _Clock(_at(14, 59, 40)), strategy=Strategy.D25)
-    assert coordinator.capture_checkpoint().status == "checkpoint_saved"
+    records.save_checkpoint(DecisionCheckpoint(FormalScoredDecision(current), _at(15, 0)))
 
     clock = _Clock(_at(15, 0))
     coordinator = _coordinator(index, records, clock, strategy=Strategy.D25)

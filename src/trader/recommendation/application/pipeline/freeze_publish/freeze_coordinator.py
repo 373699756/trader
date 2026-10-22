@@ -23,7 +23,6 @@ from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.decision_identity import (
     CommitKind,
     CommittedDecisionRecord,
-    FormalScoredDecision,
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import Strategy
@@ -76,29 +75,6 @@ class ScoredFreezeCoordinator:
         self._runtime_identity = runtime_identity
         self._strategy = strategy
         self._publication_io = publication_io
-
-    def capture_checkpoint(self) -> FreezeOperationResult:
-        now = _now(self._clock)
-        boundary = _at(now.date(), time(15, 0))
-        if not _at(now.date(), time(14, 59, 20)) <= now < boundary:
-            return FreezeOperationResult("outside_checkpoint_window")
-        current = self._current(now.date())
-        if current is None or current.observed_at > now:
-            return FreezeOperationResult("no_eligible_decision")
-        if not self._runtime_identity.matches(current):
-            return FreezeOperationResult("runtime_identity_mismatch")
-        if not 0.0 <= (boundary - current.observed_at).total_seconds() <= 30.0:
-            return FreezeOperationResult("checkpoint_too_old")
-        checkpoint = DecisionCheckpoint(FormalScoredDecision(current), boundary)
-        try:
-            with ObservePublicationIo(
-                self._publication_io, "checkpoint_write", PublicationIoTarget.decision(current)
-            ) as observation:
-                self._records.save_checkpoint(checkpoint)
-                observation.output_version = checkpoint.version
-        except (DecisionRecordError, OSError):
-            return FreezeOperationResult("persistence_failed", version=checkpoint.version)
-        return FreezeOperationResult("checkpoint_saved", version=checkpoint.version)
 
     def freeze_scheduled(self) -> FreezeOperationResult:
         now = _now(self._clock)

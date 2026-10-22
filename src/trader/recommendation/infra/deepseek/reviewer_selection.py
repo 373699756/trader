@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
-from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -268,18 +267,6 @@ def _in_deadline_timezone(value: datetime, deadline: datetime) -> datetime:
     if deadline.tzinfo is None:
         raise ValueError("DeepSeek deadline must be timezone-aware")
     return value.astimezone(deadline.tzinfo)
-
-
-def _submission_deadline(_strategy: Strategy, deadline: datetime) -> datetime:
-    local = deadline.astimezone(ZoneInfo("Asia/Shanghai"))
-    if (local.hour, local.minute, local.second) == (11, 20, 0):
-        cutoff = local.replace(hour=11, minute=18, second=0, microsecond=0)
-    elif (local.hour, local.minute, local.second) == (14, 48, 0):
-        cutoff = local.replace(hour=14, minute=46, second=0, microsecond=0)
-    else:
-        return deadline
-    cutoff = cutoff.astimezone(deadline.tzinfo)
-    return min(deadline, cutoff)
 
 
 def _physical_call_acceptance(

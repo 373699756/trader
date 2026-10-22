@@ -21,15 +21,14 @@ from trader.recommendation.application.runtime.trading_session import SessionLea
 
 
 class CadenceBand(str, Enum):
-    WARMUP = "warmup"
-    MORNING_MAIN = "morning_main"
-    MORNING_LATE = "morning_late"
-    MIDDAY = "midday"
-    AFTERNOON = "afternoon"
-    FINAL_REVIEW = "final_review"
-    FINAL_WINDOW = "final_window"
+    BEFORE_CLOSE = "before_close"
     AFTER_CLOSE = "after_close"
     CLOSED = "closed"
+    # Only independent minute/industry acquisition uses these windows.
+    WARMUP = "warmup"
+    MORNING = "morning"
+    AFTERNOON = "afternoon"
+    FINAL_REVIEW = "final_review"
 
 
 class PipelineTask(str, Enum):
@@ -40,12 +39,8 @@ class PipelineTask(str, Enum):
     LONG_QUOTES = "long_quotes"
     SCORE = "score"
     INDUSTRY_HEAT = "industry_heat"
-    DEEPSEEK_CUTOFF = "deepseek_cutoff"
-    CHECKPOINT = "checkpoint"
-    FINAL_CANDIDATE_QUOTES = "final_candidate_quotes"
     FREEZE = "freeze"
     CLOSE_QUOTES = "close_quotes"
-    CURRENT_QUOTES = "current_quotes"
 
 
 class SchedulePointStatus(str, Enum):
@@ -105,11 +100,7 @@ def TaskExecutionBudgetSeconds(task: PipelineTask) -> float | None:
         PipelineTask.LONG_QUOTES: 3.0,
         PipelineTask.SCORE: 15.0,
         PipelineTask.INDUSTRY_HEAT: 20.0,
-        PipelineTask.DEEPSEEK_CUTOFF: 1.0,
-        PipelineTask.CHECKPOINT: None,
-        PipelineTask.FINAL_CANDIDATE_QUOTES: 10.0,
         PipelineTask.CLOSE_QUOTES: 180.0,
-        PipelineTask.CURRENT_QUOTES: 20.0,
         PipelineTask.FREEZE: None,
     }[task]
 
@@ -138,8 +129,8 @@ class CadencePolicy:
                 raise ValueError(f"cadence intervals for {task.value} must be positive")
             if CadenceBand.CLOSED in values:
                 raise ValueError(f"cadence intervals for {task.value} cannot run while the market is closed")
-            if CadenceBand.AFTER_CLOSE in values and task is not PipelineTask.TOPK_QUOTES:
-                raise ValueError("only selected-code quote overlays may run after close")
+            if CadenceBand.AFTER_CLOSE in values and task not in {PipelineTask.TOPK_QUOTES, PipelineTask.LONG_QUOTES}:
+                raise ValueError("only quote display tasks may run after close")
             normalized[task] = MappingProxyType(dict(values))
         object.__setattr__(self, "intervals", MappingProxyType(normalized))
 
@@ -200,7 +191,6 @@ class CadencePlanner:
         self._pending_scores: set[tuple[str, CadenceBand, PipelineTask]] = set()
         self._started_at = ShanghaiNow(started_at) if started_at is not None else None
         self._point_states: dict[SchedulePointKey, SchedulePointState] = {}
-        self._started_dates: set[str] = set()
 
     def plan(self, at: datetime, *, is_trading_day: bool) -> CadenceBatch:
         with self._lock:
@@ -222,7 +212,7 @@ class CadencePlanner:
         if interval is None:
             return None
         with self._lock:
-            key = self._carry_score_deadline(local.date().isoformat(), band)
+            key = (local.date().isoformat(), band, PipelineTask.SCORE)
             due = self._next_due.get(key)
             if due is not None and local < due:
                 self._pending_scores.add(key)
@@ -392,7 +382,9 @@ class CadencePlanner:
     def interval_for(self, task: PipelineTask, at: datetime, *, is_trading_day: bool) -> float | None:
         if not is_trading_day:
             return None
-        return self._policy.interval(task, ResolveCadenceBand(PhaseAt(ShanghaiNow(at), is_trading_day=True)))
+        local = ShanghaiNow(at)
+        band = _task_band(task, local, PhaseAt(local, is_trading_day=True))
+        return self._policy.interval(task, band) if band is not None else None
 
     def has_active_afternoon_freeze(self, trade_date: str) -> bool:
         with self._lock:
@@ -411,25 +403,20 @@ class CadencePlanner:
 
         self._synchronize_schedule_points(local)
         tasks: list[ScheduledPipelineTask] = []
-        if trade_date not in self._started_dates:
-            self._started_dates.add(trade_date)
-            if band is CadenceBand.FINAL_WINDOW:
-                tasks.append(ScheduledPipelineTask(PipelineTask.CURRENT_QUOTES, local, phase))
         due_points = self._due_schedule_points(local)
         if self._afternoon_freeze_active(trade_date):
             due_points = tuple(item for item in due_points if item[0] is not SchedulePoint.CLOSE_QUOTES)
         for point, strategies in due_points:
             for task in _point_tasks(point, local, phase, strategies=strategies):
                 tasks.append(task)
-        tasks = list(_combine_freeze_tasks(tasks))
-        self._append_periodic_tasks(tasks, local, phase, tuple(point for point, _strategies in due_points))
+        self._append_periodic_tasks(tasks, local, phase)
         self._append_pending_score(tasks, local, phase)
 
         next_delays = tuple(
             max(0.05, (due - local).total_seconds())
             for key, due in self._next_due.items()
             if key[0] == trade_date
-            and key[1] is band
+            and key[1] is _task_band(key[2], local, phase)
             and due > local
             and (key[2] is not PipelineTask.SCORE or key in self._pending_scores)
         )
@@ -455,17 +442,6 @@ class CadencePlanner:
                 key = SchedulePointKey(trade_date, point, strategy)
                 current = self._point_states.get(key)
                 if current is not None:
-                    if current.status in {
-                        SchedulePointStatus.PENDING,
-                        SchedulePointStatus.INFLIGHT,
-                        SchedulePointStatus.RETRY_WAIT,
-                    } and _point_window_expired(point, local):
-                        self._point_states[key] = replace(
-                            current,
-                            status=SchedulePointStatus.MISSED,
-                            updated_at=local,
-                            next_retry_at=None,
-                        )
                     continue
                 point_status = _initial_point_status(
                     point,
@@ -517,21 +493,15 @@ class CadencePlanner:
         tasks: list[ScheduledPipelineTask],
         local: datetime,
         phase: MarketPhase,
-        due_points: tuple[SchedulePoint, ...],
     ) -> None:
         trade_date = local.date().isoformat()
-        band = ResolveCadenceBand(phase)
         point_task_names = {item.task for item in tasks}
-        final_quotes_due = (
-            SchedulePoint.FINAL_CANDIDATE_QUOTES in due_points
-            or phase is MarketPhase.FINAL_QUOTE
-            or self._quote_checkpoint_active(trade_date, local)
-        )
         for task in PERIODIC_TASKS:
-            if phase is MarketPhase.FROZEN and task not in {PipelineTask.TOPK_QUOTES, PipelineTask.LONG_QUOTES}:
+            band = _task_band(task, local, phase)
+            if band is None:
                 continue
             interval = self._policy.interval(task, band)
-            if interval is None or (final_quotes_due and task is PipelineTask.CANDIDATE_QUOTES):
+            if interval is None:
                 continue
             key = (trade_date, band, task)
             due = self._next_due.get(key)
@@ -559,53 +529,29 @@ class CadencePlanner:
         if interval is not None:
             self._next_due[key] = local + timedelta(seconds=interval)
 
-    def _quote_checkpoint_active(self, trade_date: str, local: datetime) -> bool:
-        return any(
-            key.trade_date == trade_date
-            and key.schedule_point is SchedulePoint.FINAL_CANDIDATE_QUOTES
-            and local >= _point_boundary(local, key.schedule_point)
-            and state.status
-            in {
-                SchedulePointStatus.PENDING,
-                SchedulePointStatus.INFLIGHT,
-                SchedulePointStatus.RETRY_WAIT,
-            }
-            for key, state in self._point_states.items()
-        )
-
     def _discard_old_state(self, trade_date: str, band: CadenceBand) -> None:
-        self._carry_score_deadline(trade_date, band)
-        self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date and key[1] is band}
+        self._next_due = {key: due for key, due in self._next_due.items() if key[0] == trade_date}
         self._pending_scores = {key for key in self._pending_scores if key[0] == trade_date and key[1] is band}
-        self._started_dates = {value for value in self._started_dates if value == trade_date}
-
-    def _carry_score_deadline(self, trade_date: str, band: CadenceBand) -> tuple[str, CadenceBand, PipelineTask]:
-        """A phase change changes policy, not the last accepted scoring trigger."""
-        current = (trade_date, band, PipelineTask.SCORE)
-        previous = next((key for key in self._next_due if key[0] == trade_date and key[2] is PipelineTask.SCORE), None)
-        if previous is not None and previous != current:
-            self._next_due[current] = self._next_due.pop(previous)
-            if previous in self._pending_scores:
-                self._pending_scores.remove(previous)
-                self._pending_scores.add(current)
-        return current
 
 
 def ResolveCadenceBand(phase: MarketPhase) -> CadenceBand:
-    return {
-        MarketPhase.CLOSED: CadenceBand.CLOSED,
-        MarketPhase.WARMUP: CadenceBand.WARMUP,
-        MarketPhase.MORNING_OBSERVE: CadenceBand.MORNING_MAIN,
-        MarketPhase.MORNING_MAIN: CadenceBand.MORNING_MAIN,
-        MarketPhase.MORNING_LATE: CadenceBand.MORNING_LATE,
-        MarketPhase.MIDDAY: CadenceBand.MIDDAY,
-        MarketPhase.AFTERNOON: CadenceBand.AFTERNOON,
-        MarketPhase.FINAL_REVIEW: CadenceBand.FINAL_REVIEW,
-        MarketPhase.DEEPSEEK_CUTOFF: CadenceBand.FINAL_WINDOW,
-        MarketPhase.FINAL_QUOTE: CadenceBand.FINAL_WINDOW,
-        MarketPhase.FROZEN: CadenceBand.FINAL_WINDOW,
-        MarketPhase.AFTER_CLOSE: CadenceBand.AFTER_CLOSE,
-    }[phase]
+    return CadenceBand(phase.value)
+
+
+def _task_band(task: PipelineTask, local: datetime, phase: MarketPhase) -> CadenceBand | None:
+    if phase is not MarketPhase.BEFORE_CLOSE or task not in {PipelineTask.INTRADAY_TAIL, PipelineTask.INDUSTRY_HEAT}:
+        return ResolveCadenceBand(phase)
+    current = local.time().replace(tzinfo=None)
+    if time(13, 0) <= current < time(14, 20):
+        return CadenceBand.AFTERNOON
+    if time(14, 20) <= current < time(14, 48):
+        return CadenceBand.FINAL_REVIEW
+    if task is PipelineTask.INDUSTRY_HEAT:
+        if time(9, 15) <= current < time(9, 30):
+            return CadenceBand.WARMUP
+        if time(9, 30) <= current < time(11, 20):
+            return CadenceBand.MORNING
+    return None
 
 
 def FreshnessLevel(age_seconds: float | None, interval_seconds: float | None) -> str:
@@ -622,9 +568,6 @@ def FreshnessLevel(age_seconds: float | None, interval_seconds: float | None) ->
 
 def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]], ...]:
     return (
-        (SchedulePoint.DEEPSEEK_CUTOFF, ("-",)),
-        (SchedulePoint.AFTERNOON_CHECKPOINT, ("tomorrow", "d25")),
-        (SchedulePoint.FINAL_CANDIDATE_QUOTES, ("-",)),
         (SchedulePoint.AFTERNOON_FREEZE, ("tomorrow", "d25")),
         (SchedulePoint.CLOSE_QUOTES, ("-",)),
     )
@@ -632,9 +575,6 @@ def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]],
 
 def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
     raw = {
-        SchedulePoint.DEEPSEEK_CUTOFF: time(14, 48),
-        SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 59, 20),
-        SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 59, 50),
         SchedulePoint.AFTERNOON_FREEZE: time(15, 0),
         SchedulePoint.CLOSE_QUOTES: time(15, 0),
     }[point]
@@ -652,53 +592,11 @@ def _initial_point_status(
     if local < boundary:
         point_status = SchedulePointStatus.PENDING
     else:
-        current = local.time().replace(tzinfo=None)
         started_before_boundary = started_at.date() < boundary.date() or started_at < boundary
-        if point in {SchedulePoint.DEEPSEEK_CUTOFF, SchedulePoint.FINAL_CANDIDATE_QUOTES}:
-            eligible = current < time(15, 0) and started_at <= boundary
-        elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
-            eligible = current < time(15, 0)
-        elif point is SchedulePoint.AFTERNOON_FREEZE:
-            eligible = current < time(15, 0) or started_before_boundary
-        else:
-            eligible = True
+        eligible = point is not SchedulePoint.AFTERNOON_FREEZE or started_before_boundary
         if eligible:
             point_status = SchedulePointStatus.PENDING
     return point_status
-
-
-def _point_window_expired(point: SchedulePoint, local: datetime) -> bool:
-    current = local.time().replace(tzinfo=None)
-    if point in {
-        SchedulePoint.DEEPSEEK_CUTOFF,
-        SchedulePoint.AFTERNOON_CHECKPOINT,
-        SchedulePoint.FINAL_CANDIDATE_QUOTES,
-    }:
-        return current >= time(15, 0)
-    return False
-
-
-def _combine_freeze_tasks(tasks: list[ScheduledPipelineTask]) -> tuple[ScheduledPipelineTask, ...]:
-    freezes = [item for item in tasks if item.task is PipelineTask.FREEZE]
-    if len(freezes) < 2:
-        return tuple(tasks)
-    if len({item.schedule_point for item in freezes}) != 1:
-        return tuple(tasks)
-    strategies = tuple(dict.fromkeys(strategy for item in freezes for strategy in item.freeze_strategies))
-    combined = ScheduledPipelineTask(
-        PipelineTask.FREEZE,
-        max(item.scheduled_at for item in freezes),
-        freezes[-1].phase,
-        strategies,
-        max(
-            (item.schedule_point for item in freezes if item.schedule_point is not None),
-            key=lambda point: _schedule_point_order(point),
-            default=None,
-        ),
-    )
-    result = [item for item in tasks if item.task is not PipelineTask.FREEZE]
-    result.append(combined)
-    return tuple(result)
 
 
 def _point_tasks(
@@ -712,16 +610,7 @@ def _point_tasks(
     if point is SchedulePoint.AFTERNOON_FREEZE:
         tasks = (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),)
     elif point is SchedulePoint.CLOSE_QUOTES:
-        tasks = (
-            ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),
-            ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
-        )
-    elif point is SchedulePoint.DEEPSEEK_CUTOFF:
-        tasks = (ScheduledPipelineTask(PipelineTask.DEEPSEEK_CUTOFF, at, phase, (), point),)
-    elif point is SchedulePoint.AFTERNOON_CHECKPOINT:
-        tasks = (ScheduledPipelineTask(PipelineTask.CHECKPOINT, at, phase, strategies, point),)
-    elif point is SchedulePoint.FINAL_CANDIDATE_QUOTES:
-        tasks = (ScheduledPipelineTask(PipelineTask.FINAL_CANDIDATE_QUOTES, at, phase, (), point),)
+        tasks = (ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),)
     else:
         raise ValueError(f"unsupported schedule point: {point.value}")
     return tasks
@@ -733,15 +622,11 @@ def _scheduled_point_keys(scheduled: ScheduledPipelineTask) -> tuple[SchedulePoi
         return ()
     trade_date = ShanghaiNow(scheduled.scheduled_at).date().isoformat()
     strategies: tuple[str, ...]
-    if point in {SchedulePoint.AFTERNOON_CHECKPOINT, SchedulePoint.AFTERNOON_FREEZE}:
+    if point is SchedulePoint.AFTERNOON_FREEZE:
         strategies = scheduled.freeze_strategies
     else:
         strategies = ("-",)
     return tuple(SchedulePointKey(trade_date, point, strategy) for strategy in strategies)
-
-
-def _schedule_point_order(point: SchedulePoint) -> int:
-    return tuple(item for item, _strategies in _schedule_point_strategies()).index(point)
 
 
 def _schedule_retry_delay(attempt_count: int) -> float:

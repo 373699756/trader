@@ -23,7 +23,6 @@ from trader.recommendation.application.ports.runtime import (
     DataRefreshPendingError,
     DataRefreshUnavailableError,
     DecisionUnavailableError,
-    FreezeUnavailableError,
     RefreshOutcome,
     ResearchIntent,
     ResearchRuntimeStatus,
@@ -119,58 +118,13 @@ def _cadence(at: datetime) -> CadencePlanner:
     return CadencePlanner(
         CadencePolicy.from_seconds(
             {
-                "full_market": {
-                    "warmup": 10,
-                    "morning_main": 10,
-                    "morning_late": 10,
-                    "midday": 10,
-                    "afternoon": 10,
-                    "final_review": 10,
-                },
-                "candidate_quotes": {
-                    "warmup": 2,
-                    "morning_main": 1,
-                    "morning_late": 2,
-                    "midday": 10,
-                    "afternoon": 2,
-                    "final_review": 1,
-                    "final_window": 1,
-                },
-                "topk_quotes": {
-                    "warmup": 1,
-                    "morning_main": 1,
-                    "morning_late": 1,
-                    "midday": 10,
-                    "afternoon": 1,
-                    "final_review": 1,
-                    "final_window": 1,
-                    "after_close": 10,
-                },
+                "full_market": {"before_close": 10},
+                "candidate_quotes": {"before_close": 10},
+                "topk_quotes": {"before_close": 10, "after_close": 10},
+                "long_quotes": {"before_close": 10, "after_close": 10},
+                "score": {"before_close": 10},
                 "intraday_tail": {"afternoon": 5, "final_review": 3},
-                "long_quotes": {
-                    "warmup": 1,
-                    "morning_main": 1,
-                    "morning_late": 1,
-                    "midday": 10,
-                    "afternoon": 1,
-                    "final_review": 1,
-                    "final_window": 1,
-                },
-                "score": {
-                    "warmup": 10,
-                    "morning_main": 3,
-                    "morning_late": 5,
-                    "afternoon": 5,
-                    "final_review": 3,
-                    "final_window": 1,
-                },
-                "industry_heat": {
-                    "warmup": 120,
-                    "morning_main": 60,
-                    "morning_late": 60,
-                    "afternoon": 60,
-                    "final_review": 60,
-                },
+                "industry_heat": {"warmup": 120, "morning": 60, "afternoon": 60, "final_review": 60},
             }
         ),
         started_at=at,
@@ -656,8 +610,8 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
         config_version="runtime-current",
     )
 
-    assert runtime._selected_overlay_codes(MarketPhase.AFTERNOON) == ("600001",)
-    assert runtime._selected_overlay_codes(MarketPhase.MIDDAY) == ("600001",)
+    assert runtime._selected_overlay_codes(MarketPhase.BEFORE_CLOSE) == ("600001",)
+    assert runtime._selected_overlay_codes(MarketPhase.BEFORE_CLOSE) == ("600001",)
     runtime.start()
     runtime.submit_due(frozen_at)
     assert runtime.wait_idle(2.0)
@@ -832,11 +786,7 @@ class Freezes:
     def __init__(self, index: UnifiedDecisionIndex | None = None) -> None:
         self._index = index
         self.calls: list[tuple[Strategy, str | None]] = []
-        self.checkpoint_calls: list[Strategy] = []
         self.close_fallback_calls: list[tuple[Strategy, str, str]] = []
-
-    def capture_checkpoint(self, strategy: Strategy, _at: datetime) -> None:
-        self.checkpoint_calls.append(strategy)
 
     def freeze(self, strategy: Strategy, at: datetime, current) -> None:
         self.calls.append((strategy, current.version if current is not None else None))
@@ -1024,7 +974,7 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
             assert not data.candidate_started.wait(0.05)
             runtime.submit_due(observed_at + timedelta(seconds=1))
             assert runtime._periodic_task_inflight(
-                ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.MORNING_MAIN)
+                ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.BEFORE_CLOSE)
             )
             assert not data.candidate_started.is_set()
             data.release_full_market.set()
@@ -1037,7 +987,7 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
         assert not candidate_lane.pending
         assert runtime._periodic_task_inflight(  # noqa: SLF001 - verifies the shared market/candidate wave boundary
             ScheduledPipelineTask(
-                PipelineTask.FULL_MARKET, observed_at + timedelta(seconds=10), MarketPhase.MORNING_MAIN
+                PipelineTask.FULL_MARKET, observed_at + timedelta(seconds=10), MarketPhase.BEFORE_CLOSE
             )
         )
         assert not decisions.build_started.wait(0.2)
@@ -1156,8 +1106,10 @@ def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> N
     assert runtime.status().last_error_code == "decision:paired_input_epoch_mismatch"
 
 
-def test_scoring_wave_skips_overlapping_ten_second_tick() -> None:
-    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+@pytest.mark.parametrize("finish_after_close", (False, True))
+def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> None:
+    observed_at = datetime(2026, 8, 11, 14, 59, 49, tzinfo=SHANGHAI)
+    clock = FixedClock(observed_at)
     entered = threading.Event()
     release = threading.Event()
 
@@ -1194,7 +1146,7 @@ def test_scoring_wave_skips_overlapping_ten_second_tick() -> None:
                 queue_capacity=4,
                 thread_name_prefix="test-control",
             ),
-            clock=FixedClock(observed_at),
+            clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=data,
@@ -1213,23 +1165,29 @@ def test_scoring_wave_skips_overlapping_ten_second_tick() -> None:
     runtime.start()
     try:
         runtime._dispatch_pipeline_task(
-            ScheduledPipelineTask(PipelineTask.SCORE, observed_at, MarketPhase.MORNING_MAIN)
+            ScheduledPipelineTask(PipelineTask.SCORE, observed_at, MarketPhase.BEFORE_CLOSE)
         )
         assert entered.wait(1.0)
         runtime._dispatch_pipeline_task(
-            ScheduledPipelineTask(PipelineTask.SCORE, observed_at + timedelta(seconds=10), MarketPhase.MORNING_MAIN)
+            ScheduledPipelineTask(PipelineTask.SCORE, observed_at + timedelta(seconds=10), MarketPhase.BEFORE_CLOSE)
         )
         data.epoch = "new-input-after-cut"
         score_lane = next(lane for lane in runtime.status().task_lanes if lane.name == "trader-task-score-wave")
-        assert score_lane.offered_count == 1
-        assert score_lane.running and not score_lane.pending
+        assert score_lane.offered_count == 2
+        assert score_lane.running and score_lane.pending
+        if finish_after_close:
+            clock.current = observed_at.replace(hour=15, minute=0, second=0)
         release.set()
         assert runtime.wait_idle(2.0)
     finally:
         release.set()
         runtime.stop(ShutdownDeadline.start(2.0))
-    assert decisions.built == [Strategy.TOMORROW, Strategy.D25]
-    assert all(isinstance(index.snapshot(strategy).current, ScoredDecision) for strategy in decisions.built)
+    expected = [Strategy.TOMORROW, Strategy.D25] * (1 if finish_after_close else 2)
+    assert decisions.built == expected
+    if finish_after_close:
+        assert all(index.snapshot(strategy).current is None for strategy in expected)
+    else:
+        assert all(isinstance(index.snapshot(strategy).current, ScoredDecision) for strategy in expected)
 
 
 @pytest.mark.parametrize("task", (PipelineTask.CANDIDATE_QUOTES, PipelineTask.INTRADAY_TAIL))
@@ -1273,97 +1231,13 @@ def test_scoring_input_refresh_triggers_score_only_when_changed(task, changed) -
 
     runtime.start()
     runtime._process_pipeline_task(  # noqa: SLF001 - verifies the refresh-to-score handoff boundary
-        ScheduledPipelineTask(task, observed_at, MarketPhase.AFTERNOON)
+        ScheduledPipelineTask(task, observed_at, MarketPhase.BEFORE_CLOSE)
     )
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
     assert decisions.input_quality_status() == ()
     assert data.calls == ([Strategy.TOMORROW, Strategy.D25] if changed else [])
-
-
-def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None:
-    checkpoint_at = datetime(2026, 8, 11, 14, 59, 20, tzinfo=SHANGHAI)
-    clock = FixedClock(checkpoint_at)
-    index = UnifiedDecisionIndex()
-    data = BlockingScoringInputs()
-
-    class CurrentRequiredFreezes(Freezes):
-        def __init__(self) -> None:
-            super().__init__()
-            self.attempts: list[Strategy] = []
-            self.initial_attempts_finished = threading.Event()
-
-        def capture_checkpoint(self, strategy: Strategy, at: datetime) -> None:
-            self.attempts.append(strategy)
-            if len(self.attempts) >= 2:
-                self.initial_attempts_finished.set()
-            if index.snapshot(strategy).current is None:
-                raise FreezeUnavailableError("no_eligible_decision")
-            super().capture_checkpoint(strategy, at)
-
-    freezes = CurrentRequiredFreezes()
-    runtime = SchedulerRuntime(
-        RuntimeDependencies(
-            control_pool=BoundedExecutor(
-                worker_count=2,
-                urgent_worker_count=1,
-                queue_capacity=4,
-                thread_name_prefix="test-control",
-            ),
-            clock=clock,
-            monotonic=clock.monotonic,
-            calendar=TradingCalendar(),
-            cadence=_cadence(checkpoint_at.replace(hour=9, minute=15)),
-            data=data,
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-checkpoint-observer"),
-            freezes=freezes,
-            settlement=Settlement(),
-            research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
-            publish_overlay=lambda _overlay: None,
-        ),
-        config_version="runtime-current",
-    )
-
-    runtime.start()
-    try:
-        runtime.submit_due(checkpoint_at)
-        assert data.candidate_started.wait(1.0)
-        assert freezes.initial_attempts_finished.wait(1.0)
-        retrying = runtime.status()
-        assert all(
-            retrying.cadence.schedule_points[
-                SchedulePointKey(checkpoint_at.date().isoformat(), SchedulePoint.AFTERNOON_CHECKPOINT, strategy.value)
-            ].status
-            is SchedulePointStatus.RETRY_WAIT
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
-        )
-
-        data.release_candidate.set()
-        assert runtime.wait_idle(2.0)
-        assert isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
-        assert isinstance(index.snapshot(Strategy.D25).current, ScoredDecision)
-        clock.current = checkpoint_at + timedelta(seconds=1)
-        runtime.submit_due(clock.current)
-        assert runtime.wait_idle(2.0)
-        status = runtime.status()
-    finally:
-        data.release_candidate.set()
-        runtime.stop(ShutdownDeadline.start(2.0))
-
-    assert freezes.checkpoint_calls == [Strategy.TOMORROW, Strategy.D25]
-    assert freezes.attempts == [Strategy.TOMORROW, Strategy.D25, Strategy.TOMORROW, Strategy.D25]
-    assert all(
-        status.cadence.schedule_points[
-            SchedulePointKey(checkpoint_at.date().isoformat(), SchedulePoint.AFTERNOON_CHECKPOINT, strategy.value)
-        ].status
-        is SchedulePointStatus.COMPLETED
-        for strategy in (Strategy.TOMORROW, Strategy.D25)
-    )
 
 
 def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
@@ -1622,8 +1496,9 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
     assert settlement.calls == [after_close + timedelta(seconds=10)]
 
 
-def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> None:
+def test_midday_continues_ten_second_scoring_and_review() -> None:
     midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+    clock = FixedClock(midday)
     data = DataRefresh()
     reviews = SharedReviews()
     index = UnifiedDecisionIndex()
@@ -1635,7 +1510,7 @@ def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> Non
                 queue_capacity=4,
                 thread_name_prefix="test-control",
             ),
-            clock=FixedClock(midday),
+            clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=data,
@@ -1655,7 +1530,8 @@ def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> Non
     runtime.start()
     runtime.submit_due(midday)
     assert runtime.wait_idle(2.0)
-    runtime.submit_due(midday + timedelta(seconds=30))
+    clock.current = midday + timedelta(seconds=10)
+    runtime.submit_due(clock.current)
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
@@ -1663,18 +1539,19 @@ def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> Non
     assert {
         strategy: scoring_calls.count(strategy) for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.LONG)
     } == {
-        Strategy.TOMORROW: 1,
-        Strategy.D25: 1,
+        Strategy.TOMORROW: 2,
+        Strategy.D25: 2,
         Strategy.LONG: 2,
     }
-    assert {request.phase for request in data.requests} <= {"midday", "midday_recovery", "quote_overlay"}
-    assert not any(request.allow_review for request in data.requests if request.phase != "quote_overlay")
-    assert reviews.calls == []
+    assert {request.phase for request in data.requests} <= {"before_close", "quote_overlay"}
+    assert all(request.allow_review for request in data.requests if request.strategy is not Strategy.LONG)
+    assert set(reviews.calls) == {Strategy.TOMORROW, Strategy.D25}
     assert all(index.snapshot(strategy).current is not None for strategy in Strategy)
 
 
-def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop() -> None:
+def test_midday_pending_draft_does_not_disable_later_scoring() -> None:
     midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+    clock = FixedClock(midday)
 
     class DraftOnlyDecisions(Decisions):
         def __init__(self) -> None:
@@ -1699,7 +1576,7 @@ def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop
                 queue_capacity=4,
                 thread_name_prefix="test-control",
             ),
-            clock=FixedClock(midday),
+            clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=data,
@@ -1719,16 +1596,18 @@ def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop
     runtime.start()
     runtime.submit_due(midday)
     assert runtime.wait_idle(2.0)
-    runtime.submit_due(midday + timedelta(seconds=30))
+    clock.current = midday + timedelta(seconds=10)
+    runtime.submit_due(clock.current)
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert data.calls.count(Strategy.TOMORROW) == 1
+    assert data.calls.count(Strategy.TOMORROW) == 2
     assert decisions.has_local_draft(Strategy.TOMORROW, midday.date())
 
 
-def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None:
+def test_midday_continuous_loop_retries_failed_input() -> None:
     midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+    clock = FixedClock(midday)
 
     class FailingOnceData(DataRefresh):
         def __init__(self) -> None:
@@ -1751,7 +1630,7 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
                 queue_capacity=4,
                 thread_name_prefix="test-control",
             ),
-            clock=FixedClock(midday),
+            clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=data,
@@ -1771,7 +1650,8 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
     runtime.start()
     runtime.submit_due(midday)
     assert runtime.wait_idle(2.0)
-    runtime.submit_due(midday + timedelta(seconds=30))
+    clock.current = midday + timedelta(seconds=10)
+    runtime.submit_due(clock.current)
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
@@ -1784,6 +1664,7 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
 
 def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None:
     midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
+    clock = FixedClock(midday)
     entered = threading.Event()
     release = threading.Event()
 
@@ -1802,7 +1683,7 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None
                 queue_capacity=4,
                 thread_name_prefix="test-control",
             ),
-            clock=FixedClock(midday),
+            clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=BlockingData(),
@@ -1822,15 +1703,16 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None
     runtime.start()
     runtime.submit_due(midday)
     assert entered.wait(timeout=1.0)
-    runtime.submit_due(midday + timedelta(seconds=30))
-    tomorrow_lane = next(lane for lane in runtime.status().lanes if lane.name == "trader-tomorrow")
+    clock.current = midday + timedelta(seconds=10)
+    runtime.submit_due(clock.current)
+    score_lane = runtime._score_lane.status()
     release.set()
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert tomorrow_lane.running
-    assert tomorrow_lane.offered_count == 1
-    assert tomorrow_lane.pending is False
+    assert score_lane.running
+    assert score_lane.offered_count == 1
+    assert score_lane.pending is False
 
 
 def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> None:
@@ -2384,8 +2266,8 @@ def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
         ),
         config_version="runtime-current",
     )
-    full_market = ScheduledPipelineTask(PipelineTask.FULL_MARKET, NOW, MarketPhase.MORNING_MAIN)
-    candidate_quotes = ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, NOW, MarketPhase.MORNING_MAIN)
+    full_market = ScheduledPipelineTask(PipelineTask.FULL_MARKET, NOW, MarketPhase.BEFORE_CLOSE)
+    candidate_quotes = ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, NOW, MarketPhase.BEFORE_CLOSE)
     runtime.start()
     try:
         runtime._process_pipeline_task(full_market)

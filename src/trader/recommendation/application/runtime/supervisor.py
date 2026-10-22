@@ -13,8 +13,6 @@ from typing import Protocol
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.schedule import (
-    MarketPhase,
-    PhaseAt,
     SecondsUntilNextScheduleBoundary,
 )
 
@@ -246,22 +244,7 @@ class RuntimeSupervisor:
 
 
 def SchedulerIntervalSeconds(at: datetime) -> float:
-    phase = PhaseAt(at, is_trading_day=True)
-    maximum = {
-        MarketPhase.CLOSED: 30.0,
-        MarketPhase.WARMUP: 60.0,
-        MarketPhase.MORNING_OBSERVE: 30.0,
-        MarketPhase.MORNING_MAIN: 10.0,
-        MarketPhase.MORNING_LATE: 20.0,
-        MarketPhase.MIDDAY: 60.0,
-        MarketPhase.AFTERNOON: 30.0,
-        MarketPhase.FINAL_REVIEW: 10.0,
-        MarketPhase.DEEPSEEK_CUTOFF: 2.0,
-        MarketPhase.FINAL_QUOTE: 2.0,
-        MarketPhase.FROZEN: 10.0,
-        MarketPhase.AFTER_CLOSE: 60.0,
-    }[phase]
-    return SecondsUntilNextScheduleBoundary(at, maximum_seconds=maximum)
+    return SecondsUntilNextScheduleBoundary(at, maximum_seconds=10.0)
 
 
 __all__ = ["RuntimeSupervisor", "RuntimeSupervisorConfig", "SchedulerIntervalSeconds"]

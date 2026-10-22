@@ -35,7 +35,6 @@ from trader.recommendation.infra.deepseek.reviewer_selection import (
     _in_deadline_timezone,
     _ReservationTracker,
     _review_priority,
-    _submission_deadline,
     _terminal_review,
     _thinking_mode,
     _unique_candidates,
@@ -439,7 +438,7 @@ class DeepSeekReviewer:
             model_role="primary",
             requested_model=self._settings.model,
             reasoning_effort="",
-            reservation_deadline=_submission_deadline(execution.strategy, execution.deadline),
+            reservation_deadline=execution.deadline,
         )
         statuses: list[str] = []
         physical_attempts = 0

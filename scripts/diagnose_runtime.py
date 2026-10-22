@@ -164,7 +164,7 @@ def _parser() -> argparse.ArgumentParser:
         default=4.5,
         help="vendor HTTP timeout; SDK socket timeout for BaoStock experiments",
     )
-    parser.add_argument("--browser-duration-seconds", type=float, default=8.0, help="full-profile browser duration")
+    parser.add_argument("--browser-duration-seconds", type=float, default=35.0, help="full-profile browser duration")
     parser.add_argument("--browser-minimum-updates", type=int, default=3, help="required browser DOM updates")
     parser.add_argument(
         "--command-timeout-seconds",

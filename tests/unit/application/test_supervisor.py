@@ -157,14 +157,14 @@ def test_supervisor_scheduler_start_interruption_stops_started_pipeline(monkeypa
     assert "trader-scheduler" not in {thread.name for thread in threading.enumerate()}
 
 
-def test_scheduler_cadence_tightens_at_final_quote() -> None:
+def test_scheduler_cadence_stays_ten_seconds_until_freeze() -> None:
     morning = datetime(2026, 7, 16, 9, 20, tzinfo=SHANGHAI)
     main = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)
     final_quote = datetime(2026, 7, 16, 14, 49, 55, tzinfo=SHANGHAI)
 
-    assert SchedulerIntervalSeconds(morning) == 60.0
+    assert SchedulerIntervalSeconds(morning) == 10.0
     assert SchedulerIntervalSeconds(main) == 10.0
-    assert SchedulerIntervalSeconds(final_quote) == 2.0
+    assert SchedulerIntervalSeconds(final_quote) == 10.0
 
 
 class FakePipeline:

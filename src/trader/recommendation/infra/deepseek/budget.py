@@ -279,7 +279,7 @@ class DeepSeekBudgetLedger:
         model_role = options.get("model_role", "primary")
         emergency_reason = options.get("emergency_reason", "")
         candidate_count = options.get("candidate_count", 0)
-        stage = _stage_key(strategy, options["phase"], bucket)
+        stage = _stage_key(strategy, options["phase"], bucket, requested_at)
         checks = (
             (strategy.value not in self._limits and bucket in {strategy.value, "emergency"}, "unknown_strategy"),
             (bucket not in self._limits, "unknown_bucket"),
