@@ -168,8 +168,8 @@ class HistoryDownloadIndex:
         if len(added_codes) != len(added_tasks) or removed_codes & added_codes:
             raise ValueError("history_download_task_population_conflict")
         with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
-            stored_codes = frozenset(row[0] for row in connection.run("SELECT code FROM download_tasks"))
-            if not removed_codes.issubset(stored_codes) or added_codes & stored_codes:
+            existing_codes = frozenset(row[0] for row in connection.run("SELECT code FROM download_tasks"))
+            if not removed_codes.issubset(existing_codes) or added_codes & existing_codes:
                 raise RuntimeError("history_download_task_population_conflict")
             updated = connection.run(
                 """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?
