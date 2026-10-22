@@ -185,6 +185,9 @@ def _parser() -> argparse.ArgumentParser:
         help="annual files sampled for expensive dbstat page classification",
     )
     parser.add_argument(
+        "--history-resume-samples", type=int, default=0, help="only measure up to 8 pending history reads"
+    )
+    parser.add_argument(
         "--sqlite-query-rounds",
         type=int,
         default=3,
@@ -254,6 +257,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("sample intervals must not be negative")
     if not 1 <= args.sqlite_page_sample_count <= 100:
         raise ValueError("--sqlite-page-sample-count must be within 1..100")
+    if not 0 <= args.history_resume_samples <= 8:
+        raise ValueError("--history-resume-samples must be within 0..8")
     if not 1 <= args.sqlite_query_rounds <= 9:
         raise ValueError("--sqlite-query-rounds must be within 1..9")
     if not 1 <= args.sqlite_revision_write_sample_count <= 5_000:
@@ -316,6 +321,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             command_timeout_seconds=args.command_timeout_seconds,
             history_root=args.history_root.expanduser().resolve() if args.history_root else None,
             sqlite_page_sample_count=args.sqlite_page_sample_count,
+            history_resume_samples=args.history_resume_samples,
             sqlite_query_rounds=args.sqlite_query_rounds,
             sqlite_revision_write_sample_count=args.sqlite_revision_write_sample_count,
             baostock_serial_only=args.baostock_serial_only,
@@ -581,6 +587,8 @@ def build_commands(
                 str(options.sqlite_query_rounds),
                 "--revision-write-sample-count",
                 str(options.sqlite_revision_write_sample_count),
+                "--resume-samples",
+                str(options.history_resume_samples),
             ),
             common_timeout,
         ),

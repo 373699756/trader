@@ -316,7 +316,16 @@ def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
             "waiting",
             176,
             4401,
-            pipeline=HistoryPipelineProgress(192, 16, 206.0, 1083.0, 1240.0),
+            pipeline=HistoryPipelineProgress(
+                192,
+                16,
+                206.0,
+                1083.0,
+                1240.0,
+                inflight_codes=8,
+                pending_codes=4201,
+                oldest_inflight_seconds=50.0,
+            ),
         )
     )
 
@@ -324,6 +333,9 @@ def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
     assert "Tencent下载" in output
     assert "| 等待 |" in output
     assert "网络" in output and "落库" in output and "回压" in output
+    assert "在途 8" in _compact_log(output)
+    assert "待派发 4201" in _compact_log(output)
+    assert "最久在途 00:00:50" in output
 
 
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:

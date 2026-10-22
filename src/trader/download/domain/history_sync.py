@@ -175,11 +175,27 @@ class HistoryPipelineProgress:
     download_seconds: float
     write_seconds: float
     backpressure_seconds: float
+    inflight_codes: int = 0
+    pending_codes: int = 0
+    oldest_inflight_seconds: float = 0.0
 
     def __post_init__(self) -> None:
-        if any(type(value) is not int or value < 0 for value in (self.downloaded_codes, self.queued_codes)) or any(
+        if any(
+            type(value) is not int or value < 0
+            for value in (
+                self.downloaded_codes,
+                self.queued_codes,
+                self.inflight_codes,
+                self.pending_codes,
+            )
+        ) or any(
             not math.isfinite(value) or value < 0
-            for value in (self.download_seconds, self.write_seconds, self.backpressure_seconds)
+            for value in (
+                self.download_seconds,
+                self.write_seconds,
+                self.backpressure_seconds,
+                self.oldest_inflight_seconds,
+            )
         ):
             raise ValueError("history_pipeline_progress_invalid")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import json
 import os
 import resource
 import sqlite3
@@ -21,8 +22,11 @@ from pathlib import Path
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
+from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
+from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 from .reporting import emit_report
 
@@ -72,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--inventory-only", action="store_true")
+    parser.add_argument("--resume-samples", type=int, default=0)
     parser.add_argument("--page-sample-count", type=int, default=1)
     parser.add_argument("--query-rounds", type=int, default=3)
     parser.add_argument("--revision-write-sample-count", type=int, default=512)
@@ -80,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.resume_samples:
+        try:
+            return _measure_resume_reads(args.history_root.resolve(), args.resume_samples)
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            emit_report({"schema_version": "history_sqlite_performance", "status": "failed"})
+            return 1
     if args.inventory_only:
         emit_report(
             {
@@ -142,6 +153,57 @@ def main() -> int:
     }
     emit_report(payload)
     return 0
+
+
+def _measure_resume_reads(root: Path, count: int) -> int:
+    if not 1 <= count <= 8:
+        raise ValueError("history resume sample count must be within 1..8")
+    with (
+        SqliteSession(root / "catalog.sqlite3", SqliteConnectionOptions(read_only=True)) as connection,
+        SqliteTransaction(connection),
+    ):
+        sequence = int(connection.run("SELECT sequence FROM download_batch").require_one()[0])
+        tasks = connection.run(
+            "SELECT code,dates_json FROM download_tasks WHERE tencent_done=0 OR failure IS NOT NULL "
+            "ORDER BY tencent_done,code LIMIT ?",
+            (count,),
+        ).fetchall()
+    measurements: list[dict[str, object]] = []
+    started = time.monotonic()
+    prices = HistoryDirectPrices(
+        root, sequence, None, HistorySqliteActivity(lambda: None, lambda: time.monotonic() - started >= 60)
+    )
+    status = "passed"
+    try:
+        for code, payload in tasks:
+            dates = tuple(date.fromisoformat(value) for value in json.loads(payload))
+            before = time.monotonic()
+            cells = prices.read_for_download(code, dates)
+            measurements.append(
+                {
+                    "requested_cells": len(dates),
+                    "existing_cells": len(cells),
+                    "obtained_cells": sum(cell.obtained for cell in cells),
+                    "read_ms": round((time.monotonic() - before) * 1000, 3),
+                    "content_hash": CanonicalDigest(cells),
+                }
+            )
+    except KeyboardInterrupt:
+        if time.monotonic() - started < 60:
+            raise
+        status = "failed"
+    emit_report(
+        {
+            "schema_version": "history_sqlite_performance",
+            "status": status,
+            "summary": {
+                "resume_reads": measurements,
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                "reason": "local_read_deadline" if status == "failed" else None,
+            },
+        }
+    )
+    return int(status == "failed")
 
 
 def inspect_history_space(root: Path) -> dict[str, object]:

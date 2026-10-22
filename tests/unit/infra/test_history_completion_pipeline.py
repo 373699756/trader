@@ -4,27 +4,94 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, timedelta
+from itertools import count
 from threading import Event, Lock, get_ident
 
 import pytest
 
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
-from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier, ProgressRecorder, _configuration
+from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier, ProgressRecorder, _configuration, _download
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
-from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
+from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+from trader.download.infra import history_download_flow as module
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
+from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.sample_builder import _SampleBuildState
 
 DAYS = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+
+def test_recovery_reads_each_physical_year_once_and_keeps_sequence_visibility(tmp_path, monkeypatch):
+    days = (date(2025, 1, 2), date(2025, 2, 3), date(2025, 12, 4), date(2026, 1, 5))
+    cells = _download("600001", days).batch.cells
+    for year in (2025, 2026):
+        partition = HistoryPricePartition(tmp_path / f"prices_{year}.sqlite3", year, 1)
+        partition.initialize()
+        partition.save_revisions(
+            tuple(
+                HistoryRevision(2 if cell.trade_date == days[-1] else 1, "main", cell, None, None, None)
+                for cell in cells
+                if cell.trade_date.year == year
+            )
+        )
+    opened = []
+    read_connection = HistoryPricePartition._read_connection
+
+    def counted_read(partition):
+        opened.append(partition._path.name)
+        return read_connection(partition)
+
+    monkeypatch.setattr(HistoryPricePartition, "_read_connection", counted_read)
+    prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False))
+    assert prices.read_for_download("600001", days) == cells[:-1]
+    assert opened == ["prices_2025.sqlite3", "prices_2026.sqlite3"]
+
+
+def test_waiting_pipeline_reports_active_jobs_without_advancing_durable_completion(tmp_path, monkeypatch):
+    ticks = count()
+    release = Event()
+    progress = []
+
+    class TestClock:
+        @staticmethod
+        def monotonic():
+            return float(next(ticks))
+
+    class WaitingSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            assert release.wait(10)
+            return super().fetch_tencent_window(security, dates)
+
+    class Recorder:
+        def publish(self, value):
+            progress.append(value)
+            if value.state == "waiting" and value.pipeline and value.pipeline.inflight_codes:
+                release.set()
+
+    monkeypatch.setattr(module, "time", TestClock)
+    with ThreadPoolExecutor(max_workers=1) as network, ThreadPoolExecutor(max_workers=1) as writer:
+        result = RunHistorySync(
+            replace(_configuration(tmp_path), history_workers=1),
+            WaitingSupplier(DAYS),
+            clock=lambda: NOW,
+            worker_pool=network,
+            writer_pool=writer,
+            progress=Recorder(),
+        )
+    assert result.state == "completed", result.reason
+    value = next(item for item in progress if item.state == "waiting" and item.pipeline)
+    assert value.completed_units == 0 and value.pipeline.downloaded_codes == 0
+    assert value.pipeline.inflight_codes == 1 and value.pipeline.pending_codes == 1
+    assert value.pipeline.oldest_inflight_seconds > 0
 
 
 class ShortTencentSupplier(FakeSupplier):

@@ -73,16 +73,17 @@ class HistoryDirectPrices:
     def read(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
         if self._fresh and code not in self._written_codes:
             return ()
-        groups: dict[tuple[int, int], list[tuple[str, date]]] = defaultdict(list)
+        groups: dict[int, list[tuple[str, date]]] = defaultdict(list)
         for day in dates:
-            groups[(day.year, day.month)].append((code, day))
+            groups[day.year].append((code, day))
         cells: list[BaoStockDailyCell] = []
-        for (year, month), keys in groups.items():
+        for year, keys in groups.items():
             self._activity.tick()
             path = self._root / f"prices_{year:04d}.sqlite3"
             if path.exists():
                 cells.extend(
-                    item.cell for item in self._month(year, month).read_price_keys(tuple(keys), self._sequence)
+                    item.cell
+                    for item in self._month(year, keys[0][1].month).read_price_keys(tuple(keys), self._sequence)
                 )
         return tuple(sorted(cells, key=lambda cell: cell.trade_date))
 

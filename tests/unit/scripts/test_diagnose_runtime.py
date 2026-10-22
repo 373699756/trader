@@ -71,6 +71,17 @@ def test_local_dual_profile_selects_only_offline_business_checks():
     )
 
 
+def test_history_resume_probe_routes_sample_bound_without_starting_downloads():
+    commands = build_commands(_options(profile="history-sqlite", history_resume_samples=8), python_executable="/python")
+    assert len(commands) == 1
+    command = commands[0]
+    assert command.argv[command.argv.index("--resume-samples") + 1] == "8"
+    assert "sync" not in command.argv and "train" not in command.argv
+    args = _parser().parse_args(["--profile", "history-sqlite", "--history-resume-samples", "9"])
+    with pytest.raises(ValueError, match="--history-resume-samples"):
+        _validate(args)
+
+
 def test_local_invalid_configuration_skips_dependents_and_runs_other_configuration():
     commands = build_commands(_options(profile="local", scoring_profile="both"), python_executable="/python")
     called = []

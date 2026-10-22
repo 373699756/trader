@@ -7,16 +7,64 @@ import pytest
 
 from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _plain_feedback, _updater, _window
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
-from tests.unit.infra.research.test_history_sync import NOW
+from tests.unit.infra.research.test_history_sync import NOW, ProgressRecorder
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _at, _current_universe, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import history_sync_runner
 from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import RunHistorySync
+
+
+def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reloading_full_prices(tmp_path, monkeypatch):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class InvalidQfq(Prices):
+        def fetch_window(self, security, dates, **kwargs):
+            window = super().fetch_window(security, dates, **kwargs)
+            if security.code == "600001":
+                partial = replace(
+                    window, cells=(replace(window.cells[0], qfq=None, status="qfq_missing"), *window.cells[1:])
+                )
+                raise HistorySupplierPendingError(partial, "tencent_qfq_invalid_price", (days[0],))
+            return window
+
+    supplier = _router(Baseline(days), InvalidQfq(), _current_universe("600001", "600002"))
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=tmp_path.parent / "reference",
+        training_root=tmp_path.parent / "models",
+    )
+    publish = history_sync_runner.PublishHistorySnapshot
+
+    def interrupted(*args):
+        raise RuntimeError("fixture_publication_failed")
+
+    monkeypatch.setattr(history_sync_runner, "PublishHistorySnapshot", interrupted)
+    assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "failed"
+    monkeypatch.setattr(history_sync_runner, "PublishHistorySnapshot", publish)
+
+    def no_full_reload(*args):
+        raise AssertionError("deferred or completed stock must not reload its download window")
+
+    monkeypatch.setattr(HistoryDirectPrices, "read_for_download", no_full_reload)
+    progress = ProgressRecorder()
+    result = RunHistorySync(config, supplier, clock=lambda: NOW, progress=progress)
+    assert result.state == "completed", result.reason
+    assert result.reason == "history_price_gaps_remaining" and result.unresolved_price_cells == 1
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    assert index.gaps_by_code() == {"600001": days[:1]}
+    assert index.gaps_by_code(days) == {}
+    summary = next(item.tencent_summary for item in progress.values if item.tencent_summary is not None)
+    assert summary.succeeded_codes == 1 and summary.reused_codes == 1
+    assert summary.pending_codes == 1 and summary.failed_codes == 1
 
 
 @pytest.mark.parametrize("mode", ("complete", "missing", "pending", "invalid_qfq_price", "unclassified_failure"))

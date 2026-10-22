@@ -182,12 +182,13 @@ class HistoryDownloadFlow:
         resources = self._resources
         tasks = resources.index.tasks()
         gap_codes = resources.index.gap_codes()
-        # Old failed requests may still have durable gaps. Recheck them with
-        # Tencent on resume; successful short responses are accepted below.
-        jobs = deque(task for task in tasks if not task.tencent_done or task.code in gap_codes)
+        retryable_codes = frozenset(resources.index.gaps_by_code(resources.context.calendar.open_dates))
+        # Resume only retryable gaps; confirmed nonpositive qfq dates retain
+        # their trading-session deferral even before initial publication.
+        jobs = deque(task for task in tasks if not task.tencent_done or task.code in retryable_codes)
         if any(len(task.dates) > resources.tuning.max_cells for task in jobs):
             raise ValueError("history_download_task_too_large")
-        completed = sum(task.tencent_done and task.code not in gap_codes for task in tasks)
+        completed = sum(task.tencent_done and task.code not in retryable_codes for task in tasks)
         self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
         self._emit(HistorySyncProgress("tencent_history", "started", completed, len(tasks)))
         _TencentPipeline(self, jobs, completed, len(tasks)).run()
@@ -318,6 +319,7 @@ class _TencentPipeline:
         self._total = total
         self._downloaded = completed
         self._futures: dict[Future[_PreparedResult], HistoryDownloadTask] = {}
+        self._dispatched_at: dict[Future[_PreparedResult], float] = {}
         self._buffered: list[_PreparedResult] = []
         self._writing: Future[_WriteResult] | None = None
         self._writing_cells = self._writing_codes = 0
@@ -366,13 +368,7 @@ class _TencentPipeline:
             saved.results,
             self._completed,
             self._total,
-            HistoryPipelineProgress(
-                self._downloaded,
-                len(self._buffered),
-                self._download_seconds,
-                self._write_seconds,
-                self._backpressure_seconds,
-            ),
+            self._pipeline_progress(),
         )
         self._last_report = time.monotonic()
 
@@ -385,6 +381,7 @@ class _TencentPipeline:
             except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
                 raise HistorySyncFailureError(exc, "tencent_history", self._futures[future].code) from exc
             del self._futures[future]
+            del self._dispatched_at[future]
             self._buffered.append(result)
             self._downloaded += 1
             self._download_seconds += result.seconds
@@ -400,6 +397,9 @@ class _TencentPipeline:
         blocked = bool(self._jobs) and (codes >= tuning.max_codes or reserved + next_cells > tuning.max_cells)
         if not self._exhausted and not blocked:
             self._exhausted = self._flow._dispatch(self._jobs, self._futures, codes, reserved)
+            now = time.monotonic()
+            for future in self._futures:
+                self._dispatched_at.setdefault(future, now)
         return blocked
 
     def _flush(self) -> None:
@@ -436,16 +436,23 @@ class _TencentPipeline:
                 "waiting",
                 self._completed,
                 self._total,
-                pipeline=HistoryPipelineProgress(
-                    self._downloaded,
-                    self._writing_codes + len(self._buffered),
-                    self._download_seconds,
-                    self._write_seconds,
-                    self._backpressure_seconds,
-                ),
+                pipeline=self._pipeline_progress(),
             )
         )
         self._last_report = time.monotonic()
+
+    def _pipeline_progress(self) -> HistoryPipelineProgress:
+        now = time.monotonic()
+        return HistoryPipelineProgress(
+            self._downloaded,
+            self._writing_codes + len(self._buffered),
+            self._download_seconds,
+            self._write_seconds,
+            self._backpressure_seconds,
+            inflight_codes=len(self._futures),
+            pending_codes=len(self._jobs),
+            oldest_inflight_seconds=max((now - started for started in self._dispatched_at.values()), default=0.0),
+        )
 
     def _cancel_pending(self) -> None:
         if self._futures or self._writing is not None:

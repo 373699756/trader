@@ -67,6 +67,7 @@ class DiagnosticOptions:
     sqlite_page_sample_count: int
     sqlite_query_rounds: int
     sqlite_revision_write_sample_count: int
+    history_resume_samples: int = 0
     baostock_serial_only: bool = False
     baostock_intervals: tuple[float, ...] = (2.0,)
     baostock_sizes: tuple[int, ...] = (10, 50, 100)
