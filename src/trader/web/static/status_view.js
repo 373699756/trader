@@ -35,7 +35,7 @@
       els.funnelStatus.textContent = "等待评分输入";
       els.funnelStages.textContent = "输入、过滤、评分与发布按顺序执行";
       els.funnelMeta.textContent = emptyFunnelSummary();
-      if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">正在读取荐股评分链路</div>';
+      renderObservationStages(els, null, null, state.strategy === "long", []);
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
       els.quoteSource.textContent = "来源不可用";
@@ -70,7 +70,7 @@
       els.funnelStatus.textContent = "历史只读";
       els.funnelStages.textContent = "历史快照不重算逐层推荐漏斗";
       els.funnelMeta.textContent = funnelSummary(null, null, null, 0, "不保存");
-      if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">历史快照不重算评分链路</div>';
+      renderObservationStages(els, null, null, false, []);
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
       els.quoteSource.textContent = "来源不可用";
@@ -175,9 +175,12 @@
       );
     } else if (payload && payload.status === "not_ready") {
       els.funnelStatus.textContent = "尚无已发布轮";
-      els.funnelStages.textContent = "输入准备中，完成后随名单一起展示十一层观测";
+      els.funnelStages.textContent = "输入准备中，十一层保留展示当前已取得的进度";
       els.funnelMeta.textContent = "等待本轮发布";
-      renderObservationStages(els, null, null, false, []);
+      renderObservationStages(
+        els, strategyQuality && strategyQuality.stage_snapshots,
+        strategyQuality && strategyQuality.pipeline, false, [],
+      );
     } else {
       const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
       els.funnelStatus.textContent = "阶段观测不可用";
@@ -227,8 +230,9 @@
   }
 
   function pipelineFunnelSummary(stageSnapshots, executable, observed, hasProgress = false) {
+    const keys = new Set(Array.isArray(stageSnapshots) ? stageSnapshots.map((stage) => stage && stage.stage) : []);
+    if (!OBSERVATION_STAGE_DEFINITIONS.every(([stageKeys]) => keys.has(stageKeys[0]))) return null;
     const displayStages = displayObservationStages(stageSnapshots);
-    if (!displayStages) return null;
     const counts = displayStages.map((stage) => stageSnapshotCount(stage));
     if (counts.every((count) => count === "—")) {
       return compactPendingFunnelSummary(executable, observed, hasProgress);
@@ -276,10 +280,14 @@
   ]);
 
   function displayObservationStages(stageSnapshots) {
-    if (!Array.isArray(stageSnapshots)) return null;
-    const byKey = new Map(stageSnapshots.map((stage) => [stage && stage.stage, stage]));
-    if (!OBSERVATION_STAGE_DEFINITIONS.every(([keys]) => byKey.has(keys[0]))) return null;
-    return OBSERVATION_STAGE_DEFINITIONS.map(([keys]) => byKey.get(keys[0]));
+    const snapshots = Array.isArray(stageSnapshots) ? stageSnapshots : [];
+    const byKey = new Map(snapshots.map((stage) => [stage && stage.stage, stage]));
+    return OBSERVATION_STAGE_DEFINITIONS.map(([keys]) => byKey.get(keys[0]) || {
+      stage: keys[0], state: "not_ready", input_count: null, output_count: null,
+      rejected_count: null, pending_count: null, failed_count: null, not_selected_count: null,
+      latency_ms: null, reasons: [], operation_durations: [], source_health: {},
+      observation_missing: true,
+    });
   }
 
   function publicationIo(statusPayload, payload) {
@@ -327,10 +335,6 @@
       ? Array.from(list.querySelectorAll(".observation-stage.is-expanded"), (stage) => stage.dataset.stageKeys)
       : []);
     const stages = displayObservationStages(stageSnapshots);
-    if (!stages) {
-      list.innerHTML = '<div class="observation-stage-empty">尚无本轮已发布的十一层观测；历史记录按原协议只读</div>';
-      return;
-    }
     const visibleIssues = Array.isArray(issues) ? issues : [];
     const markup = stages.map((stage, index) => {
       const [stageKeys, label, isFilter] = OBSERVATION_STAGE_DEFINITIONS[index];
@@ -338,9 +342,9 @@
       const isExpanded = expanded.has(stageKey);
       const input = finiteNonNegativeInteger(stage && stage.input_count);
       const output = finiteNonNegativeInteger(stage && stage.output_count);
-      const rejected = finiteNonNegativeInteger(stage && stage.rejected_count) || 0;
-      const pending = finiteNonNegativeInteger(stage && stage.pending_count) || 0;
-      const failed = finiteNonNegativeInteger(stage && stage.failed_count) || 0;
+      const rejected = finiteNonNegativeInteger(stage && stage.rejected_count);
+      const pending = finiteNonNegativeInteger(stage && stage.pending_count);
+      const failed = finiteNonNegativeInteger(stage && stage.failed_count);
       const ioFailed = stageKeys.includes("action_publish") && publicationReceipts.some((item) => item.state === "failed");
       const state = ioFailed && (!stage || stage.state !== "failed") ? "degraded" : stage && stage.state || "not_ready";
       const reasons = Array.isArray(stage && stage.reasons)
@@ -367,7 +371,9 @@
       const health = stage.source_health || {};
       const sourceState = ({ ready: "正常", degraded: "已降级", unavailable: "不可用" })[health.state] || "未知";
       const sourceText = `来源 ${sourceState} · 覆盖 ${displayCount(health.healthy_source_count)} / ${displayCount(health.source_count)} · 来源年龄 ${Number.isFinite(health.age_seconds) ? health.age_seconds.toFixed(1) + " s" : "未知"}`;
-      const detailMarkup = `<small>${escapeHtml(sourceText)}</small>${operationText ? `<small>${escapeHtml(operationText)}${reusedStartup ? " · 本轮未重新执行" : " · 排队耗时未单独测量"}</small>` : ""}${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKeys.includes("action_publish") ? publicationIoMarkup(publicationReceipts) : ""}`;
+      const missingText = stage.observation_missing
+        ? '<small>本层尚无可用观测；缺失字段不代表零，历史记录按原协议只读</small>' : "";
+      const detailMarkup = `${missingText}<small>${escapeHtml(sourceText)}</small>${operationText ? `<small>${escapeHtml(operationText)}${reusedStartup ? " · 本轮未重新执行" : " · 排队耗时未单独测量"}</small>` : ""}${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKeys.includes("action_publish") ? publicationIoMarkup(publicationReceipts) : ""}`;
       return `<article class="observation-stage${isExpanded ? " is-expanded" : ""}" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><button class="observation-stage-toggle" type="button" data-stage-toggle="true" aria-expanded="${isExpanded}" aria-controls="observation-stage-detail-${index}"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span></button><div id="observation-stage-detail-${index}" class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");
     if (list.innerHTML !== markup) list.innerHTML = markup;

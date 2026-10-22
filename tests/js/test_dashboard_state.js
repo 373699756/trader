@@ -322,10 +322,12 @@ const switchRenderer = sandbox.window.TraderStatusView.createDashboardStateRende
   switchingElements, switchState, sandbox.window.TraderSelection, sandbox.window.TraderRender,
 );
 switchRenderer.renderLoadingState();
+assert.strictEqual((switchingElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length, 11);
 assert.strictEqual(switchingElements.budgetStatus.textContent, "—");
 assert.ok(switchingElements.tableHead.innerHTML.includes("<th>排名</th><th>状态</th><th>股票</th>"));
 assert.strictEqual(switchingElements.longStockHeader.hidden, true);
 switchRenderer.renderMissingHistoricalDate("d25", "2026-10-13");
+assert.strictEqual((switchingElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length, 11);
 assert.ok(switchingElements.tableHead.innerHTML.includes("<th>排名</th><th>状态</th><th>股票</th>"));
 const stageKeys = ["local_data", "static_filter", "dynamic_market", "dynamic_filter", "market_features",
   "model_filter", "local_score", "local_risk", "fixed_selection", "risk_review", "action_publish"];
@@ -383,6 +385,49 @@ renderPublished([{ ...matchingReceipt, state: "ready", failed_count: 0, output_c
 assert(canonicalObservationElements.funnelStages.textContent.includes("新输入轮正在处理"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("未入选 364"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("文件或数据库读写失败"));
+
+// Closing time must not remove the chain when no decision has been published.
+const pendingClosePayload = {
+  status: "not_ready", strategy: "tomorrow", trade_date: "2026-08-14", frozen: false,
+  coverage: {}, items: [],
+};
+const closeChainElements = summaryFixture();
+const renderCloseChain = (payload, quality = null) => state.renderSummary(
+  closeChainElements, payload, [], "closed_market", null,
+  sandbox.window.TraderSelection, sandbox.window.TraderRender,
+  { phase: "after_close", scheduler: { input_quality: quality ? { tomorrow: quality } : {} } },
+);
+const chainCount = () => (closeChainElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length;
+renderCloseChain(pendingClosePayload);
+assert.strictEqual(chainCount(), 11);
+assert(closeChainElements.observationStageList.innerHTML.includes("淘汰 — · 待补 — · 失败 —"));
+assert(closeChainElements.observationStageList.innerHTML.includes("缺失字段不代表零"));
+const pendingQuality = {
+  summary: { trade_date: "2026-08-14" },
+  stage_snapshots: stageSnapshots.slice(0, 3), pipeline: pipelineFixture,
+};
+renderCloseChain(pendingClosePayload, pendingQuality);
+assert.strictEqual(chainCount(), 11);
+assert(closeChainElements.observationStageList.innerHTML.includes("4000 → 4000"));
+renderCloseChain(pendingClosePayload, {
+  ...pendingQuality,
+  stage_snapshots: pendingQuality.stage_snapshots.map((stage) => stage.stage === "dynamic_market"
+    ? { ...stage, output_count: 3333 } : stage),
+});
+assert(closeChainElements.observationStageList.innerHTML.includes("4000 → 3333"));
+renderCloseChain(pendingClosePayload, { ...pendingQuality, summary: { trade_date: "2026-08-13" } });
+assert.strictEqual(chainCount(), 11);
+assert(!closeChainElements.observationStageList.innerHTML.includes("4000"));
+const frozenClosePayload = { ...publishedPayload, frozen: true };
+renderCloseChain(frozenClosePayload, pendingQuality);
+assert.strictEqual(chainCount(), 11);
+assert(closeChainElements.observationStageList.innerHTML.includes("未入选 364"));
+assert(!closeChainElements.observationStageList.innerHTML.includes("3333"));
+renderCloseChain({ ...frozenClosePayload, historical: true }, pendingQuality);
+assert.strictEqual(chainCount(), 11);
+renderCloseChain({ ...pendingClosePayload, historical: true }, pendingQuality);
+assert.strictEqual(chainCount(), 11);
+assert(!closeChainElements.observationStageList.innerHTML.includes("4000"));
 const selectableObservationElements = summaryFixture();
 state.renderObservationStages(selectableObservationElements, stageSnapshots, pipelineFixture, false, []);
 selectableObservationElements.observationStageList.querySelectorAll = () => [{ dataset: { stageKeys: "dynamic_filter" } }];
@@ -879,19 +924,17 @@ const liveShort = {
   ],
 };
 assert.strictEqual(state.observationDisplayState(liveShort, "warmup"), "closed_market");
-assert.strictEqual(state.observationDisplayState(liveShort, "morning_main"), "open");
-assert.strictEqual(state.observationDisplayState(liveShort, "midday"), "open");
-assert.strictEqual(state.observationDisplayState(liveShort, "final_review"), "open");
+assert.strictEqual(state.observationDisplayState(liveShort, "before_close"), "open");
 assert.strictEqual(state.observationDisplayState(liveShort, "after_close"), "closed_market");
-assert.strictEqual(state.observationDisplayState({ ...liveShort, frozen: true }, "morning_main"), "closed_frozen");
-assert.strictEqual(state.observationDisplayState({ ...liveShort, historical: true }, "midday"), "hidden_history");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, frozen: true }, "before_close"), "closed_frozen");
+assert.strictEqual(state.observationDisplayState({ ...liveShort, historical: true }, "before_close"), "hidden_history");
 assert.strictEqual(
-  state.observationDisplayState({ ...liveShort, status: "not_ready", historical: true }, "midday"),
+  state.observationDisplayState({ ...liveShort, status: "not_ready", historical: true }, "before_close"),
   "hidden_history",
 );
 assert.strictEqual(state.observationDisplayState(liveShort, ""), "unknown");
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.observationRecommendations(liveShort, "midday"))),
+  JSON.parse(JSON.stringify(state.observationRecommendations(liveShort, "before_close"))),
   [{ code: "600002", action: "observe" }],
 );
 assert.deepStrictEqual(
@@ -906,15 +949,15 @@ const notReadyDraft = {
   items: [],
   draft: { items: [{ code: "600003", action: "observe" }] },
 };
-assert.strictEqual(state.observationDisplayState(notReadyDraft, "midday"), "open");
+assert.strictEqual(state.observationDisplayState(notReadyDraft, "before_close"), "open");
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.observationRecommendations(notReadyDraft, "midday"))),
+  JSON.parse(JSON.stringify(state.observationRecommendations(notReadyDraft, "before_close"))),
   [{ code: "600003", action: "observe" }],
 );
 const emptyObservationDraft = { ...notReadyDraft, draft: { items: [] } };
-assert.strictEqual(state.observationDisplayState(emptyObservationDraft, "midday"), "empty");
+assert.strictEqual(state.observationDisplayState(emptyObservationDraft, "before_close"), "empty");
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.observationRecommendations(emptyObservationDraft, "midday"))),
+  JSON.parse(JSON.stringify(state.observationRecommendations(emptyObservationDraft, "before_close"))),
   [],
 );
 assert.strictEqual(state.observationEmptyMessage("empty"), "本轮无股票达到观察条件");
@@ -923,7 +966,7 @@ assert.strictEqual(state.observationEmptyMessage("unavailable"), "本轮尚无�
 assert.strictEqual(
   state.observationDisplayState(
     { ...notReadyDraft, draft: null },
-    "midday",
+    "before_close",
     { scheduler: { lanes: [{ name: "trader-tomorrow", running: true, pending: false }] } },
   ),
   "warming",
@@ -931,7 +974,7 @@ assert.strictEqual(
 assert.strictEqual(
   state.observationDisplayState(
     { ...notReadyDraft, draft: null },
-    "midday",
+    "before_close",
     { scheduler: { lanes: [{ name: "trader-tomorrow", running: false, pending: false, completed_count: 58 }] } },
   ),
   "unavailable",
@@ -1706,7 +1749,7 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(
-    state.observationRecommendations({ status: "ready", strategy: "tomorrow", historical: false, items: mixedItems }, "morning_main"),
+    state.observationRecommendations({ status: "ready", strategy: "tomorrow", historical: false, items: mixedItems }, "before_close"),
   )),
   [{ code: "600002", action: "observe" }],
 );
@@ -1719,7 +1762,7 @@ assert.deepStrictEqual(
     status: "ready",
     strategy: "tomorrow",
     frozen: true,
-    phase: "morning_main",
+    phase: "before_close",
     fusion_mode: "local_degraded",
     degraded_reasons: [
       "main:board_data_reliability_below_threshold",
@@ -1768,7 +1811,7 @@ assert.deepStrictEqual(
     historical: true,
     trade_date: "2026-07-22",
     frozen: true,
-    phase: "afternoon",
+    phase: "before_close",
     degraded_reasons: [],
   }))),
   {
