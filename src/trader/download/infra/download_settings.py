@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.download.domain.company_evidence import CompanySyncConfiguration
+from trader.download.domain.company_evidence import CompanyDocumentLimits, CompanySyncConfiguration
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.domain.qfq_window import QFQ_WINDOWS
 from trader.infra.settings.data_paths import DataPaths
@@ -82,6 +82,9 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
             "source_timeout_seconds",
             "document_parse_timeout_seconds",
             "request_interval_seconds",
+            "document_failure_retry_seconds",
+            "document_transient_retry_seconds",
+            "document_limits",
         },
         "download.company",
     )
@@ -89,6 +92,8 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
     documents_fraction = Number(company, "documents_deadline_fraction", minimum=0.02, maximum=0.99)
     if announcements_fraction >= documents_fraction:
         raise ConfigurationError("download.company deadlines must keep announcements before documents")
+    limits = RequireMapping(company, "document_limits")
+    RequireExactKeys(limits, {"max_bytes", "max_pages", "max_text_characters"}, "download.company.document_limits")
     return CompanySyncConfiguration(
         budget_seconds=Number(company, "budget_seconds", minimum=60.0, maximum=21600.0),
         structured_component_seconds=Number(company, "structured_component_seconds", minimum=1.0),
@@ -97,6 +102,13 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
         source_timeout_seconds=Number(company, "source_timeout_seconds", minimum=0.1, maximum=8.0),
         document_parse_timeout_seconds=Number(company, "document_parse_timeout_seconds", minimum=0.1, maximum=30.0),
         request_interval_seconds=Number(company, "request_interval_seconds", minimum=1.0),
+        document_failure_retry_seconds=Number(company, "document_failure_retry_seconds", minimum=1.0),
+        document_transient_retry_seconds=Number(company, "document_transient_retry_seconds", minimum=1.0),
+        document_limits=CompanyDocumentLimits(
+            max_bytes=Integer(limits, "max_bytes", minimum=1, maximum=64 * 1024 * 1024),
+            max_pages=Integer(limits, "max_pages", minimum=1, maximum=1000),
+            max_text_characters=Integer(limits, "max_text_characters", minimum=80, maximum=2_000_000),
+        ),
     )
 
 

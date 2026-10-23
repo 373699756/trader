@@ -103,6 +103,11 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
     if progress.pending is None:
         return f"进度 {progress.completed}/? {unit}（总数待确认）"
     total = progress.completed + progress.pending
+    if progress.component == "risk_documents":
+        return (
+            f"已尝试 {progress.attempted_documents}/{total} 篇 | 已核验 {progress.completed} 篇 | "
+            f"暂缓重试 {progress.deferred_documents} 篇 | 待补 {progress.pending} 篇"
+        )
     percent = f"{100 * progress.completed / total:.2f}%" if total else "无待处理"
     return f"进度 {progress.completed}/{total} {unit}（{percent}） | 待处理 {progress.pending} {unit}"
 

@@ -17,6 +17,7 @@ from trader.download.domain.company_evidence import (
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
+    DocumentRetry,
     EvidenceMarket,
     EvidenceProgressState,
     EvidenceSyncProgress,
@@ -36,6 +37,10 @@ class CompanyEvidenceIndex(Protocol):
     def partition_failure(self, partition: DisclosurePartition, failure: str) -> None: ...
     def pending_documents(self, codes: Sequence[str], observed_at: datetime) -> tuple[Disclosure, ...]: ...
     def commit_document(self, item: Disclosure, text: str) -> None: ...
+    def document_retry(self, item: Disclosure, policy: str) -> DocumentRetry | None: ...
+    def document_failure(
+        self, item: Disclosure, policy: str, failure: str, attempted_at: datetime, retry_after: datetime
+    ) -> None: ...
     def component_due(self, component: str, scope: str, observed_at: datetime) -> bool: ...
     def component_since(self, component: str, scope: str, observed_at: datetime) -> date: ...
     def structured_cursor(self, query: StructuredCompanyQuery) -> StructuredCompanyQuery: ...
@@ -128,6 +133,8 @@ def SyncCompanyEvidence(
             observed_at,
             started + budget_seconds * configuration.documents_deadline_fraction,
             state,
+            configuration,
+            started,
         )
     if not _cancelled(dependencies):
         _report(dependencies, "publish", state, len(population), completed=0)
@@ -198,10 +205,10 @@ def _announcements(
     if _cancelled(dependencies):
         return 0
     partitions = deque(index.partitions(markets, observed_at))
-    deferred = 0
+    deferred: set[tuple[Market, date, date]] = set()
     while partitions and _running(dependencies, deadline):
         partition = partitions.popleft()
-        _report(dependencies, "announcements", state, len(partitions) + deferred + 1, scope=partition)
+        _report(dependencies, "announcements", state, len(partitions) + len(deferred) + 1, scope=partition)
         if _cancelled(dependencies):
             partitions.appendleft(partition)
             break
@@ -212,7 +219,8 @@ def _announcements(
             if page.total > 3000:
                 if partition.start == partition.end:
                     raise ValueError("cninfo_single_day_page_limit")
-                partitions.extendleft(reversed(index.split_partition(partition, observed_at)))
+                children = index.split_partition(partition, observed_at)
+                partitions = _replace_split_queue(partitions, partition, children, deferred)
                 continue
             state.changes += index.commit_page(partition, page, observed_at)
             if page.has_more:
@@ -226,20 +234,44 @@ def _announcements(
                 )
             else:
                 state.completed += 1
-            _report(dependencies, "announcements", state, len(partitions) + deferred, scope=partition)
+            _report(dependencies, "announcements", state, len(partitions) + len(deferred), scope=partition)
         except (OSError, RuntimeError, ValueError) as exc:
             failure = _failure(exc)
+            if failure == "cninfo_duplicate_page_links" and partition.start < partition.end:
+                children = index.split_partition(partition, observed_at)
+                partitions = _replace_split_queue(partitions, partition, children, deferred)
+                continue
             index.partition_failure(partition, failure)
             state.failures += (f"announcements:{failure}",)
             if failure in {"cninfo_duplicate_page_links", "cninfo_single_day_page_limit"}:
-                deferred += 1
-                _report(dependencies, "announcements", state, len(partitions) + deferred, scope=partition)
+                deferred.add((partition.market, partition.start, partition.end))
+                _report(dependencies, "announcements", state, len(partitions) + len(deferred), scope=partition)
                 continue
             partitions.appendleft(partition)
             break  # Do not hammer another partition after a source/transport rejection.
-    pending = len(partitions) + deferred
+    pending = len(partitions) + len(deferred)
     _report(dependencies, "announcements", state, pending, status="deferred" if pending else "complete")
     return pending
+
+
+def _replace_split_queue(
+    queue: deque[DisclosurePartition],
+    parent: DisclosurePartition,
+    children: tuple[DisclosurePartition, ...],
+    deferred: set[tuple[Market, date, date]],
+) -> deque[DisclosurePartition]:
+    # The index returns current durable descendants; discard every stale queued copy,
+    # including children already completed by a previous split in this run.
+    return deque(
+        (
+            *(item for item in children if (item.market, item.start, item.end) not in deferred),
+            *(
+                item
+                for item in queue
+                if not (item.market == parent.market and parent.start <= item.start <= item.end <= parent.end)
+            ),
+        )
+    )
 
 
 def _documents(
@@ -248,6 +280,8 @@ def _documents(
     observed_at: datetime,
     deadline: float,
     state: _SyncState,
+    configuration: CompanySyncConfiguration,
+    started: float,
 ) -> None:
     index = dependencies.index
     pending_documents = _unique_documents(index.pending_documents(population, observed_at))
@@ -255,27 +289,79 @@ def _documents(
     if any(item in {"announcements:access_denied", "announcements:rate_limited"} for item in state.failures):
         _report(dependencies, "risk_documents", state, total, completed=0, status="deferred")
         return
-    completed = 0
+    completed = attempted = deferred = 0
+    limits = configuration.document_limits
+    policy = f"{configuration.document_parse_timeout_seconds}:{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
     _report(dependencies, "risk_documents", state, total, completed=0)
     for item in pending_documents:
         if not _running(dependencies, deadline):
             break
+        now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
+        retry = index.document_retry(item, policy)
+        if retry is not None and retry.retry_after > now:
+            deferred += 1
+            state.failures += (f"risk_documents:{retry.failure}",)
+            _report(
+                dependencies,
+                "risk_documents",
+                state,
+                total - completed,
+                completed=completed,
+                attempted_documents=attempted,
+                deferred_documents=deferred,
+            )
+            continue
+        attempted += 1
+        _report(
+            dependencies,
+            "risk_documents",
+            state,
+            total - completed,
+            completed=completed,
+            attempted_documents=attempted,
+            deferred_documents=deferred,
+        )
         try:
             text = dependencies.disclosures.document(item, deadline=deadline)
             index.commit_document(item, text)
             completed += 1
             state.changes += 1
         except (OSError, RuntimeError, ValueError) as exc:
-            state.failures += (f"risk_documents:{_failure(exc)}",)
+            failure = _failure(exc)
+            state.failures += (f"risk_documents:{failure}",)
+            if not _cancelled(dependencies):
+                delay = (
+                    configuration.document_failure_retry_seconds
+                    if isinstance(exc, ValueError)
+                    else configuration.document_transient_retry_seconds
+                )
+                now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
+                index.document_failure(item, policy, failure, now, now + timedelta(seconds=delay))
             if isinstance(exc, ValueError) or (
                 isinstance(exc, TimeoutError)
                 and str(exc) == "disclosure_document_parse_timeout"
                 and _running(dependencies, deadline)
             ):
-                _report(dependencies, "risk_documents", state, total - completed, completed=completed)
+                _report(
+                    dependencies,
+                    "risk_documents",
+                    state,
+                    total - completed,
+                    completed=completed,
+                    attempted_documents=attempted,
+                    deferred_documents=deferred,
+                )
                 continue  # One unreadable or slow PDF must not starve the other documents.
             break
-        _report(dependencies, "risk_documents", state, total - completed, completed=completed)
+        _report(
+            dependencies,
+            "risk_documents",
+            state,
+            total - completed,
+            completed=completed,
+            attempted_documents=attempted,
+            deferred_documents=deferred,
+        )
     _report(
         dependencies,
         "risk_documents",
@@ -283,6 +369,8 @@ def _documents(
         total - completed,
         completed=completed,
         status="complete" if completed == total else "deferred",
+        attempted_documents=attempted,
+        deferred_documents=deferred,
     )
 
 
@@ -444,6 +532,8 @@ def _report(
     status: EvidenceProgressState = "running",
     scope: DisclosurePartition | StructuredCompanyQuery | None = None,
     pending_documents: int = 0,
+    attempted_documents: int = 0,
+    deferred_documents: int = 0,
 ) -> None:
     if dependencies.progress is not None:
         failures = tuple(
@@ -463,6 +553,8 @@ def _report(
                 status,
                 scope,
                 pending_documents,
+                attempted_documents,
+                deferred_documents,
             )
         )
 

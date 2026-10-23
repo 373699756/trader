@@ -12,6 +12,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import (
+    CompanyDocumentLimits,
     CompanySourceFailure,
     Disclosure,
     DisclosurePage,
@@ -40,6 +41,7 @@ class CninfoMarketDisclosureSource:
         timeout_seconds: float = 8.0,
         document_parse_timeout_seconds: float = 10.0,
         request_interval_seconds: float = 1.0,
+        document_limits: CompanyDocumentLimits = CompanyDocumentLimits(),
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         self._session = session
@@ -47,12 +49,13 @@ class CninfoMarketDisclosureSource:
         self._sleep = sleeper
         self._timeout = timeout_seconds
         self._document_parse_timeout = document_parse_timeout_seconds
+        self._document_limits = document_limits
         self._request_interval = request_interval_seconds
         self._cancel_requested = cancel_requested
         self._next_request = 0.0
 
     def fetch(self, partition: DisclosurePartition, *, deadline: float) -> DisclosurePage:
-        if partition.page > 1000:
+        if partition.page > 100:
             raise ValueError("cninfo_single_day_page_limit")
         response = self._request(lambda: self._fetch_page(partition, deadline), deadline)
         payload = response.json()
@@ -141,7 +144,7 @@ class CninfoMarketDisclosureSource:
                     item.url,
                     timeout=min(self._timeout, deadline - self._monotonic()),
                     deadline=deadline,
-                    max_response_bytes=4 * 1024 * 1024,
+                    max_response_bytes=self._document_limits.max_bytes,
                     cancel_requested=self._cancel_requested,
                 ),
                 deadline,
@@ -153,7 +156,17 @@ class CninfoMarketDisclosureSource:
             raise TimeoutError("disclosure_deadline")
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "trader.download.infra.company_document_parser"],
+                [
+                    sys.executable,
+                    "-m",
+                    "trader.download.infra.company_document_parser",
+                    "--max-bytes",
+                    str(self._document_limits.max_bytes),
+                    "--max-pages",
+                    str(self._document_limits.max_pages),
+                    "--max-text-characters",
+                    str(self._document_limits.max_text_characters),
+                ],
                 input=response.content,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -163,7 +176,8 @@ class CninfoMarketDisclosureSource:
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError("disclosure_document_parse_timeout") from exc
         if result.returncode:
-            raise ValueError("disclosure_document_unreadable")
+            reason = {3: "encrypted", 4: "page_limit", 5: "expanded_page_limit", 6: "text_limit", 7: "no_text"}
+            raise ValueError(f"disclosure_document_{reason.get(result.returncode, 'unreadable')}")
         return result.stdout.decode("utf-8")
 
 

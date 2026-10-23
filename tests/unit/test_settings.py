@@ -715,6 +715,10 @@ def test_company_sync_budget_and_deadline_configuration(tmp_path) -> None:
     assert settings.announcements_deadline_fraction == 0.7
     assert settings.documents_deadline_fraction == 0.95
     assert settings.source_timeout_seconds == 8.0
+    assert settings.document_limits.max_bytes == 16 * 1024 * 1024
+    assert settings.document_limits.max_pages == 200
+    assert settings.document_failure_retry_seconds == 86400
+    assert settings.document_transient_retry_seconds == 900
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -728,6 +732,12 @@ def test_company_sync_budget_and_deadline_configuration(tmp_path) -> None:
     document["company"]["source_timeout_seconds"] = 8.01
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="source_timeout_seconds must be at most 8.0"):
+        LoadCompanySyncConfiguration(tmp_path)
+
+    document["company"]["source_timeout_seconds"] = 8.0
+    document["company"]["document_limits"]["max_bytes"] = 64 * 1024 * 1024 + 1
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="max_bytes must be at most"):
         LoadCompanySyncConfiguration(tmp_path)
 
 

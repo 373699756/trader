@@ -18,7 +18,14 @@
     "documents_deadline_fraction": 0.95,
     "source_timeout_seconds": 8.0,
     "document_parse_timeout_seconds": 10.0,
-    "request_interval_seconds": 1.0
+    "request_interval_seconds": 1.0,
+    "document_failure_retry_seconds": 86400.0,
+    "document_transient_retry_seconds": 900.0,
+    "document_limits": {
+      "max_bytes": 16777216,
+      "max_pages": 200,
+      "max_text_characters": 1000000
+    }
   },
   "online_qfq": {
     "profiles": [

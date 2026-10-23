@@ -165,5 +165,5 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
     )
     assert source.document(item, deadline=120) == "verified body"
     assert len(transport.calls) == 2 and parsed == [b"PDF fixture"]
-    assert transport.calls[-1][1]["max_response_bytes"] == 4 * 1024 * 1024
+    assert transport.calls[-1][1]["max_response_bytes"] == 16 * 1024 * 1024
     assert clock.now >= 2.0

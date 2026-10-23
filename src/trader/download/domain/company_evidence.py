@@ -13,6 +13,21 @@ EvidenceProgressState = Literal["running", "complete", "reused", "deferred"]
 
 
 @dataclass(frozen=True)
+class CompanyDocumentLimits:
+    max_bytes: int = 16 * 1024 * 1024
+    max_pages: int = 200
+    max_text_characters: int = 1_000_000
+
+    def __post_init__(self) -> None:
+        if not (
+            1 <= self.max_bytes <= 64 * 1024 * 1024
+            and 1 <= self.max_pages <= 1000
+            and 80 <= self.max_text_characters <= 2_000_000
+        ):
+            raise ValueError("company_document_limits_invalid")
+
+
+@dataclass(frozen=True)
 class CompanySyncConfiguration:
     budget_seconds: float
     structured_component_seconds: float
@@ -21,6 +36,9 @@ class CompanySyncConfiguration:
     source_timeout_seconds: float
     document_parse_timeout_seconds: float
     request_interval_seconds: float
+    document_failure_retry_seconds: float = 86400.0
+    document_transient_retry_seconds: float = 900.0
+    document_limits: CompanyDocumentLimits = CompanyDocumentLimits()
 
     def __post_init__(self) -> None:
         values = (
@@ -31,6 +49,8 @@ class CompanySyncConfiguration:
             self.source_timeout_seconds,
             self.document_parse_timeout_seconds,
             self.request_interval_seconds,
+            self.document_failure_retry_seconds,
+            self.document_transient_retry_seconds,
         )
         if (
             any(not math.isfinite(value) for value in values)
@@ -40,6 +60,8 @@ class CompanySyncConfiguration:
             or not 0 < self.source_timeout_seconds <= 8
             or self.document_parse_timeout_seconds <= 0
             or self.request_interval_seconds < 1
+            or self.document_failure_retry_seconds <= 0
+            or self.document_transient_retry_seconds <= 0
         ):
             raise ValueError("company_sync_configuration_invalid")
 
@@ -183,6 +205,12 @@ class CompanyDocument:
 
 
 @dataclass(frozen=True)
+class DocumentRetry:
+    failure: str
+    retry_after: datetime
+
+
+@dataclass(frozen=True)
 class CompanyEvidenceSnapshot:
     code: str
     published_at: datetime
@@ -248,6 +276,8 @@ class EvidenceSyncProgress:
     status: EvidenceProgressState = "running"
     scope: DisclosurePartition | StructuredCompanyQuery | None = None
     pending_documents: int = 0
+    attempted_documents: int = 0
+    deferred_documents: int = 0
 
 
 @dataclass(frozen=True)
@@ -288,9 +318,11 @@ def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
 
 __all__ = [
     "CompanySyncConfiguration",
+    "CompanyDocumentLimits",
     "CompanyEvidenceRequest",
     "StructuredCompanyQuery",
     "CompanyDocument",
+    "DocumentRetry",
     "CompanyEvidenceSnapshot",
     "CompanyEvidenceSyncResult",
     "CompanyFinancial",

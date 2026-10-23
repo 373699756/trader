@@ -17,13 +17,13 @@ def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window(
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: clock[0])
     clock[0] = 591.1
-    report(EvidenceSyncProgress("risk_documents", 1, 146, 425, 40179, 0))
+    report(EvidenceSyncProgress("risk_documents", 1, 146, 425, 40179, 0, attempted_documents=2))
     clock[0] += 0.1
-    report(EvidenceSyncProgress("risk_documents", 147, 0, 425, 40325, 0, status="complete"))
+    report(EvidenceSyncProgress("risk_documents", 147, 0, 425, 40325, 0, status="complete", attempted_documents=147))
     first, final = stream.getvalue().splitlines()
-    assert "进度 1/147 篇（0.68%）" in first
+    assert "已尝试 2/147 篇 | 已核验 1 篇" in first
     assert "累计 00:09:51" in first and "591.1秒" not in first
-    assert "进度 147/147 篇（100.00%）" in final and "状态 完成" in final
+    assert "已尝试 147/147 篇 | 已核验 147 篇" in final and "状态 完成" in final
 
 
 def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
@@ -60,9 +60,9 @@ def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end()
 
     first, second, third, fourth, final = stream.getvalue().splitlines()
     assert f"原因 {unreadable}" in first
-    assert "进度 153/1246 篇" in second and "原因" not in second
+    assert "已核验 153 篇" in second and "原因" not in second
     assert f"原因 {oversized}" in third and unreadable not in third
-    assert "进度 156/1246 篇" in fourth and "原因" not in fourth
+    assert "已核验 156 篇" in fourth and "原因" not in fourth
     assert f"原因 {unreadable},{oversized}" in final and "状态 待续传" in final
 
 

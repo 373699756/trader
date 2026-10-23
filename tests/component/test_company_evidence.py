@@ -805,17 +805,24 @@ def test_document_failure_counts_unique_pending_documents_and_retries_only_unfin
 
     source = Documents()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
-    first = _sync_company_evidence(dependencies, codes, NOW)
+    first = _sync_company_evidence(
+        dependencies,
+        codes,
+        NOW,
+        configuration=replace(_TEST_COMPANY_CONFIGURATION, document_transient_retry_seconds=1),
+    )
     assert first.pending_partitions == 0 and first.pending_documents == 1
     assert first.failures == ("risk_documents:pending", "risk_documents:timeout")
     body = next(event for event in events if event.component == "risk_documents")
     assert body.pending == 1  # One disclosure associated with two stocks is still one PDF.
     assert events[-1].pending_documents == 1
     source.blocked = False
-    second = _sync_company_evidence(dependencies, codes, NOW)
+    cooling = _sync_company_evidence(dependencies, codes, NOW)
+    assert cooling.pending_documents == 1 and source.document_calls == 1
+    second = _sync_company_evidence(dependencies, codes, NOW + timedelta(seconds=1))
     assert second.pending_documents == 0 and not second.needs_retry
     assert source.document_calls == 2 and not source.calls
-    third = _sync_company_evidence(dependencies, codes, NOW)
+    third = _sync_company_evidence(dependencies, codes, NOW + timedelta(seconds=1))
     assert source.document_calls == 2 and not third.needs_retry
 
 
@@ -843,7 +850,12 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
 
     source = Documents()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0)
-    first = _sync_company_evidence(dependencies, ("600001",), NOW)
+    first = _sync_company_evidence(
+        dependencies,
+        ("600001",),
+        NOW,
+        configuration=replace(_TEST_COMPANY_CONFIGURATION, document_transient_retry_seconds=1),
+    )
     assert source.document_calls == ["slow", "healthy"]
     assert first.pending_documents == 1
     assert first.failures == ("risk_documents:disclosure_document_parse_timeout", "risk_documents:pending")
@@ -854,7 +866,7 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
 
     source.blocked = False
     source.document_calls.clear()
-    resumed = _sync_company_evidence(dependencies, ("600001",), NOW)
+    resumed = _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(seconds=1))
     assert source.document_calls == ["slow"]
     assert resumed.pending_documents == 0 and not resumed.needs_retry
     assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete

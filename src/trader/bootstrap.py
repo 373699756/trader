@@ -31,7 +31,7 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
-from trader.download.entrypoints.company_evidence_progress import ReportStPreparation
+from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportStPreparation
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
@@ -212,7 +212,6 @@ def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False
 ) -> SyncResult:
     """Compose one sync wave with shared official population and ST evidence."""
-    from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
     from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 
     settings = LoadRuntimeSettings(config_path)
@@ -270,6 +269,7 @@ def _sync_company_evidence(
                     sleeper=time.sleep,
                     timeout_seconds=source_timeout,
                     document_parse_timeout_seconds=request.configuration.document_parse_timeout_seconds,
+                    document_limits=request.configuration.document_limits,
                     request_interval_seconds=request.configuration.request_interval_seconds,
                     cancel_requested=cancel_requested,
                 ),

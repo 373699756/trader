@@ -58,6 +58,14 @@ def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
     assert session.requests[0]["timeout"] == 8
 
 
+def test_cninfo_refuses_page_beyond_official_hundred_page_window_without_request():
+    session = Session({})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    with pytest.raises(ValueError, match="cninfo_single_day_page_limit"):
+        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), page=101), deadline=8)
+    assert not session.requests
+
+
 @pytest.mark.parametrize(("status", "category"), ((403, "access_denied"), (429, "rate_limited"), (500, "http_error")))
 def test_rejections_have_distinct_safe_categories(status, category):
     source = CninfoMarketDisclosureSource(Session({}, status), monotonic=lambda: 0, sleeper=lambda value: None)

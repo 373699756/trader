@@ -97,4 +97,13 @@ SCHEMA = SqliteSchema(
     ),
 )
 
-__all__ = ["SCHEMA"]
+# Additive operational state; existing facts, cursors and published bytes stay intact.
+DOCUMENT_RETRY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS document_retries (
+  disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,
+  digest TEXT NOT NULL, policy TEXT NOT NULL, failure TEXT NOT NULL, attempted_at TEXT NOT NULL,
+  retry_after TEXT NOT NULL, attempts INTEGER NOT NULL
+)
+"""
+
+__all__ = ["SCHEMA", "DOCUMENT_RETRY_SCHEMA"]

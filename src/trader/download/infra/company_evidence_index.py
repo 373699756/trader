@@ -20,6 +20,7 @@ from trader.download.domain.company_evidence import (
     DisclosureMonths,
     DisclosurePage,
     DisclosurePartition,
+    DocumentRetry,
     EvidenceMarket,
     Market,
     StructuredCompanyPage,
@@ -29,7 +30,7 @@ from trader.download.infra.company_evidence_codec import (
     DecodeCompanySnapshot,
     EncodeCompanyPublication,
 )
-from trader.download.infra.company_evidence_sql import SCHEMA
+from trader.download.infra.company_evidence_sql import DOCUMENT_RETRY_SCHEMA, SCHEMA
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     SqliteConnection,
@@ -70,6 +71,8 @@ class SQLiteCompanyEvidenceIndex:
                     initialize=self._initialize_contract,
                     validate=self._validate_contract,
                 )
+                with SqliteTransaction(connection, immediate=True):
+                    connection.run(DOCUMENT_RETRY_SCHEMA)
         except sqlite3.Error as exc:
             raise RuntimeError("company_evidence_persistence_unavailable") from exc
 
@@ -91,32 +94,43 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             pending_before: set[tuple[str, str, str]] = set()
             for market in markets:
+                pending_before.update(
+                    (row["market"], row["start"], row["end"])
+                    for row in connection.run(
+                        "SELECT market,start,end FROM partitions WHERE market=? AND complete=0 AND end>=?",
+                        (market, cutoff.isoformat()),
+                    ).fetchall()
+                )
                 latest = connection.run(
                     "SELECT MAX(end) FROM partitions WHERE market=? AND complete=1", (market,)
                 ).require_one()[0]
                 baseline_start = max(cutoff, date.fromisoformat(latest) + timedelta(days=1)) if latest else cutoff
-                for start, end in DisclosureMonths(baseline_start, today):
+                for start, end in DisclosureMonths(baseline_start, today - timedelta(days=7)):
                     self._add_partition(connection, market, start, end)
                 # Check each recent day separately: fixed pages survive interruption and don't shift at midnight.
                 for offset in range(7):
                     day = today - timedelta(days=offset)
-                    self._add_partition(connection, market, day, day)
+                    # A pending wider slice already owns this date and its saved page cursor.
+                    if (
+                        connection.run(
+                            "SELECT 1 FROM partitions WHERE market=? AND complete=0 AND start<=? AND end>=? LIMIT 1",
+                            (market, day.isoformat(), day.isoformat()),
+                        ).fetchone()
+                        is None
+                    ):
+                        connection.run(
+                            "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
+                            (market, day.isoformat(), day.isoformat()),
+                        )
                 # One old month per day, excluding the recent overlap. Bound supplier correction audits.
                 months = DisclosureMonths(cutoff, today - timedelta(days=7))
                 if months:
                     start, end = months[today.toordinal() % len(months)]
                     self._add_partition(connection, market, start, end)
-                    pending_before.update(
-                        (row["market"], row["start"], row["end"])
-                        for row in connection.run(
-                            "SELECT market,start,end FROM partitions WHERE market=? AND complete=0 AND end>=?",
-                            (market, cutoff.isoformat()),
-                        ).fetchall()
-                    )
                     connection.run(
                         "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
                         "WHERE market=? AND complete=1 AND ((start>=? AND checked_at<?) "
-                        "OR (start=? AND end=? AND checked_at<?))",
+                        "OR (start>=? AND end<=? AND checked_at<?))",
                         (
                             market,
                             (today - timedelta(days=6)).isoformat(),
@@ -146,10 +160,26 @@ class SQLiteCompanyEvidenceIndex:
         )
 
     def _add_partition(self, connection: SqliteConnection, market: str, start: date, end: date) -> None:
-        connection.run(
-            "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
-            (market, start.isoformat(), end.isoformat()),
-        )
+        # Seed only dates with no durable owner. Existing children (including old-schema
+        # children) cover their parent's range, so restart/audit cannot resurrect it.
+        ranges = connection.run(
+            "SELECT start,end FROM partitions WHERE market=? AND start<=? AND end>=? ORDER BY start,end",
+            (market, end.isoformat(), start.isoformat()),
+        ).fetchall()
+        cursor = start
+        for row in ranges:
+            left, right = date.fromisoformat(row[0]), date.fromisoformat(row[1])
+            if left > cursor:
+                connection.run(
+                    "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
+                    (market, cursor.isoformat(), (left - timedelta(days=1)).isoformat()),
+                )
+            cursor = max(cursor, right + timedelta(days=1))
+        if cursor <= end:
+            connection.run(
+                "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
+                (market, cursor.isoformat(), end.isoformat()),
+            )
 
     def split_partition(self, partition: DisclosurePartition, observed_at: datetime) -> tuple[DisclosurePartition, ...]:
         if partition.start == partition.end:
@@ -160,24 +190,30 @@ class SQLiteCompanyEvidenceIndex:
             replace(partition, start=middle + timedelta(days=1), page=1, expected_rows=None, received_rows=0),
         )
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            connection.run("DELETE FROM partitions WHERE market=? AND start=? AND end=?", _key(partition))
             for item in children:
                 self._add_partition(connection, item.market, item.start, item.end)
                 connection.run(
                     "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                    "WHERE market=? AND start=? AND end=? AND complete=1 AND checked_at<?",
+                    "WHERE market=? AND start>=? AND end<=? AND complete=1 AND checked_at<?",
                     (*_key(item), observed_at.date().isoformat()),
                 )
-            connection.run("DELETE FROM partitions WHERE market=? AND start=? AND end=?", _key(partition))
-            rows = tuple(
-                connection.run(
-                    "SELECT * FROM partitions WHERE market=? AND start=? AND end=?", _key(item)
-                ).require_one()
-                for item in children
-            )
+            connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
+            connection.run("DELETE FROM coverage WHERE market=? AND start=? AND end=?", _key(partition))
+            rows = connection.run(
+                "SELECT * FROM partitions WHERE market=? AND start>=? AND end<=? AND complete=0 ORDER BY start",
+                _key(partition),
+            ).fetchall()
         return tuple(
-            replace(item, page=row["next_page"], expected_rows=row["expected_rows"], received_rows=row["received_rows"])
-            for item, row in zip(children, rows, strict=True)
-            if not row["complete"]
+            DisclosurePartition(
+                partition.market,
+                date.fromisoformat(row["start"]),
+                date.fromisoformat(row["end"]),
+                row["next_page"],
+                row["expected_rows"],
+                row["received_rows"],
+            )
+            for row in rows
         )
 
     def commit_page(self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime) -> int:
@@ -292,8 +328,9 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection:
             rows = connection.run(
                 "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                "WHERE kind='announcement' AND body_checked=0 AND published_at>=? ORDER BY published_at DESC",
-                ((observed_at - timedelta(days=365)).isoformat(),),
+                "WHERE kind='announcement' AND body_checked=0 AND published_at>=? AND published_at<=? "
+                "ORDER BY published_at DESC",
+                ((observed_at.date() - timedelta(days=365)).isoformat(), observed_at.isoformat()),
             ).fetchall()
         allowed = frozenset(codes)
         return tuple(_disclosure(row) for row in rows if row["code"] in allowed and NeedsDocumentReview(row["title"]))
@@ -303,6 +340,41 @@ class SQLiteCompanyEvidenceIndex:
             connection.run(
                 "UPDATE disclosures SET body=?,body_checked=1 WHERE source=? AND source_id=? AND digest=?",
                 (text, item.source, item.identity, item.digest),
+            )
+            connection.run(
+                "DELETE FROM document_retries WHERE disclosure_id IN "
+                "(SELECT id FROM disclosures WHERE source=? AND source_id=? AND digest=?)",
+                (item.source, item.identity, item.digest),
+            )
+
+    def document_retry(self, item: Disclosure, policy: str) -> DocumentRetry | None:
+        with self._connect() as connection:
+            row = connection.run(
+                "SELECT r.failure,r.retry_after FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
+                "WHERE d.source=? AND d.source_id=? AND d.digest=? AND r.digest=d.digest AND r.policy=?",
+                (item.source, item.identity, item.digest, policy),
+            ).fetchone()
+        return DocumentRetry(row[0], datetime.fromisoformat(row[1])) if row else None
+
+    def document_failure(
+        self, item: Disclosure, policy: str, failure: str, attempted_at: datetime, retry_after: datetime
+    ) -> None:
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            connection.run(
+                "INSERT INTO document_retries(disclosure_id,digest,policy,failure,attempted_at,retry_after,attempts) "
+                "SELECT id,digest,?,?,?,?,1 FROM disclosures WHERE source=? AND source_id=? AND digest=? "
+                "ON CONFLICT(disclosure_id) DO UPDATE SET digest=excluded.digest,policy=excluded.policy,failure=excluded.failure,"
+                "attempted_at=excluded.attempted_at,retry_after=excluded.retry_after,"
+                "attempts=CASE WHEN document_retries.digest=excluded.digest THEN document_retries.attempts+1 ELSE 1 END",
+                (
+                    policy,
+                    failure,
+                    attempted_at.isoformat(),
+                    retry_after.isoformat(),
+                    item.source,
+                    item.identity,
+                    item.digest,
+                ),
             )
 
     def component_due(self, component: str, scope: str, observed_at: datetime) -> bool:
@@ -615,7 +687,13 @@ def _snapshot_shared(connection: SqliteConnection, now: datetime) -> _SnapshotSh
     return _SnapshotShared(
         tuple(connection.run("SELECT start,end,market FROM coverage WHERE end>=? ORDER BY start", (cutoff,))),
         tuple(connection.run("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
-        tuple(connection.run("SELECT DISTINCT failure,market FROM partitions WHERE end>=? AND failure<>''", (cutoff,))),
+        tuple(
+            connection.run(
+                "SELECT DISTINCT CASE WHEN failure='' THEN 'pending' ELSE failure END AS failure,market "
+                "FROM partitions WHERE end>=? AND (failure<>'' OR complete=0)",
+                (cutoff,),
+            )
+        ),
         pledge[0] if pledge else None,
     )
 
