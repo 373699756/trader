@@ -59,7 +59,7 @@ from trader.training.infra.sample_builder import (
     TrainingHistorySource,
     TrainingSampleBuildRequest,
 )
-from trader.training.infra.sample_cache import SampleCacheBytes, TrainingSampleCache
+from trader.training.infra.sample_cache import PruneEmptySampleDirectories, SampleCacheBytes, TrainingSampleCache
 from trader.training.infra.sample_index import (
     TRAINING_SAMPLE_CACHE_MIB,
     TRAINING_SAMPLE_MMAP_BYTES,
@@ -556,6 +556,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
                     shutil.rmtree(staging)
         if all(item.status != "blocked" for item in completed):
             cache.clear()
+            PruneEmptySampleDirectories(request.sample_root, request.sample_root.parent)
     except (HistoryTrainingInputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         peak_bytes = max(peak_bytes, SampleCacheBytes(cache))
         reason = _reason(exc)

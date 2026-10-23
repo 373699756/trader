@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
@@ -64,6 +68,39 @@ class TrainingSampleCache:
             if path.is_symlink():
                 raise ValueError("training_sample_cache_symlink")
             path.unlink(missing_ok=True)
+
+
+@contextmanager
+def TemporaryTrainingSamples(samples_root: Path, profile: str) -> Iterator[Path]:
+    """Keep one profile's temporary samples only while its training run is active."""
+    if profile not in ("v1", "v2", "v3"):
+        raise ValueError("training sample profile is invalid")
+    profile_root = samples_root / profile
+    if profile_root.is_symlink() or (
+        profile_root.exists() and (not profile_root.is_dir() or any(profile_root.iterdir()))
+    ):
+        raise ValueError("training sample directory contains existing data")
+    profile_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="training-", dir=profile_root) as temporary:
+            yield Path(temporary)
+    finally:
+        PruneEmptySampleDirectories(profile_root, samples_root)
+
+
+def PruneEmptySampleDirectories(profile_root: Path, samples_root: Path) -> None:
+    """Remove empty profile and parent directories without touching retained caches."""
+    if profile_root.parent != samples_root:
+        raise ValueError("training sample profile is outside the sample root")
+    for directory in (profile_root, samples_root):
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                _LOGGER.warning("training_sample_directory_cleanup_failed", exc_info=True)
+            break
 
 
 def SampleCacheBytes(cache: TrainingSampleCache | None) -> int:

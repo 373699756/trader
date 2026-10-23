@@ -117,16 +117,16 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
     assert all(",1," in request for request in sessions[0].calls)
 
 
-def test_history_increment_pairs_latest_day_when_qfq_uses_two_rows_for_older_padding():
-    days = tuple(date(2026, 10, 19) + timedelta(days=offset) for offset in range(5))
-    previous = (date(2026, 10, 15), date(2026, 10, 16))
+def test_history_increment_pairs_latest_day_when_qfq_uses_one_row_for_older_padding():
+    days = tuple(DAY + timedelta(days=offset) for offset in range(6))
+    previous = DAY - timedelta(days=1)
 
     class CountLimitedHttp(_Http):
         def get(self, url, **kwargs):
             param = kwargs["params"]["param"]
             count = int(param.split(",")[4])
             self.raw = [[day.isoformat(), *ROW[1:]] for day in days][:count]
-            self.adjusted = [[day.isoformat(), *ROW[1:]] for day in (*previous, *days)][:count]
+            self.adjusted = [[day.isoformat(), *ROW[1:]] for day in (previous, *days)][:count]
             return super().get(url, **kwargs)
 
     http = CountLimitedHttp()

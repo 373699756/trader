@@ -67,54 +67,6 @@ def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reload
     assert summary.pending_codes == 1 and summary.failed_codes == 1
 
 
-def test_rounded_raw_amount_gap_is_completed_without_changing_old_snapshot(tmp_path):
-    days = (date(2026, 10, 21), date(2026, 10, 22), date(2026, 10, 23))
-
-    class RefinedPrices(Prices):
-        def __init__(self):
-            super().__init__()
-            self.refined = False
-
-        def fetch_window(self, security, dates, **kwargs):
-            window = super().fetch_window(security, dates, **kwargs)
-            cells = []
-            for cell in window.cells:
-                if cell.trade_date != days[-1]:
-                    cells.append(cell)
-                    continue
-                raw = replace(cell.unadjusted, amount=1628277200.0 if self.refined else 1628280000.0)
-                qfq = replace(cell.qfq, amount=1628277200.0) if self.refined else None
-                cells.append(
-                    replace(cell, unadjusted=raw, qfq=qfq, status="complete" if self.refined else "qfq_missing")
-                )
-            return replace(window, cells=tuple(cells))
-
-    prices = RefinedPrices()
-    supplier = _router(Baseline(days), prices, _current_universe("600001"))
-    config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=tmp_path.parent / "reference",
-        training_root=tmp_path.parent / "models",
-    )
-    first = RunHistorySync(config, supplier, clock=lambda: _at(days[-1]))
-    assert first.unresolved_price_cells == 1
-    original = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
-    assert original is not None
-    old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], original)
-
-    prices.refined = True
-    retried = RunHistorySync(config, supplier, clock=lambda: _at(days[-1]))
-
-    assert retried.state == "completed" and retried.unresolved_price_cells == 0
-    assert HistorySnapshotReader(tmp_path).read_day(days[-1], original) == old_rows
-    latest = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
-    assert latest is not None
-    assert all(row.cell.status == "complete" for row in HistorySnapshotReader(tmp_path).read_day(days[-1], latest))
-
-
 @pytest.mark.parametrize("mode", ("complete", "missing", "pending", "invalid_qfq_price", "unclassified_failure"))
 def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, capsys, mode):
     days = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))

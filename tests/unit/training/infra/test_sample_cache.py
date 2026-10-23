@@ -5,7 +5,7 @@ import pytest
 
 from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
 from trader.infra.sqlite_connection import OpenSqliteConnection
-from trader.training.infra.sample_cache import TrainingSampleCache
+from trader.training.infra.sample_cache import PruneEmptySampleDirectories, TrainingSampleCache
 from trader.training.infra.sample_index import TrainingSample
 
 
@@ -67,3 +67,22 @@ def test_failed_sample_initialization_closes_sqlite_connection(tmp_path, monkeyp
     assert len(connections) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         connections[0].run("SELECT 1")
+
+
+def test_empty_sample_directories_are_pruned_without_deleting_retained_cache(tmp_path):
+    samples_root = tmp_path / "samples"
+    v2_root = samples_root / "v2"
+    v3_root = samples_root / "v3"
+    v2_root.mkdir(parents=True)
+    v3_root.mkdir()
+    retained = v3_root / "samples.sqlite3"
+    retained.write_bytes(b"retained")
+
+    PruneEmptySampleDirectories(v2_root, samples_root)
+    PruneEmptySampleDirectories(v3_root, samples_root)
+    assert not v2_root.exists()
+    assert retained.read_bytes() == b"retained"
+
+    retained.unlink()
+    PruneEmptySampleDirectories(v3_root, samples_root)
+    assert not samples_root.exists()

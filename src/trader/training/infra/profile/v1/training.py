@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 from collections.abc import Callable
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
@@ -39,6 +38,7 @@ from trader.training.infra.profile.v1.samples import (
     LearnedRankSampleCounts,
     LearnedRankSampleIndex,
 )
+from trader.training.infra.sample_cache import TemporaryTrainingSamples
 
 
 @dataclass(frozen=True)
@@ -84,12 +84,7 @@ def RunV1Training(
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=1),
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=5),
             )
-            root = sample_root / "v1"
-            if root.is_symlink() or (root.exists() and (not root.is_dir() or any(root.iterdir()))):
-                raise ValueError("V1 sample directory contains existing data")
-            root.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(prefix="training-", dir=root) as temporary:
-                directory = Path(temporary)
+            with TemporaryTrainingSamples(sample_root, "v1") as directory:
                 sample_path = directory / "samples.sqlite3"
                 with closing(LearnedRankSampleIndex(sample_path)) as index:
                     counts = BuildLearnedRankSamples(

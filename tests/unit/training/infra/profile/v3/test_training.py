@@ -246,7 +246,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     )
     second = run_training(tmp_path / "history", tmp_path / "train")
     assert second.status == "engineering_ready" and builds == 1
-    assert not (tmp_path / "samples" / profile / "samples.sqlite3").exists()
+    assert not (tmp_path / "samples").exists()
 
 
 def test_provably_insufficient_industry_rows_fail_before_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

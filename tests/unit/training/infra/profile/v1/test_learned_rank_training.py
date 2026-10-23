@@ -141,7 +141,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
     assert tuple(head.strategy for head in result.heads) == (Strategy.TOMORROW, Strategy.D25)
     assert all(head.training_rows == 360 and head.validation.predicted_rows == 60 for head in result.heads)
     assert all(head.validation.mean_daily_rank_ic > 0.5 for head in result.heads)
-    assert list((sample_root / "v1").iterdir()) == []
+    assert not sample_root.exists()
     pair = ReadLearnedRankPair(model_root)
     profile_root = model_root / "v1"
     paths = tuple(
@@ -191,6 +191,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
         settings=replace(_settings(), minimum_training_rows=99999),
     )
     assert failed.status == "failed" and {path.relative_to(profile_root): path.read_bytes() for path in paths} == before
+    assert not sample_root.exists()
     with pytest.raises(InterruptedError):
         RunV1Training(
             lambda: history,
@@ -201,6 +202,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
             cancel_requested=lambda: True,
         )
     assert {path.relative_to(profile_root): path.read_bytes() for path in paths} == before
+    assert not sample_root.exists()
     missing_path = profile_root / "d25/metadata.json"
     missing_path.unlink()
     with pytest.raises(FileNotFoundError, match="head files"):
