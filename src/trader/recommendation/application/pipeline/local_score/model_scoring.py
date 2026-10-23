@@ -264,6 +264,8 @@ class ProductionModelScoringService:
         return self._history_required_sessions
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
+        if feature.model_history_quality is not None and feature.model_history_quality.failure:
+            return False
         if self._predictor.profile_id == "v5" and not _valid_sequence(feature):
             return False
         row = _raw_row(feature, self._row_contract)
@@ -666,6 +668,9 @@ def _eligible_rows(
     rows: list[_RawRow] = []
     missing: list[str] = []
     for feature in sorted(features, key=lambda item: item.quote.code):
+        if feature.model_history_quality is not None and feature.model_history_quality.failure:
+            missing.append(feature.quote.code)
+            continue
         row = _raw_row(feature, contract)
         if row is None or (contract.exposure_contract.requires_industry and not row.industry):
             missing.append(feature.quote.code)

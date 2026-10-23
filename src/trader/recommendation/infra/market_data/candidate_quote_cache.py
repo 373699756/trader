@@ -194,6 +194,7 @@ class QuoteCache:
                 feature,
                 values={**feature.values, **dict(completed.get(feature.quote.code, ()))},
                 model_sequence=sequences.get(feature.quote.code),
+                model_history_quality=self._history.model_history_quality(feature.quote.code, feature.observed_at),
                 quote=QuoteWithIndustry(
                     feature.quote, references.get(feature.quote.code), ShanghaiNow(feature.observed_at).date()
                 ),

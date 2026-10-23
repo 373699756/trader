@@ -29,6 +29,7 @@ from trader.download.infra.history_partition_repack import (
 )
 from trader.download.infra.history_storage_profile import ClassifyHistoryStorage
 from trader.infra.serialization.canonical import ContentHash
+from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.training.application.tomorrow_training import (
@@ -304,7 +305,6 @@ def RunJointProfileTraining(
                         window = _require_industry_coverage(
                             archive,
                             split,
-                            request.profile.history_sessions,
                             request.profile.algorithm,
                             request.settings.fitting.minimum_industry_training_rows,
                         )
@@ -486,7 +486,6 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
         training_window = _require_industry_coverage(
             archive,
             split,
-            request.profile.history_sessions,
             request.profile.algorithm,
             request.settings.fitting.minimum_industry_training_rows,
         )
@@ -595,7 +594,7 @@ def _sample_cache_for(
             split.content_hash,
             feature_count,
             "monthly_samples",
-            "tencent_inferred_suspended_trade_bar_windows",
+            HISTORY_ALIGNMENT_CONTRACT,
             request.profile.history_sessions,
             request.profile.momentum_horizons,
             request.profile.market_state_momentum_horizons,
@@ -626,12 +625,12 @@ def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleC
 def _require_industry_coverage(
     archive: _TrainingInputSnapshot,
     split: TrainingDateSplit,
-    history_sessions: int,
     algorithm: Literal["lightgbm", "ridge", "tcn"],
     minimum_training_rows: int,
 ) -> TomorrowTrainingWindow:
     window = TomorrowTrainingWindow(split)
-    if not archive.has_industry_window(window.readable_dates, history_sessions):
+    # Calendar continuity is checked by the aligner; these are signal-fact bounds.
+    if not archive.has_industry_window(window.readable_dates, 1):
         raise ValueError("history_industry_coverage_insufficient")
     for anchors in (
         split.model_fit_dates,
@@ -640,11 +639,9 @@ def _require_industry_coverage(
         split.confirmation_dates,
         split.daily_proxy_holdout_dates,
     ):
-        if not archive.has_industry_window(window.readable_dates, history_sessions, anchor_dates=frozenset(anchors)):
+        if not archive.has_industry_window(window.readable_dates, 1, anchor_dates=frozenset(anchors)):
             raise ValueError("history_industry_split_coverage_insufficient")
-    bounds = archive.industry_sample_upper_bounds(
-        window.readable_dates, history_sessions, frozenset(split.model_fit_dates)
-    )
+    bounds = archive.industry_sample_upper_bounds(window.readable_dates, 1, frozenset(split.model_fit_dates))
     if not any(count >= minimum_training_rows for _, count in bounds):
         raise ValueError("history_industry_training_rows_insufficient")
     return window
@@ -1007,9 +1004,7 @@ def _training_contract_hash(
             "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
             "history_sessions": profile.history_sessions,
-            "feature_day_axis": "complete_market_sessions_before_signal"
-            if profile.algorithm == "tcn"
-            else "actual_trade_bars_skip_tencent_inferred_suspension",
+            "feature_day_axis": HISTORY_ALIGNMENT_CONTRACT,
             "fit_dates": settings.fit_dates,
             "algorithm": profile.algorithm,
             "strategy_head": contract.strategy.value,
@@ -1167,6 +1162,11 @@ def _reason(exc: BaseException) -> str:
         "history_manifest_unavailable",
         "history_manifest_parent_unavailable",
         "profile_training_rows_empty",
+        "profile_training_effective_dates_insufficient",
+        "history_alignment_calendar_mismatch",
+        "history_alignment_source_day_missing",
+        "history_alignment_duplicate_row",
+        "history_alignment_row_outside_calendar",
         "history_industry_coverage_insufficient",
         "history_industry_split_coverage_insufficient",
         "history_industry_training_rows_insufficient",

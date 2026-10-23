@@ -7,11 +7,12 @@ from pathlib import Path
 
 from tests.contract.test_bootstrap import _config
 from trader.bootstrap import BuildProfiledSystem, BuildSystem
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.entrypoints.cli import BuildParser as CliParser
 from trader.entrypoints.performance import Run as PerformanceRun
 
 
-def test_explicit_v1_build_is_lazy_shadow_and_reuses_v2_published_history(tmp_path: Path, monkeypatch) -> None:
+def test_explicit_v1_build_is_lazy_shadow_and_binds_complete_published_history(tmp_path: Path, monkeypatch) -> None:
     path = _config(tmp_path)
     monkeypatch.setattr(
         threading.Thread, "start", lambda _thread: (_ for _ in ()).throw(AssertionError("build started a thread"))
@@ -24,7 +25,8 @@ def test_explicit_v1_build_is_lazy_shadow_and_reuses_v2_published_history(tmp_pa
     )
     assert system.records._database == tmp_path / "data/recommendation/learned_rank/decisions.sqlite3"
     assert system.market_data.history.completed_features_enabled is True
-    assert system.market_data.history._history.publication.profile == "v2"
+    assert isinstance(system.market_data.history._history.publication, SQLitePublishedHistorySnapshot)
+    assert system.market_data.history._history.publication._root == tmp_path / "data/market/history"
     assert not (tmp_path / "data/recommendation").exists()
     assert not (tmp_path / "runtime").exists()
     both = BuildProfiledSystem(path, profiles=("v2", "v3"))

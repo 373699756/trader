@@ -158,3 +158,33 @@ def test_non_positive_gross_minus_cost_closes_selection_before_local_score(appli
     )
     assert VisibleScoredSeats(projection.local) == ()
     assert projection.stages.local_score.snapshot.input_count == 0
+
+
+def test_missing_history_is_pending_without_invoking_v1_predictor(application_feature_factory) -> None:
+    from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
+
+    features = tuple(
+        replace(feature, model_history_quality=ModelHistoryQuality("history_model_date_mismatch"))
+        for feature in _features(application_feature_factory)
+    )
+    service = _service()
+    projection = BuildScoredLocal(
+        _native_input(features),
+        _policy(),
+        sequence=1,
+        runtime=ScoredProjectionInputs(model_scoring=ModelScoringRouter("v1", {Strategy.TOMORROW: service})),
+    )
+    stage = projection.stages.model_filter.snapshot
+    assert (stage.input_count, stage.output_count, stage.pending_count, stage.rejected_count, stage.failed_count) == (
+        12,
+        0,
+        12,
+        0,
+        0,
+    )
+    assert [(reason.code, reason.count) for reason in stage.reasons] == [("history_model_date_mismatch", 12)]
+    assert service.status().computation.request_count == 1
+    assert service.status().computation.predictor_batch_count == 0
+    service.score(_features(application_feature_factory))
+    status = service.status().computation
+    assert status.predictor_batch_count == 1 and status.stage_durations[0].last_duration_ms >= 0

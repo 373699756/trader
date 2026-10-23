@@ -108,7 +108,7 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
     requested: list[frozenset[date]] = []
 
     class Archive:
-        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates))
+        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates), listing_intervals=())
 
         @staticmethod
         def training_row_upper_bound(_dates) -> int:
@@ -142,7 +142,9 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
     )
 
     class HistorySourceFixture:
-        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates), active_snapshot_hash="a" * 64)
+        snapshot = SimpleNamespace(
+            calendar=BaoStockCalendar(dates), active_snapshot_hash="a" * 64, listing_intervals=()
+        )
 
         def __init__(self) -> None:
             self.scans = 0

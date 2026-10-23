@@ -36,7 +36,7 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_sync_runner import RunHistorySync
-from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
+from trader.download.infra.published_history_snapshot import PublishedHistoryReadError, SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
@@ -249,6 +249,21 @@ def test_old_published_manifest_remains_readable_after_active_history_advances(t
     assert tuple(reader.iter_windows(original, sessions=61)) == original_rows
 
 
+def test_online_alignment_refuses_a_wholly_missing_source_day(tmp_path, prepared_history, monkeypatch):
+    root = tmp_path / "history"
+    days = tuple(date(2026, 9, 8) + timedelta(days=i) for i in range(3))
+    prepared_history(root, days)
+    source = SQLitePublishedHistorySnapshot(root)
+    read = source._reader.iter_published_range_by_code
+
+    def missing_day(*args):
+        yield from (row for row in read(*args) if row.trade_date != days[1])
+
+    monkeypatch.setattr(source._reader, "iter_published_range_by_code", missing_day)
+    with pytest.raises(PublishedHistoryReadError, match="source_day_missing"):
+        tuple(source.iter_windows(source.manifest(), sessions=3))
+
+
 def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_path, prepared_history, monkeypatch):
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
@@ -400,13 +415,13 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
     verified = []
-    verify = HistoryPricePartition.verify.__func__
+    verify = HistoryPricePartition.verify_logical_content.__func__
 
-    def observed(cls, path, reference, progress=None):
+    def observed(cls, path, reference, progress=None, **kwargs):
         verified.append(reference)
-        return verify(cls, path, reference, progress)
+        return verify(cls, path, reference, progress, **kwargs)
 
-    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(observed))
+    monkeypatch.setattr(HistoryPricePartition, "verify_logical_content", classmethod(observed))
     archive = SQLitePublishedHistorySnapshot(tmp_path / "history")
     manifest = archive.manifest()
     history = PublishedHistoryCache(

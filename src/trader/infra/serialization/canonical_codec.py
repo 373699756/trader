@@ -62,8 +62,15 @@ def CanonicalText(
     include_derived: bool = False,
     exclusion: CanonicalExclusion | None = None,
 ) -> str:
+    return CanonicalJsonText(
+        EncodeCanonicalValue(value, include_derived=include_derived, exclusion=exclusion), ensure_ascii=ensure_ascii
+    )
+
+
+def CanonicalJsonText(value: CanonicalValue, *, ensure_ascii: bool = True) -> str:
+    """Encode a persistence codec's explicit JSON projection without reflective traversal."""
     return json.dumps(
-        EncodeCanonicalValue(value, include_derived=include_derived, exclusion=exclusion),
+        value,
         ensure_ascii=ensure_ascii,
         allow_nan=False,
         sort_keys=True,
@@ -85,4 +92,11 @@ def CanonicalDigest(
     ).hexdigest()
 
 
-__all__ = ["CanonicalExclusion", "CanonicalValue", "EncodeCanonicalValue", "CanonicalText", "CanonicalDigest"]
+__all__ = [
+    "CanonicalExclusion",
+    "CanonicalValue",
+    "EncodeCanonicalValue",
+    "CanonicalText",
+    "CanonicalJsonText",
+    "CanonicalDigest",
+]

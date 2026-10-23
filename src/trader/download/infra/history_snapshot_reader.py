@@ -352,7 +352,7 @@ class HistorySnapshotReader:
         dates = session_dates
         if (
             not dates
-            or len(dates) > MAX_HISTORY_TRAINING_WINDOW_SESSIONS
+            or len(dates) > BAOSTOCK_MAX_SESSIONS
             or dates != tuple(sorted(set(dates)))
             or dates[-1] > snapshot.data_cutoff
         ):
@@ -363,7 +363,7 @@ class HistorySnapshotReader:
         rows: list[PublishedHistoryCell] = []
         for year, month in RouteHistoryMonths(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
-            partition = self._verified_partition(reference)
+            partition = self._partition_with_trust(reference, None, required_level=None, establish_level="logical")
             rows.extend(
                 row
                 for row in partition.iter_published_cells(
@@ -371,7 +371,7 @@ class HistorySnapshotReader:
                 )
                 if row.trade_date in allowed
             )
-            self._verified_partition(reference)
+            self._partition_with_trust(reference, None, required_level=None, establish_level="logical")
         return tuple(rows)
 
     def iter_published_range_by_code(
@@ -381,7 +381,9 @@ class HistorySnapshotReader:
             raise ValueError("published history range is invalid")
         references = tuple(self._reference(snapshot, year, month) for year, month in RouteHistoryMonths(start, end))
         streams = tuple(
-            self._verified_partition(reference).iter_published_cells(start, end, snapshot_sequence=reference.sequence)
+            self._partition_with_trust(
+                reference, None, required_level=None, establish_level="logical"
+            ).iter_published_cells(start, end, snapshot_sequence=reference.sequence)
             for reference in references
         )
         index = self.reference_index(snapshot)
@@ -389,7 +391,7 @@ class HistorySnapshotReader:
             row for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date)) if index.eligible(row.code)
         )
         for reference in references:
-            self._verified_partition(reference)
+            self._partition_with_trust(reference, None, required_level=None, establish_level="logical")
 
     def iter_shadow_facts(
         self,

@@ -116,7 +116,7 @@ class SQLiteTrainingSampleIndex:
                 industry TEXT NOT NULL,
                 average_amount_20d REAL NOT NULL,
                 {feature_columns},
-                target_t1 REAL NOT NULL,
+                target_t1 REAL,
                 target_t2 REAL,
                 target_t3 REAL,
                 target_t4 REAL,

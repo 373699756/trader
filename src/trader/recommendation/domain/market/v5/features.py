@@ -6,9 +6,11 @@ import math
 from dataclasses import dataclass
 from datetime import date
 
+from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
+
 SEQUENCE_STEPS = 60
 SEQUENCE_CHANNELS = ("open_return", "high_return", "low_return", "close_return", "log_volume", "log_amount")
-SEQUENCE_CONTRACT = "completed_daily_61_ohlcv_amount_before_signal"
+SEQUENCE_CONTRACT = "completed_daily_61_ohlcv_amount_before_signal:" + HISTORY_ALIGNMENT_CONTRACT
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,11 +26,10 @@ class PriceVolumePoint:
     def __post_init__(self) -> None:
         if type(self.trade_date) is not date:
             raise ValueError("V5 sequence point requires a market date")
-        if any(
-            not math.isfinite(v) or v <= 0
-            for v in (self.open_price, self.high, self.low, self.close, self.volume, self.amount)
-        ):
-            raise ValueError("V5 requires positive complete OHLCV and amount")
+        if any(not math.isfinite(v) or v <= 0 for v in (self.open_price, self.high, self.low, self.close)):
+            raise ValueError("V5 requires positive complete OHLC")
+        if any(not math.isfinite(v) or v < 0 for v in (self.volume, self.amount)):
+            raise ValueError("V5 requires nonnegative complete volume and amount")
         if not self.low <= min(self.open_price, self.close) <= max(self.open_price, self.close) <= self.high:
             raise ValueError("V5 OHLC order is invalid")
 

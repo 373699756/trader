@@ -130,6 +130,33 @@ def test_training_samples_use_prior_completed_sessions_and_explicit_missing_labe
             assert counts.missing_d25 > 0  # Tomorrow's newest anchors lack mature D25 labels.
 
 
+def test_v1_missing_t1_keeps_d25_and_fixed_calendar_partitions(tmp_path: Path) -> None:
+    from contextlib import ExitStack, closing
+
+    history = _History()
+    splits = tuple(
+        BuildLearnedRankDateSplit(history.dates, _settings(), maturity_sessions=maturity) for maturity in (1, 5)
+    )
+    anchor = splits[0].fitting[5]
+    missing_day = history.dates[history.dates.index(anchor) + 1]
+
+    class MissingHistory(_History):
+        def iter_training_rows(self, allowed_dates):
+            for row in super().iter_training_rows(allowed_dates):
+                if row.trade_date == missing_day and row.code == self.codes[0]:
+                    row = replace(row, point=None, cell_status="unknown_missing")
+                yield row
+
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
+        counts = BuildLearnedRankSamples(MissingHistory(), (splits[0], splits[1]), index)
+        with ExitStack() as resources:
+            tomorrow = index.matrix((anchor, missing_day), Strategy.TOMORROW, tmp_path / "t1", resources)
+            d25 = index.matrix((anchor, missing_day), Strategy.D25, tmp_path / "d25", resources)
+            assert anchor not in tomorrow.dates and missing_day in tomorrow.dates
+            assert d25.dates.count(anchor) == len(history.codes)
+            assert counts.estimated_sessions == 1 and counts.missing_t1 >= len(history.codes)
+
+
 def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered_models(tmp_path: Path) -> None:
     history = _History()
     model_root = tmp_path / "models"

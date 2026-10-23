@@ -900,9 +900,8 @@ def _build_market_data(
         cache=market_cache,
     )
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history))
-    published_profile = "v2" if strategy.scoring_profile in {"v1", "v5"} else strategy.scoring_profile
     history_cache = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache(paths.daily_window, published_profile)),
+        published_history,
         lookback_sessions=training_settings.history_sessions,
         monotonic=time.monotonic,
         outcome_history=published_history,

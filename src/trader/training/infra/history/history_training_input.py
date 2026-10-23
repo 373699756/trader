@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -43,6 +43,7 @@ class HistoryTrainingInputSnapshot:
     calendar: BaoStockCalendar
     training_codes: tuple[str, ...]
     input_descriptor_hash: str
+    listing_intervals: tuple[tuple[str, date, date | None], ...] = ()
 
     def __post_init__(self) -> None:
         hashes = (
@@ -61,6 +62,11 @@ class HistoryTrainingInputSnapshot:
             or not self.training_codes
             or self.training_codes != tuple(sorted(set(self.training_codes)))
             or any(len(code) != 6 or not code.isdigit() for code in self.training_codes)
+            or len({code for code, _, _ in self.listing_intervals}) != len(self.listing_intervals)
+            or any(
+                code not in self.training_codes or (end is not None and end < start)
+                for code, start, end in self.listing_intervals
+            )
         ):
             raise ValueError("history training input snapshot is invalid")
 
@@ -91,7 +97,10 @@ class SQLiteHistoryTrainingInputSnapshot:
         self._archive = HistorySnapshotReader(root)
         self._codes = frozenset(item.code for item in universe)
         self._descriptor = descriptor
-        self.snapshot = _snapshot_for_training(active, calendar, self._codes, descriptor)
+        self.snapshot = replace(
+            _snapshot_for_training(active, calendar, self._codes, descriptor),
+            listing_intervals=tuple((item.code, item.listed_on, item.delisted_on) for item in universe),
+        )
 
     @classmethod
     def open(cls, root: Path) -> SQLiteHistoryTrainingInputSnapshot:

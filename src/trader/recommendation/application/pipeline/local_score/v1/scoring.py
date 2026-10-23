@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections.abc import Callable, Sequence
 from typing import cast
@@ -10,6 +11,8 @@ from typing import cast
 from trader.recommendation.application.ports.loaded_profile import (
     LearnedRankPredictorPort,
     LoadedScoringProfile,
+    ModelComputationStageStatus,
+    ModelComputationStatus,
     ModelDiagnostics,
     ModelInput,
     ModelScoreBatch,
@@ -49,6 +52,12 @@ class LearnedRankScoringService:
         self._cost_policy = cost_policy
         self._content_hash = content_hash
         self._monotonic = monotonic
+        self._request_count = 0
+        self._predictor_batch_count = 0
+        self._candidate_count = 0
+        self._lock = threading.RLock()
+        self._prediction_ms = 0.0
+        self._cumulative_prediction_ms = 0.0
         self._contract_hash = content_hash(
             (
                 "completed_daily_251",
@@ -64,6 +73,8 @@ class LearnedRankScoringService:
         return f"{self._predictor.model_id}:{self._predictor.model_hash}"
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
+        if feature.model_history_quality is not None and feature.model_history_quality.failure:
+            return False
         return (
             feature.history_days >= self.history_required_sessions
             and all(
@@ -83,6 +94,18 @@ class LearnedRankScoringService:
             if context is not None and context.time_budget_seconds is not None
             else None
         )
+        with self._lock:
+            return self._score_locked(features, context=context, deadline=deadline)
+
+    def _score_locked(
+        self,
+        features: Sequence[FeatureSnapshot],
+        *,
+        context: ModelScoringContext | None,
+        deadline: float | None,
+    ) -> ModelScoreBatch:
+        self._request_count += 1
+        self._candidate_count = len(features)
         if deadline is not None and self._monotonic() >= deadline:
             raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
         source = (
@@ -103,7 +126,14 @@ class LearnedRankScoringService:
             )
             for item in population
         )
-        predictions = self._predictor.predict(inputs) if inputs else ()
+        if inputs:
+            self._predictor_batch_count += 1
+        started = self._monotonic()
+        try:
+            predictions = self._predictor.predict(inputs) if inputs else ()
+        finally:
+            self._prediction_ms = max(0.0, (self._monotonic() - started) * 1000.0) if inputs else 0.0
+            self._cumulative_prediction_ms += self._prediction_ms
         if deadline is not None and self._monotonic() >= deadline:
             raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
         if tuple(item.code for item in predictions) != population_codes or any(
@@ -164,6 +194,10 @@ class LearnedRankScoringService:
         )
 
     def status(self) -> ScoringHeadRuntimeStatus:
+        with self._lock:
+            return self._status_locked()
+
+    def _status_locked(self) -> ScoringHeadRuntimeStatus:
         evidence = self._head.evidence
         return ScoringHeadRuntimeStatus(
             active=True,
@@ -183,6 +217,21 @@ class LearnedRankScoringService:
             score_scale=LEARNED_RANK_SCORE_SCALE,
             production_authority=False,
             training_label_cutoff=evidence.training_label_cutoff,
+            computation=ModelComputationStatus(
+                candidate_count=self._candidate_count,
+                request_count=self._request_count,
+                predictor_batch_count=self._predictor_batch_count,
+                stage_durations=(
+                    ModelComputationStageStatus(
+                        "prediction",
+                        self._predictor_batch_count,
+                        self._prediction_ms,
+                        self._cumulative_prediction_ms,
+                    ),
+                )
+                if self._predictor_batch_count
+                else (),
+            ),
         )
 
 

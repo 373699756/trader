@@ -34,7 +34,8 @@ def CalculateHistoryProof(
         + ",r.content_hash"
         + " FROM daily_observations o JOIN daily_records r ON "
         "r.trade_date=o.trade_date AND r.code=o.code AND r.revision_id=o.revision_id "
-        "WHERE o.trade_date>=? AND o.trade_date<? AND o.sync_sequence=(SELECT MAX(i.sync_sequence) FROM daily_observations i "
+        "WHERE o.trade_date>=? AND o.trade_date<? AND o.sync_sequence=(SELECT MAX(i.sync_sequence) "
+        "FROM daily_observations i INDEXED BY sqlite_autoindex_daily_observations_1 "
         "WHERE i.trade_date=o.trade_date AND i.code=o.code AND i.sync_sequence<=?) "
         "ORDER BY o.trade_date,o.code",
         (*dates, sequence),

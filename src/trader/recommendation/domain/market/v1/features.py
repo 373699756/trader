@@ -34,9 +34,9 @@ class LearnedRankDailyPoint:
             or not math.isfinite(self.close_price)
             or self.close_price <= 0.0
             or not math.isfinite(self.amount)
-            or self.amount <= 0.0
+            or self.amount < 0.0
         ):
-            raise ValueError("learned-rank daily point requires a complete positive price/amount pair")
+            raise ValueError("learned-rank daily point requires positive price and nonnegative amount")
 
 
 def CalculateLearnedRankFeatures(points: Sequence[LearnedRankDailyPoint]) -> tuple[float, ...] | None:
@@ -56,7 +56,10 @@ def CalculateLearnedRankFeatures(points: Sequence[LearnedRankDailyPoint]) -> tup
     mean = math.fsum(daily) / len(daily)
     volatility = math.sqrt(math.fsum((value - mean) ** 2 for value in daily) / len(daily))
     drawdown = close / max(point.close_price for point in points[-60:]) - 1.0
-    log_amount = math.log(math.fsum(point.amount for point in points[-20:]) / 20.0)
+    average_amount = math.fsum(point.amount for point in points[-20:]) / 20.0
+    if average_amount <= 0.0:
+        return None
+    log_amount = math.log(average_amount)
     result = (*returns, volatility, drawdown, log_amount)
     return result if all(math.isfinite(value) for value in result) else None
 

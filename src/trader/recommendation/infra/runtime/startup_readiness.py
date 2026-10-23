@@ -23,12 +23,8 @@ def WarnMissingLocalData(paths: DataPaths, profile_id: ScoringProfileId, *, mode
         )
     if not (paths.history / "catalog.sqlite3").is_file():
         _LOGGER.warning(
-            "警告：缺少历史数据，看板继续启动；离线训练与回溯待就绪。需要训练时运行 ./run.sh train。",
-        )
-    if not paths.daily_window.is_file():
-        _LOGGER.warning(
-            "警告：%s 缺少行情短窗口，看板继续启动；相关推荐输入待就绪。可运行 ./run.sh sync market 补齐。",
-            profile_id.upper(),
+            "警告：缺少已发布完整历史，看板继续启动；模型输入、离线训练与回溯待就绪。"
+            "可运行 ./run.sh sync history 补齐；需要训练时运行 ./run.sh train。",
         )
 
 

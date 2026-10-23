@@ -1389,13 +1389,14 @@ def test_latest_day_missing_retries_only_when_the_batch_gap_is_widespread() -> N
 def test_online_projection_matches_full_history_and_keeps_settlement_independent(tmp_path) -> None:
     from tests.component.test_candidate_history_tail import CALENDAR, NOW, _Archive
 
-    full = _Archive(251, 0, ("600001", "600002"))
+    class MissingTailArchive(_Archive):
+        @staticmethod
+        def window(code, dates):
+            window = _Archive.window(code, dates)
+            return replace(window, cells=window.cells[:-2]) if code == "600002" else window
+
+    full = MissingTailArchive(251, 0, ("600001", "600002"))
     reader = ReadPublishedHistoryUseCase(full)
-    short = SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2")
-    for window in reader.iter_windows(full.current, sessions=251):
-        if window.code == "600002":
-            window = PublishedHistoryWindow(window.code, window.cells[:-2])
-        publish_windows(short, (window,), "history:fixture")
     calendar_calls = 0
 
     def dates():
@@ -1404,7 +1405,7 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
         return CALENDAR
 
     projection = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(short),
+        reader,
         lookback_sessions=251,
         outcome_history=reader,
         open_dates=dates,

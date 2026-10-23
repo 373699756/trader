@@ -52,6 +52,7 @@ from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE
 from trader.recommendation.domain.candidate.filters import HardFilter
 from trader.recommendation.domain.evidence.pipeline import PipelineStage
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
+from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionDownside,
@@ -238,6 +239,15 @@ def BuildScoredLocal(
         for feature in quality_batch.output.records
         if feature.quote.code not in model_reasons and feature.quote.code not in missing_model_codes
     )
+    missing_model_reasons = {
+        feature.quote.code: (
+            feature.model_history_quality.failure
+            if feature.model_history_quality is not None and feature.model_history_quality.failure
+            else "production_model_features_missing"
+        )
+        for feature in quality_batch.output.records
+        if feature.quote.code in missing_model_codes
+    }
     model_stage = MeasuredOutput(
         StageOutput(
             PipelineStage.MODEL_FILTER,
@@ -247,10 +257,7 @@ def BuildScoredLocal(
             input_count=len(quality_batch.output.records),
             rejected_count=len(model_reasons),
             pending_count=len(missing_model_codes),
-            reasons=ReasonAggregates(
-                Counter(model_reasons.values())
-                + Counter({"production_model_features_missing": len(missing_model_codes)})
-            ),
+            reasons=ReasonAggregates(Counter(model_reasons.values()) + Counter(missing_model_reasons.values())),
             source_health=quality_batch.output.snapshot.source_health,
             latency_ms=0,
         ),
@@ -287,7 +294,7 @@ def BuildScoredLocal(
                 if feature.quote.code not in quality_codes
             },
             **model_reasons,
-            **{code: "production_model_features_missing" for code in missing_model_codes},
+            **missing_model_reasons,
         },
     )
     scored_stage = _local_score_stage(
@@ -434,7 +441,8 @@ def _local_score_stage(
             pending_count=sum(
                 count
                 for reason, count in reasons.items()
-                if reason in {"production_model_features_missing", "strategy_history_insufficient"}
+                if reason
+                in {"production_model_features_missing", "strategy_history_insufficient"} | HISTORY_INPUT_FAILURES
             ),
             source_health=source.snapshot.source_health,
             latency_ms=0,

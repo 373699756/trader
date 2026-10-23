@@ -148,7 +148,7 @@ def SummarizeHistoryMetrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         if len(volumes) == 5 and all(math.isfinite(value) and value >= 0.0 for value in volumes)
         else None
     )
-    amount_5d = _positive_average(tuple(bar.amount for bar in bars[-5:]), 5)
+    amount_5d = _nonnegative_average(tuple(bar.amount for bar in bars[-5:]), 5)
     high_20d = max((bar.high for bar in bars[-20:] if bar.high > 0.0), default=None) if len(bars) >= 20 else None
 
     window_20 = bars[-20:] if len(bars) >= 20 else bars[:]
@@ -173,7 +173,7 @@ def SummarizeHistoryMetrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
         for bar in values:
             if bar.close > 0:
                 close_peaks.append(bar.close)
-            if bar.amount > 0:
+            if math.isfinite(bar.amount) and bar.amount >= 0:
                 valid_amounts.append(bar.amount)
             if bar.turnover_rate is not None and math.isfinite(bar.turnover_rate) and bar.turnover_rate > 0:
                 valid_turnover.append(bar.turnover_rate)
@@ -286,8 +286,8 @@ def AverageTrueRangePct(bars: tuple[DailyBar, ...], days: int = 20) -> float | N
     return sum(values) / days if len(values) == days else None
 
 
-def _positive_average(values: tuple[float, ...], required: int) -> float | None:
-    finite = tuple(value for value in values if math.isfinite(value) and value > 0.0)
+def _nonnegative_average(values: tuple[float, ...], required: int) -> float | None:
+    finite = tuple(value for value in values if math.isfinite(value) and value >= 0.0)
     return sum(finite) / required if len(finite) == required else None
 
 
@@ -297,13 +297,13 @@ def _amihud_average(bars: list[DailyBar]) -> float | None:
         for bar in bars
         if math.isfinite(bar.pct_change) and math.isfinite(bar.amount) and bar.amount > 0.0
     )
-    return sum(values) / 20.0 if len(values) == 20 else None
+    return sum(values) / len(values) if len(bars) == 20 and values else None
 
 
 def MedianAmount(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     if len(bars) < days:
         return None
-    values = [bar.amount for bar in bars[-days:] if bar.amount > 0]
+    values = [bar.amount for bar in bars[-days:] if math.isfinite(bar.amount) and bar.amount >= 0]
     return statistics.median(values) if len(values) == days else None
 
 

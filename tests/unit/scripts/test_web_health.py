@@ -57,7 +57,12 @@ def _funnel(**overrides: int) -> dict[str, object]:
                 history=values["history"],
                 strategy_history_eligible=values["strategy_history_eligible"],
             ),
-            _stage("model_filter", values["model_input_eligible"], values["candidate_features"]),
+            _stage(
+                "model_filter",
+                values["model_input_eligible"],
+                values["candidate_features"],
+                model_input_eligible=values["model_input_eligible"],
+            ),
             _stage("local_score", values["candidate_features"], values["full_scored"]),
             _stage("local_risk", values["full_scored"], values["full_scored"]),
             _stage("fixed_selection", values["full_scored"], seats),
@@ -85,6 +90,14 @@ def _stage(key: str, input_count: object, output_count: object, **facets: object
         "facets": [{"key": name, "count": count, "total": total} for name, count in facets.items()],
         "reason_counts": [],
     }
+
+
+def test_model_readiness_uses_model_stage_even_with_an_unrelated_primary_blocker():
+    funnel = _funnel()
+    funnel["stages"][5] = _stage("model_filter", 1401, 0, model_input_eligible=0)
+    sample = _sample(1, funnel=funnel, primary_blocker="chinext_board_too_hot")
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,))
+    assert any(finding.code == "model_input_unavailable" for finding in findings)
 
 
 def _sample(
@@ -622,6 +635,9 @@ def test_runtime_report_exposes_active_model_head_consumption() -> None:
                 "candidate_count": 65,
                 "predictor_batch_count": 2,
                 "cache_hit_count": 0,
+                "score_scale": None,
+                "production_authority": None,
+                "training_label_cutoff": None,
             }
         },
     }

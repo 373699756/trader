@@ -509,7 +509,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
     rows = tuple(_training_point(day, 10.0 + index) for index, day in enumerate(dates[:66]))
 
     class Archive:
-        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates))
+        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates), listing_intervals=())
 
         @staticmethod
         def training_row_upper_bound(_dates) -> int:
@@ -589,10 +589,12 @@ def test_training_exposure_features_do_not_change_when_peer_future_label_is_miss
         for index in range(3)
     )
     before = _finalize_sample_day(samples, V2_TRAINING_PROFILE)
-    samples[2].future_returns[:] = [None] * 5
+    samples[2].future_returns[0] = None
     after = _finalize_sample_day(samples, V2_TRAINING_PROFILE)
 
-    assert len(before) == 3 and len(after) == 2
+    assert len(before) == 3 and len(after) == 3
+    assert all(item.targets[0] is None for item in after)
+    assert all(item.targets[-1] is not None for item in after)
     assert before[0].features == after[0].features
 
 

@@ -34,6 +34,10 @@ class TrainingSampleDiagnostics:
     short_window: int
     invalid_features: int
     missing_labels: int
+    suspended_sessions: int = 0
+    estimated_sessions: int = 0
+    missing_t1: int = 0
+    missing_d25: int = 0
 
 
 @dataclass(frozen=True)

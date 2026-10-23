@@ -31,6 +31,7 @@ from trader.recommendation.domain.market.v1.features import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
 from trader.training.domain.v1.learned_rank import LearnedRankDateSplit
+from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 
 _FEATURE_BYTES = struct.Struct(f"<{len(LEARNED_RANK_FEATURE_IDS)}d")
@@ -59,6 +60,8 @@ class LearnedRankSampleCounts:
     short_window: int
     missing_t1: int
     missing_d25: int
+    suspended_sessions: int = 0
+    estimated_sessions: int = 0
 
 
 @dataclass(frozen=True)
@@ -122,7 +125,9 @@ class LearnedRankSampleIndex:
     def add_day(self, pending: _PendingDay) -> tuple[int, int, int]:
         candidates = tuple(pending.candidates.values())
         benchmarks = tuple(
-            math.fsum(cast(float, value) for value in values) / len(values) if values else None
+            math.fsum(cast(float, value) for value in values) / len(values)
+            if values and len(values) == len(candidates)
+            else None
             for values in (
                 tuple(item.future[index] for item in candidates if item.future[index] is not None) for index in range(5)
             )
@@ -210,8 +215,6 @@ class LearnedRankSampleIndex:
                 codes.append(code_values.setdefault(code, code))
                 sample_dates.append(day)
                 industries.append(industry_values.setdefault(industry, industry))
-        if frozenset(sample_dates) != allowed_dates:
-            raise ValueError("learned_rank_sample_dates_incomplete")
         return LearnedRankMatrix(features, targets, tuple(codes), tuple(sample_dates), tuple(industries), tuple(groups))
 
 
@@ -228,13 +231,17 @@ def BuildLearnedRankSamples(
     selected = frozenset(day for split in splits for day in split.sample_dates)
     first_position = min(positions[day] for day in selected) - 251
     readable = frozenset(calendar[first_position:])
+    readable = AlignmentReadDates(calendar, readable)
     total = source.training_row_upper_bound(readable)
     rolling: dict[str, _RollingCode] = {}
     pending: deque[_PendingDay] = deque()
     current: date | None = None
     source_rows = converted = missing_prices = missing_industry = short_window = missing_t1 = missing_d25 = 0
+    suspended_sessions = estimated_sessions = 0
     last_key: tuple[date, str] | None = None
-    for row in source.iter_training_rows(readable):
+    for row in AlignTrainingRows(
+        source.iter_training_rows(readable), tuple(sorted(readable)), source.snapshot.listing_intervals
+    ):
         source_rows += 1
         if source_rows % 512 == 0:
             CheckV1Cancellation(cancel_requested)
@@ -262,6 +269,9 @@ def BuildLearnedRankSamples(
         if state.last_position != position - 1:
             state.points.clear()
         point = _complete_point(row)
+        if point is not None:
+            suspended_sessions += row.cell_status == "supplier_marked_suspended"
+            estimated_sessions += row.cell_status in {"unknown_missing", "tencent_inferred_suspended"}
         if point is None:
             missing_prices += 1
             state.points.clear()
@@ -270,9 +280,13 @@ def BuildLearnedRankSamples(
         for day in pending:
             candidate = day.candidates.get(row.code)
             horizon = position - day.position
-            if candidate is not None and 1 <= horizon <= 5:
+            if (
+                candidate is not None
+                and 1 <= horizon <= 5
+                and row.cell_status in {None, "complete", "supplier_marked_suspended"}
+            ):
                 candidate.future[horizon - 1] = point.close_price / candidate.entry - 1.0
-        if row.trade_date in selected:
+        if row.trade_date in selected and row.cell_status in {None, "complete"} and point.amount > 0.0:
             if row.industry is None:
                 missing_industry += 1
             elif (features := CalculateLearnedRankFeatures(tuple(state.points))) is None:
@@ -288,19 +302,26 @@ def BuildLearnedRankSamples(
         missing_d25 += absent_d25
     CheckV1Cancellation(cancel_requested)
     return LearnedRankSampleCounts(
-        source_rows, converted, missing_prices, missing_industry, short_window, missing_t1, missing_d25
+        source_rows,
+        converted,
+        missing_prices,
+        missing_industry,
+        short_window,
+        missing_t1,
+        missing_d25,
+        suspended_sessions,
+        estimated_sessions,
     )
 
 
 def _complete_point(row: HistoryTrainingRow) -> LearnedRankDailyPoint | None:
     point = row.point
     if (
-        row.cell_status not in {None, "complete"}
-        or point is None
+        point is None
         or point.qfq_close_price is None
         or point.qfq_amount is None
         or point.qfq_close_price <= 0.0
-        or point.qfq_amount <= 0.0
+        or point.qfq_amount < 0.0
     ):
         return None
     return LearnedRankDailyPoint(row.trade_date, point.qfq_close_price, point.qfq_amount)

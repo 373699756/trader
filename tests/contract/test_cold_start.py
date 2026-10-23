@@ -52,8 +52,9 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
             assert head["model_hash"] == ""
             assert head["historical_failure_reasons"] == ["production_model_missing"]
         assert "./run.sh train" in caplog.text
-    assert "./run.sh sync market" in caplog.text
-    assert "缺少历史数据" in caplog.text
+    assert "./run.sh sync history" in caplog.text
+    assert "缺少已发布完整历史" in caplog.text
+    assert "缺少行情短窗口" not in caplog.text
     assert started == []
     assert not (tmp_path / "data").exists()
     assert not (tmp_path / ".runtime").exists()

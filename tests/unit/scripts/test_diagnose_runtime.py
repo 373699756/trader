@@ -788,6 +788,9 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
                 "candidate_count": 0,
                 "predictor_batch_count": 0,
                 "cache_hit_count": 2,
+                "score_scale": None,
+                "production_authority": None,
+                "training_label_cutoff": None,
             }
         },
     }

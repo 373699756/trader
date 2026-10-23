@@ -19,7 +19,6 @@ const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
 assert(statusViewSource.includes('[["static_filter"], "静态资格过滤", true]'));
 assert(statusViewSource.includes('[["dynamic_filter"], "动态过滤", true]'));
 assert(!statusViewSource.includes('["一级稳定过滤", ["dynamic_filter"]]'));
-assert(statusViewSource.includes('stageKeys.includes("market_features") && state === "not_ready"'));
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
 const streamSource = fs.readFileSync(streamPath, "utf8");
@@ -490,6 +489,15 @@ renderCloseChain(publishedPayload, {
 assert(!closeChainElements.funnelStages.textContent.includes("新输入轮正在处理"),
   "a different trade date must not appear as the next round");
 const selectableObservationElements = summaryFixture();
+const missingModelElements = summaryFixture();
+state.renderObservationStages(missingModelElements, stageSnapshots.map((stage) => stage.stage === "model_filter"
+  ? { ...stage, state: "not_ready", input_count: 1401, output_count: 0, rejected_count: 0,
+      pending_count: 1401, failed_count: 0, not_selected_count: 0, latency_ms: 1570,
+      reasons: [{ code: "history_model_date_mismatch", count: 1401 }] }
+  : stage), pipelineFixture, false, []);
+assert(missingModelElements.observationStageList.innerHTML.includes("模型输入未就绪"));
+assert(missingModelElements.observationStageList.innerHTML.includes("淘汰 0 · 待补 1401 · 失败 0"));
+assert(missingModelElements.observationStageList.innerHTML.includes("模型历史截止日期不匹配"));
 state.renderObservationStages(selectableObservationElements, stageSnapshots, pipelineFixture, false, []);
 selectableObservationElements.observationStageList.querySelectorAll = () => [{ dataset: { stageKeys: "dynamic_filter" } }];
 state.renderObservationStages(selectableObservationElements, stageSnapshots, pipelineFixture, false, []);

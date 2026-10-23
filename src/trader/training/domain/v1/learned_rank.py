@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
+from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
@@ -198,7 +199,8 @@ class LearnedRankPredictionMetrics:
 LEARNED_RANK_CONTRACT = (
     "learned_rank_completed_daily",
     LEARNED_RANK_FEATURE_IDS,
-    "previous_251_contiguous_sessions_qfq_close_amount",
+    HISTORY_ALIGNMENT_CONTRACT,
+    "previous_251_market_sessions_qfq_close_nonnegative_amount",
     "same_day_equal_weight_gross_excess_close_proxy",
     "tomorrow_t1_d25_mean_t2_t3_t4_t5",
     "daily_average_tie_relevance_0_4_linear_gain",

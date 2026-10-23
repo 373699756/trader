@@ -26,6 +26,7 @@ from trader.recommendation.domain.candidate.filters import (
     LevelOneFilterRules,
 )
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
+from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import (
     ScoredDisposition,
@@ -105,11 +106,14 @@ _TRANSIENT_FILTER_REASONS = frozenset(
         "invalid_liquidity_history",
     }
 )
-_TRANSIENT_SELECTION_REASONS = frozenset(
-    {
-        "production_model_features_missing",
-        "strategy_history_insufficient",
-    }
+_TRANSIENT_SELECTION_REASONS = (
+    frozenset(
+        {
+            "production_model_features_missing",
+            "strategy_history_insufficient",
+        }
+    )
+    | HISTORY_INPUT_FAILURES
 )
 _SECURITY_IDENTITY_RESTRICTIONS = frozenset(
     {

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
+from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
+
 FeatureDirection = Literal["higher", "lower", "mixed", "diagnostic"]
 FeatureMissingPolicy = Literal["reject_model_input", "preserve_missing"]
 FeatureVisibility = Literal["completed_session", "decision_anchor", "same_anchor_cross_section"]
@@ -101,6 +103,7 @@ class FeatureVectorManifest:
             _content_hash(
                 (
                     "feature_vector_manifest",
+                    HISTORY_ALIGNMENT_CONTRACT,
                     self.catalog_hash,
                     *(item.value for item in self.feature_ids),
                     *self.units,

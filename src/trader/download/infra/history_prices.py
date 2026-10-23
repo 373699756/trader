@@ -19,10 +19,14 @@ from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_partition_proof import CalculateHistoryProof
-from trader.download.infra.history_revision_codec import RevisionColumnValues, RevisionFromColumns
+from trader.download.infra.history_revision_codec import (
+    PublishedCellFromRevisionColumns,
+    RevisionColumnValues,
+    RevisionFromColumns,
+)
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_sqlite_read_connection import OpenHistoryPriceReader
-from trader.download.infra.price_columns import PRICE_COLUMNS, PRICE_SQL, PriceCellFromColumns, PriceValues
+from trader.download.infra.price_columns import PRICE_COLUMNS, PRICE_SQL, PriceValues
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
@@ -80,7 +84,6 @@ _REVISION_COLUMNS = (
     + _PRICE_SELECT
     + ", records.content_hash"
 )
-_DAILY_COLUMNS = "records.trade_date, records.code, " + _PRICE_SELECT
 _INSERT_RECORD = "INSERT INTO daily_records VALUES (" + ",".join("?" for _ in range(29)) + ")"
 _LATEST_WINDOW = """
 WITH latest AS (
@@ -119,7 +122,7 @@ WHERE records.trade_date BETWEEN ? AND ?
 ORDER BY records.code, records.trade_date
 """
 _LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_REVISION_COLUMNS)
-_PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_DAILY_COLUMNS)
+_PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_REVISION_COLUMNS)
 _LATEST_SHADOW_SQL = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
@@ -157,7 +160,7 @@ _LATEST_CODE_BOARD_SQL = _LATEST_WINDOW.format(
     record_filter="  AND records.board = ?",
 )
 _PUBLISHED_CODE_SQL = _LATEST_WINDOW.format(
-    columns=_DAILY_COLUMNS, observation_filter="      AND code = ?", record_filter=""
+    columns=_REVISION_COLUMNS, observation_filter="      AND code = ?", record_filter=""
 )
 _TRAINING_RANGE_SQL = """
 SELECT records.trade_date,
@@ -634,7 +637,7 @@ class HistoryPricePartition:
                 cursor = connection.run(query, parameters)
                 while rows := cursor.fetchmany(512):
                     for row in rows:
-                        yield PriceCellFromColumns(str(row[1]), str(row[0]), cast(PriceValues, row[2:]))
+                        yield PublishedCellFromRevisionColumns(tuple(row))
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryPricePartitionError("published daily query failed") from exc
 

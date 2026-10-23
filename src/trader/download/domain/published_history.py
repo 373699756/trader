@@ -114,6 +114,7 @@ class PublishedHistoryManifest:
     calendar_dates: tuple[date, ...]
     universe_codes: tuple[str, ...]
     publication_id: str | None = None
+    listing_intervals: tuple[tuple[str, date, date | None], ...] = ()
 
     def __post_init__(self) -> None:
         dates = tuple(self.calendar_dates)
@@ -128,6 +129,10 @@ class PublishedHistoryManifest:
             or not codes
             or codes != tuple(sorted(set(codes)))
             or any(len(code) != 6 or not code.isdigit() for code in codes)
+            or len({code for code, _, _ in self.listing_intervals}) != len(self.listing_intervals)
+            or any(
+                code not in codes or (end is not None and end < start) for code, start, end in self.listing_intervals
+            )
             or self.publication_id is not None
             and (
                 len(self.publication_id) != 32

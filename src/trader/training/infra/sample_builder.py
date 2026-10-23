@@ -28,6 +28,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingWindow,
     TrainingSampleDiagnostics,
 )
+from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.sample_index import (
@@ -108,6 +109,10 @@ class _SampleBuildState:
     short_window: int = 0
     invalid_features: int = 0
     missing_labels: int = 0
+    suspended_sessions: int = 0
+    estimated_sessions: int = 0
+    missing_t1: int = 0
+    missing_d25: int = 0
 
     def report_scanned(self, value: int) -> None:
         self.processed_rows = value
@@ -123,21 +128,22 @@ class _SampleBuildState:
         position = self.calendar_positions[row.trade_date]
         self._advance_day(row.trade_date, position)
         rolling = self._rolling_for(code, position)
-        if row.cell_status == "tencent_inferred_suspended":
-            if self.profile.algorithm == "tcn":
-                rolling.points.clear()
-            rolling.previous_position = position
-            return
-        if row.point is None or row.industry is None:
+        if row.point is not None:
+            self.suspended_sessions += row.cell_status == "supplier_marked_suspended"
+            self.estimated_sessions += row.cell_status in {"unknown_missing", "tencent_inferred_suspended"}
+        if row.point is not None and row.cell_status in {None, "complete", "supplier_marked_suspended"}:
+            self._record_future_close(code, row.point, position)
+        if row.point is None:
             rolling.points.clear()
-            if row.industry is None:
-                self.missing_industry += 1
-            else:
-                self.missing_prices += 1
+            self.missing_prices += 1
         else:
             rolling.points.append(row.point)
-            if len(rolling.points) == self.profile.history_sessions:
-                self._record_future_close(code, row.point, position)
+            if row.cell_status not in {None, "complete"}:
+                rolling.previous_position = position
+                return
+            if row.industry is None:
+                self.missing_industry += 1
+            elif len(rolling.points) == self.profile.history_sessions:
                 candidate = _pending_sample(row, rolling.points, position, self.readable_dates, self.profile)
                 if candidate is not None:
                     self.pending_days[-1].samples[code] = candidate
@@ -179,6 +185,8 @@ class _SampleBuildState:
             pending = self.pending_days.pop(0)
             finalized = _finalize_sample_day(tuple(pending.samples.values()), self.profile)
             self.missing_labels += len(pending.samples) - len(finalized)
+            self.missing_t1 += len(pending.samples) - sum(item.targets[0] is not None for item in finalized)
+            self.missing_d25 += len(pending.samples) - sum(item.targets[-1] is not None for item in finalized)
             self.repository.add_final(finalized)
             self.converted_samples += len(finalized)
             _publish(
@@ -201,11 +209,14 @@ def BuildTrainingSamples(request: TrainingSampleBuildRequest) -> None:
     _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows))
     _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows))
 
-    for row in request.archive.iter_training_rows(
-        request.window.readable_dates,
-        state.report_scanned,
+    read_dates = AlignmentReadDates(request.archive.snapshot.calendar.open_dates, request.window.readable_dates)
+    for row in AlignTrainingRows(
+        request.archive.iter_training_rows(read_dates, state.report_scanned),
+        tuple(sorted(read_dates)),
+        request.archive.snapshot.listing_intervals,
     ):
-        state.accept(row)
+        if row.trade_date in request.window.readable_dates:
+            state.accept(row)
 
     _complete_sample_state(state, request)
 
@@ -226,10 +237,15 @@ def BuildJointTrainingSamples(requests: tuple[TrainingSampleBuildRequest, ...]) 
     for request, state in zip(requests, states, strict=True):
         _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, state.total_rows))
         _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, state.total_rows))
-    union_dates = frozenset().union(*(request.window.readable_dates for request in requests))
+    union_dates = AlignmentReadDates(
+        archive.snapshot.calendar.open_dates,
+        frozenset().union(*(request.window.readable_dates for request in requests)),
+    )
     scanned = [0] * len(states)
     scanned_union = 0
-    for row in archive.iter_training_rows(union_dates):
+    for row in AlignTrainingRows(
+        archive.iter_training_rows(union_dates), tuple(sorted(union_dates)), archive.snapshot.listing_intervals
+    ):
         scanned_union += 1
         for index, state in enumerate(states):
             if row.trade_date in state.readable_dates:
@@ -249,7 +265,7 @@ def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
         request.repository,
         request.profile,
         request.progress,
-        request.archive.training_row_upper_bound(request.window.readable_dates),
+        request.archive.training_row_upper_bound(AlignmentReadDates(calendar, request.window.readable_dates)),
         {day: position for position, day in enumerate(calendar)},
         request.window.readable_dates,
         frozenset(request.codes),
@@ -272,6 +288,10 @@ def _complete_sample_state(state: _SampleBuildState, request: TrainingSampleBuil
                 state.short_window,
                 state.invalid_features,
                 state.missing_labels,
+                state.suspended_sessions,
+                state.estimated_sessions,
+                state.missing_t1,
+                state.missing_d25,
             ),
         ),
     )
@@ -310,7 +330,9 @@ def _pending_sample(
     if close is None:
         return None
     amounts = tuple(points[index].qfq_amount for index in range(len(points) - 20, len(points)))
-    if any(amount is None or not math.isfinite(amount) or amount <= 0.0 for amount in amounts):
+    if any(amount is None or not math.isfinite(amount) or amount < 0.0 for amount in amounts):
+        return None
+    if math.fsum(cast(float, amount) for amount in amounts) <= 0.0 or (current.qfq_amount or 0.0) <= 0.0:
         return None
     anchor_horizons = (1, 3, 5, *profile.momentum_horizons)
     raw_features = profile.raw_feature_manifest.bind(
@@ -391,8 +413,6 @@ def _finalize_sample_day(
     )
     finalized: list[TrainingSample] = []
     for index, item in enumerate(population):
-        if item.future_returns[0] is None:
-            continue
         excess = tuple(
             TrainingAlphaTarget(next_return=value, benchmark_return=cast(float, benchmarks[horizon]))
             if value is not None and benchmarks[horizon] is not None
@@ -401,6 +421,8 @@ def _finalize_sample_day(
         )
         d25_values = excess[1:]
         aggregate = math.fsum(cast(float, value) for value in d25_values) / 4.0 if None not in d25_values else None
+        if excess[0] is None and aggregate is None:
+            continue
         finalized.append(
             TrainingSample(
                 item.code,
@@ -422,7 +444,11 @@ def _finalize_sample_day(
 
 def _benchmark(values: Sequence[_PendingSample], horizon: int) -> float | None:
     available = tuple(item.future_returns[horizon] for item in values if item.future_returns[horizon] is not None)
-    return math.fsum(cast(float, item) for item in available) / len(available) if available else None
+    return (
+        math.fsum(cast(float, item) for item in available) / len(available)
+        if available and len(available) == len(values)
+        else None
+    )
 
 
 def TrainingAlphaTarget(*, next_return: float, benchmark_return: float) -> float:

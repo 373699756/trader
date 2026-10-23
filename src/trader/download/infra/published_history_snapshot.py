@@ -39,6 +39,9 @@ class SQLitePublishedHistorySnapshot:
             data_cutoff=archive.snapshot.data_cutoff,
             calendar_dates=archive.calendar.open_dates,
             universe_codes=tuple(item.code for item in archive.universe.securities),
+            listing_intervals=tuple(
+                (item.code, item.listed_on, item.delisted_on) for item in archive.universe.securities
+            ),
         )
 
     def iter_windows(
@@ -50,11 +53,16 @@ class SQLitePublishedHistorySnapshot:
         archive = self._matching_snapshot(manifest)
         dates = _session_dates(manifest, sessions)
         allowed_codes = frozenset(manifest.universe_codes)
+        seen_dates: set[date] = set()
         try:
             cells = self._reader.iter_published_range_by_code(dates[0], dates[-1], archive.snapshot)
             for code, group in groupby(cells, key=lambda row: row.code):
                 if code in allowed_codes:
-                    yield PublishedHistoryWindow(code, tuple(group))
+                    window = PublishedHistoryWindow(code, tuple(group))
+                    seen_dates.update(cell.trade_date for cell in window.cells)
+                    yield window
+            if not seen_dates or any(day >= min(seen_dates) and day not in seen_dates for day in dates):
+                raise PublishedHistoryReadError("history_alignment_source_day_missing")
             self._matching_snapshot(manifest)
         except (HistorySnapshotReadError, OSError, ValueError) as exc:
             raise PublishedHistoryReadError("history_snapshot_partition_invalid") from exc
@@ -91,6 +99,8 @@ class SQLitePublishedHistorySnapshot:
             archive.snapshot.content_hash != manifest.snapshot_hash
             or archive.calendar.open_dates != manifest.calendar_dates
             or tuple(item.code for item in archive.universe.securities) != manifest.universe_codes
+            or tuple((item.code, item.listed_on, item.delisted_on) for item in archive.universe.securities)
+            != manifest.listing_intervals
             or archive.snapshot.data_cutoff != manifest.data_cutoff
         ):
             raise PublishedHistoryReadError("history_snapshot_identity_conflict")

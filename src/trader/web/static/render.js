@@ -163,6 +163,8 @@
     board_limit: "超过板块候选名额", board_candidate_limit: "超过板块候选名额",
     deepseek_eligible: "席内可复核", deepseek_submitted: "提交复核", deepseek_completed: "复核完成", deepseek_cache_reused: "复用已有证据", deepseek_veto: "证据否决", deepseek_source_failed: "复核来源失败",
     strategy_history_insufficient: "策略所需历史交易日不足", production_model_features_missing: "模型输入字段缺失",
+    history_snapshot_unavailable: "已发布历史尚不可用", history_window_insufficient: "对齐后的历史窗口不足",
+    history_model_date_mismatch: "模型历史截止日期不匹配", history_invalid_prices: "历史价格或成交额不可用",
     candidate_quotes_pending: "候选行情待补充", security_master_coverage_incomplete: "证券基础资料覆盖不完整",
     below_score_threshold: "最终分低于观察线", filter_observe_only: "数据或风险限制，仅供观察",
     observation_phase: "当前时段仅供观察", downside_guard: "下行保护触发，仅供观察",
@@ -212,6 +214,7 @@
   }
 
   function pipelineFacetLabel(value) {
+    if (value === "model_input_eligible") return "模型输入就绪";
     return PIPELINE_FACET_LABELS[value] || "其他处理结果";
   }
 

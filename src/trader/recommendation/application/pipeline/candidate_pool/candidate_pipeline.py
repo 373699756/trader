@@ -28,6 +28,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     Severity,
     StageReasonAggregate,
 )
+from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import (
@@ -135,6 +136,7 @@ def SelectCandidateOutput(
                 "refresh_pending",
                 "data_pending",
             }
+            | HISTORY_INPUT_FAILURES
         ),
         reasons=ReasonAggregates(reasons),
         source_health=source.snapshot.source_health,

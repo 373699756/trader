@@ -97,9 +97,9 @@ _PIPELINE_COUNT_LOCATIONS = {
     "input_ready_population": ("local_data", "output_count"),
     "dynamic_filter_eligible": ("dynamic_filter", "output_count"),
     "strategy_history_eligible": ("market_features", "strategy_history_eligible"),
-    "model_input_eligible": ("market_features", "output_count"),
-    "scoring_input_eligible": ("market_features", "output_count"),
-    "scoring_input_count": ("market_features", "output_count"),
+    "model_input_eligible": ("model_filter", "model_input_eligible"),
+    "scoring_input_eligible": ("local_score", "input_count"),
+    "scoring_input_count": ("local_score", "input_count"),
     "requested_candidates": ("market_features", "input_count"),
     "candidate_features": ("market_features", "candidate_features"),
     "candidate_quote_eligible": ("market_features", "output_count"),
@@ -215,6 +215,9 @@ class ScoringHeadSnapshot:
     candidate_count: int | None
     predictor_batch_count: int | None
     cache_hit_count: int | None
+    score_scale: str | None = None
+    production_authority: bool | None = None
+    training_label_cutoff: str | None = None
 
 
 @dataclass(frozen=True)
@@ -482,6 +485,7 @@ def _parse_scoring_profile(payload: Mapping[str, object]) -> ScoringProfileSnaps
 def _parse_scoring_head(payload: Mapping[str, object]) -> ScoringHeadSnapshot:
     computation = _mapping(payload.get("computation"))
     active = payload.get("active")
+    authority = payload.get("production_authority")
     return ScoringHeadSnapshot(
         profile_id=_text(payload.get("profile_id")),
         active=active if isinstance(active, bool) else None,
@@ -491,6 +495,9 @@ def _parse_scoring_head(payload: Mapping[str, object]) -> ScoringHeadSnapshot:
         candidate_count=_nonnegative_int(computation.get("candidate_count")),
         predictor_batch_count=_nonnegative_int(computation.get("predictor_batch_count")),
         cache_hit_count=_nonnegative_int(computation.get("cache_hit_count")),
+        score_scale=_text(payload.get("score_scale")),
+        production_authority=authority if isinstance(authority, bool) else None,
+        training_label_cutoff=_text(payload.get("training_label_cutoff")),
     )
 
 

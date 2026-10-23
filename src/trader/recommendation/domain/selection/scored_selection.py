@@ -635,6 +635,8 @@ def ApplySelectionRisks(
 
 
 def _score_input_skip_reason(feature: FeatureSnapshot, request: ScoredSelectionRequest) -> str | None:
+    if feature.model_history_quality is not None and feature.model_history_quality.failure:
+        return feature.model_history_quality.failure
     if feature.history_days < request.minimum_history_sessions:
         return "strategy_history_insufficient"
     if not _model_input_is_eligible(feature.quote.code, request):

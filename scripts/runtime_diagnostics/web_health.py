@@ -308,11 +308,7 @@ def _model_input_findings(
 ) -> list[Finding]:
     history_eligible = quality.pipeline.count("strategy_history_eligible") or 0
     model_eligible = quality.pipeline.count("model_input_eligible")
-    if (
-        quality.primary_blocker not in {"model_input_unavailable", "production_model_features_missing"}
-        or history_eligible <= 0
-        or model_eligible != 0
-    ):
+    if history_eligible <= 0 or model_eligible != 0:
         return []
     return [
         _finding(
@@ -1230,6 +1226,9 @@ def _scoring_profile_payload(payload: ScoringProfileSnapshot | None) -> dict[str
                     "candidate_count": head.candidate_count,
                     "predictor_batch_count": head.predictor_batch_count,
                     "cache_hit_count": head.cache_hit_count,
+                    "score_scale": head.score_scale,
+                    "production_authority": head.production_authority,
+                    "training_label_cutoff": head.training_label_cutoff,
                 }
                 for strategy, head in payload.heads.items()
             }

@@ -362,9 +362,11 @@
         : Number.isFinite(stage && stage.duration_ms) ? stage.duration_ms : null;
       const stageIssues = visibleIssues.filter((issue) => stageKeys.some((key) => issueBelongsToStage(issue, key)));
       const disposition = `淘汰 ${displayCount(rejected)} · 待补 ${displayCount(pending)} · 失败 ${displayCount(failed)} · 未入选 ${displayCount(stage && stage.not_selected_count)}`;
-      const outputLabel = stageKeys.includes("market_features") && state === "not_ready" && pending > 0 && output === 0
+      const outputLabel = stageKeys.some((key) => key === "market_features" || key === "model_filter") && pending > 0 && output === 0
         ? "待补充" : output == null ? "—" : displayCount(output);
-      const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${outputLabel} · ${disposition} · 耗时 ${formatStageDuration(duration)}`;
+      const readiness = stageKeys.includes("model_filter") && pending === input && input > 0 && output === 0 && rejected === 0 && failed === 0
+        ? "模型输入未就绪" : stageStateLabel(state);
+      const detail = `${readiness} · ${input == null ? "—" : displayCount(input)} → ${outputLabel} · ${disposition} · 耗时 ${formatStageDuration(duration)}`;
       const operationLabels = { processing: "处理与校验", review_wait: "复核等待", startup_reuse: "沿用启动结果", cache_reuse: "本轮缓存复用", local_read: "本地资料读取", acquisition: "行情采集", feature_assembly: "特征准备", feature_compute: "总体特征计算", quote_refresh: "行情更新", validation: "输入校验" };
       const reusedStartup = (stage.operation_durations || []).some((item) => item.operation === "startup_reuse");
       const operationText = (stage.operation_durations || []).map((item) => item.operation === "startup_reuse"

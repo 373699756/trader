@@ -159,6 +159,8 @@ def ProjectPipelineFacts(
             )
         if stage is PipelineStage.MARKET_FEATURES and stage_counts is not None:
             facets += (PipelineFacet("strategy_history_eligible", stage_counts.strategy_history_eligible),)
+        if stage is PipelineStage.MODEL_FILTER:
+            facets = (PipelineFacet("model_input_eligible", fact.input_count - fact.pending_count - fact.failed_count),)
         if stage is PipelineStage.RISK_REVIEW:
             counts = {item.code: item.count for item in fact.reasons}
             facets = tuple(
@@ -264,6 +266,11 @@ def _primary_supply_blocker(
     *,
     empty_reason: str | None,
 ) -> str:
+    # A partially degraded upstream population does not explain a completely
+    # blocked downstream stage. Prefer the first stage that consumes all output.
+    for stage in pipeline.stages:
+        if stage.input_count and stage.output_count == 0 and (stage.pending_count or stage.failed_count):
+            return stage.reason_counts[0].reason if stage.reason_counts else f"{stage.key}_pending"
     for stage in pipeline.stages:
         if stage.pending_count or stage.failed_count:
             return stage.reason_counts[0].reason if stage.reason_counts else f"{stage.key}_pending"

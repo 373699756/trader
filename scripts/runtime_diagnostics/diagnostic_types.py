@@ -22,6 +22,8 @@ Profile = Literal[
     "tencent-download",
     "tencent-history-window",
     "v5-training",
+    "training-alignment",
+    "model-inputs",
     "history-sqlite",
     "history-source-compare",
     "market-factor-compare",
@@ -79,6 +81,7 @@ class DiagnosticOptions:
     company_evidence_database: Path | None = None
     company_replay_directory: Path | None = None
     v5_probe_directory: Path | None = None
+    training_probe_directory: Path | None = None
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
     qfq_database: Path | None = None

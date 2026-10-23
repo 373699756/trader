@@ -178,6 +178,8 @@ class StderrTomorrowTrainingProgress:
             parts.append(
                 f"缺行业 {diagnostic.missing_industry} | 缺价格 {diagnostic.missing_prices} | 窗口不足 {diagnostic.short_window} "
                 f"| 特征无效 {diagnostic.invalid_features} | 标签不足 {diagnostic.missing_labels}"
+                f" | 停牌日 {diagnostic.suspended_sessions} | 缺行估算日 {diagnostic.estimated_sessions}"
+                f" | T+1标签缺失 {diagnostic.missing_t1} | D25标签缺失 {diagnostic.missing_d25}"
             )
         print(" | ".join(parts), file=sys.stderr, flush=True)
         self._last_emitted_at = now

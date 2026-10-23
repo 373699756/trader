@@ -147,6 +147,8 @@ class MarketDataHealth:
                     "history_memory_entries": history.entries,
                     "history_raw_rows": history.raw_rows,
                     "history_profile_entries": history.profile_entries,
+                    "history_estimated_codes": history.estimated_history_codes,
+                    "history_suspended_codes": history.suspended_history_codes,
                     "market_feature_rows": quote_status.market_feature_rows,
                     "candidate_quote_cache_entries": quote_status.candidate_quote_entries,
                     "candidate_quote_latest_source": (

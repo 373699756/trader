@@ -50,6 +50,8 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent-download": ("tencent_download",),
     "tencent-history-window": ("tencent_history_window",),
     "v5-training": ("v5_training",),
+    "training-alignment": ("training_alignment",),
+    "model-inputs": ("model_inputs",),
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
     "market-factor-compare": ("market_factor_compare",),
@@ -208,6 +210,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", default="-", help="report output path outside the repository, or -")
     parser.add_argument("--v5-probe-directory", type=Path, help="new external directory for isolated V5 training")
+    parser.add_argument("--training-probe-directory", type=Path, help="new external directory for all-profile training")
     parser.add_argument(
         "--format",
         choices=("auto", "json", "text"),
@@ -310,6 +313,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--cpu-profile-dir is only available for market-factor-compare")
     if args.profile == "v5-training" and args.v5_probe_directory is None:
         raise ValueError("v5-training requires --v5-probe-directory")
+    if args.profile == "training-alignment" and (args.training_probe_directory is None or args.history_root is None):
+        raise ValueError("training-alignment requires --history-root and --training-probe-directory")
     return (
         DiagnosticOptions(
             profile=args.profile,
@@ -347,6 +352,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_replay_directory=company_replay_directory,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
+            else None,
+            training_probe_directory=_external_path(args.training_probe_directory, "--training-probe-directory")
+            if args.training_probe_directory is not None
             else None,
             eligibility_evidence=tuple(args.eligibility_evidence),
             download_sizes=tuple(args.download_sizes),
@@ -410,6 +418,31 @@ def build_commands(
         )
     cli = (python_executable, "-m", "trader.entrypoints.cli", "--config", str(options.runtime_config))
     commands: dict[str, DiagnosticCommand] = {
+        "model_inputs": DiagnosticCommand(
+            "model_inputs",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.training_alignment",
+                "--history-root",
+                str(options.history_root),
+                "--inputs-only",
+            ),
+            common_timeout,
+        ),
+        "training_alignment": DiagnosticCommand(
+            "training_alignment",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.training_alignment",
+                "--history-root",
+                str(options.history_root),
+                "--work-root",
+                str(options.training_probe_directory),
+            ),
+            common_timeout,
+        ),
         "v5_training": DiagnosticCommand(
             "v5_training",
             (
@@ -1349,6 +1382,8 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tencent_download": _security_master_details,
     "tencent_history_window": _security_master_details,
     "v5_training": _security_master_details,
+    "training_alignment": _security_master_details,
+    "model_inputs": _security_master_details,
     "qfq_sqlite_audit": _security_master_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,

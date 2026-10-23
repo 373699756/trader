@@ -20,7 +20,7 @@ from trader.download.domain.history_reference import HistoryReferenceSnapshot, H
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import ProjectHistoryCell
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_prices import HistoryPricePartition
+from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError
 from trader.download.infra.history_snapshot_reader import (
     HistoryPartitionRevisionComparison,
     HistorySnapshotReader,
@@ -374,6 +374,20 @@ def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_
     assert len(streamed) == len(dates) * 2
 
 
+def test_published_alignment_seed_window_and_valid_looking_payload_corruption(tmp_path):
+    root = tmp_path / "history"
+    dates = tuple(date(2025, 1, 1) + timedelta(days=offset) for offset in range(300))
+    rows = tuple(_revision("600001", day) for day in dates)
+    snapshot = _build_snapshot(root, rows)
+    reader = HistorySnapshotReader(root)
+    assert len(reader.read_published_code_window("600001", dates, snapshot)) == 300
+    reference = snapshot.partitions[-1]
+    with SqliteSession(root / reference.relative_path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE daily_records SET qfq_amount=qfq_amount+1 WHERE trade_date=?", (dates[-1].isoformat(),))
+    with pytest.raises(HistoryPricePartitionError, match="published daily query failed"):
+        reader.read_published_code_window("600001", dates, snapshot)
+
+
 @pytest.mark.parametrize("change", ("same_size_corruption", "atomic_replace"))
 def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monkeypatch):
     root = tmp_path / "history"
@@ -422,13 +436,13 @@ def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp
     )
     snapshot = _build_snapshot(root, (original, revised))
     calls = []
-    verify = HistoryPricePartition.verify.__func__
+    verify = HistoryPricePartition.verify_logical_content.__func__
 
-    def observe(cls, path, reference, progress=None):
+    def observe(cls, path, reference, progress=None, **kwargs):
         calls.append(reference)
-        return verify(cls, path, reference, progress)
+        return verify(cls, path, reference, progress, **kwargs)
 
-    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(observe))
+    monkeypatch.setattr(HistoryPricePartition, "verify_logical_content", classmethod(observe))
     reader = HistorySnapshotReader(root)
     old_reference = HistoryPricePartition(root / snapshot.partitions[0].relative_path, 2026, 9).seal(1)
     old_snapshot = replace(snapshot, sequence=1, partitions=(old_reference,))

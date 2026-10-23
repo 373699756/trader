@@ -10,6 +10,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
+from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 
 if TYPE_CHECKING:
@@ -239,6 +240,7 @@ class FeatureSnapshot:
     model_industry: ModelIndustryReference | None = None
     research_components: ResearchComponentCoverage | None = None
     model_sequence: ModelPriceVolumeSequence | None = None
+    model_history_quality: ModelHistoryQuality | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
