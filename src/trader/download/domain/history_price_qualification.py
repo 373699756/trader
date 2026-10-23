@@ -118,10 +118,21 @@ def _require_raw_prices(
         (left.low_price, right.low_price, 0.0051),
         (left.close_price, right.close_price, 0.0051),
         (left.volume, right.volume, 100.0),
-        (left.amount, right.amount, 100.0),
     ):
         if a is None or b is None or not isclose(a, b, rel_tol=0.0, abs_tol=tolerance):
             raise RuntimeError("history_tail_raw_price_conflict")
+    if left.amount is None or right.amount is None or not _same_raw_amount(left.amount, right.amount):
+        raise RuntimeError("history_tail_raw_price_conflict")
+
+
+def _same_raw_amount(left: float, right: float) -> bool:
+    if isclose(left, right, rel_tol=0.0, abs_tol=100.0):
+        return True
+    # Tencent may first publish whole ten-thousand-yuan amounts, then refine them.
+    for rounded, precise in ((left, right), (right, left)):
+        if isclose(rounded, round(precise / 10000.0) * 10000.0, rel_tol=0.0, abs_tol=0.01):
+            return True
+    return False
 
 
 def _side(side: PublishedHistorySide | None) -> BaoStockDailySide:
