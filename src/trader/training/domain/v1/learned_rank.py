@@ -272,7 +272,7 @@ class LearnedRankHead:
 
 @dataclass(frozen=True)
 class LearnedRankPair:
-    """Atomic engineering artifact containing both strategies and provenance."""
+    """Both strategy models and their shared training provenance."""
 
     training_input_hash: str
     source_identity_hash: str

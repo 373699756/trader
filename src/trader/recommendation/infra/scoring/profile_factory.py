@@ -6,7 +6,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
-from trader.infra.process_lock import ProcessLockError
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
@@ -61,7 +60,7 @@ def BuildProfileScoring(
 
 
 class ScoringModelsUnavailableError(RuntimeError):
-    """An expected artifact failure closes model admission without blocking Web."""
+    """An expected model failure closes admission without blocking Web."""
 
     def __init__(self, reason: ModelLoadFailure) -> None:
         self.reason = reason
@@ -80,17 +79,21 @@ def LoadScoringProfile(
     *,
     training_root: Path,
 ) -> LoadedScoringProfile:
-    """Load one authorized profile without exposing artifact details to callers."""
+    """Load one authorized profile without exposing model file details to callers."""
 
     if profile_id == "v1":
-        from trader.training.infra.profile.v1.artifacts import LoadV1ScoringProfile
+        from trader.training.infra.profile.v1.models import LoadV1ScoringProfile
 
         try:
             return LoadV1ScoringProfile(training_root)
         except FileNotFoundError as exc:
             raise ScoringModelsMissingError() from exc
-        except ProcessLockError as exc:
+        except ProfilePublicationBusyError as exc:
             raise ScoringModelsUnavailableError("publication_busy") from exc
+        except ModelBundleIntegrityError as exc:
+            raise ScoringModelsUnavailableError("integrity_conflict") from exc
+        except ModelBundleContractError as exc:
+            raise ScoringModelsUnavailableError("contract_conflict") from exc
         except (OSError, TypeError, ValueError) as exc:
             raise ScoringModelsUnavailableError("corrupt") from exc
     if profile_id in {"v2", "v3"}:

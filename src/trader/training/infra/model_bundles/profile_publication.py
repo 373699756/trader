@@ -28,7 +28,8 @@ class ProfilePublicationBusyError(RuntimeError):
 
 
 @contextmanager
-def _publication_lock(profile_root: Path, timeout_seconds: float) -> Iterator[None]:
+def ProfilePublicationLock(profile_root: Path, timeout_seconds: float = 2.0) -> Iterator[None]:
+    """Bound a profile reader or publisher's wait on the shared directory lock."""
     if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
         raise ValueError("profile publication timeout must be finite and nonnegative")
     lock = ProcessLock(profile_root.with_name(f".{profile_root.name}.publication.lock"), label="model publication")
@@ -89,7 +90,7 @@ def PublishProfileBundles(
             for contract in profile.heads
         )
         _validate_profile_pair(heads)
-        with _publication_lock(profile_root, timeout_seconds):
+        with ProfilePublicationLock(profile_root, timeout_seconds):
             if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
                 raise ValueError("trained profile directory is invalid")
             if profile_root.exists():
@@ -127,7 +128,7 @@ def InspectActiveProfileBundles(
     # is an empty installation, not the temporary gap inside a publication.
     if not profile_root.parent.exists():
         raise FileNotFoundError(profile_root)
-    with _publication_lock(profile_root, timeout_seconds):
+    with ProfilePublicationLock(profile_root, timeout_seconds):
         if not profile_root.exists() and not profile_root.is_symlink():
             raise FileNotFoundError(profile_root)
         if not profile_root.is_dir() or profile_root.is_symlink():
@@ -160,4 +161,9 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-__all__ = ["InspectActiveProfileBundles", "ProfilePublicationBusyError", "PublishProfileBundles"]
+__all__ = [
+    "InspectActiveProfileBundles",
+    "ProfilePublicationBusyError",
+    "ProfilePublicationLock",
+    "PublishProfileBundles",
+]

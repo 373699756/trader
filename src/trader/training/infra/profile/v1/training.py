@@ -15,7 +15,6 @@ from lightgbm.basic import LightGBMError
 
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryPartitionRepackInactive
-from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import (
@@ -31,7 +30,7 @@ from trader.training.domain.v1.learned_rank import (
     LearnedRankPair,
     V1TrainingSettings,
 )
-from trader.training.infra.profile.v1.artifacts import PublishLearnedRankPair
+from trader.training.infra.profile.v1.models import PublishLearnedRankPair
 from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions
 from trader.training.infra.profile.v1.samples import (
     BuildLearnedRankSamples,
@@ -72,7 +71,7 @@ def RunV1Training(
     try:
         with (
             HistoryMaintenanceLock(history_root.with_name(".history.lock")),
-            ProcessLock(model_root / ".learned_rank.training.lock", label="V1 training"),
+            HistoryMaintenanceLock(model_root / ".v1.training.lock"),
         ):
             CheckV1Cancellation(cancel_requested)
             RequireHistoryPartitionRepackInactive(history_root)
@@ -85,7 +84,9 @@ def RunV1Training(
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=1),
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=5),
             )
-            root = sample_root / "learned_rank"
+            root = sample_root / "v1"
+            if root.is_symlink() or (root.exists() and (not root.is_dir() or any(root.iterdir()))):
+                raise ValueError("V1 sample directory contains existing data")
             root.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix="training-", dir=root) as temporary:
                 directory = Path(temporary)
