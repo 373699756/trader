@@ -7,6 +7,7 @@ import pytest
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
@@ -114,6 +115,26 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
     assert len(sessions) == 1
     assert len(sessions[0].calls) == 2
     assert all(",1," in request for request in sessions[0].calls)
+
+
+def test_history_increment_pairs_latest_day_when_qfq_uses_one_row_for_older_padding():
+    days = tuple(DAY + timedelta(days=offset) for offset in range(6))
+    previous = DAY - timedelta(days=1)
+
+    class CountLimitedHttp(_Http):
+        def get(self, url, **kwargs):
+            param = kwargs["params"]["param"]
+            count = int(param.split(",")[4])
+            self.raw = [[day.isoformat(), *ROW[1:]] for day in days][:count]
+            self.adjusted = [[day.isoformat(), *ROW[1:]] for day in (previous, *days)][:count]
+            return super().get(url, **kwargs)
+
+    http = CountLimitedHttp()
+    window = FetchTencentHistoryWindow(http.supplier(), SECURITY, days, days)
+
+    assert all(cell.status == "complete" for cell in window.cells)
+    assert window.cells[-1].trade_date == days[-1]
+    assert all(",7," in request for request in http.calls)
 
 
 def test_invalid_old_page_keeps_real_partial_pairs_without_switching_hosts():

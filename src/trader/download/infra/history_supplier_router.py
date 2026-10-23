@@ -76,4 +76,6 @@ def FetchTencentHistoryWindow(
     if not calendar or any(day >= calendar[0] and day not in calendar for day in dates):
         raise ValueError("Tencent history dates must belong to the exchange calendar")
     count = 2000 if dates[0] < calendar[0] else sum(dates[0] <= day <= dates[-1] for day in calendar)
-    return prices.fetch_window(security, dates, request_count=max(5, count), allow_interior_padding=True)
+    # Tencent qfq may spend one requested row on the session before the start date.
+    request_count = min(2000, max(5, count) + 1)
+    return prices.fetch_window(security, dates, request_count=request_count, allow_interior_padding=True)

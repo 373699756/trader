@@ -146,7 +146,7 @@ def test_st_check_uses_current_check_day_instead_of_resumed_price_cutoff():
     assert context.st_evidence[0].checked_on == checked
 
 
-@pytest.mark.parametrize("positions,expected", (((8, 9), 5), ((0, 9), 10), ((-1, 9), 2000)))
+@pytest.mark.parametrize("positions,expected", (((8, 9), 6), ((0, 9), 11), ((-1, 9), 2000)))
 def test_sparse_gap_request_count_covers_date_span(positions, expected):
     calendar = tuple(date(2026, 10, 1) + timedelta(days=i) for i in range(10))
     requested = tuple(calendar[0] + timedelta(days=i) for i in positions)

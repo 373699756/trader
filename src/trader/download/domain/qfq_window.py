@@ -6,10 +6,13 @@ import re
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 
 QFQ_WINDOWS = (("v2", 251), ("v3", 61))
+DAILY_READY_AT = time(15, 15)
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class QfqWindowIncompleteError(RuntimeError):
@@ -75,7 +78,8 @@ class QfqUpdateResult:
 def CompletedDailyCutoff(observed_at: datetime) -> date:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("qfq update requires an aware business clock")
-    return observed_at.date() if observed_at.time() >= time(15, 10) else observed_at.date() - timedelta(days=1)
+    local = observed_at.astimezone(_SHANGHAI)
+    return local.date() if local.time() >= DAILY_READY_AT else local.date() - timedelta(days=1)
 
 
 def MergeDailyTail(

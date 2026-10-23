@@ -250,6 +250,25 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     assert tuple(item.relative_path for item in snapshot.partitions) == ("prices_2026.sqlite3",)
 
 
+@pytest.mark.parametrize(
+    "minute,expected_cutoff",
+    ((14, date(2026, 10, 22)), (15, date(2026, 10, 23))),
+)
+def test_history_sync_targets_today_only_from_shanghai_1515(tmp_path, minute, expected_cutoff):
+    days = tuple(date(2026, 10, 20) + timedelta(days=offset) for offset in range(4))
+
+    class TargetSupplier(FakeSupplier):
+        def load_context(self, as_of, sessions, *, universe=None):
+            self.dates = tuple(day for day in days if day <= as_of)
+            return super().load_context(as_of, sessions, universe=universe)
+
+    observed = datetime(2026, 10, 23, 15, minute, tzinfo=ZoneInfo("Asia/Shanghai"))
+    result = RunHistorySync(_configuration(tmp_path), TargetSupplier(days), clock=lambda: observed)
+
+    assert result.state == "completed"
+    assert result.data_cutoff == expected_cutoff
+
+
 def _snapshot(root):
     result = HistoryControlIndex(root / "catalog.sqlite3").load_state().active_snapshot
     assert result is not None

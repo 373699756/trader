@@ -6,7 +6,7 @@ import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
@@ -35,6 +35,7 @@ from trader.download.domain.history_sync import (
     HistorySyncProgressStage,
     HistoryTwoStageSupplier,
 )
+from trader.download.domain.qfq_window import CompletedDailyCutoff
 from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_control_index import (
     HistoryControlError,
@@ -69,6 +70,7 @@ from trader.training.infra.history.history_training_due import EvaluateAllHistor
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+# Keep the persisted source identity timestamp stable; target-day selection uses CompletedDailyCutoff.
 _BAOSTOCK_DAILY_READY = time(15, 10)
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,7 +107,7 @@ class _HistorySync:
             if not _has_sufficient_disk(self.configuration.archive_root, self.configuration.minimum_free_bytes):
                 return _status("blocked", "disk_space_insufficient", self.configuration, active, self.observed_at)
             pending = self.index.pending(active.sequence if active else 0)
-            target = pending.cutoff if pending else _latest_completed_daily_date(self.observed_at)
+            target = pending.cutoff if pending else CompletedDailyCutoff(self.observed_at)
             inputs = self._prepare(active, pending, target)
             if inputs is None:
                 unresolved = (
@@ -124,7 +126,7 @@ class _HistorySync:
                 )
             snapshot = self._download(inputs, active)
             published = True
-            if pending is not None and target < _latest_completed_daily_date(self.observed_at):
+            if pending is not None and target < CompletedDailyCutoff(self.observed_at):
                 continue
             unresolved = self.index.gap_summary(tuple(item.code for item in inputs.context.universe))
             return _status(
@@ -468,12 +470,6 @@ def _active_universe(control: HistoryControlIndex, active: HistoryActiveSnapshot
     state = control.load_state()
     universe = next(item for item in state.universes if item.content_hash == active.universe_hash)
     return frozenset(item.code for item in universe.securities)
-
-
-def _latest_completed_daily_date(observed_at: datetime) -> date:
-    if observed_at.time() >= _BAOSTOCK_DAILY_READY:
-        return observed_at.date()
-    return observed_at.date() - timedelta(days=1)
 
 
 def _safe_active(control: HistoryControlIndex) -> HistoryActiveSnapshot | None:
