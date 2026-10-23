@@ -55,6 +55,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "research-source-compare": ("research_source_compare",),
     "history-write": ("history_write_benchmark",),
     "download-performance": ("download_performance",),
+    "company-resume": ("company_resume",),
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
     "qfq-sqlite": ("qfq_sqlite_audit",),
@@ -93,6 +94,11 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--company-replay-directory",
+        type=Path,
+        help="explicit repository-external directory for an isolated company backup and resumable evidence",
+    )
     parser.add_argument(
         "--profile",
         choices=tuple(_PROFILE_CHECKS),
@@ -283,6 +289,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     long_evidence_output = (
         _external_path(args.long_evidence_output, "--long-evidence-output") if args.long_evidence_output else None
     )
+    company_replay_directory = _external_path(args.company_replay_directory, "--company-replay-directory")
+    if args.profile == "company-resume" and company_replay_directory is None:
+        raise ValueError("company-resume requires --company-replay-directory")
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
@@ -331,6 +340,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             long_watchlist=args.long_watchlist,
             long_evidence_output=long_evidence_output,
             company_evidence_database=args.company_evidence_database,
+            company_replay_directory=company_replay_directory,
             eligibility_evidence=tuple(args.eligibility_evidence),
             download_sizes=tuple(args.download_sizes),
             qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database else None,
@@ -655,6 +665,21 @@ def build_commands(
             (python_executable, "-m", "scripts.runtime_diagnostics.download_performance")
             + (
                 ("--baseline-checkout", str(options.baseline_checkout)) if options.baseline_checkout is not None else ()
+            ),
+            common_timeout,
+        ),
+        "company_resume": DiagnosticCommand(
+            "company_resume",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.company_resume",
+                "--database",
+                str(options.company_evidence_database),
+                "--directory",
+                str(options.company_replay_directory),
+                "--budget-seconds",
+                str(max(30.0, common_timeout - 30)),
             ),
             common_timeout,
         ),
@@ -1223,6 +1248,46 @@ def _long_admission_details(
     }
 
 
+def _company_resume_details(
+    _result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]
+) -> None:
+    summary = _mapping(source.get("summary"))
+    selected = {
+        key: summary.get(key)
+        for key in (
+            "isolated_backup",
+            "implementation_digest",
+            "selected_slices",
+            "completed_slices",
+            "covered_slices",
+            "saved_pages_replayed",
+            "document_sample_limit",
+        )
+    }
+    runs = summary.get("runs")
+    selected["runs"] = (
+        [
+            {
+                key: run.get(key)
+                for key in (
+                    "interrupted",
+                    "pages",
+                    "document_attempts",
+                    "pending_slices",
+                    "sampled_pending_documents",
+                    "failures",
+                    "elapsed_seconds",
+                )
+            }
+            for run in runs[:3]
+            if isinstance(run, dict)
+        ]
+        if isinstance(runs, list)
+        else []
+    )
+    payload["summary"] = selected
+
+
 def _configuration_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
     payload["summary"] = {
         key: source.get(key)
@@ -1275,6 +1340,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "research_source_compare": _research_source_compare_details,
     "history_write_benchmark": _history_sqlite_performance_details,
     "download_performance": _history_sqlite_performance_details,
+    "company_resume": _company_resume_details,
     "history_space": _history_sqlite_performance_details,
     "history_industry": _history_sqlite_performance_details,
     "baostock_qfq_shadow": _baostock_qfq_shadow_details,

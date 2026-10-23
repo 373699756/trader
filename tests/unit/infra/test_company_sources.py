@@ -10,6 +10,8 @@ from trader.download.domain.company_evidence import (
     CompanySourceFailure,
     Disclosure,
     DisclosurePartition,
+    DisclosureQuery,
+    DisclosureSecurity,
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
@@ -61,9 +63,67 @@ def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
 def test_cninfo_refuses_page_beyond_official_hundred_page_window_without_request():
     session = Session({})
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
-    with pytest.raises(ValueError, match="cninfo_single_day_page_limit"):
+    with pytest.raises(ValueError, match="cninfo_page_limit"):
         source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), page=101), deadline=8)
     assert not session.requests
+
+
+def test_cninfo_board_and_group_queries_use_official_filter_shape():
+    session = Session({"totalRecordNum": 0, "hasMore": False, "announcements": []})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    securities = (DisclosureSecurity("600001", "one"), DisclosureSecurity("600002", "two"))
+    query = DisclosureQuery("shmb", securities)
+    source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query), deadline=20)
+    request = session.requests[0]["data"]
+    assert request["plate"] == "shmb" and request["stock"] == "600001,one;600002,two"
+    assert source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date()), deadline=20) == (
+        DisclosureQuery("shmb"),
+        DisclosureQuery("shkcp"),
+    )
+    children = source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query), deadline=20)
+    assert tuple(q.securities for q in children) == ((securities[0],), (securities[1],))
+
+
+def test_board_split_uses_frozen_official_members_and_rejects_an_unsplittable_security():
+    class Lists(Session):
+        def get(self, url, **kwargs):
+            self.requests.append(kwargs)
+            return HttpResponse(
+                200, json.dumps({"stockList": [{"code": f"600{i:03d}", "orgId": str(i)} for i in range(65)]}).encode()
+            )
+
+    session = Lists({})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    day = DisclosurePartition("sse", NOW.date(), NOW.date(), query=DisclosureQuery("shmb"))
+    groups = source.split_queries(day, deadline=20)
+    assert [len(q.securities) for q in groups] == [32, 32, 1]
+    assert source.split_queries(day, deadline=20) == groups and len(session.requests) == 1
+    with pytest.raises(ValueError, match="cninfo_query_unsplittable"):
+        source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date(), query=groups[-1]), deadline=20)
+
+
+@pytest.mark.parametrize(
+    "query", [DisclosureQuery("shkcp"), DisclosureQuery("shmb", (DisclosureSecurity("600002", "other"),))]
+)
+def test_cninfo_ignored_query_filter_never_returns_a_trusted_page(query):
+    session = Session(
+        {
+            "totalRecordNum": 1,
+            "hasMore": False,
+            "announcements": [
+                {
+                    "announcementId": "one",
+                    "secCode": "600001",
+                    "announcementTitle": "公告",
+                    "announcementTime": NOW.timestamp() * 1000,
+                    "adjunctUrl": "",
+                }
+            ],
+        }
+    )
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    with pytest.raises(ValueError, match="cninfo_query_filter_ignored"):
+        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query), deadline=20)
 
 
 @pytest.mark.parametrize(("status", "category"), ((403, "access_denied"), (429, "rate_limited"), (500, "http_error")))

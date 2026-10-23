@@ -27,6 +27,7 @@ Profile = Literal[
     "research-source-compare",
     "history-write",
     "download-performance",
+    "company-resume",
     "history-space",
     "history-industry",
     "qfq-sqlite",
@@ -75,6 +76,7 @@ class DiagnosticOptions:
     long_watchlist: Path = PROJECT_ROOT / "config/long_watchlist.json"
     long_evidence_output: Path | None = None
     company_evidence_database: Path | None = None
+    company_replay_directory: Path | None = None
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
     qfq_database: Path | None = None

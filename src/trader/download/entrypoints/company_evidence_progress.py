@@ -119,7 +119,12 @@ def _scope(progress: EvidenceSyncProgress) -> str:
     market = (
         {"sse": "沪市", "szse": "深市", "bse": "北市"}[scope.market] if isinstance(scope, DisclosurePartition) else ""
     )
-    return f" | 当前 {market}{scope.start.isoformat()}~{scope.end.isoformat()} 第{scope.page}页"
+    detail = ""
+    if isinstance(scope, DisclosurePartition) and scope.query is not None:
+        detail = f" {scope.query.plate}"
+        if scope.query.securities:
+            detail += f" 证券组{len(scope.query.securities)}项"
+    return f" | 当前 {market}{scope.start.isoformat()}~{scope.end.isoformat()}{detail} 第{scope.page}页"
 
 
 __all__ = ["CompanyEvidenceProgress", "ReportStPreparation"]

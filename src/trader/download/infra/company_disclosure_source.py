@@ -17,6 +17,8 @@ from trader.download.domain.company_evidence import (
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
+    DisclosureQuery,
+    DisclosureSecurity,
 )
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import (
@@ -29,6 +31,7 @@ from trader.infra.http_contracts import (
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_DEFAULT_DOCUMENT_LIMITS = CompanyDocumentLimits()
 
 
 class CninfoMarketDisclosureSource:
@@ -41,7 +44,7 @@ class CninfoMarketDisclosureSource:
         timeout_seconds: float = 8.0,
         document_parse_timeout_seconds: float = 10.0,
         request_interval_seconds: float = 1.0,
-        document_limits: CompanyDocumentLimits = CompanyDocumentLimits(),
+        document_limits: CompanyDocumentLimits = _DEFAULT_DOCUMENT_LIMITS,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         self._session = session
@@ -53,10 +56,11 @@ class CninfoMarketDisclosureSource:
         self._request_interval = request_interval_seconds
         self._cancel_requested = cancel_requested
         self._next_request = 0.0
+        self._securities: tuple[DisclosureSecurity, ...] | None = None
 
     def fetch(self, partition: DisclosurePartition, *, deadline: float) -> DisclosurePage:
         if partition.page > 100:
-            raise ValueError("cninfo_single_day_page_limit")
+            raise ValueError("cninfo_page_limit")
         response = self._request(lambda: self._fetch_page(partition, deadline), deadline)
         payload = response.json()
         if not isinstance(payload, Mapping):
@@ -70,6 +74,14 @@ class CninfoMarketDisclosureSource:
         result: list[Disclosure] = []
         for row in rows:
             result.append(_parse_disclosure(row, partition))
+        query = partition.query
+        if query is not None:
+            selected = {security.code for security in query.securities}
+            for item in result:
+                if (selected and not selected.intersection(item.codes)) or (
+                    not selected and any(_plate(code) != query.plate for code in item.codes)
+                ):
+                    raise ValueError("cninfo_query_filter_ignored")
         if more and not result:
             raise ValueError("cninfo_empty_nonterminal_page")
         return DisclosurePage(tuple(result), total, more)
@@ -81,9 +93,13 @@ class CninfoMarketDisclosureSource:
                 "pageNum": str(partition.page),
                 "pageSize": "30",
                 "column": partition.market,
-                "plate": {"sse": "sh", "szse": "sz", "bse": "bj"}[partition.market],
+                "plate": partition.query.plate
+                if partition.query
+                else {"sse": "sh", "szse": "sz", "bse": "bj"}[partition.market],
                 "tabName": "fulltext",
-                "stock": "",
+                "stock": ";".join(f"{s.code},{s.org_id}" for s in partition.query.securities)
+                if partition.query
+                else "",
                 "searchkey": "",
                 "secid": "",
                 "category": "",
@@ -98,6 +114,52 @@ class CninfoMarketDisclosureSource:
             deadline=deadline,
             cancel_requested=self._cancel_requested,
         )
+
+    def split_queries(self, partition: DisclosurePartition, *, deadline: float) -> tuple[DisclosureQuery, ...]:
+        query = partition.query
+        if query is None:
+            return tuple(
+                DisclosureQuery(plate)
+                for plate in {"sse": ("shmb", "shkcp"), "szse": ("szmb", "szcy"), "bse": ("bj",)}[partition.market]
+            )
+        if query.securities:
+            if len(query.securities) == 1:
+                raise ValueError("cninfo_query_unsplittable")
+            middle = len(query.securities) // 2
+            return (
+                DisclosureQuery(query.plate, query.securities[:middle]),
+                DisclosureQuery(query.plate, query.securities[middle:]),
+            )
+        if self._securities is None:
+            response = self._request(
+                lambda: self._session.get(
+                    "https://www.cninfo.com.cn/new/data/szse_stock.json",
+                    timeout=min(self._timeout, deadline - self._monotonic()),
+                    deadline=deadline,
+                    cancel_requested=self._cancel_requested,
+                ),
+                deadline,
+            )
+            payload = response.json()
+            rows = payload.get("stockList") if isinstance(payload, Mapping) else None
+            if not isinstance(rows, list) or not rows:
+                raise ValueError("cninfo_security_list_invalid")
+            parsed = []
+            for row in rows:
+                if (
+                    not isinstance(row, Mapping)
+                    or not isinstance(row.get("code"), str)
+                    or not isinstance(row.get("orgId"), str)
+                ):
+                    raise ValueError("cninfo_security_list_invalid")
+                parsed.append(DisclosureSecurity(row["code"], row["orgId"]))
+            if len({s.code for s in parsed}) != len(parsed):
+                raise ValueError("cninfo_security_list_invalid")
+            self._securities = tuple(sorted(parsed, key=lambda s: s.code))
+        members = tuple(s for s in self._securities if _plate(s.code) == query.plate)
+        if not members:
+            raise ValueError("cninfo_security_list_incomplete")
+        return tuple(DisclosureQuery(query.plate, members[i : i + 32]) for i in range(0, len(members), 32))
 
     def _request(self, send: Callable[[], HttpResponse], deadline: float) -> HttpResponse:
         # Only the read-only CNInfo protocol owns retries; the shared transport remains single-attempt.
@@ -176,9 +238,24 @@ class CninfoMarketDisclosureSource:
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError("disclosure_document_parse_timeout") from exc
         if result.returncode:
-            reason = {3: "encrypted", 4: "page_limit", 5: "expanded_page_limit", 6: "text_limit", 7: "no_text"}
+            reason = {
+                3: "encrypted",
+                4: "page_limit",
+                5: "expanded_page_limit",
+                6: "text_limit",
+                7: "no_text",
+                8: "short_text",
+            }
             raise ValueError(f"disclosure_document_{reason.get(result.returncode, 'unreadable')}")
         return result.stdout.decode("utf-8")
+
+
+def _plate(code: str) -> str:
+    if code.startswith("6"):
+        return "shkcp" if code.startswith(("688", "689")) else "shmb"
+    if code.startswith(("4", "8", "9")):
+        return "bj"
+    return "szcy" if code.startswith(("300", "301")) else "szmb"
 
 
 def _parse_disclosure(row: object, partition: DisclosurePartition) -> Disclosure:

@@ -8,14 +8,13 @@ import pytest
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from trader.download.domain.company_evidence import CompanyDocumentLimits
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from tests.unit.infra.test_company_sources import NOW, Session
-from trader.download.domain.company_evidence import Disclosure
+from trader.download.domain.company_evidence import CompanyDocumentLimits, Disclosure
+from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.infra.http_contracts import HttpResponse
 
 
-def _pdf(pages=1, *, encrypted=False, blank=False):
+def _pdf(pages=1, *, encrypted=False, blank=False, short=False):
     writer = PdfWriter()
     for _ in range(pages):
         page = writer.add_blank_page(width=500, height=500)
@@ -31,7 +30,8 @@ def _pdf(pages=1, *, encrypted=False, blank=False):
                 {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
             )
             stream = DecodedStreamObject()
-            stream.set_data(b"BT /F1 12 Tf 10 10 Td (" + b"Official announcement evidence. " * 5 + b") Tj ET")
+            text = b"Short text." if short else b"Official announcement evidence. " * 5
+            stream.set_data(b"BT /F1 12 Tf 10 10 Td (" + text + b") Tj ET")
             page[NameObject("/Contents")] = stream
     if encrypted:
         writer.encrypt("fixture")
@@ -77,6 +77,13 @@ def test_pdf_failure_categories_do_not_emit_partial_verified_text(payload, code)
 def test_extracted_text_limit_rejects_instead_of_truncating():
     result = _parse(_pdf(), max_text=80)
     assert result.returncode == 6 and not result.stdout
+
+
+def test_short_text_is_distinct_from_no_extractable_text_and_neither_is_verified():
+    short = _parse(_pdf(short=True))
+    blank = _parse(_pdf(blank=True))
+    assert short.returncode == 8 and blank.returncode == 7
+    assert not short.stdout and not blank.stdout
 
 
 def test_real_parser_reason_and_config_limits_reach_the_source():

@@ -9,6 +9,17 @@ module and profile there; it is not added as another top-level script.
 It reports company write/publication/cold and warm reads, unchanged publication, and equivalent per-stock versus batch gap queries.
 It makes zero HTTP requests and cannot establish full-market supplier download speed.
 
+`--profile company-resume --company-replay-directory /absolute/external/path`
+backs up `--company-evidence-database` through SQLite, then resumes the failed
+date slices against real CNInfo only in that external copy. The first run interrupts
+after two successful page responses; later runs verify cursor recovery and completed
+coverage, with at most 32 pending PDFs sampled per run. Structured sources are skipped.
+Use `--command-timeout-seconds 2400` for a bounded long replay; the child receives
+30 seconds less for its logical budget. The directory retains the resumable copy,
+selection and sanitized `report.json`; the unified `--output` remains the report entrypoint.
+The active database stays read-only. A passed replay covers selected slices only,
+and does not mean the whole year or all pending PDFs are complete.
+
 ## Retained tools
 
 This table is the sole declaration of the nine retained top-level tools.

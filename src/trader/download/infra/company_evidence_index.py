@@ -20,17 +20,28 @@ from trader.download.domain.company_evidence import (
     DisclosureMonths,
     DisclosurePage,
     DisclosurePartition,
+    DisclosureQuery,
     DocumentRetry,
     EvidenceMarket,
     Market,
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
+from trader.download.infra.company_disclosure_queries import (
+    CommitDisclosureQueryPage,
+    DeferDisclosurePartition,
+    DisclosureQueryKey,
+    ReadDisclosureQueries,
+    ReconcileDisclosureQueries,
+    RestartDisclosureQuery,
+    SeedDisclosureQueries,
+    ValidateDisclosureQueryPage,
+)
 from trader.download.infra.company_evidence_codec import (
     DecodeCompanySnapshot,
     EncodeCompanyPublication,
 )
-from trader.download.infra.company_evidence_sql import DOCUMENT_RETRY_SCHEMA, SCHEMA
+from trader.download.infra.company_evidence_sql import DISCLOSURE_QUERY_SCHEMA, DOCUMENT_RETRY_SCHEMA, SCHEMA
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     SqliteConnection,
@@ -73,6 +84,8 @@ class SQLiteCompanyEvidenceIndex:
                 )
                 with SqliteTransaction(connection, immediate=True):
                     connection.run(DOCUMENT_RETRY_SCHEMA)
+                    for statement in DISCLOSURE_QUERY_SCHEMA:
+                        connection.run(statement)
         except sqlite3.Error as exc:
             raise RuntimeError("company_evidence_persistence_unavailable") from exc
 
@@ -127,6 +140,21 @@ class SQLiteCompanyEvidenceIndex:
                 if months:
                     start, end = months[today.toordinal() % len(months)]
                     self._add_partition(connection, market, start, end)
+                    # Reopened audits must fetch fresh children rather than reconcile yesterday's set.
+                    connection.run(
+                        "DELETE FROM disclosure_queries WHERE market=? AND EXISTS(SELECT 1 FROM partitions p "
+                        "WHERE p.market=disclosure_queries.market AND p.start=disclosure_queries.start "
+                        "AND p.end=disclosure_queries.end AND p.complete=1 AND ((p.start>=? AND p.checked_at<?) "
+                        "OR (p.start>=? AND p.end<=? AND p.checked_at<?)))",
+                        (
+                            market,
+                            (today - timedelta(days=6)).isoformat(),
+                            (observed_at - timedelta(minutes=15)).isoformat(),
+                            start.isoformat(),
+                            end.isoformat(),
+                            today.isoformat(),
+                        ),
+                    )
                     connection.run(
                         "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
                         "WHERE market=? AND complete=1 AND ((start>=? AND checked_at<?) "
@@ -217,6 +245,16 @@ class SQLiteCompanyEvidenceIndex:
         )
 
     def commit_page(self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime) -> int:
+        if partition.query is not None:
+            try:
+                with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                    ValidateDisclosureQueryPage(connection, partition, page)
+                    changes = self._write_disclosures(connection, page.rows)
+                    CommitDisclosureQueryPage(connection, partition, page)
+                return changes
+            except ValueError:
+                self.restart_partition(partition)
+                raise
         self._validate_page(partition, page)
         received = partition.received_rows + len(page.rows)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
@@ -241,22 +279,83 @@ class SQLiteCompanyEvidenceIndex:
                     *_key(partition),
                 ),
             )
+            connection.run(
+                "DELETE FROM partition_retries WHERE market=? AND start=? AND end=? AND scope=?",
+                DisclosureQueryKey(partition),
+            )
             # Removed/corrected listings are recognized only after a complete date slice, never after a failed page.
             if not page.has_more:
-                connection.run(
-                    "INSERT OR REPLACE INTO coverage VALUES(?,?,?,?)", (*_key(partition), observed_at.isoformat())
-                )
-                stale = connection.run(
-                    "SELECT d.id,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                    "WHERE d.source='cninfo' AND substr(d.published_at,1,10) BETWEEN ? AND ? "
-                    "AND NOT EXISTS(SELECT 1 FROM partition_rows p WHERE p.market=? AND p.start=? AND p.end=? "
-                    "AND p.source_id=d.source_id AND p.code=c.code)",
-                    (partition.start.isoformat(), partition.end.isoformat(), *_key(partition)),
-                ).fetchall()
-                for row in stale:
-                    if EvidenceMarket(row["code"]) == partition.market:
-                        connection.run("DELETE FROM disclosure_codes WHERE disclosure_id=? AND code=?", tuple(row))
+                self._finish_partition(connection, partition, observed_at)
         return changes
+
+    def _finish_partition(
+        self, connection: SqliteConnection, partition: DisclosurePartition, observed_at: datetime
+    ) -> None:
+        connection.run("INSERT OR REPLACE INTO coverage VALUES(?,?,?,?)", (*_key(partition), observed_at.isoformat()))
+        stale = connection.run(
+            "SELECT d.id,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+            "WHERE d.source='cninfo' AND substr(d.published_at,1,10) BETWEEN ? AND ? "
+            "AND NOT EXISTS(SELECT 1 FROM partition_rows p WHERE p.market=? AND p.start=? AND p.end=? "
+            "AND p.source_id=d.source_id AND p.code=c.code)",
+            (partition.start.isoformat(), partition.end.isoformat(), *_key(partition)),
+        ).fetchall()
+        for row in stale:
+            if EvidenceMarket(row["code"]) == partition.market:
+                connection.run("DELETE FROM disclosure_codes WHERE disclosure_id=? AND code=?", tuple(row))
+
+    def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None:
+        with self._connect() as connection:
+            return ReadDisclosureQueries(connection, replace(partition, query=None))
+
+    def split_query(
+        self, partition: DisclosurePartition, queries: tuple[DisclosureQuery, ...]
+    ) -> tuple[DisclosurePartition, ...]:
+        if not queries:
+            raise ValueError("cninfo_query_unsplittable")
+        if len({query.key for query in queries}) != len(queries) or (
+            partition.query is not None and any(query.key == partition.query.key for query in queries)
+        ):
+            raise ValueError("cninfo_query_split_invalid")
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            SeedDisclosureQueries(connection, partition, queries)
+            pending = ReadDisclosureQueries(connection, replace(partition, query=None))
+        if pending is None:
+            raise RuntimeError("company_disclosure_queries_missing")
+        return pending
+
+    def commit_query_coverage(
+        self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime
+    ) -> None:
+        try:
+            with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                ReconcileDisclosureQueries(connection, partition, page)
+                connection.run(
+                    "UPDATE partitions SET complete=1,next_page=1,expected_rows=?,received_rows=?,checked_at=?,failure='' "
+                    "WHERE market=? AND start=? AND end=?",
+                    (page.total, page.total, observed_at.isoformat(), *_key(partition)),
+                )
+                self._finish_partition(connection, partition, observed_at)
+                connection.run("DELETE FROM partition_retries WHERE market=? AND start=? AND end=?", _key(partition))
+        except ValueError:
+            with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                connection.run("DELETE FROM disclosure_queries WHERE market=? AND start=? AND end=?", _key(partition))
+                connection.run(
+                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0 WHERE market=? AND start=? AND end=?",
+                    _key(partition),
+                )
+            raise
+
+    def partition_retry_after(self, partition: DisclosurePartition) -> datetime | None:
+        with self._connect() as connection:
+            row = connection.run(
+                "SELECT retry_after FROM partition_retries WHERE market=? AND start=? AND end=? AND scope=?",
+                DisclosureQueryKey(partition),
+            ).fetchone()
+        return datetime.fromisoformat(row[0]) if row else None
+
+    def defer_partition(self, partition: DisclosurePartition, retry_after: datetime) -> None:
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            DeferDisclosurePartition(connection, partition, retry_after)
 
     def _validate_page(self, partition: DisclosurePartition, page: DisclosurePage) -> None:
         if partition.expected_rows is not None and partition.expected_rows != page.total:
@@ -287,6 +386,9 @@ class SQLiteCompanyEvidenceIndex:
 
     def restart_partition(self, partition: DisclosurePartition) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            if partition.query is not None:
+                RestartDisclosureQuery(connection, partition)
+                return
             connection.run(
                 "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
                 "WHERE market=? AND start=? AND end=?",
@@ -295,6 +397,11 @@ class SQLiteCompanyEvidenceIndex:
 
     def partition_failure(self, partition: DisclosurePartition, failure: str) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            if partition.query is not None:
+                connection.run(
+                    "UPDATE disclosure_queries SET failure=? WHERE market=? AND start=? AND end=? AND scope=?",
+                    (failure, *DisclosureQueryKey(partition)),
+                )
             connection.run(
                 "UPDATE partitions SET failure=? WHERE market=? AND start=? AND end=?", (failure, *_key(partition))
             )

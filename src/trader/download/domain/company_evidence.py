@@ -133,6 +133,33 @@ class Disclosure:
 
 
 @dataclass(frozen=True)
+class DisclosureSecurity:
+    code: str
+    org_id: str
+
+    def __post_init__(self) -> None:
+        EvidenceMarket(self.code)
+        if not self.org_id or len(self.org_id) > 80 or any(c in self.org_id for c in ";,|\n\r"):
+            raise ValueError("cninfo_security_invalid")
+
+
+@dataclass(frozen=True)
+class DisclosureQuery:
+    plate: str
+    securities: tuple[DisclosureSecurity, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.plate not in {"szmb", "szcy", "shmb", "shkcp", "bj"} or len(self.securities) > 32:
+            raise ValueError("cninfo_query_invalid")
+        if len({item.code for item in self.securities}) != len(self.securities):
+            raise ValueError("cninfo_query_invalid")
+
+    @property
+    def key(self) -> str:
+        return self.plate + "|" + ";".join(f"{item.code},{item.org_id}" for item in self.securities)
+
+
+@dataclass(frozen=True)
 class DisclosurePartition:
     market: Market
     start: date
@@ -140,6 +167,7 @@ class DisclosurePartition:
     page: int = 1
     expected_rows: int | None = None
     received_rows: int = 0
+    query: DisclosureQuery | None = None
 
     def __post_init__(self) -> None:
         if self.start > self.end or self.page < 1 or self.received_rows < 0:
@@ -317,6 +345,8 @@ def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
 
 
 __all__ = [
+    "DisclosureSecurity",
+    "DisclosureQuery",
     "CompanySyncConfiguration",
     "CompanyDocumentLimits",
     "CompanyEvidenceRequest",

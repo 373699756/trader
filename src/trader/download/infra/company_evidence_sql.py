@@ -106,4 +106,27 @@ CREATE TABLE IF NOT EXISTS document_retries (
 )
 """
 
-__all__ = ["SCHEMA", "DOCUMENT_RETRY_SCHEMA"]
+DISCLOSURE_QUERY_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS disclosure_queries (
+      market TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, scope TEXT NOT NULL,
+      plate TEXT NOT NULL, securities TEXT NOT NULL, next_page INTEGER NOT NULL DEFAULT 1,
+      expected_rows INTEGER, received_rows INTEGER NOT NULL DEFAULT 0,
+      complete INTEGER NOT NULL DEFAULT 0, failure TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(market,start,end,scope),
+      FOREIGN KEY(market,start,end) REFERENCES partitions(market,start,end) ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+    """CREATE TABLE IF NOT EXISTS disclosure_query_rows (
+      market TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, scope TEXT NOT NULL,
+      source_id TEXT NOT NULL, code TEXT NOT NULL, record_key TEXT NOT NULL,
+      PRIMARY KEY(market,start,end,scope,source_id,code),
+      FOREIGN KEY(market,start,end,scope) REFERENCES disclosure_queries(market,start,end,scope) ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+    """CREATE TABLE IF NOT EXISTS partition_retries (
+      market TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, scope TEXT NOT NULL,
+      retry_after TEXT NOT NULL,
+      PRIMARY KEY(market,start,end,scope),
+      FOREIGN KEY(market,start,end) REFERENCES partitions(market,start,end) ON DELETE CASCADE
+    ) WITHOUT ROWID""",
+)
+
+__all__ = ["SCHEMA", "DOCUMENT_RETRY_SCHEMA", "DISCLOSURE_QUERY_SCHEMA"]

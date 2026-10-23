@@ -70,6 +70,9 @@ class Sources:
     def document(self, item, *, deadline):
         raise AssertionError("ordinary announcements must not fetch a document")
 
+    def split_queries(self, partition, *, deadline):
+        raise ValueError("cninfo_query_unsplittable")
+
     def pledge_day(self, observed_at, *, deadline):
         return observed_at.date()
 
@@ -579,7 +582,7 @@ def test_invalid_announcement_partition_does_not_block_other_partitions(tmp_path
     requests = [item for item in source.calls if isinstance(item, DisclosurePartition)]
     assert requests.index(target) < len(requests) - 1
     assert result.pending_partitions == events[-1].pending == 1
-    expected_failure = "cninfo_duplicate_page_links" if failure == "duplicate" else "cninfo_single_day_page_limit"
+    expected_failure = "cninfo_query_unsplittable"
     assert f"announcements:{expected_failure}" in result.failures
     assert index.partitions(("sse",), NOW)[0].page == 1
 
@@ -702,7 +705,7 @@ def test_content_removed_without_publication_change_preserves_loaded_memory(tmp_
     assert not research.status().restart_required
 
 
-def test_access_denied_stops_pdf_requests_and_keeps_checkpoint(tmp_path):
+def test_announcement_access_denied_preserves_cursor_but_does_not_stop_pdf_host(tmp_path):
     from trader.download.domain.company_evidence import CompanySourceFailure
 
     index = _index(tmp_path)
@@ -715,10 +718,14 @@ def test_access_denied_stops_pdf_requests_and_keeps_checkpoint(tmp_path):
                 raise CompanySourceFailure("access_denied")
             return super().fetch(first, **kwargs)
 
+        def document(self, item, *, deadline):
+            return "官方完整正文"
+
     source = DeniedSources()
     result = _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     assert "announcements:access_denied" in result.failures
-    assert "risk_documents:pending" in result.failures
+    assert "risk_documents:pending" not in result.failures
+    assert "announcements:source_stopped" in result.failures
     assert index.partitions(("sse",), NOW)[0].page == 2
 
 
@@ -760,7 +767,12 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
 
     source = Resumable()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
-    first = _sync_company_evidence(dependencies, ("600001",), NOW)
+    first = _sync_company_evidence(
+        dependencies,
+        ("600001",),
+        NOW,
+        configuration=replace(_TEST_COMPANY_CONFIGURATION, document_transient_retry_seconds=1),
+    )
     assert first.failures == (f"announcements:{category}",)
     assert first.pending_partitions > 0 and first.pending_documents == 0
     assert source.pages == [1, 2] and source.documents == ["first"]
@@ -772,7 +784,7 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
     source.blocked = False
     source.calls.clear()
     events.clear()
-    second = _sync_company_evidence(dependencies, ("600001",), NOW)
+    second = _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(seconds=1))
     assert not second.needs_retry
     assert source.pages == [1, 2, 2] and source.documents == ["first"]
     assert not source.calls
@@ -898,7 +910,11 @@ def test_document_parse_timeout_at_stage_deadline_stops_later_bodies(tmp_path):
     )
     assert source.document_calls == ["slow"]
     assert result.pending_documents == 2
-    assert result.failures == ("risk_documents:disclosure_document_parse_timeout", "risk_documents:pending")
+    assert result.failures == (
+        "risk_documents:deadline",
+        "risk_documents:disclosure_document_parse_timeout",
+        "risk_documents:pending",
+    )
 
 
 def test_company_sync_configuration_controls_component_deadlines(tmp_path, monkeypatch):
@@ -977,7 +993,12 @@ def test_cninfo_recovers_same_uncommitted_page_without_replaying_saved_prefix(tm
 
     source = CninfoMarketDisclosureSource(Transport(), monotonic=lambda: clock[0], sleeper=sleep)
     dependencies = CompanyEvidenceDependencies(index, source, Sources(), lambda: clock[0], events.append)
-    result = _sync_company_evidence(dependencies, ("600001",), NOW)
+    result = _sync_company_evidence(
+        dependencies,
+        ("600001",),
+        NOW,
+        configuration=replace(_TEST_COMPANY_CONFIGURATION, document_transient_retry_seconds=1),
+    )
     news = [event for event in events if event.component == "news"]
     assert len(news) == 1 and news[0].status == "complete" and news[0].pending == 0
     if failures_before_success == 3:
@@ -986,7 +1007,7 @@ def test_cninfo_recovers_same_uncommitted_page_without_replaying_saved_prefix(tm
             part for part in index.partitions(("sse",), NOW) if (part.start, part.end) == (target.start, target.end)
         )
         assert (checkpoint.page, checkpoint.received_rows) == (2, 1)
-        result = _sync_company_evidence(dependencies, ("600001",), NOW)
+        result = _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(minutes=1))
     assert not result.needs_retry and result.pending_partitions == 0
     assert pages == [1] + [2] * (failures_before_success + 1)
     assert events[-1].status == "complete" and not events[-1].failure

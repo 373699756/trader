@@ -38,7 +38,7 @@ def Main() -> int:
                 return 6
         text = "\n".join(parts).strip()
         if len(text) < 80:
-            return 7
+            return 7 if not text else 8
         sys.stdout.buffer.write(text.encode("utf-8"))
         return 0
     except (PdfReadError, ValueError, TypeError, KeyError, RecursionError):

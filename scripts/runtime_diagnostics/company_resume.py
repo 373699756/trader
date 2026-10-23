@@ -1,0 +1,261 @@
+"""Replay failed company slices against real CNInfo only in an external SQLite backup."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sqlite3
+import tempfile
+import time
+from collections.abc import Sequence
+from contextlib import closing
+from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from trader.bootstrap import OpenExternalHttp
+from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
+from trader.download.domain.company_evidence import (
+    CompanySyncConfiguration,
+    Disclosure,
+    DisclosurePage,
+    DisclosurePartition,
+    Market,
+)
+from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+from trader.infra.http_contracts import HttpTransport
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+class _ReplayIndex(SQLiteCompanyEvidenceIndex):
+    def __init__(self, path: Path, selection: frozenset[tuple[str, str, str]]) -> None:
+        super().__init__(path)
+        self._selection = selection
+
+    def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
+        return tuple(
+            p
+            for p in super().partitions(markets, observed_at)
+            if (p.market, str(p.start), str(p.end)) in self._selection
+        )
+
+    def component_due(self, component: str, scope: str, observed_at: datetime) -> bool:
+        # This diagnostic measures announcement recovery, not another full structured-source download.
+        return False
+
+    def pending_documents(self, codes: Sequence[str], observed_at: datetime) -> tuple[Disclosure, ...]:
+        return super().pending_documents(codes, observed_at)[:32]
+
+
+class _ObservedSource(CninfoMarketDisclosureSource):
+    def __init__(self, session: HttpTransport, configuration: CompanySyncConfiguration) -> None:
+        super().__init__(
+            session,
+            monotonic=time.monotonic,
+            sleeper=time.sleep,
+            timeout_seconds=configuration.source_timeout_seconds,
+            document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
+            document_limits=configuration.document_limits,
+            request_interval_seconds=configuration.request_interval_seconds,
+        )
+        self.pages: list[tuple[str, str, str, str, int]] = []
+        self.documents = 0
+
+    def fetch(self, partition: DisclosurePartition, *, deadline: float) -> DisclosurePage:
+        page = super().fetch(partition, deadline=deadline)
+        self.pages.append(
+            (
+                partition.market,
+                str(partition.start),
+                str(partition.end),
+                partition.query.key if partition.query else "",
+                partition.page,
+            )
+        )
+        return page
+
+    def document(self, item: Disclosure, *, deadline: float) -> str:
+        self.documents += 1
+        return super().document(item, deadline=deadline)
+
+
+def _copy(source: Path, destination: Path) -> None:
+    with tempfile.NamedTemporaryFile(
+        prefix=".company-copy-", suffix=".sqlite3", dir=destination.parent, delete=False
+    ) as temporary:
+        pending = Path(temporary.name)
+    try:
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=8)) as original:
+            with closing(sqlite3.connect(pending, timeout=8)) as replica:
+                original.backup(replica)
+        pending.replace(destination)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]]) -> set[tuple[str, str, str, str, int]]:
+    saved = set()
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as c:
+        for market, start, end, scope, page in pages:
+            if scope:
+                row = c.run(
+                    "SELECT next_page FROM disclosure_queries WHERE market=? AND start=? AND end=? AND scope=?",
+                    (market, start, end, scope),
+                ).fetchone()
+            else:
+                row = c.run(
+                    "SELECT next_page FROM partitions p WHERE market=? AND start=? AND end=? AND NOT EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=p.market AND q.start=p.start AND q.end=p.end)",
+                    (market, start, end),
+                ).fetchone()
+            if row is not None and row[0] > page:
+                saved.add((market, start, end, scope, page))
+    return saved
+
+
+def Main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--database", required=True, type=Path)
+    parser.add_argument("--directory", required=True, type=Path)
+    parser.add_argument("--budget-seconds", required=True, type=float)
+    args = parser.parse_args()
+    implementation = hashlib.sha256()
+    for relative in (
+        "scripts/runtime_diagnostics/company_resume.py",
+        "src/trader/download/application/company_evidence.py",
+        "src/trader/download/infra/company_disclosure_source.py",
+        "src/trader/download/infra/company_disclosure_queries.py",
+        "src/trader/download/infra/company_evidence_index.py",
+        "src/trader/download/infra/company_document_parser.py",
+    ):
+        implementation.update((_ROOT / relative).read_bytes())
+    source_path = args.database.resolve(strict=True)
+    directory = args.directory.resolve()
+    if (
+        not args.directory.is_absolute()
+        or directory == _ROOT
+        or _ROOT in directory.parents
+        or not 30 <= args.budget_seconds <= 10800
+    ):
+        parser.error("external absolute directory and budget within 30..10800 seconds required")
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / "evidence.sqlite3"
+    if destination.resolve() == source_path or (destination.exists() and destination.samefile(source_path)):
+        parser.error("source and replay database must differ")
+    if not destination.exists():
+        _copy(source_path, destination)
+    selection_path = directory / "selection.json"
+    with SqliteSession(destination, SqliteConnectionOptions(read_only=True)) as c:
+        codes = tuple(row[0] for row in c.run("SELECT code FROM published ORDER BY code"))
+        if selection_path.exists():
+            selection = _selection(json.loads(selection_path.read_text(encoding="utf-8")))
+        else:
+            selection = frozenset(
+                tuple(row)
+                for row in c.run(
+                    "SELECT market,start,end FROM partitions WHERE complete=0 AND (failure<>'' OR next_page>1)"
+                )
+            )
+            selection_path.write_text(json.dumps(sorted(selection)), encoding="utf-8")
+    if not selection or not codes:
+        parser.error("backup needs failed slices and a published population")
+    index = _ReplayIndex(destination, selection)
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    configuration = LoadCompanySyncConfiguration(_ROOT)
+    configuration = replace(configuration, budget_seconds=args.budget_seconds)
+    started = time.monotonic()
+    runs = []
+    saved: set[tuple[str, str, str, str, int]] = set()
+    replayed = 0
+    for number in range(3):
+        remaining = args.budget_seconds - (time.monotonic() - started)
+        if remaining < 15:
+            break
+        with OpenExternalHttp() as session:
+            source = _ObservedSource(session, configuration)
+
+            def interrupt(number: int = number, source: _ObservedSource = source) -> bool:
+                return number == 0 and len(source.pages) >= 2
+
+            result = SyncCompanyEvidence(
+                CompanyEvidenceDependencies(
+                    index,
+                    source,
+                    EastmoneyCompanySource(session, monotonic=time.monotonic),
+                    time.monotonic,
+                    cancel_requested=interrupt,
+                ),
+                codes,
+                now,
+                configuration=replace(configuration, budget_seconds=remaining),
+            )
+            if number == 0:
+                saved = _saved_pages(destination, source.pages)
+            else:
+                replayed += len(saved.intersection(source.pages))
+            runs.append(
+                {
+                    "interrupted": "task:cancelled" in result.failures,
+                    "pages": len(source.pages),
+                    "document_attempts": source.documents,
+                    "pending_slices": result.pending_partitions,
+                    "sampled_pending_documents": result.pending_documents,
+                    "failures": result.failures,
+                    "elapsed_seconds": round(result.elapsed_seconds, 3),
+                }
+            )
+        time.sleep(configuration.request_interval_seconds)
+    with SqliteSession(destination, SqliteConnectionOptions(read_only=True)) as c:
+        completed = sum(
+            bool(c.run("SELECT complete FROM partitions WHERE market=? AND start=? AND end=?", key).require_one()[0])
+            for key in selection
+        )
+        covered = sum(
+            c.run("SELECT 1 FROM coverage WHERE market=? AND start=? AND end=?", key).fetchone() is not None
+            for key in selection
+        )
+    passed = completed == covered == len(selection) and replayed == 0
+    report = {
+        "schema_version": "company-resume",
+        "status": "passed" if passed else "degraded",
+        "summary": {
+            "isolated_backup": True,
+            "implementation_digest": implementation.hexdigest(),
+            "selected_slices": len(selection),
+            "completed_slices": completed,
+            "covered_slices": covered,
+            "saved_pages_replayed": replayed,
+            "document_sample_limit": 32,
+            "runs": runs,
+        },
+        "findings": [] if passed else ["company_resume_incomplete"],
+    }
+    (directory / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(report, ensure_ascii=False))
+    return 0
+
+
+def _selection(payload: object) -> frozenset[tuple[str, str, str]]:
+    if not isinstance(payload, list):
+        raise ValueError("company_replay_selection_invalid")
+    keys = []
+    for row in payload:
+        if not isinstance(row, list) or len(row) != 3 or not all(isinstance(s, str) for s in row):
+            raise ValueError("company_replay_selection_invalid")
+        if row[0] not in {"sse", "szse", "bse"}:
+            raise ValueError("company_replay_selection_invalid")
+        keys.append((row[0], row[1], row[2]))
+    return frozenset(keys)
+
+
+if __name__ == "__main__":
+    raise SystemExit(Main())
+
+
+__all__ = ["Main"]
