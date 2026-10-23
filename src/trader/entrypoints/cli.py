@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from trader.download.infra.akshare_calendar import AkshareCalendarTimeoutError
 from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
@@ -163,6 +164,25 @@ def _run_history_download(config_path: Path, profile: ScoringProfileId | None = 
     except KeyboardInterrupt:
         print(json.dumps({"schema_version": "joint_training_result", "status": "cancelled"}))
         return 130
+    except AkshareCalendarTimeoutError as exc:
+        print(
+            f"train: 交易日历准备超时，AkShare/Sina 在 {exc.timeout_seconds:g} 秒内未完成；"
+            "尚未进入模型训练，请稍后重试。",
+            file=sys.stderr,
+        )
+        print(
+            json.dumps(
+                {
+                    "schema_version": "joint_training_result",
+                    "status": "failed",
+                    "category": "TimeoutError",
+                    "stage": "reference_calendar",
+                    "source": "akshare_sina",
+                    "timeout_seconds": exc.timeout_seconds,
+                }
+            )
+        )
+        return 1
     except (OSError, RuntimeError, ValueError) as exc:
         print(
             json.dumps({"schema_version": "joint_training_result", "status": "failed", "category": type(exc).__name__})

@@ -7,8 +7,19 @@ from datetime import date
 from trader.infra.isolated_call import IsolatedCall
 
 
+class AkshareCalendarTimeoutError(TimeoutError):
+    """Identify the bounded calendar preparation call without exposing SDK details."""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        super().__init__("akshare_sina_calendar_timeout")
+        self.timeout_seconds = timeout_seconds
+
+
 def FetchAkshareCalendar(timeout_seconds: float, *, execute: IsolatedCall) -> tuple[date, ...]:
-    return execute(_read_calendar, timeout_seconds)
+    try:
+        return execute(_read_calendar, timeout_seconds)
+    except TimeoutError as exc:
+        raise AkshareCalendarTimeoutError(timeout_seconds) from exc
 
 
 def _read_calendar() -> tuple[date, ...]:
@@ -20,4 +31,4 @@ def _read_calendar() -> tuple[date, ...]:
     return tuple(sorted({date.fromisoformat(str(value)[:10]) for value in frame["trade_date"]}))
 
 
-__all__ = ["FetchAkshareCalendar"]
+__all__ = ["AkshareCalendarTimeoutError", "FetchAkshareCalendar"]

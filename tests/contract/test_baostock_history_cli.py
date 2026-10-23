@@ -21,6 +21,40 @@ from trader.entrypoints.cli import BuildParser, Main
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("profile_args", ((), ("--profile", "v1")))
+def test_train_reports_calendar_timeout_before_model_training(monkeypatch, capsys, profile_args):
+    from trader.download.infra.akshare_calendar import FetchAkshareCalendar
+
+    def timeout(_operation, _timeout):
+        raise TimeoutError("private supplier details")
+
+    def prepare(*_args, **_kwargs):
+        return FetchAkshareCalendar(30, execute=timeout)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("calendar timeout must stop before model training")
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", forbidden)
+    monkeypatch.setattr("trader.training.entrypoints.v1.training.RunLearnedRankTraining", forbidden)
+
+    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", *profile_args]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "schema_version": "joint_training_result",
+        "status": "failed",
+        "category": "TimeoutError",
+        "stage": "reference_calendar",
+        "source": "akshare_sina",
+        "timeout_seconds": 30,
+    }
+    assert "交易日历准备超时" in captured.err
+    assert "AkShare/Sina 在 30 秒内未完成" in captured.err
+    assert "尚未进入模型训练" in captured.err
+    assert "private supplier details" not in captured.out + captured.err
+
+
 @pytest.mark.parametrize("price_gaps", (0, 1))
 def test_v1_training_uses_its_own_admission_after_published_history(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], price_gaps: int
