@@ -111,11 +111,21 @@ def test_preload_retries_changed_identity_and_restart_adopts_new_publication(mon
 @pytest.mark.parametrize("cancelled", (False, True))
 def test_preload_cancel_or_monotonic_deadline_never_accepts_partial_projection(cancelled):
     source = _Archive(61, 1, ("600001", "600002"))
-    ticks = iter((0.0, 0.0, 31.0, 32.0, 33.0, 34.0))
+    ticks = iter((0.0, 0.0, 181.0, 182.0, 183.0, 184.0))
     history = _cache(source, monotonic=lambda: next(ticks))
     history.initialize(cancelled=lambda: cancelled)
     assert history.entries() == {}
     assert history.status().maintenance_state == "failed"
+
+
+def test_preload_exceeding_old_thirty_second_limit_publishes_complete_projection():
+    source = _Archive(61, 1, ("600001", "600002"))
+    ticks = iter((0.0, 0.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0))
+    history = _cache(source, monotonic=lambda: next(ticks))
+    history.initialize(cancelled=lambda: False)
+    assert set(history.entries()) == {"600001", "600002"}
+    assert history.status().maintenance_state == "ready"
+    assert history.status().error_count == 0
 
 
 def test_missing_outcome_history_does_not_close_online_gate():

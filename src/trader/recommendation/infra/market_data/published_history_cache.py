@@ -38,6 +38,7 @@ from trader.recommendation.infra.market_data.published_history_bars import Outco
 from trader.training.domain.evaluation.models import OutcomeBar
 
 _RAW_RETENTION_SESSIONS = 20
+_STARTUP_PRELOAD_DEADLINE_SECONDS = 180.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +125,7 @@ class PublishedHistoryCache:
             if self._initialized:
                 return
             self._initialized = True
-            deadline = self._monotonic() + 30.0
+            deadline = self._monotonic() + _STARTUP_PRELOAD_DEADLINE_SECONDS
             try:
                 self._outcome_manifest = self._outcome_history.manifest() if self._outcome_history else None
                 self._outcome_disk_snapshot_hash = (

@@ -971,12 +971,7 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
         runtime.submit_due(observed_at)
         if block_full_market:
             assert data.full_market_started.wait(1.0)
-            assert not data.candidate_started.wait(0.05)
-            runtime.submit_due(observed_at + timedelta(seconds=1))
-            assert runtime._periodic_task_inflight(
-                ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.BEFORE_CLOSE)
-            )
-            assert not data.candidate_started.is_set()
+            assert data.candidate_started.wait(1.0)
             data.release_full_market.set()
         assert data.candidate_started.wait(1.0)
         runtime.submit_due(observed_at + timedelta(seconds=2))
@@ -985,11 +980,6 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
         )
         assert candidate_lane.running
         assert not candidate_lane.pending
-        assert runtime._periodic_task_inflight(  # noqa: SLF001 - verifies the shared market/candidate wave boundary
-            ScheduledPipelineTask(
-                PipelineTask.FULL_MARKET, observed_at + timedelta(seconds=10), MarketPhase.BEFORE_CLOSE
-            )
-        )
         assert not decisions.build_started.wait(0.2)
         assert index.snapshot(Strategy.TOMORROW).current is None
 
