@@ -26,8 +26,8 @@
         "before_close": 10
       },
       "intraday_tail": {
-        "afternoon": 5,
-        "final_review": 3
+        "afternoon": 10,
+        "final_review": 10
       },
       "industry_heat": {
         "warmup": 120,

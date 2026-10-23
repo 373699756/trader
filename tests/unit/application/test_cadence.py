@@ -1,9 +1,9 @@
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.application.runtime.cadence import (
     CadencePlanner,
     CadencePolicy,
@@ -16,8 +16,8 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI, Schedul
 
 
 def _policy():
-    raw = json.loads(Path("config/scheduler.json").read_text())
-    return CadencePolicy.from_seconds(raw["pipeline"]["cadence_seconds"])
+    settings = LoadRuntimeSettings(Path("config/runtime.json"))
+    return CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
 
 
 @pytest.mark.parametrize(
@@ -66,16 +66,23 @@ def test_input_changes_across_former_time_bands_keep_one_pending_score(boundary)
         ("09:20:00", None, 120),
         ("10:00:00", None, 60),
         ("12:15:00", None, None),
-        ("13:00:00", 5, 60),
-        ("14:20:00", 3, 60),
+        ("13:00:00", 10, 60),
+        ("14:20:00", 10, 60),
         ("14:48:00", None, None),
     ],
 )
-def test_independent_input_windows_preserve_original_frequencies(clock, minute, industry):
+def test_minute_checks_use_ten_seconds_with_existing_input_windows(clock, minute, industry):
     at = datetime.fromisoformat("2026-07-16T" + clock).replace(tzinfo=SHANGHAI)
     planner = CadencePlanner(_policy(), started_at=at)
     assert planner.interval_for(PipelineTask.INTRADAY_TAIL, at, is_trading_day=True) == minute
     assert planner.interval_for(PipelineTask.INDUSTRY_HEAT, at, is_trading_day=True) == industry
+    first = planner.plan(at, is_trading_day=True)
+    assert (PipelineTask.INTRADAY_TAIL in {task.task for task in first.tasks}) == (minute is not None)
+    for seconds in (3, 5, 9):
+        pending = planner.plan(at + timedelta(seconds=seconds), is_trading_day=True)
+        assert PipelineTask.INTRADAY_TAIL not in {task.task for task in pending.tasks}
+    due = planner.plan(at + timedelta(seconds=10), is_trading_day=True)
+    assert (PipelineTask.INTRADAY_TAIL in {task.task for task in due.tasks}) == (minute is not None)
 
 
 def test_no_duplicate_or_catchup_after_slow_round_and_no_old_special_points():

@@ -498,7 +498,7 @@ def _validate_cadence_settings(
         "topk_quotes": {"before_close": 10, "after_close": 10},
         "long_quotes": {"before_close": 10, "after_close": 10},
         "score": {"before_close": 10},
-        "intraday_tail": {"afternoon": 5, "final_review": 3},
+        "intraday_tail": {"afternoon": 10, "final_review": 10},
         "industry_heat": {"warmup": 120, "morning": 60, "afternoon": 60, "final_review": 60},
     }
     if cadence != expected:
