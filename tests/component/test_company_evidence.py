@@ -226,6 +226,42 @@ def test_restart_resumes_first_uncommitted_page(tmp_path):
     assert all(item != current for item in index.partitions(("sse",), NOW))
 
 
+def test_unfinished_announcement_precedes_due_recent_recheck(tmp_path):
+    index = _index(tmp_path)
+    planned = index.partitions(("sse",), NOW)
+    unfinished = next(item for item in planned if item.end < NOW.date() - timedelta(days=7))
+    recent = next(item for item in planned if item.start == NOW.date())
+    stale_check = (NOW - timedelta(hours=1)).isoformat()
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE partitions SET complete=1,checked_at=?,next_page=2", (stale_check,))
+        connection.run(
+            "UPDATE partitions SET complete=0,next_page=3,expected_rows=2,received_rows=1 "
+            "WHERE market=? AND start=? AND end=?",
+            (unfinished.market, unfinished.start.isoformat(), unfinished.end.isoformat()),
+        )
+    resumed = index.partitions(("sse",), NOW)
+    assert resumed[0].start == unfinished.start and resumed[0].page == 3
+    assert any(item.start == recent.start and item.end == recent.end and item.page == 1 for item in resumed)
+    already_reopened = index.partitions(("sse",), NOW)
+    assert already_reopened[0].start == unfinished.start and already_reopened[0].page == 3
+
+    class ResumingSources(Sources):
+        def fetch(self, first, *args, **kwargs):
+            if isinstance(first, DisclosurePartition) and (first.start, first.end) == (
+                unfinished.start,
+                unfinished.end,
+            ):
+                self.calls.append(first)
+                return DisclosurePage((_disclosure("second"),), 2, False)
+            return super().fetch(first, *args, **kwargs)
+
+    source = ResumingSources()
+    result = _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    requested = [item for item in source.calls if isinstance(item, DisclosurePartition)]
+    assert requested[0].start == unfinished.start and requested[0].page == 3
+    assert result.pending_partitions == 0
+
+
 def test_unchanged_announcement_does_not_rewrite_document(tmp_path):
     index = _index(tmp_path)
     partition = index.partitions(("sse",), NOW)[0]

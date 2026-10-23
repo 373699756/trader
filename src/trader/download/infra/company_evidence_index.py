@@ -89,6 +89,7 @@ class SQLiteCompanyEvidenceIndex:
         today = observed_at.date()
         cutoff = today - timedelta(days=365)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            pending_before: set[tuple[str, str, str]] = set()
             for market in markets:
                 latest = connection.run(
                     "SELECT MAX(end) FROM partitions WHERE market=? AND complete=1", (market,)
@@ -105,23 +106,32 @@ class SQLiteCompanyEvidenceIndex:
                 if months:
                     start, end = months[today.toordinal() % len(months)]
                     self._add_partition(connection, market, start, end)
-                connection.run(
-                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                    "WHERE market=? AND complete=1 AND ((start>=? AND checked_at<?) "
-                    "OR (start=? AND end=? AND checked_at<?))",
-                    (
-                        market,
-                        (today - timedelta(days=6)).isoformat(),
-                        (observed_at - timedelta(minutes=15)).isoformat(),
-                        start.isoformat(),
-                        end.isoformat(),
-                        today.isoformat(),
-                    ),
-                )
+                    pending_before.update(
+                        (row["market"], row["start"], row["end"])
+                        for row in connection.run(
+                            "SELECT market,start,end FROM partitions WHERE market=? AND complete=0 AND end>=?",
+                            (market, cutoff.isoformat()),
+                        ).fetchall()
+                    )
+                    connection.run(
+                        "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
+                        "WHERE market=? AND complete=1 AND ((start>=? AND checked_at<?) "
+                        "OR (start=? AND end=? AND checked_at<?))",
+                        (
+                            market,
+                            (today - timedelta(days=6)).isoformat(),
+                            (observed_at - timedelta(minutes=15)).isoformat(),
+                            start.isoformat(),
+                            end.isoformat(),
+                            today.isoformat(),
+                        ),
+                    )
             rows = connection.run(
-                "SELECT * FROM partitions WHERE complete=0 AND end>=? ORDER BY end DESC,market,start",
+                "SELECT * FROM partitions WHERE complete=0 AND end>=? "
+                "ORDER BY CASE WHEN next_page>1 THEN 0 ELSE 1 END,end DESC,market,start",
                 (cutoff.isoformat(),),
             ).fetchall()
+            rows = sorted(rows, key=lambda row: (row["market"], row["start"], row["end"]) not in pending_before)
         return tuple(
             DisclosurePartition(
                 cast(Market, row["market"]),
