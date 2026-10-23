@@ -180,6 +180,9 @@
   function toggleObservationStage(event) {
     const button = event.target.closest("button[data-stage-toggle]");
     if (!button || !els.observationStageList.contains(button)) return;
+    const selection = window.getSelection?.();
+    if (selection && !selection.isCollapsed
+      && button.contains(selection.anchorNode) && button.contains(selection.focusNode)) return;
     const stage = button.closest(".observation-stage");
     const expanded = stage.classList.toggle("is-expanded");
     button.setAttribute("aria-expanded", String(expanded));

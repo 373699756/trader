@@ -624,6 +624,7 @@ tbody tr.is-unavailable td.negative {
   border-left: 3px solid var(--line-strong);
   border-radius: 4px;
   background: var(--surface-raised);
+  user-select: text;
 }
 
 .observation-stage:not(:last-child)::after {
@@ -654,6 +655,7 @@ tbody tr.is-unavailable td.negative {
   font-size: 11px;
   line-height: 1;
   text-align: center;
+  user-select: text;
 }
 
 .observation-stage[data-state="completed"] .observation-stage-index { border-color: #347354; color: var(--green); }
@@ -674,7 +676,8 @@ tbody tr.is-unavailable td.negative {
   background: none;
   font: inherit;
   text-align: left;
-  cursor: pointer;
+  cursor: text;
+  user-select: text;
 }
 
 .observation-stage-main strong,

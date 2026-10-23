@@ -382,10 +382,11 @@ def _observation_copyability(base: str | _ChromeSession) -> dict[str, object]:
         """
         document.querySelector('#errorDetailsButton').click();
         const list = document.querySelector('#observationStageList');
-        const stage = Array.from(list.querySelectorAll('.observation-stage'))
-          .find((item) => item.querySelector('.observation-stage-detail')?.textContent.trim());
-        if (!stage) return {passed: false, reason: 'no_stage_detail'};
+        const stage = list.querySelector('[data-stage-keys="dynamic_market"]');
+        if (!stage?.querySelector('.observation-stage-detail')?.textContent.trim())
+          return {passed: false, reason: 'no_realtime_stage_detail'};
         const button = stage.querySelector('button[data-stage-toggle]');
+        const index = stage.querySelector('.observation-stage-index');
         const detail = stage.querySelector('.observation-stage-detail');
         button.click();
         const range = document.createRange();
@@ -399,11 +400,30 @@ def _observation_copyability(base: str | _ChromeSession) -> dict[str, object]:
         window.TraderStatusView.renderObservationStages({observationStageList: list}, [], null, false, []);
         const preserved = stage.isConnected && selection.toString().trim() === selected;
         selection.removeAllRanges();
+        range.selectNodeContents(button);
+        selection.addRange(range);
+        const visibleText = selection.toString();
+        const title = button.querySelector('strong').textContent.trim();
+        const summary = button.querySelector('span').textContent.trim();
+        button.click();
+        const headerStillExpanded = stage.classList.contains('is-expanded');
+        selection.removeAllRanges();
+        range.selectNodeContents(index);
+        selection.addRange(range);
+        const indexSelected = selection.toString().trim() === '03';
+        selection.removeAllRanges();
         document.querySelector('#observationDrawerClose').click();
         return {passed: button.tagName === 'BUTTON' && !button.contains(detail)
+          && document.querySelector('#observationDrawerTitle').textContent === '观察 · 评分链路（只读诊断）'
+          && getComputedStyle(document.querySelector('#observationDrawerTitle')).fontSize === '16px'
           && getComputedStyle(detail).userSelect === 'text'
+          && getComputedStyle(button).userSelect === 'text'
+          && getComputedStyle(index).userSelect === 'text'
+          && visibleText.includes(title) && visibleText.includes(summary)
+          && indexSelected && headerStillExpanded
           && selected.length > 0 && stillExpanded && preserved,
-          selected_length: selected.length, still_expanded: stillExpanded, preserved};
+          selected_length: selected.length, index_selected: indexSelected,
+          header_still_expanded: headerStillExpanded, still_expanded: stillExpanded, preserved};
         """,
     )
     if not isinstance(result, dict):
