@@ -484,6 +484,10 @@ tr:focus-visible {
   border-bottom: 1px solid var(--line);
 }
 
+.summary-band.is-three-column {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .funnel-item {
   grid-column: span 3;
 }

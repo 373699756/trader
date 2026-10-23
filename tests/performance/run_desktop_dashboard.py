@@ -249,7 +249,8 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: P
                 and item.get("ranks") == [1, 2]
                 and item.get("tiers") == ["关注", "关注"]
                 and item.get("tier_colors_distinct") is True
-                and item.get("cards") == 4
+                and item.get("cards") == 3
+                and item.get("budget_hidden") is True
                 and item.get("six_seat") == "2 / 6 只"
                 and item.get("browser_errors") == []
                 for item, (_, expected_codes) in zip(
@@ -361,7 +362,8 @@ def _six_seat_snapshot(base: str | _ChromeSession) -> dict[str, object]:
           codes: rows.map((row) => row.dataset.code),
           ranks: rows.map((row) => Number(row.cells[0].textContent)),
           tiers: rows.map((row) => row.cells[1].textContent.trim()),
-          cards: document.querySelectorAll('.summary-band > .summary-item').length,
+          cards: document.querySelectorAll('.summary-band > .summary-item:not([hidden])').length,
+          budget_hidden: document.querySelector('#budgetPanel').hidden,
           six_seat: document.querySelector('#sixSeatStatus').textContent,
           six_seat_meta: document.querySelector('#sixSeatMeta').textContent,
           tier_colors_distinct: new Set(tierColors).size === 3,
@@ -585,6 +587,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             "status": "running",
             "runtime_started": True,
             "phase": "before_close",
+            "deepseek": {"enabled": False},
             "deepseek_budget": {"used": 0, "remaining": 168, "planned_limit": 71},
             "market_data": {
                 "active_source": "eastmoney",
@@ -816,23 +819,23 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
         const controls = document.querySelector('.control-band').getBoundingClientRect();
         const layout = document.querySelector('#recommendation-layout').getBoundingClientRect();
         const rows = Array.from(document.querySelectorAll('#tableBody tr[data-code]'));
+        const cards = Array.from(document.querySelectorAll('.summary-band > .summary-item:not([hidden])'));
+        const cardWidths = cards.map((item) => item.getBoundingClientRect().width);
         return {
           actual: [window.innerWidth, window.innerHeight],
           overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
           ordered: header.bottom <= summary.top && summary.bottom <= controls.top && controls.bottom <= layout.top,
-          equal_summary_heights: new Set(
-            Array.from(document.querySelectorAll('.summary-band > .summary-item'))
-              .map((item) => item.getBoundingClientRect().height),
-          ).size === 1,
-          cards: document.querySelectorAll('.summary-band > .summary-item').length,
+          equal_summary_heights: new Set(cards.map((item) => item.getBoundingClientRect().height)).size === 1,
+          equal_summary_widths: Math.max(...cardWidths) - Math.min(...cardWidths) <= 1,
+          cards: cards.length,
+          budget_hidden: document.querySelector('#budgetPanel').hidden,
           rows: rows.length,
           ranks: rows.map((row) => Number(row.cells[0].textContent)),
           tiers: rows.map((row) => row.cells[1].textContent.trim()),
           current_columns: rows[0]?.cells.length,
-          classified_industry: rows[0]?.cells[2].textContent.includes('证监会行业 G56航空运输业'),
-          score_labels_absent: !/本地|风险复核|最终/.test(rows[0]?.cells[8].textContent || ''),
-          action_alignment: [getComputedStyle(document.querySelector('.action-heading')).textAlign,
-            getComputedStyle(rows[0].cells[9]).textAlign],
+          stock_only: !rows[0]?.cells[2].textContent.includes('证监会行业'),
+          classified_industry: rows[0]?.cells[3].textContent.includes('证监会行业 G56航空运输业'),
+          score_labels_absent: !/本地|风险复核|最终/.test(rows[0]?.cells[9].textContent || ''),
           reason_alignment: [getComputedStyle(document.querySelector('.reason-heading')).textAlign,
             getComputedStyle(rows[0].cells[10]).textAlign],
           browser_errors: window.TraderDashboardDiagnostics.snapshot().browserErrors,
@@ -876,14 +879,16 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("overflow") is False
         and result.get("ordered") is True
         and result.get("equal_summary_heights") is True
-        and result.get("cards") == 4
+        and result.get("equal_summary_widths") is True
+        and result.get("cards") == 3
+        and result.get("budget_hidden") is True
         and result.get("rows") == 2
         and result.get("ranks") == [1, 2]
         and result.get("tiers") == ["回避", "回避"]
         and result.get("current_columns") == 11
+        and result.get("stock_only") is True
         and result.get("classified_industry") is True
         and result.get("score_labels_absent") is True
-        and result.get("action_alignment") == ["center", "left"]
         and result.get("reason_alignment") == ["center", "left"]
         and result.get("browser_errors") == []
     )

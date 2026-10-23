@@ -271,17 +271,17 @@
       columns: [
         '<col style="width:56px">',
         '<col style="width:86px">',
-        '<col style="width:230px">',
+        '<col style="width:155px">',
+        '<col style="width:185px">',
         '<col style="width:80px">',
         '<col style="width:88px">',
         '<col style="width:85px">',
         '<col style="width:95px">',
         '<col style="width:100px">',
         '<col style="width:165px">',
-        '<col style="width:95px">',
         '<col style="width:185px">',
       ].join(""),
-      head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>本地 / 风险复核 / ${finalLabel}</th><th class="action-heading">动作</th><th class="reason-heading">原因</th></tr>`,
+      head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>板块行业</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>本地 / 风险复核 / ${finalLabel}</th><th class="reason-heading">原因</th></tr>`,
     };
   }
 
@@ -329,11 +329,17 @@
     return historical ? historyRow(item) : currentRow(item, snapshot);
   }
 
-  function stock(item) {
+  function stock(item, includeContext = true) {
     const industry = String(item.industry || "").trim()
       || (item.classified_industry ? `证监会行业 ${item.classified_industry}` : "");
     const context = [BOARD_LABELS[item.board], industry].filter(Boolean).join(" · ");
-    return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml([item.code || "-", context].filter(Boolean).join(" · "))}</span>`;
+    return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml([item.code || "-", includeContext ? context : ""].filter(Boolean).join(" · "))}</span>`;
+  }
+
+  function boardIndustry(item) {
+    const industry = String(item.industry || "").trim()
+      || (item.classified_industry ? `证监会行业 ${item.classified_industry}` : "");
+    return `<span class="stock-name">${escapeHtml(BOARD_LABELS[item.board] || "-")}</span><span class="stock-code">${escapeHtml(industry || "-")}</span>`;
   }
 
   function tierTag(item) {
@@ -352,14 +358,14 @@
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
-      <td>${stock(item)}</td>
+      <td>${stock(item, false)}</td>
+      <td class="board-industry-cell">${boardIndustry(item)}</td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
       <td><div class="score-stack"><span aria-label="本地评分"><b>${number(scores.local_score, 2)}</b></span><span aria-label="风险复核"><b>${review}</b></span><span aria-label="${finalLabel}"><b>${number(scores.final_score, 2)}</b></span></div></td>
-      <td class="action-cell"><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
   }

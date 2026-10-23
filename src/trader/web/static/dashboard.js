@@ -113,7 +113,7 @@
   function init() {
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
-      "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta",
+      "summaryBand", "budgetPanel", "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta",
       "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelMeta",
       "inputQualityStrategy", "inputQualityScoreTime", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody", "outcomeSummary", "sixSeatStatus", "sixSeatMeta",
@@ -736,7 +736,7 @@
       els.marketPhase.textContent = formatters.phaseLabel(payload.phase || "closed");
       const health = renderHealth(payload);
       els.runtimeDot.dataset.state = health.level === "normal" ? running ? "ok" : "warn" : health.level === "error" ? "error" : "warn";
-      statusView.renderBudgetSummary(els, payload.deepseek_budget, state.payload);
+      statusView.renderBudgetSummary(els, payload.deepseek_budget, state.payload, payload.deepseek);
       reconcileRecommendationIdentity(payload);
       if (state.payload && (previousPhase !== state.runtimePhase || state.payload.status === "not_ready")) {
         renderPayload(state.payload);

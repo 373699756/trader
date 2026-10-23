@@ -1389,11 +1389,35 @@ sandbox.window.TraderStatusView.renderBudgetSummary(
   { ...patchPayload, items: [patchItem, observedReview] },
 );
 assert.match(budgetWithObservation.budgetMeta.textContent, /复核 1\/1/);
+const budgetVisibility = {
+  budgetPanel: { hidden: false },
+  summaryBand: { classList: { toggle(name, enabled) {
+    assert.strictEqual(name, "is-three-column");
+    budgetVisibility.threeColumns = enabled;
+  } } },
+  budgetStatus: {}, budgetMeta: {},
+};
+sandbox.window.TraderStatusView.renderBudgetSummary(
+  budgetVisibility, { used: 0, remaining: 168, limit: 168 }, patchPayload, { enabled: false },
+);
+assert.strictEqual(budgetVisibility.budgetPanel.hidden, true);
+assert.strictEqual(budgetVisibility.threeColumns, true);
+sandbox.window.TraderStatusView.renderBudgetSummary(
+  budgetVisibility, { used: 0, remaining: 168, limit: 168 }, patchPayload, { enabled: true },
+);
+assert.strictEqual(budgetVisibility.budgetPanel.hidden, false);
+assert.strictEqual(budgetVisibility.threeColumns, false);
+sandbox.window.TraderStatusView.renderBudgetSummary(
+  budgetVisibility, { used: 0, remaining: 168, limit: 168 }, patchPayload,
+);
+assert.strictEqual(budgetVisibility.budgetPanel.hidden, true);
+assert.strictEqual(budgetVisibility.threeColumns, true);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /本地 \/ 风险复核 \/ 最终/);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head,
   /今日涨跌<\/th><th>换手率<\/th><th>成交额<\/th>/);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head,
-  /class="action-heading">动作<\/th><th class="reason-heading">原因/);
+  /股票<\/th><th>板块行业<\/th><th>最新价/);
+assert.doesNotMatch(sandbox.window.TraderRender.tableDefinition(getPayload).head, /动作<\/th>/);
 assert.strictEqual(state.tableColumnCount(getPayload), 11);
 const noResearchItem = { ...getPayload.items[0], research_coverage: null, review_outcome: null, risks: [] };
 assert.doesNotMatch(state.drawer(noResearchItem, getPayload), /公司风险研究|风险研究：|风险扣分/);
@@ -1403,15 +1427,15 @@ const unknownResearchItem = { ...noResearchItem, code: "600312", industry: "", a
     review_eligible: false,
     components: { financial: "unknown", announcements: "unknown", pledge: "unknown", unlock: "unknown" } } };
 const unknownRow = state.tableRows([unknownResearchItem], getPayload);
-assert.match(unknownRow, /600312 · 主板/);
+assert.match(unknownRow, /600312<\/span><\/td>\s*<td class="board-industry-cell"><span class="stock-name">主板/);
 assert.doesNotMatch(unknownRow, /未分类|风险研究：/);
 assert.match(unknownRow, /<td class="positive">\+1\.20%<\/td>/);
 assert.match(unknownRow, /未入复核/);
 assert.doesNotMatch(unknownRow, /<\/b>本地|<\/b>风险复核|<\/b>最终/);
-assert.match(unknownRow, /<td class="action-cell">/);
+assert.doesNotMatch(unknownRow, /<td class="action-cell">/);
 const classifiedRow = state.tableRows([{ ...unknownResearchItem,
   classified_industry: "D44电力、热力生产和供应业" }], getPayload);
-assert.match(classifiedRow, /600312 · 主板 · 证监会行业 D44电力、热力生产和供应业/);
+assert.match(classifiedRow, /<td class="board-industry-cell"><span class="stock-name">主板<\/span><span class="stock-code">证监会行业 D44电力、热力生产和供应业/);
 assert.doesNotMatch(state.drawer(unknownResearchItem, getPayload), /公司风险研究|风险研究：/);
 assert.match(state.drawer(unknownResearchItem, getPayload), /未进入本次 DeepSeek 复核候选/);
 assert.match(state.tableRows([{ ...unknownResearchItem, pct_change: -1.2 }], getPayload),

@@ -19,7 +19,8 @@
     grid-row: 3;
   }
 
-  .summary-band {
+  .summary-band,
+  .summary-band.is-three-column {
     grid-template-columns: repeat(2, minmax(100px, 1fr));
   }
 
@@ -124,7 +125,8 @@
     flex: 1 1 auto;
   }
 
-  .summary-band {
+  .summary-band,
+  .summary-band.is-three-column {
     grid-template-columns: minmax(0, 1fr);
   }
 

@@ -198,7 +198,8 @@
         : visibleText(strategySummary.latest_quote_source)
           ? render.sourceLabel(strategySummary.latest_quote_source)
           : "来源不可用";
-    renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
+    renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload,
+      statusPayload && statusPayload.deepseek);
     els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.inputQualityScoreTime.textContent = payload.strategy === "long"
       ? "长期策略不评分"
@@ -539,7 +540,10 @@
     return available;
   }
 
-  function renderBudgetSummary(els, budget, payload) {
+  function renderBudgetSummary(els, budget, payload, deepseek) {
+    const budgetHidden = !deepseek || deepseek.enabled !== true;
+    if (els.budgetPanel) els.budgetPanel.hidden = budgetHidden;
+    if (els.summaryBand) els.summaryBand.classList.toggle("is-three-column", budgetHidden);
     const available = budget && budget.available !== false;
     const used = available ? displayCount(budget.used) : "—";
     const remaining = available ? displayCount(budget.remaining) : "—";
