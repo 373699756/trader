@@ -557,6 +557,33 @@ def test_duplicate_page_links_restart_without_claiming_complete(tmp_path):
     assert index.partitions(("sse",), NOW)[0].page == 1
 
 
+@pytest.mark.parametrize("failure", ["duplicate", "single_day_overflow"])
+def test_invalid_announcement_partition_does_not_block_other_partitions(tmp_path, failure):
+    index = _index(tmp_path)
+    target = next(item for item in index.partitions(("sse",), NOW) if item.start == item.end == NOW.date())
+
+    class IsolatedSources(Sources):
+        def fetch(self, first, *args, **kwargs):
+            if first == target:
+                self.calls.append(first)
+                if failure == "duplicate":
+                    return DisclosurePage((_disclosure(), _disclosure()), 2, False)
+                return DisclosurePage((_disclosure(),), 3001, True)
+            return super().fetch(first, *args, **kwargs)
+
+    source = IsolatedSources()
+    events = []
+    result = _sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append), ("600001",), NOW
+    )
+    requests = [item for item in source.calls if isinstance(item, DisclosurePartition)]
+    assert requests.index(target) < len(requests) - 1
+    assert result.pending_partitions == events[-1].pending == 1
+    expected_failure = "cninfo_duplicate_page_links" if failure == "duplicate" else "cninfo_single_day_page_limit"
+    assert f"announcements:{expected_failure}" in result.failures
+    assert index.partitions(("sse",), NOW)[0].page == 1
+
+
 def test_unchanged_publication_does_not_rewrite_rows_or_change_version(tmp_path):
     index = _index(tmp_path)
     source = Sources()

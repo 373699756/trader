@@ -198,9 +198,10 @@ def _announcements(
     if _cancelled(dependencies):
         return 0
     partitions = deque(index.partitions(markets, observed_at))
+    deferred = 0
     while partitions and _running(dependencies, deadline):
         partition = partitions.popleft()
-        _report(dependencies, "announcements", state, len(partitions) + 1, scope=partition)
+        _report(dependencies, "announcements", state, len(partitions) + deferred + 1, scope=partition)
         if _cancelled(dependencies):
             partitions.appendleft(partition)
             break
@@ -208,7 +209,9 @@ def _announcements(
             page = dependencies.disclosures.fetch(partition, deadline=deadline)
             state.pages += 1
             # CNInfo has bounded result sets. Split dates before trusting an oversized range.
-            if page.total > 3000 and partition.start != partition.end:
+            if page.total > 3000:
+                if partition.start == partition.end:
+                    raise ValueError("cninfo_single_day_page_limit")
                 partitions.extendleft(reversed(index.split_partition(partition, observed_at)))
                 continue
             state.changes += index.commit_page(partition, page, observed_at)
@@ -223,15 +226,20 @@ def _announcements(
                 )
             else:
                 state.completed += 1
-            _report(dependencies, "announcements", state, len(partitions), scope=partition)
+            _report(dependencies, "announcements", state, len(partitions) + deferred, scope=partition)
         except (OSError, RuntimeError, ValueError) as exc:
             failure = _failure(exc)
             index.partition_failure(partition, failure)
             state.failures += (f"announcements:{failure}",)
+            if failure in {"cninfo_duplicate_page_links", "cninfo_single_day_page_limit"}:
+                deferred += 1
+                _report(dependencies, "announcements", state, len(partitions) + deferred, scope=partition)
+                continue
             partitions.appendleft(partition)
             break  # Do not hammer another partition after a source/transport rejection.
-    _report(dependencies, "announcements", state, len(partitions), status="deferred" if partitions else "complete")
-    return len(partitions)
+    pending = len(partitions) + deferred
+    _report(dependencies, "announcements", state, pending, status="deferred" if pending else "complete")
+    return pending
 
 
 def _documents(
