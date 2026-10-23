@@ -205,7 +205,7 @@ class ProductionModelScoringService:
         if profile.profile_id != predictor.profile_id:
             raise ValueError("scoring profile identity does not match its head")
         self._evidence = head.evidence
-        if not predictor.model_id or len(predictor.model_hash) != 64 or predictor.profile_id not in {"v2", "v3"}:
+        if not predictor.model_id or len(predictor.model_hash) != 64 or predictor.profile_id not in {"v2", "v3", "v5"}:
             raise ValueError(f"{strategy.value} production model identity is invalid")
         try:
             self._runtime_features = _runtime_feature_contract(profile)
@@ -264,6 +264,8 @@ class ProductionModelScoringService:
         return self._history_required_sessions
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
+        if self._predictor.profile_id == "v5" and not _valid_sequence(feature):
+            return False
         row = _raw_row(feature, self._row_contract)
         return row is not None and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
 
@@ -334,7 +336,11 @@ class ProductionModelScoringService:
         population.update((feature.quote.code, feature) for feature in features)
         rows_started = self._monotonic()
         rows, missing_population_codes = _eligible_rows(
-            tuple(population.values()),
+            tuple(
+                feature
+                for feature in population.values()
+                if self._predictor.profile_id != "v5" or _valid_sequence(feature)
+            ),
             self._row_contract,
         )
         self._record_stage("model_rows", rows_started)
@@ -352,6 +358,10 @@ class ProductionModelScoringService:
             )
         )
         requested_codes.difference_update(missing_codes)
+        if self._predictor.profile_id == "v5":
+            sequence_missing = {code for code in requested_codes if not _valid_sequence(population[code])}
+            missing_codes = tuple(sorted(set(missing_codes) | sequence_missing))
+            requested_codes.difference_update(sequence_missing)
         codes = tuple(row.code for row in rows)
         if len(codes) != len(set(codes)):
             raise ValueError(f"{self._strategy.value} model scoring candidates must be unique")
@@ -446,7 +456,12 @@ class ProductionModelScoringService:
                 ),
             )
             inputs_by_row.append(
-                ModelInput(row.code, tuple(vector[feature_id] for feature_id in self._feature_ids), row.industry)
+                ModelInput(
+                    row.code,
+                    tuple(vector[feature_id] for feature_id in self._feature_ids),
+                    row.industry,
+                    population[row.code].model_sequence if self._predictor.profile_id == "v5" else None,
+                )
             )
         inputs = tuple(inputs_by_row)
         self._record_stage("model_input_vectors", vector_started)
@@ -456,9 +471,18 @@ class ProductionModelScoringService:
         elif predictions is None:
             deadline.require_time("before_batch_prediction")
             started_at = self._monotonic()
-            predictions = self._predictor.predict(inputs)
+            if self._predictor.profile_id == "v5":
+                predicted: list[ModelPrediction] = []
+                for start in range(0, len(inputs), 256):
+                    deadline.require_time("before_batch_prediction")
+                    predicted.extend(self._predictor.predict(inputs[start : start + 256]))
+                    self._predictor_batch_count += 1
+                    deadline.require_time("completed_after_batch_prediction_deadline")
+                predictions = tuple(predicted)
+            else:
+                predictions = self._predictor.predict(inputs)
+                self._predictor_batch_count += 1
             self._record_stage("batch_prediction", started_at)
-            self._predictor_batch_count += 1
             deadline.require_time("completed_after_batch_prediction_deadline")
         if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
             raise ValueError(f"{self._strategy.value} production model returned a mismatched prediction batch")
@@ -588,6 +612,15 @@ class ProductionModelScoringService:
             decision_age_ms=deadline.decision_age_ms,
             deadline_abandon_reason=abandon_reason,
         )
+
+
+def _valid_sequence(feature: FeatureSnapshot) -> bool:
+    sequence = feature.model_sequence
+    return (
+        sequence is not None
+        and sequence.code == feature.quote.code
+        and sequence.dates[-1] < ShanghaiNow(feature.observed_at).date()
+    )
 
 
 def _score_predictions(

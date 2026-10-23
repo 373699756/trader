@@ -49,6 +49,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "baostock-qfq-shadow": ("baostock_qfq_shadow",),
     "tencent-download": ("tencent_download",),
     "tencent-history-window": ("tencent_history_window",),
+    "v5-training": ("v5_training",),
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
     "market-factor-compare": ("market_factor_compare",),
@@ -121,7 +122,7 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="isolated checkout for five alternating history-write or download-performance comparisons",
     )
-    parser.add_argument("--scoring-profile", choices=("v1", "v2", "v3", "both"), default=None)
+    parser.add_argument("--scoring-profile", choices=("v1", "v2", "v3", "v5", "both"), default=None)
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument("--market-sources", nargs="+", choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
     parser.add_argument("--market-profiles", nargs="+", choices=("v2", "v3"), default=("v2", "v3"))
@@ -206,6 +207,7 @@ def _parser() -> argparse.ArgumentParser:
         help="rows copied into the disposable revision batch-write probe",
     )
     parser.add_argument("--output", default="-", help="report output path outside the repository, or -")
+    parser.add_argument("--v5-probe-directory", type=Path, help="new external directory for isolated V5 training")
     parser.add_argument(
         "--format",
         choices=("auto", "json", "text"),
@@ -306,6 +308,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--baseline-checkout is only available for history-write or download-performance")
     if args.cpu_profile_dir is not None and args.profile != "market-factor-compare":
         raise ValueError("--cpu-profile-dir is only available for market-factor-compare")
+    if args.profile == "v5-training" and args.v5_probe_directory is None:
+        raise ValueError("v5-training requires --v5-probe-directory")
     return (
         DiagnosticOptions(
             profile=args.profile,
@@ -341,6 +345,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             long_evidence_output=long_evidence_output,
             company_evidence_database=args.company_evidence_database,
             company_replay_directory=company_replay_directory,
+            v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
+            if args.v5_probe_directory is not None
+            else None,
             eligibility_evidence=tuple(args.eligibility_evidence),
             download_sizes=tuple(args.download_sizes),
             qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database else None,
@@ -403,6 +410,19 @@ def build_commands(
         )
     cli = (python_executable, "-m", "trader.entrypoints.cli", "--config", str(options.runtime_config))
     commands: dict[str, DiagnosticCommand] = {
+        "v5_training": DiagnosticCommand(
+            "v5_training",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.v5_training",
+                "--history-root",
+                str(options.history_root),
+                "--work-root",
+                str(options.v5_probe_directory),
+            ),
+            common_timeout,
+        ),
         "configuration": DiagnosticCommand("configuration", cli + ("validate-config",), common_timeout),
         "history_maintenance": DiagnosticCommand(
             "history_maintenance", cli + ("history-automation-status",), common_timeout
@@ -1328,6 +1348,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "history_sources": _history_details,
     "tencent_download": _security_master_details,
     "tencent_history_window": _security_master_details,
+    "v5_training": _security_master_details,
     "qfq_sqlite_audit": _security_master_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,

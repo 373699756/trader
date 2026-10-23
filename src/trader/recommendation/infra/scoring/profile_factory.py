@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal
 
@@ -28,8 +29,11 @@ from trader.training.infra.model_bundles.profile_publication import (
 )
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 
-ModelLoadFailure = Literal["missing", "corrupt", "integrity_conflict", "contract_conflict", "publication_busy"]
+ModelLoadFailure = Literal[
+    "missing", "corrupt", "integrity_conflict", "contract_conflict", "publication_busy", "dependency_missing"
+]
 
 
 def BuildProfileScoring(
@@ -96,9 +100,21 @@ def LoadScoringProfile(
             raise ScoringModelsUnavailableError("contract_conflict") from exc
         except (OSError, TypeError, ValueError) as exc:
             raise ScoringModelsUnavailableError("corrupt") from exc
-    if profile_id in {"v2", "v3"}:
+    if profile_id in {"v2", "v3", "v5"}:
         try:
-            profile = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
+            if profile_id == "v5":
+                if find_spec("torch") is None:
+                    raise ScoringModelsUnavailableError("dependency_missing")
+                from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+
+                ConfigureTcnRuntime(training=False)
+            profile = (
+                V2_TRAINING_PROFILE
+                if profile_id == "v2"
+                else V5_TRAINING_PROFILE
+                if profile_id == "v5"
+                else V3_TRAINING_PROFILE
+            )
             inspected = InspectActiveProfileBundles(training_root / profile.output_directory, profile)
             bundles = tuple(item.model for item in inspected)
             return BuildTrainedScoringProfile(profile_id, bundles)

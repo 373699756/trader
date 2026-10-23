@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from collections import deque
 from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from functools import lru_cache
 from typing import Protocol, cast
 
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
@@ -14,6 +16,7 @@ from trader.recommendation.domain.market.feature_contracts import (
     CalculateProfileQfqAlpha,
     QfqPriceAnchors,
 )
+from trader.recommendation.domain.market.v5.features import CalculatePriceVolumeSequence, PriceVolumePoint
 from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
     CreateExposureContext,
@@ -121,6 +124,8 @@ class _SampleBuildState:
         self._advance_day(row.trade_date, position)
         rolling = self._rolling_for(code, position)
         if row.cell_status == "tencent_inferred_suspended":
+            if self.profile.algorithm == "tcn":
+                rolling.points.clear()
             rolling.previous_position = position
             return
         if row.point is None or row.industry is None:
@@ -319,6 +324,36 @@ def _pending_sample(
     )
     if any(raw_features.missing_mask):
         return None
+    sequence: tuple[float, ...] = ()
+    if profile.algorithm == "tcn":
+        completed = tuple(points)[:-1]
+        ordered_dates = _ordered_dates(readable_dates)
+        end = bisect_left(ordered_dates, row.trade_date)
+        expected = ordered_dates[max(0, end - 61) : end]
+        try:
+            sequence = CalculatePriceVolumeSequence(
+                row.code,
+                tuple(
+                    PriceVolumePoint(
+                        p.trade_date,
+                        cast(float, p.qfq_open),
+                        cast(float, p.qfq_high),
+                        cast(float, p.qfq_low),
+                        cast(float, p.qfq_close_price),
+                        cast(float, p.raw_volume),
+                        cast(float, p.qfq_amount),
+                    )
+                    for p in completed
+                    if all(
+                        v is not None
+                        for v in (p.qfq_open, p.qfq_high, p.qfq_low, p.qfq_close_price, p.raw_volume, p.qfq_amount)
+                    )
+                ),
+                expected_dates=expected,
+                source_identity=profile.profile_id,
+            ).values
+        except ValueError:
+            return None
     return _PendingSample(
         row.code,
         row.trade_date,
@@ -326,9 +361,14 @@ def _pending_sample(
         row.board,
         cast(str, row.industry),
         math.fsum(cast(float, amount) for amount in amounts) / 20.0,
-        raw_features.require_complete(),
+        (*raw_features.require_complete(), *sequence),
         close,
     )
+
+
+@lru_cache(maxsize=4)
+def _ordered_dates(dates: frozenset[date]) -> tuple[date, ...]:
+    return tuple(sorted(dates))
 
 
 def _finalize_sample_day(
@@ -339,7 +379,7 @@ def _finalize_sample_day(
     if not population:
         return ()
     residuals = ResidualizeSampleDay(
-        tuple(item.features[3:] for item in population),
+        tuple(item.features[3 : 3 + len(profile.momentum_horizons)] for item in population),
         tuple(item.board for item in population),
         tuple(item.industry for item in population),
         tuple(item.average_amount_20d for item in population),
@@ -368,7 +408,12 @@ def _finalize_sample_day(
                 item.board,
                 item.industry,
                 item.average_amount_20d,
-                (*item.features[:3], *(residual[index] for residual in residuals), *market_state),
+                (
+                    *item.features[:3],
+                    *(residual[index] for residual in residuals),
+                    *market_state,
+                    *item.features[len(profile.raw_feature_manifest.names) :],
+                ),
                 (excess[0], excess[1], excess[2], excess[3], excess[4], aggregate),
             )
         )

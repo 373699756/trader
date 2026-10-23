@@ -20,6 +20,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.training.infra.model_bundles.contracts import TrainedAlgorithm, TrainedProfileContract
+from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork, TcnTensor
 
 
 class ModelBundleIntegrityError(ValueError):
@@ -138,6 +139,12 @@ class TrainedLightGBMModelSnapshot(TrainedIndustryModelSnapshot):
 
 
 @dataclass(frozen=True)
+class TrainedTcnModelSnapshot(TrainedIndustryModelSnapshot):
+    dropout: float
+    weights: tuple[TcnTensor, ...]
+
+
+@dataclass(frozen=True)
 class TrainedHeadModelBundle:
     serialization_profile_id: ScoringProfileId
     strategy: Strategy
@@ -166,7 +173,9 @@ class TrainedHeadModelBundle:
     point_in_time_parity: Literal[False]
     training_rows: int
     validation_rows: int
-    industries: tuple[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot], ...]
+    industries: tuple[
+        tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot | TrainedTcnModelSnapshot], ...
+    ]
     dependencies: tuple[tuple[str, str], ...]
     metadata_hash: str
     content_hash: str
@@ -299,7 +308,11 @@ def _decode_group_document(
     *,
     report: bool,
 ) -> _GroupIdentity:
-    fields = _REPORT_FIELDS if report else _INPUT_FIELDS
+    fields = (
+        (_REPORT_FIELDS | ({"prediction_metrics"} if profile.algorithm == "tcn" else set()))
+        if report
+        else _INPUT_FIELDS
+    )
     payload, declared_hash = _hashed_object(document, fields, "report" if report else "training input")
     contract = profile.head_for_strategy(strategy)
     expected_schema = (
@@ -330,6 +343,8 @@ def _decode_group_document(
         or not _valid_target_metrics(payload.get("target_metrics"), strategy)
     ):
         raise ValueError("trained strategy-head report is invalid")
+    if report and profile.algorithm == "tcn" and not _valid_prediction_metrics(payload.get("prediction_metrics")):
+        raise ValueError("V5 prediction metrics are invalid")
     if report and (
         not _boolean(payload, "artifact_structure_valid")
         or _string_list(payload, "artifact_structure_failure_reasons")
@@ -423,16 +438,37 @@ def _hashed_object(document: object, fields: set[str], label: str) -> tuple[dict
     return payload, declared_hash
 
 
+def _valid_prediction_metrics(value: object) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    for industry, metrics in value.items():
+        if (
+            not isinstance(industry, str)
+            or not isinstance(metrics, dict)
+            or set(metrics) != {"rows", "mae", "rmse", "best_epoch", "early_stopping_mse"}
+        ):
+            return False
+        if not all(
+            IsFiniteNumber(metrics[name]) and metrics[name] >= 0 for name in ("mae", "rmse", "early_stopping_mse")
+        ):
+            return False
+        if not all(IsInteger(metrics[name]) and metrics[name] > 0 for name in ("rows", "best_epoch")):
+            return False
+    return True
+
+
 def _decode_industries(
     payload: dict[str, object], width: int, algorithm: TrainedAlgorithm
-) -> tuple[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot], ...]:
+) -> tuple[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot | TrainedTcnModelSnapshot], ...]:
     raw = payload.get("industries")
     if not isinstance(raw, dict) or not raw:
         raise ValueError("trained-head industry models are missing")
-    result: list[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot]] = []
+    result: list[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot | TrainedTcnModelSnapshot]] = []
     model_fields = (
         {"lightgbm_model", "lightgbm_best_iteration"}
         if algorithm == "lightgbm"
+        else {"tcn_network"}
+        if algorithm == "tcn"
         else {"ridge_intercept", "ridge_coefficients"}
     )
     for industry, document in raw.items():
@@ -450,14 +486,19 @@ def _decode_industries(
         if algorithm == "lightgbm":
             if _integer(values, "lightgbm_best_iteration") < 1:
                 raise ValueError("trained-head LightGBM iteration is invalid")
-            model: TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot = TrainedLightGBMModelSnapshot(
-                transformer_means=means,
-                transformer_scales=scales,
-                calibration_intercept=calibration_intercept,
-                calibration_slope=calibration_slope,
-                lightgbm_model=_text(values, "lightgbm_model"),
-                lightgbm_best_iteration=_integer(values, "lightgbm_best_iteration"),
+            model: TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot | TrainedTcnModelSnapshot = (
+                TrainedLightGBMModelSnapshot(
+                    transformer_means=means,
+                    transformer_scales=scales,
+                    calibration_intercept=calibration_intercept,
+                    calibration_slope=calibration_slope,
+                    lightgbm_model=_text(values, "lightgbm_model"),
+                    lightgbm_best_iteration=_integer(values, "lightgbm_best_iteration"),
+                )
             )
+        elif algorithm == "tcn":
+            dropout, weights = DecodeTcnNetwork(values["tcn_network"], width - 360)
+            model = TrainedTcnModelSnapshot(means, scales, calibration_intercept, calibration_slope, dropout, weights)
         else:
             coefficients = tuple(_number_list(values, "ridge_coefficients"))
             if len(coefficients) != width:
@@ -492,7 +533,9 @@ def _exposure_contract(payload: dict[str, object]) -> ExposureContract:
 
 def _dependencies(payload: dict[str, object], algorithm: TrainedAlgorithm) -> tuple[tuple[str, str], ...]:
     raw = payload.get("dependencies")
-    expected = {"numpy", "lightgbm"} if algorithm == "lightgbm" else {"numpy"}
+    expected = (
+        {"numpy", "lightgbm"} if algorithm == "lightgbm" else {"numpy", "torch"} if algorithm == "tcn" else {"numpy"}
+    )
     if not isinstance(raw, dict) or set(raw) != expected:
         raise ValueError("trained-head dependency identity is invalid")
     values = tuple(sorted((str(name), str(value)) for name, value in raw.items()))
@@ -587,6 +630,7 @@ __all__ = [
     "TrainedHeadModelBundle",
     "TrainedIndustryModelSnapshot",
     "TrainedRidgeModelSnapshot",
+    "TrainedTcnModelSnapshot",
     "TrainedLightGBMModelSnapshot",
     "DecodeHeadBundle",
     "LoadHeadBundle",

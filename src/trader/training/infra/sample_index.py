@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -184,6 +184,36 @@ class SQLiteTrainingSampleIndex:
         if not self._counts_by_target:
             self._prepare_industry_counts()
         return self._counts_by_target[target]
+
+    def iter_batches(
+        self,
+        industry: str,
+        contract: TrainedHeadContract,
+        split_name: TrainingSplitName,
+        *,
+        batch_size: int = 256,
+    ) -> Iterator[TrainingSampleMatrix]:
+        """Stream one industry's ordered partition without allocating its full matrix."""
+        if not 1 <= batch_size <= 256:
+            raise ValueError("training batch size must be within 1..256")
+        target = _require_target_column(contract.target_column)
+        columns = ",".join(f"s.f{i}" for i in contract.feature_positions)
+        rows = self._connection.run(
+            f"SELECT {columns},s.{target} FROM samples s "
+            "JOIN sample_split_dates d ON d.trade_date=s.trade_date "
+            f"WHERE s.industry=? AND d.split_name=? AND s.{target} IS NOT NULL ORDER BY s.trade_date,s.code",
+            (industry, split_name),
+        )
+        batch: list[tuple[float, ...]] = []
+        for row in rows:
+            batch.append(tuple(float(v) for v in row))
+            if len(batch) == batch_size:
+                matrix = np.asarray(batch, dtype=np.float64)
+                yield TrainingSampleMatrix(matrix[:, :-1], matrix[:, -1])
+                batch.clear()
+        if batch:
+            matrix = np.asarray(batch, dtype=np.float64)
+            yield TrainingSampleMatrix(matrix[:, :-1], matrix[:, -1])
 
     def _prepare_industry_counts(self) -> None:
         aggregates = ",".join(f"COUNT(samples.{target})" for target in _TARGET_COLUMNS)

@@ -63,7 +63,7 @@ class ResearchCommandOptions:
     profile: ScoringProfileId | None = None
 
 
-def ConfigureTrainingResources() -> None:
+def ConfigureTrainingResources(*, scoring_profile: ScoringProfileId | None = None) -> None:
     """Apply the bounded process policy before loading either training head."""
 
     from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
@@ -71,6 +71,10 @@ def ConfigureTrainingResources() -> None:
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[name] = str(TOMORROW_TRAINING_COMPUTE_THREADS)
     _lower_training_priority()
+    if scoring_profile == "v5":
+        from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+
+        ConfigureTcnRuntime(training=True)
 
 
 def _lower_training_priority() -> None:

@@ -24,7 +24,7 @@ def BuildTrainedScoringProfile(
     profile_id: ScoringProfileId,
     bundles: tuple[TrainedHeadModelBundle, ...],
 ) -> LoadedScoringProfile:
-    if profile_id not in {"v2", "v3"}:
+    if profile_id not in {"v2", "v3", "v5"}:
         raise ValueError("shared trained heads require the V2 or V3 scoring profile")
     by_strategy = {bundle.strategy: bundle for bundle in bundles}
     if len(bundles) != 2 or set(by_strategy) != {Strategy.TOMORROW, Strategy.D25}:

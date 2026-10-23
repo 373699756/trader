@@ -80,8 +80,8 @@ def ProfileMapping(raw: object, profile_id: str, label: str) -> Mapping[str, obj
         if not isinstance(item, dict):
             raise ConfigurationError(f"{label} entries must be objects")
         identity = item.get("profile")
-        if not isinstance(identity, str) or identity not in {"v1", "v2", "v3"} or identity in profiles:
-            raise ConfigurationError(f"{label} profile identities must be unique v1, v2 and v3")
+        if not isinstance(identity, str) or identity not in {"v1", "v2", "v3", "v5"} or identity in profiles:
+            raise ConfigurationError(f"{label} profile identities must be unique v1, v2, v3 and v5")
         profiles[identity] = {key: value for key, value in item.items() if key != "profile"}
     if not {"v2", "v3"}.issubset(profiles) or profile_id not in profiles:
         raise ConfigurationError(f"{label} must define v2, v3 and the requested profile")

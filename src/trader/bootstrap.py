@@ -170,11 +170,12 @@ from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue, PublishedTrainingState
 from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
-from trader.training.infra.training_settings import LoadProfileTrainingSettings, ProfileTrainingSettings
+from trader.training.infra.training_settings import (
+    LoadRuntimeTrainingSettings,
+    ProfileTrainingSettings,
+)
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
@@ -340,14 +341,18 @@ def ExecuteDownloadTrain(config_path: Path, *, scoring_profile: ScoringProfileId
     from trader.download.entrypoints.commands import RunDownload
     from trader.training.entrypoints.commands import ConfigureTrainingResources, RunJointTraining
 
-    if scoring_profile is not None and scoring_profile != "v1":
-        raise ValueError("joint training accepts only an explicit v1 override")
+    if scoring_profile is not None and scoring_profile not in {"v1", "v5"}:
+        raise ValueError("training accepts only explicit v1 or v5 overrides")
     runtime = LoadRuntimeSettings(config_path)
     paths = runtime.data_paths
-    ConfigureTrainingResources()
+    ConfigureTrainingResources(scoring_profile=scoring_profile)
     result = RunDownload(runtime.project_root, config_path, quiet_success=True, allow_price_gaps=True)
     if result:
         return result
+    if scoring_profile == "v5":
+        from trader.training.entrypoints.v5.training import RunTcnTrainingCommand
+
+        return RunTcnTrainingCommand(runtime)
     if scoring_profile == "v1":
         from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
         from trader.training.entrypoints.v1.training import RunLearnedRankTraining
@@ -629,13 +634,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         loaded_profile = None
         model_failure = f"production_model_{exc.reason}"
     WarnMissingLocalData(paths, profile_id, model_failure=model_failure if loaded_profile is None else None)
-    training_settings: ProfileTrainingSettings | V1TrainingSettings
-    if profile_id == "v1":
-        training_settings = LoadV1TrainingSettings(settings.project_root)
-    else:
-        training_settings = LoadProfileTrainingSettings(settings.project_root, profile_id)
-    if isinstance(training_settings, ProfileTrainingSettings):
-        training_settings.require_profile(V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE)
+    training_settings = LoadRuntimeTrainingSettings(settings.project_root, profile_id)
     market_data = _build_market_data(
         context,
         calendar,
@@ -902,7 +901,7 @@ def _build_market_data(
         cache=market_cache,
     )
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history))
-    published_profile = "v2" if strategy.scoring_profile == "v1" else strategy.scoring_profile
+    published_profile = "v2" if strategy.scoring_profile in {"v1", "v5"} else strategy.scoring_profile
     history_cache = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLiteQfqWindowCache(paths.daily_window, published_profile)),
         lookback_sessions=training_settings.history_sessions,
@@ -914,6 +913,7 @@ def _build_market_data(
         ),
         require_input_binding=True,
         learned_rank_inputs=strategy.scoring_profile == "v1",
+        sequence_inputs=strategy.scoring_profile == "v5",
     )
     if shared_market is None:
         intraday_client = EastmoneyClient(

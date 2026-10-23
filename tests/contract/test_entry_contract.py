@@ -182,8 +182,8 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert (
-        "看板可追加 --profile v1|v2|v3|both；both 保持 V2/V3。本地检测使用 scripts/diagnose_runtime.py --profile local。"
-        in completed.stdout
+        "看板可追加 --profile v1|v2|v3|v5|both；both 保持 V2/V3。"
+        "本地检测使用 scripts/diagnose_runtime.py --profile local。" in completed.stdout
     )
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
@@ -391,7 +391,7 @@ def test_train_stops_before_training_on_history_failure(monkeypatch, download_re
     from trader.bootstrap import ExecuteDownloadTrain
 
     calls = []
-    monkeypatch.setattr(research_commands, "ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr(research_commands, "ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr("trader.download.entrypoints.commands.RunDownload", lambda *args, **kwargs: download_result)
     monkeypatch.setattr(
         research_commands, "RunJointTraining", lambda runtime, *, refresh_due: calls.append(runtime) or 7
@@ -474,7 +474,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "评分档位只能是 v1、v2、v3 或 both: latest\n"
+    assert completed.stderr == "评分档位只能是 v1、v2、v3、v5 或 both: latest\n"
     assert not missing_venv.exists()
 
 
@@ -496,12 +496,12 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-screen" not in powershell
     assert "--allow-partial-history" not in powershell
     assert (
-        "看板可追加 --profile v1|v2|v3|both；both 保持 V2/V3。本地检测使用 scripts/diagnose_runtime.py --profile local。"
-        in powershell
+        "看板可追加 --profile v1|v2|v3|v5|both；both 保持 V2/V3。"
+        "本地检测使用 scripts/diagnose_runtime.py --profile local。" in powershell
     )
     assert "& $SelectedEntryPoint --help" in powershell
     assert "$ProfileArgs = if ($ScoringProfileSet)" in powershell
-    assert '$ScoringProfile -notin @("v1", "v2", "v3", "both")' in powershell
+    assert '$ScoringProfile -notin @("v1", "v2", "v3", "v5", "both")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert '$PublicModes = @("help", "-h", "--help", "sync", "train")' in powershell

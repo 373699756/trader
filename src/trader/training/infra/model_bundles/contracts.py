@@ -10,7 +10,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 TrainedTargetColumn = Literal["target_t1", "target_d25_aggregate"]
-TrainedAlgorithm = Literal["lightgbm", "ridge"]
+TrainedAlgorithm = Literal["lightgbm", "ridge", "tcn"]
 
 
 @dataclass(frozen=True)
@@ -46,14 +46,14 @@ class TrainedProfileContract:
 
     def __post_init__(self) -> None:
         if (
-            self.profile_id not in {"v2", "v3"}
+            self.profile_id not in {"v2", "v3", "v5"}
             or self.output_directory != self.profile_id
             or self.history_sessions < 61
-            or self.history_sessions != max(self.momentum_horizons) + 1
+            or self.history_sessions != max(self.momentum_horizons) + (2 if self.profile_id == "v5" else 1)
             or len(set(self.momentum_horizons)) != len(self.momentum_horizons)
             or not set(self.market_state_momentum_horizons).issubset(self.momentum_horizons)
             or tuple(head.strategy for head in self.heads) != (Strategy.TOMORROW, Strategy.D25)
-            or (self.profile_id, self.algorithm) not in {("v2", "lightgbm"), ("v3", "ridge")}
+            or (self.profile_id, self.algorithm) not in {("v2", "lightgbm"), ("v3", "ridge"), ("v5", "tcn")}
         ):
             raise ValueError("trained profile contract is invalid")
 

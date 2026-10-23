@@ -103,7 +103,7 @@ class _CandidateUnionFixture:
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--profile", choices=("v1", "v2", "v3"))
+    parser.add_argument("--profile", choices=("v1", "v2", "v3", "v5"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
     return parser
@@ -122,6 +122,8 @@ def Run(
     )
     if strategy_settings.scoring_profile == "v1":
         return _unavailable_report("learned_rank_shadow_workload_unverified")
+    if strategy_settings.scoring_profile == "v5":
+        return _unavailable_report("tcn_sequence_workload_unverified")
     budgets = settings.performance_budgets
     market_inputs, market_quotes, candidates = _fixtures(budgets)
     context = _OperationContext(

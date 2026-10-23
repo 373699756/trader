@@ -11,6 +11,7 @@ from typing import Literal, Protocol
 
 from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
@@ -24,6 +25,7 @@ class ModelInput:
     code: str
     alpha_features: tuple[float, ...]
     industry: str = ""
+    sequence: ModelPriceVolumeSequence | None = None
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
@@ -32,6 +34,8 @@ class ModelInput:
             raise ValueError("model input alpha features must be non-empty and finite")
         if not isinstance(self.industry, str):
             raise ValueError("model input industry must be text")
+        if self.sequence is not None and self.sequence.code != self.code:
+            raise ValueError("model sequence belongs to another code")
 
 
 class HeadPrediction(Protocol):

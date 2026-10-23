@@ -26,6 +26,11 @@ from trader.recommendation.domain.market.v1.features import (
     CalculateLearnedRankFeatures,
     LearnedRankDailyPoint,
 )
+from trader.recommendation.domain.market.v5.features import (
+    CalculatePriceVolumeSequence,
+    ModelPriceVolumeSequence,
+    PriceVolumePoint,
+)
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,
@@ -72,6 +77,7 @@ class PublishedHistoryEntry:
     bars: tuple[DailyBar, ...]
     context: HistoryContext
     learned_rank_values: tuple[float, ...] | None = None
+    model_sequences: tuple[ModelPriceVolumeSequence, ...] = ()
 
 
 class PublishedHistoryCache:
@@ -90,6 +96,7 @@ class PublishedHistoryCache:
         reserve_bytes: Callable[[int], bool] | None = None,
         require_input_binding: bool = False,
         learned_rank_inputs: bool = False,
+        sequence_inputs: bool = False,
     ) -> None:
         self._history = history
         self._outcome_history = outcome_history
@@ -98,6 +105,7 @@ class PublishedHistoryCache:
         self._reserve_bytes = reserve_bytes
         self._require_input_binding = require_input_binding
         self._learned_rank_inputs = learned_rank_inputs
+        self._sequence_inputs = sequence_inputs
         self._lookback_sessions = max(61, lookback_sessions)
         self._recovery = recovery
         self._tail_recovery = tail_recovery
@@ -438,7 +446,25 @@ class PublishedHistoryCache:
 
     @property
     def completed_features_enabled(self) -> bool:
-        return self._learned_rank_inputs
+        return self._learned_rank_inputs or self._sequence_inputs
+
+    def completed_model_sequences(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+    ) -> Mapping[str, ModelPriceVolumeSequence]:
+        if not self._sequence_inputs or self._open_dates is None:
+            return {}
+        day = observed_at.astimezone(SHANGHAI).date()
+        previous = max((d for d in self._open_dates() if d < day), default=None)
+        with self._lock:
+            return {
+                code: seq
+                for code in codes
+                if (entry := self._entries.get(code)) is not None
+                for seq in entry.model_sequences
+                if seq.dates[-1] == previous
+            }
 
     def update_coverage(self, codes: Sequence[str], data_versions: Sequence[str] | None = None) -> None:
         del data_versions
@@ -528,6 +554,11 @@ class PublishedHistoryCache:
                     if self._learned_rank_inputs
                     else None
                 ),
+                model_sequences=_model_sequences(
+                    window.code, bars, self._open_dates() if self._open_dates else (), manifest.snapshot_hash
+                )
+                if self._sequence_inputs
+                else (),
             )
         return entries
 
@@ -535,6 +566,30 @@ class PublishedHistoryCache:
         with self._lock:
             self._error_count += 1
             self._maintenance_reason = reason
+
+
+def _model_sequences(
+    code: str, bars: tuple[DailyBar, ...], calendar: tuple[date, ...], source_identity: str
+) -> tuple[ModelPriceVolumeSequence, ...]:
+    sequences: list[ModelPriceVolumeSequence] = []
+    for selected in (bars[-61:], bars[-62:-1]):
+        if len(selected) != 61:
+            continue
+        end = date.fromisoformat(selected[-1].trade_date)
+        dates = tuple(d for d in calendar if d <= end)[-61:]
+        try:
+            points = tuple(
+                PriceVolumePoint(
+                    date.fromisoformat(b.trade_date), b.open_price, b.high, b.low, b.close, b.volume, b.amount
+                )
+                for b in selected
+            )
+            sequences.append(
+                CalculatePriceVolumeSequence(code, points, expected_dates=dates, source_identity=source_identity)
+            )
+        except ValueError:
+            continue
+    return tuple(sequences)
 
 
 def _completed_model_values(bars: tuple[DailyBar, ...], open_dates: tuple[date, ...]) -> tuple[float, ...] | None:

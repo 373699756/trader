@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import lightgbm as lgb
 import numpy as np
 
@@ -13,7 +15,11 @@ from trader.training.infra.model_bundles.bundle_codec import (
     TrainedHeadModelBundle,
     TrainedLightGBMModelSnapshot,
     TrainedRidgeModelSnapshot,
+    TrainedTcnModelSnapshot,
 )
+
+if TYPE_CHECKING:
+    from trader.training.infra.profile.v5.network import TcnNetwork
 
 
 class TrainedHeadPredictor:
@@ -34,6 +40,17 @@ class TrainedHeadPredictor:
             for industry, model in bundle.industries
             if isinstance(model, TrainedLightGBMModelSnapshot)
         }
+        self._tcn: dict[str, TcnNetwork] = {}
+        if bundle.algorithm == "tcn":
+            from trader.training.infra.profile.v5.network import TcnNetwork
+
+            for industry, model in bundle.industries:
+                if not isinstance(model, TrainedTcnModelSnapshot):
+                    raise ValueError("V5 requires TCN industry models")
+                network = TcnNetwork(len(bundle.feature_ids) - 360, model.dropout)
+                network.load_tensors(model.weights)
+                network.eval()
+                self._tcn[industry] = network
 
     @property
     def profile_id(self) -> ScoringProfileId:
@@ -49,7 +66,7 @@ class TrainedHeadPredictor:
 
     @property
     def feature_ids(self) -> tuple[str, ...]:
-        return self._bundle.feature_ids
+        return tuple(n for n in self._bundle.feature_ids if not n.startswith("sequence_"))
 
     @property
     def exposure_contract(self) -> ExposureContract:
@@ -60,6 +77,8 @@ class TrainedHeadPredictor:
         return tuple(sorted(self._models))
 
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+        if self._bundle.algorithm == "tcn":
+            return self._predict_tcn(inputs)
         predictions: list[ModelPrediction] = []
         for item in inputs:
             selected = self._models.get(item.industry)
@@ -68,10 +87,34 @@ class TrainedHeadPredictor:
             predictions.append(self._predict_one(item, selected))
         return tuple(predictions)
 
+    def _predict_tcn(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+        predicted_by_code: dict[str, float] = {}
+        if len({item.code for item in inputs}) != len(inputs):
+            raise ValueError("V5 batch codes must be unique")
+        for industry in sorted({item.industry for item in inputs}):
+            model = self._models.get(industry)
+            if not isinstance(model, TrainedTcnModelSnapshot):
+                raise ValueError("V5 input industry is not covered")
+            selected = tuple(item for item in inputs if item.industry == industry)
+            for start in range(0, len(selected), 256):
+                batch = selected[start : start + 256]
+                if any(item.sequence is None or len(item.alpha_features) != len(self.feature_ids) for item in batch):
+                    raise ValueError("V5 input is missing its sequence or auxiliary features")
+                matrix = np.asarray(
+                    [(*item.alpha_features, *item.sequence.values) for item in batch if item.sequence is not None],
+                    dtype=np.float64,
+                )
+                matrix -= np.asarray(model.transformer_means)
+                matrix /= np.asarray(model.transformer_scales)
+                predicted = self._tcn[industry].predict(matrix)
+                for item, value in zip(batch, predicted, strict=True):
+                    predicted_by_code[item.code] = model.calibration_intercept + model.calibration_slope * float(value)
+        return tuple(ModelPrediction(item.code, predicted_by_code[item.code]) for item in inputs)
+
     def _predict_one(
         self,
         item: ModelInput,
-        model: TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot,
+        model: TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot | TrainedTcnModelSnapshot,
     ) -> ModelPrediction:
         matrix = np.asarray((item.alpha_features,), dtype=np.float64)
         if matrix.shape[1:] != (len(self.feature_ids),):
@@ -84,9 +127,11 @@ class TrainedHeadPredictor:
             predicted = float(
                 booster.predict(standardized, num_iteration=model.lightgbm_best_iteration, num_threads=1)[0]
             )
-        else:
+        elif isinstance(model, TrainedRidgeModelSnapshot):
             coefficients = np.asarray(model.ridge_coefficients, dtype=np.float64)
             predicted = float(model.ridge_intercept + standardized[0] @ coefficients)
+        else:
+            raise ValueError("V5 requires sequence batch inference")
         return ModelPrediction(
             item.code,
             model.calibration_intercept + model.calibration_slope * predicted,

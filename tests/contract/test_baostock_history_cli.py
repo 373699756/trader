@@ -35,7 +35,7 @@ def test_train_reports_calendar_timeout_before_model_training(monkeypatch, capsy
         pytest.fail("calendar timeout must stop before model training")
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", forbidden)
     monkeypatch.setattr("trader.training.entrypoints.v1.training.RunLearnedRankTraining", forbidden)
 
@@ -84,7 +84,7 @@ def test_v1_training_uses_its_own_admission_after_published_history(
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
     monkeypatch.setattr("trader.bootstrap.EvaluateAllHistoryTrainingDue", forbid_other_profiles)
     monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", forbid_other_profiles)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr("trader.training.infra.profile.v1.training.RunV1Training", fit_v1)
 
     assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", "--profile", "v1"]) == 0
@@ -101,7 +101,7 @@ def test_train_preserves_history_cancellation_and_failure(
 ) -> None:
     status = HistoryMaintenanceStatus(state, state, Path("data/market/history"), "tencent", None, None, None, None)
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
         "trader.training.entrypoints.commands.RunJointTraining",
         lambda _runtime: pytest.fail("cancelled or failed history must not start training"),
@@ -163,7 +163,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         lambda *_args, **_kwargs: PreparedFixture(NOW, industry_version="fixture"),
     )
 
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
         "trader.training.entrypoints.commands.RunJointTraining",
         lambda _runtime: pytest.fail("incomplete history must block training"),
@@ -210,7 +210,7 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(monk
         return _history()
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", download)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
         "trader.training.entrypoints.commands.RunJointTraining", lambda *args, **kwargs: pytest.fail("training ran")
     )
@@ -230,7 +230,7 @@ def test_train_cancellation_during_reference_preparation_returns_130(monkeypatch
         raise RuntimeError("reference_preparation_cancelled")
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
         "trader.training.entrypoints.commands.RunJointTraining", lambda *args, **kwargs: pytest.fail("training ran")
     )
@@ -274,7 +274,7 @@ def test_train_uses_valid_samples_despite_reported_price_gaps(
     )
     calls: list[object] = []
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
         "trader.training.entrypoints.commands.RunJointTraining",
         lambda runtime, **kwargs: calls.append(runtime) or 0,

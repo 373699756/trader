@@ -65,12 +65,12 @@
   function configuredScoringProfile() {
     if (typeof document.querySelector !== "function") return "";
     const meta = document.querySelector('meta[name="trader-default-scoring-profile"]');
-    return meta && ["v1", "v2", "v3"].includes(meta.content) ? meta.content : "";
+    return meta && ["v1", "v2", "v3", "v5"].includes(meta.content) ? meta.content : "";
   }
   function configuredLongProfile() {
     if (typeof document.querySelector !== "function") return "v2";
     const meta = document.querySelector('meta[name="trader-long-scoring-profile"]');
-    return meta && ["v1", "v2", "v3"].includes(meta.content) ? meta.content : "v2";
+    return meta && ["v1", "v2", "v3", "v5"].includes(meta.content) ? meta.content : "v2";
   }
   function deliveryProfile(strategy) {
     return strategy === "long" ? state.longProfile : state.profile;
@@ -195,7 +195,7 @@
   }
 
   async function selectProfile(profile) {
-    if (!["v1", "v2", "v3"].includes(profile) || profile === state.profile) return;
+    if (!["v1", "v2", "v3", "v5"].includes(profile) || profile === state.profile) return;
     const strategy = state.strategy;
     state.profile = profile;
     document.querySelectorAll(".profile-tab").forEach((button) => {

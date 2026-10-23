@@ -98,13 +98,24 @@ class HistoryTrainingPoint:
     trade_date: date
     qfq_close_price: float | None
     qfq_amount: float | None
+    qfq_open: float | None = None
+    qfq_high: float | None = None
+    qfq_low: float | None = None
+    raw_volume: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.trade_date) is not date:
             raise ValueError("history training point date is invalid")
         if any(
             value is not None and (not math.isfinite(value) or value < 0.0)
-            for value in (self.qfq_close_price, self.qfq_amount)
+            for value in (
+                self.qfq_close_price,
+                self.qfq_amount,
+                self.qfq_open,
+                self.qfq_high,
+                self.qfq_low,
+                self.raw_volume,
+            )
         ):
             raise ValueError("history training point contains an invalid number")
 

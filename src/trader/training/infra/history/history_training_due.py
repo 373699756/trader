@@ -42,6 +42,7 @@ from trader.training.infra.model_bundles.profile_publication import (
 )
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 
 
 @dataclass(frozen=True)
@@ -266,10 +267,14 @@ def _mature_label_cutoff(
 
 
 def EvaluateAllHistoryTrainingDue(
-    history_root: Path, training_root: Path, observed_at: datetime
+    history_root: Path,
+    training_root: Path,
+    observed_at: datetime,
+    *,
+    selected_profile: TrainedProfileContract | None = None,
 ) -> tuple[HeadTrainingStatus, ...]:
     results: list[HeadTrainingStatus] = []
-    for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
+    for profile in (selected_profile,) if selected_profile is not None else (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
         heads, failure = _inspect_profile(training_root, profile)
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             bundle = next((item for item in heads if item.strategy is strategy), None)
@@ -336,7 +341,11 @@ class PublishedTrainingState:
         except HistoryControlError:
             history = None
         results: list[HeadTrainingStatus] = []
-        for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
+        for profile in (
+            V2_TRAINING_PROFILE,
+            V3_TRAINING_PROFILE,
+            *((V5_TRAINING_PROFILE,) if self._owned_profile == "v5" else ()),
+        ):
             heads, failure = _inspect_profile(self._training_root, profile)
             for strategy in (Strategy.TOMORROW, Strategy.D25):
                 bundle = next((item for item in heads if item.strategy is strategy), None)

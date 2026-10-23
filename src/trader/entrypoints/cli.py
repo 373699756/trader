@@ -42,7 +42,7 @@ def BuildParser() -> argparse.ArgumentParser:
     performance.add_argument("--baseline", type=Path)
     training = subparsers.add_parser("train", help="Maintain history; train V2/V3 by default or explicitly train V1.")
     training.add_argument(
-        "--profile", choices=("v1",), default=argparse.SUPPRESS, help="Train the new V1 Shadow model."
+        "--profile", choices=("v1", "v5"), default=argparse.SUPPRESS, help="Train explicit V1 or V5 dual-head models."
     )
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
@@ -81,10 +81,10 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         return 2
     profile_override = cast(ScoringProfileId | None, args.profile)
     if args.command in ("sync", "train"):
-        if args.profile is not None and not (args.command == "train" and args.profile == "v1"):
+        if args.profile is not None and not (args.command == "train" and args.profile in {"v1", "v5"}):
             parser.error(f"{args.command} does not accept --profile")
         try:
-            _configuration_payload(runtime, None)
+            _configuration_payload(runtime, "v5" if args.command == "train" and profile_override == "v5" else None)
         except (OSError, RuntimeError, ValueError) as exc:
             print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}))
             return 2
@@ -164,6 +164,21 @@ def _run_history_download(config_path: Path, profile: ScoringProfileId | None = 
     except KeyboardInterrupt:
         print(json.dumps({"schema_version": "joint_training_result", "status": "cancelled"}))
         return 130
+    except ModuleNotFoundError as exc:
+        if profile != "v5" or exc.name != "torch":
+            raise
+        print("V5需要PyTorch CPU依赖，请按下载训练文档安装 .[v5] 后重试。", file=sys.stderr)
+        print(
+            json.dumps(
+                {
+                    "schema_version": "profile_training_result",
+                    "profile": "v5",
+                    "status": "failed",
+                    "category": "dependency_missing",
+                }
+            )
+        )
+        return 1
     except AkshareCalendarTimeoutError as exc:
         print(
             f"train: 交易日历准备超时，AkShare/Sina 在 {exc.timeout_seconds:g} 秒内未完成；"
@@ -222,6 +237,9 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
     research = LoadResearchSettings(config_dir)
     cost = LoadExecutionCostPolicy(config_dir)
     cost_scenarios = LoadEvaluationCostScenarios(config_dir)
+    fit_dates = {"v1": training_v1.fit_dates, "v2": training_v2.fit_dates, "v3": training_v3.fit_dates}
+    if strategy.scoring_profile == "v5":
+        fit_dates["v5"] = LoadProfileTrainingSettings(runtime.project_root, "v5").fit_dates
     return {
         "status": "ok",
         "runtime_version": runtime.config_version,
@@ -231,7 +249,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "runtime_dir": str(runtime.runtime_dir),
         "data_dir": str(runtime.data_paths.root),
         "history_sessions": download.sessions,
-        "training_fit_dates": {"v1": training_v1.fit_dates, "v2": training_v2.fit_dates, "v3": training_v3.fit_dates},
+        "training_fit_dates": fit_dates,
         "research_arms": len(research.ablation_arms),
         "terminal_holdout_sessions": research.terminal_holdout_sessions,
         "online_round_trip_base_rate": cost.round_trip_base_rate,

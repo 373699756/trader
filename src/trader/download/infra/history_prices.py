@@ -167,7 +167,11 @@ SELECT records.trade_date,
        records.raw_trading_status,
        records.qfq_trading_status,
        records.qfq_close,
-       records.qfq_amount
+       records.qfq_amount,
+       records.qfq_open,
+       records.qfq_high,
+       records.qfq_low,
+       records.raw_volume
 FROM daily_records AS records
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
@@ -1044,9 +1048,22 @@ def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
 
 
 def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
-    if len(row) != 8:
+    if len(row) != 12:
         raise HistoryPricePartitionError("history month training row shape is invalid")
-    trade_date_value, code, board, cell_status, raw_status, qfq_status, qfq_close, qfq_amount = row
+    (
+        trade_date_value,
+        code,
+        board,
+        cell_status,
+        raw_status,
+        qfq_status,
+        qfq_close,
+        qfq_amount,
+        qfq_open,
+        qfq_high,
+        qfq_low,
+        raw_volume,
+    ) = row
     if (
         not isinstance(trade_date_value, str)
         or not isinstance(code, str)
@@ -1070,6 +1087,10 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
             trade_date,
             _training_number(qfq_close),
             _training_number(qfq_amount),
+            _training_number(qfq_open),
+            _training_number(qfq_high),
+            _training_number(qfq_low),
+            _training_number(raw_volume),
         )
         if raw_status == qfq_status == "trading"
         else None

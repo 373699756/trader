@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import asdict, dataclass
+from functools import partial
 from typing import Literal
 
 import lightgbm as lgb
@@ -15,6 +17,7 @@ from trader.training.application.tomorrow_training import (
 )
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
+from trader.training.infra.profile.v5.settings import TcnCalibrationError, TcnFittingParameters
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TrainingIndustryCounts,
@@ -41,7 +44,12 @@ class RidgeFittingParameters:
     penalty: float
 
 
-ModelFittingParameters = LightGBMFittingParameters | RidgeFittingParameters
+ModelFittingParameters = LightGBMFittingParameters | RidgeFittingParameters | TcnFittingParameters
+
+
+def FittingParameterDocument(parameters: ModelFittingParameters) -> dict[str, object]:
+    """Project fitting identity at the persisted contract boundary."""
+    return asdict(parameters)
 
 
 @dataclass(frozen=True)
@@ -72,12 +80,33 @@ def FitIndustryModels(
         if (
             counts.training < parameters.minimum_industry_training_rows
             or counts.calibration == 0
-            or (isinstance(parameters, LightGBMFittingParameters) and counts.early_stopping == 0)
+            or (
+                isinstance(parameters, (LightGBMFittingParameters, TcnFittingParameters)) and counts.early_stopping == 0
+            )
+            or (isinstance(parameters, TcnFittingParameters) and counts.calibration < 2)
             or counts.validation == 0
         ):
             _publish(progress, contract, _fit_progress(position, len(workloads), len(models)))
             continue
-        models[counts.industry] = _fit_industry(samples, counts, contract, parameters)
+        if isinstance(parameters, TcnFittingParameters):
+            from trader.training.infra.profile.v5.fitting import FitTcnIndustry
+
+            try:
+                models[counts.industry] = FitTcnIndustry(
+                    samples,
+                    counts,
+                    contract,
+                    parameters,
+                    partial(
+                        _publish, progress, contract, _FitProgress("running", position - 1, len(workloads), len(models))
+                    ),
+                )
+            except TcnCalibrationError:
+                logging.getLogger(__name__).warning(
+                    "v5_industry_calibration_unavailable", extra={"industry": counts.industry}
+                )
+        else:
+            models[counts.industry] = _fit_industry(samples, counts, contract, parameters)
         _publish(progress, contract, _fit_progress(position, len(workloads), len(models)))
     if not workloads:
         _publish(progress, contract, _FitProgress("completed", 0, 0))
@@ -110,7 +139,7 @@ def _fit_industry(
     samples: SQLiteTrainingSampleIndex,
     counts: TrainingIndustryCounts,
     contract: TrainedHeadContract,
-    parameters: ModelFittingParameters,
+    parameters: LightGBMFittingParameters | RidgeFittingParameters,
 ) -> dict[str, object]:
     data = samples.industry_data(counts, contract)
     train = data.training
@@ -209,6 +238,7 @@ def _fit_lightgbm(
 __all__ = [
     "LightGBMFittingParameters",
     "ModelFittingParameters",
+    "FittingParameterDocument",
     "RidgeFittingParameters",
     "FitIndustryModels",
 ]

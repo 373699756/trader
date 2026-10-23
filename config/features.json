@@ -53,6 +53,16 @@
           "qfq_residual_momentum_60d_skip5"
         ]
       }
+    },
+    {
+      "profile": "v5",
+      "history_sessions": 62,
+      "momentum_horizons": [20, 40, 60],
+      "market_state_momentum_horizons": [],
+      "heads": {
+        "tomorrow": ["qfq_return_1d", "qfq_return_3d", "qfq_return_5d", "qfq_residual_momentum_20d_skip5", "qfq_residual_momentum_40d_skip5", "qfq_residual_momentum_60d_skip5"],
+        "d25": ["qfq_return_3d", "qfq_return_5d", "qfq_residual_momentum_20d_skip5", "qfq_residual_momentum_40d_skip5", "qfq_residual_momentum_60d_skip5"]
+      }
     }
   ],
   "factor_index": {

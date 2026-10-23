@@ -23,6 +23,7 @@ from trader.recommendation.domain.market.models import (
 )
 from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
+from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_version
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -184,12 +185,15 @@ class QuoteCache:
             for feature in features:
                 by_time.setdefault(feature.observed_at, []).append(feature.quote.code)
         completed: dict[str, tuple[tuple[str, float], ...]] = {}
+        sequences: dict[str, ModelPriceVolumeSequence] = {}
         for observed_at, codes in by_time.items():
             completed.update(self._history.completed_model_features(codes, observed_at))
+            sequences.update(self._history.completed_model_sequences(codes, observed_at))
         return tuple(
             replace(
                 feature,
                 values={**feature.values, **dict(completed.get(feature.quote.code, ()))},
+                model_sequence=sequences.get(feature.quote.code),
                 quote=QuoteWithIndustry(
                     feature.quote, references.get(feature.quote.code), ShanghaiNow(feature.observed_at).date()
                 ),

@@ -111,6 +111,16 @@ Missing trading dates remain pending. Supplier socket timeouts are inactivity
 limits; the diagnostic child deadline bounds the whole child command.
 The report never authorizes replacing complete history with Tencent.
 
+V5的真实小范围训练通过同一入口执行（先安装v5可选CPU依赖）：
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile v5-training \
+  --v5-probe-directory /tmp/trader-v5-industry-probe \
+  --command-timeout-seconds 600 --output /tmp/trader-v5-industry-report.json
+```
+
+输出目录必须位于仓库及活动历史之外且尚不存在。工具只读捕获已发布历史身份，按当前最大行业选择上市最早的最多40股，在输出目录导出真实日线与参考副本；导出核验所选revision身份和行哈希，不冒充全历史完整性扫描。随后按生产20000行行业门槛进行两个epoch的真实CPU双头拟合、校准、发布及重载，报告实际样本、耗时、RSS和失败原因。网络调用及活动数据写入为零；源码、模型与样本都不会自动切到活动目录。该小范围工程探测不证明全市场资源、默认100epoch训练、收益或生产准入通过；超时或取消可能保留外部副本用于诊断。
+
 Audit active qfq paired publication and checkpoint state:
 
 ```bash

@@ -21,6 +21,7 @@ Profile = Literal[
     "baostock-qfq-shadow",
     "tencent-download",
     "tencent-history-window",
+    "v5-training",
     "history-sqlite",
     "history-source-compare",
     "market-factor-compare",
@@ -77,10 +78,11 @@ class DiagnosticOptions:
     long_evidence_output: Path | None = None
     company_evidence_database: Path | None = None
     company_replay_directory: Path | None = None
+    v5_probe_directory: Path | None = None
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
     qfq_database: Path | None = None
-    scoring_profile: Literal["v2", "v3", "both"] | None = None
+    scoring_profile: Literal["v1", "v2", "v3", "v5", "both"] | None = None
     market_sources: tuple[str, ...] = ("tencent", "eastmoney", "sina", "baostock")
     market_profiles: tuple[str, ...] = ("v2", "v3")
     market_sizes: tuple[int, ...] = (120, 720, 0)

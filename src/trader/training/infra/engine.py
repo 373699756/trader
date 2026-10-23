@@ -51,8 +51,10 @@ from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
+from trader.training.infra.model_bundles.documents import BuildIndustryModelDocument, BuildPredictionMetricsDocument
 from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles, PublishProfileBundles
-from trader.training.infra.model_fitting import FitIndustryModels, LightGBMFittingParameters
+from trader.training.infra.model_fitting import FitIndustryModels, FittingParameterDocument, LightGBMFittingParameters
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_builder import (
     BuildJointTrainingSamples,
     BuildTrainingSamples,
@@ -185,6 +187,7 @@ class ProfileTrainingRequest:
             or len(set(strategies)) != len(strategies)
             or any(contract != self.profile.head_for_strategy(contract.strategy) for contract in self.contracts)
             or (self.profile.algorithm == "lightgbm") != isinstance(self.settings.fitting, LightGBMFittingParameters)
+            or (self.profile.algorithm == "tcn") != isinstance(self.settings.fitting, TcnFittingParameters)
         ):
             raise ValueError("profile training request contains a foreign or duplicate head contract")
 
@@ -539,6 +542,8 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
                     _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "started", 0, 1))
                     PublishProfileBundles(request.train_root, request.profile, tuple(prepared))
                     _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
+                except InterruptedError:
+                    raise
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     completed = [
                         replace(item, status="blocked", model_hash="", failure_reasons=(_reason(exc),))
@@ -557,6 +562,8 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
         if all(item.status != "blocked" for item in completed):
             cache.clear()
             PruneEmptySampleDirectories(request.sample_root, request.sample_root.parent)
+    except InterruptedError:
+        raise
     except (HistoryTrainingInputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         peak_bytes = max(peak_bytes, SampleCacheBytes(cache))
         reason = _reason(exc)
@@ -620,7 +627,7 @@ def _require_industry_coverage(
     archive: _TrainingInputSnapshot,
     split: TrainingDateSplit,
     history_sessions: int,
-    algorithm: Literal["lightgbm", "ridge"],
+    algorithm: Literal["lightgbm", "ridge", "tcn"],
     minimum_training_rows: int,
 ) -> TomorrowTrainingWindow:
     window = TomorrowTrainingWindow(split)
@@ -628,7 +635,7 @@ def _require_industry_coverage(
         raise ValueError("history_industry_coverage_insufficient")
     for anchors in (
         split.model_fit_dates,
-        *((split.early_stopping_dates,) if algorithm == "lightgbm" else ()),
+        *((split.early_stopping_dates,) if algorithm in {"lightgbm", "tcn"} else ()),
         split.calibration_dates,
         split.confirmation_dates,
         split.daily_proxy_holdout_dates,
@@ -663,7 +670,7 @@ def _prepare_locked_split(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.active_snapshot_hash,
             fit_dates=settings.fit_dates,
-            early_stopping_sessions=20 if profile.algorithm == "lightgbm" else 0,
+            early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
             history_sessions=profile.history_sessions,
         )
     except ValueError:
@@ -755,7 +762,7 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
             validation_rows,
             request.run_id,
         )
-        model = _model_document(models)
+        model = BuildIndustryModelDocument(models)
         model_hash = ContentHash(model)
         model["content_hash"] = model_hash
         report = _report_document(context, models, model_hash, request.metrics)
@@ -802,6 +809,8 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
             sample_database_peak_bytes=request.peak_bytes,
         )
         return result, staging
+    except InterruptedError:
+        raise
     except (LightGBMError, OSError, TypeError, ValueError, RuntimeError, sqlite3.Error) as exc:
         if staging is not None:
             shutil.rmtree(staging, ignore_errors=True)
@@ -852,18 +861,9 @@ def _report_document(
         "prediction_return_failure_reasons": ["daily_close_proxy_not_point_in_time"],
         "automatic_model_update": False,
     }
+    if context.profile.algorithm == "tcn":
+        document["prediction_metrics"] = BuildPredictionMetricsDocument(models)
     return document
-
-
-def _model_document(models: dict[str, dict[str, object]]) -> dict[str, object]:
-    return {
-        "industries": {
-            industry: {
-                key: value for key, value in parameters.items() if key not in {"training_rows", "validation_rows"}
-            }
-            for industry, parameters in models.items()
-        }
-    }
 
 
 def _metadata_document(
@@ -891,6 +891,8 @@ def _metadata_document(
         "dependencies": (
             {"lightgbm": version("lightgbm"), "numpy": version("numpy")}
             if context.profile.algorithm == "lightgbm"
+            else {"torch": version("torch"), "numpy": version("numpy")}
+            if context.profile.algorithm == "tcn"
             else {"numpy": version("numpy")}
         ),
         "training_input": training_input,
@@ -999,11 +1001,15 @@ def _training_contract_hash(
             "implementation_identity": TrainingImplementationIdentity(),
             "dependencies": {"numpy": version("numpy"), "lightgbm": version("lightgbm")}
             if profile.algorithm == "lightgbm"
+            else {"numpy": version("numpy"), "torch": version("torch")}
+            if profile.algorithm == "tcn"
             else {"numpy": version("numpy")},
             "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
             "history_sessions": profile.history_sessions,
-            "feature_day_axis": "actual_trade_bars_skip_tencent_inferred_suspension",
+            "feature_day_axis": "complete_market_sessions_before_signal"
+            if profile.algorithm == "tcn"
+            else "actual_trade_bars_skip_tencent_inferred_suspension",
             "fit_dates": settings.fit_dates,
             "algorithm": profile.algorithm,
             "strategy_head": contract.strategy.value,
@@ -1019,7 +1025,9 @@ def _training_contract_hash(
             "training_cost_bps": 0,
             "evaluation_cost_bps": [20, 50, 100],
             "minimum_industry_training_rows": fitting.minimum_industry_training_rows,
-            "model_parameters": {"ridge_penalty": fitting.penalty}
+            "model_parameters": FittingParameterDocument(fitting)
+            if isinstance(fitting, TcnFittingParameters)
+            else {"ridge_penalty": fitting.penalty}
             if not isinstance(fitting, LightGBMFittingParameters)
             else {
                 "objective": "regression_l2",

@@ -50,7 +50,7 @@ class DataPaths:
 
 
 def _validate_profile(profile: str) -> None:
-    if profile not in ("v1", "v2", "v3"):
+    if profile not in ("v1", "v2", "v3", "v5"):
         raise ValueError("data_profile_invalid")
 
 
