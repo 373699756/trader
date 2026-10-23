@@ -9,6 +9,7 @@ import pytest
 
 from tests.unit.application.scoring_helpers import profile_for
 from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
+from trader.recommendation.application.pipeline.local_score import model_scoring
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
@@ -108,6 +109,32 @@ def test_model_residual_population_includes_non_candidate_peers(application_feat
     assert tuple(item.code for item in batch.predictions) == (candidate.quote.code,)
     assert service._state is not None
     assert len(service._state.momenta) == 2
+
+
+def test_model_builds_one_vector_per_requested_stock(application_feature_factory, monkeypatch) -> None:
+    candidates = tuple(
+        _model_feature(application_feature_factory(code, NOW), offset=index * 0.01, amihud=1.0 + index)
+        for index, code in enumerate(("600000", "600001"))
+    )
+    peer = _model_feature(application_feature_factory("600002", NOW), offset=0.02, amihud=3.0)
+    calls: list[int] = []
+    original = model_scoring._model_feature_vector
+
+    def record_vector(index, context):
+        calls.append(index)
+        return original(index, context)
+
+    monkeypatch.setattr(model_scoring, "_model_feature_vector", record_vector)
+    service = _service(_Predictor())
+    batch = service.score(candidates, context=ModelScoringContext(population_features=(*candidates, peer)))
+
+    assert tuple(item.code for item in batch.predictions) == tuple(item.quote.code for item in candidates)
+    assert calls == [0, 1]
+    assert {item.calculator_group for item in service.computation_status().stage_durations} >= {
+        "cost_reference",
+        "model_rows",
+        "model_input_vectors",
+    }
 
 
 @pytest.mark.parametrize("profile_id", ("v2", "v3"))

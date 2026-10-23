@@ -624,14 +624,6 @@ class MarketInputCoordinator(DataRefreshPort):
         try:
             shared = self._cached_input(request)
             candidate_features = shared.candidate_features
-            if request.strategy is Strategy.TOMORROW and shared.requested_codes:
-                scoring_batch = self._score_features(
-                    tuple(item.quote.code for item in shared.candidate_features),
-                    request.observed_at,
-                    include_intraday_tail=True,
-                    session=request.session,
-                )
-                candidate_features = scoring_batch.features
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise DataRefreshUnavailableError(_failure_code(exc)) from exc
         reference_version = self._market.reference_version()
@@ -710,7 +702,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 if request.phase == "close_fallback"
                 else tuple(item.quote.code for item in candidate_features),
                 request.observed_at,
-                include_intraday_tail=False,
+                include_intraday_tail=request.strategy is Strategy.TOMORROW,
                 session=request.session,
             )
             if requested

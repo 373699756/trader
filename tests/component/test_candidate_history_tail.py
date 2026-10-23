@@ -226,6 +226,17 @@ def test_candidate_refresh_exposes_updated_features_and_isolates_one_conflicting
     assert features[0].values["return_60d"] is not None
     read = service.read_candidate_features(codes, NOW)
     assert {feature.quote.code: feature.history_days for feature in read} == {"600001": 61, "600002": 0}
+    latency_stages = service.quotes.gateway.local_latencies
+    assert {
+        "candidate_history_lookup",
+        "candidate_research_lookup",
+        "candidate_feature_build",
+        "candidate_issuer_risk",
+    } <= set(latency_stages)
+    assert "candidate_intraday_lookup" not in latency_stages
+    tail_read = service.read_candidate_features(codes, NOW, include_intraday_tail=True)
+    assert tuple(item.quote.code for item in tail_read) == codes
+    assert "candidate_intraday_lookup" in latency_stages
     assert len(supplier.calls) == 2
     health = service.health()
     assert health["history_tail_quality_counts"]["adjustment_conflict"] == 1

@@ -283,6 +283,7 @@ def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_chan
 
 def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(
     application_feature_factory,
+    monkeypatch,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
     feature = application_feature_factory("600001", observed_at)
@@ -294,9 +295,19 @@ def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(
     )
     _prime_scoring_cache(adapter, observed_at)
     shared_epoch = adapter.data.scoring_epoch()
+    scoring_reads: list[bool] = []
+    original_score_features = adapter.data._score_features
+
+    def record_scoring_read(*args, **kwargs):
+        scoring_reads.append(kwargs["include_intraday_tail"])
+        return original_score_features(*args, **kwargs)
+
+    monkeypatch.setattr(adapter.data, "_score_features", record_scoring_read)
 
     adapter.data.refresh(_request(observed_at, strategy=Strategy.TOMORROW))
+    assert scoring_reads == [True]
     adapter.data.refresh(_request(observed_at, strategy=Strategy.D25))
+    assert scoring_reads == [True, False]
     assert adapter.data.scoring_epoch() == shared_epoch
 
     market._features = (

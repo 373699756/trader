@@ -468,34 +468,43 @@ class MarketFeatureService:
         if not normalized:
             return ()
         action_restrictions: dict[str, set[str]] = {}
+        started = self._monotonic()
         histories = self.history.cached(
             normalized,
             observed_at=observed_at,
             fresh_only=True,
             action_restrictions=action_restrictions,
         )
+        self.quotes.gateway.record_local_latency("candidate_history_lookup", self._elapsed_ms(started))
+        started = self._monotonic()
         research = self.research.cached(
             normalized,
             include_structured=include_structured_research,
             action_restrictions=action_restrictions,
             as_of=observed_at,
         )
+        self.quotes.gateway.record_local_latency("candidate_research_lookup", self._elapsed_ms(started))
+        started = self._monotonic()
         intraday = (
             self.intraday.cached(normalized, action_restrictions=action_restrictions, observed_at=observed_at)
             if include_intraday_tail
             else None
         )
-        features = self._apply_issuer_risk_facts(
-            self.quotes.build_candidate_features(
-                self.quotes.candidate_snapshot(normalized),
-                histories,
-                observed_at,
-                research_observations=research,
-                intraday_minutes=intraday,
-                action_restrictions=action_restrictions,
-            ),
+        if include_intraday_tail:
+            self.quotes.gateway.record_local_latency("candidate_intraday_lookup", self._elapsed_ms(started))
+        started = self._monotonic()
+        features = self.quotes.build_candidate_features(
+            self.quotes.candidate_snapshot(normalized),
+            histories,
             observed_at,
+            research_observations=research,
+            intraday_minutes=intraday,
+            action_restrictions=action_restrictions,
         )
+        self.quotes.gateway.record_local_latency("candidate_feature_build", self._elapsed_ms(started))
+        started = self._monotonic()
+        features = self._apply_issuer_risk_facts(features, observed_at)
+        self.quotes.gateway.record_local_latency("candidate_issuer_risk", self._elapsed_ms(started))
         if include_intraday_tail:
             self.intraday.record_feature_coverage(normalized, features)
         return features

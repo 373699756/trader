@@ -326,14 +326,18 @@ class ProductionModelScoringService:
         population = {feature.quote.code: feature for feature in reference_features}
         if len(population) != len(reference_features):
             raise ValueError("model reference population must contain unique codes")
+        cost_started = self._monotonic()
         cost_reference = self._cost_reference(reference_features, context.population_identity)
+        self._record_stage("cost_reference", cost_started)
         deadline.require_time("after_cost_reference")
         cost_boards = frozenset(board for board, _reference in cost_reference.boards)
         population.update((feature.quote.code, feature) for feature in features)
+        rows_started = self._monotonic()
         rows, missing_population_codes = _eligible_rows(
             tuple(population.values()),
             self._row_contract,
         )
+        self._record_stage("model_rows", rows_started)
         missing_codes = tuple(
             sorted(
                 {code for code in missing_population_codes if code in requested_codes}
@@ -421,31 +425,31 @@ class ProductionModelScoringService:
             )
             affected.clear()
         computed_groups = () if shared is not None else invalidation.affected_groups
-        inputs = tuple(
-            ModelInput(
-                row.code,
-                tuple(
-                    _model_feature_vector(
-                        index,
-                        _ModelFeatureVectorContext(
-                            daily_returns[index],
-                            momenta[index],
-                            residuals,
-                            market_state,
-                            self._runtime_features.return_horizons,
-                            self._runtime_features.momentum_horizons,
-                            self._runtime_features.market_state_horizons,
-                            self._feature_ids,
-                        ),
-                    )[feature_id]
-                    for feature_id in self._feature_ids
+        vector_started = self._monotonic()
+        inputs_by_row: list[ModelInput] = []
+        for index, row in enumerate(ordered_rows):
+            if row.code not in requested_codes or (
+                self._exposure_contract.requires_industry and row.industry not in self._industry_ids
+            ):
+                continue
+            vector = _model_feature_vector(
+                index,
+                _ModelFeatureVectorContext(
+                    daily_returns[index],
+                    momenta[index],
+                    residuals,
+                    market_state,
+                    self._runtime_features.return_horizons,
+                    self._runtime_features.momentum_horizons,
+                    self._runtime_features.market_state_horizons,
+                    self._feature_ids,
                 ),
-                row.industry,
             )
-            for index, row in enumerate(ordered_rows)
-            if row.code in requested_codes
-            and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
-        )
+            inputs_by_row.append(
+                ModelInput(row.code, tuple(vector[feature_id] for feature_id in self._feature_ids), row.industry)
+            )
+        inputs = tuple(inputs_by_row)
+        self._record_stage("model_input_vectors", vector_started)
         predictions = previous.predictions if previous is not None and inputs == previous.inputs else None
         if not inputs:
             predictions = ()
