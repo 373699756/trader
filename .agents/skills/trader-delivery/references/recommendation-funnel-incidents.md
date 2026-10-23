@@ -57,23 +57,15 @@ object and therefore preserves its original timezone.
 
 ## 4. Checkpoint: funnel-semantic-classification
 
-Read one strategy and one trade date from the typed scheduler input-quality projection. Classify every stage separately:
-
-```text
-requested_candidates
-  -> candidate_features
-  -> security_master
-  -> history
-  -> full_scored
-  -> selected_executable / selected_observe
-```
+Read one strategy and one trade date from the typed scheduler projection. Classify each active stage using `PIPELINE_STAGE_ORDER` and `ProjectPipelineFacts` in `src/trader/recommendation/application/pipeline/quality_check/pipeline_status.py`, together with the eleven-stage authority in `docs/2_工程设计.md`. Read each stage's status, counts and reasons; older input-quality facets and historical funnel counts do not define a second active pipeline.
 
 - `candidate_quotes_pending` means candidate feature collection has not completed; render it as collecting, not as a
   confirmed numeric zero.
 - `security_master_coverage_incomplete` means candidate features may be complete while the reference-data quality gate
   legitimately prevents formal publication.
-- A nonzero `full_scored` with zero selected is not automatically data loss: the strategy may legally return 0 after
-  filters, score/action thresholds, risk, TopK, board, or industry constraints.
+- A nonzero scored population with zero selected is not automatically data loss: the strategy may legally return 0 after
+  filters, score/action thresholds, risk, fixed-seat selection or board constraints. Use the current selection authority;
+  do not restore retired industry limits or candidate truncation from historical incidents.
 - Historical readiness is per stock and per strategy/profile. A coverage ratio is a health metric, not permission to
   discard scores that already exist. If `full_scored > 0` while a legacy `history_coverage_incomplete` batch blocker
   prevents publication, classify `global_history_gate_blocked_eligible_candidates`; do not tune the percentage.
@@ -111,7 +103,8 @@ only task must instead mark this checkpoint unavailable and must not claim the i
   failure shape. Capture relevant stage counts and the remaining primary blocker.
 - Use `full` when browser delivery or performance is affected, but remember that its isolated browser fixture does not
   prove the already-running desktop service loaded new code.
-- When Web behavior/layout changes, run the repository desktop gate at 1280x720, 1440x900, and 1920x1080.
+- When Web behavior/layout changes, verify readability, interaction and data consistency in a current stable desktop
+  Chrome, Edge or Firefox, using widths relevant to the changed layout. AGENTS.md does not require fixed resolutions.
 - Keep the service's controlled supplier degradation distinct from a failed product gate.
 
 ## Closure evidence

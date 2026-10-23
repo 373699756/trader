@@ -1,45 +1,50 @@
 ---
 name: trader-delivery
-description: "实施和审查 Trader 仓库改动，按风险选择业务合同、消费者检查、诊断和交付证据。适用于代码、配置、文档与 skill 修改；纯日志释义或无需仓库检查的问题不触发交付流程。"
+description: "规划、实施或审查 Trader 仓库改动，按风险核对业务影响、消费者和交付证据。仅解释日志且无需仓库检查时不使用。"
 ---
 
 # Trader Delivery
 
-Deliver one repository change without reopening a known failure or regressing an adjacent boundary.
+## 先确定任务模式
 
-## Start the batch
+遵守用户要求和仓库 AGENTS.md。本 skill 只负责路由、业务影响和交付证据；Python 设计与编码使用 [Python engineering guide](../python-engineering-guide/SKILL.md)，不重复执行两份流程。
 
-1. Follow the repository `AGENTS.md`; this skill owns delivery routing and evidence, not a second copy of business or Python rules. For Python changes, use the available [Python engineering guide](../python-engineering-guide/SKILL.md) for coding and interface decisions. Apply both once; do not repeat their workflows or create a second ledger.
-2. Record the current branch, its upstream relationship, staged and unstaged files, and the exact task file scope before editing. Preserve unrelated user changes.
-3. Read the applicable authority before planning: `docs/1_评分逻辑.md` owns scoring and profit-validation rules; `docs/2_工程设计.md` owns product, architecture, timeline, runtime, API/Web, operations and acceptance; `docs/4_下载训练.md` owns download, historical data, training artifacts and replay engineering. `docs/3_工程实施.md` is the only active progress and evidence ledger. Follow `docs/README.md` for navigation; do not recreate retired blueprint or Changelog owners.
-4. Classify the change before selecting checks. For behavior or cross-boundary changes, use [the change-impact matrix](references/change-impact-matrix.md) and include affected consumers. For docs, skills or metadata, use the lightweight route in [delivery evidence](references/delivery-evidence.md); inspect only the contracts and references relevant to the edit.
+| 用户当前任务 | 本轮产物与边界 |
+| --- | --- |
+| 规划、讨论方案，或宿主处于 Plan Mode | 只读调查与方案；不登记实施、不修改文件、不提交或推送 |
+| 只读审查、诊断 | 有位置和证据的发现、未验证项；不自动转为修复或发布 |
+| 已授权实施 | 完成实现、适用门禁与 AGENTS.md 要求的单批交付；已有授权不重复询问 |
 
-## Plan and implement
+只在进入实施时登记阶段；小范围修改沿用轻量路线。读取过 skill 不是完成证据，检查未运行不能写成通过。
 
-- For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, use the lightweight route in [the delivery evidence guide](references/delivery-evidence.md). Follow `AGENTS.md` when deciding whether a ledger entry is required; do not create one for formality. Do not manufacture an architecture comparison, multi-step plan, regression test, or `Regression-Key`.
-- For defects, repeated regressions, public-contract changes, or cross-boundary work, state the user-visible symptom, confirmed evidence, root cause status (`confirmed` or `pending verification`), target architecture, in-scope files, excluded boundaries, and completion conditions. Use a stable `Regression-Key` only for a repeated defect family.
-- Compare a local patch with a systemic repair when ownership, representation, resource orchestration, or timing crosses modules. Choose from evidence, not diff size.
-- Complete the implementation slice first, then add or change only the contracts and tests required by the actual risk. When regression proof is required, cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
-- For Python naming changes, apply [the Python engineering skill's naming and migration rules](../python-engineering-guide/references/coding-standard.md#3-命名格式与可读性); this delivery skill does not define a second naming contract.
-- For scheduling, freezing, current/history, or Web visibility changes, use the hot/cold five-period matrix in the authoritative design. A single timestamp or fixture is insufficient.
-- For state or JSON changes, trace the typed value from owner to final serializer and browser consumer. Do not add dictionary fallbacks or parallel status sources.
-- For candidate, score, model diagnostic, cost gate, risk, fusion, action, ranking, decision identity, or score research changes, read [the scoring-chain guide](references/scoring-chain.md) and trace the changed meaning through every listed owner and consumer.
-- For concurrency or deadlines, account separately for queue wait, vendor attempts, validation, persistence, publication, cancellation, and shutdown.
+## 开始与资料选择
 
-## Diagnose and verify
+先确认分支、上游、已暂存与未暂存修改及本批范围，保留其它任务的修改。按实际影响读取权威章节：docs/1_评分逻辑.md 管评分和收益准入；docs/2_工程设计.md 管产品、架构、运行、API/Web和验收；docs/4_下载训练.md 管下载、历史、训练和回溯。导航见 docs/README.md，进度与证据只维护 docs/3_工程实施.md，不恢复旧 Changelog 所有者。
 
-Read [the runtime diagnostics guide](references/runtime-diagnostics.md) when diagnosing or changing running behavior, suppliers, history, Web, performance, or browser delivery. A documentation mention alone does not require live probes. Use `scripts/diagnose_runtime.py` as the only public diagnostic CLI. Keep each implementation in its owning `scripts/runtime_diagnostics/` module; do not recreate standalone wrapper scripts or duplicate probe logic in the orchestrator.
+| 触发情形 | 此时读取 | 要获得的证据 |
+| --- | --- | --- |
+| 文档、skill、元数据且无运行合同变化 | [delivery evidence 的轻量路线](references/delivery-evidence.md) | 精确范围、完整 diff、引用或示例有效性 |
+| 行为、缺陷或跨边界变更 | [change-impact matrix](references/change-impact-matrix.md) 和 [delivery evidence](references/delivery-evidence.md) | 首个变化或故障边界、owner、全部受影响消费者与验收条件 |
+| 候选、评分、模型诊断、成本门、风险、排名或决策身份 | [scoring-chain guide](references/scoring-chain.md) | 语义从 owner 到冻结、查询及外部投影的完整传递 |
+| 运行、供应商、历史、性能或浏览器交付 | [runtime diagnostics](references/runtime-diagnostics.md) | 运行身份、真实探测范围、失败类别和未验证门 |
+| 推荐为空、collecting停滞、漏斗或Web状态不一致 | [funnel incident playbook](references/recommendation-funnel-incidents.md) | 分配根因前完成六个检查点，不因首个探测看似明确而省略 |
+| qfq供应商成功但pending或数据库与检查点不一致 | [qfq publication playbook](references/qfq-publication-incidents.md) | 下载、配对校验、双档发布、检查点确认及锁竞争分别核实 |
 
-For empty recommendations, a stuck collecting state, unexpected funnel counts, or disagreement between Web and runtime status, read [the recommendation-funnel incident playbook](references/recommendation-funnel-incidents.md) before assigning a root cause. Complete all six checkpoints even when the first probe appears decisive. A sandbox `connection_failed`, a generic runtime error category, HTTP 200, or a fixture browser pass is not enough to close a funnel incident.
+文档中提及运行行为本身不要求启动真实探测；只加载当前任务命中的资料。
 
-For qfq downloads that report pending codes after successful supplier responses, or when database membership and checkpoint completion differ, read [the qfq paired-publication incident playbook](references/qfq-publication-incidents.md). Separate supplier download, pair validation, V2/V3 publication, checkpoint confirmation, and reader/writer contention before assigning a cause.
+## 实施时保留可检查事实
 
-Read [the delivery evidence guide](references/delivery-evidence.md) before marking implementation or Review complete. It defines lightweight and higher-risk evidence routes plus the minimum root-cause, regression, live-process, diff, and handoff evidence.
+- 缺陷先区分已证实事实与假设；记录用户症状、首个故障边界、根因是否确认。只有复发缺陷族使用已有稳定 Regression-Key。
+- owner、表示、资源编排或时间跨模块时，比较局部修复与整体修复；按证据选择。迁移同步新 owner、全部消费者并删除旧活动路径。
+- 完成实现切片后再补实际风险需要的最小回归。命名与原子改名只遵守 [Python 命名权威](../python-engineering-guide/references/coding-standard.md#3-命名格式与可读性)。
+- 调度、冻结、current/history或Web可见性变更使用工程设计的热/冷五时段矩阵；一个时间点或fixture不够。状态/JSON变更追踪类型到最终serializer和浏览器消费者，不加字典fallback或第二状态源。
+- 并发/deadline分别核对排队、供应商尝试、校验、持久化、发布、取消和停止。Python检查种类由Python guide确定，具体门禁按 AGENTS.md 和工程设计选择。
+- 运行诊断只通过 scripts/diagnose_runtime.py，实现放在所属 scripts/runtime_diagnostics/ 模块；不重建独立wrapper或在编排器复制探测。mock、HTTP 200、旧进程和源码阅读不能代替真实运行证据。
 
-Do not claim live verification from mocks, HTTP 200 alone, an old process, or source code inspection. If real service, supplier, token, browser, or time-window evidence is unavailable, record the precise unverified gate and keep the claim bounded.
+## 结束前核对
 
-When this skill or its references change, verify that linked files, named source/test paths, commands, API routes, configuration paths, and stable identities still exist. A syntax-only skill validator cannot prove routing correctness.
+按 [delivery evidence 的交付核对](references/delivery-evidence.md#review-and-handoff) 查看实际 diff、检查输出与Git身份。发现漏项先补做；条件不可用时明确未验证的门，不把口头确认、测试fixture或先前批次结果当作本批通过。
 
-For code changes, use affected Ruff checks; add mypy for public types or complex boundaries and targeted tests for material behavior risks. Full regression and release gates follow `AGENTS.md` and the engineering design; they are not mandatory for every batch. Keep passed, failed and unrun checks distinct, including failures already present in the baseline.
+修改 skill 时核对链接及锚点、命名的源码/测试路径、命令、API路由、配置和稳定身份。元数据validator只证明结构有效；需要核验执行行为时，显式运行 scripts.skill_evaluation，命令和限制见 scripts/README.md。普通文案调整不自动触发模型调用，不以少量合成案例承诺稳定成功率。
 
-This skill is a repository delivery workflow loaded by the agent under `AGENTS.md`; it is not a product runtime hook and will never be triggered by Web, market-data, or scheduler events. If it was not loaded for an eligible repository mutation, record and correct the process omission instead of adding product trigger logic.
+本 skill 由代理在仓库任务中读取，不是Web、行情或调度器运行hook。符合条件却漏加载时补齐流程，不新增产品触发逻辑。

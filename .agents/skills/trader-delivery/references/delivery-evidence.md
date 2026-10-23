@@ -1,5 +1,15 @@
 # Delivery evidence
 
+## Mode boundary
+
+Apply this reference within the current task mode. Planning produces read-only
+findings and a plan; read-only review/diagnosis produces findings and evidence
+gaps. Neither starts an implementation stage or performs edits, commits or
+pushes. The implementation and delivery requirements below apply only to an
+authorized implementation task. A failed or unavailable required gate remains
+explicit; do not report completion because the skill was read or a command was
+attempted.
+
 ## Evidence depth
 
 For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, keep the batch lightweight. Record the baseline and preserved user changes, requested outcome, exact scope, direct review/check, commit, push, and upstream confirmation. Update the engineering ledger only when `AGENTS.md` requires a stage or an existing task already owns one. Implement directly; a multi-step plan, architecture comparison, regression test, and live evidence are unnecessary.
@@ -43,10 +53,22 @@ stage counts; do not summarize every zero as “no data”.
 
 ## Review and handoff
 
+Check the evidence at the operation it describes; do not replace it with a
+checklist of unsupported "done" statements:
+
+| Claim | Evidence to inspect |
+| --- | --- |
+| Consumers switched | Definition and consumer searches before/after, imports, exports, entry strings and patch targets; classify any remaining old-name matches |
+| Ownership migrated | New owner and all consumers in the diff, old active paths actually deleted; no alias, forwarding or parallel state |
+| Gate passed | This batch's exact command, exit result and relevant output; distinguish failures, unrun checks and baseline failures |
+| Live behavior verified | Changed release/process identity and applicable real probe; fixture, HTTP 200 and source inspection cannot establish this |
+| Review complete | Full diff including added/deleted/untracked files against the pushed baseline, no unresolved in-scope findings |
+| Implementation delivered | Exact staged scope; actual commit message checked against AGENTS.md; one commit, successful push and local/upstream commit equality |
+
 - Compare the complete diff with the previously pushed baseline and with the original file allowlist.
 - Inspect new files, removed paths, duplicate owners, hidden fallbacks, TODOs, generated output, and source-file size.
 - For Python changes, review naming and migration against [the Python engineering skill's single naming contract](../../python-engineering-guide/references/coding-standard.md#3-命名格式与可读性).
 - In a shared worktree, capture the initial staged set separately from unstaged files. Before commit, re-read `HEAD`, its upstream and `git diff --cached --name-only`; if another batch advanced the branch or touched a shared file, rebase the review baseline and stage only this batch's exact hunks.
 - Run `git diff --check` and `git diff --cached --check`; confirm every staged hunk belongs to the original file allowlist.
 - When a stage is required, record actual changes, verification, and unfinished work only in its existing `docs/3_工程实施.md` entry. Lightweight batches follow `AGENTS.md` without creating a stage for formality. For a repeated defect, connect its stable `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
-- Do not mark the batch complete before its single commit is pushed and confirmed present on the upstream branch.
+- After implementation, Review and required checks finish, mark the existing stage `completed` before committing as AGENTS.md requires. Report delivery complete only after the single commit is pushed and confirmed present on the upstream branch; a failed push leaves delivery pending.

@@ -1,4 +1,4 @@
 interface:
   display_name: "Python 工程设计与编码规范"
   short_description: "按仓库命名与边界规则设计、实现和审查 Python 代码"
-  default_prompt: "使用 $python-engineering-guide 按仓库规则实现或审查 Python 改动，确认公开顶层函数与类型使用大驼峰，并按风险验证全部消费者。"
+  default_prompt: "使用 $python-engineering-guide 读取适用规范，按真实公开边界核对命名、类型与全部消费者，并报告实际验证证据。"

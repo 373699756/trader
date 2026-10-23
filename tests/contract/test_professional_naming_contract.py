@@ -168,11 +168,13 @@ def test_active_paths_use_stable_business_responsibilities() -> None:
 
 def test_storage_responsibility_naming_rule_is_authoritative() -> None:
     collaboration_rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
 
-    assert "不得使用 `store`、`stored` 或 `*Store`" in collaboration_rules
-    assert "Repository" in collaboration_rules
-    assert "不保留转发、兼容导出、双读或双写" in design
+    authority = ".agents/skills/python-engineering-guide/references/coding-standard.md"
+    assert f"({authority}#3-命名格式与可读性)" in collaboration_rules
+    coding_rules = (ROOT / authority).read_text(encoding="utf-8")
+    for term in ("`store`", "`stored`", "`*Store`", "`Repository`", "`Archive`", "`Registry`"):
+        assert term in coding_rules
+    assert "兼容别名" in coding_rules
 
 
 def test_active_python_has_no_c3_or_relative_holdout_identity_names() -> None:

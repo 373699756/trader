@@ -1,6 +1,6 @@
 interface:
   display_name: "Trader Delivery"
   short_description: "按风险交付 Trader 改动，核对公开命名、消费者与实际验证"
-  default_prompt: "使用 $trader-delivery 按 AGENTS.md 完成这批 Trader 改动，检查所有权和命名消费者，执行必要验证并交付。"
+  default_prompt: "使用 $trader-delivery 按当前规划、只读审查或实施模式处理 Trader 任务，核对消费者和实际证据；实施按 AGENTS.md 交付。"
 policy:
   allow_implicit_invocation: true

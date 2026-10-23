@@ -39,6 +39,40 @@ repository-external destination; for repack acceptance, pass explicit isolated
 external paths. For training evidence, also explicitly
 set external `--history-root`, `--train-root` and `--output`.
 
+## Skill evaluation (opt-in internal module)
+
+`skill_evaluation/` owns synthetic agent evaluations, separate from runtime
+diagnostics and the nine retained top-level scripts. It is not a product entry
+and is never invoked by default tests or quality gates. Explicit `run` makes
+Codex model requests using the current CLI login and model configuration;
+`compare`, help and offline unit tests make no requests.
+
+| Tool | Owner | Network | Writes | Output | Resource boundary |
+| --- | --- | --- | --- | --- | --- |
+| `python3 -m scripts.skill_evaluation` | Repository skill execution evidence | `run` invokes Codex model inference; agent shell network disabled, no live supplier requests | Required new absolute external directory, one synthetic repository and local bare origin per case; no active data or original remote copied | Versioned aggregate `summary.json`, readable `summary.md`, external per-case raw JSONL/stderr; compare prints a table | Eight sequential cases, repeat 1–3 (default 1); 600 s and 20 MiB combined child output per case, process group terminated on limit; local Git calls 15 s; no hard RSS/disk limit on agent-created files |
+
+```bash
+.venv/bin/python3 -m scripts.skill_evaluation run --suite all --repeat 1 --output-dir /tmp/trader-skills-before
+.venv/bin/python3 -m scripts.skill_evaluation compare --before /tmp/trader-skills-before --after /tmp/trader-skills-after
+```
+
+`--suite` also accepts one case name for a focused repeat. Use new output
+directories for each run. `--skill-source` accepts a previously saved skill
+snapshot; each run copies its inputs once and records both skill and evaluator
+digests, so editing the checkout cannot mix versions within a suite.
+The disposable venv contains the existing Ruff package and binary, with no
+editable product installation. Only the fixture's own Git metadata and local
+bare origin are explicitly added to the agent's writable roots.
+If Codex cannot execute any commands, subsequent cases are marked not started
+instead of repeating a known infrastructure failure. Exit `0` means all required evidence passed, `1`
+means an observed behavior failure, `2` means an execution error or evidence
+gap. Unknown JSONL events, missing final claims and unavailable model identity
+remain explicit; null identity means Codex did not report it, not an inferred
+model match. Raw traces may contain local paths and are retained only outside
+the checkout. These fixtures do not prove production recovery or a stable
+success rate. The current checks recognize shell reads and static task shapes;
+alternate tool formats or equivalent code outside those shapes need review.
+
 Makefile checks all of `src/trader`, `tests` and `scripts`, including internal
 probes and migration tools. Strict source debt is anchored to rule, relative file
 and qualified function, so unchanged aggregate counts cannot hide relocated
