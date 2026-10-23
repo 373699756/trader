@@ -34,7 +34,11 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
     started = []
     monkeypatch.setattr(threading.Thread, "start", lambda thread: started.append(thread.name))
 
-    system = BuildProfiledSystem(config) if profile == "both" else BuildSystem(config, scoring_profile=profile)
+    system = (
+        BuildProfiledSystem(config, profiles=("v2", "v3"))
+        if profile == "both"
+        else BuildSystem(config, scoring_profile=profile)
+    )
 
     client = system.app.test_client()
     assert client.get("/").status_code == 200

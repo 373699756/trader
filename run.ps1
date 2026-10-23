@@ -3,9 +3,6 @@ $ErrorActionPreference = "Stop"
 
 $RootDir = Split-Path -Parent $PSCommandPath
 $Mode = ""
-$ModeSet = $false
-$ScoringProfile = $null
-$ScoringProfileSet = $false
 $ForwardArgs = @()
 
 function Show-Usage {
@@ -13,10 +10,9 @@ function Show-Usage {
 本地 A 股研究看板
 
 日常使用（不做离线研究）:
-  .\run.ps1                         以默认 V2 启动并加载共享双头模型
-  .\run.ps1 --profile v2|v3         显式使用 V2 或 V3 启动
-  .\run.ps1 --profile v1            单独启动全新 V1 Shadow（需先显式训练）
-  .\run.ps1 --profile v5            单独启动 V5 TCN预测过滤档位
+  .\run.ps1                         同时启动全部档位 V1、V2、V3、V5
+  .\run.ps1 v2                      只启动 V2
+  .\run.ps1 v1,v2,v3                同时启动所列档位，Web按钮互斥切换
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
@@ -24,11 +20,11 @@ function Show-Usage {
   .\run.ps1 sync history            单独更新完整历史，自动续传
   .\run.ps1 sync market             单独更新行情窗口
   .\run.ps1 sync company            单独更新公司资料
-  .\run.ps1 train                   历史维护后联合训练或复用 V2/V3
-  .\run.ps1 train --profile v1      历史维护后训练全新 V1 双头 Shadow 工件
-  .\run.ps1 train --profile v5      历史维护后训练或复用 V5 TCN 双头
+  .\run.ps1 train                   历史维护后处理全部档位 V1、V2、V3、V5
+  .\run.ps1 train v1,v5             历史维护后只训练所列档位
 
-看板可追加 --profile v1|v2|v3|v5|both；both 保持 V2/V3。本地检测使用 scripts/diagnose_runtime.py --profile local。
+档位以逗号分隔，可自由组合；省略时选择全部。V1为工程Shadow，V5需可选CPU依赖。
+本地检测使用 scripts/diagnose_runtime.py --profile local。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -43,50 +39,11 @@ function Show-Usage {
 
 $PublicModes = @("help", "-h", "--help", "sync", "train")
 
-for ($Index = 0; $Index -lt $args.Count; $Index++) {
-    $Argument = [string]$args[$Index]
-    if ($Argument -eq "--profile") {
-        if ($Index + 1 -ge $args.Count) {
-            [Console]::Error.WriteLine("缺少 --profile 的值（v1、v2、v3、v5 或 both）。")
-            exit 2
-        }
-        $Index++
-        $ScoringProfile = [string]$args[$Index]
-        $ScoringProfileSet = $true
-    }
-    elseif ($Argument.StartsWith("--profile=")) {
-        $ScoringProfile = $Argument.Substring("--profile=".Length)
-        $ScoringProfileSet = $true
-    }
-    elseif ($Argument -in $PublicModes -and -not $ModeSet) {
-        $Mode = $Argument
-        $ModeSet = $true
-    }
-    elseif ($ModeSet) {
-        $ForwardArgs += $Argument
-    }
-    else {
-        [Console]::Error.WriteLine("未知命令: $Argument")
-        [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
-        [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
-        exit 2
-    }
-}
-
-if ($ScoringProfileSet -and $ScoringProfile -notin @("v1", "v2", "v3", "v5", "both")) {
-    [Console]::Error.WriteLine("评分档位只能是 v1、v2、v3、v5 或 both: $ScoringProfile")
-    exit 2
-}
-if (($Mode -eq "sync" -and $ScoringProfileSet) -or ($Mode -eq "train" -and $ScoringProfileSet -and $ScoringProfile -notin @("v1", "v5")) -or ($Mode -eq "train" -and $ForwardArgs.Count -gt 0)) {
-    [Console]::Error.WriteLine("$Mode 不接受任何参数；请只运行 .\run.ps1 $Mode。")
-    exit 2
-}
-
-if ($Mode -eq "sync" -and $ForwardArgs.Count -gt 0) {
-    if ($ForwardArgs.Count -ne 1 -or $ForwardArgs[0] -notin @("history", "market", "company")) {
-        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]")
-        exit 2
-    }
+if ($args.Count -gt 0 -and [string]$args[0] -in $PublicModes) {
+    $Mode = [string]$args[0]
+    $ForwardArgs = @($args | Select-Object -Skip 1)
+} else {
+    $ForwardArgs = @($args)
 }
 
 if ($Mode -in @("help", "-h", "--help")) {
@@ -94,11 +51,24 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
-if (-not $IsServerMode -and $Mode -notin @("sync", "train")) {
-    [Console]::Error.WriteLine("未知命令: $Mode")
-    [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
-    [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
-    exit 2
+if ($Mode -eq "sync") {
+    if ($ForwardArgs.Count -gt 1 -or ($ForwardArgs.Count -eq 1 -and $ForwardArgs[0] -notin @("history", "market", "company"))) {
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]")
+        exit 2
+    }
+} elseif ($ForwardArgs.Count -gt 0) {
+    # PowerShell may pass an unquoted comma list as an array; normalize it once.
+    $Selection = ($ForwardArgs | ForEach-Object { $_ -join "," }) -join ","
+    if ($Selection -cnotmatch '^v(1|2|3|5)(,v(1|2|3|5))*$') {
+        [Console]::Error.WriteLine("档位列表只能包含 v1、v2、v3、v5，以逗号分隔且不得重复。")
+        exit 2
+    }
+    $Profiles = $Selection.Split(",")
+    if (@($Profiles | Select-Object -Unique).Count -ne $Profiles.Count) {
+        [Console]::Error.WriteLine("档位不能重复。")
+        exit 2
+    }
+    $ForwardArgs = @($Selection)
 }
 
 $VenvDir = if ($env:VENV_DIR) { $env:VENV_DIR } else { Join-Path $RootDir ".venv" }
@@ -157,11 +127,9 @@ if (-not $env:TRADER_HOST) {
 if (-not $env:TRADER_PORT) {
     $env:TRADER_PORT = "5000"
 }
-$ProfileArgs = if ($ScoringProfileSet) { @("--profile", $ScoringProfile) } else { @() }
-
 if ($IsServerMode) {
-    & $SelectedEntryPoint --config $ConfigPath @ProfileArgs @ForwardArgs
+    & $SelectedEntryPoint --config $ConfigPath @ForwardArgs
     exit $LASTEXITCODE
 }
-& $SelectedEntryPoint --config $ConfigPath @ProfileArgs $Mode @ForwardArgs
+& $SelectedEntryPoint --config $ConfigPath $Mode @ForwardArgs
 exit $LASTEXITCODE

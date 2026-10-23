@@ -122,11 +122,11 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
 def test_server_entrypoint_accepts_new_v1_and_the_two_production_profiles() -> None:
     parser = build_server_parser()
 
-    assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v1"]).profile == "v1"
-    assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v2"]).profile == "v2"
-    assert parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "v3"]).profile == "v3"
+    assert parser.parse_args(["--config", "/tmp/runtime.json", "v1"]).profiles == ("v1",)
+    assert parser.parse_args(["--config", "/tmp/runtime.json", "v2"]).profiles == ("v2",)
+    assert parser.parse_args(["--config", "/tmp/runtime.json", "v1,v2,v3"]).profiles == ("v1", "v2", "v3")
     with pytest.raises(SystemExit) as error:
-        parser.parse_args(["--config", "/tmp/runtime.json", "--profile", "latest"])
+        parser.parse_args(["--config", "/tmp/runtime.json", "latest"])
     assert error.value.code == 2
 
 
@@ -173,18 +173,15 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
 
     assert completed.returncode == 0
     assert "日常使用（不做离线研究）:" in completed.stdout
-    assert "./run.sh                         以默认 V2 启动并加载共享双头模型" in completed.stdout
-    assert "./run.sh --profile v2|v3         单独启动 V2 或 V3" in completed.stdout
-    assert "./run.sh --profile both          同一进程同时启动 V2 和 V3" in completed.stdout
+    assert "./run.sh                         同时启动全部档位 V1、V2、V3、V5" in completed.stdout
+    assert "./run.sh v2                      只启动 V2" in completed.stdout
+    assert "./run.sh v1,v2,v3                同时启动所列档位，Web按钮互斥切换" in completed.stdout
     assert "scripts/diagnose_runtime.py --profile local" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh train                   历史维护后联合训练或复用 V2/V3" in completed.stdout
+    assert "./run.sh train                   历史维护后处理全部档位 V1、V2、V3、V5" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
-    assert (
-        "看板可追加 --profile v1|v2|v3|v5|both；both 保持 V2/V3。"
-        "本地检测使用 scripts/diagnose_runtime.py --profile local。" in completed.stdout
-    )
+    assert "档位以逗号分隔，可自由组合；省略时选择全部。" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -233,7 +230,7 @@ def test_run_script_rejects_download_arguments_before_environment_setup(
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert "train 不接受" in completed.stderr
+    assert completed.stderr.startswith("用法：./run.sh" if arguments[0] == "train" else "未知命令: --profile")
     assert not missing_venv.exists()
 
 
@@ -326,11 +323,11 @@ exit 99""",
 @pytest.mark.parametrize(
     ("arguments", "profile"),
     (
-        (("--profile", "v2"), "v2"),
-        (("--profile=v2",), "v2"),
-        (("--profile", "v3"), "v3"),
-        (("--profile=v3",), "v3"),
-        (("--profile", "v1"), "v1"),
+        (("v2",), "v2"),
+        (("v1,v2,v3",), "v1,v2,v3"),
+        (("v3",), "v3"),
+        (("v1,v2,v3,v5",), "v1,v2,v3,v5"),
+        (("v1",), "v1"),
     ),
 )
 def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
@@ -354,10 +351,10 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"server:--config {config} --profile {profile}\n"
+    assert completed.stdout == f"server:--config {config} {profile}\n"
 
 
-@pytest.mark.parametrize("profile_args", ((), ("--profile", "v1")))
+@pytest.mark.parametrize("profile_args", ((), ("v1",), ("v1,v5",), ("v2",), ("v2,v3",)))
 def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, profile_args: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -382,7 +379,7 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
     )
 
     assert completed.returncode == 0
-    suffix = " --profile v1" if profile_args else ""
+    suffix = f" {profile_args[0]}" if profile_args else ""
     assert completed.stdout == f"cli:--config {config} train{suffix}\n"
 
 
@@ -396,7 +393,7 @@ def test_train_stops_before_training_on_history_failure(monkeypatch, download_re
     monkeypatch.setattr(
         research_commands, "RunJointTraining", lambda runtime, *, refresh_due: calls.append(runtime) or 7
     )
-    assert ExecuteDownloadTrain(ROOT / "config/runtime.json") == (download_result or 7)
+    assert ExecuteDownloadTrain(ROOT / "config/runtime.json", scoring_profiles=("v2", "v3")) == (download_result or 1)
     assert len(calls) == int(download_result == 0)
 
 
@@ -464,7 +461,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
     missing_venv = tmp_path / "missing-venv"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "--profile", "latest"),
+        ("bash", str(ROOT / "run.sh"), "v9"),
         cwd=ROOT,
         env={**os.environ, "VENV_DIR": str(missing_venv)},
         text=True,
@@ -474,7 +471,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "评分档位只能是 v1、v2、v3、v5 或 both: latest\n"
+    assert completed.stderr == "档位列表只能包含 v1、v2、v3、v5，以逗号分隔且不得重复。\n"
     assert not missing_venv.exists()
 
 
@@ -490,18 +487,15 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
 
     assert "日常使用（不做离线研究）:" in powershell
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
-    assert ".\\run.ps1                         以默认 V2 启动并加载共享双头模型" in powershell
-    assert ".\\run.ps1 --profile v2|v3         显式使用 V2 或 V3 启动" in powershell
+    assert ".\\run.ps1                         同时启动全部档位 V1、V2、V3、V5" in powershell
+    assert ".\\run.ps1 v1,v2,v3                同时启动所列档位，Web按钮互斥切换" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert "--allow-partial-history" not in powershell
-    assert (
-        "看板可追加 --profile v1|v2|v3|v5|both；both 保持 V2/V3。"
-        "本地检测使用 scripts/diagnose_runtime.py --profile local。" in powershell
-    )
+    assert "档位以逗号分隔，可自由组合；省略时选择全部。" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
-    assert "$ProfileArgs = if ($ScoringProfileSet)" in powershell
-    assert '$ScoringProfile -notin @("v1", "v2", "v3", "v5", "both")' in powershell
+    assert "$ForwardArgs = @($Selection)" in powershell
+    assert "^v(1|2|3|5)(,v(1|2|3|5))*$" in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert '$PublicModes = @("help", "-h", "--help", "sync", "train")' in powershell
@@ -717,7 +711,7 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
     monkeypatch.setattr(server_module, "ProcessLock", _LockedProcess)
 
     with pytest.raises(SystemExit) as error:
-        server_module.Main(["--config", str(tmp_path / "runtime.json"), "--profile", "v2"])
+        server_module.Main(["--config", str(tmp_path / "runtime.json"), "v2"])
 
     message = str(error.value)
     assert "trader-server is already running" in message

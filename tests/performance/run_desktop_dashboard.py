@@ -180,29 +180,35 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: P
             )
             snapshot = _six_seat_snapshot(base)
             snapshots.append({"strategy": strategy, **snapshot})
-        _execute(base, 'document.querySelector(".profile-tab[data-profile=v3]").click(); return true;')
-        _wait(
-            lambda: bool(
+        profile_switches = []
+        for profile in ("v1", "v5", "v3"):
+            _execute(base, f'document.querySelector(".profile-tab[data-profile={profile}]").click(); return true;')
+            _wait(
+                lambda profile=profile: bool(
+                    _execute(
+                        base,
+                        f"""
+                    return ['status', 'decisions/d25/dates', 'decisions/d25/current'].every((path) =>
+                      performance.getEntriesByType('resource').some((entry) =>
+                        entry.name.includes('/api/' + path) && entry.name.includes('profile={profile}')))
+                      && document.querySelectorAll('#tableBody tr[data-code]').length === 2;
+                """,
+                    )
+                ),
+                f"{profile} profile requests and rows",
+            )
+            profile_switches.append(
                 _execute(
                     base,
                     """
-                return ['status', 'decisions/d25/dates', 'decisions/d25/current'].every((path) =>
-                  performance.getEntriesByType('resource').some((entry) =>
-                    entry.name.includes('/api/' + path) && entry.name.includes('profile=v3')));
+                return {selected: document.querySelector('.profile-tab[aria-selected=true]')?.dataset.profile,
+                  selected_count: document.querySelectorAll('.profile-tab[aria-selected=true]').length,
+                  before_date: document.querySelector('.profile-control').getBoundingClientRect().right
+                    <= document.querySelector('.date-control').getBoundingClientRect().left,
+                  rows: document.querySelectorAll('#tableBody tr[data-code]').length};
             """,
                 )
-            ),
-            "v3 profile requests",
-        )
-        profile_switch = _execute(
-            base,
-            """
-            return {selected: document.querySelector('.profile-tab[aria-selected=true]')?.dataset.profile,
-              before_date: document.querySelector('.profile-control').getBoundingClientRect().right
-                <= document.querySelector('.date-control').getBoundingClientRect().left,
-              rows: document.querySelectorAll('#tableBody tr[data-code]').length};
-        """,
-        )
+            )
         _execute(base, 'document.querySelector(".profile-tab[data-profile=v2]").click(); return true;')
         _wait(
             lambda: bool(
@@ -263,7 +269,11 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: P
             and avoided.get("six_seat_meta") == "推荐 0 · 关注 0 · 回避 2"
             and observation_copy.get("passed") is True
             and close_chain.get("passed") is True
-            and profile_switch == {"selected": "v3", "before_date": True, "rows": 2}
+            and profile_switches
+            == [
+                {"selected": profile, "selected_count": 1, "before_date": True, "rows": 2}
+                for profile in ("v1", "v5", "v3")
+            ]
             and all(_viewport_passed(viewport) for viewport in viewports)
             and isinstance(long_state, dict)
             and long_state.get("rows", 0) > 0
@@ -280,7 +290,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: P
             "avoided": avoided,
             "observation_copy": observation_copy,
             "close_chain": close_chain,
-            "profile_switch": profile_switch,
+            "profile_switches": profile_switches,
             "long": long_state,
             "viewports": viewports,
             "external_network_calls": 0,
@@ -716,7 +726,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
                     status_provider,
                     profile_id=profile,
                 )
-                for profile in ("v2", "v3")
+                for profile in ("v1", "v2", "v3", "v5")
             },
             "v2",
         ),

@@ -69,7 +69,13 @@ def _create_product_blueprint(services: WebServices | None) -> Blueprint:
 
 def _root(services: WebServices | None) -> str:
     retention_seconds = services.config.snapshot_retention_seconds if services is not None else 0.0
-    profiles = tuple(services.profiles) if isinstance(services, ProfiledWebServices) else ()
+    profiles = (
+        tuple(services.profiles)
+        if isinstance(services, ProfiledWebServices)
+        else (services.profile_id,)
+        if isinstance(services, UnifiedWebServices)
+        else ()
+    )
     default_profile = (
         services.default_profile
         if isinstance(services, ProfiledWebServices)

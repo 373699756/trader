@@ -195,7 +195,8 @@
   }
 
   async function selectProfile(profile) {
-    if (!["v1", "v2", "v3", "v5"].includes(profile) || profile === state.profile) return;
+    const available = Array.from(document.querySelectorAll(".profile-tab"), (button) => button.dataset.profile);
+    if (!available.includes(profile) || profile === state.profile) return;
     const strategy = state.strategy;
     state.profile = profile;
     document.querySelectorAll(".profile-tab").forEach((button) => {
@@ -211,10 +212,11 @@
     state.projectionVersion = "";
     state.selectionSequence += 1;
     state.requestSequence += 1;
+    const selectionId = state.selectionSequence;
     stateRenderer.renderLoadingState();
     streamController.connect();
     await loadStatus();
-    if (state.profile === profile) await selectStrategy(strategy);
+    if (state.profile === profile && state.selectionSequence === selectionId) await selectStrategy(strategy);
   }
 
   async function selectStrategy(strategy) {

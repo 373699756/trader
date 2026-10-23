@@ -113,7 +113,8 @@ from trader.recommendation.application.runtime.supervisor import (
 from trader.recommendation.domain.market.eligibility import SelectQuotePopulation
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
+from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
@@ -172,10 +173,7 @@ from trader.training.infra.history.training_reminder_status import ReadTrainingR
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
 from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
-from trader.training.infra.training_settings import (
-    LoadRuntimeTrainingSettings,
-    ProfileTrainingSettings,
-)
+from trader.training.infra.training_settings import LoadRuntimeTrainingSettings, ProfileTrainingSettings
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
@@ -336,30 +334,29 @@ def _prepare_reference(
             raise RuntimeError("history ST worker shutdown exceeded 30 seconds")
 
 
-def ExecuteDownloadTrain(config_path: Path, *, scoring_profile: ScoringProfileId | None = None) -> int:
+def ExecuteDownloadTrain(
+    config_path: Path, *, scoring_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
+) -> int:
     """One process, history validation before training, no server resources."""
     from trader.download.entrypoints.commands import RunDownload
     from trader.training.entrypoints.commands import ConfigureTrainingResources, RunJointTraining
+    from trader.training.entrypoints.selected_training import RunSelectedTraining
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.v1.training import RunLearnedRankTraining
+    from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+    from trader.training.infra.profile.v1.training import RunV1Training
 
-    if scoring_profile is not None and scoring_profile not in {"v1", "v5"}:
-        raise ValueError("training accepts only explicit v1 or v5 overrides")
+    scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
     runtime = LoadRuntimeSettings(config_path)
     paths = runtime.data_paths
-    ConfigureTrainingResources(scoring_profile=scoring_profile)
+    ConfigureTrainingResources()
     result = RunDownload(runtime.project_root, config_path, quiet_success=True, allow_price_gaps=True)
     if result:
         return result
-    if scoring_profile == "v5":
-        from trader.training.entrypoints.v5.training import RunTcnTrainingCommand
-
-        return RunTcnTrainingCommand(runtime)
-    if scoring_profile == "v1":
-        from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-        from trader.training.entrypoints.v1.training import RunLearnedRankTraining
-        from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
-        from trader.training.infra.profile.v1.training import RunV1Training
-
-        return RunLearnedRankTraining(
+    return RunSelectedTraining(
+        runtime,
+        scoring_profiles,
+        run_v1=lambda: RunLearnedRankTraining(
             runtime,
             execute=lambda cancelled: RunV1Training(
                 partial(SQLiteHistoryTrainingInputSnapshot.open, paths.history),
@@ -370,10 +367,13 @@ def ExecuteDownloadTrain(config_path: Path, *, scoring_profile: ScoringProfileId
                 progress=StderrTomorrowTrainingProgress(),
                 cancel_requested=cancelled,
             ),
-        )
-    return RunJointTraining(
-        runtime,
-        refresh_due=lambda: EvaluateAllHistoryTrainingDue(paths.history, paths.models, ShanghaiClock(_utc_now).now()),
+        ),
+        run_joint=lambda: RunJointTraining(
+            runtime,
+            refresh_due=lambda: EvaluateAllHistoryTrainingDue(
+                paths.history, paths.models, ShanghaiClock(_utc_now).now()
+            ),
+        ),
     )
 
 
@@ -808,31 +808,30 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
 
 
-def BuildProfiledSystem(config_path: str | Path) -> ProfiledApplicationSystem[Flask]:
-    """Build both production profiles with one read-only delivery surface."""
+def BuildProfiledSystem(
+    config_path: str | Path, *, profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
+) -> ProfiledApplicationSystem[Flask]:
+    """Build the selected profiles with one shared resource owner and read-only surface."""
+    profiles = ParseProfileSelection(",".join(profiles))
     settings = LoadRuntimeSettings(config_path)
-    v2 = BuildSystem(config_path, scoring_profile="v2", runtime_scope="v2", owns_shared_runtime=True)
-    v3 = BuildSystem(
-        config_path,
-        scoring_profile="v3",
-        runtime_scope="v3",
-        owns_shared_runtime=False,
-        shared_inputs=SharedRecommendationInputs(v2.workers, v2.market_data, v2.budget),
-    )
-    default_profile = LoadStrategySettings(settings.strategy_config_path).scoring_profile
-    profiles: dict[str, UnifiedWebServices] = {system.profile_id: system.web_services for system in (v2, v3)}
+    default_profile = "v2" if "v2" in profiles else profiles[0]
+    primary = BuildSystem(config_path, scoring_profile=default_profile, runtime_scope=default_profile)
+    shared = SharedRecommendationInputs(primary.workers, primary.market_data, primary.budget)
+    build_secondary = partial(BuildSystem, config_path, owns_shared_runtime=False, shared_inputs=shared)
+    systems = [primary]
+    for profile in profiles:
+        if profile != default_profile:
+            systems.append(build_secondary(scoring_profile=profile, runtime_scope=profile))
+    web_profiles = {system.profile_id: system.web_services for system in systems}
     app = CreateApp(
         services=ProfiledWebServices(
-            profiles=profiles,
+            profiles={profile: web_profiles[profile] for profile in profiles},
             default_profile=default_profile,
-            long_profile="v2",
-            config=WebApiConfig(
-                heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
-                snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
-            ),
+            long_profile=default_profile,
+            config=primary.web_services.config,
         )
     )
-    return ProfiledApplicationSystem(settings, app, (v2, v3))
+    return ProfiledApplicationSystem(settings, app, tuple(systems))
 
 
 def _build_worker_context(

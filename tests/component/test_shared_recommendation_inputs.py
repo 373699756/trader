@@ -37,7 +37,7 @@ from trader.recommendation.infra.normalization.features import FeatureBuilder
 
 
 def test_both_shares_sources_and_budget_but_isolates_models_and_publication(tmp_path):
-    system = BuildProfiledSystem(_empty_config(tmp_path))
+    system = BuildProfiledSystem(_empty_config(tmp_path), profiles=("v2", "v3"))
     v2, v3 = system.systems
     assert v2.market_cache is v3.market_cache
     assert v2.source_lanes is v3.source_lanes

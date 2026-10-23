@@ -1,4 +1,4 @@
-"""Bounded cancellation and public result projection for explicit V5 training."""
+"""Bounded cancellation and result projection for one standard model profile."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from trader.infra.settings import RuntimeSettings
 from trader.infra.shutdown import ShutdownSignalController
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from trader.training.infra.profile.v5.training import RunV5Training
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 
@@ -26,11 +26,11 @@ class _CancellableProgress:
 
     def publish(self, progress: TomorrowTrainingProgress) -> None:
         if self._cancelled():
-            raise InterruptedError("V5 training cancelled")
+            raise InterruptedError("profile training cancelled")
         self._target.publish(progress)
 
 
-def RunTcnTrainingCommand(runtime: RuntimeSettings) -> int:
+def RunModelTrainingCommand(runtime: RuntimeSettings, profile: TrainedProfileContract) -> int:
     """Project the explicit offline command; no clients or executors are created here."""
     paths = runtime.data_paths
     cancelled = Event()
@@ -39,22 +39,26 @@ def RunTcnTrainingCommand(runtime: RuntimeSettings) -> int:
     )
     controller.install()
     try:
-        with StderrTomorrowTrainingProgress(command_label="V5训练") as progress:
-            result = RunV5Training(
-                paths.history,
-                paths.models,
-                sample_root=paths.samples,
-                settings=LoadProfileTrainingSettings(runtime.project_root, "v5"),
-                progress=_CancellableProgress(progress, cancelled.is_set),
+        with StderrTomorrowTrainingProgress(command_label=f"{profile.profile_id.upper()}训练") as progress:
+            result = RunProfileTraining(
+                ProfileTrainingRequest(
+                    paths.history,
+                    paths.models,
+                    profile,
+                    profile.heads,
+                    LoadProfileTrainingSettings(runtime.project_root, profile.profile_id),
+                    _CancellableProgress(progress, cancelled.is_set),
+                    sample_root=paths.samples,
+                )
             )
         maintenance = EvaluateAllHistoryTrainingDue(
-            paths.history, paths.models, datetime.now(ZoneInfo("Asia/Shanghai")), selected_profile=V5_TRAINING_PROFILE
+            paths.history, paths.models, datetime.now(ZoneInfo("Asia/Shanghai")), selected_profile=profile
         )
         print(
             json.dumps(
                 {
                     "schema_version": "profile_training_result",
-                    "profile": "v5",
+                    "profile": profile.profile_id,
                     "status": result.status,
                     "run_id": result.run_id,
                     "reused": result.run_id is None and result.status == "engineering_ready",
@@ -77,11 +81,11 @@ def RunTcnTrainingCommand(runtime: RuntimeSettings) -> int:
         )
         return 0 if result.status == "engineering_ready" else 1
     except (InterruptedError, KeyboardInterrupt):
-        print(json.dumps({"profile": "v5", "status": "cancelled"}))
+        print(json.dumps({"profile": profile.profile_id, "status": "cancelled"}))
         return 130
     finally:
         controller.mark_completed()
         controller.restore()
 
 
-__all__ = ["RunTcnTrainingCommand"]
+__all__ = ["RunModelTrainingCommand"]

@@ -15,6 +15,7 @@ from trader.download.infra.akshare_calendar import AkshareCalendarTimeoutError
 from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
+from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
 
@@ -40,9 +41,13 @@ def BuildParser() -> argparse.ArgumentParser:
     )
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
-    training = subparsers.add_parser("train", help="Maintain history; train V2/V3 by default or explicitly train V1.")
+    training = subparsers.add_parser("train", help="Maintain history once, then train all or the selected profiles.")
     training.add_argument(
-        "--profile", choices=("v1", "v5"), default=argparse.SUPPRESS, help="Train explicit V1 or V5 dual-head models."
+        "profiles",
+        nargs="?",
+        type=ParseProfileSelection,
+        default=SCORING_PROFILE_IDS,
+        help="Comma-separated profiles; defaults to all profiles.",
     )
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
@@ -81,16 +86,18 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         return 2
     profile_override = cast(ScoringProfileId | None, args.profile)
     if args.command in ("sync", "train"):
-        if args.profile is not None and not (args.command == "train" and args.profile in {"v1", "v5"}):
+        if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")
         try:
-            _configuration_payload(runtime, "v5" if args.command == "train" and profile_override == "v5" else None)
+            _configuration_payload(runtime, None)
         except (OSError, RuntimeError, ValueError) as exc:
             print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}))
             return 2
         print(f"{args.command}: 正在准备官方总体、ST资格、交易日历及当前行业。", file=sys.stderr)
         if args.command == "train":
-            return _run_history_download(config_path, profile_override)
+            profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
+            print(f"train: 本次训练档位 {', '.join(profile.upper() for profile in profiles)}。", file=sys.stderr)
+            return _run_history_download(config_path, profiles)
         from trader.bootstrap import ExecuteSync
         from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
@@ -151,34 +158,17 @@ def _run_training_command(
     )
 
 
-def _run_history_download(config_path: Path, profile: ScoringProfileId | None = None) -> int:
+def _run_history_download(config_path: Path, profiles: tuple[ScoringProfileId, ...]) -> int:
     from trader.training.entrypoints.commands import ConfigureTrainingResources
 
     ConfigureTrainingResources()
     from trader.bootstrap import ExecuteDownloadTrain
 
     try:
-        return (
-            ExecuteDownloadTrain(config_path, scoring_profile=profile) if profile else ExecuteDownloadTrain(config_path)
-        )
+        return ExecuteDownloadTrain(config_path, scoring_profiles=profiles)
     except KeyboardInterrupt:
         print(json.dumps({"schema_version": "joint_training_result", "status": "cancelled"}))
         return 130
-    except ModuleNotFoundError as exc:
-        if profile != "v5" or exc.name != "torch":
-            raise
-        print("V5需要PyTorch CPU依赖，请按下载训练文档安装 .[v5] 后重试。", file=sys.stderr)
-        print(
-            json.dumps(
-                {
-                    "schema_version": "profile_training_result",
-                    "profile": "v5",
-                    "status": "failed",
-                    "category": "dependency_missing",
-                }
-            )
-        )
-        return 1
     except AkshareCalendarTimeoutError as exc:
         print(
             f"train: 交易日历准备超时，AkShare/Sina 在 {exc.timeout_seconds:g} 秒内未完成；"

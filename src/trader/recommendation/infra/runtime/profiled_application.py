@@ -24,7 +24,7 @@ ApplicationT = TypeVar("ApplicationT")
 
 @dataclass(frozen=True)
 class ProfiledApplicationSystem(Generic[ApplicationT]):
-    """One process hosting isolated V2 and V3 recommendation lanes."""
+    """One process hosting the selected, isolated recommendation profiles."""
 
     settings: RuntimeSettings
     app: ApplicationT

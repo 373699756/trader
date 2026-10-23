@@ -27,8 +27,7 @@ def test_explicit_v1_build_is_lazy_shadow_and_reuses_v2_published_history(tmp_pa
     assert system.market_data.history._history.publication.profile == "v2"
     assert not (tmp_path / "data/recommendation").exists()
     assert not (tmp_path / "runtime").exists()
-    # Both retains its two production lanes and their shared physical resource owners.
-    both = BuildProfiledSystem(path)
+    both = BuildProfiledSystem(path, profiles=("v2", "v3"))
     assert tuple(item.profile_id for item in both.systems) == ("v2", "v3")
     assert both.systems[0].workers.market_cache is both.systems[1].workers.market_cache
     assert both.systems[0].budget is both.systems[1].budget
@@ -36,8 +35,8 @@ def test_explicit_v1_build_is_lazy_shadow_and_reuses_v2_published_history(tmp_pa
 
 def test_v1_cli_and_diagnostics_do_not_enter_legacy_training_or_performance(tmp_path: Path) -> None:
     parser = CliParser()
-    assert parser.parse_args(["train", "--profile", "v1"]).profile == "v1"
-    assert parser.parse_args(["--profile", "v1", "train"]).profile == "v1"
+    assert parser.parse_args(["train", "v1"]).profiles == ("v1",)
+    assert parser.parse_args(["train", "v1,v5"]).profiles == ("v1", "v5")
     report = PerformanceRun(_config(tmp_path), scoring_profile="v1")
     assert report["status"] == "failed"
     assert report["failures"] == ["learned_rank_shadow_workload_unverified"]

@@ -21,7 +21,7 @@ from trader.entrypoints.cli import BuildParser, Main
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("profile_args", ((), ("--profile", "v1")))
+@pytest.mark.parametrize("profile_args", ((), ("v1",)))
 def test_train_reports_calendar_timeout_before_model_training(monkeypatch, capsys, profile_args):
     from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 
@@ -87,7 +87,7 @@ def test_v1_training_uses_its_own_admission_after_published_history(
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr("trader.training.infra.profile.v1.training.RunV1Training", fit_v1)
 
-    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", "--profile", "v1"]) == 0
+    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", "v1"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert calls == ["v1"]
@@ -280,13 +280,13 @@ def test_train_uses_valid_samples_despite_reported_price_gaps(
         lambda runtime, **kwargs: calls.append(runtime) or 0,
     )
 
-    result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train"])
+    result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train", "v2,v3"])
 
     assert result == (0 if starts_training else 1)
     assert len(calls) == int(starts_training)
     captured = capsys.readouterr()
     if starts_training:
-        assert captured.out == ""  # The stubbed trainer emits nothing; successful history is stderr-only.
+        assert json.loads(captured.out)["status"] == "completed"
     else:
         assert json.loads(captured.out)["price_gaps"]["cells"] == 3267
     assert ("价格缺口待补" in captured.err) == (state != "failed")

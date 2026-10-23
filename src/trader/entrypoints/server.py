@@ -27,6 +27,7 @@ from trader.infra.shutdown import (
     ShutdownStep,
 )
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
+from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,12 +49,19 @@ class _RuntimeSystem(_StoppableSystem, Protocol):
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-server")
     parser.add_argument("--config", default=os.environ.get("TRADER_CONFIG", ""))
-    parser.add_argument("--profile", choices=(*SCORING_PROFILE_IDS, "both"))
+    parser.add_argument(
+        "profiles",
+        nargs="?",
+        type=ParseProfileSelection,
+        default=SCORING_PROFILE_IDS,
+        help="Comma-separated profiles to run together; defaults to all profiles.",
+    )
     return parser
 
 
 def Main(argv: list[str] | None = None) -> int:
     args = BuildParser().parse_args(argv)
+    profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
     config_path = _absolute_config_path(args.config)
     settings = LoadRuntimeSettings(config_path)
     _validate_bind(settings)
@@ -64,9 +72,9 @@ def Main(argv: list[str] | None = None) -> int:
         raise SystemExit(_active_service_message(exc, settings)) from None
     with lock:
         system = (
-            BuildProfiledSystem(config_path)
-            if args.profile == "both"
-            else BuildSystem(config_path, scoring_profile=cast(ScoringProfileId | None, args.profile))
+            BuildProfiledSystem(config_path, profiles=profiles)
+            if len(profiles) > 1
+            else BuildSystem(config_path, scoring_profile=profiles[0])
         )
         return _run_system(
             system,
