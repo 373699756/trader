@@ -1,6 +1,6 @@
 {
   "deepseek": {
-    "enabled": true,
+    "enabled": false,
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-flash",
     "timeout_seconds": 20,

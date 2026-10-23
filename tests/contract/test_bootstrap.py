@@ -181,8 +181,21 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
 def test_deepseek_toggle_rebuilds_with_new_configuration_identity_and_readable_status(tmp_path, monkeypatch) -> None:
     config_path = _config(tmp_path)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture-deepseek-key")
+    default = BuildSystem(config_path)
+    assert default.settings.deepseek.enabled is False
+    assert default.settings.deepseek.api_key == ""
+    default_payload = default.app.test_client().get("/api/status").get_json()
+    assert default_payload["deepseek"]["enabled"] is False
+    assert default_payload["deepseek"]["physical_attempts"] == 0
+    assert default_payload["deepseek"]["zero_call_reason"] == "disabled"
+
+    deepseek_path = config_path.parent / "deepseek.json"
+    document = json.loads(deepseek_path.read_text(encoding="utf-8"))
+    document["deepseek"]["enabled"] = True
+    deepseek_path.write_text(json.dumps(document), encoding="utf-8")
     enabled = BuildSystem(config_path)
     assert enabled.settings.deepseek.enabled is True
+    assert enabled.settings.config_version != default.settings.config_version
     enabled_response = enabled.app.test_client().get("/api/status")
     assert enabled_response.status_code == 200
     assert enabled_response.get_json()["deepseek"]["enabled"] is True

@@ -464,7 +464,9 @@ def test_runtime_settings_loads_deepseek_key_from_protected_file(tmp_path, monke
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(key_file))
 
-    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = True
+    runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
     assert runtime.deepseek.api_key == "secret-from-file"
 
@@ -481,7 +483,9 @@ def test_runtime_settings_loads_both_credentials_from_one_protected_assignment_f
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(credential_file))
     monkeypatch.setenv("TUSHARE_TOKEN_FILE", str(credential_file))
 
-    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = True
+    runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
     assert runtime.deepseek.api_key == "deepseek-from-file"
     assert runtime.market_data.tushare.token == "tushare-from-file"
@@ -492,7 +496,9 @@ def test_runtime_settings_prefers_deepseek_environment_key(tmp_path, monkeypatch
     monkeypatch.setenv("DEEPSEEK_API_KEY", "secret-from-environment")
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(missing_file))
 
-    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = True
+    runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
     assert runtime.deepseek.api_key == "secret-from-environment"
 
@@ -586,8 +592,11 @@ def test_runtime_settings_rejects_insecure_deepseek_key_file(tmp_path, monkeypat
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(key_file))
 
+    raw = _runtime_document()
+    raw["deepseek"]["enabled"] = True
+    config_path = _write_runtime_config(tmp_path, raw)
     with pytest.raises(ConfigurationError, match="must not be accessible by group or other users"):
-        LoadRuntimeSettings(RUNTIME_CONFIG)
+        LoadRuntimeSettings(config_path)
 
 
 def test_runtime_settings_loads_tushare_token_with_environment_priority(tmp_path, monkeypatch) -> None:

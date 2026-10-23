@@ -82,7 +82,7 @@ python3 -m venv .venv
 .venv/bin/trader-server --config "$PWD/config/runtime.json"
 ~~~
 
-DeepSeek开关位于[config/deepseek.json](config/deepseek.json)的deepseek.enabled，当前默认true。将现有字段改成`"enabled": false`并正常重启即可关闭结构化复核；false时跳过DeepSeek的凭据加载、不发起请求、不消耗物理预算，合法本地推荐继续。Tushare的独立凭据校验仍生效。启用时改回true并配置密钥；JSON布尔不加引号。
+DeepSeek开关位于[config/deepseek.json](config/deepseek.json)的deepseek.enabled，当前默认false。正常重启后关闭结构化复核，跳过DeepSeek的凭据加载、不发起请求、不消耗物理预算，合法本地推荐继续。Tushare的独立凭据校验仍生效。需要启用时显式改为true并配置密钥，再正常重启；JSON布尔不加引号。
 
 修改配置后先执行上面的validate-config命令。配置hash随有效内容变化是正常行为，无需手工修改或保持旧hash。当前加载器会拒绝未知字段、错误类型，以及与固定合同不一致的调度、缓存、模型或预算值；这类字段不是任意可调参数，具体边界见[工程设计第3.3节](docs/2_工程设计.md#33-配置修改与启动校验)。配置不热加载，校验通过后正常重启生效。
 
