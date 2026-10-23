@@ -13,6 +13,7 @@ from typing import Literal, Protocol
 from trader.download.domain.company_evidence import (
     CompanyEvidenceSyncResult,
     CompanySourceFailure,
+    CompanySyncConfiguration,
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
@@ -83,9 +84,10 @@ def SyncCompanyEvidence(
     codes: Sequence[str],
     observed_at: datetime,
     *,
-    budget_seconds: float = 3480,
+    configuration: CompanySyncConfiguration,
     news_codes: Sequence[str] = (),
 ) -> CompanyEvidenceSyncResult:
+    budget_seconds = configuration.budget_seconds
     if observed_at.utcoffset() is None or not math.isfinite(budget_seconds) or budget_seconds <= 0:
         raise ValueError("company evidence requires an aware time and positive budget")
     started = dependencies.monotonic()
@@ -103,12 +105,30 @@ def SyncCompanyEvidence(
         if any(item.endswith((":access_denied", ":rate_limited")) for item in state.failures):
             _report(dependencies, component, state, None, completed=0, status="deferred")
             continue
-        _structured(dependencies, component, observed_at, min(deadline, dependencies.monotonic() + 600), state)
+        _structured(
+            dependencies,
+            component,
+            observed_at,
+            min(deadline, dependencies.monotonic() + configuration.structured_component_seconds),
+            state,
+        )
     pending = published = 0
     if not _cancelled(dependencies):
-        pending = _announcements(dependencies, population, observed_at, started + budget_seconds * 0.7, state)
+        pending = _announcements(
+            dependencies,
+            population,
+            observed_at,
+            started + budget_seconds * configuration.announcements_deadline_fraction,
+            state,
+        )
     if not _cancelled(dependencies):
-        _documents(dependencies, population, observed_at, started + budget_seconds * 0.95, state)
+        _documents(
+            dependencies,
+            population,
+            observed_at,
+            started + budget_seconds * configuration.documents_deadline_fraction,
+            state,
+        )
     if not _cancelled(dependencies):
         _report(dependencies, "publish", state, len(population), completed=0)
         if not _cancelled(dependencies):
@@ -239,9 +259,13 @@ def _documents(
             state.changes += 1
         except (OSError, RuntimeError, ValueError) as exc:
             state.failures += (f"risk_documents:{_failure(exc)}",)
-            if isinstance(exc, ValueError):
+            if isinstance(exc, ValueError) or (
+                isinstance(exc, TimeoutError)
+                and str(exc) == "disclosure_document_parse_timeout"
+                and _running(dependencies, deadline)
+            ):
                 _report(dependencies, "risk_documents", state, total - completed, completed=completed)
-                continue  # An unreadable/oversized PDF must not starve all other documents.
+                continue  # One unreadable or slow PDF must not starve the other documents.
             break
         _report(dependencies, "risk_documents", state, total - completed, completed=completed)
     _report(

@@ -17,6 +17,7 @@ from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.download.infra.history_reference_codec import ReadStEvidence, WriteStEvidence
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 from trader.infra.settings import LoadRuntimeSettings
@@ -82,6 +83,8 @@ def st_sources(monkeypatch):
             paths.history, paths.reference, training_root=paths.models, minimum_free_bytes=0
         ),
     )
+    company_config = LoadCompanySyncConfiguration(_ROOT)
+    monkeypatch.setattr(bootstrap, "LoadCompanySyncConfiguration", lambda _root: company_config)
     return calls, sessions
 
 
@@ -117,8 +120,9 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     if not existing_cache:
         expected_queries |= {"600001", "600003"}
 
-    def download(root, progress, request, *, timeout_seconds, cancel_requested):
+    def download(root, progress, request, *, cancel_requested):
         codes, observed_at = request.codes, request.observed_at
+        assert request.configuration.budget_seconds == 5400.0
         assert set(calls) == expected_queries
         assert all(session.closed for session in sessions)
         assert codes == ("600001", "600005", "600007")

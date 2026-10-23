@@ -38,12 +38,16 @@ class CninfoMarketDisclosureSource:
         monotonic: Callable[[], float],
         sleeper: Callable[[float], None],
         timeout_seconds: float = 8.0,
+        document_parse_timeout_seconds: float = 10.0,
+        request_interval_seconds: float = 1.0,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         self._session = session
         self._monotonic = monotonic
         self._sleep = sleeper
         self._timeout = timeout_seconds
+        self._document_parse_timeout = document_parse_timeout_seconds
+        self._request_interval = request_interval_seconds
         self._cancel_requested = cancel_requested
         self._next_request = 0.0
 
@@ -126,7 +130,7 @@ class CninfoMarketDisclosureSource:
             self._sleep(interval)
             self._check(deadline)
             delay -= interval
-        self._next_request = self._monotonic() + 1.0
+        self._next_request = self._monotonic() + self._request_interval
 
     def document(self, item: Disclosure, *, deadline: float) -> str:
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
@@ -144,7 +148,7 @@ class CninfoMarketDisclosureSource:
             )
         except HttpResponseTooLarge as exc:
             raise ValueError("disclosure_document_oversized") from exc
-        remaining = min(10.0, deadline - self._monotonic())
+        remaining = min(self._document_parse_timeout, deadline - self._monotonic())
         if remaining <= 0:
             raise TimeoutError("disclosure_deadline")
         try:

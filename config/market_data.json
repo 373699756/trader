@@ -4,7 +4,6 @@
     "sina_timeout_seconds": 8,
     "full_market_primary_timeout_seconds": 12,
     "candidate_timeout_seconds": 3,
-    "research_timeout_seconds": 8,
     "minimum_market_rows": 1000,
     "single_flight": true,
     "circuit_breaker_failures": 3,

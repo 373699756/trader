@@ -39,7 +39,7 @@ from trader.download.infra.company_disclosure_source import CninfoMarketDisclosu
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
-from trader.download.infra.download_settings import LoadHistorySyncConfiguration
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadHistorySyncConfiguration
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
@@ -220,6 +220,7 @@ def ExecuteSync(
     progress = CompanyEvidenceProgress()
     history_progress = StderrHistorySyncProgress()
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
+    company_configuration = LoadCompanySyncConfiguration(settings.project_root)
     return SyncData(
         prepare=lambda: _prepare_reference(
             settings.data_paths.reference, clock.now(), progress, cancel_requested=cancel_requested
@@ -243,10 +244,9 @@ def ExecuteSync(
                     ),
                     clock.now(),
                 ),
-                budget_seconds=3480.0,
+                configuration=company_configuration,
             ),
             cancel_requested=cancel_requested,
-            timeout_seconds=settings.market_data.research_timeout_seconds,
         ),
         cancelled=cancel_requested,
     ).execute(target)
@@ -258,20 +258,22 @@ def _sync_company_evidence(
     request: CompanyEvidenceRequest,
     *,
     cancel_requested: Callable[[], bool] | None = None,
-    timeout_seconds: float = 8.0,
 ) -> CompanyEvidenceSyncResult:
     with ProcessLock(root / "evidence.lock", label="sync company"), ProgressHeartbeat(progress) as heartbeat:
         with OpenExternalHttp() as disclosure_session, OpenExternalHttp() as structured_session:
+            source_timeout = request.configuration.source_timeout_seconds
             dependencies = CompanyEvidenceDependencies(
                 SQLiteCompanyEvidenceIndex(root / "evidence.sqlite3"),
                 CninfoMarketDisclosureSource(
                     disclosure_session,
                     monotonic=time.monotonic,
                     sleeper=time.sleep,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=source_timeout,
+                    document_parse_timeout_seconds=request.configuration.document_parse_timeout_seconds,
+                    request_interval_seconds=request.configuration.request_interval_seconds,
                     cancel_requested=cancel_requested,
                 ),
-                EastmoneyCompanySource(structured_session, monotonic=time.monotonic, timeout_seconds=timeout_seconds),
+                EastmoneyCompanySource(structured_session, monotonic=time.monotonic, timeout_seconds=source_timeout),
                 time.monotonic,
                 heartbeat,
                 cancel_requested,
@@ -280,7 +282,7 @@ def _sync_company_evidence(
                 dependencies,
                 request.codes,
                 request.observed_at,
-                budget_seconds=request.budget_seconds,
+                configuration=request.configuration,
                 news_codes=request.news_codes,
             )
 

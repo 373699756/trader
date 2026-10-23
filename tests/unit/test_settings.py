@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.infra.settings.runtime_loader as runtime_loader
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.settings import (
     ConfigurationError,
     LoadLongWatchlist,
@@ -123,7 +124,6 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.api.maximum_top_n == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "trader"
     assert runtime.data_paths.recommendation("v2") == PROJECT_ROOT / "data/recommendation/v2"
-    assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.market_data.eastmoney_timeout_seconds == 8
     assert runtime.market_data.sina_timeout_seconds == 8
     assert runtime.market_data.full_market_primary_timeout_seconds == 12
@@ -709,13 +709,26 @@ def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_pa
         LoadStrategySettings(strategy_path)
 
 
-def test_research_timeout_cannot_exceed_point_in_time_source_limit(tmp_path) -> None:
-    raw = _runtime_document()
-    raw["market_data"]["research_timeout_seconds"] = 8.01
-    changed_path = _write_runtime_config(tmp_path, raw)
+def test_company_sync_budget_and_deadline_configuration(tmp_path) -> None:
+    settings = LoadCompanySyncConfiguration(PROJECT_ROOT)
+    assert settings.budget_seconds == 90 * 60
+    assert settings.announcements_deadline_fraction == 0.7
+    assert settings.documents_deadline_fraction == 0.95
+    assert settings.source_timeout_seconds == 8.0
 
-    with pytest.raises(ConfigurationError, match="research_timeout_seconds must be at most 8.0"):
-        LoadRuntimeSettings(changed_path)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text(encoding="utf-8"))
+    document["company"]["announcements_deadline_fraction"] = 0.96
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="announcements before documents"):
+        LoadCompanySyncConfiguration(tmp_path)
+
+    document["company"]["announcements_deadline_fraction"] = 0.7
+    document["company"]["source_timeout_seconds"] = 8.01
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="source_timeout_seconds must be at most 8.0"):
+        LoadCompanySyncConfiguration(tmp_path)
 
 
 def test_priority_reserve_must_leave_capacity_for_normal_events(tmp_path) -> None:

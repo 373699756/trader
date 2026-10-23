@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from trader.download.domain.company_evidence import CompanySyncConfiguration
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.domain.qfq_window import QFQ_WINDOWS
 from trader.infra.settings.data_paths import DataPaths
@@ -19,8 +20,7 @@ from trader.infra.settings.parser import (
 
 
 def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> HistorySyncConfiguration:
-    document = ReadJsonObject(project_root / "config" / "download.json")
-    RequireExactKeys(document, {"history", "online_qfq"}, "download")
+    document = _download_document(project_root)
     history = RequireMapping(document, "history")
     RequireExactKeys(
         history,
@@ -69,4 +69,41 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
     )
 
 
-__all__ = ["LoadHistorySyncConfiguration"]
+def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration:
+    document = _download_document(project_root)
+    company = RequireMapping(document, "company")
+    RequireExactKeys(
+        company,
+        {
+            "budget_seconds",
+            "structured_component_seconds",
+            "announcements_deadline_fraction",
+            "documents_deadline_fraction",
+            "source_timeout_seconds",
+            "document_parse_timeout_seconds",
+            "request_interval_seconds",
+        },
+        "download.company",
+    )
+    announcements_fraction = Number(company, "announcements_deadline_fraction", minimum=0.01, maximum=0.98)
+    documents_fraction = Number(company, "documents_deadline_fraction", minimum=0.02, maximum=0.99)
+    if announcements_fraction >= documents_fraction:
+        raise ConfigurationError("download.company deadlines must keep announcements before documents")
+    return CompanySyncConfiguration(
+        budget_seconds=Number(company, "budget_seconds", minimum=60.0, maximum=21600.0),
+        structured_component_seconds=Number(company, "structured_component_seconds", minimum=1.0),
+        announcements_deadline_fraction=announcements_fraction,
+        documents_deadline_fraction=documents_fraction,
+        source_timeout_seconds=Number(company, "source_timeout_seconds", minimum=0.1, maximum=8.0),
+        document_parse_timeout_seconds=Number(company, "document_parse_timeout_seconds", minimum=0.1, maximum=30.0),
+        request_interval_seconds=Number(company, "request_interval_seconds", minimum=1.0),
+    )
+
+
+def _download_document(project_root: Path) -> dict[str, object]:
+    document = ReadJsonObject(project_root / "config" / "download.json")
+    RequireExactKeys(document, {"history", "online_qfq", "company"}, "download")
+    return document
+
+
+__all__ = ["LoadCompanySyncConfiguration", "LoadHistorySyncConfiguration"]

@@ -5,6 +5,7 @@ import sqlite3
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -14,6 +15,7 @@ from trader.download.application.company_evidence import CompanyEvidenceDependen
 from trader.download.domain.company_evidence import (
     CompanyRatio,
     CompanySourceFailure,
+    CompanySyncConfiguration,
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
@@ -22,6 +24,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpResponse, HttpTimeout
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
@@ -31,6 +34,24 @@ from trader.infra.sqlite_connection import (
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
+_TEST_COMPANY_CONFIGURATION = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
+
+
+def _sync_company_evidence(
+    dependencies,
+    codes,
+    observed_at,
+    *,
+    configuration: CompanySyncConfiguration = _TEST_COMPANY_CONFIGURATION,
+    news_codes=(),
+):
+    return SyncCompanyEvidence(
+        dependencies,
+        codes,
+        observed_at,
+        configuration=configuration,
+        news_codes=news_codes,
+    )
 
 
 class Sources:
@@ -71,11 +92,11 @@ def test_second_run_reuses_baseline_without_redownloading(tmp_path):
     index = _index(tmp_path)
     source = Sources()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0)
-    first = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    first = _sync_company_evidence(dependencies, ("600001",), NOW)
     assert not first.needs_retry
     assert first.fetched_pages > 3
     source.calls.clear()
-    second = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    second = _sync_company_evidence(dependencies, ("600001",), NOW)
     assert second.fetched_pages == second.changed_rows == 0
     assert not source.calls
     assert second.published_codes == 1
@@ -137,7 +158,7 @@ def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp
     monkeypatch.setattr(index, "publish", tracked_publish)
     if phase == "before_start":
         monkeypatch.setattr(index, "initialize", lambda: pytest.fail("cancelled task initialized the database"))
-    result = SyncCompanyEvidence(
+    result = _sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: 0.0, progress, lambda: cancelled),
         ("600001",),
         NOW + timedelta(days=1),
@@ -167,12 +188,12 @@ def test_company_cancellation_saves_the_last_page_and_resumes_it(tmp_path, monke
 
     source = PagedFinancials()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, cancel_requested=lambda: cancelled)
-    first = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    first = _sync_company_evidence(dependencies, ("600001",), NOW)
     assert first.published_codes == 0 and first.failures == ("task:cancelled",)
     assert len(source.calls) == 1
     cancelled = False
     source.calls.clear()
-    resumed = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    resumed = _sync_company_evidence(dependencies, ("600001",), NOW)
     financial = [
         item for item in source.calls if isinstance(item, StructuredCompanyQuery) and item.component == "financial"
     ]
@@ -346,7 +367,7 @@ def test_reader_releases_transaction_before_consumers_and_pins_all_requested_row
 def test_company_inputs_require_restart_to_adopt_manual_publication(tmp_path):
     index = _index(tmp_path)
     source = Sources()
-    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     research = PublishedCompanyResearch(
         SQLiteCompanyEvidenceReader(index.path),
         wall_clock=lambda: NOW,
@@ -418,7 +439,7 @@ def test_company_reads_do_not_revisit_disk_after_preload(tmp_path, monkeypatch):
 def test_reader_and_candidate_load_never_invoke_background_download(tmp_path):
     index = _index(tmp_path)
     source = Sources()
-    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("hot path network")
@@ -457,9 +478,9 @@ def test_new_day_queries_only_increment_overlap_and_one_month_audit(tmp_path):
     index = _index(tmp_path)
     source = Sources()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0)
-    SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    _sync_company_evidence(dependencies, ("600001",), NOW)
     source.calls.clear()
-    SyncCompanyEvidence(dependencies, ("600001",), NOW + timedelta(days=1))
+    _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(days=1))
     partitions = [item for item in source.calls if isinstance(item, DisclosurePartition)]
     assert partitions
     assert sum((item.end - item.start).days > 1 for item in partitions) <= 1
@@ -469,7 +490,7 @@ def test_new_day_queries_only_increment_overlap_and_one_month_audit(tmp_path):
 def test_optional_news_uses_only_candidate_scope(tmp_path):
     index = _index(tmp_path)
     source = Sources()
-    SyncCompanyEvidence(
+    _sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001", "600002"), NOW, news_codes=("600001",)
     )
     assert ("news", "600001") in source.calls
@@ -480,9 +501,9 @@ def test_same_day_later_run_checks_new_disclosures_without_restarting_year(tmp_p
     index = _index(tmp_path)
     source = Sources()
     deps = CompanyEvidenceDependencies(index, source, source, lambda: 0)
-    SyncCompanyEvidence(deps, ("600001",), NOW)
+    _sync_company_evidence(deps, ("600001",), NOW)
     source.calls.clear()
-    SyncCompanyEvidence(deps, ("600001",), NOW + timedelta(minutes=30))
+    _sync_company_evidence(deps, ("600001",), NOW + timedelta(minutes=30))
     partitions = [item for item in source.calls if isinstance(item, DisclosurePartition)]
     assert len(partitions) == 7
     assert all(item.start == item.end for item in partitions)
@@ -503,7 +524,7 @@ def test_duplicate_page_links_restart_without_claiming_complete(tmp_path):
 def test_unchanged_publication_does_not_rewrite_rows_or_change_version(tmp_path):
     index = _index(tmp_path)
     source = Sources()
-    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
     before = reader.read(("600001",))
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
@@ -576,7 +597,7 @@ def test_missing_pledge_record_becomes_zero_only_after_full_snapshot(tmp_path):
 def test_cached_snapshot_ages_without_network_or_another_database_read(tmp_path, monkeypatch):
     index = _index(tmp_path)
     source = Sources()
-    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
     research = PublishedCompanyResearch(
         reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
@@ -601,7 +622,7 @@ def test_cached_snapshot_ages_without_network_or_another_database_read(tmp_path,
 def test_content_removed_without_publication_change_preserves_loaded_memory(tmp_path):
     index = _index(tmp_path)
     source = Sources()
-    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     research = PublishedCompanyResearch(
         SQLiteCompanyEvidenceReader(index.path),
         wall_clock=lambda: NOW,
@@ -632,7 +653,7 @@ def test_access_denied_stops_pdf_requests_and_keeps_checkpoint(tmp_path):
             return super().fetch(first, **kwargs)
 
     source = DeniedSources()
-    result = SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    result = _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     assert "announcements:access_denied" in result.failures
     assert "risk_documents:pending" in result.failures
     assert index.partitions(("sse",), NOW)[0].page == 2
@@ -676,7 +697,7 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
 
     source = Resumable()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
-    first = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    first = _sync_company_evidence(dependencies, ("600001",), NOW)
     assert first.failures == (f"announcements:{category}",)
     assert first.pending_partitions > 0 and first.pending_documents == 0
     assert source.pages == [1, 2] and source.documents == ["first"]
@@ -688,7 +709,7 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
     source.blocked = False
     source.calls.clear()
     events.clear()
-    second = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    second = _sync_company_evidence(dependencies, ("600001",), NOW)
     assert not second.needs_retry
     assert source.pages == [1, 2, 2] and source.documents == ["first"]
     assert not source.calls
@@ -703,7 +724,7 @@ def test_document_failure_counts_unique_pending_documents_and_retries_only_unfin
     index = _index(tmp_path)
     source = Sources()
     codes = ("600001", "600002")
-    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), codes, NOW)
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), codes, NOW)
     part = DisclosurePartition("sse", NOW.date(), NOW.date())
     item = replace(_disclosure(title="关于本公司被立案调查的公告"), codes=codes)
     index.commit_page(part, DisclosurePage((item,), 1, False), NOW)
@@ -721,18 +742,125 @@ def test_document_failure_counts_unique_pending_documents_and_retries_only_unfin
 
     source = Documents()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
-    first = SyncCompanyEvidence(dependencies, codes, NOW)
+    first = _sync_company_evidence(dependencies, codes, NOW)
     assert first.pending_partitions == 0 and first.pending_documents == 1
     assert first.failures == ("risk_documents:pending", "risk_documents:timeout")
     body = next(event for event in events if event.component == "risk_documents")
     assert body.pending == 1  # One disclosure associated with two stocks is still one PDF.
     assert events[-1].pending_documents == 1
     source.blocked = False
-    second = SyncCompanyEvidence(dependencies, codes, NOW)
+    second = _sync_company_evidence(dependencies, codes, NOW)
     assert second.pending_documents == 0 and not second.needs_retry
     assert source.document_calls == 2 and not source.calls
-    third = SyncCompanyEvidence(dependencies, codes, NOW)
+    third = _sync_company_evidence(dependencies, codes, NOW)
     assert source.document_calls == 2 and not third.needs_retry
+
+
+def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body_checked(tmp_path):
+    index = _index(tmp_path)
+    source = Sources()
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0.0), ("600001",), NOW)
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date())
+    slow = _disclosure("slow", title="关于本公司被立案调查的公告", when=NOW)
+    healthy = _disclosure("healthy", title="关于本公司被立案调查的公告", when=NOW - timedelta(minutes=1))
+    index.commit_page(partition, DisclosurePage((slow, healthy), 2, False), NOW)
+
+    class Documents(Sources):
+        blocked = True
+
+        def __init__(self):
+            super().__init__()
+            self.document_calls = []
+
+        def document(self, item, *, deadline):
+            self.document_calls.append(item.identity)
+            if item.identity == "slow" and self.blocked:
+                raise TimeoutError("disclosure_document_parse_timeout")
+            return "已核验正文"
+
+    source = Documents()
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0)
+    first = _sync_company_evidence(dependencies, ("600001",), NOW)
+    assert source.document_calls == ["slow", "healthy"]
+    assert first.pending_documents == 1
+    assert first.failures == ("risk_documents:disclosure_document_parse_timeout", "risk_documents:pending")
+    assert not SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    with SqliteSession(index.path) as connection:
+        checked = connection.run("SELECT source_id,body_checked FROM disclosures ORDER BY source_id").fetchall()
+    assert [(row[0], row[1]) for row in checked] == [("healthy", 1), ("slow", 0)]
+
+    source.blocked = False
+    source.document_calls.clear()
+    resumed = _sync_company_evidence(dependencies, ("600001",), NOW)
+    assert source.document_calls == ["slow"]
+    assert resumed.pending_documents == 0 and not resumed.needs_retry
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+
+
+def test_document_parse_timeout_at_stage_deadline_stops_later_bodies(tmp_path):
+    index = _index(tmp_path)
+    source = Sources()
+    clock = [0.0]
+    _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: clock[0]), ("600001",), NOW)
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date())
+    slow = _disclosure("slow", title="关于本公司被立案调查的公告", when=NOW)
+    healthy = _disclosure("healthy", title="关于本公司被立案调查的公告", when=NOW - timedelta(minutes=1))
+    index.commit_page(partition, DisclosurePage((slow, healthy), 2, False), NOW)
+
+    class DeadlineDocuments(Sources):
+        def __init__(self):
+            super().__init__()
+            self.document_calls = []
+
+        def document(self, item, *, deadline):
+            self.document_calls.append(item.identity)
+            clock[0] = deadline
+            raise TimeoutError("disclosure_document_parse_timeout")
+
+    source = DeadlineDocuments()
+    result = _sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: clock[0]), ("600001",), NOW
+    )
+    assert source.document_calls == ["slow"]
+    assert result.pending_documents == 2
+    assert result.failures == ("risk_documents:disclosure_document_parse_timeout", "risk_documents:pending")
+
+
+def test_company_sync_configuration_controls_component_deadlines(tmp_path, monkeypatch):
+    index = _index(tmp_path)
+    monkeypatch.setattr(index, "partitions", lambda *_args: (DisclosurePartition("sse", NOW.date(), NOW.date()),))
+    document = _disclosure(title="关于本公司被立案调查的公告")
+    deadlines = {}
+
+    class TimedSources(Sources):
+        def fetch(self, first, *args, **kwargs):
+            deadlines["announcements" if isinstance(first, DisclosurePartition) else first.component] = kwargs[
+                "deadline"
+            ]
+            if isinstance(first, DisclosurePartition):
+                return DisclosurePage((document,), 1, False)
+            return StructuredCompanyPage(first.component, first.page, 1, 0)
+
+        def document(self, item, *, deadline):
+            deadlines["documents"] = deadline
+            return "已核验正文"
+
+    source = TimedSources()
+    configuration = replace(
+        _TEST_COMPANY_CONFIGURATION,
+        budget_seconds=100.0,
+        structured_component_seconds=7.0,
+        announcements_deadline_fraction=0.4,
+        documents_deadline_fraction=0.8,
+    )
+    result = _sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0.0),
+        ("600001",),
+        NOW,
+        configuration=configuration,
+    )
+    assert deadlines == {"financial": 7.0, "pledge": 7.0, "unlock": 7.0, "announcements": 40.0, "documents": 80.0}
+    assert result.pending_documents == 0 and not result.needs_retry
 
 
 @pytest.mark.parametrize("failures_before_success", [1, 3])
@@ -774,7 +902,7 @@ def test_cninfo_recovers_same_uncommitted_page_without_replaying_saved_prefix(tm
 
     source = CninfoMarketDisclosureSource(Transport(), monotonic=lambda: clock[0], sleeper=sleep)
     dependencies = CompanyEvidenceDependencies(index, source, Sources(), lambda: clock[0], events.append)
-    result = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    result = _sync_company_evidence(dependencies, ("600001",), NOW)
     news = [event for event in events if event.component == "news"]
     assert len(news) == 1 and news[0].status == "complete" and news[0].pending == 0
     if failures_before_success == 3:
@@ -783,7 +911,7 @@ def test_cninfo_recovers_same_uncommitted_page_without_replaying_saved_prefix(tm
             part for part in index.partitions(("sse",), NOW) if (part.start, part.end) == (target.start, target.end)
         )
         assert (checkpoint.page, checkpoint.received_rows) == (2, 1)
-        result = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+        result = _sync_company_evidence(dependencies, ("600001",), NOW)
     assert not result.needs_retry and result.pending_partitions == 0
     assert pages == [1] + [2] * (failures_before_success + 1)
     assert events[-1].status == "complete" and not events[-1].failure

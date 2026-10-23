@@ -12,6 +12,38 @@ Component = Literal["announcements", "financial", "pledge", "unlock", "news"]
 EvidenceProgressState = Literal["running", "complete", "reused", "deferred"]
 
 
+@dataclass(frozen=True)
+class CompanySyncConfiguration:
+    budget_seconds: float
+    structured_component_seconds: float
+    announcements_deadline_fraction: float
+    documents_deadline_fraction: float
+    source_timeout_seconds: float
+    document_parse_timeout_seconds: float
+    request_interval_seconds: float
+
+    def __post_init__(self) -> None:
+        values = (
+            self.budget_seconds,
+            self.structured_component_seconds,
+            self.announcements_deadline_fraction,
+            self.documents_deadline_fraction,
+            self.source_timeout_seconds,
+            self.document_parse_timeout_seconds,
+            self.request_interval_seconds,
+        )
+        if (
+            any(not math.isfinite(value) for value in values)
+            or self.budget_seconds <= 0
+            or self.structured_component_seconds <= 0
+            or not 0 < self.announcements_deadline_fraction < self.documents_deadline_fraction < 1
+            or not 0 < self.source_timeout_seconds <= 8
+            or self.document_parse_timeout_seconds <= 0
+            or self.request_interval_seconds < 1
+        ):
+            raise ValueError("company_sync_configuration_invalid")
+
+
 class CompanySourceFailure(RuntimeError):
     def __init__(
         self, category: Literal["access_denied", "rate_limited", "http_error"], *, status_code: int | None = None
@@ -25,11 +57,11 @@ class CompanySourceFailure(RuntimeError):
 class CompanyEvidenceRequest:
     codes: tuple[str, ...]
     observed_at: datetime
+    configuration: CompanySyncConfiguration
     news_codes: tuple[str, ...] = ()
-    budget_seconds: float = 3480.0
 
     def __post_init__(self) -> None:
-        if self.observed_at.utcoffset() is None or not math.isfinite(self.budget_seconds) or self.budget_seconds <= 0:
+        if self.observed_at.utcoffset() is None:
             raise ValueError("company_evidence_request_invalid")
 
 
@@ -255,6 +287,7 @@ def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
 
 
 __all__ = [
+    "CompanySyncConfiguration",
     "CompanyEvidenceRequest",
     "StructuredCompanyQuery",
     "CompanyDocument",

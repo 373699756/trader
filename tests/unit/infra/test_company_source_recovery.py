@@ -143,10 +143,17 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
 
     def parse(*args, **kwargs):
         parsed.append(kwargs["input"])
+        assert kwargs["timeout"] == 4.0
         return SimpleNamespace(returncode=0, stdout=b"verified body")
 
     monkeypatch.setattr("trader.download.infra.company_disclosure_source.subprocess.run", parse)
-    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
+    source = CninfoMarketDisclosureSource(
+        transport,
+        monotonic=clock,
+        sleeper=clock.sleep,
+        document_parse_timeout_seconds=4.0,
+        request_interval_seconds=2.0,
+    )
     item = Disclosure(
         "cninfo",
         "fixture",
@@ -159,3 +166,4 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
     assert source.document(item, deadline=120) == "verified body"
     assert len(transport.calls) == 2 and parsed == [b"PDF fixture"]
     assert transport.calls[-1][1]["max_response_bytes"] == 4 * 1024 * 1024
+    assert clock.now >= 2.0
