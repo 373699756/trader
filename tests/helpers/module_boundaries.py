@@ -221,7 +221,7 @@ def CoreIoViolations(source: str, layer: str) -> tuple[str, ...]:
         elif isinstance(node, ast.ImportFrom):
             imported = (node.module or "",)
             aliases.update((alias.asname or alias.name, f"{node.module}.{alias.name}") for alias in node.names)
-        if layer == "domain":
+        if layer == "domain" and isinstance(node, (ast.Import, ast.ImportFrom)):
             violations.extend(
                 f"{node.lineno}: external I/O import {name}" for name in imported if name.split(".")[0] in io_modules
             )

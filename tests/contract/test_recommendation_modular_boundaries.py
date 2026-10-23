@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from tests.helpers.module_boundaries import SourceImports
+from tests.helpers.module_boundaries import SourceImports, SourceImportTargets
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "trader"
@@ -35,16 +35,28 @@ def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> 
 
 
 def test_composition_root_explicitly_imports_recommendation_capabilities() -> None:
-    imported = {item.member for item in SourceImports(SOURCE / "bootstrap.py", SOURCE)}
+    bootstrap = SOURCE / "bootstrap.py"
+    imported = {item.member for item in SourceImports(bootstrap, SOURCE)}
     for capability in (
         "CandidateFilteringService",
         "LocalScoringService",
-        "PublishedModelScoringService",
         "RankingSelectionService",
         "RiskControlService",
         "ScoreFusionService",
     ):
         assert capability in imported
+
+    factory = SOURCE / "recommendation/infra/scoring/profile_factory.py"
+    assert "trader.recommendation.infra.scoring.profile_factory" in SourceImportTargets(bootstrap, SOURCE)
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "profile_factory"
+        and node.func.attr == "BuildProfileScoring"
+        for node in ast.walk(ast.parse(bootstrap.read_text(encoding="utf-8")))
+    )
+    assert "PublishedModelScoringService" in {item.member for item in SourceImports(factory, SOURCE)}
 
 
 def test_infrastructure_technical_capabilities_have_single_owners() -> None:
