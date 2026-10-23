@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from trader.download.domain.history_automation import HistoryAutomationStatus
+from trader.training.domain.training_reminder import TrainingReminderStatus
 
 
-def ProjectHistoryAutomationStatus(status: HistoryAutomationStatus) -> dict[str, object]:
+def ProjectTrainingReminderStatus(status: TrainingReminderStatus) -> dict[str, object]:
     return {
         "schema_version": "history_automation_status",
         "state": status.state,
@@ -25,4 +25,4 @@ def ProjectHistoryAutomationStatus(status: HistoryAutomationStatus) -> dict[str,
     }
 
 
-__all__ = ["ProjectHistoryAutomationStatus"]
+__all__ = ["ProjectTrainingReminderStatus"]

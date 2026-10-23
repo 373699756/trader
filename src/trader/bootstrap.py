@@ -165,8 +165,10 @@ from trader.recommendation.infra.status_projection import RuntimeStatus as _runt
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.application.research_audit import TryBuildCommittedResearchAudit
 from trader.training.application.research_runtime import ResearchRuntime
+from trader.training.domain.training_reminder import TrainingReminderStatus
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue, PublishedTrainingState
+from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -341,8 +343,9 @@ def ExecuteDownloadTrain(config_path: Path, *, scoring_profile: ScoringProfileId
     if scoring_profile is not None and scoring_profile != "v1":
         raise ValueError("joint training accepts only an explicit v1 override")
     runtime = LoadRuntimeSettings(config_path)
+    paths = runtime.data_paths
     ConfigureTrainingResources()
-    result = RunDownload(runtime.project_root, config_path, quiet_success=True)
+    result = RunDownload(runtime.project_root, config_path, quiet_success=True, allow_price_gaps=True)
     if result:
         return result
     if scoring_profile == "v1":
@@ -354,10 +357,10 @@ def ExecuteDownloadTrain(config_path: Path, *, scoring_profile: ScoringProfileId
         return RunLearnedRankTraining(
             runtime,
             execute=lambda cancelled: RunV1Training(
-                partial(SQLiteHistoryTrainingInputSnapshot.open, runtime.data_paths.history),
-                runtime.data_paths.models,
-                sample_root=runtime.data_paths.samples,
-                history_root=runtime.data_paths.history,
+                partial(SQLiteHistoryTrainingInputSnapshot.open, paths.history),
+                paths.models,
+                sample_root=paths.samples,
+                history_root=paths.history,
                 settings=LoadV1TrainingSettings(runtime.project_root),
                 progress=StderrTomorrowTrainingProgress(),
                 cancel_requested=cancelled,
@@ -365,10 +368,12 @@ def ExecuteDownloadTrain(config_path: Path, *, scoring_profile: ScoringProfileId
         )
     return RunJointTraining(
         runtime,
-        refresh_due=lambda: EvaluateAllHistoryTrainingDue(
-            runtime.data_paths.history, runtime.data_paths.models, ShanghaiClock(_utc_now).now()
-        ),
+        refresh_due=lambda: EvaluateAllHistoryTrainingDue(paths.history, paths.models, ShanghaiClock(_utc_now).now()),
     )
+
+
+def ExecuteTrainingReminderStatus(settings: RuntimeSettings) -> TrainingReminderStatus:
+    return ReadTrainingReminderStatus(settings.data_paths.history, ShanghaiClock(_utc_now).now())
 
 
 def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
@@ -424,7 +429,7 @@ def ExecuteHistoryDownload(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
                 )
             )
-            result = DownloadHistoryUseCase(
+            return DownloadHistoryUseCase(
                 HistorySyncGateway(worker_pool=history_pool, writer_pool=history_writer)
             ).execute(
                 configuration,
@@ -439,11 +444,6 @@ def ExecuteHistoryDownload(
                 clock=clock,
                 progress=progress,
                 cancel_requested=cancel_requested,
-            )
-            if reference.industry_version or result.state not in {"completed", "already_current"}:
-                return result
-            return replace(
-                result, reason="current_industry_unavailable", training_due=False, training_due_reason="data_incomplete"
             )
     finally:
         deadline = ShutdownDeadline.start(30.0)

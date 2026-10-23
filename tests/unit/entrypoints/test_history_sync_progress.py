@@ -95,20 +95,7 @@ def test_st_checkpoints_report_progress_before_completion(capsys) -> None:
 
 
 def _failed_status(reason: str) -> HistoryMaintenanceStatus:
-    return HistoryMaintenanceStatus(
-        "failed",
-        reason,
-        Path("data/history"),
-        "baostock",
-        None,
-        None,
-        None,
-        None,
-        0,
-        False,
-        "data_incomplete",
-        False,
-    )
+    return HistoryMaintenanceStatus("failed", reason, Path("data/history"), "baostock", None, None, None, None)
 
 
 def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
@@ -405,10 +392,6 @@ def test_completed_result_keeps_machine_json_out_of_the_progress_stream(capsys) 
         "a" * 64,
         date(2026, 9, 10),
         date(2026, 9, 9),
-        0,
-        False,
-        "data_incomplete",
-        False,
     )
 
     progress.publish_result(completed)

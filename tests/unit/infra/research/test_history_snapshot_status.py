@@ -100,12 +100,7 @@ def test_active_monthly_snapshot_projects_typed_counts_and_optional_full_verific
     root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(
-        root,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(root).parent / "reference",
-        training_root=(root).parent / "models",
+        root, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(root).parent / "reference"
     )
     assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
@@ -130,7 +125,6 @@ def test_legacy_nested_archive_is_not_discovered(tmp_path: Path) -> None:
         reread_sessions=2,
         minimum_free_bytes=0,
         reference_root=(legacy_root).parent / "reference",
-        training_root=(legacy_root).parent / "models",
     )
     assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
@@ -144,12 +138,7 @@ def test_partition_tamper_fails_closed_without_losing_the_snapshot_identity(tmp_
     root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(
-        root,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(root).parent / "reference",
-        training_root=(root).parent / "models",
+        root, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(root).parent / "reference"
     )
     assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
     active = InspectHistorySnapshot(root)

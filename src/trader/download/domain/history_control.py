@@ -13,15 +13,6 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 HistorySecurityBoard = Literal["main", "chinext", "star"]
 HistorySyncState = Literal["pending", "running", "completed", "failed", "cancelled"]
-HistoryTrainingDueReason = Literal[
-    "not_due",
-    "initial_training_required",
-    "cadence_due",
-    "input_revision_due",
-    "training_contract_due",
-    "data_incomplete",
-]
-HistoryReminderOutcome = Literal["sent", "notification_degraded"]
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY = re.compile(r"^[a-z0-9_.:-]{1,128}$")
@@ -149,176 +140,6 @@ class HistorySyncCheckpoint:
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
-@dataclass(frozen=True)
-class HistoryTrainingDueState:
-    due_identity: str
-    reason: HistoryTrainingDueReason
-    baseline_label_cutoff: date | None
-    current_label_cutoff: date | None
-    matured_label_days_since_training: int
-    input_revision: bool
-    observed_at: datetime
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        _require_identity(self.due_identity, "training due identity")
-        _require_shanghai(self.observed_at, "training due observation")
-        valid = (
-            self.reason == "initial_training_required"
-            and self.baseline_label_cutoff is None
-            and self.current_label_cutoff is not None
-            or self.reason == "cadence_due"
-            and self.baseline_label_cutoff is not None
-            and self.current_label_cutoff is not None
-            and self.matured_label_days_since_training >= 20
-            or self.reason == "input_revision_due"
-            and self.input_revision
-            or self.reason == "training_contract_due"
-            and self.baseline_label_cutoff is not None
-            and self.current_label_cutoff is not None
-            or self.reason == "not_due"
-            and not self.input_revision
-            and self.matured_label_days_since_training < 20
-            or self.reason == "data_incomplete"
-        )
-        if self.matured_label_days_since_training < 0 or not valid:
-            raise ValueError("history training due state is invalid")
-        object.__setattr__(self, "content_hash", CanonicalDigest(self))
-
-    @property
-    def training_due(self) -> bool:
-        return self.reason in {
-            "initial_training_required",
-            "cadence_due",
-            "input_revision_due",
-            "training_contract_due",
-        }
-
-
-@dataclass(frozen=True)
-class HistoryTrainingDueRequest:
-    due_identity: str
-    baseline_label_cutoff: date | None
-    current_label_cutoff: date | None
-    calendar_dates: tuple[date, ...]
-    input_revision: bool
-    observed_at: datetime
-    data_complete: bool = True
-    training_contract_changed: bool = False
-
-
-def CalculateHistoryTrainingDue(request: HistoryTrainingDueRequest) -> HistoryTrainingDueState:
-    """Derive the immutable training cadence from mature trading sessions.
-
-    The count is deliberately based on the exchange calendar rather than elapsed
-    wall-clock time.  A missing input is represented as ``data_incomplete`` and
-    never advances the training baseline.
-    """
-
-    dates = tuple(request.calendar_dates)
-    if not dates or dates != tuple(sorted(set(dates))):
-        raise ValueError("history training calendar is invalid")
-    current = request.current_label_cutoff
-    if current is not None and current not in dates:
-        raise ValueError("history training current label cutoff is outside the calendar")
-    data_complete = request.data_complete
-    if request.baseline_label_cutoff is not None and current is not None and request.baseline_label_cutoff > current:
-        data_complete = False
-    if not data_complete or current is None:
-        reason: HistoryTrainingDueReason = "data_incomplete"
-        matured = 0
-    else:
-        matured = (
-            sum(day > request.baseline_label_cutoff and day <= current for day in dates)
-            if request.baseline_label_cutoff is not None
-            else 0
-        )
-        if request.baseline_label_cutoff is None:
-            reason = "initial_training_required"
-        elif request.input_revision:
-            reason = "input_revision_due"
-        elif request.training_contract_changed:
-            reason = "training_contract_due"
-        elif matured >= 20:
-            reason = "cadence_due"
-        else:
-            reason = "not_due"
-    return HistoryTrainingDueState(
-        request.due_identity,
-        reason,
-        request.baseline_label_cutoff,
-        current,
-        matured,
-        request.input_revision,
-        request.observed_at,
-    )
-
-
-def CalculateHistoryTrainingCacheInvalidationDates(
-    calendar_dates: tuple[date, ...],
-    revised_dates: tuple[date, ...],
-    *,
-    dependency_sessions: int = 60,
-) -> tuple[date, ...]:
-    """Expand revised inputs to their T+1 label and bounded feature dependants."""
-
-    calendar = tuple(calendar_dates)
-    revisions = tuple(revised_dates)
-    if (
-        dependency_sessions < 0
-        or not calendar
-        or calendar != tuple(sorted(set(calendar)))
-        or revisions != tuple(sorted(set(revisions)))
-        or any(day not in calendar for day in revisions)
-    ):
-        raise ValueError("history training cache invalidation input is invalid")
-    positions = {day: position for position, day in enumerate(calendar)}
-    invalidated: set[date] = set()
-    for day in revisions:
-        position = positions[day]
-        invalidated.update(calendar[max(0, position - 1) : position + dependency_sessions + 1])
-    return tuple(sorted(invalidated))
-
-
-@dataclass(frozen=True)
-class HistoryReminderClaim:
-    due_identity: str
-    reminder_date: date
-    claimed_at: datetime
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        _require_identity(self.due_identity, "reminder claim due identity")
-        _require_shanghai(self.claimed_at, "reminder claim")
-        if self.claimed_at.date() != self.reminder_date:
-            raise ValueError("history reminder claim is invalid")
-        object.__setattr__(self, "content_hash", CanonicalDigest(self))
-
-
-@dataclass(frozen=True)
-class HistoryReminderState:
-    due_identity: str
-    reminder_date: date
-    outcome: HistoryReminderOutcome
-    attempted_at: datetime
-    error_code: str | None
-    content_hash: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        _require_identity(self.due_identity, "reminder due identity")
-        _require_shanghai(self.attempted_at, "reminder attempt")
-        valid = (
-            self.outcome == "sent"
-            and self.error_code is None
-            or self.outcome == "notification_degraded"
-            and self.error_code is not None
-            and _ERROR_CODE.fullmatch(self.error_code) is not None
-        )
-        if not valid or self.attempted_at.date() != self.reminder_date:
-            raise ValueError("history reminder state is invalid")
-        object.__setattr__(self, "content_hash", CanonicalDigest(self))
-
-
 @dataclass(frozen=True, order=True)
 class HistorySnapshotPartition:
     relative_path: str
@@ -379,6 +200,17 @@ class HistoryActiveSnapshot:
 
 
 @dataclass(frozen=True)
+class HistoryRepackTrainingProof:
+    snapshot_hash: str
+    model_hash: str
+    report_hash: str
+
+    def __post_init__(self) -> None:
+        for value in (self.snapshot_hash, self.model_hash, self.report_hash):
+            _require_hash(value, "repack training proof")
+
+
+@dataclass(frozen=True)
 class HistoryDiskRequirement:
     month_sidecar_bytes: int
     sqlite_temporary_bytes: int
@@ -431,9 +263,6 @@ class HistoryControlState:
     calendars: tuple[HistoryCalendarIdentity, ...]
     universes: tuple[HistoryUniverseIdentity, ...]
     checkpoints: tuple[HistorySyncCheckpoint, ...]
-    due_states: tuple[HistoryTrainingDueState, ...]
-    reminders: tuple[HistoryReminderState, ...]
-    reminder_claims: tuple[HistoryReminderClaim, ...]
     snapshots: tuple[HistoryActiveSnapshot, ...]
     active_snapshot_hash: str | None
 
@@ -442,9 +271,6 @@ class HistoryControlState:
         calendars = tuple(sorted(self.calendars, key=lambda item: item.content_hash))
         universes = tuple(sorted(self.universes, key=lambda item: item.content_hash))
         checkpoints = tuple(sorted(self.checkpoints, key=lambda item: (item.sync_identity, item.ordinal)))
-        due_states = tuple(sorted(self.due_states, key=lambda item: item.due_identity))
-        reminders = tuple(sorted(self.reminders, key=lambda item: (item.due_identity, item.reminder_date)))
-        reminder_claims = tuple(sorted(self.reminder_claims, key=lambda item: (item.due_identity, item.reminder_date)))
         snapshots = tuple(sorted(self.snapshots, key=lambda item: item.sequence))
         if self.active_snapshot_hash is not None:
             _require_hash(self.active_snapshot_hash, "active snapshot")
@@ -456,9 +282,6 @@ class HistoryControlState:
             (calendars, tuple(item.content_hash for item in calendars)),
             (universes, tuple(item.content_hash for item in universes)),
             (checkpoints, tuple((item.sync_identity, item.ordinal) for item in checkpoints)),
-            (due_states, tuple(item.due_identity for item in due_states)),
-            (reminders, tuple((item.due_identity, item.reminder_date) for item in reminders)),
-            (reminder_claims, tuple((item.due_identity, item.reminder_date) for item in reminder_claims)),
             (snapshots, tuple(item.sequence for item in snapshots)),
         ):
             if len(values) != len(set(identities)):
@@ -481,9 +304,6 @@ class HistoryControlState:
         object.__setattr__(self, "calendars", calendars)
         object.__setattr__(self, "universes", universes)
         object.__setattr__(self, "checkpoints", checkpoints)
-        object.__setattr__(self, "due_states", due_states)
-        object.__setattr__(self, "reminders", reminders)
-        object.__setattr__(self, "reminder_claims", reminder_claims)
         object.__setattr__(self, "snapshots", snapshots)
 
     @property
@@ -491,56 +311,18 @@ class HistoryControlState:
         return next((item for item in self.snapshots if item.content_hash == self.active_snapshot_hash), None)
 
 
-@dataclass(frozen=True)
-class HistoryAutomationControlState:
-    """Bounded persisted state required by unattended synchronization status."""
-
-    active_snapshot: HistoryActiveSnapshot | None
-    due_states: tuple[HistoryTrainingDueState, ...]
-    reminders: tuple[HistoryReminderState, ...]
-    reminder_claims: tuple[HistoryReminderClaim, ...]
-
-    def __post_init__(self) -> None:
-        due_states = tuple(sorted(self.due_states, key=lambda item: item.due_identity))
-        reminders = tuple(sorted(self.reminders, key=lambda item: (item.due_identity, item.reminder_date)))
-        reminder_claims = tuple(sorted(self.reminder_claims, key=lambda item: (item.due_identity, item.reminder_date)))
-        for values, identities in (
-            (due_states, tuple(item.due_identity for item in due_states)),
-            (reminders, tuple((item.due_identity, item.reminder_date) for item in reminders)),
-            (reminder_claims, tuple((item.due_identity, item.reminder_date) for item in reminder_claims)),
-        ):
-            if len(values) != len(set(identities)):
-                raise ValueError("history automation control contains duplicate identities")
-        due_identities = {item.due_identity for item in due_states}
-        unsealed_reminder = any(item.due_identity not in due_identities for item in reminders)
-        unsealed_claim = any(item.due_identity not in due_identities for item in reminder_claims)
-        if unsealed_reminder or unsealed_claim:
-            raise ValueError("history automation control contains an unsealed due identity")
-        object.__setattr__(self, "due_states", due_states)
-        object.__setattr__(self, "reminders", reminders)
-        object.__setattr__(self, "reminder_claims", reminder_claims)
-
-
 __all__ = [
     "HistoryActiveSnapshot",
-    "HistoryAutomationControlState",
     "HistoryCalendarIdentity",
     "HistoryControlState",
     "HistoryPublishedControlState",
     "HistoryDiskRequirement",
-    "HistoryReminderClaim",
-    "HistoryReminderOutcome",
-    "HistoryReminderState",
+    "HistoryRepackTrainingProof",
     "HistorySecurityBoard",
     "HistorySecurityIdentity",
     "HistorySnapshotPartition",
     "HistorySourceIdentity",
     "HistorySyncCheckpoint",
     "HistorySyncState",
-    "HistoryTrainingDueReason",
-    "HistoryTrainingDueRequest",
-    "HistoryTrainingDueState",
     "HistoryUniverseIdentity",
-    "CalculateHistoryTrainingCacheInvalidationDates",
-    "CalculateHistoryTrainingDue",
 ]

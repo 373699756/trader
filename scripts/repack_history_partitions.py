@@ -13,6 +13,7 @@ from trader.download.infra.history_partition_repack import (
     HistoryPartitionRepackError,
 )
 from trader.download.infra.history_partition_repack_state import HistoryPartitionRepackStatus
+from trader.training.infra.history.repack_training_evidence import VerifyHistoryRepackTraining
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,7 +44,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.action == "rollback":
             status = coordinator.rollback()
         else:
-            status = coordinator.finalize(args.training_root, args.memory_evidence)
+            status = coordinator.finalize(
+                verify_training=lambda snapshot_hash: VerifyHistoryRepackTraining(
+                    args.training_root, args.memory_evidence, snapshot_hash
+                )
+            )
     except (HistoryPartitionRepackError, OSError, ValueError) as exc:
         print(
             json.dumps(

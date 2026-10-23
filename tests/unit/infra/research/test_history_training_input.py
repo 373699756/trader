@@ -50,6 +50,7 @@ from trader.training.infra.history.history_training_due import (
     _revised_dates_since_bundle,
 )
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceIndex
 from trader.training.infra.model_bundles.bundle_snapshot import ActiveHeadBundle
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -133,7 +134,6 @@ def prepared_history(tmp_path_factory: pytest.TempPathFactory):
                 reread_sessions=2,
                 minimum_free_bytes=0,
                 reference_root=(seed).parent / "reference",
-                training_root=(seed).parent / "models",
             )
             result = RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW)
             assert result.state == "completed"
@@ -239,12 +239,7 @@ def test_old_published_manifest_remains_readable_after_active_history_advances(t
     original = reader.manifest()
     original_rows = reader.read_windows(original, ("600001",), sessions=61)
     configuration = HistorySyncConfiguration(
-        root,
-        sessions=61,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=tmp_path / "reference",
-        training_root=tmp_path / "models",
+        root, sessions=61, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path / "reference"
     )
     advanced = (*dates[1:], dates[-1] + timedelta(days=1))
     result = RunHistorySync(configuration, _Supplier(advanced), clock=lambda: NOW + timedelta(days=1))
@@ -268,7 +263,7 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
         pair = [head for head in heads if head.profile_id == profile]
         assert pair[0].due.current_label_cutoff > pair[1].due.current_label_cutoff
     monkeypatch.setattr(
-        HistoryControlIndex, "save_due_state", lambda *args: pytest.fail("startup must never save due state")
+        TrainingMaintenanceIndex, "save_due_state", lambda *args: pytest.fail("startup must never save due state")
     )
     monkeypatch.setattr(
         due_module, "EvaluateHistoryTrainingDue", lambda *args: pytest.fail("startup must never calculate due state")
@@ -288,7 +283,9 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
 
 
-def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(tmp_path, prepared_history):
+def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(
+    tmp_path, prepared_history, monkeypatch
+):
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
@@ -297,25 +294,25 @@ def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(
         head.mkdir(parents=True)
         (head / "model.json").write_text("{broken")
         (head / "metadata.json").write_text("{}")
-    result = RunHistorySync(
-        HistorySyncConfiguration(
-            root,
-            tmp_path / "reference",
-            sessions=61,
-            reread_sessions=2,
-            minimum_free_bytes=0,
-            training_root=tmp_path / "models",
-        ),
-        _Supplier(dates),
-        clock=lambda: NOW,
-    )
+    with monkeypatch.context() as isolated:
+        isolated.setattr(
+            due_module, "EvaluateHistoryTrainingDue", lambda *_args: pytest.fail("download queried models")
+        )
+        result = RunHistorySync(
+            HistorySyncConfiguration(
+                root, tmp_path / "reference", sessions=61, reread_sessions=2, minimum_free_bytes=0
+            ),
+            _Supplier(dates),
+            clock=lambda: NOW,
+        )
     assert result.state == "already_current"
-    assert result.training_due and result.training_due_reason == "initial_training_required"
-    assert len(result.training_heads) == 4
-    assert all(head.failure == "corrupt" and head.due.training_due for head in result.training_heads)
+    assert result.published
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW)
+    assert len(heads) == 4
+    assert all(head.failure == "corrupt" and head.due.training_due for head in heads)
     projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
     projection.initialize()
-    assert tuple(head.due for head in projection.status()) == tuple(head.due for head in result.training_heads)
+    assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
 
 
 def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricates_history(tmp_path: Path) -> None:
@@ -539,7 +536,7 @@ def test_training_due_expands_revision_cache_invalidation_to_the_selected_profil
 
     monkeypatch.setattr(
         due_module,
-        "CalculateHistoryTrainingCacheInvalidationDates",
+        "CalculateTrainingCacheInvalidationDates",
         calculate_invalidation,
     )
 
@@ -562,7 +559,6 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
         reread_sessions=2,
         minimum_free_bytes=0,
         reference_root=(archive_root).parent / "reference",
-        training_root=(archive_root).parent / "models",
     )
     first_dates = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
     RunHistorySync(configuration, _Supplier(first_dates), clock=lambda: NOW)

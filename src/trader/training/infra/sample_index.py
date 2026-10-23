@@ -11,7 +11,6 @@ from typing import Literal, cast
 
 import numpy as np
 
-from trader.download.domain.baostock_daily import BaoStockTrainingSplit
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
@@ -19,6 +18,7 @@ from trader.infra.sqlite_connection import (
     SqliteSchema,
     SqliteTransaction,
 )
+from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation"]
@@ -157,7 +157,7 @@ class SQLiteTrainingSampleIndex:
             (self._encode(sample) for sample in samples),
         )
 
-    def prepare_for_model_fitting(self, split: BaoStockTrainingSplit) -> None:
+    def prepare_for_model_fitting(self, split: TrainingDateSplit) -> None:
         if self._prepared_split_hash is not None:
             raise RuntimeError("training sample split is already prepared")
         self._counts_by_target.clear()
@@ -172,7 +172,7 @@ class SQLiteTrainingSampleIndex:
         self._transaction.commit()
         self._prepared_split_hash = split.content_hash
 
-    def require_split(self, split: BaoStockTrainingSplit) -> None:
+    def require_split(self, split: TrainingDateSplit) -> None:
         self.require_split_hash(split.content_hash)
 
     def require_split_hash(self, split_hash: str) -> None:

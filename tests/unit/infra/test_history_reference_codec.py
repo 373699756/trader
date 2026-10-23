@@ -85,12 +85,7 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
             return super().load_context(as_of, sessions, universe=universe, industry_cache=industry_cache)
 
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=2,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     baseline, prices = RecordingBaseline(dates), Prices()
     result = RunHistorySync(
@@ -122,11 +117,7 @@ def test_unknown_tencent_date_breaks_training_window_and_is_refetched(tmp_path):
             )
 
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=125,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=125, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     result = RunHistorySync(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 1
@@ -154,12 +145,7 @@ def test_tencent_missing_dates_publish_without_baostock_recovery(tmp_path):
             )
 
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=2,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     supplier = Missing(dates)
     first = RunHistorySync(config, supplier, clock=lambda: NOW)
@@ -270,11 +256,7 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
 
     dates = tuple(date(2026, 7, 1) + timedelta(days=i) for i in range(65))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=65,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=65, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     assert RunHistorySync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
     snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_published_state().snapshot
@@ -298,12 +280,7 @@ def test_tencent_missing_dates_publish_sparse_rows_for_every_stock(tmp_path):
             )
 
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=2,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     supplier = Missing(dates)
     result = RunHistorySync(config, supplier, clock=lambda: NOW)
@@ -446,12 +423,7 @@ def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, da
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     supplier = FakeSupplier(dates, industry="bank")
     config = HistorySyncConfiguration(
-        root,
-        sessions=2,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(root).parent / "reference",
-        training_root=(root).parent / "models",
+        root, sessions=2, reread_sessions=2, minimum_free_bytes=0, reference_root=(root).parent / "reference"
     )
     assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "completed"
     snapshot = HistoryControlIndex(root / "catalog.sqlite3").load_published_state().snapshot
@@ -484,7 +456,6 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
         reread_sessions=2,
         minimum_free_bytes=0,
         reference_root=(tmp_path / "baostock").parent / "reference",
-        training_root=(tmp_path / "baostock").parent / "models",
     )
     assert RunHistorySync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
 

@@ -17,11 +17,6 @@ from trader.download.infra.history_partition_repack_state import (
 )
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.serialization.fields import AsSequence
-from trader.training.application.tomorrow_training import TomorrowTrainingStage
-from trader.training.infra.profile.v3.training_memory_evidence import (
-    TomorrowTrainingMemoryEvidence,
-    TomorrowTrainingStageDuration,
-)
 
 
 class HistoryPartitionRepackCodecError(RuntimeError):
@@ -170,52 +165,6 @@ def ReadHistoryPartitionRepackActivationJournal(path: Path) -> HistoryPartitionR
         raise HistoryPartitionRepackCodecError("history repack activation journal is invalid") from exc
 
 
-def ReadTomorrowTrainingMemoryEvidence(path: Path) -> TomorrowTrainingMemoryEvidence:
-    payload = _read_verified_json(path, "tomorrow_training_memory_gate")
-    _require_fields(
-        payload,
-        {
-            "schema_version",
-            "status",
-            "training_status",
-            "repeat_training_status",
-            "training_input_hash",
-            "model_hash",
-            "report_hash",
-            "peak_rss_bytes",
-            "starting_peak_rss_bytes",
-            "max_rss_bytes",
-            "sample_database_peak_bytes",
-            "stage_durations_ms",
-            "failure_reasons",
-            "content_hash",
-        },
-    )
-    try:
-        if _text(payload, "status") != "passed":
-            raise ValueError("training memory gate did not pass")
-        failures = _list(payload, "failure_reasons")
-        if failures:
-            raise ValueError("training memory gate has failure reasons")
-        starting_peak_rss_bytes = _integer(payload, "starting_peak_rss_bytes")
-        peak_rss_bytes = _integer(payload, "peak_rss_bytes")
-        if starting_peak_rss_bytes < 1 or starting_peak_rss_bytes > peak_rss_bytes:
-            raise ValueError("training memory starting peak is invalid")
-        return TomorrowTrainingMemoryEvidence(
-            _text(payload, "training_status"),
-            _text(payload, "repeat_training_status"),
-            _text(payload, "training_input_hash"),
-            _text(payload, "model_hash"),
-            _text(payload, "report_hash"),
-            peak_rss_bytes,
-            _integer(payload, "max_rss_bytes"),
-            _integer(payload, "sample_database_peak_bytes"),
-            _stage_durations(payload),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HistoryPartitionRepackCodecError("Tomorrow training memory evidence is invalid") from exc
-
-
 def _decode_source_file(raw: object) -> HistoryPartitionRepackSourceFileIdentity:
     payload = _object(raw)
     _require_fields(payload, {"relative_path", "size_bytes", "modified_ns"})
@@ -322,16 +271,6 @@ def _integer(payload: dict[str, object], key: str) -> int:
     return value
 
 
-def _stage_durations(payload: dict[str, object]) -> tuple[TomorrowTrainingStageDuration, ...]:
-    durations = _object(payload["stage_durations_ms"])
-    decoded: list[TomorrowTrainingStageDuration] = []
-    for stage, value in durations.items():
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise TypeError("history repack stage duration must be numeric")
-        decoded.append(TomorrowTrainingStageDuration(cast(TomorrowTrainingStage, stage), float(value)))
-    return tuple(sorted(decoded, key=lambda item: item.stage))
-
-
 def _require_fields(payload: dict[str, object], fields: set[str]) -> None:
     if set(payload) != fields:
         raise ValueError("history repack document fields are invalid")
@@ -351,7 +290,6 @@ __all__ = [
     "HistoryPartitionRepackCodecError",
     "ReadHistoryPartitionRepackActivationJournal",
     "ReadHistoryPartitionRepackBuildState",
-    "ReadTomorrowTrainingMemoryEvidence",
     "WriteHistoryPartitionRepackActivationJournal",
     "WriteHistoryPartitionRepackBuildState",
 ]

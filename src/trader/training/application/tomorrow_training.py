@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.download.domain.baostock_daily import BaoStockTrainingSplit
 from trader.recommendation.domain.publication.models import Strategy
+from trader.training.domain.training_dates import TrainingDateSplit
 
 TomorrowTrainingStage = Literal[
     "resource_preflight",
@@ -61,7 +61,7 @@ class TomorrowTrainingProgressPort(Protocol):
 
 @dataclass(frozen=True)
 class TomorrowTrainingWindow:
-    split: BaoStockTrainingSplit
+    split: TrainingDateSplit
     readable_dates: frozenset[date] = field(init=False)
 
     def __post_init__(self) -> None:

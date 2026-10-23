@@ -35,12 +35,7 @@ def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reload
 
     supplier = _router(Baseline(days), InvalidQfq(), _current_universe("600001", "600002"))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=tmp_path.parent / "reference",
-        training_root=tmp_path.parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
     publish = history_sync_runner.PublishHistorySnapshot
 
@@ -92,12 +87,7 @@ def test_rounded_raw_amount_gap_is_completed_without_changing_old_snapshot(tmp_p
     prices = RefinedPrices()
     supplier = _router(Baseline(days), prices, _current_universe("600001"))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=tmp_path.parent / "reference",
-        training_root=tmp_path.parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
     first = RunHistorySync(config, supplier, clock=lambda: _at(days[-1]))
     assert first.unresolved_price_cells == 1
@@ -137,12 +127,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
 
     baseline = Baseline(days)
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     result = RunHistorySync(
         config, _router(baseline, PartialPrices()), clock=lambda: _at(days[-1]), progress=StderrHistorySyncProgress()
@@ -209,12 +194,7 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
     baseline = Baseline(days)
     supplier = _router(baseline, prices, _current_universe("600001", "600002", "600003", "600004"))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     first = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert first.state == "completed" and first.unresolved_price_cells == 3

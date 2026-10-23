@@ -33,6 +33,7 @@ from trader.training.domain.evaluation.historical_screening import HISTORICAL_SC
 from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.training.domain.model_publication import HeadTrainingStatus
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
+from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceError
 from trader.training.infra.research.h1_point_in_time_snapshot import (
     H1PointInTimeSnapshotConflictError,
     SQLiteH1PointInTimeSnapshot,
@@ -307,7 +308,7 @@ def RunJointTraining(runtime: RuntimeSettings, *, refresh_due: Callable[[], tupl
     due_failure: str | None = None
     try:
         training_heads = refresh_due()
-    except (HistoryControlError, OSError, ValueError) as exc:
+    except (HistoryControlError, TrainingMaintenanceError, OSError, ValueError) as exc:
         training_heads = ()
         due_failure = type(exc).__name__
     print(

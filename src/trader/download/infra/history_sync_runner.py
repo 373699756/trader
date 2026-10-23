@@ -65,7 +65,6 @@ from trader.download.infra.history_sync_failure import (
 )
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.workers import InjectedExecutor, WorkerExecutor
-from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
 
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
@@ -105,7 +104,7 @@ class _HistorySync:
         while True:
             active = self.control.load_state().active_snapshot
             if not _has_sufficient_disk(self.configuration.archive_root, self.configuration.minimum_free_bytes):
-                return _status("blocked", "disk_space_insufficient", self.configuration, active, self.observed_at)
+                return _status("blocked", "disk_space_insufficient", self.configuration, active)
             pending = self.index.pending(active.sequence if active else 0)
             target = pending.cutoff if pending else CompletedDailyCutoff(self.observed_at)
             inputs = self._prepare(active, pending, target)
@@ -120,7 +119,6 @@ class _HistorySync:
                     "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
                     self.configuration,
                     active,
-                    self.observed_at,
                     unresolved_price_cells=unresolved.cells if unresolved else 0,
                     price_gap_summary=unresolved,
                 )
@@ -134,7 +132,6 @@ class _HistorySync:
                 "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
                 self.configuration,
                 snapshot,
-                self.observed_at,
                 unresolved_price_cells=unresolved.cells if unresolved else 0,
                 price_gap_summary=unresolved,
             )
@@ -370,11 +367,9 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 write_tuning,
             ).execute()
     except KeyboardInterrupt:
-        return _status("cancelled", "cancelled", configuration, _safe_active(control), observed_at)
+        return _status("cancelled", "cancelled", configuration, _safe_active(control))
     except HistoryMaintenanceAlreadyRunningError:
-        return _status(
-            "already_running", "history_maintenance_running", configuration, _safe_active(control), observed_at
-        )
+        return _status("already_running", "history_maintenance_running", configuration, _safe_active(control))
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
         reason = HistoryFailureCode(exc)
         detail = HistoryFailureDetail(exc)
@@ -395,7 +390,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 pass
         else:
             _LOGGER.error("history_sync_failure reason=%s diagnostic=%s", reason, detail)
-        return _status("failed", reason, configuration, _safe_active(control), observed_at)
+        return _status("failed", reason, configuration, _safe_active(control))
 
 
 def _download_tasks(
@@ -503,19 +498,11 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     reason: str | None,
     configuration: HistorySyncConfiguration,
     snapshot: HistoryActiveSnapshot | None,
-    observed_at: datetime,
     *,
     unresolved_price_cells: int = 0,
     price_gap_summary: HistoryPriceGapSummary | None = None,
 ) -> HistoryMaintenanceStatus:
     root = configuration.archive_root
-    reference_ready = snapshot is not None and _has_industry_reference(root, snapshot)
-    heads = EvaluateAllHistoryTrainingDue(root, configuration.training_root, observed_at) if reference_ready else ()
-    states = tuple(item.due for item in heads if item.due is not None)
-    complete = len(states) == 4 and all(item.reason != "data_incomplete" for item in states)
-    due_state = (
-        next((item for item in states if item.training_due), states[0] if states else None) if complete else None
-    )
     return HistoryMaintenanceStatus(
         state=state,
         reason=reason,
@@ -525,22 +512,9 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         active_snapshot_hash=snapshot.content_hash if snapshot is not None else None,
         data_cutoff=snapshot.data_cutoff if snapshot is not None else None,
         label_cutoff=snapshot.label_cutoff if snapshot is not None else None,
-        matured_label_days_since_training=(due_state.matured_label_days_since_training if due_state else 0),
-        training_due=(due_state.training_due if due_state else False),
-        training_due_reason=(due_state.reason if due_state else "data_incomplete"),
-        automatic_training=False,
         unresolved_price_cells=unresolved_price_cells,
         price_gap_summary=price_gap_summary,
-        training_heads=heads,
     )
-
-
-def _has_industry_reference(root: Path, snapshot: HistoryActiveSnapshot) -> bool:
-    try:
-        source = HistoryControlIndex(root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
-        return bool(ReadBoundHistoryReference(root, source.supplier_contract).industry_intervals)
-    except (HistoryControlError, OSError, ValueError):
-        return False
 
 
 __all__ = ["RunHistorySync"]

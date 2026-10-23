@@ -14,18 +14,7 @@ from trader.training.application.training_due import TrainingDueUseCase
 
 def _status() -> HistoryMaintenanceStatus:
     return HistoryMaintenanceStatus(
-        "completed",
-        None,
-        Path("data/history"),
-        "baostock",
-        None,
-        "a" * 64,
-        date(2026, 9, 15),
-        date(2026, 9, 14),
-        0,
-        False,
-        "data_incomplete",
-        False,
+        "completed", None, Path("data/history"), "baostock", None, "a" * 64, date(2026, 9, 15), date(2026, 9, 14)
     )
 
 
@@ -54,9 +43,7 @@ class _Publication:
 
 def test_history_use_cases_delegate_to_their_single_port(tmp_path) -> None:
     archive = _Archive()
-    configuration = HistorySyncConfiguration(
-        archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-    )
+    configuration = HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference")
     supplier = object()
 
     assert DownloadHistoryUseCase(archive).execute(configuration, supplier) is not None  # type: ignore[arg-type]

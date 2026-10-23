@@ -3,15 +3,15 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
 from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.sample_cache import PruneEmptySampleDirectories, TrainingSampleCache
 from trader.training.infra.sample_index import TrainingSample
 
 
 def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
-    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
+    split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
     cache = TrainingSampleCache(tmp_path, "first-input", 1, split.content_hash)
     with cache.open() as samples:
         samples.add_final(

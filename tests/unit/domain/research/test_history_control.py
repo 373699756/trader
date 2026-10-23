@@ -7,23 +7,36 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.domain.history_control import (
-    CalculateHistoryTrainingCacheInvalidationDates,
-    CalculateHistoryTrainingDue,
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryControlState,
-    HistoryReminderClaim,
-    HistoryReminderState,
     HistorySecurityIdentity,
     HistorySnapshotPartition,
     HistorySourceIdentity,
     HistorySyncCheckpoint,
-    HistoryTrainingDueRequest,
-    HistoryTrainingDueState,
     HistoryUniverseIdentity,
+)
+from trader.training.domain.training_due import (
+    CalculateTrainingCacheInvalidationDates,
+    CalculateTrainingDue,
+    TrainingDueRequest,
+    TrainingDueState,
+)
+from trader.training.domain.training_reminder import (
+    TrainingMaintenanceState,
+    TrainingReminderClaim,
+    TrainingReminderState,
 )
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def test_training_date_move_preserves_the_existing_split_content_identity() -> None:
+    from trader.training.domain.training_dates import BuildTrainingDateSplit
+
+    dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
+    split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
+    assert split.content_hash == "9c7c805bcdab66468686da327ad5539f21b8b3ccaf3896c9ea0be54a8afde327"
 
 
 def test_download_history_hashes_keep_the_published_identity() -> None:
@@ -84,7 +97,7 @@ def test_history_control_values_are_immutable_and_hash_bound() -> None:
     universe = _universe(source)
     snapshot = _snapshot(source, calendar, universe)
     checkpoint = HistorySyncCheckpoint("sync-20260910", 1, "running", NOW, 2, 10, None)
-    due = HistoryTrainingDueState(
+    due = TrainingDueState(
         "due-20260910",
         "cadence_due",
         date(2026, 8, 12),
@@ -93,21 +106,13 @@ def test_history_control_values_are_immutable_and_hash_bound() -> None:
         False,
         NOW,
     )
-    reminder = HistoryReminderState("due-20260910", date(2026, 9, 10), "sent", NOW, None)
-    reminder_claim = HistoryReminderClaim("due-20260910", date(2026, 9, 10), NOW)
-    state = HistoryControlState(
-        (source,),
-        (calendar,),
-        (universe,),
-        (checkpoint,),
-        (due,),
-        (reminder,),
-        (reminder_claim,),
-        (snapshot,),
-        snapshot.content_hash,
-    )
+    reminder = TrainingReminderState("due-20260910", date(2026, 9, 10), "sent", NOW, None)
+    reminder_claim = TrainingReminderClaim("due-20260910", date(2026, 9, 10), NOW)
+    state = HistoryControlState((source,), (calendar,), (universe,), (checkpoint,), (snapshot,), snapshot.content_hash)
+    maintenance = TrainingMaintenanceState(snapshot, (due,), (reminder,), (reminder_claim,))
 
     assert due.training_due is True
+    assert maintenance.due_states == (due,)
     assert state.active_snapshot == snapshot
     assert len({source.content_hash, calendar.content_hash, universe.content_hash, snapshot.content_hash}) == 4
     with pytest.raises(FrozenInstanceError):
@@ -142,7 +147,7 @@ def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> N
     with pytest.raises(ValueError, match="checkpoint"):
         HistorySyncCheckpoint("sync-20260910", 1, "running", NOW, 9, 10, "supplier_failed")
     with pytest.raises(ValueError, match="due"):
-        HistoryTrainingDueState(
+        TrainingDueState(
             "due-20260910",
             "not_due",
             date(2026, 8, 12),
@@ -152,11 +157,11 @@ def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> N
             NOW,
         )
     with pytest.raises(ValueError, match="reminder"):
-        HistoryReminderState("due-20260910", date(2026, 9, 10), "sent", NOW, "notify_failed")
+        TrainingReminderState("due-20260910", date(2026, 9, 10), "sent", NOW, "notify_failed")
     with pytest.raises(ValueError, match="reminder"):
-        HistoryReminderState("due-20260910", date(2026, 9, 9), "sent", NOW, None)
+        TrainingReminderState("due-20260910", date(2026, 9, 9), "sent", NOW, None)
     with pytest.raises(ValueError, match="reminder claim"):
-        HistoryReminderClaim("due-20260910", date(2026, 9, 9), NOW)
+        TrainingReminderClaim("due-20260910", date(2026, 9, 9), NOW)
 
 
 def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
@@ -166,7 +171,7 @@ def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
     snapshot = _snapshot(source, calendar, universe)
     caller_sources = [source]
 
-    state = HistoryControlState(caller_sources, [calendar], [universe], [], [], [], [], [snapshot], None)  # type: ignore[arg-type]
+    state = HistoryControlState(caller_sources, [calendar], [universe], [], [snapshot], None)  # type: ignore[arg-type]
     caller_sources.clear()
 
     assert state.sources == (source,)
@@ -176,8 +181,8 @@ def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
 
 def test_training_due_counts_matured_exchange_sessions_not_calendar_days() -> None:
     dates = tuple(date(2026, 8, 1) + timedelta(days=index) for index in range(25))
-    state = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    state = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-cadence",
             baseline_label_cutoff=dates[0],
             current_label_cutoff=dates[-1],
@@ -194,8 +199,8 @@ def test_training_due_counts_matured_exchange_sessions_not_calendar_days() -> No
 
 def test_training_due_changes_from_not_due_on_the_twentieth_mature_label_day() -> None:
     dates = tuple(date(2026, 8, 1) + timedelta(days=index) for index in range(21))
-    nineteenth = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    nineteenth = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-nineteenth",
             baseline_label_cutoff=dates[0],
             current_label_cutoff=dates[19],
@@ -204,8 +209,8 @@ def test_training_due_changes_from_not_due_on_the_twentieth_mature_label_day() -
             observed_at=NOW,
         )
     )
-    twentieth = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    twentieth = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-twentieth",
             baseline_label_cutoff=dates[0],
             current_label_cutoff=dates[20],
@@ -223,8 +228,8 @@ def test_training_due_changes_from_not_due_on_the_twentieth_mature_label_day() -
 
 def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data() -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    revised = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    revised = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-revision",
             baseline_label_cutoff=dates[0],
             current_label_cutoff=dates[-1],
@@ -233,8 +238,8 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
             observed_at=NOW,
         )
     )
-    incomplete = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    incomplete = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-incomplete",
             baseline_label_cutoff=dates[0],
             current_label_cutoff=dates[-1],
@@ -249,8 +254,8 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
     assert incomplete.reason == "data_incomplete"
     assert incomplete.matured_label_days_since_training == 0
 
-    ahead = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    ahead = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-ahead",
             baseline_label_cutoff=dates[-1],
             current_label_cutoff=dates[-2],
@@ -265,8 +270,8 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
 def test_training_due_rebuilds_when_the_execution_contract_changes() -> None:
     dates = tuple(date(2026, 7, 1) + timedelta(days=index) for index in range(40))
 
-    state = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    state = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-contract",
             baseline_label_cutoff=dates[-2],
             current_label_cutoff=dates[-1],
@@ -284,8 +289,8 @@ def test_training_due_rebuilds_when_the_execution_contract_changes() -> None:
 
 def test_training_due_requires_initial_training_without_a_bundle_baseline() -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9))
-    state = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    state = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity="due-initial",
             baseline_label_cutoff=None,
             current_label_cutoff=dates[-1],
@@ -302,6 +307,6 @@ def test_training_due_requires_initial_training_without_a_bundle_baseline() -> N
 def test_training_revision_invalidates_t1_label_and_sixty_feature_dependants() -> None:
     dates = tuple(date(2026, 1, 1) + timedelta(days=index) for index in range(80))
 
-    invalidated = CalculateHistoryTrainingCacheInvalidationDates(dates, (dates[10], dates[30]))
+    invalidated = CalculateTrainingCacheInvalidationDates(dates, (dates[10], dates[30]))
 
     assert invalidated == dates[9:]

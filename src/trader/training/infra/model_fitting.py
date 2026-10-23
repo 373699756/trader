@@ -8,12 +8,12 @@ from typing import Literal
 import lightgbm as lgb
 import numpy as np
 
-from trader.download.domain.baostock_daily import BaoStockTrainingSplit
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
 )
+from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
@@ -54,7 +54,7 @@ class _FitProgress:
 
 def FitIndustryModels(
     samples: SQLiteTrainingSampleIndex,
-    split: BaoStockTrainingSplit,
+    split: TrainingDateSplit,
     contract: TrainedHeadContract,
     parameters: ModelFittingParameters,
     *,

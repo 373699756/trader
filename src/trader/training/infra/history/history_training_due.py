@@ -9,13 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from trader.download.domain.history_control import (
-    CalculateHistoryTrainingCacheInvalidationDates,
-    CalculateHistoryTrainingDue,
-    HistoryActiveSnapshot,
-    HistoryTrainingDueRequest,
-    HistoryTrainingDueState,
-)
+from trader.download.domain.history_control import HistoryActiveSnapshot
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
@@ -30,6 +24,13 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
+from trader.training.domain.training_due import (
+    CalculateTrainingCacheInvalidationDates,
+    CalculateTrainingDue,
+    TrainingDueRequest,
+    TrainingDueState,
+)
+from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceError, TrainingMaintenanceIndex
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.bundle_snapshot import (
     ActiveHeadBundle,
@@ -47,7 +48,7 @@ from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 class HistoryTrainingDueEvaluation:
     archive_root: Path
     active_snapshot: HistoryActiveSnapshot
-    state: HistoryTrainingDueState
+    state: TrainingDueState
     bundle: ActiveHeadBundle | None
     revised_dates: tuple[date, ...]
     invalidated_cache_dates: tuple[date, ...]
@@ -79,6 +80,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     strategy = query.strategy
     expected_training_contract_hash = query.expected_training_contract_hash
     control = HistoryControlIndex(archive_root / "catalog.sqlite3")
+    maintenance = TrainingMaintenanceIndex(archive_root / "catalog.sqlite3")
     try:
         state = control.load_state()
     except HistoryControlError:
@@ -98,8 +100,8 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, profile, strategy)
     if bundle_invalid:
         due_identity = _due_identity(query, active.content_hash, None, invalid=True)
-        due = CalculateHistoryTrainingDue(
-            HistoryTrainingDueRequest(
+        due = CalculateTrainingDue(
+            TrainingDueRequest(
                 due_identity=due_identity,
                 baseline_label_cutoff=None,
                 current_label_cutoff=current_label_cutoff,
@@ -111,7 +113,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
             )
         )
         if query.persist:
-            due = _persist_due_observation(control, due)
+            due = _persist_due_observation(maintenance, due)
         return HistoryTrainingDueEvaluation(archive_root, active, due, None, (), ())
     baseline_cutoff = bundle.label_cutoff if bundle is not None else None
     baseline = (
@@ -136,15 +138,15 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     training_contract_changed = bundle is not None and (
         expected_training_contract_hash is not None and bundle.training_contract_hash != expected_training_contract_hash
     )
-    invalidated_dates = CalculateHistoryTrainingCacheInvalidationDates(
+    invalidated_dates = CalculateTrainingCacheInvalidationDates(
         calendar.open_dates,
         revised_dates,
         dependency_sessions=profile.history_sessions - 1,
     )
     due_identity = _due_identity(query, active.content_hash, bundle.metadata_hash if bundle else None)
     due_identity += ":" + CanonicalResearchHash((data_complete, revised_dates, current_label_cutoff))[:16]
-    due = CalculateHistoryTrainingDue(
-        HistoryTrainingDueRequest(
+    due = CalculateTrainingDue(
+        TrainingDueRequest(
             due_identity=due_identity,
             baseline_label_cutoff=baseline_cutoff,
             current_label_cutoff=current_label_cutoff,
@@ -155,9 +157,9 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
             training_contract_changed=training_contract_changed,
         )
     )
-    previous = next((item for item in state.due_states if item.due_identity == due.due_identity), None)
+    previous = maintenance.read_due_state(due.due_identity)
     if previous is None and query.persist:
-        control.save_due_state(due)
+        maintenance.save_due_state(due)
     elif previous is not None:
         due = previous
     return HistoryTrainingDueEvaluation(
@@ -170,7 +172,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     )
 
 
-def _persist_due_observation(control: HistoryControlIndex, due: HistoryTrainingDueState) -> HistoryTrainingDueState:
+def _persist_due_observation(control: TrainingMaintenanceIndex, due: TrainingDueState) -> TrainingDueState:
     previous = control.read_due_state(due.due_identity)
     if previous is not None:
         return previous
@@ -355,8 +357,10 @@ class PublishedTrainingState:
                         invalid=failure not in (None, "missing"),
                     )
                     try:
-                        due = control.read_due_state(identity, latest=True)
-                    except HistoryControlError:
+                        due = TrainingMaintenanceIndex(self._history_root / "catalog.sqlite3").read_due_state(
+                            identity, latest=True
+                        )
+                    except TrainingMaintenanceError:
                         due = None
                 loaded = next(
                     (

@@ -13,7 +13,7 @@ def ProjectHeadTrainingStatus(status: HeadTrainingStatus) -> dict[str, object]:
         "disk": _identity(status.disk),
         "restart_required": status.restart_required,
         "training_due": due.training_due if due else None,
-        "training_due_reason": due.reason if due else "data_incomplete",
+        "training_due_reason": due.reason if due else "unavailable",
         "current_label_cutoff": due.current_label_cutoff.isoformat() if due and due.current_label_cutoff else None,
         "matured_label_days_since_training": due.matured_label_days_since_training if due else None,
         "failure": status.failure,

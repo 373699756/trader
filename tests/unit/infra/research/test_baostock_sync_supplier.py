@@ -41,9 +41,7 @@ def test_price_total_deadline_survives_page_activity_and_bounds_retries(tmp_path
 
     clock = _Clock()
     supplier = BaoStockHistorySupplier(
-        HistorySyncConfiguration(
-            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-        ),
+        HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference"),
         monotonic=clock,
         price_total_seconds=180.0,
     )
@@ -140,9 +138,7 @@ def test_industry_date_progress_keeps_counts_and_elapsed_across_page_activity(tm
     clock = _Clock()
     recorder = _ProgressRecorder()
     supplier = BaoStockHistorySupplier(
-        HistorySyncConfiguration(
-            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-        ),
+        HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference"),
         progress=recorder,
         monotonic=clock,
     )
@@ -258,7 +254,6 @@ def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage(tmp_path) -
         HistorySyncConfiguration(
             archive_root=tmp_path / "history",
             reference_root=tmp_path / "reference",
-            training_root=tmp_path / "models",
             supplier_timeout_seconds=1.0,
             supplier_retries=0,
             progress_heartbeat_seconds=0.25,
@@ -288,7 +283,6 @@ def test_supplier_result_handle_does_not_restart_the_call_deadline(tmp_path) -> 
         HistorySyncConfiguration(
             archive_root=tmp_path / "history",
             reference_root=tmp_path / "reference",
-            training_root=tmp_path / "models",
             supplier_timeout_seconds=1.0,
             supplier_retries=0,
             progress_heartbeat_seconds=0.25,
@@ -313,7 +307,6 @@ def test_supplier_keeps_context_and_price_request_policies_separate(tmp_path, mo
         HistorySyncConfiguration(
             archive_root=tmp_path / "history",
             reference_root=tmp_path / "reference",
-            training_root=tmp_path / "models",
             supplier_timeout_seconds=45.0,
             supplier_retries=2,
             progress_heartbeat_seconds=5.0,
@@ -348,7 +341,6 @@ def test_supplier_login_timeout_does_not_repeat_the_slow_start(tmp_path, monkeyp
         HistorySyncConfiguration(
             archive_root=tmp_path / "history",
             reference_root=tmp_path / "reference",
-            training_root=tmp_path / "models",
             supplier_timeout_seconds=45.0,
             supplier_retries=2,
         ),
@@ -377,10 +369,7 @@ def test_price_failure_restarts_only_an_unhealthy_supplier_session(
 
     supplier = BaoStockHistorySupplier(
         HistorySyncConfiguration(
-            archive_root=tmp_path / "history",
-            reference_root=tmp_path / "reference",
-            training_root=tmp_path / "models",
-            supplier_retries=0,
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=0
         ),
         price_policy=BaoStockRequestPolicy(20.0, 0),
     )

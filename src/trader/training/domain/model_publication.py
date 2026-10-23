@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 from datetime import date
 
-from trader.download.domain.history_control import HistoryTrainingDueState
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.training.domain.training_due import TrainingDueState
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class HeadTrainingStatus:
     profile_id: ScoringProfileId
     strategy: Strategy
     disk: ModelPublicationIdentity | None
-    due: HistoryTrainingDueState | None
+    due: TrainingDueState | None
     failure: str | None = None
     loaded: ModelPublicationIdentity | None = None
     owned: bool = False

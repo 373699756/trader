@@ -11,6 +11,17 @@ DOWNLOAD_APPLICATION = ROOT / "src" / "trader" / "download" / "application"
 TRAINING_APPLICATION = ROOT / "src" / "trader" / "training" / "application"
 
 
+def test_download_business_does_not_import_training_implementations_or_values() -> None:
+    source_root = ROOT / "src/trader"
+    imports = [
+        f"{path.relative_to(source_root)}:{imported.line} -> {imported.module}"
+        for path in (source_root / "download").rglob("*.py")
+        for imported in SourceImports(path, source_root)
+        if imported.module == "trader.training" or imported.module.startswith("trader.training.")
+    ]
+    assert imports == []
+
+
 @pytest.mark.parametrize("business", ("download", "training"))
 @pytest.mark.parametrize(
     ("source", "rejected"),

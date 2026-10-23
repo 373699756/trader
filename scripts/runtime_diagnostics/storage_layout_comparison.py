@@ -329,13 +329,15 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
             )
 
         measure("incremental_write", update, repetitions=11)
-        _sqlite_adapter_cases(root, min(size, 1000), measure)
+        _sqlite_adapter_cases(root, min(size, 1000), measure, checkout=checkout)
     return result
 
 
-def _sqlite_adapter_cases(root: Path, size: int, measure: Callable[[str, Callable[[], object]], None]) -> None:
+def _sqlite_adapter_cases(
+    root: Path, size: int, measure: Callable[[str, Callable[[], object]], None], *, checkout: Path
+) -> None:
     """Exercise unchanged adapter contracts against each checkout, using identical typed inputs."""
-    from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide, BuildBaostockTrainingSplit
+    from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
     from trader.download.domain.company_evidence import Disclosure, DisclosurePage
     from trader.download.domain.history_revision import HistoryRevision
     from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
@@ -364,7 +366,15 @@ def _sqlite_adapter_cases(root: Path, size: int, measure: Callable[[str, Callabl
 
     measure("history_training_narrow_read", scan)
     split_days = tuple(date(2021, 1, 1) + timedelta(days=offset) for offset in range(1600))
-    split = BuildBaostockTrainingSplit(split_days, parent_manifest_hash="a" * 64)
+    if (checkout / "src/trader/training/domain/training_dates.py").is_file():
+        from trader.training.domain.training_dates import BuildTrainingDateSplit
+
+        split = BuildTrainingDateSplit(split_days, parent_manifest_hash="a" * 64)
+    else:
+        # Only the isolated historical checkout owns this retired API.
+        from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
+
+        split = BuildBaostockTrainingSplit(split_days, parent_manifest_hash="a" * 64)
     samples = tuple(
         TrainingSample(code, day, "main", "fixture", 1_000_000.0, (0.1,) * 6, (0.02, 0.03, 0.04, 0.05, 0.06, 0.045))
         for code in codes
@@ -475,13 +485,18 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
     with TemporaryDirectory(prefix="trader-layout-comparison-") as scratch:
         root = Path(scratch)
         history = root / "history"
-        config = HistorySyncConfiguration(
-            history,
-            reference_root=root / "reference",
-            training_root=root / "models",
-            sessions=2000,
-            minimum_free_bytes=0,
-        )
+        if layout == "monthly":
+            config = HistorySyncConfiguration(
+                history,
+                reference_root=root / "reference",
+                training_root=root / "models",
+                sessions=2000,
+                minimum_free_bytes=0,
+            )
+        else:
+            config = HistorySyncConfiguration(
+                history, reference_root=root / "reference", sessions=2000, minimum_free_bytes=0
+            )
         stopped = Event()
         wal_peak = 0
 

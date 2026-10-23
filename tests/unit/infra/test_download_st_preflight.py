@@ -79,9 +79,7 @@ def st_sources(monkeypatch):
     monkeypatch.setattr(
         bootstrap,
         "LoadHistorySyncConfiguration",
-        lambda root, paths: HistorySyncConfiguration(
-            paths.history, paths.reference, training_root=paths.models, minimum_free_bytes=0
-        ),
+        lambda root, paths: HistorySyncConfiguration(paths.history, paths.reference, minimum_free_bytes=0),
     )
     company_config = LoadCompanySyncConfiguration(_ROOT)
     monkeypatch.setattr(bootstrap, "LoadCompanySyncConfiguration", lambda _root: company_config)
@@ -182,12 +180,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
     if command == "history":
         result = bootstrap.ExecuteHistoryDownload(
             HistorySyncConfiguration(
-                tmp_path / "history",
-                reference_root,
-                sessions=3,
-                reread_sessions=2,
-                minimum_free_bytes=0,
-                training_root=(tmp_path / "history").parent / "models",
+                tmp_path / "history", reference_root, sessions=3, reread_sessions=2, minimum_free_bytes=0
             ),
             clock=lambda: NOW,
         )

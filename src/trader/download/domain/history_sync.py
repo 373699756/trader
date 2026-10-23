@@ -55,7 +55,6 @@ BAOSTOCK_PREPARATION_INTERVAL_SECONDS = 2.0
 class HistorySyncConfiguration:
     archive_root: Path
     reference_root: Path
-    training_root: Path
     sessions: int = 2000
     reread_sessions: int = 5
     download_batch_size: int = 64

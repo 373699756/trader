@@ -16,22 +16,16 @@ from zoneinfo import ZoneInfo
 
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
-    HistoryAutomationControlState,
     HistoryCalendarIdentity,
     HistoryControlState,
     HistoryDiskRequirement,
     HistoryPublishedControlState,
-    HistoryReminderClaim,
-    HistoryReminderOutcome,
-    HistoryReminderState,
     HistorySecurityBoard,
     HistorySecurityIdentity,
     HistorySnapshotPartition,
     HistorySourceIdentity,
     HistorySyncCheckpoint,
     HistorySyncState,
-    HistoryTrainingDueReason,
-    HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
@@ -54,9 +48,6 @@ ControlKind = Literal[
     "calendar",
     "universe",
     "checkpoint",
-    "due",
-    "reminder_claim",
-    "reminder",
     "snapshot",
 ]
 ControlRecord = (
@@ -64,9 +55,6 @@ ControlRecord = (
     | HistoryCalendarIdentity
     | HistoryUniverseIdentity
     | HistorySyncCheckpoint
-    | HistoryTrainingDueState
-    | HistoryReminderClaim
-    | HistoryReminderState
     | HistoryActiveSnapshot
 )
 
@@ -227,65 +215,6 @@ class HistoryControlIndex:
         key = f"{value.sync_identity}:{value.ordinal}"
         self._save("checkpoint", key, value.content_hash, _checkpoint_payload(value))
 
-    def save_due_state(self, value: HistoryTrainingDueState) -> None:
-        self._save("due", value.due_identity, value.content_hash, _due_payload(value))
-
-    def read_due_state(self, identity: str, *, latest: bool = False) -> HistoryTrainingDueState | None:
-        try:
-            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
-                row = connection.run(
-                    "SELECT content_hash,payload_json FROM immutable_records WHERE kind='due' "
-                    "AND (record_key=? OR record_key LIKE ?) "
-                    "ORDER BY json_extract(payload_json,'$.observed_at') DESC LIMIT 1",
-                    (identity, identity + ":%" if latest else identity),
-                ).fetchone()
-                if row is None:
-                    return None
-                value = _decode_record("due", row[1])
-                if not isinstance(value, HistoryTrainingDueState) or value.content_hash != row[0]:
-                    raise HistoryControlError("history due observation is invalid")
-                return value
-        except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryControlError("history due observation read failed") from exc
-
-    def claim_reminder(self, value: HistoryReminderClaim) -> bool:
-        """Atomically claim one due identity on one Shanghai date.
-
-        The claim is durable before the external desktop-notification side effect.
-        A process restart or a concurrent scheduled trigger therefore observes the
-        existing identity and does not emit the same reminder again.
-        """
-
-        key = f"{value.due_identity}:{value.reminder_date.isoformat()}"
-        payload_json = json.dumps(
-            _reminder_claim_payload(value),
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        try:
-            with (
-                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
-                SqliteTransaction(connection, immediate=True),
-            ):
-                existing = connection.run(
-                    "SELECT 1 FROM immutable_records WHERE kind=? AND record_key=?",
-                    ("reminder_claim", key),
-                ).fetchone()
-                if existing is not None:
-                    return False
-                connection.run(
-                    "INSERT INTO immutable_records(kind, record_key, content_hash, payload_json) VALUES (?, ?, ?, ?)",
-                    ("reminder_claim", key, value.content_hash, payload_json),
-                )
-        except sqlite3.Error as exc:
-            raise HistoryControlError("history reminder claim write failed") from exc
-        return True
-
-    def save_reminder(self, value: HistoryReminderState) -> None:
-        key = f"{value.due_identity}:{value.reminder_date.isoformat()}"
-        self._save("reminder", key, value.content_hash, _reminder_payload(value))
-
     def save_reference(self, reference: HistoryReferenceSnapshot) -> None:
         with (
             SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
@@ -374,7 +303,7 @@ class HistoryControlIndex:
         try:
             with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
                 rows = connection.run(
-                    "SELECT kind, content_hash, payload_json FROM immutable_records ORDER BY kind, record_key"
+                    "SELECT kind, content_hash, payload_json FROM immutable_records WHERE kind IN ('source','calendar','universe','checkpoint','snapshot') ORDER BY kind, record_key"
                 ).fetchall()
                 active = connection.run(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
@@ -386,9 +315,6 @@ class HistoryControlIndex:
             "calendar": [],
             "universe": [],
             "checkpoint": [],
-            "due": [],
-            "reminder_claim": [],
-            "reminder": [],
             "snapshot": [],
         }
         for kind, content_hash, payload_json in rows:
@@ -404,9 +330,6 @@ class HistoryControlIndex:
                 cast(tuple[HistoryCalendarIdentity, ...], tuple(decoded["calendar"])),
                 cast(tuple[HistoryUniverseIdentity, ...], tuple(decoded["universe"])),
                 cast(tuple[HistorySyncCheckpoint, ...], tuple(decoded["checkpoint"])),
-                cast(tuple[HistoryTrainingDueState, ...], tuple(decoded["due"])),
-                cast(tuple[HistoryReminderState, ...], tuple(decoded["reminder"])),
-                cast(tuple[HistoryReminderClaim, ...], tuple(decoded["reminder_claim"])),
                 cast(tuple[HistoryActiveSnapshot, ...], tuple(decoded["snapshot"])),
                 cast(str | None, active[0] if active is not None else None),
             )
@@ -463,49 +386,6 @@ class HistoryControlIndex:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryControlError("history publication control read failed") from exc
 
-    def load_automation_state(self) -> HistoryAutomationControlState:
-        """Read only the bounded records needed by scheduled-run observability."""
-
-        if self.integrity().state != "healthy":
-            raise HistoryControlError("history control database is unavailable")
-        try:
-            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
-                active = connection.run(
-                    "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
-                ).fetchone()
-                active_hash = cast(str | None, active[0] if active is not None else None)
-                rows = connection.run(
-                    "SELECT kind, content_hash, payload_json FROM immutable_records "
-                    "WHERE kind IN ('due', 'reminder_claim', 'reminder') "
-                    "OR (kind='snapshot' AND content_hash=?) ORDER BY kind, record_key",
-                    (active_hash,),
-                ).fetchall()
-        except sqlite3.Error as exc:
-            raise HistoryControlError("history automation control read failed") from exc
-        decoded: dict[str, list[ControlRecord]] = {
-            "due": [],
-            "reminder_claim": [],
-            "reminder": [],
-            "snapshot": [],
-        }
-        for kind, content_hash, payload_json in rows:
-            value = _decode_record(cast(ControlKind, kind), payload_json)
-            if value.content_hash != content_hash:
-                raise HistoryControlError("history automation control record hash is invalid")
-            decoded[kind].append(value)
-        snapshots = cast(tuple[HistoryActiveSnapshot, ...], tuple(decoded["snapshot"]))
-        if active is not None and (len(snapshots) != 1 or snapshots[0].sequence != active[1]):
-            raise HistoryControlError("history active snapshot pointer is inconsistent")
-        try:
-            return HistoryAutomationControlState(
-                snapshots[0] if snapshots else None,
-                cast(tuple[HistoryTrainingDueState, ...], tuple(decoded["due"])),
-                cast(tuple[HistoryReminderState, ...], tuple(decoded["reminder"])),
-                cast(tuple[HistoryReminderClaim, ...], tuple(decoded["reminder_claim"])),
-            )
-        except (TypeError, ValueError) as exc:
-            raise HistoryControlError("history automation control is inconsistent") from exc
-
     @classmethod
     def rebuild(
         cls,
@@ -513,6 +393,7 @@ class HistoryControlIndex:
         state: HistoryControlState,
         *,
         references: tuple[HistoryReferenceSnapshot, ...],
+        restore_related_records: Callable[[Path], None],
         fault_injector: FaultInjector | None = None,
     ) -> None:
         current = cls(path)
@@ -530,6 +411,7 @@ class HistoryControlIndex:
             for reference in references:
                 rebuilt.save_reference(reference)
             _populate_rebuilt_control(rebuilt, state)
+            restore_related_records(temporary)
             if rebuilt.load_state() != state:
                 raise HistoryControlError("rebuilt history control state does not match its source")
             _checkpoint_wal(temporary)
@@ -588,9 +470,6 @@ def _populate_rebuilt_control(
         repository.save_universe(universe)
     for checkpoint in state.checkpoints:
         repository.save_checkpoint(checkpoint)
-    for due_state in state.due_states:
-        repository.save_due_state(due_state)
-    _populate_rebuilt_reminders(repository, state)
     for snapshot in state.snapshots:
         repository._save(
             "snapshot",
@@ -600,17 +479,6 @@ def _populate_rebuilt_control(
         )
     if state.active_snapshot is not None:
         repository.publish_snapshot(state.active_snapshot)
-
-
-def _populate_rebuilt_reminders(
-    repository: HistoryControlIndex,
-    state: HistoryControlState,
-) -> None:
-    for reminder_claim in state.reminder_claims:
-        if not repository.claim_reminder(reminder_claim):
-            raise HistoryControlConflictError("history reminder claim rebuild conflicts")
-    for reminder in state.reminders:
-        repository.save_reminder(reminder)
 
 
 def InspectHistoryDisk(
@@ -674,40 +542,6 @@ def _checkpoint_payload(value: HistorySyncCheckpoint) -> dict[str, object]:
         "completed_units": value.completed_units,
         "total_units": value.total_units,
         "error_code": value.error_code,
-    }
-
-
-def _due_payload(value: HistoryTrainingDueState) -> dict[str, object]:
-    return {
-        "due_identity": value.due_identity,
-        "reason": value.reason,
-        "baseline_label_cutoff": (
-            value.baseline_label_cutoff.isoformat() if value.baseline_label_cutoff is not None else None
-        ),
-        "current_label_cutoff": (
-            value.current_label_cutoff.isoformat() if value.current_label_cutoff is not None else None
-        ),
-        "matured_label_days_since_training": value.matured_label_days_since_training,
-        "input_revision": value.input_revision,
-        "observed_at": value.observed_at.isoformat(),
-    }
-
-
-def _reminder_payload(value: HistoryReminderState) -> dict[str, object]:
-    return {
-        "due_identity": value.due_identity,
-        "reminder_date": value.reminder_date.isoformat(),
-        "outcome": value.outcome,
-        "attempted_at": value.attempted_at.isoformat(),
-        "error_code": value.error_code,
-    }
-
-
-def _reminder_claim_payload(value: HistoryReminderClaim) -> dict[str, object]:
-    return {
-        "due_identity": value.due_identity,
-        "reminder_date": value.reminder_date.isoformat(),
-        "claimed_at": value.claimed_at.isoformat(),
     }
 
 
@@ -777,44 +611,6 @@ def _decode_payload(kind: ControlKind, payload: dict[str, object]) -> ControlRec
             _shanghai_datetime(payload, "observed_at"),
             _integer(payload, "completed_units"),
             _integer(payload, "total_units"),
-            _optional_text(payload, "error_code"),
-        )
-    elif kind == "due":
-        _require_keys(
-            payload,
-            {
-                "due_identity",
-                "reason",
-                "baseline_label_cutoff",
-                "current_label_cutoff",
-                "matured_label_days_since_training",
-                "input_revision",
-                "observed_at",
-            },
-        )
-        value = HistoryTrainingDueState(
-            _text(payload, "due_identity"),
-            cast(HistoryTrainingDueReason, _text(payload, "reason")),
-            _optional_date(payload, "baseline_label_cutoff"),
-            _optional_date(payload, "current_label_cutoff"),
-            _integer(payload, "matured_label_days_since_training"),
-            _boolean(payload, "input_revision"),
-            _shanghai_datetime(payload, "observed_at"),
-        )
-    elif kind == "reminder_claim":
-        _require_keys(payload, {"due_identity", "reminder_date", "claimed_at"})
-        value = HistoryReminderClaim(
-            _text(payload, "due_identity"),
-            date.fromisoformat(_text(payload, "reminder_date")),
-            _shanghai_datetime(payload, "claimed_at"),
-        )
-    elif kind == "reminder":
-        _require_keys(payload, {"due_identity", "reminder_date", "outcome", "attempted_at", "error_code"})
-        value = HistoryReminderState(
-            _text(payload, "due_identity"),
-            date.fromisoformat(_text(payload, "reminder_date")),
-            cast(HistoryReminderOutcome, _text(payload, "outcome")),
-            _shanghai_datetime(payload, "attempted_at"),
             _optional_text(payload, "error_code"),
         )
     else:
@@ -896,13 +692,6 @@ def _integer(payload: dict[str, object], key: str) -> int:
     value = payload[key]
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"history control {key} must be integer")
-    return value
-
-
-def _boolean(payload: dict[str, object], key: str) -> bool:
-    value = payload[key]
-    if not isinstance(value, bool):
-        raise TypeError(f"history control {key} must be boolean")
     return value
 
 

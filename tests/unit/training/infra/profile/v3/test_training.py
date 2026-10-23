@@ -8,10 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from trader.download.domain.baostock_daily import (
-    BaoStockCalendar,
-    BuildBaostockTrainingSplit,
-)
+from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError
 from trader.download.infra.history_partition_repack import HistoryPartitionRepackFenceError
@@ -19,6 +16,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ResidualizeExposure
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
+from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.engine import (
     _cleanup_abandoned_workspaces,
     _mature_label_cutoff,
@@ -507,7 +505,7 @@ def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path
 
 def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
-    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
+    split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
     rows = tuple(_training_point(day, 10.0 + index) for index, day in enumerate(dates[:66]))
 
     class Archive:
@@ -541,7 +539,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
 
 def test_training_window_and_sample_dates_preserve_the_frozen_tomorrow_contract() -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
-    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
+    split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
     window = TomorrowTrainingWindow(split)
 
     assert window.readable_dates.isdisjoint(split.point_in_time_holdout_dates)
@@ -600,7 +598,7 @@ def test_training_exposure_features_do_not_change_when_peer_future_label_is_miss
 
 def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
-    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
+    split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
     updates: list[TomorrowTrainingProgress] = []
 
     class Samples:

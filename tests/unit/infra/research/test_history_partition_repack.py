@@ -10,6 +10,7 @@ import pytest
 
 import trader.download.infra.history_partition_repack as repack_module
 import trader.training.infra.history.history_training_due as due_module
+import trader.training.infra.history.repack_training_evidence as training_evidence_module
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
@@ -26,7 +27,6 @@ from trader.download.infra.history_partition_repack import (
     HistoryPartitionRepackFenceError,
     RequireHistoryPartitionRepackInactive,
 )
-from trader.download.infra.history_partition_repack_codec import ReadTomorrowTrainingMemoryEvidence
 from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackRequirements,
 )
@@ -35,6 +35,10 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.history.history_training_due import EvaluateHistoryTrainingDue, HistoryTrainingDueQuery
+from trader.training.infra.history.repack_training_evidence import (
+    ReadTomorrowTrainingMemoryEvidence,
+    VerifyHistoryRepackTraining,
+)
 from trader.training.infra.model_bundles.bundle_snapshot import ActiveHeadBundle
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training import RunRepackTomorrowTraining, RunRepackV3Training
@@ -358,7 +362,7 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     coordinator.activate()
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
-        repack_module,
+        training_evidence_module,
         "InspectActiveProfileBundles",
         lambda _path, _profile: (
             type(
@@ -395,12 +399,20 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
 
         monkeypatch.setattr(repack_module.shutil, "rmtree", partial_delete)
         with pytest.raises(OSError, match="interrupted backup cleanup"):
-            coordinator.finalize(tmp_path / "data/training/models", memory_evidence)
+            coordinator.finalize(
+                verify_training=lambda snapshot_hash: VerifyHistoryRepackTraining(
+                    tmp_path / "data/training/models", memory_evidence, snapshot_hash
+                )
+            )
         with pytest.raises(repack_module.HistoryPartitionRepackError, match="cannot be rolled back"):
             coordinator.rollback()
         monkeypatch.setattr(repack_module.shutil, "rmtree", remove_tree)
 
-    finalized = coordinator.finalize(tmp_path / "data/training/models", memory_evidence)
+    finalized = coordinator.finalize(
+        verify_training=lambda snapshot_hash: VerifyHistoryRepackTraining(
+            tmp_path / "data/training/models", memory_evidence, snapshot_hash
+        )
+    )
 
     assert finalized.state == "finalized"
     assert finalized.released_bytes > 0
@@ -419,7 +431,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     coordinator.activate()
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
-        repack_module,
+        training_evidence_module,
         "InspectActiveProfileBundles",
         lambda _path, _profile: (
             type(
@@ -434,7 +446,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
         ),
     )
     monkeypatch.setattr(
-        repack_module,
+        training_evidence_module,
         "ReadTomorrowTrainingMemoryEvidence",
         lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
@@ -452,7 +464,11 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     unexpected.write_text("preserve me", encoding="utf-8")
 
     with pytest.raises(repack_module.HistoryPartitionRepackError, match="unexpected files"):
-        coordinator.finalize(tmp_path / "data/training/models", tmp_path / "data/historyless/memory.json")
+        coordinator.finalize(
+            verify_training=lambda snapshot_hash: VerifyHistoryRepackTraining(
+                tmp_path / "data/training/models", tmp_path / "data/historyless/memory.json", snapshot_hash
+            )
+        )
 
     assert unexpected.read_text(encoding="utf-8") == "preserve me"
 
@@ -464,7 +480,7 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
     coordinator.activate()
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
-        repack_module,
+        training_evidence_module,
         "InspectActiveProfileBundles",
         lambda _path, _profile: (
             type(
@@ -479,7 +495,7 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
         ),
     )
     monkeypatch.setattr(
-        repack_module,
+        training_evidence_module,
         "ReadTomorrowTrainingMemoryEvidence",
         lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
@@ -497,6 +513,10 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
     Path(f"{backup_partition}-wal").write_bytes(b"pending transaction")
 
     with pytest.raises(repack_module.HistoryPartitionRepackError, match="pending SQLite"):
-        coordinator.finalize(tmp_path / "data/training/models", tmp_path / "data/historyless/memory.json")
+        coordinator.finalize(
+            verify_training=lambda snapshot_hash: VerifyHistoryRepackTraining(
+                tmp_path / "data/training/models", tmp_path / "data/historyless/memory.json", snapshot_hash
+            )
+        )
 
     assert Path(f"{backup_partition}-wal").read_bytes() == b"pending transaction"

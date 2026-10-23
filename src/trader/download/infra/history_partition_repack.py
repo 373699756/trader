@@ -15,6 +15,7 @@ from typing import cast
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryControlState,
+    HistoryRepackTrainingProof,
     HistorySnapshotPartition,
 )
 from trader.download.infra.history_control_index import (
@@ -26,7 +27,6 @@ from trader.download.infra.history_partition_repack_codec import (
     HistoryPartitionRepackCodecError,
     ReadHistoryPartitionRepackActivationJournal,
     ReadHistoryPartitionRepackBuildState,
-    ReadTomorrowTrainingMemoryEvidence,
     WriteHistoryPartitionRepackActivationJournal,
     WriteHistoryPartitionRepackBuildState,
 )
@@ -43,7 +43,6 @@ from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.price_columns import PRICE_COLUMNS
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
-from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]
@@ -265,7 +264,7 @@ class HistoryPartitionRepackCoordinator:
         WriteHistoryPartitionRepackActivationJournal(layout.journal_path, replace(journal, state="rolled_back"))
         self._inject("rolled_back")
 
-    def finalize(self, training_root: Path, memory_evidence_path: Path) -> HistoryPartitionRepackStatus:
+    def finalize(self, *, verify_training: Callable[[str], HistoryRepackTrainingProof]) -> HistoryPartitionRepackStatus:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root.with_name(".history.lock")):
             state = self._completed_state()
@@ -276,16 +275,11 @@ class HistoryPartitionRepackCoordinator:
             if journal.state not in {"verified", "finalizing"}:
                 raise HistoryPartitionRepackError("repack must be verified before finalization")
             _verify_candidate(layout.source_root, state, target=True)
-            from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-
-            bundle = InspectActiveProfileBundles(training_root.resolve() / "v3", V3_TRAINING_PROFILE)[0]
-            evidence = ReadTomorrowTrainingMemoryEvidence(memory_evidence_path.resolve())
-            if (
-                bundle.training_input_hash != state.target_snapshot_hash
-                or evidence.training_input_hash != state.target_snapshot_hash
-                or evidence.model_hash != bundle.model_hash
-                or evidence.report_hash != bundle.report_hash
-            ):
+            snapshot_hash = state.target_snapshot_hash
+            if snapshot_hash is None:
+                raise HistoryPartitionRepackError("repack target snapshot is unavailable")
+            proof = verify_training(snapshot_hash)
+            if proof.snapshot_hash != state.target_snapshot_hash:
                 raise HistoryPartitionRepackError("training evidence does not match repacked prices")
             if journal.state == "verified":
                 _verify_candidate(layout.backup_root, state, target=False)

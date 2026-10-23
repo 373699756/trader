@@ -14,20 +14,9 @@ from trader.download.entrypoints.sync_projection import ProjectSyncResult
 _NOW = datetime(2026, 10, 16, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
-def _history(state="completed", reason="not_due"):
+def _history(state="completed", unresolved_price_cells=0):
     return HistoryMaintenanceStatus(
-        state,
-        None,
-        Path("history"),
-        "tencent",
-        None,
-        "a" * 64,
-        _NOW.date(),
-        _NOW.date(),
-        0,
-        False,
-        reason,
-        False,
+        state, None, Path("history"), "tencent", None, "a" * 64, _NOW.date(), _NOW.date(), unresolved_price_cells
     )
 
 
@@ -67,7 +56,7 @@ def test_failed_or_incomplete_history_continues_market_and_company(pending):
 
     def history(value):
         if pending:
-            return _history(reason="data_incomplete")
+            return _history(unresolved_price_cells=1)
         raise RuntimeError("history unavailable")
 
     def market(value):

@@ -97,7 +97,14 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set)
         print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True))
         return result.exit_code
-    if args.command in ("history-automation-status", "history-automation-uninstall"):
+    if args.command == "history-automation-status":
+        from trader.bootstrap import ExecuteTrainingReminderStatus
+        from trader.training.entrypoints.training_reminder_projection import ProjectTrainingReminderStatus
+
+        status = ExecuteTrainingReminderStatus(runtime)
+        print(json.dumps(ProjectTrainingReminderStatus(status), ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "history-automation-uninstall":
         from trader.download.entrypoints.commands import RunDownloadCommand
 
         return RunDownloadCommand(args.command, config_path=config_path)

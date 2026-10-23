@@ -38,9 +38,7 @@ def test_warm_industry_context_does_not_start_or_query_supplier(tmp_path, monkey
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     calendar = BaoStockCalendar(DATES)
     with supplier_module.BaoStockHistorySupplier(
-        HistorySyncConfiguration(
-            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-        )
+        HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference")
     ) as source:
         cold = source.load_industry_context(calendar, UNIVERSE, industry_cache=cache)
     assert requests == list(DATES)
@@ -52,9 +50,7 @@ def test_warm_industry_context_does_not_start_or_query_supplier(tmp_path, monkey
     monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_request", unexpected)
     monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_start", unexpected)
     with supplier_module.BaoStockHistorySupplier(
-        HistorySyncConfiguration(
-            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-        )
+        HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference")
     ) as source:
         assert source.load_industry_context(calendar, UNIVERSE, industry_cache=cache) == cold
 
@@ -83,9 +79,7 @@ def test_real_request_wrapper_has_one_start_and_completion_per_industry_date(tmp
     monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_request_once", request_once)
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     with supplier_module.BaoStockHistorySupplier(
-        HistorySyncConfiguration(
-            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-        ),
+        HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference"),
         progress=StderrHistorySyncProgress(),
     ) as source:
         source.load_industry_context(BaoStockCalendar(DATES), UNIVERSE, industry_cache=cache)
@@ -101,9 +95,7 @@ def test_future_observation_cannot_be_reused_at_an_earlier_cutoff(tmp_path, indu
     _, requests = industry_source
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     with supplier_module.BaoStockHistorySupplier(
-        HistorySyncConfiguration(
-            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-        )
+        HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference")
     ) as source:
         source.load_industry_context(BaoStockCalendar(DATES), UNIVERSE, industry_cache=cache)
         requests.clear()
@@ -115,9 +107,7 @@ def test_new_cutoff_fetches_only_new_query_after_more_than_thirty_days(tmp_path,
     _, requests = industry_source
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     with supplier_module.BaoStockHistorySupplier(
-        HistorySyncConfiguration(
-            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
-        )
+        HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference")
     ) as source:
         source.load_industry_context(BaoStockCalendar(DATES), UNIVERSE, industry_cache=cache)
         requests.clear()
@@ -136,7 +126,6 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
         reread_sessions=2,
         minimum_free_bytes=0,
         reference_root=(tmp_path / "history").parent / "reference",
-        training_root=(tmp_path / "history").parent / "models",
     )
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     prices = Prices()

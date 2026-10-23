@@ -7,9 +7,6 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from trader.download.domain.history_control import HistoryTrainingDueReason
-from trader.training.domain.model_publication import HeadTrainingStatus
-
 HistoryMaintenanceState = Literal[
     "blocked",
     "already_current",
@@ -45,20 +42,20 @@ class HistoryMaintenanceStatus:
     active_snapshot_hash: str | None
     data_cutoff: date | None
     label_cutoff: date | None
-    matured_label_days_since_training: int
-    training_due: bool
-    training_due_reason: HistoryTrainingDueReason
-    automatic_training: bool
     unresolved_price_cells: int = 0
     price_gap_summary: HistoryPriceGapSummary | None = None
-    training_heads: tuple[HeadTrainingStatus, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.matured_label_days_since_training < 0 or self.unresolved_price_cells < 0:
-            raise ValueError("matured label days must not be negative")
-        due_reasons = {"initial_training_required", "cadence_due", "input_revision_due", "training_contract_due"}
-        if self.training_due != (self.training_due_reason in due_reasons):
-            raise ValueError("training due flag and reason disagree")
+        if self.unresolved_price_cells < 0:
+            raise ValueError("unresolved history price cells must not be negative")
+
+    @property
+    def published(self) -> bool:
+        return self.state in {"completed", "already_current"} and self.active_snapshot_hash is not None
+
+    @property
+    def needs_retry(self) -> bool:
+        return not self.published or self.unresolved_price_cells > 0
 
 
 __all__ = [
@@ -66,5 +63,4 @@ __all__ = [
     "HistoryMaintenanceStatus",
     "HistoryPriceGapReason",
     "HistoryPriceGapSummary",
-    "HistoryTrainingDueReason",
 ]

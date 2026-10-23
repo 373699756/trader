@@ -84,7 +84,6 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
             config = replace(
                 LoadHistorySyncConfiguration(project_root, DataPaths(work / "data")),
                 archive_root=work / "history",
-                training_root=work / "train",
                 sessions=sessions,
                 reread_sessions=min(5, sessions),
                 history_workers=workers,

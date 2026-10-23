@@ -151,12 +151,7 @@ class FakeSupplier:
 
 def _configuration(root: Path) -> HistorySyncConfiguration:
     return HistorySyncConfiguration(
-        root,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(root).parent / "reference",
-        training_root=(root).parent / "models",
+        root, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(root).parent / "reference"
     )
 
 
@@ -280,12 +275,7 @@ def test_incremental_updates_only_new_days_and_keeps_cumulative_history(tmp_path
     days = tuple(date(2026, 8, 1) + timedelta(days=index) for index in range(40))
     supplier = FakeSupplier(days[:20])
     configuration = HistorySyncConfiguration(
-        tmp_path,
-        sessions=20,
-        reread_sessions=5,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=20, reread_sessions=5, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     first_now = NOW.replace(month=8, day=20)
     first = RunHistorySync(configuration, supplier, clock=lambda: first_now)
@@ -421,12 +411,7 @@ def test_pending_batch_replaces_incomplete_day_before_first_publication(tmp_path
 
     def configuration(root):
         return HistorySyncConfiguration(
-            root,
-            sessions=8,
-            reread_sessions=5,
-            minimum_free_bytes=0,
-            reference_root=(root).parent / "reference",
-            training_root=(root).parent / "models",
+            root, sessions=8, reread_sessions=5, minimum_free_bytes=0, reference_root=(root).parent / "reference"
         )
 
     class PartialFirstRun(FakeSupplier):
@@ -604,12 +589,7 @@ def test_cross_year_interruption_only_requests_missing_dates_and_five_anchors(tm
     days = tuple(date(2025, 12, 1) + timedelta(days=i) for i in range(35))
     supplier = FakeSupplier(days)
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=35,
-        reread_sessions=5,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=35, reread_sessions=5, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     original = HistoryPriceWriteSession.save_revision_batches
 
@@ -640,12 +620,7 @@ def test_resume_finishes_old_cutoff_then_updates_to_current_cutoff(tmp_path, mon
     days = tuple(date(2026, 9, 1) + timedelta(days=i) for i in range(10))
     supplier = Dated(days)
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     original = history_sync_module.PublishHistorySnapshot
 

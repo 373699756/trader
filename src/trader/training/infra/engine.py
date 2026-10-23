@@ -18,7 +18,6 @@ from typing import Literal, Protocol, cast
 
 from lightgbm.basic import LightGBMError
 
-from trader.download.domain.baostock_daily import BaoStockTrainingSplit, BuildBaostockTrainingSplit
 from trader.download.domain.history_control import HistoryActiveSnapshot
 from trader.download.infra.history_control_index import (
     HistoryMaintenanceAlreadyRunningError,
@@ -40,6 +39,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingWindow,
 )
 from trader.training.domain.tomorrow_training_input import EvaluateTomorrowTrainingInput, FrozenDailyInputDescriptor
+from trader.training.domain.training_dates import BuildTrainingDateSplit, TrainingDateSplit
 from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputError,
     HistoryTrainingInputSnapshot,
@@ -158,7 +158,7 @@ class _TrainingRunContext:
     snapshot: HistoryTrainingInputSnapshot
     label_cutoff: date
     training_input_document_hash: str
-    split: BaoStockTrainingSplit
+    split: TrainingDateSplit
     split_hash: str
     training_contract_hash: str
     training_rows: int
@@ -195,7 +195,7 @@ class _HeadFitRequest:
     profile: TrainedProfileContract
     settings: ProfileTrainingSettings
     snapshot: HistoryTrainingInputSnapshot
-    split: BaoStockTrainingSplit
+    split: TrainingDateSplit
     samples: SQLiteTrainingSampleIndex
     metrics: tuple[TargetMetric, ...]
     train_root: Path
@@ -575,7 +575,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
 
 def _sample_cache_for(
     snapshot: HistoryTrainingInputSnapshot,
-    split: BaoStockTrainingSplit,
+    split: TrainingDateSplit,
     request: ProfileTrainingRequest,
 ) -> TrainingSampleCache:
     feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
@@ -618,7 +618,7 @@ def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleC
 
 def _require_industry_coverage(
     archive: _TrainingInputSnapshot,
-    split: BaoStockTrainingSplit,
+    split: TrainingDateSplit,
     history_sessions: int,
     algorithm: Literal["lightgbm", "ridge"],
     minimum_training_rows: int,
@@ -657,9 +657,9 @@ def _prepare_locked_split(
     snapshot: HistoryTrainingInputSnapshot,
     profile: TrainedProfileContract,
     settings: ProfileTrainingSettings,
-) -> tuple[BaoStockTrainingSplit | None, str]:
+) -> tuple[TrainingDateSplit | None, str]:
     try:
-        split = BuildBaostockTrainingSplit(
+        split = BuildTrainingDateSplit(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.active_snapshot_hash,
             fit_dates=settings.fit_dates,
@@ -1050,7 +1050,7 @@ def _training_contract_hash(
     )
 
 
-def _head_split_hash(split: BaoStockTrainingSplit, contract: TrainedHeadContract) -> str:
+def _head_split_hash(split: TrainingDateSplit, contract: TrainedHeadContract) -> str:
     return ContentHash(
         {
             "calendar_split_hash": split.content_hash,

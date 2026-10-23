@@ -21,24 +21,51 @@ from trader.entrypoints.cli import BuildParser, Main
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("price_gaps", (0, 1))
+def test_v1_training_uses_its_own_admission_after_published_history(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], price_gaps: int
+) -> None:
+    from trader.training.infra.profile.v1.training import V1TrainingResult
+
+    status = HistoryMaintenanceStatus(
+        "completed",
+        None,
+        Path("data/history"),
+        "tencent",
+        None,
+        "a" * 64,
+        date(2026, 9, 10),
+        date(2026, 9, 9),
+        price_gaps,
+    )
+    calls = []
+
+    def forbid_other_profiles(*_args, **_kwargs):
+        pytest.fail("V1 admission queried unrelated model state")
+
+    def fit_v1(*_args, **_kwargs):
+        calls.append("v1")
+        return V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0)
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr("trader.bootstrap.EvaluateAllHistoryTrainingDue", forbid_other_profiles)
+    monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", forbid_other_profiles)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.infra.profile.v1.training.RunV1Training", fit_v1)
+
+    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", "--profile", "v1"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert calls == ["v1"]
+    assert payload["profile"] == "v1" and payload["production_authority"] is False
+    assert "双档" not in captured.err
+
+
 @pytest.mark.parametrize(("state", "exit_code"), (("cancelled", 130), ("failed", 1)))
 def test_train_preserves_history_cancellation_and_failure(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, state, exit_code
 ) -> None:
-    status = HistoryMaintenanceStatus(
-        state,
-        state,
-        Path("data/market/history"),
-        "tencent",
-        None,
-        None,
-        None,
-        None,
-        0,
-        False,
-        "data_incomplete",
-        False,
-    )
+    status = HistoryMaintenanceStatus(state, state, Path("data/market/history"), "tencent", None, None, None, None)
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
     monkeypatch.setattr(
@@ -81,18 +108,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     status = HistoryMaintenanceStatus(
-        "completed",
-        None,
-        Path("data/history"),
-        "baostock",
-        None,
-        "a" * 64,
-        date(2026, 9, 10),
-        date(2026, 9, 9),
-        0,
-        False,
-        "data_incomplete",
-        False,
+        "completed", None, Path("data/history"), "baostock", None, "a" * 64, date(2026, 9, 10), date(2026, 9, 9)
     )
 
     def synchronize(_configuration, supplier, progress, **_kwargs):
@@ -118,35 +134,30 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "trader.training.entrypoints.commands.RunJointTraining",
         lambda _runtime: pytest.fail("incomplete history must block training"),
     )
-    assert Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train"]) == 1
+    from trader.download.entrypoints.commands import RunDownload
+
+    assert RunDownload(PROJECT_ROOT, PROJECT_ROOT / "config/runtime.json") == 0
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload == {
         "active_snapshot_hash": "a" * 64,
         "archive_root": "data/history",
-        "automatic_training": False,
         "data_cutoff": "2026-09-10",
         "efficient_daily_source": None,
         "label_cutoff": "2026-09-09",
-        "matured_label_days_since_training": 0,
         "reason": None,
         "schema_version": "history_maintenance_status",
         "selected_baseline_source": "baostock",
         "state": "completed",
-        "training_due": False,
-        "training_due_reason": "data_incomplete",
-        "training_heads": [],
         "unresolved_price_cells": 0,
         "price_gaps": None,
     }
     assert "\x1b" not in captured.err and "\x1b" not in captured.out
     progress_lines = re.sub(r" +", " ", captured.err).splitlines()
     assert progress_lines == [
-        "train: 正在准备官方总体、ST资格、交易日历及当前行业。",
         "00:00:00 | 交易日历 | 等待 | 调用 00:00:05",
         "00:00:00 | 同步完成",
-        "完整历史未通过训练准入；未启动双档训练。",
     ]
     assert "completed_units" not in captured.err
     assert "total_units" not in captured.err
@@ -195,19 +206,17 @@ def test_train_cancellation_during_reference_preparation_returns_130(monkeypatch
 
 
 @pytest.mark.parametrize(
-    ("state", "due_reason", "gap_reason", "starts_training"),
+    ("state", "gap_reason", "starts_training"),
     (
-        ("completed", "initial_training_required", "tencent_qfq_invalid_price", True),
-        ("already_current", "initial_training_required", "history_price_pending", True),
-        ("completed", "data_incomplete", "tencent_qfq_invalid_price", False),
-        ("failed", "initial_training_required", "tencent_qfq_invalid_price", False),
+        ("completed", "tencent_qfq_invalid_price", True),
+        ("already_current", "history_price_pending", True),
+        ("failed", "tencent_qfq_invalid_price", False),
     ),
 )
 def test_train_uses_valid_samples_despite_reported_price_gaps(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     state: Literal["completed", "already_current", "failed"],
-    due_reason: Literal["initial_training_required", "data_incomplete"],
     gap_reason: str,
     starts_training: bool,
 ) -> None:
@@ -220,10 +229,6 @@ def test_train_uses_valid_samples_despite_reported_price_gaps(
         "a" * 64,
         date(2026, 10, 16),
         date(2026, 10, 15),
-        0,
-        due_reason == "initial_training_required",
-        due_reason,
-        False,
         3267,
         HistoryPriceGapSummary(
             25,
@@ -252,35 +257,23 @@ def test_train_uses_valid_samples_despite_reported_price_gaps(
         assert json.loads(captured.out)["price_gaps"]["cells"] == 3267
     assert ("价格缺口待补" in captured.err) == (state != "failed")
     if starts_training:
-        assert "按有效样本尝试双档训练" in captured.err
+        assert "按有效样本尝试所选档位训练" in captured.err
         assert "未启动双档训练" not in captured.err
     else:
-        assert "未启动双档训练" in captured.err
+        assert "完整历史尚未完成合法发布" in captured.err
 
 
 def test_download_contract_exposes_an_immutable_typed_status() -> None:
     status = HistoryMaintenanceStatus(
-        "already_current",
-        None,
-        Path("data/history"),
-        "baostock",
-        None,
-        "a" * 64,
-        date(2026, 9, 10),
-        date(2026, 9, 9),
-        0,
-        False,
-        "data_incomplete",
-        False,
+        "already_current", None, Path("data/history"), "baostock", None, "a" * 64, date(2026, 9, 10), date(2026, 9, 9)
     )
 
     assert status.state == "already_current"
     assert status.reason is None
     assert status.archive_root == Path("data/history")
-    assert status.training_due is False
-    assert status.training_due_reason == "data_incomplete"
-    with pytest.raises(ValueError, match="flag and reason disagree"):
-        replace(status, training_due=True)
+    assert status.published and not status.needs_retry
+    with pytest.raises(ValueError, match="must not be negative"):
+        replace(status, unresolved_price_cells=-1)
     with pytest.raises(AttributeError):
         status.state = "completed"  # type: ignore[misc]
 

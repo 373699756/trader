@@ -65,7 +65,6 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
         query_interval_seconds=Number(history, "query_interval_seconds", minimum=1.5),
         cancellation_grace_seconds=Number(history, "cancellation_grace_seconds", minimum=0.001),
         progress_heartbeat_seconds=Number(history, "progress_heartbeat_seconds", minimum=0.001),
-        training_root=paths.models,
     )
 
 

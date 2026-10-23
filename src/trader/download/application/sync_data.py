@@ -81,9 +81,7 @@ class SyncData:
         if task == "history":
             history = self.history(reference)
             stopped = history.state == "cancelled" or self.cancelled()
-            ready = (
-                history.state in {"completed", "already_current"} and history.training_due_reason != "data_incomplete"
-            )
+            ready = not history.needs_retry
             return SyncTaskResult(
                 task, "cancelled" if stopped else "completed" if ready else "pending", history=history
             )

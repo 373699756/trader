@@ -220,13 +220,12 @@ def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) ->
             reread_sessions=2,
             minimum_free_bytes=0,
             reference_root=(tmp_path).parent / "reference",
-            training_root=(tmp_path).parent / "models",
         ),
         router,
         clock=lambda: _at(dates[-1]),
     )
     assert result.state == "completed"
-    assert result.training_due is False and result.training_due_reason == "data_incomplete"
+    assert result.published and not result.needs_retry
 
 
 def test_non_login_context_failure_does_not_hide_reference_error() -> None:
@@ -258,12 +257,7 @@ def test_tencent_first_fetches_one_whole_window(count):
 def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, incoming):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
     before = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
@@ -328,7 +322,6 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
             reread_sessions=2,
             minimum_free_bytes=0,
             reference_root=(tmp_path).parent / "reference",
-            training_root=(tmp_path).parent / "models",
         ),
         reference=replace(_prepared(_current_universe("600001", "600002"), dates), industry_version="fixture"),
         clock=lambda: _at(dates[-1]),
@@ -348,12 +341,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
 def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
     new_dates = tuple(day + timedelta(days=1) for day in dates)
@@ -375,7 +363,6 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
         reread_sessions=2,
         minimum_free_bytes=0,
         reference_root=(tmp_path / "baostock").parent / "reference",
-        training_root=(tmp_path / "baostock").parent / "models",
     )
     full = _current_universe("600001", "600002")
     assert (
@@ -417,12 +404,7 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
 def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
     dates = tuple(date(2026, 10, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=3,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     assert RunHistorySync(config, Baseline(dates), clock=lambda: _at(dates[-1])).state == "completed"
 
@@ -461,12 +443,7 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
 def test_gap_longer_than_reread_window_includes_published_qfq_anchor(tmp_path):
     dates = tuple(date(2026, 8, 25) + timedelta(days=i) for i in range(10))
     config = HistorySyncConfiguration(
-        tmp_path,
-        sessions=10,
-        reread_sessions=2,
-        minimum_free_bytes=0,
-        reference_root=(tmp_path).parent / "reference",
-        training_root=(tmp_path).parent / "models",
+        tmp_path, sessions=10, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     first = RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1]))
     assert first.state == "completed"

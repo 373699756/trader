@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
 from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra import model_fitting
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.model_fitting import FitIndustryModels
@@ -26,7 +26,7 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 ) -> None:
     profile = V2_TRAINING_PROFILE if contract in V2_HEAD_CONTRACTS else V3_TRAINING_PROFILE
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_500))
-    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64, history_sessions=profile.history_sessions)
+    split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, history_sessions=profile.history_sessions)
     usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
     settings = LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id)
 
