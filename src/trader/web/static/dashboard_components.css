@@ -328,6 +328,7 @@ th {
   background: #191c1f;
   font-size: 11px;
   font-weight: 600;
+  text-align: center;
 }
 
 tbody tr {
@@ -358,8 +359,11 @@ td:nth-child(2) {
   left: var(--rank-width);
   z-index: 4;
   width: var(--tier-width);
-  text-align: left;
   background: inherit;
+}
+
+td:nth-child(2) {
+  text-align: left;
 }
 
 table:not(.is-long-table) th:nth-child(2),
@@ -380,14 +384,29 @@ table:not(.is-long-table) td:nth-child(3) {
   left: calc(var(--rank-width) + var(--tier-width));
   z-index: 4;
   width: var(--stock-width);
-  text-align: left;
   box-shadow: 1px 0 0 var(--line);
   background: inherit;
 }
 
+table:not(.is-long-table) td:nth-child(3) {
+  text-align: left;
+}
+
 table:not(.is-long-table):not(.is-history) th:nth-child(3),
 table:not(.is-long-table):not(.is-history) td:nth-child(3) {
-  width: 230px;
+  width: 131px;
+}
+
+table:not(.is-long-table):not(.is-history) td.board-industry-cell {
+  text-align: left;
+}
+
+table:not(.is-long-table):not(.is-history) td:nth-child(5),
+table:not(.is-long-table):not(.is-history) td:nth-child(6),
+table:not(.is-long-table):not(.is-history) td:nth-child(7),
+table:not(.is-long-table):not(.is-history) td:nth-child(8),
+table:not(.is-long-table):not(.is-history) td:nth-child(9) {
+  text-align: center;
 }
 
 table.is-long-table th:nth-child(2),
@@ -503,7 +522,7 @@ tbody tr.is-unavailable td.negative {
 }
 
 .reason-cell {
-  text-align: left;
+  text-align: center;
 }
 
 .table-state {

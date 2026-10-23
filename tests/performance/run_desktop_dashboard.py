@@ -853,8 +853,15 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           ranks: rows.map((row) => Number(row.cells[0].textContent)),
           tiers: rows.map((row) => row.cells[1].textContent.trim()),
           current_columns: rows[0]?.cells.length,
+          headers_centered: Array.from(document.querySelectorAll('#tableHead th')).every((cell) =>
+            getComputedStyle(cell).textAlign === 'center'),
+          column_widths: Array.from(document.querySelectorAll('#tableColumns col')).slice(2, 4)
+            .map((column) => column.style.width),
           stock_only: !rows[0]?.cells[2].textContent.includes('证监会行业'),
           classified_industry: rows[0]?.cells[3].textContent.includes('证监会行业 G56航空运输业'),
+          board_industry_alignment: getComputedStyle(rows[0].cells[3]).textAlign,
+          market_value_alignments: Array.from(rows[0].cells).slice(4, 9)
+            .map((cell) => getComputedStyle(cell).textAlign),
           score_labels_absent: !/本地|风险复核|最终/.test(rows[0]?.cells[9].textContent || ''),
           reason_alignment: [getComputedStyle(document.querySelector('.reason-heading')).textAlign,
             getComputedStyle(rows[0].cells[10]).textAlign],
@@ -906,10 +913,14 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("ranks") == [1, 2]
         and result.get("tiers") == ["回避", "回避"]
         and result.get("current_columns") == 11
+        and result.get("headers_centered") is True
+        and result.get("column_widths") == ["131px", "161px"]
         and result.get("stock_only") is True
         and result.get("classified_industry") is True
+        and result.get("board_industry_alignment") == "left"
+        and result.get("market_value_alignments") == ["center"] * 5
         and result.get("score_labels_absent") is True
-        and result.get("reason_alignment") == ["center", "left"]
+        and result.get("reason_alignment") == ["center", "center"]
         and result.get("browser_errors") == []
     )
 

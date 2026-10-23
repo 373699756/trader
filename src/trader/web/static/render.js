@@ -271,8 +271,8 @@
       columns: [
         '<col style="width:56px">',
         '<col style="width:86px">',
-        '<col style="width:155px">',
-        '<col style="width:185px">',
+        '<col style="width:131px">',
+        '<col style="width:161px">',
         '<col style="width:80px">',
         '<col style="width:88px">',
         '<col style="width:85px">',
