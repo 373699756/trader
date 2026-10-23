@@ -29,7 +29,7 @@ from trader.recommendation.application.pipeline.quality_check.pipeline_status im
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, StageState, ValidateStageBatchContinuity
-from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     FormalScoredDecision,
@@ -169,7 +169,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert quote.data_version == source_quote.data_version
     assert projection.local.selection_diagnostics is not None
     assert projection.local.selection_diagnostics.executable_threshold == 78.0
-    assert projection.local.selection_diagnostics.observation_floor == 73.0
+    assert projection.local.selection_diagnostics.observation_floor == 72.0
     assert projection.input_quality.history_required_sessions == 61
     assert ("score_scale", "weighted_evidence_quality_0_100") in projection.local.input_versions
     assert ("score_model", f"daily_reconstructible_ensemble:{'b' * 64}") in projection.local.input_versions
@@ -447,6 +447,57 @@ def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
     assert projection.input_quality.candidate_scored_count == 1
     skipped = next(item for item in projection.selection.evaluations if item.code == "600002")
     assert skipped.selection_skip_reason == "production_model_features_missing"
+
+
+@pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
+@pytest.mark.parametrize(
+    ("offset", "expected"),
+    (
+        (-6.01, "unavailable"),
+        (-6.0, "observe"),
+        (-5.99, "observe"),
+        (-0.01, "observe"),
+        (0.0, "executable"),
+        (0.01, "executable"),
+    ),
+)
+def test_configured_action_floors_reach_decision_projection(
+    application_feature_factory,
+    native_type: type[ScoredNativeInput],
+    offset: float,
+    expected: str,
+) -> None:
+    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    strategy = native_type.strategy
+    threshold = policy.selection.thresholds[strategy.value]
+    score = round(threshold + offset, 2)
+    weights = {
+        board: {key: float(key == "entry_quality") for key in policy.board_local_strategy_weights[strategy][board]}
+        for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
+    }
+    policy = replace(policy, board_local_strategy_weights={**policy.board_local_strategy_weights, strategy: weights})
+    features = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
+        for index in range(100)
+    )
+    features = tuple(
+        replace(
+            feature,
+            values={**feature.values, "entry_quality": score, "volume_to_5d_average": 0.6, "max_drawdown_20d": -2.0},
+        )
+        for feature in features
+    )
+    native = replace(_native_input(features, native_type), phase="close_fallback")
+
+    projection = BuildScoredLocal(native, policy, sequence=1)
+
+    diagnostics = projection.local.selection_diagnostics
+    assert diagnostics is not None
+    assert diagnostics.executable_threshold == threshold
+    assert diagnostics.observation_floor == threshold - 6.0
+    item = projection.local.items[0]
+    assert item.final_score == item.local_score == score
+    assert item.action.value == expected, item.reason
 
 
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))

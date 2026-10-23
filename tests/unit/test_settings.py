@@ -759,7 +759,7 @@ def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
     (
         ("fusion", "confidence_coverage_min", 0.1, "coverage and known-dimension"),
         ("fusion", "minimum_known_dimensions", 1, "coverage and known-dimension"),
-        ("selection", "observation_margin", 6, "observation margin"),
+        ("selection", "observation_margin", 5, "observation margin"),
     ),
 )
 def test_fixed_review_and_observation_gates_cannot_drift(

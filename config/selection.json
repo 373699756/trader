@@ -6,7 +6,7 @@
     "competition_group_limits": {},
     "minimum_board_reliability": 0.85,
     "review_candidate_limit": 6,
-    "observation_margin": 5,
+    "observation_margin": 6,
     "thresholds": {
       "tomorrow": 78,
       "d25": 76

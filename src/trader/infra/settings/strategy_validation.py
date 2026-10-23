@@ -81,8 +81,8 @@ def _validate_selection(settings: StrategySettings) -> None:
         raise ConfigurationError("board reliability gate is fixed at 0.85")
     if settings.selection.review_candidate_limit != 6:
         raise ConfigurationError("DeepSeek review candidate limit must be 6")
-    if settings.selection.observation_margin != 5.0:
-        raise ConfigurationError("selection observation margin is fixed at 5")
+    if settings.selection.observation_margin != 6.0:
+        raise ConfigurationError("selection observation margin is fixed at 6")
 
 
 def _validate_signal_policies(settings: StrategySettings) -> None:
