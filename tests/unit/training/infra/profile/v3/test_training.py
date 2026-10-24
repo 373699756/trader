@@ -24,7 +24,7 @@ from trader.training.infra.engine import (
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.model_bundles.bundle_codec import TrainedLightGBMModelSnapshot, TrainedRidgeModelSnapshot
-from trader.training.infra.model_evaluation import CalibrationResult, PredictionMetrics
+from trader.training.infra.model_evaluation import CalibrationResult, CalibrationUnavailableError, PredictionMetrics
 from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -566,7 +566,8 @@ def test_training_exposure_features_do_not_change_when_peer_future_label_is_miss
     assert before[0].features == after[0].features
 
 
-def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
+@pytest.mark.parametrize("calibration_failure", (False, True))
+def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, calibration_failure) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
     updates: list[TomorrowTrainingProgress] = []
@@ -580,6 +581,8 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
         def industry_counts(_contract) -> tuple[V3TrainingIndustryCounts, ...]:
             assert updates[-1].stage == "industry_statistics"
             assert updates[-1].state == "started"
+            if calibration_failure:
+                return tuple(V3TrainingIndustryCounts(name, 20_000, 20, 2, 1, 2) for name in ("银行", "软件"))
             return (
                 V3TrainingIndustryCounts("银行", 0, 0, 0, 0),
                 V3TrainingIndustryCounts("软件", 0, 0, 0, 0),
@@ -591,6 +594,11 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
 
     progress = SimpleNamespace(publish=updates.append)
 
+    def reject_calibration(*_args):
+        raise CalibrationUnavailableError("calibration_prediction_variance_insufficient")
+
+    monkeypatch.setattr("trader.training.infra.model_fitting._fit_industry", reject_calibration)
+
     result = FitIndustryModels(
         Samples(),
         split,
@@ -601,14 +609,25 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
 
     assert result.models == ()
     assert result.training_rows == result.validation_rows == 0
-    assert [(item.stage, item.state, item.completed_units, item.total_units) for item in updates] == [
+    assert result.candidate_training_rows == (40_000 if calibration_failure else 0)
+    assert [(item.stage, item.state, item.completed_units, item.total_units) for item in updates[:3]] == [
         ("industry_statistics", "started", 0, 1),
         ("industry_statistics", "completed", 1, 1),
         ("model_fit", "started", 0, 2),
-        ("model_fit", "running", 1, 2),
-        ("model_fit", "completed", 2, 2),
     ]
     assert all(item.strategy is Strategy.TOMORROW for item in updates)
+    assert all(item.total_units == 2 for item in updates if item.stage == "model_fit")
+    assert (updates[-1].state, updates[-1].completed_units) == ("completed", 2)
+    skipped = [item.fit_detail for item in updates if item.fit_detail and item.fit_detail.phase == "skipped"]
+    assert [item.industry for item in skipped] == ["银行", "软件"]
+    assert [item.completed_units for item in updates if item.fit_detail and item.fit_detail.phase == "skipped"] == [
+        1,
+        2,
+    ]
+    assert all(item.training_rows == (20_000 if calibration_failure else 0) for item in skipped)
+    assert [item.failure_reason for item in skipped] == [item.reason for item in result.failures]
+    training = [item.fit_detail for item in updates if item.fit_detail and item.fit_detail.phase == "training"]
+    assert [item.industry for item in training] == (["银行", "软件"] if calibration_failure else [])
 
 
 def test_training_progress_rejects_impossible_counts() -> None:

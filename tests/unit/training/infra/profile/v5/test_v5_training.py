@@ -126,9 +126,36 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
         LoadProfileTrainingSettings(ROOT, "v5"), fitting=TcnFittingParameters(10, epochs=2, early_stopping_rounds=2)
     )
     models = tmp_path / "models"
-    result = RunV5Training(archive.archive_root, models, sample_root=tmp_path / "samples", settings=settings)
+    updates = []
+
+    class Progress:
+        def publish(self, update):
+            updates.append(update)
+
+    result = RunV5Training(
+        archive.archive_root, models, sample_root=tmp_path / "samples", settings=settings, progress=Progress()
+    )
     assert result.status == "engineering_ready", result.heads
     assert {h.strategy for h in result.heads} == {Strategy.TOMORROW, Strategy.D25}
+    for head in result.heads:
+        details = [update.fit_detail for update in updates if update.strategy is head.strategy and update.fit_detail]
+        assert {item.phase for item in details} == {
+            "preparation",
+            "batch_cache",
+            "normalization",
+            "training",
+            "early_stopping",
+            "calibration",
+            "completed",
+        }
+        assert all(item.industry == "bank" and item.training_rows == head.training_rows for item in details)
+        for epoch in (1, 2):
+            trained = [item for item in details if item.phase == "training" and item.epoch == epoch]
+            assert trained[0].completed_batches == 0
+            assert trained[-1].completed_batches == trained[-1].total_batches == math.ceil(head.training_rows / 256)
+            assert all(item.total_epochs == 2 for item in trained)
+            assert [item.completed_batches for item in trained] == sorted(item.completed_batches for item in trained)
+        assert details[-1].phase == "completed"
     assert sorted(p.relative_to(models).as_posix() for p in models.rglob("*.json")) == [
         "v5/d25/metadata.json",
         "v5/d25/model.json",
@@ -165,7 +192,8 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
 
     class _CancelledFit:
         def publish(self, progress):
-            if progress.stage == "model_fit" and progress.state == "running":
+            detail = progress.fit_detail
+            if detail is not None and detail.phase == "training" and detail.completed_batches == 1:
                 raise InterruptedError("cancelled fixture")
 
     with pytest.raises(InterruptedError):

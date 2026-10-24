@@ -40,6 +40,33 @@ class TrainingSampleDiagnostics:
     missing_d25: int = 0
 
 
+TrainingFitPhase = Literal[
+    "preparation", "batch_cache", "normalization", "training", "early_stopping", "calibration", "completed", "skipped"
+]
+
+
+@dataclass(frozen=True)
+class TrainingFitDetail:
+    industry: str
+    training_rows: int
+    phase: TrainingFitPhase
+    epoch: int = 0
+    total_epochs: int = 0
+    completed_batches: int = 0
+    total_batches: int = 0
+    failure_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not self.industry
+            or min(self.training_rows, self.epoch, self.total_epochs, self.completed_batches, self.total_batches) < 0
+            or self.epoch > self.total_epochs
+            or self.completed_batches > self.total_batches
+            or (self.phase == "skipped") != bool(self.failure_reason)
+        ):
+            raise ValueError("training fit detail is invalid")
+
+
 @dataclass(frozen=True)
 class TomorrowTrainingProgress:
     stage: TomorrowTrainingStage
@@ -49,6 +76,7 @@ class TomorrowTrainingProgress:
     produced_units: int = 0
     strategy: Strategy | None = None
     sample_diagnostics: TrainingSampleDiagnostics | None = None
+    fit_detail: TrainingFitDetail | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -100,4 +128,6 @@ __all__ = [
     "TomorrowTrainingProgressState",
     "TomorrowTrainingStage",
     "TomorrowTrainingWindow",
+    "TrainingFitDetail",
+    "TrainingFitPhase",
 ]

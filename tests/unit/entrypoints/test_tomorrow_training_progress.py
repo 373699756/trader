@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress
+from dataclasses import replace
+
+import pytest
+
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TrainingFitDetail
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 
 
@@ -100,3 +104,39 @@ def test_duplicate_completion_does_not_double_count_stage_duration() -> None:
     output.publish(TomorrowTrainingProgress("target_statistics", "started", 0, 1))
     output.publish(TomorrowTrainingProgress("sample_index", "completed", 1, 1))
     assert output.stage_durations == (("sample_index", 10.0),)
+
+
+def test_fit_detail_retains_latest_batch_without_flooding_and_emits_skips_immediately(capsys) -> None:
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0, 1, 2, 3, 11, 12), start_heartbeat=False)
+    output.publish(TomorrowTrainingProgress("model_fit", "started", 0, 83))
+    detail = TrainingFitDetail("银行", 20000, "training", 2, 100, 0, 79)
+    update = TomorrowTrainingProgress("model_fit", "running", 11, 83, fit_detail=detail)
+    output.publish(update)
+    assert "行业 银行 | 训练样本 20000 | 训练 | 轮次 2/100 | 已完成批次 0/79" in capsys.readouterr().err
+    for batch in (1, 2):
+        output.publish(replace(update, fit_detail=replace(detail, completed_batches=batch)))
+    assert capsys.readouterr().err == ""
+    output._emit_heartbeat(11)
+    heartbeat = capsys.readouterr().err
+    assert "阶段耗时 00:00:11" in heartbeat and "已完成批次 2/79" in heartbeat
+    skipped = TrainingFitDetail("银行", 20000, "skipped", failure_reason="calibration_prediction_variance_insufficient")
+    output.publish(replace(update, completed_units=12, fit_detail=skipped))
+    assert "行业跳过 | 原因 calibration_prediction_variance_insufficient" in capsys.readouterr().err
+    output.publish(replace(update, completed_units=12, fit_detail=TrainingFitDetail("软件", 30000, "preparation")))
+    assert "行业 软件 | 训练样本 30000 | 样本检查" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "detail",
+    (
+        {"epoch": 2, "total_epochs": 1},
+        {"completed_batches": 2, "total_batches": 1},
+        {"training_rows": -1},
+        {"phase": "skipped"},
+        {"failure_reason": "invalid_while_training"},
+    ),
+)
+def test_fit_detail_rejects_impossible_progress(detail) -> None:
+    values = {"industry": "银行", "training_rows": 20000, "phase": "training", **detail}
+    with pytest.raises(ValueError, match="fit detail"):
+        TrainingFitDetail(**values)

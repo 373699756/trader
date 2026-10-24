@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Literal
 
@@ -14,6 +14,7 @@ from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
+    TrainingFitDetail,
 )
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.infra.model_bundles.bundle_codec import (
@@ -83,6 +84,21 @@ class _FitProgress:
     completed_units: int
     total_units: int
     produced_units: int = 0
+    fit_detail: TrainingFitDetail | None = None
+
+
+@dataclass
+class _IndustryProgress:
+    port: TomorrowTrainingProgressPort | None
+    contract: TrainedHeadContract
+    update: _FitProgress
+
+    def heartbeat(self) -> None:
+        _publish(self.port, self.contract, self.update)
+
+    def publish(self, detail: TrainingFitDetail) -> None:
+        self.update = replace(self.update, fit_detail=detail)
+        self.heartbeat()
 
 
 def FitIndustryModels(
@@ -103,12 +119,18 @@ def FitIndustryModels(
         progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=contract.strategy))
     _publish(progress, contract, _FitProgress("started", 0, len(workloads)))
     for position, counts in enumerate(workloads, start=1):
+        detail = TrainingFitDetail(counts.industry, counts.training, "preparation")
+        observer = _IndustryProgress(
+            progress, contract, _FitProgress("running", position - 1, len(workloads), len(models), detail)
+        )
+        observer.heartbeat()
         model, failure = _attempt_industry_fit(
             samples,
             counts,
             contract,
             parameters,
-            partial(_publish, progress, contract, _FitProgress("running", position - 1, len(workloads), len(models))),
+            observer.heartbeat,
+            observer.publish,
         )
         if model is not None:
             models.append(model)
@@ -126,9 +148,12 @@ def FitIndustryModels(
         _publish(
             progress,
             contract,
-            _FitProgress("running", position, len(workloads), len(models))
-            if models and position == len(workloads)
-            else _fit_progress(position, len(workloads), len(models)),
+            replace(
+                _FitProgress("running", position, len(workloads), len(models))
+                if models and position == len(workloads)
+                else _fit_progress(position, len(workloads), len(models)),
+                fit_detail=replace(detail, phase="skipped" if failure else "completed", failure_reason=failure or None),
+            ),
         )
     if not workloads:
         _publish(progress, contract, _FitProgress("completed", 0, 0))
@@ -160,6 +185,7 @@ def _attempt_industry_fit(
     contract: TrainedHeadContract,
     parameters: ModelFittingParameters,
     heartbeat: Callable[[], None],
+    report: Callable[[TrainingFitDetail], None],
 ) -> tuple[FittedIndustryModel | None, str]:
     failure = _coverage_failure(counts, parameters)
     if failure:
@@ -168,8 +194,8 @@ def _attempt_industry_fit(
         if isinstance(parameters, TcnFittingParameters):
             from trader.training.infra.profile.v5.fitting import FitTcnIndustry
 
-            return FitTcnIndustry(samples, counts, contract, parameters, heartbeat), ""
-        heartbeat()
+            return FitTcnIndustry(samples, counts, contract, parameters, heartbeat, report=report), ""
+        report(TrainingFitDetail(counts.industry, counts.training, "training"))
         fitted = _fit_industry(samples, counts, contract, parameters, heartbeat)
         heartbeat()
         return fitted, ""
@@ -203,6 +229,7 @@ def _publish(
                 update.total_units,
                 update.produced_units,
                 strategy=contract.strategy,
+                fit_detail=update.fit_detail,
             )
         )
 

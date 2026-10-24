@@ -16,6 +16,7 @@ from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_PEAK_RSS_MIB,
     TomorrowTrainingProgress,
     TomorrowTrainingStage,
+    TrainingFitPhase,
 )
 
 _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
@@ -32,6 +33,16 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "artifact_publish": "工件发布",
 }
 _STATE_LABELS = {"started": "开始", "running": "运行中", "completed": "完成"}
+_FIT_PHASE_LABELS: dict[TrainingFitPhase, str] = {
+    "preparation": "样本检查",
+    "batch_cache": "行业样本缓存",
+    "normalization": "标准化统计",
+    "training": "训练",
+    "early_stopping": "早停验证",
+    "calibration": "独立校准",
+    "completed": "行业拟合完成",
+    "skipped": "行业跳过",
+}
 _PROGRESS_INTERVAL_SECONDS = 10.0
 _HEARTBEAT_INTERVAL_SECONDS = 10.0
 TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready", "failed"]
@@ -95,8 +106,15 @@ class StderrTomorrowTrainingProgress:
                 duration = now - self._stage_started_at[key]
                 self._stage_durations[progress.stage] = self._stage_durations.get(progress.stage, 0.0) + duration
                 self._completed_stages.add(key)
-            self._latest = progress
             boundary = progress.state in {"started", "completed"}
+            if progress.fit_detail is not None:
+                previous = self._latest.fit_detail if self._latest is not None else None
+                boundary = boundary or (
+                    previous is None
+                    or previous.industry != progress.fit_detail.industry
+                    or (progress.fit_detail.phase in {"skipped", "completed"} and previous != progress.fit_detail)
+                )
+            self._latest = progress
             due = self._last_emitted_at is None or now - self._last_emitted_at >= _PROGRESS_INTERVAL_SECONDS
             if boundary or due:
                 self._emit(progress, now)
@@ -176,6 +194,17 @@ class StderrTomorrowTrainingProgress:
             parts.append(f"有效样本 {progress.produced_units}")
         elif progress.stage == "model_fit":
             parts.append(f"有效模型 {progress.produced_units}")
+        if progress.fit_detail is not None:
+            detail = progress.fit_detail
+            parts.extend(
+                (f"行业 {detail.industry}", f"训练样本 {detail.training_rows}", _FIT_PHASE_LABELS[detail.phase])
+            )
+            if detail.epoch:
+                parts.append(f"轮次 {detail.epoch}/{detail.total_epochs}")
+            if detail.total_batches:
+                parts.append(f"已完成批次 {detail.completed_batches}/{detail.total_batches}")
+            if detail.failure_reason:
+                parts.append(f"原因 {detail.failure_reason}")
         if progress.sample_diagnostics is not None:
             diagnostic = progress.sample_diagnostics
             parts.append(
