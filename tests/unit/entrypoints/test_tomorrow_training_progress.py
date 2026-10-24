@@ -73,8 +73,8 @@ def test_expensive_index_stage_emits_heartbeat_at_ten_seconds(capsys) -> None:
     output._emit_heartbeat(10.0)
     output._emit_heartbeat(20.0)
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:10 | Tomorrow训练 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:10",
-        "00:00:20 | Tomorrow训练 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:20",
+        "00:00:10 | Tomorrow训练 | 样本索引 | 0/1 (0.00%) | 运行中 | 阶段耗时 00:00:10",
+        "00:00:20 | Tomorrow训练 | 样本索引 | 0/1 (0.00%) | 运行中 | 阶段耗时 00:00:20",
     ]
     output.publish_result("engineering_ready", None)
     capsys.readouterr()

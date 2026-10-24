@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from types import TracebackType
 from typing import Literal
 
@@ -33,11 +34,12 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
 _STATE_LABELS = {"started": "开始", "running": "运行中", "completed": "完成"}
 _PROGRESS_INTERVAL_SECONDS = 10.0
 _HEARTBEAT_INTERVAL_SECONDS = 10.0
-TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready"]
+TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready", "failed"]
 _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
     "blocked": "阻塞",
     "rejected": "拒绝",
     "engineering_ready": "完成",
+    "failed": "失败",
 }
 
 
@@ -143,7 +145,7 @@ class StderrTomorrowTrainingProgress:
                 and self._last_emitted_at is not None
                 and now - self._last_emitted_at >= _HEARTBEAT_INTERVAL_SECONDS
             ):
-                self._emit(self._latest, now)
+                self._emit(replace(self._latest, state="running"), now)
 
     def _emit(self, progress: TomorrowTrainingProgress, now: float) -> None:
         percent = 100.0 if progress.total_units == 0 else progress.completed_units / progress.total_units * 100.0

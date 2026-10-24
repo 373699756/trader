@@ -236,7 +236,7 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
             if profile_root.exists():
                 if (profile_root / "model.json").exists() or (profile_root / "model.json").is_symlink():
                     raise ValueError("retired V1 model directory cannot be replaced")
-                _read_pair_directory(profile_root)
+                _require_replaceable_directory(profile_root)
                 os.replace(profile_root, previous)
                 old_moved = True
             new_moved = False
@@ -259,6 +259,20 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
     finally:
         if staging.exists():
             shutil.rmtree(staging)
+
+
+def _require_replaceable_directory(profile_root: Path) -> None:
+    """Check ownership without requiring obsolete or damaged models to load."""
+    for directory in profile_root.iterdir():
+        if (
+            directory.name not in {strategy.value for strategy in _STRATEGIES}
+            or directory.is_symlink()
+            or not directory.is_dir()
+        ):
+            raise ValueError("V1 model directory has unexpected entries")
+        for path in directory.iterdir():
+            if path.name not in {"model.json", "metadata.json"} or path.is_symlink() or not path.is_file():
+                raise ValueError("V1 head directory has unexpected entries")
 
 
 def ReadLearnedRankPair(model_root: Path) -> LearnedRankPair:

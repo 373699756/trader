@@ -69,6 +69,45 @@ def test_cache_hits_read_no_history_and_partial_failure_does_not_block_other_pro
     assert result.outcomes[1].result == rows
 
 
+@pytest.mark.parametrize("terminal", ("success", "failure", "cancelled"))
+def test_finished_profile_reports_once_before_other_profile_finishes(terminal):
+    notified = Event()
+    outcomes = []
+
+    def fast(_rows):
+        if terminal == "failure":
+            raise ValueError("publication_failed")
+        if terminal == "cancelled":
+            raise InterruptedError("cancelled")
+        return 42
+
+    def slow(_rows):
+        assert notified.wait(5), "V1 result was delayed until V5 completion"
+        assert [item.profile for item in outcomes] == ["v1"]
+        return 24
+
+    def report(outcome):
+        outcomes.append(outcome)
+        if outcome.profile == "v1":
+            notified.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        run = RunSelectedTrainingTasks(
+            (SelectedTrainingTask("v1", frozenset(), fast), SelectedTrainingTask("v5", frozenset(), slow)),
+            lambda _dates: pytest.fail("no history expected"),
+            executor,
+            lambda: False,
+            on_outcome=report,
+        )
+    assert tuple(outcomes) == run.outcomes
+    assert run.outcomes[1].result == 24
+    assert run.outcomes[0].cancelled == (terminal == "cancelled")
+    assert (
+        run.outcomes[0].failure
+        == {"success": None, "failure": "publication_failed", "cancelled": "cancelled"}[terminal]
+    )
+
+
 def test_cancellation_unblocks_bounded_producer_and_workers():
     cancelled = Event()
 
@@ -114,7 +153,10 @@ def test_atomic_memory_wait_cancel_release_and_oversize():
         pass
 
 
-def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("v1_status", ("engineering_ready", "failed"))
+def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
+    tmp_path, monkeypatch, capsys, v1_status
+):
     import json
 
     from tests.contract.test_cold_start import _empty_config
@@ -128,9 +170,30 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(t
     def train(request, executor):
         executors.append(executor._workers)
         assert executor._workers.status().workers == 2
-        future = executor.submit(lambda: V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0))
+        future = executor.submit(
+            lambda: V1TrainingResult(
+                v1_status,
+                "fixture",
+                "a" * 64,
+                0,
+                failure_reasons=("publication_failed",) if v1_status == "failed" else (),
+            )
+        )
+        outcomes = (
+            SelectedTrainingOutcome("v1", future.result()),
+            SelectedTrainingOutcome("v5", None, "dependency_missing"),
+        )
+        for outcome in outcomes:
+            request.on_outcome(outcome)
+        immediate = capsys.readouterr().err
+        assert (
+            "V1训练 | 1/1 (100.00%) | 完成" in immediate
+            if v1_status == "engineering_ready"
+            else "V1训练 | 0/1 (0.00%) | 失败 | 错误 publication_failed" in immediate
+        )
+        assert "V5训练 | 0/1 (0.00%) | 失败 | 错误 dependency_missing" in immediate
         return SelectedTrainingRun(
-            (SelectedTrainingOutcome("v1", future.result()), SelectedTrainingOutcome("v5", None, "dependency_missing")),
+            outcomes,
             1,
             123,
         )

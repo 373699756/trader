@@ -365,6 +365,101 @@ def test_v1_directory_publication_failure_preserves_previous_pair(
     assert blocked.status == "failed" and old_sample.read_bytes() == b"old"
 
 
+def test_retraining_replaces_obsolete_contract_and_reports_actual_fit_and_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.training.domain.v1 import learned_rank
+
+    history = _History()
+    model_root = tmp_path / "models"
+    with monkeypatch.context() as old_contract:
+        old_contract.setattr(learned_rank, "LEARNED_RANK_CONTRACT", "obsolete_fixture_contract")
+        old = RunV1Training(
+            lambda: history,
+            model_root,
+            history_root=tmp_path / "history",
+            sample_root=tmp_path / "samples",
+            settings=_settings(),
+        )
+        assert old.status == "engineering_ready", old.failure_reasons
+    with pytest.raises(ValueError, match="provenance"):
+        ReadLearnedRankPair(model_root)
+
+    events = []
+
+    class Progress:
+        def publish(self, event):
+            events.append(event)
+
+    result = RunV1Training(
+        lambda: history,
+        model_root,
+        history_root=tmp_path / "history",
+        sample_root=tmp_path / "samples",
+        settings=_settings(),
+        progress=Progress(),
+    )
+    assert result.status == "engineering_ready", result.failure_reasons
+    assert ReadLearnedRankPair(model_root).heads == result.heads
+    fitted = [event for event in events if event.stage == "model_fit" and event.state == "completed"]
+    assert [event.produced_units for event in fitted] == [1, 1]
+    assert [(event.stage, event.state, event.strategy) for event in events[-2:]] == [
+        ("artifact_publish", "started", None),
+        ("artifact_publish", "completed", None),
+    ]
+
+
+def test_publication_recovers_damaged_owned_files_but_preserves_unknown_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trader.training.infra.profile.v1 import models
+
+    model_root = tmp_path / "models"
+    result = RunV1Training(
+        _History,
+        model_root,
+        history_root=tmp_path / "history",
+        sample_root=tmp_path / "samples",
+        settings=_settings(),
+    )
+    assert result.status == "engineering_ready", result.failure_reasons
+    pair = ReadLearnedRankPair(model_root)
+    metadata = model_root / "v1/d25/metadata.json"
+    metadata.write_text("damaged", encoding="utf-8")
+    original_replace = models.os.replace
+
+    def fail_publication(source, destination):
+        if Path(source).name.startswith(".v1.publication.") and Path(destination) == model_root / "v1":
+            raise OSError("simulated publication failure")
+        original_replace(source, destination)
+
+    with monkeypatch.context() as failed_swap:
+        failed_swap.setattr(models.os, "replace", fail_publication)
+        with pytest.raises(OSError, match="simulated"):
+            PublishLearnedRankPair(model_root, pair)
+    assert metadata.read_text(encoding="utf-8") == "damaged"
+    PublishLearnedRankPair(model_root, pair)
+    assert ReadLearnedRankPair(model_root) == pair
+    metadata.unlink()
+    PublishLearnedRankPair(model_root, pair)
+    assert ReadLearnedRankPair(model_root) == pair
+    for path in (model_root / "v1/notes", model_root / "v1/d25/notes"):
+        path.write_text("unowned", encoding="utf-8")
+        with pytest.raises(ValueError, match="unexpected entries"):
+            PublishLearnedRankPair(model_root, pair)
+        assert path.read_text(encoding="utf-8") == "unowned"
+        path.unlink()
+    metadata.unlink()
+    target = tmp_path / "outside.json"
+    target.write_text("unowned", encoding="utf-8")
+    metadata.symlink_to(target)
+    with pytest.raises(ValueError, match="unexpected entries"):
+        PublishLearnedRankPair(model_root, pair)
+    assert metadata.is_symlink() and target.read_text(encoding="utf-8") == "unowned"
+    assert not any(path.is_dir() for path in model_root.glob(".v1.publication.*"))
+    assert not tuple(model_root.glob(".v1.previous.*"))
+
+
 def test_old_single_file_model_and_publication_lock_never_become_new_v1_models(tmp_path: Path) -> None:
     (tmp_path / "learned_rank").mkdir()
     (tmp_path / "learned_rank/model.json").write_text("{}", encoding="utf-8")

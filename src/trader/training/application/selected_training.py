@@ -51,19 +51,26 @@ def RunSelectedTrainingTasks(
     read_rows: Callable[[frozenset[date]], Iterator[HistoryTrainingRow]],
     executor: Executor,
     cancelled: Callable[[], bool],
+    *,
+    on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None = None,
 ) -> SelectedTrainingRun[ResultT]:
     if not tasks or len({task.profile for task in tasks}) != len(tasks):
         raise ValueError("training_requires_unique_selected_profiles")
-    return _TrainingFanout(tasks, executor, cancelled).execute(read_rows)
+    return _TrainingFanout(tasks, executor, cancelled, on_outcome).execute(read_rows)
 
 
 class _TrainingFanout(Generic[ResultT]):
     def __init__(
-        self, tasks: tuple[SelectedTrainingTask[ResultT], ...], executor: Executor, cancelled: Callable[[], bool]
+        self,
+        tasks: tuple[SelectedTrainingTask[ResultT], ...],
+        executor: Executor,
+        cancelled: Callable[[], bool],
+        on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None,
     ) -> None:
         self.tasks = tasks
         self.executor = executor
         self.cancelled = cancelled
+        self.on_outcome = on_outcome
         self.queues: tuple[Queue[tuple[HistoryTrainingRow, ...] | None], ...] = tuple(Queue(maxsize=2) for _ in tasks)
         self.stopped = Event()
         self.futures: list[Future[SelectedTrainingOutcome[ResultT]]] = []
@@ -85,12 +92,15 @@ class _TrainingFanout(Generic[ResultT]):
         try:
             if self.cancelled():
                 raise InterruptedError("selected_training_cancelled")
-            return SelectedTrainingOutcome(task.profile, task.execute(self._receive(self.queues[index])))
+            outcome = SelectedTrainingOutcome(task.profile, task.execute(self._receive(self.queues[index])))
         except InterruptedError:
-            return SelectedTrainingOutcome(task.profile, None, "cancelled", True)
+            outcome = SelectedTrainingOutcome(task.profile, None, "cancelled", True)
         except (OSError, RuntimeError, ValueError, ImportError) as exc:
             reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-            return SelectedTrainingOutcome(task.profile, None, reason or type(exc).__name__)
+            outcome = SelectedTrainingOutcome(task.profile, None, reason or type(exc).__name__)
+        if self.on_outcome is not None:
+            self.on_outcome(outcome)
+        return outcome
 
     def _send(self, index: int, batch: tuple[HistoryTrainingRow, ...] | None) -> None:
         while not self.futures[index].done():

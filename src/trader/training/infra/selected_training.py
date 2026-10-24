@@ -17,6 +17,7 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.training.application.resources import TrainingMemoryAdmission
 from trader.training.application.selected_training import (
     RunSelectedTrainingTasks,
+    SelectedTrainingOutcome,
     SelectedTrainingRun,
     SelectedTrainingTask,
     TrainingLocations,
@@ -61,6 +62,7 @@ class SelectedTrainingRequest:
     cancelled: Callable[[], bool]
     memory_admission: TrainingMemoryAdmission
     paths: TrainingLocations
+    on_outcome: Callable[[SelectedTrainingOutcome[SelectedProfileResult]], None] | None = None
 
 
 def TrainSelectedProfiles(
@@ -92,7 +94,7 @@ def TrainSelectedProfiles(
                 source_rows(readable), tuple(sorted(readable)), archive.snapshot.listing_intervals
             )
 
-        run = RunSelectedTrainingTasks(tasks, read_rows, executor, request.cancelled)
+        run = RunSelectedTrainingTasks(tasks, read_rows, executor, request.cancelled, on_outcome=request.on_outcome)
         return replace(run, history_rows_read=physical_rows)
 
 

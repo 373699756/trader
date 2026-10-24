@@ -145,6 +145,7 @@ def RunV1Training(
                                 )
                             )
                         _progress(progress, "model_fit", "completed", strategy)
+                _progress(progress, "artifact_publish", "started", None)
                 pair = LearnedRankPair(
                     snapshot.active_snapshot_hash,
                     snapshot.source_identity_hash,
@@ -155,7 +156,7 @@ def RunV1Training(
                 )
                 CheckV1Cancellation(cancel_requested)
                 PublishLearnedRankPair(model_root, pair)
-                _progress(progress, "artifact_publish", "completed", Strategy.D25)
+                _progress(progress, "artifact_publish", "completed", None)
         return V1TrainingResult(
             "engineering_ready", run_id, input_hash, peak_bytes, tuple(heads), counts, coverage=coverage
         )
@@ -180,10 +181,15 @@ def _progress(
     progress: TomorrowTrainingProgressPort | None,
     stage: TomorrowTrainingStage,
     state: TomorrowTrainingProgressState,
-    strategy: Strategy,
+    strategy: Strategy | None,
 ) -> None:
     if progress is not None:
-        progress.publish(TomorrowTrainingProgress(stage, state, int(state == "completed"), 1, strategy=strategy))
+        completed = int(state == "completed")
+        progress.publish(
+            TomorrowTrainingProgress(
+                stage, state, completed, 1, produced_units=completed if stage == "model_fit" else 0, strategy=strategy
+            )
+        )
 
 
 __all__ = ["RunV1Training", "V1TrainingResult"]

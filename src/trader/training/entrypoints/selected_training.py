@@ -14,7 +14,7 @@ from trader.infra.shutdown import ShutdownSignalController
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingMemoryAdmission
-from trader.training.application.selected_training import TrainingLocations
+from trader.training.application.selected_training import SelectedTrainingOutcome, TrainingLocations
 from trader.training.entrypoints.profile_training import (
     CancellableTrainingProgress,
     ProjectLearnedRankTrainingResult,
@@ -27,7 +27,11 @@ from trader.training.infra.history.history_training_projection import ProjectHea
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from trader.training.infra.selected_training import SelectedTrainingRequest, TrainSelectedProfiles
+from trader.training.infra.selected_training import (
+    SelectedProfileResult,
+    SelectedTrainingRequest,
+    TrainSelectedProfiles,
+)
 
 
 def RunSelectedTraining(
@@ -47,15 +51,31 @@ def RunSelectedTraining(
     try:
         executor.start()
         with ExitStack() as scope:
-            progresses = tuple(
-                CancellableTrainingProgress(
-                    scope.enter_context(StderrTomorrowTrainingProgress(command_label=f"{profile.upper()}训练")),
-                    cancelled.is_set,
-                )
+            outputs = tuple(
+                scope.enter_context(StderrTomorrowTrainingProgress(command_label=f"{profile.upper()}训练"))
                 for profile in profiles
             )
+            progresses = tuple(CancellableTrainingProgress(output, cancelled.is_set) for output in outputs)
+
+            def report_outcome(outcome: SelectedTrainingOutcome[SelectedProfileResult]) -> None:
+                output = outputs[profiles.index(outcome.profile)]
+                result = outcome.result
+                if outcome.cancelled:
+                    output.publish_cancelled()
+                elif result is None:
+                    output.publish_result("failed", outcome.failure)
+                else:
+                    reasons = (
+                        tuple(reason for head in result.heads for reason in head.failure_reasons)
+                        if isinstance(result, TrainingRunResult)
+                        else result.failure_reasons
+                    )
+                    output.publish_result(result.status, "; ".join(dict.fromkeys(reasons)) or None)
+
             run = TrainSelectedProfiles(
-                SelectedTrainingRequest(runtime, profiles, progresses, cancelled.is_set, memory_admission, paths),
+                SelectedTrainingRequest(
+                    runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome
+                ),
                 WorkerFutureExecutor(executor),
             )
         codes: list[int] = []
