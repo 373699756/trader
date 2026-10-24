@@ -86,7 +86,7 @@
           <span>评分档位</span>
           <div class="profile-tabs" role="tablist" aria-label="评分档位">
             {% for profile in scoring_profiles %}
-            <button class="profile-tab{% if profile == default_scoring_profile %} is-active{% endif %}" type="button" role="tab" data-profile="{{ profile }}" aria-selected="{% if profile == default_scoring_profile %}true{% else %}false{% endif %}">{{ profile|upper }}{% if profile == 'v1' %} · Shadow{% endif %}</button>
+            <button class="profile-tab{% if profile == default_scoring_profile %} is-active{% endif %}" type="button" role="tab" data-profile="{{ profile }}" aria-selected="{% if profile == default_scoring_profile %}true{% else %}false{% endif %}">{{ profile|upper }}{% if profile in ('v1', 'v5') %} · Shadow{% endif %}</button>
             {% endfor %}
           </div>
         </div>

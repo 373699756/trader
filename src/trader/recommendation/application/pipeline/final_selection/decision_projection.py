@@ -212,6 +212,9 @@ def BuildScoredLocal(
     minimum_history_sessions = (
         model_scoring.history_required_sessions(strategy) if model_scoring is not None and uses_model else 20
     )
+    production_authority = (profile_status is None or profile_status.production_authority) and (
+        model_batch is None or model_batch.production_authority
+    )
     if learned_rank and (
         model_batch is None
         or model_batch.score_scale != "learned_rank_percentile_0_100"
@@ -304,9 +307,17 @@ def BuildScoredLocal(
     selection = ApplySelectionRisks(
         selection, policy.risk_rules, policy.fusion.local_risk_cap, native_input.evaluated_at, strategy
     )
-    if learned_rank and model_batch is not None:
+    if not production_authority:
         ranked = {
-            item.code: replace(item, ranking_score=model_batch.diagnostics[item.code].signal_score, shadow_only=True)
+            item.code: replace(
+                item,
+                ranking_score=(
+                    model_batch.diagnostics[item.code].signal_score
+                    if learned_rank and model_batch is not None
+                    else item.ranking_score
+                ),
+                shadow_only=True,
+            )
             for item in selection.scored_candidates
         }
         selection = replace(
@@ -339,7 +350,7 @@ def BuildScoredLocal(
         ),
     )
     fixed = FixScoredSeats(risk_stage, decision_policy, native_input.evaluated_at, runtime.monotonic)
-    candidates = SelectScoredReviewCandidates(fixed.records, decision_policy)
+    candidates = SelectScoredReviewCandidates(fixed.records, decision_policy) if production_authority else ()
     input_version = native_input.input_version
     decision_request = ScoredDecisionRequest(
         selection=selection,
@@ -396,7 +407,7 @@ def BuildScoredLocal(
                 score_scale=model_batch.score_scale if model_batch is not None else WEIGHTED_EVIDENCE_SCORE_SCALE,
                 score_model_id=model_batch.score_model_id if model_batch is not None else None,
                 score_contract_hash=model_batch.score_contract_hash if model_batch is not None else None,
-                production_authority=model_batch.production_authority if model_batch is not None else True,
+                production_authority=production_authority,
                 rank_population_version=model_batch.rank_population_version if model_batch is not None else None,
             ),
         ),
@@ -407,7 +418,7 @@ def BuildScoredLocal(
         score_scale=model_batch.score_scale if model_batch is not None else WEIGHTED_EVIDENCE_SCORE_SCALE,
         score_model_id=model_batch.score_model_id if model_batch is not None else None,
         score_contract_hash=model_batch.score_contract_hash if model_batch is not None else None,
-        production_authority=model_batch.production_authority if model_batch is not None else True,
+        production_authority=production_authority,
         rank_population_version=model_batch.rank_population_version if model_batch is not None else None,
     )
 

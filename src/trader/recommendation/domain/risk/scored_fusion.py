@@ -589,7 +589,9 @@ def _action_for(
         if downside.status == "observe":
             return RecommendationAction.OBSERVE, f"downside_guard:{','.join(downside.reasons)}"
         if evaluation.shadow_only:
-            return RecommendationAction.OBSERVE, "learned_rank_shadow_only"
+            return RecommendationAction.OBSERVE, (
+                "learned_rank_shadow_only" if evaluation.ranking_score is not None else "engineering_shadow_only"
+            )
         return RecommendationAction.EXECUTABLE, "score_threshold_met"
     return RecommendationAction.OBSERVE, "near_score_threshold"
 

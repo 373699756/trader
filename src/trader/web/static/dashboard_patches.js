@@ -325,7 +325,7 @@
     if (presentation.shadow) {
       return {
         level: payload.stale || degraded ? "warning" : "idle",
-        message: `Shadow · 模型排序仅供观察，尚无生产授权，不计入正式推荐业绩${payload.stale ? " · 行情已过期" : ""}${degraded ? ` · 降级：${degraded}` : ""}`,
+        message: `Shadow · ${presentation.learnedRank ? "模型排序" : "本地评分"}仅供观察，尚无生产授权，不计入正式推荐业绩${payload.stale ? " · 行情已过期" : ""}${degraded ? ` · 降级：${degraded}` : ""}`,
       };
     }
     const unreviewed = presentation.learnedRank ? "模型排序，未使用风险复核" : "仅本地评分";

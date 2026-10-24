@@ -28,6 +28,7 @@ from trader.recommendation.domain.market.v1.features import (
     LearnedRankDailyPoint,
 )
 from trader.recommendation.domain.market.v5.features import (
+    SEQUENCE_STEPS,
     CalculatePriceVolumeSequence,
     ModelPriceVolumeSequence,
     PriceVolumePoint,
@@ -515,7 +516,8 @@ class PublishedHistoryCache:
         if entry is None:
             return ModelHistoryQuality("history_invalid_prices")
         failure = None
-        if entry.context.sample_count < self._lookback_sessions:
+        required_sessions = SEQUENCE_STEPS + 1 if self._sequence_inputs else self._lookback_sessions
+        if entry.context.sample_count < required_sessions:
             failure = "history_window_insufficient"
         elif entry.context.latest_trade_date > day.isoformat():
             failure = "history_model_date_mismatch"

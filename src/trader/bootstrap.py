@@ -683,6 +683,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         context,
         RuntimePublicationDependencies(persistence.sequence, persistence.records, market_data, persistence.outcomes),
         publication_io=publication_io,
+        production_authority=bool((profile_status := model_scoring.status()) and profile_status.production_authority),
     )
     native_data = source_router.MarketInputCoordinator(
         market_data,
@@ -1119,10 +1120,9 @@ def _build_publication(
     dependencies: RuntimePublicationDependencies,
     *,
     publication_io: PublicationIoTracker,
+    production_authority: bool,
 ) -> RuntimePublicationContext:
-    settings = context.settings
-    records = dependencies.records
-    market_data = dependencies.market_data
+    settings, records, market_data = context.settings, dependencies.records, dependencies.market_data
     tomorrow_decisions = UnifiedDecisionIndex()
     decision_drafts = UnifiedDecisionDraftIndex()
     decision_events = UnifiedDecisionEventStream(
@@ -1143,16 +1143,16 @@ def _build_publication(
         thread_name="trader-decision-observer",
         prepare=DecisionObservation.materialize,
     )
-    runtime_identity = DecisionRuntimeIdentity(
-        context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
-    )
     freezer = partial(
         ScoredFreezeCoordinator,
         tomorrow_decisions,
         records,
         clock,
-        runtime_identity=runtime_identity,
+        runtime_identity=DecisionRuntimeIdentity(
+            context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
+        ),
         publication_io=publication_io,
+        production_authority=production_authority,
     )
     tomorrow_freezer = freezer(strategy=Strategy.TOMORROW)
     d25_freezer = freezer(strategy=Strategy.D25)

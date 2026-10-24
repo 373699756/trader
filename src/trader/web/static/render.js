@@ -41,6 +41,7 @@
     outside_execution_window: "当前不在执行时段",
     score_threshold_met: "评分达到执行门槛",
     near_score_threshold: "接近执行门槛，继续观察",
+    engineering_shadow_only: "工程验证阶段，仅供观察",
     below_score_threshold: "评分未达到执行门槛",
     model_net_utility_non_positive: "成本后净超额未转正",
     board_concentration_limit: "超过板块集中度上限",
@@ -263,7 +264,7 @@
       && versions.score_scale === "learned_rank_percentile_0_100");
     return {
       learnedRank,
-      shadow: learnedRank && versions.execution_mode === "shadow",
+      shadow: Boolean(snapshot && snapshot.strategy !== "long" && versions.execution_mode === "shadow"),
       finalLabel: learnedRank ? "模型排序分" : "最终评分",
     };
   }

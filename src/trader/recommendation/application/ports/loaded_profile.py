@@ -326,6 +326,10 @@ class ScoringProfileRuntimeStatus:
             raise ValueError("scoring profile runtime heads are invalid")
         object.__setattr__(self, "heads", MappingProxyType(heads))
 
+    @property
+    def production_authority(self) -> bool:
+        return all(head.production_authority for head in self.heads.values())
+
 
 class ScoringCapabilityPort(Protocol):
     @property

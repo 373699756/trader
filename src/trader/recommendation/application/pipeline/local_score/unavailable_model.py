@@ -48,7 +48,7 @@ class UnavailableModelCapability:
             automatic_model_update=False,
             loss_probability_status="not_modeled",
             score_scale=LEARNED_RANK_SCORE_SCALE if self.profile_id == "v1" else WEIGHTED_EVIDENCE_SCORE_SCALE,
-            production_authority=self.profile_id != "v1",
+            production_authority=self.profile_id not in {"v1", "v5"},
         )
 
 

@@ -13,8 +13,11 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringContext,
     ModelScoringDeadlineError,
 )
+from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
+from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 
@@ -108,3 +111,83 @@ def test_v5_late_batch_does_not_publish_a_result(application_feature_factory):
         service.score((feature,), context=ModelScoringContext(time_budget_seconds=1))
     assert predictor.calls == 1
     assert service.computation_status().deadline_abandon_reason == "completed_after_batch_prediction_deadline"
+
+
+@pytest.mark.parametrize(
+    "invalid_input", ("missing_sequence", "wrong_code", "same_day", "missing_auxiliary", "history_failure", "industry")
+)
+def test_v5_ineligible_peer_cannot_change_cost_population_or_receive_prediction(
+    application_feature_factory, invalid_input
+):
+    class IndustryPredictor(_SequencePredictor):
+        exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
+        industry_ids = ("C39",)
+        predicted = 0.0025
+
+    predictor = IndustryPredictor()
+    service = ProductionModelScoringService(
+        profile_for(predictor), Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0)
+    )
+    dates = tuple(NOW.date() - timedelta(days=61 - i) for i in range(61))
+    industry = ModelIndustryReference("C39", "证监会行业分类", NOW.date(), "fixture", "industry")
+    candidate, peer = tuple(
+        replace(
+            _model_feature(application_feature_factory(code, NOW), offset=index * 0.01, amihud=index + 1),
+            model_sequence=ModelPriceVolumeSequence(code, dates, (0.01,) * 360, "publication"),
+            model_industry=industry,
+        )
+        for index, code in enumerate(("600000", "600001"))
+    )
+    if invalid_input == "missing_sequence":
+        peer = replace(peer, model_sequence=None)
+    elif invalid_input == "wrong_code":
+        peer = replace(peer, model_sequence=replace(peer.model_sequence, code="600002"))
+    elif invalid_input == "same_day":
+        peer = replace(
+            peer, model_sequence=replace(peer.model_sequence, dates=tuple(day + timedelta(days=1) for day in dates))
+        )
+    elif invalid_input == "missing_auxiliary":
+        peer = replace(peer, values={**peer.values, "qfq_return_1d": None})
+    elif invalid_input == "history_failure":
+        peer = replace(peer, model_history_quality=ModelHistoryQuality("history_model_date_mismatch"))
+    else:
+        peer = replace(peer, model_industry=replace(industry, industry_id="C38"))
+    assert service.is_input_eligible(candidate)
+    assert not service.is_input_eligible(peer)
+    baseline = service.score((candidate,), context=ModelScoringContext(population_features=(candidate,)))
+    mixed = service.score((candidate, peer), context=ModelScoringContext(population_features=(candidate, peer)))
+    assert mixed.predictions == baseline.predictions
+    assert mixed.diagnostics == baseline.diagnostics
+    assert mixed.cost_reference_version == baseline.cost_reference_version
+    assert mixed.missing_codes == (peer.quote.code,)
+    assert mixed.diagnostics[candidate.quote.code].predicted_net_excess_pct < 0
+    no_reference = service.score((candidate,), context=ModelScoringContext(population_features=(peer,)))
+    assert not no_reference.predictions
+    assert no_reference.missing_codes == (candidate.quote.code,)
+
+
+@pytest.mark.parametrize("profile_id", ("v2", "v3", "v5"))
+def test_model_status_and_nonempty_empty_missing_batches_keep_explicit_authority(
+    application_feature_factory, profile_id
+):
+    predictor = _SequencePredictor() if profile_id == "v5" else _Predictor()
+    predictor.profile_id = profile_id
+    profile = profile_for(predictor)
+    head = profile.heads[Strategy.TOMORROW]
+    authority = profile_id != "v5"
+    profile = replace(
+        profile,
+        heads={Strategy.TOMORROW: replace(head, evidence=replace(head.evidence, production_authority=authority))},
+    )
+    service = ProductionModelScoringService(profile, Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0))
+    dates = tuple(NOW.date() - timedelta(days=61 - i) for i in range(61))
+    feature = replace(
+        _model_feature(application_feature_factory("600000", NOW), offset=0, amihud=1),
+        model_sequence=ModelPriceVolumeSequence("600000", dates, (0.01,) * 360, "publication"),
+    )
+    missing = replace(feature, values={**feature.values, "qfq_return_1d": None})
+    assert service.status().production_authority is authority
+    for features in ((feature,), (), (missing,)):
+        batch = service.score(features)
+        assert batch.production_authority is authority
+        assert service.score(features).production_authority is authority

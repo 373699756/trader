@@ -276,6 +276,12 @@ class ScoredDecision:
         selected = sorted((item for item in items if item.selected), key=lambda item: item.rank)
         if [item.rank for item in selected] != list(range(1, len(selected) + 1)):
             raise ValueError("selected decision ranks must be contiguous")
+        if dict(versions).get("execution_mode") == "shadow" and (
+            dict(versions).get("production_authority") != "false"
+            or self.is_formal
+            or any(item.action is RecommendationAction.EXECUTABLE for item in items)
+        ):
+            raise ValueError("shadow identity cannot grant production authority or executable actions")
         learned_rank = dict(versions).get("score_scale") == LEARNED_RANK_SCORE_SCALE
         if learned_rank:
             if (

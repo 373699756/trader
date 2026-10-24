@@ -340,6 +340,7 @@ class ProductionModelScoringService:
             training_anchor=evidence.training_anchor,
             runtime_anchor=evidence.runtime_anchor,
             point_in_time_parity=evidence.point_in_time_parity,
+            production_authority=evidence.production_authority,
         )
 
     def computation_status(self) -> ModelComputationStatus:
@@ -389,11 +390,7 @@ class ProductionModelScoringService:
         population.update((feature.quote.code, feature) for feature in features)
         rows_started = self._monotonic()
         prepared_rows = self._shared_features.prepare_rows(
-            tuple(
-                feature
-                for feature in population.values()
-                if self._predictor.profile_id != "v5" or _valid_sequence(feature)
-            ),
+            self._input_population(tuple(population.values())),
             self._row_contract,
         )
         rows, missing_population_codes = prepared_rows.rows, prepared_rows.missing_codes
@@ -413,9 +410,9 @@ class ProductionModelScoringService:
         )
         requested_codes.difference_update(missing_codes)
         if self._predictor.profile_id == "v5":
-            sequence_missing = {code for code in requested_codes if not _valid_sequence(population[code])}
-            missing_codes = tuple(sorted(set(missing_codes) | sequence_missing))
-            requested_codes.difference_update(sequence_missing)
+            input_missing = {code for code in requested_codes if not self.is_input_eligible(population[code])}
+            missing_codes = tuple(sorted(set(missing_codes) | input_missing))
+            requested_codes.difference_update(input_missing)
         codes = tuple(row.code for row in rows)
         if len(codes) != len(set(codes)):
             raise ValueError(f"{self._strategy.value} model scoring candidates must be unique")
@@ -573,7 +570,14 @@ class ProductionModelScoringService:
             if row.code in requested_codes
             and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
         )
-        batch = _score_predictions(self.model_version, predictions, costs, missing_codes, cost_reference.version)
+        batch = _score_predictions(
+            self.model_version,
+            predictions,
+            costs,
+            missing_codes,
+            cost_reference.version,
+            production_authority=self._evidence.production_authority,
+        )
         deadline.require_time("completed_after_score_projection_deadline")
         self._state = _ModelComputationState(
             revisions,
@@ -595,11 +599,17 @@ class ProductionModelScoringService:
         )
         return batch
 
+    def _input_population(self, features: tuple[FeatureSnapshot, ...]) -> tuple[FeatureSnapshot, ...]:
+        if self._predictor.profile_id != "v5":
+            return features
+        return tuple(feature for feature in features if self.is_input_eligible(feature))
+
     def _cost_reference(
         self,
         features: tuple[FeatureSnapshot, ...],
         population_identity: str,
     ) -> _CostReference:
+        features = self._input_population(features)
         rows = self._shared_features.prepare_rows(features, self._row_contract).rows
         eligible = tuple(
             row for row in rows if not self._exposure_contract.requires_industry or row.industry in self._industry_ids
@@ -717,9 +727,18 @@ def _score_predictions(
     costs: tuple[float, ...],
     missing_codes: tuple[str, ...],
     cost_reference_version: str,
+    *,
+    production_authority: bool = True,
 ) -> ModelScoreBatch:
     if not predictions:
-        return ModelScoreBatch(model_version, {}, (), missing_codes, cost_reference_version)
+        return ModelScoreBatch(
+            model_version,
+            {},
+            (),
+            missing_codes,
+            cost_reference_version,
+            production_authority=production_authority,
+        )
     utilities = tuple(
         prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
     )
@@ -744,7 +763,14 @@ def _score_predictions(
             predicted_net_excess_pct=net_pct,
             model_disagreement_pct=None,
         )
-    return ModelScoreBatch(model_version, diagnostics, predictions, missing_codes, cost_reference_version)
+    return ModelScoreBatch(
+        model_version,
+        diagnostics,
+        predictions,
+        missing_codes,
+        cost_reference_version,
+        production_authority=production_authority,
+    )
 
 
 def _row_identity(feature: FeatureSnapshot, contract: _ModelRowContract) -> _ModelRowIdentity:

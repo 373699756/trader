@@ -69,10 +69,11 @@ def _evidence(bundle: TrainedHeadModelBundle) -> ProfileEvidence:
     return ProfileEvidence(
         bundle.historical_status,
         bundle.historical_failure_reasons,
-        "manual_user_override",
+        "trained_artifact" if bundle.serialization_profile_id == "v5" else "manual_user_override",
         training_anchor=bundle.training_anchor,
         runtime_anchor=bundle.runtime_anchor,
         point_in_time_parity=bundle.point_in_time_parity,
+        production_authority=bundle.serialization_profile_id != "v5",
     )
 
 

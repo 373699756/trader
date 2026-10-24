@@ -69,6 +69,7 @@ class ScoredFreezeCoordinator:
         runtime_identity: DecisionRuntimeIdentity,
         strategy: Strategy = Strategy.TOMORROW,
         publication_io: PublicationIoTracker | None = None,
+        production_authority: bool = True,
     ) -> None:
         self._index = index
         self._records = records
@@ -76,6 +77,7 @@ class ScoredFreezeCoordinator:
         self._runtime_identity = runtime_identity
         self._strategy = strategy
         self._publication_io = publication_io
+        self._production_authority = production_authority
 
     def freeze_scheduled(self) -> FreezeOperationResult:
         now = _now(self._clock)
@@ -85,6 +87,8 @@ class ScoredFreezeCoordinator:
         existing = self._existing(now.date())
         if existing is not None:
             return existing
+        if not self._production_authority:
+            return FreezeOperationResult("shadow_only")
         checkpoint, checkpoint_failed = self._checkpoint(now.date(), boundary)
         current = self._current(now.date())
         if current is not None and IsShadowDecision(current):
@@ -135,6 +139,8 @@ class ScoredFreezeCoordinator:
         existing = self._existing(now.date())
         if existing is not None:
             return existing
+        if not self._production_authority:
+            return FreezeOperationResult("shadow_only")
         rejection = self._close_rejection(
             decision,
             recovery_path=recovery_path,
