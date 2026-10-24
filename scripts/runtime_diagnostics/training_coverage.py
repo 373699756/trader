@@ -9,7 +9,8 @@ from datetime import date
 from pathlib import Path
 
 from trader.infra.settings import LoadRuntimeSettings
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession
+from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
 from .reporting import emit_report
@@ -19,6 +20,9 @@ def _audit(path: Path) -> dict[str, object]:
     with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=10, cache_kib=8192)) as connection:
         connection.run("PRAGMA query_only=ON")
         connection.run("PRAGMA cache_size=-8192")
+        tables = {str(row[0]) for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
+        if {"sample_statistics", "sample_day_diagnostics"}.issubset(tables):
+            return _audit_statistics(connection)
         days = connection.run("SELECT trade_date,split_name FROM sample_split_dates ORDER BY trade_date").fetchall()
         missing: list[dict[str, object]] = []
         for day, partition in days:
@@ -30,7 +34,7 @@ def _audit(path: Path) -> dict[str, object]:
             counts = connection.run(
                 "SELECT COUNT(*),COUNT(target_t1),COUNT(target_d25_aggregate) FROM samples WHERE trade_date=?",
                 (day,),
-            ).fetchone()
+            ).require_one()
             if counts[1] == 0 or counts[2] == 0:
                 missing.append(
                     {
@@ -42,6 +46,50 @@ def _audit(path: Path) -> dict[str, object]:
                     }
                 )
         return {"expected_dates": len(days), "missing": missing}
+
+
+def _audit_statistics(connection: SqliteConnection) -> dict[str, object]:
+    rows = connection.run(
+        "SELECT d.trade_date,d.split_name,"
+        "COALESCE(SUM(CASE WHEN s.target='rows' THEN s.rows END),0),"
+        "COALESCE(SUM(CASE WHEN s.target='target_t1' THEN s.rows END),0),"
+        "COALESCE(SUM(CASE WHEN s.target='target_d25_aggregate' THEN s.rows END),0) "
+        "FROM sample_split_dates d LEFT JOIN sample_statistics s ON s.trade_date=d.trade_date "
+        "GROUP BY d.trade_date ORDER BY d.trade_date"
+    ).fetchall()
+    missing = [
+        {"date": day, "partition": partition, "sample_rows": samples, "t1_rows": t1, "d25_rows": d25}
+        for day, partition, samples, t1, d25 in rows
+        if not t1 or not d25
+    ]
+    projected = []
+    for partition, expected, diagnosed, t1_dates, d25_dates, t1_rows, d25_rows in connection.run(
+        "SELECT d.split_name,COUNT(*),COUNT(g.trade_date),"
+        "SUM(CASE WHEN g.candidates>g.missing_t1 THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN g.candidates>g.missing_t2+g.missing_t3+g.missing_t4+g.missing_t5 THEN 1 ELSE 0 END),"
+        "SUM(MAX(0,COALESCE(g.candidates-g.missing_t1,0))),"
+        "SUM(MAX(0,COALESCE(g.candidates-g.missing_t2-g.missing_t3-g.missing_t4-g.missing_t5,0))) "
+        "FROM sample_split_dates d LEFT JOIN sample_day_diagnostics g ON g.trade_date=d.trade_date "
+        "GROUP BY d.split_name ORDER BY MIN(d.trade_date)"
+    ):
+        projected.append(
+            {
+                "partition": partition,
+                "expected_dates": expected,
+                "diagnosed_dates": diagnosed,
+                "effective_t1_dates": t1_dates,
+                "minimum_effective_d25_dates": d25_dates,
+                "eligible_t1_rows": t1_rows,
+                "minimum_eligible_d25_rows": d25_rows,
+            }
+        )
+    return {
+        "expected_dates": len(rows),
+        "missing": missing,
+        "observed_label_contract": TRAINING_LABEL_BENCHMARK_CONTRACT,
+        "observed_label_projection": projected,
+        "projection_is_training_result": False,
+    }
 
 
 def _trace_labels(history: Path, path: Path, signal: date) -> dict[str, object]:
@@ -89,7 +137,7 @@ def _trace_labels(history: Path, path: Path, signal: date) -> dict[str, object]:
         "horizons": horizons,
         "source_active_writes": 0,
         "price_scan_passes": 1,
-        "interpretation": "fixed_signal_population; estimated_or_absent_future_prices_cannot_supply_labels",
+        "interpretation": "observed_t1_sample_population; observed_returns_only_per_horizon; estimates_cannot_supply_labels",
     }
 
 

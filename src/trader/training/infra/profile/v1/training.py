@@ -37,6 +37,7 @@ from trader.training.infra.profile.v1.samples import (
     BuildLearnedRankSamples,
     CheckV1Cancellation,
     LearnedRankInputPort,
+    LearnedRankPartitionCoverage,
     LearnedRankSampleCounts,
     LearnedRankSampleIndex,
     LearnedRankSampleStream,
@@ -53,6 +54,7 @@ class V1TrainingResult:
     heads: tuple[LearnedRankHead, ...] = ()
     sample_counts: LearnedRankSampleCounts | None = None
     failure_reasons: tuple[str, ...] = ()
+    coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
 
 
 def RunV1Training(
@@ -73,6 +75,7 @@ def RunV1Training(
     counts: LearnedRankSampleCounts | None = None
     peak_bytes = 0
     heads: list[LearnedRankHead] = []
+    coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
     try:
         with (
             HistoryMaintenanceLock(history_root.with_name(".history.lock")) if aligned_rows is None else nullcontext(),
@@ -99,6 +102,19 @@ def RunV1Training(
                         stream=LearnedRankSampleStream(progress, cancel_requested, aligned_rows),
                     )
                     peak_bytes = sample_path.stat().st_size
+                    coverage = index.coverage(splits)
+                    failures = tuple(
+                        f"learned_rank_sample_partition_empty:{item.strategy.value}:{item.partition}"
+                        if item.rows == 0
+                        else f"learned_rank_training_rows_insufficient:{item.strategy.value}:{item.partition}"
+                        for item in coverage
+                        if item.rows == 0
+                        or (item.partition == "fitting" and item.rows < settings.minimum_training_rows)
+                    )
+                    if failures:
+                        return V1TrainingResult(
+                            "failed", run_id, input_hash, peak_bytes, (), counts, failures, coverage
+                        )
                 if memory_admission is not None:
                     fitting_resources.enter_context(
                         memory_admission.reserve(
@@ -140,11 +156,24 @@ def RunV1Training(
                 CheckV1Cancellation(cancel_requested)
                 PublishLearnedRankPair(model_root, pair)
                 _progress(progress, "artifact_publish", "completed", Strategy.D25)
-        return V1TrainingResult("engineering_ready", run_id, input_hash, peak_bytes, tuple(heads), counts)
+        return V1TrainingResult(
+            "engineering_ready", run_id, input_hash, peak_bytes, tuple(heads), counts, coverage=coverage
+        )
     except InterruptedError:
         raise
     except (OSError, RuntimeError, ValueError, sqlite3.Error, LightGBMError, np.linalg.LinAlgError) as exc:
-        return V1TrainingResult("failed", run_id, input_hash, peak_bytes, (), counts, (type(exc).__name__,))
+        reason = str(exc)
+        known_reasons = {
+            "learned_rank_calendar_insufficient",
+            "learned_rank_sample_partition_empty",
+            "learned_rank_training_rows_insufficient",
+            "learned_rank_validation_predictions_invalid",
+            "learned-rank prediction metrics are invalid",
+            "learned-rank head is invalid",
+            "learned-rank pair provenance is invalid",
+        }
+        failure = reason if reason in known_reasons else type(exc).__name__
+        return V1TrainingResult("failed", run_id, input_hash, peak_bytes, (), counts, (failure,), coverage)
 
 
 def _progress(

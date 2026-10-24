@@ -11,6 +11,7 @@ from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNM
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
 
 
 @dataclass(frozen=True)
@@ -201,7 +202,7 @@ LEARNED_RANK_CONTRACT = (
     LEARNED_RANK_FEATURE_IDS,
     HISTORY_ALIGNMENT_CONTRACT,
     "previous_251_market_sessions_qfq_close_nonnegative_amount",
-    "same_day_equal_weight_gross_excess_close_proxy",
+    TRAINING_LABEL_BENCHMARK_CONTRACT,
     "tomorrow_t1_d25_mean_t2_t3_t4_t5",
     "daily_average_tie_relevance_0_4_linear_gain",
     "daily_equal_weight_inverse_query_size_no_lambda_normalization",

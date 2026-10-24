@@ -561,7 +561,7 @@ def test_training_exposure_features_do_not_change_when_peer_future_label_is_miss
     after = _finalize_sample_day(samples, V2_TRAINING_PROFILE)
 
     assert len(before) == 3 and len(after) == 3
-    assert all(item.targets[0] is None for item in after)
+    assert tuple(item.targets[0] for item in after) == (0.0, 0.0, None)
     assert all(item.targets[-1] is not None for item in after)
     assert before[0].features == after[0].features
 

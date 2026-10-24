@@ -6,9 +6,17 @@ import pytest
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.market.history_alignment import AlignMarketSession, MarketDailyObservation
 from trader.recommendation.domain.market.v5.features import CalculatePriceVolumeSequence, PriceVolumePoint
+from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.sample_builder import _finalize_sample_day, _PendingSample
+
+
+def test_observed_training_benchmark_never_fills_missing_or_accepts_invalid_returns():
+    assert ObservedTrainingBenchmark((None, None)) is None
+    assert ObservedTrainingBenchmark((0.2, None, -0.1)) == pytest.approx(0.05)
+    with pytest.raises(ValueError, match="non_finite"):
+        ObservedTrainingBenchmark((0.1, float("nan")))
 
 
 def test_forward_valuation_preserves_dates_and_never_promotes_estimates_to_labels():
@@ -74,7 +82,7 @@ def test_v5_zero_flow_session_has_a_real_position_in_the_sequence():
     assert len(sequence.values) == 360
 
 
-def test_d25_survives_unavailable_t1_and_benchmark_population_stays_fixed():
+def test_d25_survives_unavailable_t1_and_other_stocks_keep_observed_targets():
     first = _PendingSample(
         "600001",
         date(2026, 10, 19),
@@ -89,6 +97,38 @@ def test_d25_survives_unavailable_t1_and_benchmark_population_stays_fixed():
     second = replace(first, code="600002", future_returns=[0.1, 0.1, 0.2, 0.3, 0.4])
     samples = _finalize_sample_day((first, second), V3_TRAINING_PROFILE)
     assert len(samples) == 2
-    assert all(sample.targets[0] is None for sample in samples)
+    assert samples[0].targets[0] is None
+    assert samples[1].targets[0] == 0.0
     assert samples[0].targets[-1] == pytest.approx(0.05)
     assert samples[1].targets[-1] == pytest.approx(-0.05)
+
+
+def test_horizon_benchmarks_use_observed_returns_without_changing_feature_exposures():
+    first = _PendingSample(
+        "600001",
+        date(2026, 10, 19),
+        0,
+        "main",
+        "industry",
+        1000,
+        (0.1, 0.1, 0.1, 0.2, 0.3, 0.4),
+        10,
+        [0.1, 0.2, 0.3, 0.4, 0.5],
+    )
+    second = replace(first, code="600002", future_returns=[0.2, None, 0.4, 0.5, 0.6])
+    third = replace(first, code="600003", future_returns=[None, 0.4, 0.5, 0.6, 0.7])
+    samples = _finalize_sample_day((first, second, third), V3_TRAINING_PROFILE)
+    assert len(samples) == 3
+    assert samples[0].targets == pytest.approx((-0.05, -0.1, -0.1, -0.1, -0.1, -0.1))
+    assert samples[1].targets[0] == pytest.approx(0.05)
+    assert samples[1].targets[1] is None and samples[1].targets[-1] is None
+    assert samples[2].targets[0] is None and samples[2].targets[-1] == pytest.approx(0.1)
+    complete = _finalize_sample_day(
+        (
+            first,
+            replace(second, future_returns=first.future_returns),
+            replace(third, future_returns=first.future_returns),
+        ),
+        V3_TRAINING_PROFILE,
+    )
+    assert tuple(sample.features for sample in samples) == tuple(sample.features for sample in complete)

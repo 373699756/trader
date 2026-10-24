@@ -39,6 +39,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
 )
+from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
 from trader.training.domain.tomorrow_training_input import EvaluateTomorrowTrainingInput, FrozenDailyInputDescriptor
 from trader.training.domain.training_dates import BuildTrainingDateSplit, TrainingDateSplit
 from trader.training.infra.history.history_training_input import (
@@ -902,7 +903,7 @@ def _training_contract_hash(
             "feature_units": list(contract.feature_manifest.units),
             "label_target": contract.label_target,
             "maturity_sessions": contract.maturity_sessions,
-            "benchmark": "daily_close_equal_weight_engineering_proxy",
+            "benchmark": TRAINING_LABEL_BENCHMARK_CONTRACT,
             "training_cost_bps": 0,
             "evaluation_cost_bps": [20, 50, 100],
             "minimum_industry_training_rows": fitting.minimum_industry_training_rows,

@@ -25,10 +25,16 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
     archive = _archive(tmp_path / "history")
     original = archive.iter_training_rows
     scans = []
+    missing_day = archive.snapshot.calendar.open_dates[-10]
 
     def rows(dates, progress=None):
         scans.append(dates)
-        yield from original(dates, progress)
+        for row in original(dates, progress):
+            yield (
+                replace(row, point=None, cell_status="unknown_missing")
+                if row.trade_date == missing_day and row.code == "600005"
+                else row
+            )
 
     archive.iter_training_rows = rows
     monkeypatch.setattr(

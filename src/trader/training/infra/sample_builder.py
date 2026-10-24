@@ -28,6 +28,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingWindow,
     TrainingSampleDiagnostics,
 )
+from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
@@ -387,7 +388,9 @@ def _finalize_sample_day(
         tuple(item.industry for item in population),
         tuple(item.average_amount_20d for item in population),
     )
-    benchmarks = tuple(_benchmark(population, horizon) for horizon in range(5))
+    benchmarks = tuple(
+        ObservedTrainingBenchmark(item.future_returns[horizon] for item in population) for horizon in range(5)
+    )
     market_state = tuple(
         math.fsum(item.features[3 + profile.momentum_horizons.index(horizon)] for item in population) / len(population)
         for horizon in profile.market_state_momentum_horizons
@@ -421,15 +424,6 @@ def _finalize_sample_day(
             )
         )
     return tuple(finalized)
-
-
-def _benchmark(values: Sequence[_PendingSample], horizon: int) -> float | None:
-    available = tuple(item.future_returns[horizon] for item in values if item.future_returns[horizon] is not None)
-    return (
-        math.fsum(cast(float, item) for item in available) / len(available)
-        if available and len(available) == len(values)
-        else None
-    )
 
 
 def TrainingAlphaTarget(*, next_return: float, benchmark_return: float) -> float:

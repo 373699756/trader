@@ -45,11 +45,7 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
 
     def rows(allowed, progress=None):
         for row in original(allowed, progress):
-            yield (
-                replace(row, point=None, cell_status="unknown_missing")
-                if row.trade_date == absent and row.code == "600005"
-                else row
-            )
+            yield (replace(row, point=None, cell_status="unknown_missing") if row.trade_date == absent else row)
 
     archive.iter_training_rows = rows
     monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: archive)
@@ -61,7 +57,7 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
     coverage = next(item for item in d25.coverage if item.partition == "training")
     gap = next(item for item in coverage.missing if item.trade_date == signal)
     assert gap.sample_rows == gap.candidates == 6
-    assert gap.missing_future_returns == (0, 1, 0, 0, 0)
+    assert gap.missing_future_returns == (0, 6, 0, 0, 0)
     assert coverage.sample_rows > coverage.target_rows > 0
     assert d25.training_rows == 0
     assert not tuple((tmp_path / "models").rglob("model.json"))

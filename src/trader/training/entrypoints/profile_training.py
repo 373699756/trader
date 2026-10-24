@@ -78,6 +78,16 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
         "sample_database_peak_bytes": result.sample_database_peak_bytes,
         "failure_reasons": list(result.failure_reasons),
         "sample_counts": CanonicalValue(result.sample_counts),
+        "coverage": [
+            {
+                "strategy": item.strategy.value,
+                "partition": item.partition,
+                "expected_dates": item.expected_dates,
+                "effective_dates": item.effective_dates,
+                "rows": item.rows,
+            }
+            for item in result.coverage
+        ],
         "heads": [
             {
                 "strategy": head.strategy.value,

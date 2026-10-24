@@ -11,7 +11,7 @@ from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 import numpy as np
 
@@ -30,6 +30,7 @@ from trader.recommendation.domain.market.v1.features import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.domain.v1.learned_rank import LearnedRankDateSplit
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
@@ -72,6 +73,15 @@ class LearnedRankMatrix:
     dates: tuple[date, ...]
     industries: tuple[str, ...]
     groups: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class LearnedRankPartitionCoverage:
+    strategy: Strategy
+    partition: Literal["fitting", "early_stopping", "calibration", "validation"]
+    expected_dates: int
+    effective_dates: int
+    rows: int
 
 
 @dataclass
@@ -133,14 +143,7 @@ class LearnedRankSampleIndex:
 
     def add_day(self, pending: _PendingDay) -> tuple[int, int, int]:
         candidates = tuple(pending.candidates.values())
-        benchmarks = tuple(
-            math.fsum(cast(float, value) for value in values) / len(values)
-            if values and len(values) == len(candidates)
-            else None
-            for values in (
-                tuple(item.future[index] for item in candidates if item.future[index] is not None) for index in range(5)
-            )
-        )
+        benchmarks = tuple(ObservedTrainingBenchmark(item.future[index] for item in candidates) for index in range(5))
         converted = missing_t1 = missing_d25 = 0
         with SqliteTransaction(self._connection):
             for item in candidates:
@@ -171,6 +174,32 @@ class LearnedRankSampleIndex:
                 )
                 converted += 1
         return converted, missing_t1, missing_d25
+
+    def coverage(
+        self, splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit]
+    ) -> tuple[LearnedRankPartitionCoverage, ...]:
+        counts = {
+            date.fromisoformat(str(day)): (int(t1_rows), int(d25_rows))
+            for day, t1_rows, d25_rows in self._connection.run(
+                "SELECT day, COUNT(target_t1), COUNT(target_d25) FROM samples GROUP BY day"
+            )
+        }
+        result: list[LearnedRankPartitionCoverage] = []
+        for position, (strategy, split) in enumerate(zip((Strategy.TOMORROW, Strategy.D25), splits, strict=True)):
+            partitions: tuple[
+                tuple[Literal["fitting", "early_stopping", "calibration", "validation"], tuple[date, ...]], ...
+            ] = (
+                ("fitting", split.fitting),
+                ("early_stopping", split.early_stopping),
+                ("calibration", split.calibration),
+                ("validation", split.validation),
+            )
+            for name, days in partitions:
+                rows = tuple(counts.get(day, (0, 0))[position] for day in days)
+                result.append(
+                    LearnedRankPartitionCoverage(strategy, name, len(days), sum(value > 0 for value in rows), sum(rows))
+                )
+        return tuple(result)
 
     def matrix(
         self, dates: tuple[date, ...], strategy: Strategy, directory: Path, resources: ExitStack
@@ -356,6 +385,7 @@ __all__ = [
     "CheckV1Cancellation",
     "LearnedRankMatrix",
     "LearnedRankInputPort",
+    "LearnedRankPartitionCoverage",
     "LearnedRankSampleCounts",
     "LearnedRankSampleIndex",
 ]

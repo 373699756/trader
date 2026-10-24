@@ -27,6 +27,7 @@ from trader.training.domain.v1.learned_rank import (
     LearnedRankRelevance,
     V1TrainingSettings,
 )
+from trader.training.entrypoints.profile_training import ProjectLearnedRankTrainingResult
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.profile.v1.models import (
     LearnedRankPredictor,
@@ -152,9 +153,53 @@ def test_v1_missing_t1_keeps_d25_and_fixed_calendar_partitions(tmp_path: Path) -
         with ExitStack() as resources:
             tomorrow = index.matrix((anchor, missing_day), Strategy.TOMORROW, tmp_path / "t1", resources)
             d25 = index.matrix((anchor, missing_day), Strategy.D25, tmp_path / "d25", resources)
-            assert anchor not in tomorrow.dates and missing_day in tomorrow.dates
+            assert tomorrow.dates.count(anchor) == len(history.codes) - 1 and missing_day in tomorrow.dates
+            assert all(
+                code != history.codes[0]
+                for code, day in zip(tomorrow.codes, tomorrow.dates, strict=True)
+                if day == anchor
+            )
             assert d25.dates.count(anchor) == len(history.codes)
-            assert counts.estimated_sessions == 1 and counts.missing_t1 >= len(history.codes)
+            assert counts.estimated_sessions == 1 and counts.missing_t1 >= 1
+
+
+def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage(tmp_path, monkeypatch):
+    original = LearnedRankSampleIndex.add_day
+
+    def missing_second_day(index, pending):
+        for candidate in pending.candidates.values():
+            candidate.future[1] = None
+        return original(index, pending)
+
+    monkeypatch.setattr(LearnedRankSampleIndex, "add_day", missing_second_day)
+    monkeypatch.setattr(
+        "trader.training.infra.profile.v1.training.FitLearnedRankHead",
+        lambda *args, **kwargs: pytest.fail("both heads must pass coverage before any expensive fit"),
+    )
+    result = RunV1Training(
+        _History,
+        tmp_path / "models",
+        history_root=tmp_path / "history",
+        sample_root=tmp_path / "samples",
+        settings=_settings(),
+    )
+    assert result.status == "failed"
+    assert result.failure_reasons == tuple(
+        f"learned_rank_sample_partition_empty:d25:{name}"
+        for name in ("fitting", "early_stopping", "calibration", "validation")
+    )
+    assert len(result.coverage) == 8
+    assert all(item.rows > 0 for item in result.coverage if item.strategy is Strategy.TOMORROW)
+    projected = ProjectLearnedRankTrainingResult(result)
+    assert projected["failure_reasons"] == list(result.failure_reasons)
+    assert projected["coverage"][-1] == {
+        "strategy": "d25",
+        "partition": "validation",
+        "expected_dates": 5,
+        "effective_dates": 0,
+        "rows": 0,
+    }
+    assert not (tmp_path / "models/v1").exists()
 
 
 def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered_models(tmp_path: Path) -> None:
