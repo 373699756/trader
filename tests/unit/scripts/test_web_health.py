@@ -5,11 +5,48 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.runtime_diagnostics.web_health import WebSample, analyze_samples, build_report, parse_web_sample
+from scripts.runtime_diagnostics.web_health import (
+    WebSample,
+    analyze_samples,
+    build_report,
+    collect_samples,
+    parse_web_sample,
+)
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES
 
 _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"
+
+
+@pytest.mark.parametrize("ready", (False, True))
+def test_runtime_collects_long_without_applying_short_strategy_scoring_rules(monkeypatch, ready):
+    requests = []
+    long_payload = {
+        "strategy": "long",
+        "status": "ready" if ready else "not_ready",
+        "coverage": {"item_count": int(ready), "available_quote_count": int(ready)},
+        "items": [{"code": "private-code", "quote": {"price": 123.45}}] if ready else [],
+    }
+
+    def fetch(url, timeout_seconds):
+        requests.append(url)
+        return long_payload if url.endswith("/long/current") else {}
+
+    monkeypatch.setattr("scripts.runtime_diagnostics.web_health._fetch_mapping", fetch)
+    samples = collect_samples(
+        "http://127.0.0.1:5000", strategies=(_STRATEGY,), sample_count=1, interval_seconds=0, timeout_seconds=1
+    )
+    findings = analyze_samples(samples, strategies=(_STRATEGY,))
+    assert any(item.code == "long_projection_unavailable" for item in findings) is not ready
+    assert not any(item.strategy == "long" and item.code != "long_projection_unavailable" for item in findings)
+    assert requests[-1].endswith("/long/current")
+    report = build_report(
+        "http://127.0.0.1:5000", samples, findings, strategies=(_STRATEGY,), consecutive_zero_threshold=1
+    )
+    summary = report["samples"][0]["strategies"]["long"]
+    assert summary["current_item_count"] == int(ready)
+    assert summary["available_quote_count"] == int(ready)
+    assert "private-code" not in str(report) and "123.45" not in str(report)
 
 
 def _funnel(**overrides: int) -> dict[str, object]:

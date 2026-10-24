@@ -145,6 +145,7 @@ class ProjectionSnapshot:
     pipeline: PipelineSnapshot | None
     degraded_reasons: tuple[str, ...] = ()
     selected_item_count: int | None = None
+    available_quote_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -443,6 +444,7 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
             selected_count=_nonnegative_int(coverage.get("selected_count")),
         ),
         item_count=len(items) if include_items and isinstance(items, list) else None,
+        available_quote_count=_nonnegative_int(coverage.get("available_quote_count")),
         empty_reason=_text(diagnostics.get("empty_reason")),
         maximum_final_score=_nonnegative_number(diagnostics.get("maximum_final_score")),
         top_score_count=top_score_count,

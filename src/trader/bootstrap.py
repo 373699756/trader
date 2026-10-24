@@ -685,9 +685,10 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     candidate_filtering = CandidateFilteringService(policy, model_scoring)
     local_scoring = LocalScoringService(model_scoring, RankingSelectionService(), RiskControlService())
     publication_io = PublicationIoTracker(now=ShanghaiClock(now).now, monotonic=time.monotonic)
+    next_long_sequence = partial(run_scope.next_sequence, persistence.sequence.allocate)
     publication = _build_publication(
         context,
-        RuntimePublicationDependencies(persistence.sequence, persistence.records, market_data, persistence.outcomes),
+        RuntimePublicationDependencies(next_long_sequence, persistence.records, market_data, persistence.outcomes),
         publication_io=publication_io,
         production_authority=bool((profile_status := model_scoring.status()) and profile_status.production_authority),
     )
@@ -1157,26 +1158,25 @@ def _build_publication(
         publication_io=publication_io,
         production_authority=production_authority,
     )
-    long_runtime = LongRuntime(
-        LongRuntimeDependencies(
-            market_data,
-            tomorrow_decisions,
-            context.now,
-            decision_events.publish_projection,
-            context.owns_shared_runtime,
-            next_sequence=dependencies.sequence.allocate,
-        ),
-        config_version=context.effective_config_version,
-        watchlist_version=context.watchlist.watchlist_version,
-        items=_long_item_definitions(context.watchlist),
-        groups=_long_group_definitions(context.watchlist),
-    )
     return RuntimePublicationContext(
         records,
         tomorrow_decisions,
         decision_drafts,
         research_trace,
-        long_runtime,
+        LongRuntime(
+            LongRuntimeDependencies(
+                market_data,
+                tomorrow_decisions,
+                context.now,
+                decision_events.publish_projection,
+                context.owns_shared_runtime,
+                next_sequence=dependencies.next_sequence,
+            ),
+            config_version=context.effective_config_version,
+            watchlist_version=context.watchlist.watchlist_version,
+            items=_long_item_definitions(context.watchlist),
+            groups=_long_group_definitions(context.watchlist),
+        ),
         decision_queries,
         decision_events,
         freezer(strategy=Strategy.TOMORROW),

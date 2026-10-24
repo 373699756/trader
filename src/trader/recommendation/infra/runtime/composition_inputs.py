@@ -81,7 +81,7 @@ class RuntimePublicationContext:
 
 @dataclass(frozen=True)
 class RuntimePublicationDependencies:
-    sequence: PublicationSequence
+    next_sequence: Callable[[], int]
     records: SQLiteDecisionRecords
     market_data: MarketFeatureService
     outcomes: SQLiteOutcomeEvidenceIndex

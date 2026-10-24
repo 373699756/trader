@@ -126,6 +126,18 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     status = sample.status
     if status is None:
         return findings
+    long_current = sample.decisions.get("long")
+    if long_current is not None and long_current.status != "ready":
+        findings.append(
+            _finding(
+                "warning",
+                "long_projection_unavailable",
+                sample,
+                "long",
+                "Long current projection is unavailable independently of short-strategy model readiness",
+                {"status": long_current.status, "item_count": long_current.item_count},
+            )
+        )
     if status.schema_version != _STATUS_SCHEMA_VERSION:
         findings.append(
             _finding("error", "status_schema_mismatch", sample, None, "status schema is missing or unsupported")
@@ -983,7 +995,7 @@ def _collect_sample(
         status_payload = _fetch_mapping(f"{base_url}/api/status", timeout_seconds)
     except FetchError as exc:
         issues.append(FetchIssue("status", exc.error_code))
-    for strategy in strategies:
+    for strategy in (*strategies, "long"):
         endpoint = f"decision:{strategy}"
         try:
             decision_payloads[strategy] = _fetch_mapping(
@@ -1085,6 +1097,14 @@ def _finding_payload(finding: Finding) -> dict[str, object]:
 def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str, object]:
     status = sample.status
     result: dict[str, object] = {}
+    long_current = sample.decisions.get("long")
+    if long_current is not None:
+        result["long"] = {
+            "current_projection": _projection_summary(long_current),
+            "current_item_count": long_current.item_count,
+            "available_quote_count": long_current.available_quote_count,
+            "degraded_reasons": list(long_current.degraded_reasons),
+        }
     for strategy in strategies:
         current = sample.decisions.get(strategy)
         quality = _strategy_quality(sample, strategy)
