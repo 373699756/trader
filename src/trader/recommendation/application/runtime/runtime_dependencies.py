@@ -30,6 +30,7 @@ from trader.recommendation.application.runtime.cadence import (
     CadencePlanner,
 )
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 
 
 @dataclass(frozen=True)
@@ -51,3 +52,4 @@ class RuntimeDependencies:
     latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
     publication_io: PublicationIoTracker | None = None
     monotonic: Callable[[], float] = time.monotonic
+    run_scope: RecommendationRunScope | None = None

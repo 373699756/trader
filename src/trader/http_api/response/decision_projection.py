@@ -31,6 +31,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
     HistoricalStageStatus,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 
 def SerializeDecisionView(view: DecisionView) -> dict[str, object]:
@@ -38,6 +39,7 @@ def SerializeDecisionView(view: DecisionView) -> dict[str, object]:
         return _serialize_long_view(view)
     return {
         "schema_version": view.schema_version,
+        **_preview_fields(view.preview_context, view.observed_at),
         "status": view.status,
         "strategy": view.strategy.value,
         "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
@@ -380,6 +382,17 @@ def _time(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _preview_fields(context: PreviewContext | None, generated_at: datetime | None) -> dict[str, object]:
+    if context is None:
+        return {}
+    return {
+        "run_mode": "preview",
+        "market_trade_date": context.market_trade_date.isoformat(),
+        "market_as_of": context.market_as_of.isoformat(),
+        "generated_at": _time(generated_at),
+    }
+
+
 def _serialize_overlay_quote(quote: DecisionQuote) -> dict[str, object]:
     return {
         "code": quote.code,
@@ -401,6 +414,7 @@ def _serialize_decision_replacement(
     diagnostics = replacement.selection_diagnostics
     return {
         "patch_schema_version": 4,
+        **_preview_fields(replacement.preview_context, replacement.observed_at),
         "snapshot_id": payload.version,
         "publication_id": payload.version,
         "projection_version": replacement.projection_version,
@@ -424,6 +438,7 @@ def _serialize_decision_replacement(
         "fusion_mode": replacement.fusion_mode,
         "stale": False,
         "frozen": False,
+        **({"frozen_at": None} if replacement.preview_context is not None else {}),
         "degraded_reasons": list(replacement.degraded_reasons),
         "coverage": {
             "candidate_count": replacement.coverage.candidate_count,

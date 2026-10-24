@@ -59,12 +59,14 @@ def DynamicSourceHealth(features: tuple[FeatureSnapshot, ...], as_of: datetime) 
     invalid = {
         feature.quote.source
         for feature in features
-        if feature.quote.source and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of) > 30.0
+        if feature.quote.source
+        and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of, preview_context=feature.preview_context) > 30.0
     }
     healthy = {
         feature.quote.source
         for feature in features
-        if feature.quote.source and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of) <= 30.0
+        if feature.quote.source
+        and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of, preview_context=feature.preview_context) <= 30.0
     } - invalid
     state = (
         SourceHealthState.READY

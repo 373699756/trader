@@ -39,6 +39,7 @@ from trader.recommendation.domain.publication.decision_identity import (
 )
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
@@ -169,6 +170,7 @@ class DecisionView:
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     outcome_summaries: tuple[OutcomeTierSummary, ...] = ()
     schema_version: str = DECISION_VIEW_SCHEMA_VERSION
+    preview_context: PreviewContext | None = field(default=None, kw_only=True)
 
     @property
     def projection_version(self) -> str | None:
@@ -297,6 +299,9 @@ def _current_scored(
     strategy: Strategy,
     now: datetime,
 ) -> tuple[ScoredDecision | None, CommittedDecisionRecord | None]:
+    current = snapshot.current
+    if isinstance(current, ScoredDecision) and current.strategy is strategy and current.preview_context is not None:
+        return current, None
     boundary = datetime.combine(
         now.date(),
         time(15, 0),
@@ -307,7 +312,6 @@ def _current_scored(
         if formal is None or formal.trade_date != now.date():
             return None, None
         return formal.decision, formal
-    current = snapshot.current
     if not isinstance(current, ScoredDecision) or current.trade_date != now.date():
         return None, None
     return current, None
@@ -399,6 +403,7 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
         selection_diagnostics=decision.selection_diagnostics,
         top_scores=top_scores,
         pipeline=decision.pipeline,
+        preview_context=decision.preview_context,
     )
 
 

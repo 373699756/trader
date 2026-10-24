@@ -90,6 +90,7 @@ from trader.recommendation.domain.market.eligibility import IssuerEligibilityBat
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.refresh import IntradayRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
 
 _LOGGER = logging.getLogger(__name__)
@@ -136,6 +137,8 @@ class _PendingQualityContext:
 
 
 class MarketReader(Protocol):
+    def prepare_preview(self, context: PreviewContext | None) -> None: ...
+
     def reference_version(self) -> str: ...
 
     def fetch_market_feature_batch(
@@ -238,6 +241,21 @@ class MarketInputCoordinator(DataRefreshPort):
     def invalidate_history(self) -> None:
         with self._lock:
             self._invalidate_scoring_locked()
+
+    def prepare_preview(self, context: PreviewContext) -> None:
+        status = self._model_scoring.status() if self._model_scoring is not None else None
+        if status is None:
+            raise DataRefreshUnavailableError("model_scoring_unavailable")
+        for head in status.heads.values():
+            if not head.active:
+                reason = next(iter(head.historical_failure_reasons), "production_model_unavailable")
+                raise DataRefreshUnavailableError(reason)
+        try:
+            self._market.prepare_preview(context)
+        except MarketDataPendingError as exc:
+            raise DataRefreshPendingError(_failure_code(exc)) from exc
+        except MarketDataUnavailableError as exc:
+            raise DataRefreshUnavailableError(_failure_code(exc)) from exc
 
     def refresh_task(self, request: PipelineTaskRequest) -> RefreshOutcome:
         deadline = _task_deadline(request)
@@ -362,6 +380,8 @@ class MarketInputCoordinator(DataRefreshPort):
             candidate_pipeline = self._candidate_pipeline
             market_version = self._market_version
         if not population or initial_plans is None or issuer_eligibility is None or candidate_pipeline is None:
+            if request.preview_context is not None:
+                raise DataRefreshUnavailableError("candidate_universe_unavailable")
             raise DataRefreshPendingError("candidate_universe_unavailable")
         started = self._monotonic()
         refresh_plan = self._candidate_filtering.refresh(
@@ -568,6 +588,8 @@ class MarketInputCoordinator(DataRefreshPort):
         _deadline: datetime | None,
     ) -> RefreshOutcome:
         requested = self._requested_codes()
+        if not requested and request.preview_context is not None:
+            return RefreshOutcome(request.task, False, "intraday:empty", (), request.observed_at, False)
         _require_codes(requested, "intraday_universe_unavailable")
         refreshed = self._market.refresh_intraday_tail(requested, request.observed_at)
         with SessionGuard(request.session), self._lock:

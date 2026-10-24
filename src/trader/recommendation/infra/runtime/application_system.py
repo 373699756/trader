@@ -19,6 +19,7 @@ from trader.recommendation.application.runtime.resource_orchestration import (
     StartApplicationResources,
     StopApplicationResources,
 )
+from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor
@@ -78,6 +79,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     market_data: MarketFeatureService
     budget: DeepSeekBudgetLedger
     review_cache: ReviewCache
+    run_scope: RecommendationRunScope
     owns_shared_resources: bool = True
 
     @property

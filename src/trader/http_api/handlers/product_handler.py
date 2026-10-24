@@ -171,6 +171,7 @@ def _status(services: WebServices | None) -> RouteResponse:
             },
             "status": str(runtime.get("status", "running")),
             "phase": runtime.get("phase"),
+            **_preview_status(runtime),
             "runtime_started": bool(runtime.get("runtime_started", True)),
             "runtime_version": runtime.get("runtime_version"),
             "company_research": _company_research(runtime),
@@ -196,6 +197,25 @@ def _status(services: WebServices | None) -> RouteResponse:
             },
         }
     )
+
+
+def _preview_status(runtime: Mapping[str, object]) -> dict[str, object]:
+    if runtime.get("run_mode") != "preview":
+        return {}
+    return {
+        "run_mode": "preview",
+        **{
+            name: _optional_string(runtime.get(name))
+            for name in (
+                "preview_run_id",
+                "market_trade_date",
+                "market_as_of",
+                "preview_started_at",
+                "preview_state",
+                "preview_error",
+            )
+        },
+    }
 
 
 def _events(services: WebServices | None) -> RouteResponse:

@@ -203,8 +203,8 @@
     els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.inputQualityScoreTime.textContent = payload.strategy === "long"
       ? "长期策略不评分"
-      : payload.observed_at
-        ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
+      : payload.generated_at || payload.observed_at
+        ? `评分于 ${payload.run_mode === "preview" ? render.formatDateTime(payload.generated_at) : render.formatTime(payload.observed_at)} 完成`
         : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
     renderPublicationStatus(els, payload, statusPayload);
     if (payload && payload.historical !== true && statusPayload) {
@@ -565,6 +565,23 @@
   }
 
   function renderPublicationStatus(els, payload, statusPayload) {
+    const preview = payload && payload.run_mode === "preview" ? payload
+      : payload && payload.historical !== true && payload.strategy !== "long"
+        && statusPayload && statusPayload.run_mode === "preview" ? statusPayload : null;
+    if (preview) {
+      const states = { waiting_inputs: "等待输入", running: "计算中", ready: "已完成", failed: "已阻塞" };
+      const runStatus = statusPayload && statusPayload.run_mode === "preview"
+        && (preview === statusPayload || payload.input_versions?.preview_run_id === statusPayload.preview_run_id)
+        ? statusPayload : null;
+      const state = states[runStatus && runStatus.preview_state]
+        || (payload && payload.run_mode === "preview" && payload.status === "ready" ? "已完成" : "等待输入");
+      els.publicationStatus.textContent = `测试预览 · ${state}`;
+      const generated = preview.generated_at || preview.preview_started_at;
+      const shadow = window.TraderRender.scorePresentation(payload).shadow ? " · Shadow 观察" : "";
+      const error = runStatus && runStatus.preview_error;
+      els.publicationMeta.textContent = `数据 ${preview.market_trade_date} 收盘 · ${preview.generated_at ? "计算" : "开始"} ${window.TraderRender.formatDateTime(generated)}${shadow} · 不冻结、不计入业绩${error ? ` · 阻塞：${error}` : ""}`;
+      return;
+    }
     if (window.TraderRender.scorePresentation(payload).shadow) {
       els.publicationStatus.textContent = "Shadow 观察";
       els.publicationMeta.textContent = "尚无生产授权，不计入正式推荐业绩";

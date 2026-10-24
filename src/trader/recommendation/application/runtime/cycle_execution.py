@@ -208,7 +208,7 @@ class RecommendationCycleExecutor:
     ) -> None:
         if lane.is_superseded(request) or not isinstance(local, ScoredDecision):
             return
-        defer_initial_review = self._observe_research(local, request)
+        defer_initial_review = False if local.preview_context is not None else self._observe_research(local, request)
         if request.phase == "close_fallback":
             self._close_control.freeze_close_fallback(request, local, recovery_path="close_rebuild")
             return

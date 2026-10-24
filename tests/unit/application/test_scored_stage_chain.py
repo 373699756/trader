@@ -8,6 +8,7 @@ import pytest
 
 from tests.unit.application.cycle_fixture import build_cycle_fixture
 from tests.unit.application.review_helpers import review
+from tests.unit.application.scoring_helpers import profile_for
 from tests.unit.application.test_input_runtime import (
     _decision_build,
     _Market,
@@ -20,6 +21,7 @@ from tests.unit.application.test_tomorrow_projection import (
     _native_input,
     _NonPositiveProductionPredictor,
     _ProductionPredictor,
+    _RecordingProductionPredictor,
     _router,
     _verified_feature,
     _with_model_features,
@@ -30,6 +32,8 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
     ScoredProjectionInputs,
 )
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.runtime import PipelineTaskRequest, ReviewUnavailableError
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.application.runtime.cadence import PipelineTask
@@ -43,6 +47,8 @@ from trader.recommendation.domain.evidence.review import ReviewOutcome, RiskFact
 from trader.recommendation.domain.market.models import Board, Evidence
 from trader.recommendation.domain.publication.decision_identity import FormalScoredDecision, VisibleScoredSeats
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 
 
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
@@ -186,10 +192,25 @@ def test_real_scored_handoffs_measure_operations_and_match_selected_decision(app
     )
 
 
-def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(application_feature_factory):
+@pytest.mark.parametrize("preview", (False, True))
+def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(application_feature_factory, preview):
     router = _router(_ProductionPredictor())
+    native = _native_input(_features(application_feature_factory))
+    evaluated_at = EVALUATED_AT.replace(hour=15, minute=0, second=10) if preview else EVALUATED_AT
+    context = PreviewContext("projection-preview", evaluated_at.date(), evaluated_at) if preview else None
+    if context is not None:
+        features = tuple(
+            replace(
+                feature,
+                quote=replace(feature.quote, source_time=context.market_as_of, received_time=evaluated_at),
+                observed_at=evaluated_at,
+            )
+            for feature in native.market_features
+        )
+        native = replace(native, market_features=features, candidate_features=features, evaluated_at=evaluated_at)
+    native = replace(native, preview_context=context)
     local = BuildScoredLocal(
-        _native_input(_features(application_feature_factory)),
+        native,
         _policy(),
         sequence=1,
         runtime=ScoredProjectionInputs(model_scoring=router),
@@ -200,14 +221,15 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
         local,
         _policy(),
         {
-            item.code: replace(review(item.code, 100), completed_at=EVALUATED_AT + timedelta(seconds=5))
+            item.code: replace(review(item.code, 100), completed_at=evaluated_at + timedelta(seconds=5))
             for item in local.review_candidates
         },
-        review_deadline=EVALUATED_AT + timedelta(minutes=8),
+        review_deadline=evaluated_at + timedelta(minutes=8),
         monotonic=lambda: float(next(ticks)),
         review_latency_ms=73,
     )
     assert result is not None and result.decision is not None
+    assert local.local.preview_context is result.decision.preview_context is context
     assert result.stages.local_score is local.stages.local_score
     assert result.stages.risk_review.snapshot.latency_ms == 1073
     assert result.stages.fixed_selection is local.stages.fixed_selection
@@ -218,6 +240,147 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
     )
     assert result.decision.parent_version == local.local.version
     assert local.stages.risk_review.records[0].review is None
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_non_trading_day_real_adapters_predict_and_register_review_after_15(application_feature_factory, strategy):
+    observed_at = EVALUATED_AT.replace(month=10, day=24, hour=16, minute=0)
+    context = PreviewContext(f"adapter-preview-{strategy.value}", observed_at.date() - timedelta(days=1), observed_at)
+    policy = _policy()
+    strong_local_values = {
+        name: 95.0 for component in policy.local_component_weights[strategy].values() for name in component
+    }
+    features = []
+    for index in range(300):
+        prefix, board = (("600", Board.MAIN), ("300", Board.CHINEXT), ("688", Board.STAR))[index % 3]
+        feature = _with_model_features(
+            _verified_feature(
+                application_feature_factory(f"{prefix}{index:03d}", context.market_as_of, industry=f"行业{index % 4}")
+            ),
+            index,
+        )
+        features.append(
+            replace(
+                feature,
+                quote=replace(
+                    feature.quote,
+                    board=board,
+                    board_source="security_master",
+                    board_reliability="verified",
+                    received_time=observed_at,
+                ),
+                values={**feature.values, **strong_local_values, "entry_quality": 95.0},
+                observed_at=observed_at,
+                preview_context=context,
+            )
+        )
+    predictor = _RecordingProductionPredictor()
+    router = _router(predictor)
+    if strategy is Strategy.D25:
+        router = ModelScoringRouter(
+            "v2",
+            {
+                strategy: ProductionModelScoringService(
+                    profile_for(predictor, strategy), strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0)
+                )
+            },
+        )
+    clock = [observed_at]
+    adapter = build_cycle_fixture(
+        _Market(tuple(features)),
+        config_version="preview-adapter-fixture",
+        decision_build=replace(_decision_build(now=lambda: clock[0]), model_scoring=router),
+    )
+    request = replace(
+        _request(observed_at, strategy=strategy, phase="before_close"),
+        preview_context=context,
+        allow_review=True,
+        review_deadline=observed_at + timedelta(seconds=30),
+    )
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.data.refresh(request)
+    local = adapter.decisions.build_local(request)
+    assert local is not None and local.preview_context is context
+    assert local.trade_date == observed_at.date() and local.observed_at == observed_at
+    assert predictor.codes and set(predictor.codes).issubset({feature.quote.code for feature in features})
+    projection = adapter.decisions.projection(local.version)
+    assert projection is not None and projection.native_input.phase == "before_close"
+    assert len(VisibleScoredSeats(local)) == 6
+    assert all(item.model_diagnostics is not None for item in local.items)
+    assert all(item.model_diagnostics.estimated_cost_pct > 0 for item in local.items if item.model_diagnostics)
+    assert all(item.quote is not None and item.quote.source_time == context.market_as_of for item in local.items)
+    assert projection.review_candidates
+    clock[0] = observed_at + timedelta(seconds=5)
+    result = BuildScoredHybrid(
+        projection,
+        _policy(),
+        {item.code: replace(review(item.code, 100), completed_at=clock[0]) for item in projection.review_candidates},
+        review_deadline=request.review_deadline,
+    )
+    assert result is not None and result.decision is not None
+    accepted = adapter.decisions.register_review(projection, result)
+    assert accepted is not None and accepted.preview_context is context
+    assert accepted.stage == "hybrid" and accepted.parent_version == local.version
+    assert tuple(item.code for item in VisibleScoredSeats(accepted)) == tuple(
+        item.code for item in VisibleScoredSeats(local)
+    )
+    assert all(item.final_score == item.local_score for item in accepted.items)
+    clock[0] = request.review_deadline
+    assert adapter.decisions.register_review(projection, result) is None
+
+
+def test_non_trading_day_real_adapter_publishes_empty_seats_when_population_is_ineligible(application_feature_factory):
+    observed_at = EVALUATED_AT.replace(month=10, day=24, hour=16, minute=0)
+    context = PreviewContext("empty-adapter-preview", observed_at.date() - timedelta(days=1), observed_at)
+    feature = _with_model_features(_verified_feature(application_feature_factory("600001", context.market_as_of)), 0)
+    feature = replace(
+        feature,
+        quote=replace(feature.quote, is_st=True, received_time=observed_at),
+        observed_at=observed_at,
+        preview_context=context,
+    )
+    predictor = _RecordingProductionPredictor()
+    adapter = build_cycle_fixture(
+        _Market((feature,)),
+        config_version="preview-empty-fixture",
+        decision_build=replace(_decision_build(now=lambda: observed_at), model_scoring=_router(predictor)),
+    )
+    request = replace(
+        _request(observed_at, phase="before_close"),
+        preview_context=context,
+        allow_review=True,
+        review_deadline=observed_at + timedelta(seconds=30),
+    )
+    _prime_scoring_cache(adapter, observed_at)
+    tail = adapter.data.refresh_task(
+        PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, observed_at, preview_context=context)
+    )
+    assert tail.data_version == "intraday:empty"
+    adapter.data.refresh(request)
+    local = adapter.decisions.build_local(request)
+    assert local is not None and local.preview_context is context
+    assert not VisibleScoredSeats(local) and not local.items
+    assert not predictor.codes
+
+
+@pytest.mark.parametrize(
+    ("task", "code"),
+    (
+        (PipelineTask.FULL_MARKET, "coherent_market_epoch_unavailable"),
+        (PipelineTask.CANDIDATE_QUOTES, "candidate_universe_unavailable"),
+    ),
+)
+def test_non_trading_day_real_adapter_fails_empty_population_without_pending_retry(task, code) -> None:
+    from trader.recommendation.application.ports.runtime import DataRefreshPendingError, DataRefreshUnavailableError
+
+    observed_at = EVALUATED_AT.replace(month=10, day=24, hour=16, minute=0)
+    context = PreviewContext("missing-population-preview", observed_at.date() - timedelta(days=1), observed_at)
+    adapter = build_cycle_fixture(
+        _Market(()), config_version="preview-missing-fixture", decision_build=_decision_build(now=lambda: observed_at)
+    )
+    with pytest.raises(DataRefreshUnavailableError, match=code) as error:
+        adapter.data.refresh_task(PipelineTaskRequest(task, observed_at, preview_context=context))
+    assert not isinstance(error.value, DataRefreshPendingError)
 
 
 @pytest.mark.parametrize("failure", ("rejected", "empty", "late", "deadline"))

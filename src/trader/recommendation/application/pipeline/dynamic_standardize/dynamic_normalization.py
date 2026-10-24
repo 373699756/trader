@@ -17,6 +17,9 @@ def NormalizeCandidateDiscoveryPopulation(
 
     normalized: list[FeatureSnapshot] = []
     for feature in features:
+        if feature.preview_context is not None:
+            normalized.append(feature)
+            continue
         source_time = min(evaluated_at, feature.quote.received_time)
         normalized.append(
             feature

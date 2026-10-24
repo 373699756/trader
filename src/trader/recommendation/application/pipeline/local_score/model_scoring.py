@@ -714,11 +714,7 @@ class ProductionModelScoringService:
 
 def _valid_sequence(feature: FeatureSnapshot) -> bool:
     sequence = feature.model_sequence
-    return (
-        sequence is not None
-        and sequence.code == feature.quote.code
-        and sequence.dates[-1] < ShanghaiNow(feature.observed_at).date()
-    )
+    return sequence is not None and sequence.code == feature.quote.code and sequence.dates[-1] < _market_day(feature)
 
 
 def _score_predictions(
@@ -773,6 +769,14 @@ def _score_predictions(
     )
 
 
+def _market_day(feature: FeatureSnapshot) -> date:
+    return (
+        feature.preview_context.market_trade_date
+        if feature.preview_context is not None
+        else ShanghaiNow(feature.observed_at).date()
+    )
+
+
 def _row_identity(feature: FeatureSnapshot, contract: _ModelRowContract) -> _ModelRowIdentity:
     fields = (
         *(f"qfq_return_{horizon}d" for horizon in contract.return_horizons),
@@ -783,7 +787,7 @@ def _row_identity(feature: FeatureSnapshot, contract: _ModelRowContract) -> _Mod
     return _ModelRowIdentity(
         feature.quote.code,
         BoardForSnapshot(feature),
-        ShanghaiNow(feature.observed_at).date(),
+        _market_day(feature),
         feature.history_days,
         feature.quote.industry,
         feature.model_industry,
@@ -925,7 +929,7 @@ def _raw_row(
     if feature.history_days < contract.history_required_sessions or amount <= 0.0 or amihud < 0.0:
         return None
     model_industry = feature.model_industry
-    if model_industry is not None and model_industry.effective_date > ShanghaiNow(feature.observed_at).date():
+    if model_industry is not None and model_industry.effective_date > _market_day(feature):
         model_industry = None
     industry = (
         model_industry.industry_id.strip()

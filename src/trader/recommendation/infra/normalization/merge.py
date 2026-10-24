@@ -18,6 +18,7 @@ from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.normalization.columnar_merge import (
     ColumnarMergeError,
     TryMergeCompleteRealtime,
@@ -36,6 +37,7 @@ from trader.recommendation.infra.normalization.observation_ties import Observati
 class MergeObservationLimits:
     targeted_codes: Sequence[str] = ()
     max_age_seconds: float | None = None
+    preview_context: PreviewContext | None = None
 
 
 _DEFAULT_MERGE_LIMITS = MergeObservationLimits()
@@ -80,7 +82,10 @@ def MergeMarketObservations(
             missing[f"{observation.subject_key}.{field}.{SourceName(observation.source)}"] = value
 
     valid, consistency_reasons = _validate_observation_consistency(
-        valid, observed_at=observed_at, max_age_seconds=limits.max_age_seconds
+        valid,
+        observed_at=observed_at,
+        max_age_seconds=limits.max_age_seconds,
+        preview_context=limits.preview_context,
     )
     degraded.update(consistency_reasons)
     if not valid:
@@ -432,14 +437,15 @@ def _validate_observation_consistency(
     *,
     observed_at: datetime,
     max_age_seconds: float | None,
+    preview_context: PreviewContext | None = None,
 ) -> tuple[list[SourceObservation], set[str]]:
     if max_age_seconds is not None and max_age_seconds < 0:
         raise ValueError("max_age_seconds must be non-negative")
+    observations, reasons = _preview_realtime_observations(observations, observed_at, preview_context)
     grouped: dict[str, list[SourceObservation]] = defaultdict(list)
     for observation in observations:
         grouped[observation.subject_key].append(observation)
     accepted: list[SourceObservation] = []
-    reasons: set[str] = set()
     for subject, items in grouped.items():
         realtime_items = [
             item
@@ -448,11 +454,12 @@ def _validate_observation_consistency(
         ]
         consistency_items = realtime_items or items
         inconsistent = False
-        if len({item.trade_date for item in consistency_items}) > 1:
+        if preview_context is None and len({item.trade_date for item in consistency_items}) > 1:
             reasons.add(f"trade_date_conflict:{subject}")
             inconsistent = True
         if (
-            len(
+            preview_context is None
+            and len(
                 {
                     item.observation_point.astimezone(timezone.utc)
                     for item in consistency_items
@@ -475,18 +482,58 @@ def _validate_observation_consistency(
         for item in items:
             # Closing eligibility is limited to the same Shanghai business day;
             # a newly received previous-day quote must not become today's close.
-            age = QuoteFreshnessAgeSeconds(item.source_time, observed_at)
+            age = QuoteFreshnessAgeSeconds(item.source_time, observed_at, preview_context=preview_context)
             # Realtime quote deadlines must not evict durable security-reference
             # observations. Reference validity is owned by the reference loader.
             if (
-                max_age_seconds is not None
+                (max_age_seconds is not None or preview_context is not None)
                 and SourceName(item.source) in {"eastmoney", "sina", "tencent"}
-                and age > max_age_seconds
+                and age > (max_age_seconds if max_age_seconds is not None else 0.0)
             ):
                 reasons.add(f"freshness_expired:{subject}:{SourceName(item.source)}")
                 continue
             accepted.append(item)
     return accepted, reasons
+
+
+def _preview_realtime_observations(
+    observations: Sequence[SourceObservation], observed_at: datetime, context: PreviewContext | None
+) -> tuple[Sequence[SourceObservation], set[str]]:
+    """Align close-fact comparisons while retaining every actual supplier timestamp."""
+    if context is None:
+        return observations, set()
+    accepted: list[SourceObservation] = []
+    reasons: set[str] = set()
+    for item in observations:
+        source = SourceName(item.source)
+        if source in {"eastmoney", "sina", "tencent"} and "price" in item.fields:
+            reason = _preview_coordinate_rejection(item, observed_at, context)
+            if reason is not None:
+                reasons.add(f"{reason}:{item.subject_key}:{source}")
+                continue
+        accepted.append(item)
+    return accepted, reasons
+
+
+def _preview_coordinate_rejection(
+    observation: SourceObservation, observed_at: datetime, context: PreviewContext
+) -> str | None:
+    if not context.accepts_quote(observation.source_time, observed_at):
+        return "freshness_expired"
+    # ObservationFromQuote defaults these two coordinates to actual collection
+    # time. Explicit market coordinates must still identify the same close.
+    if observation.trade_date not in {
+        context.market_trade_date,
+        observation.observed_at.astimezone(context.started_at.tzinfo).date(),
+    }:
+        return "trade_date_conflict"
+    if (
+        observation.observation_point != observation.observed_at
+        and observation.observation_point is not None
+        and not context.accepts_quote(observation.observation_point, observed_at)
+    ):
+        return "observation_point_conflict"
+    return None
 
 
 def _failure_categories(reasons: Iterable[str]) -> tuple[str, ...]:

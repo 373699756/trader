@@ -30,6 +30,7 @@ from trader.recommendation.application.runtime.cadence import (
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointResult,
+    TaskExecutionBudgetSeconds,
 )
 from trader.recommendation.application.runtime.close_control import CloseControlCoordinator, CloseControlHooks
 from trader.recommendation.application.runtime.cycle_execution import (
@@ -42,6 +43,7 @@ from trader.recommendation.application.runtime.latest_wins import (
     LatestWinsTelemetry,
     LatestWinsWorker,
 )
+from trader.recommendation.application.runtime.preview_cycle import PreviewCycleRunner
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueIndex
 from trader.recommendation.application.runtime.schedule import (
@@ -218,6 +220,7 @@ class SchedulerRuntime:
                 self._record_publish_rejection,
             ),
         )
+        self._preview = PreviewCycleRunner(dependencies, self._cycles.execute_pair, self._scheduled_request)
 
     def start(self) -> bool:
         with self._lock:
@@ -284,6 +287,14 @@ class SchedulerRuntime:
             if not self._running:
                 return 30.0
         observed_at = ShanghaiNow(at or self._dependencies.clock.now())
+        scope = self._dependencies.run_scope
+        if scope is not None:
+            scope.initialize()
+            if not scope.resolved:
+                self._calendar_decision(observed_at)
+                return 30.0
+            if scope.is_preview:
+                return self._submit_preview(observed_at)
         session = self._session.capture()
         if session.generation != self._planned_generation:
             self._dependencies.cadence.rotate_session(observed_at, reason=self._session.status().discontinuity_reason)
@@ -308,6 +319,21 @@ class SchedulerRuntime:
             if not self._periodic_task_inflight(scheduled):
                 self._dispatch_pipeline_task(replace(scheduled, session=session))
         return batch.next_delay_seconds
+
+    def _submit_preview(self, observed_at: datetime) -> float:
+        if self._preview.status().state != "waiting_inputs":
+            return 30.0
+        lane = self._score_lane.status()
+        if not lane.running and not lane.pending:
+            self._score_lane.offer(
+                ScheduledPipelineTask(
+                    PipelineTask.SCORE,
+                    observed_at,
+                    MarketPhase.BEFORE_CLOSE,
+                    session=self._session.capture(),
+                )
+            )
+        return 1.0
 
     def _calendar_decision(self, observed_at: datetime) -> tuple[bool | None, float]:
         trade_date = observed_at.date()
@@ -409,6 +435,10 @@ class SchedulerRuntime:
         try:
             with SessionGuard(scheduled.session):
                 pass
+            scope = self._dependencies.run_scope
+            if scope is not None and scope.preview is not None:
+                self._preview.execute(scope.preview, scheduled.session)
+                return
             now = ShanghaiNow(self._dependencies.clock.now())
             if now.date() != scheduled.scheduled_at.date() or now.time() >= wall_time(15, 0):
                 return
@@ -431,6 +461,12 @@ class SchedulerRuntime:
         with self._lock:
             if not self._running:
                 return LatestWinsOffer.REJECTED
+        scope = self._dependencies.run_scope
+        if scope is not None and (
+            not scope.resolved
+            or (scope.is_preview and (request.preview_context != scope.preview or request.strategy is Strategy.LONG))
+        ):
+            return LatestWinsOffer.REJECTED
         session = request.session
         if session is None:
             session = self._session.capture()
@@ -621,8 +657,17 @@ class SchedulerRuntime:
         lanes = tuple(self._lanes[strategy].status() for strategy in Strategy)
         hybrid_lanes = tuple(self._hybrid_lanes[strategy].status() for strategy in (Strategy.TOMORROW, Strategy.D25))
         task_lanes = (*tuple(self._task_lanes[task].status() for task in _DATA_LANES), self._score_lane.status())
+        preview = self._preview.status()
+        preview_context = self._dependencies.run_scope.preview if self._dependencies.run_scope else None
         with self._lock:
             issues = self._issues.snapshot()
+            if preview_context is not None and preview.state == "ready":
+                if any(lane.running or lane.pending for lane in hybrid_lanes):
+                    preview = replace(preview, state="running")
+                elif self._review_failure_count:
+                    preview = replace(preview, state="failed", error=issues.last_error_code or "review_unavailable")
+            elif preview.state == "failed" and preview.error == "preview_decision_unavailable":
+                preview = replace(preview, error=issues.last_error_code or preview.error)
             return SchedulerRuntimeStatus(
                 running=self._running,
                 phase=self._phase,
@@ -654,6 +699,9 @@ class SchedulerRuntime:
                 strategy_error_codes=issues.strategy_error_codes,
                 recent_errors=issues.recent_errors,
                 input_quality=self._dependencies.decisions.input_quality_status(),
+                preview_context=preview_context,
+                preview_state=preview.state if preview_context is not None else None,
+                preview_error=preview.error if preview_context is not None else None,
                 session=session,
                 publication_io=self._dependencies.publication_io.snapshots()
                 if self._dependencies.publication_io is not None
@@ -677,6 +725,9 @@ class SchedulerRuntime:
             self._sequences[strategy] = sequence + 1
         deadline_time = wall_time(15, 0)
         review_deadline = datetime.combine(observed_at.date(), deadline_time, tzinfo=SHANGHAI)
+        preview = self._dependencies.run_scope.preview if self._dependencies.run_scope else None
+        if preview is not None:
+            review_deadline = observed_at + timedelta(seconds=TaskExecutionBudgetSeconds(PipelineTask.SCORE) or 15.0)
         allow_review = strategy is not Strategy.LONG and observed_at < review_deadline
         return CycleRequest(
             strategy=strategy,
@@ -688,6 +739,7 @@ class SchedulerRuntime:
             allow_review=allow_review,
             review_deadline=review_deadline,
             session=self._session.capture(),
+            preview_context=preview,
         )
 
     def _record_publish(
@@ -717,6 +769,8 @@ class SchedulerRuntime:
                     receipt.output_version = event.decision_version
             except (RuntimeError, TypeError, ValueError) as exc:
                 self._record_failure("publish", f"decision_event:{type(exc).__name__}", strategy)
+        if isinstance(identity, ScoredDecision) and identity.preview_context is not None:
+            return
         observation = None
         if event is not None:
             observation = DecisionObservation(

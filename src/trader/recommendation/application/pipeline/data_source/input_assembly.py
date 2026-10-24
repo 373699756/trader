@@ -13,7 +13,7 @@ from trader.recommendation.application.ports.runtime import (
     DecisionUnavailableError,
     PipelineTaskRequest,
 )
-from trader.recommendation.application.runtime.cadence import TaskExecutionBudgetSeconds
+from trader.recommendation.application.runtime.cadence import PipelineTask, TaskExecutionBudgetSeconds
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionQuote
@@ -139,6 +139,11 @@ def BuildModelScoringContext(request: CycleRequest, batch: InputBatch, now: date
     local_now = now.astimezone(SHANGHAI)
     input_at = DecisionObservedAt(batch).astimezone(SHANGHAI)
     input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
+    if request.preview_context is not None:
+        return ModelScoringContext(
+            time_budget_seconds=TaskExecutionBudgetSeconds(PipelineTask.SCORE),
+            input_age_seconds=input_age_seconds,
+        )
     if request.phase == "close_fallback":
         return ModelScoringContext(input_age_seconds=input_age_seconds)
     deadline = datetime.combine(request.trade_date, time(15, 0), tzinfo=SHANGHAI)

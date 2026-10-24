@@ -42,6 +42,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     ValidateStageBatchContinuity,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import InitializeReferenceDataPlane
 from trader.recommendation.infra.status_projection import InputQualityPayload, RuntimeStatus
@@ -374,7 +375,8 @@ def test_research_trace_initialization_is_fail_open() -> None:
     trace.initialize.assert_called_once_with()
 
 
-def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> None:
+@pytest.mark.parametrize("preview", (False, True))
+def test_runtime_status_exposes_and_degrades_on_research_observer_failure(preview) -> None:
     from unittest.mock import Mock
 
     scheduler = Mock()
@@ -430,6 +432,9 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         last_error_code="",
         input_quality=(),
         publication_io=(),
+        preview_context=PreviewContext("status-preview", date(2026, 8, 28), point_updated_at) if preview else None,
+        preview_state="failed" if preview else None,
+        preview_error="production_model_contract_conflict" if preview else None,
         calendar=TradingCalendarRuntimeStatus(
             state="unknown",
             trade_date=None,
@@ -453,10 +458,22 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
 
     payload = RuntimeStatus(scheduler, reviewer, market_health)
 
+    if preview:
+        assert payload["run_mode"] == "preview"
+        assert payload["market_trade_date"] == "2026-08-28"
+        assert payload["market_as_of"] == "2026-08-28T15:00:00+08:00"
+        assert payload["preview_started_at"] == point_updated_at.isoformat()
+        assert payload["preview_state"] == "failed"
+        assert payload["preview_error"] == "production_model_contract_conflict"
+    else:
+        assert {"run_mode", "market_trade_date", "market_as_of", "preview_state", "preview_error"}.isdisjoint(payload)
     assert payload["observer"]["consumer_failure_count"] == 3
     assert payload["company_research"]["state"] == "idle"
-    assert payload["health"] == {"level": "degraded", "issue_count": 1}
-    assert payload["degraded_reasons"] == ["observer:ResearchTraceCapacityError"]
+    assert payload["health"] == {"level": "degraded", "issue_count": 2 if preview else 1}
+    assert payload["degraded_reasons"] == [
+        "observer:ResearchTraceCapacityError",
+        *(["preview:production_model_contract_conflict"] if preview else []),
+    ]
     assert payload["last_error"] == "observer:ResearchTraceCapacityError"
     assert payload["scheduler"]["settlement_completed_count"] == 0
     assert payload["scheduler"]["settlement_failure_count"] == 0

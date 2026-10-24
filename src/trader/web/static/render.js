@@ -265,6 +265,7 @@
     return {
       learnedRank,
       shadow: Boolean(snapshot && snapshot.strategy !== "long" && versions.execution_mode === "shadow"),
+      preview: Boolean(snapshot && snapshot.run_mode === "preview"),
       finalLabel: learnedRank ? "模型排序分" : "最终评分",
     };
   }
@@ -511,6 +512,9 @@
     if (presentation.shadow) {
       scoreParts.push(note("Shadow 仅供观察，尚未取得生产授权，不计入正式推荐业绩。", "warn"));
     }
+    if (presentation.preview) {
+      scoreParts.push(note(`测试预览 · 数据 ${snapshot.market_trade_date} 收盘 · 计算 ${formatDateTime(snapshot.generated_at)} · 不冻结、不计入正式推荐业绩。`, "warn"));
+    }
     scoreParts.push(note(reviewResult(item, snapshot), "muted"));
     if (Array.isArray(item.risks) && item.risks.length > 0) {
       scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
@@ -700,7 +704,7 @@
   function formatDateTime(value) {
     const parsed = new Date(value);
     if (!Number.isFinite(parsed.getTime())) return "-";
-    return parsed.toLocaleString("zh-CN", { hour12: false });
+    return parsed.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
   }
 
   function formatTime(value) {

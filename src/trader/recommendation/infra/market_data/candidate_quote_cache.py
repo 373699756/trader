@@ -25,6 +25,7 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_version
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -95,6 +96,20 @@ class QuoteCache:
         self._candidate_cycle: datetime | None = None
         self._active_candidate_codes: set[str] = set()
         self._out_of_order_count = 0
+        self._preview_context: PreviewContext | None = None
+
+    def prepare_preview(self, context: PreviewContext | None) -> None:
+        with self._lock:
+            if context != self._preview_context:
+                self._market_features = ()
+                self._market_quotes_by_code = MappingProxyType({})
+                self._cross_section_reference = MappingProxyType({})
+                self._cross_section_normalization_reference = MappingProxyType({})
+                self._candidate_quotes.clear()
+                self._active_candidate_codes.clear()
+                self._candidate_cycle = None
+                self._preview_context = context
+        self.gateway.prepare_preview(context)
 
     def candidate_snapshot(self, codes: Sequence[str]) -> tuple[MarketQuote, ...]:
         with self._lock:
@@ -131,6 +146,7 @@ class QuoteCache:
             research_observations=research_observations,
             intraday_minutes=intraday_minutes,
             history_summaries=history_summaries,
+            preview_context=self._preview_context,
         )
         return _apply_action_restrictions(self._with_model_industries(features), action_restrictions or {})
 
@@ -151,6 +167,7 @@ class QuoteCache:
                     observed_at,
                     research_observations=research_observations,
                     history_summaries=self._history.summaries(histories, observed_at),
+                    preview_context=self._preview_context,
                 )
             ),
             action_restrictions,
@@ -173,7 +190,7 @@ class QuoteCache:
 
     def _with_industry_quotes(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> tuple[MarketQuote, ...]:
         references = self._references.model_industries(tuple(quote.code for quote in quotes))
-        day = ShanghaiNow(observed_at).date()
+        day = self._preview_context.market_trade_date if self._preview_context else ShanghaiNow(observed_at).date()
         return tuple(QuoteWithIndustry(quote, references.get(quote.code), day) for quote in quotes)
 
     def _with_model_industries(
@@ -200,12 +217,21 @@ class QuoteCache:
                 model_sequence=sequences.get(feature.quote.code),
                 model_history_quality=quality[feature.quote.code],
                 quote=QuoteWithIndustry(
-                    feature.quote, references.get(feature.quote.code), ShanghaiNow(feature.observed_at).date()
+                    feature.quote,
+                    references.get(feature.quote.code),
+                    self._preview_context.market_trade_date
+                    if self._preview_context
+                    else ShanghaiNow(feature.observed_at).date(),
                 ),
                 model_industry=(
                     reference
                     if (reference := references.get(feature.quote.code)) is not None
-                    and reference.effective_date <= ShanghaiNow(feature.observed_at).date()
+                    and reference.effective_date
+                    <= (
+                        self._preview_context.market_trade_date
+                        if self._preview_context
+                        else ShanghaiNow(feature.observed_at).date()
+                    )
                     else None
                 ),
             )

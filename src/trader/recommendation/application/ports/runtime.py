@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
@@ -16,6 +16,7 @@ from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.trading_session import SessionLease
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,200}$")
@@ -45,6 +46,7 @@ class CycleRequest:
     allow_review: bool
     review_deadline: datetime
     session: SessionLease | None = None
+    preview_context: PreviewContext | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         _require_shanghai(self.observed_at, "cycle observed_at")
@@ -63,6 +65,7 @@ class PipelineTaskRequest:
     observed_at: datetime
     selected_codes: tuple[str, ...] = ()
     session: SessionLease | None = None
+    preview_context: PreviewContext | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         _require_shanghai(self.observed_at, "pipeline task observed_at")
@@ -146,6 +149,8 @@ class TradingCalendarUnavailableError(RuntimeError):
 
 
 class DataRefreshPort(Protocol):
+    def prepare_preview(self, context: PreviewContext) -> None: ...
+
     def refresh_task(self, request: PipelineTaskRequest) -> RefreshOutcome: ...
 
     def refresh(self, request: CycleRequest) -> None: ...

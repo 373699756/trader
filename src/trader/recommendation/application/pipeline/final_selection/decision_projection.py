@@ -70,6 +70,7 @@ from trader.recommendation.domain.publication.models import (
     ScoredStockEvaluation,
     Strategy,
 )
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.risk.downside import DownsideAssessment
 from trader.recommendation.domain.risk.scored_fusion import (
     BuildScoredDecisionEpoch,
@@ -125,6 +126,7 @@ class _DecisionProjectionContext:
     score_contract_hash: str | None = None
     production_authority: bool = True
     rank_population_version: str | None = None
+    preview_context: PreviewContext | None = None
 
 
 @dataclass(frozen=True)
@@ -409,6 +411,7 @@ def BuildScoredLocal(
                 score_contract_hash=model_batch.score_contract_hash if model_batch is not None else None,
                 production_authority=production_authority,
                 rank_population_version=model_batch.rank_population_version if model_batch is not None else None,
+                preview_context=native_input.preview_context,
             ),
         ),
         score_model_version=model_version,
@@ -601,6 +604,7 @@ def BuildScoredHybrid(
             score_contract_hash=projection.score_contract_hash,
             production_authority=projection.production_authority,
             rank_population_version=projection.rank_population_version,
+            preview_context=projection.native_input.preview_context,
         ),
     )
     return ScoredReviewProjection(replace(decision, input_versions=projection.local.input_versions), stages)
@@ -655,6 +659,7 @@ def _scored_decision(
         population_count=epoch.evaluated_count,
         rejected_count=epoch.rejected_count,
         selection_diagnostics=_selection_diagnostics(epoch, context),
+        preview_context=context.preview_context,
     )
 
 

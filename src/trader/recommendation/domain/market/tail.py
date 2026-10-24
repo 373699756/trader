@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.factors import Clamp
 from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TAIL_SIGNAL_VALUE_FIELDS = (
@@ -75,11 +76,12 @@ def DeriveTailSignals(
     *,
     observed_at: datetime,
     policy: TailSignalPolicy,
+    preview_context: PreviewContext | None = None,
 ) -> TailSignals:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("tail observation time must be timezone-aware")
     observed_local = observed_at.astimezone(SHANGHAI)
-    unique = _unique_point_in_time_bars(bars, observed_local)
+    unique = _unique_point_in_time_bars(bars, observed_local, preview_context)
     if not unique:
         return TailSignals(None, None, None, None, None, None, None, None, None, None, "", (), 0)
 
@@ -159,8 +161,9 @@ def TailSignalEvidence(code: str, signals: TailSignals) -> Evidence | None:
 
 
 def _unique_point_in_time_bars(
-    bars: tuple[MinuteBar, ...], observed_local: datetime
+    bars: tuple[MinuteBar, ...], observed_local: datetime, preview_context: PreviewContext | None
 ) -> dict[int, tuple[int, MinuteBar]]:
+    market_as_of = preview_context.market_as_of if preview_context is not None else observed_local
     grouped: dict[int, list[MinuteBar]] = {}
     for bar in bars:
         local = bar.source_time.astimezone(SHANGHAI)
@@ -168,8 +171,8 @@ def _unique_point_in_time_bars(
         ordinal = _trading_minute_ordinal(local)
         if (
             ordinal is None
-            or local.date() != observed_local.date()
-            or bar.source_time > observed_local
+            or local.date() != market_as_of.date()
+            or bar.source_time > market_as_of
             or received_local < local
             or received_local > observed_local
             or not math.isfinite(bar.close)

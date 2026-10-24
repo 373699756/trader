@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
 from trader.recommendation.application.long_runtime import LongRuntime
@@ -21,6 +20,7 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.runtime.cadence import CadencePolicy
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
@@ -43,7 +43,6 @@ class RuntimeBuildContext:
     latency: LatencyWaterfall
     cadence_policy: CadencePolicy
     workers: RuntimeWorkerResources
-    budget_path: Path
     owns_shared_runtime: bool
 
 
@@ -63,6 +62,7 @@ class SharedRecommendationInputs:
     budget: DeepSeekBudgetLedger
     review_cache: ReviewCache
     input_preloader: PublishedInputPreloader
+    run_scope: RecommendationRunScope
 
 
 @dataclass(frozen=True)

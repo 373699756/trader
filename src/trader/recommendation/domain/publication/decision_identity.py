@@ -19,6 +19,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
     HistoricalStageSnapshot,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
 
 DecisionStage = Literal["local", "hybrid"]
@@ -242,6 +243,7 @@ class ScoredDecision:
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     schema_version: str = DECISION_IDENTITY_SCHEMA_VERSION
     is_formal: bool = field(default=False, kw_only=True)
+    preview_context: PreviewContext | None = field(default=None, kw_only=True)
     version: str = field(init=False)
 
     @cached_property
@@ -266,7 +268,7 @@ class ScoredDecision:
             raise ValueError("hybrid decision requires a parent version")
         if self.stage not in {"local", "hybrid"}:
             raise ValueError("decision stage is invalid")
-        versions = _normalize_versions(self.input_versions)
+        versions = _preview_input_versions(self, _normalize_versions(self.input_versions))
         _require_identity(self.config_version, "config version")
         _require_identity(self.strategy_version, "strategy version")
         _require_identity(self.fusion_version, "fusion version")
@@ -310,6 +312,7 @@ class ScoredDecision:
             self,
             "version",
             f"decision:{self.strategy.value}:{self.trade_date.isoformat()}:{self.stage}:{self.sequence}"
+            + (f":preview:{self.preview_context.run_id}" if self.preview_context is not None else "")
             + (":formal" if self.is_formal else ""),
         )
 
@@ -440,6 +443,8 @@ class CommittedDecisionRecord:
     def __post_init__(self) -> None:
         if self.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
             raise ValueError(f"record schema_version must be {COMMITTED_RECORD_SCHEMA_VERSION}")
+        if IsPreviewDecision(self.decision):
+            raise ValueError("preview decisions cannot become formal records")
         if IsShadowDecision(self.decision):
             raise ValueError("shadow decisions cannot become formal records")
         _require_shanghai(self.committed_at, "decision committed_at")
@@ -476,6 +481,40 @@ def IsShadowDecision(decision: ScoredDecision) -> bool:
     return ("execution_mode", "shadow") in decision.input_versions
 
 
+def IsPreviewDecision(decision: ScoredDecision) -> bool:
+    """Read an explicit ephemeral run, independently of algorithm or profile identity."""
+    return decision.preview_context is not None
+
+
+def _preview_input_versions(
+    decision: ScoredDecision, versions: tuple[tuple[str, str], ...]
+) -> tuple[tuple[str, str], ...]:
+    context = decision.preview_context
+    if context is None:
+        if ("run_mode", "preview") in versions:
+            raise ValueError("preview decision identity requires its typed run context")
+        return versions
+    if decision.is_formal or context.started_at > decision.observed_at:
+        raise ValueError("preview decisions require a current non-formal run context")
+    if any(
+        item.quote is not None and not context.accepts_quote(item.quote.source_time, decision.observed_at)
+        for item in decision.items
+    ):
+        raise ValueError("preview decision quotes must belong to its completed market session")
+    expected = (
+        ("run_mode", "preview"),
+        ("preview_run_id", context.run_id),
+        ("market_trade_date", context.market_trade_date.isoformat()),
+    )
+    for name, value in expected:
+        supplied = next((version for key, version in versions if key == name), None)
+        if supplied is not None and supplied != value:
+            raise ValueError("preview context conflicts with decision input identity")
+        if supplied is None:
+            versions = (*versions, (name, value))
+    return _normalize_versions(versions)
+
+
 def VisibleScoredSeats(decision: ScoredDecision) -> tuple[DecisionItem, ...]:
     """Read fixed seats; retain the original display contract only for old records."""
     audit = decision.pipeline
@@ -499,6 +538,8 @@ def FormalScoredDecision(
 ) -> ScoredDecision:
     """Project an accepted scored identity to its immutable six-row close form."""
 
+    if IsPreviewDecision(decision):
+        raise ValueError("preview decisions cannot become formal decisions")
     if IsShadowDecision(decision):
         raise ValueError("shadow decisions cannot become formal decisions")
 
@@ -551,6 +592,12 @@ def _scored_payload(
     }
     if decision.is_formal:
         payload["is_formal"] = True
+    if decision.preview_context is not None:
+        payload["preview_context"] = {
+            "run_id": decision.preview_context.run_id,
+            "market_trade_date": decision.preview_context.market_trade_date.isoformat(),
+            "started_at": decision.preview_context.started_at.isoformat(),
+        }
     if decision.population_count is not None and decision.rejected_count is not None:
         payload["population_count"] = decision.population_count
         payload["rejected_count"] = decision.rejected_count
@@ -702,6 +749,8 @@ def _historical_snapshot_payload(stage: HistoricalStageSnapshot) -> dict[str, _J
 def CommittedRecordIdentityPayload(record: CommittedDecisionRecord) -> dict[str, _Json]:
     """Return the explicit current-schema material shared by identity hashing and persistence."""
 
+    if IsPreviewDecision(record.decision):
+        raise ValueError("preview decisions cannot be encoded as formal records")
     return {
         "schema_version": record.schema_version,
         "decision": _scored_payload(
@@ -953,6 +1002,7 @@ def _validate_coverage_counts(population_count: int | None, rejected_count: int 
 
 __all__ = [
     "IsShadowDecision",
+    "IsPreviewDecision",
     "COMMITTED_RECORD_SCHEMA_VERSION",
     "DECISION_IDENTITY_SCHEMA_VERSION",
     "LONG_PROJECTION_SCHEMA_VERSION",

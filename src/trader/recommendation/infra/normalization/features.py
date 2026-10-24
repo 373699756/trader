@@ -54,6 +54,7 @@ from trader.recommendation.domain.market.tail import (
     TailSignalEvidence,
     TailSignalPolicy,
 )
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.risk.downside import DeriveEntrySetupValues
 from trader.recommendation.infra.normalization.feature_math import (
     _CROSS_SECTION_FIELDS,
@@ -90,6 +91,7 @@ class FeatureBuildOptions(TypedDict, total=False):
     research_observations: Mapping[str, ResearchObservation] | None
     intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None
     history_summaries: Mapping[str, HistoryContext] | None
+    preview_context: PreviewContext | None
 
 
 class _FeatureGroupOptions(FeatureBuildOptions):
@@ -295,6 +297,7 @@ class FeatureBuilder:
                 research_observations=options.get("research_observations"),
                 intraday_minutes=options.get("intraday_minutes"),
                 history_summaries=options.get("history_summaries"),
+                preview_context=options.get("preview_context"),
             ):
                 built[snapshot.quote.code] = snapshot
         return tuple(built[quote.code] for quote in quotes)
@@ -318,6 +321,7 @@ class FeatureBuilder:
                     tuple(intraday_minutes.get(quote.code, ())),
                     observed_at=observed_at,
                     policy=self._tail_signal_policy,
+                    preview_context=options.get("preview_context"),
                 )
                 for quote in quotes
             }
@@ -490,6 +494,7 @@ class FeatureBuilder:
                     ),
                     normalization=normalization,
                     research_components=ResearchComponentsFromObservation(research_observation),
+                    preview_context=options.get("preview_context"),
                 )
             )
         return tuple(snapshots)

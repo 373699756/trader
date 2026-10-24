@@ -616,10 +616,13 @@
     for (const item of recommendations) {
       if (Object.hasOwn(counts, item.tier)) counts[item.tier] += 1;
     }
-    const shadow = window.TraderRender.scorePresentation(payload).shadow;
+    const presentation = window.TraderRender.scorePresentation(payload);
+    const shadow = presentation.shadow;
     els.sixSeatStatus.textContent = payload.status === "not_ready" && recommendations.length === 0
       ? "待评分" : recommendations.length ? `${recommendations.length} / 6 只` : "合法空榜";
-    els.sixSeatMeta.textContent = shadow
+    els.sixSeatMeta.textContent = presentation.preview
+      ? `测试预览${shadow ? " · Shadow 仅观察" : ""} · 推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`
+      : shadow
       ? `Shadow 仅观察 · 关注 ${counts.watch} · 回避 ${counts.avoid}`
       : `推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`;
   }
@@ -737,7 +740,8 @@
       const running = Boolean(payload.runtime_started);
       const previousPhase = state.runtimePhase;
       state.runtimePhase = typeof payload.phase === "string" ? payload.phase : "";
-      els.runtimeStatus.textContent = running ? "运行中" : payload.status === "not_ready" ? "未就绪" : "已停止";
+      els.runtimeStatus.textContent = payload.run_mode === "preview" ? "测试预览"
+        : running ? "运行中" : payload.status === "not_ready" ? "未就绪" : "已停止";
       els.marketPhase.textContent = formatters.phaseLabel(payload.phase || "closed");
       const health = renderHealth(payload);
       els.runtimeDot.dataset.state = health.level === "normal" ? running ? "ok" : "warn" : health.level === "error" ? "error" : "warn";

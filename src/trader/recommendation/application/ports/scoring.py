@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -27,6 +28,7 @@ class ScoredNativeInput:
     candidate_features: tuple[FeatureSnapshot, ...]
     preselect_max_age_seconds: float
     score_max_age_seconds: float
+    preview_context: PreviewContext | None = field(default=None, kw_only=True)
     input_version: str = field(init=False)
 
     def __post_init__(self) -> None:

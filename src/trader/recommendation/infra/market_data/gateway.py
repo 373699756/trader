@@ -32,6 +32,7 @@ from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.gateway_health import (
     MarketGatewayHealthStatus,
     MarketSourceHealthStatus,
@@ -176,6 +177,7 @@ class MarketDataGateway:
         self._listing_open_dates = options.get("listing_open_dates")
         self._listing_open_dates_retry_at = 0.0
         self._latest_snapshot: CanonicalMarketSnapshot | None = None
+        self._preview_context: PreviewContext | None = None
         self._latest_batch: ColumnarQuoteBatch | None = None
         self._latest_changes = NormalizedMarketChangeSet("", (), (), ())
         self._latest_source = "unavailable"
@@ -210,6 +212,17 @@ class MarketDataGateway:
         if not references:
             return
         self.update_reference_observations(references)
+
+    def prepare_preview(self, context: PreviewContext | None) -> None:
+        """Bind explicit collection eligibility without altering supplier timestamps."""
+        with self._state_lock:
+            if context != self._preview_context:
+                self._latest_snapshot = None
+                self._latest_batch = None
+                self._latest_changes = NormalizedMarketChangeSet("", (), (), ())
+                self._latest_by_code.clear()
+                self._latest_observations.clear()
+                self._preview_context = context
 
     def fetch_market(
         self,
@@ -255,7 +268,9 @@ class MarketDataGateway:
         deadline: datetime | None,
         max_observation_age_seconds: float | None = None,
     ) -> Sequence[MarketQuote]:
-        results = self._sources.fetch_market_sources(observed_at, force=force, deadline=deadline)
+        results = self._sources.fetch_market_sources(
+            observed_at, force=force or self._preview_context is not None, deadline=deadline
+        )
         successes = tuple(result for result in results if result.status == "success")
         outcome = _market_route_outcome(results)
         completed_at = max(observed_at, self._wall_clock())
@@ -294,7 +309,9 @@ class MarketDataGateway:
             observed_at=completed_at,
             merge_epoch=self._versions.advance("market"),
             previous=previous,
-            limits=MergeObservationLimits(max_age_seconds=max_observation_age_seconds),
+            limits=MergeObservationLimits(
+                max_age_seconds=max_observation_age_seconds, preview_context=self._preview_context
+            ),
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         snapshot = _with_snapshot_degradation(snapshot, _source_degraded_reasons(results))
@@ -504,7 +521,11 @@ class MarketDataGateway:
             (*raw_baseline, *baseline_observations, *observations, *references),
             observed_at=completed_at,
             merge_epoch=self._versions.advance("targeted"),
-            limits=MergeObservationLimits(targeted_codes=codes, max_age_seconds=request.max_observation_age_seconds),
+            limits=MergeObservationLimits(
+                targeted_codes=codes,
+                max_age_seconds=request.max_observation_age_seconds,
+                preview_context=self._preview_context,
+            ),
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         with self._state_lock:
@@ -528,7 +549,7 @@ class MarketDataGateway:
                 timeout_seconds=_target_quote_timeout_seconds(request.deadline, self._wall_clock),
             ),
             request.requested_at,
-            request.force,
+            request.force or self._preview_context is not None,
             request.deadline,
             1,
             request.isolated,

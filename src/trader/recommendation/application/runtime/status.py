@@ -15,6 +15,7 @@ from trader.recommendation.application.runtime.latest_wins import LatestWinsStat
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue
 from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.application.runtime.trading_session import TradingSessionStatus
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,9 @@ class SchedulerRuntimeStatus:
     strategy_error_codes: tuple[tuple[str, str], ...]
     recent_errors: tuple[RuntimeIssue, ...]
     input_quality: tuple[InputQualityStatus, ...]
+    preview_context: PreviewContext | None = None
+    preview_state: Literal["waiting_inputs", "running", "ready", "failed"] | None = None
+    preview_error: str | None = None
     publication_io: tuple[PublicationIoSnapshot, ...] = ()
     session: TradingSessionStatus = TradingSessionStatus(0, None, "startup")
     calendar: TradingCalendarRuntimeStatus = TradingCalendarRuntimeStatus(

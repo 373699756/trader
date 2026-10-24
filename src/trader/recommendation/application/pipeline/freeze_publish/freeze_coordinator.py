@@ -23,6 +23,7 @@ from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.decision_identity import (
     CommitKind,
     CommittedDecisionRecord,
+    IsPreviewDecision,
     IsShadowDecision,
     ScoredDecision,
 )
@@ -81,6 +82,9 @@ class ScoredFreezeCoordinator:
 
     def freeze_scheduled(self) -> FreezeOperationResult:
         now = _now(self._clock)
+        current = self._current(now.date())
+        if current is not None and IsPreviewDecision(current):
+            return FreezeOperationResult("preview_only")
         boundary = _at(now.date(), time(15, 0))
         if now < boundary:
             return FreezeOperationResult("before_freeze")
@@ -132,6 +136,8 @@ class ScoredFreezeCoordinator:
         recovery_path: CloseRecoveryPath,
         official_close_version: str,
     ) -> FreezeOperationResult:
+        if IsPreviewDecision(decision):
+            return FreezeOperationResult("preview_only")
         now = _now(self._clock)
         close = _at(now.date(), time(15, 0))
         if now < close:
@@ -166,6 +172,9 @@ class ScoredFreezeCoordinator:
         return self._commit(record)
 
     def restore(self, trade_date: date) -> FreezeOperationResult:
+        current = self._current(trade_date)
+        if current is not None and IsPreviewDecision(current):
+            return FreezeOperationResult("preview_only")
         return self._existing(trade_date) or FreezeOperationResult("formal_decision_unavailable")
 
     def _close_rejection(
@@ -253,6 +262,8 @@ class ScoredFreezeCoordinator:
         return checkpoint, False
 
     def _commit(self, record: CommittedDecisionRecord) -> FreezeOperationResult:
+        if IsPreviewDecision(record.decision):
+            return FreezeOperationResult("preview_only")
         try:
             with ObservePublicationIo(
                 self._publication_io, "formal_write", PublicationIoTarget.decision(record.decision)

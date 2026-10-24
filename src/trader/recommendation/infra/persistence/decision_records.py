@@ -25,7 +25,7 @@ from trader.recommendation.application.ports.decision_records import (
     DecisionRecordRecoverySummary,
     DecisionRecordUnavailableError,
 )
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
+from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, IsPreviewDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
 
@@ -82,6 +82,8 @@ class SQLiteDecisionRecords:
             raise DecisionRecordUnavailableError("decision database unavailable") from exc
 
     def commit(self, record: CommittedDecisionRecord) -> None:
+        if IsPreviewDecision(record.decision):
+            raise ValueError("preview decisions cannot be written to formal records")
         self.import_record_bytes(CommittedRecordBytes(record))
 
     def import_record_bytes(self, payload: bytes) -> None:
@@ -142,6 +144,8 @@ class SQLiteDecisionRecords:
         return tuple(date.fromisoformat(row["trade_date"]) for row in rows)
 
     def save_checkpoint(self, checkpoint: DecisionCheckpoint) -> None:
+        if IsPreviewDecision(checkpoint.decision):
+            raise ValueError("preview decisions cannot be written to formal checkpoints")
         envelope = CommittedDecisionRecord(checkpoint.decision, checkpoint.boundary_at, "checkpoint_recovery")
         self.import_checkpoint_bytes(CommittedRecordBytes(envelope))
 
@@ -199,6 +203,8 @@ class SQLiteDecisionRecords:
         return self._load_checkpoint_row(row)
 
     def consume_checkpoint(self, checkpoint: DecisionCheckpoint, *, consumed_at: datetime) -> None:
+        if IsPreviewDecision(checkpoint.decision):
+            raise ValueError("preview decisions cannot consume formal checkpoints")
         if consumed_at.tzinfo is None or consumed_at.utcoffset() is None:
             raise ValueError("checkpoint consumption requires an aware clock")
         with self._lock, self._connect(write=True) as connection:

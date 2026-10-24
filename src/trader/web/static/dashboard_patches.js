@@ -70,6 +70,11 @@
       fusion_mode: patch.fusion_mode,
       stale: patch.stale,
       frozen: patch.frozen,
+      frozen_at: patch.frozen_at || null,
+      run_mode: patch.run_mode,
+      market_trade_date: patch.market_trade_date,
+      market_as_of: patch.market_as_of,
+      generated_at: patch.generated_at,
       degraded_reasons: patch.degraded_reasons || [],
       coverage,
       selection_diagnostics: patch.selection_diagnostics || {},
@@ -322,6 +327,12 @@
     const reasons = Array.isArray(payload.degraded_reasons) ? payload.degraded_reasons : [];
     const presentation = window.TraderRender.scorePresentation(payload);
     const degraded = reasons.length ? reasonLabels(reasons, payload.frozen === true, payload) : "";
+    if (presentation.preview) {
+      return {
+        level: degraded ? "warning" : "idle",
+        message: `测试预览 · 数据 ${payload.market_trade_date} 收盘 · 计算 ${window.TraderRender.formatDateTime(payload.generated_at)}${presentation.shadow ? " · Shadow 仅观察" : ""} · 不冻结、不计入正式推荐业绩${degraded ? ` · 降级：${degraded}` : ""}`,
+      };
+    }
     if (presentation.shadow) {
       return {
         level: payload.stale || degraded ? "warning" : "idle",

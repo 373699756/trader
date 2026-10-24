@@ -7,7 +7,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
-from datetime import time as wall_time
 
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     BuildModelScoringContext as _model_scoring_context,
@@ -87,6 +86,7 @@ class DecisionBuildDependencies:
 class _ReviewInput:
     identity: ScoringInputIdentity
     session: SessionLease | None
+    deadline: datetime
 
 
 class LocalDecisionBuilder(DecisionBuilderPort):
@@ -168,6 +168,7 @@ class LocalDecisionBuilder(DecisionBuilderPort):
                 batch.candidate_features,
                 30.0,
                 30.0,
+                preview_context=request.preview_context,
             )
             projection = self._local_scoring.score(
                 native_input,
@@ -228,7 +229,9 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             self._projections[projection.local.version] = projection
             self._decisions[projection.local.version] = projection.local
             if accepted:
-                self._review_inputs[projection.local.version] = _ReviewInput(batch.quality_identity, request.session)
+                self._review_inputs[projection.local.version] = _ReviewInput(
+                    batch.quality_identity, request.session, request.review_deadline
+                )
             self._trim_research_sources()
         return projection.local
 
@@ -258,7 +261,12 @@ class LocalDecisionBuilder(DecisionBuilderPort):
         self, projection: ScoredLocalProjection, review: ScoredReviewProjection, context: _ReviewInput
     ) -> ScoredDecision | None:
         at = ShanghaiNow(self._now())
-        if at.date() != context.identity.trade_date or at.time() >= wall_time(15, 0):
+        valid_before = (
+            context.deadline
+            if projection.local.preview_context is not None
+            else at.replace(hour=15, minute=0, second=0, microsecond=0)
+        )
+        if at.date() != context.identity.trade_date or at >= valid_before:
             return None
         decision = review.decision or projection.local
         if review.decision is not None and decision.parent_version != projection.local.version:
@@ -294,7 +302,7 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             quality,
             parent_version=decision.version,
             session=context.session,
-            valid_before=at.replace(hour=15, minute=0, second=0, microsecond=0),
+            valid_before=valid_before,
         ):
             return None
         if review.decision is None:

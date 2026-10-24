@@ -64,7 +64,7 @@ from trader.recommendation.application.pipeline.freeze_publish.decision_events i
     DecisionObservation,
 )
 from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
-from trader.recommendation.domain.publication.decision_identity import DecisionStage
+from trader.recommendation.domain.publication.decision_identity import DecisionStage, IsPreviewDecision
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
@@ -156,6 +156,14 @@ class ResearchTraceLimits:
             raise ValueError("research payload capacity cannot exceed total capacity")
 
 
+def _require_persistable_observation(observation: DecisionObservation) -> None:
+    event = observation.event
+    if ("run_mode", "preview") in event.input_versions or (
+        event.projection is not None and IsPreviewDecision(event.projection)
+    ):
+        raise ValueError("preview decisions cannot enter research traces")
+
+
 class SQLiteResearchTraceIndex:
     """Observer consumer that persists only the generic committed event."""
 
@@ -191,6 +199,7 @@ class SQLiteResearchTraceIndex:
             self._initialized = True
 
     def record(self, observation: DecisionObservation) -> None:
+        _require_persistable_observation(observation)
         self.initialize()
         observation = observation.materialize()
         event = observation.event

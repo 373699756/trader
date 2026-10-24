@@ -2,7 +2,9 @@
 
 import json
 import threading
+from datetime import datetime
 from itertools import combinations
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -60,6 +62,7 @@ def test_selected_profiles_share_resources_and_web_shows_only_selected_buttons(t
         assert system.budget is primary.budget
         assert system.market_data.quotes.gateway is primary.market_data.quotes.gateway
         assert system.market_data.research is primary.market_data.research
+        assert system.run_scope is primary.run_scope
     client = group.app.test_client()
     html = client.get("/").get_data(as_text=True)
     assert html.count('class="profile-tab') == len(profiles) + 1  # Includes the tablist class.
@@ -74,6 +77,36 @@ def test_selected_profiles_share_resources_and_web_shows_only_selected_buttons(t
             assert status.status_code == 400
     assert f'name="trader-long-scoring-profile" content="{default}"' in html
     assert not (tmp_path / "data").exists()
+
+
+@pytest.mark.parametrize("profiles", _SELECTIONS)
+def test_every_profile_combination_shares_preview_authority_without_formal_initialization(
+    tmp_path, monkeypatch, profiles
+):
+    config = _empty_config(tmp_path)
+    now = datetime(2026, 10, 24, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr(bootstrap, "_utc_now", lambda: now)
+    monkeypatch.setattr(bootstrap.PublishedReferences, "initialize", lambda self: None)
+    monkeypatch.setattr(
+        bootstrap.ChinaTradingCalendar,
+        "open_dates",
+        lambda self: (now.date().replace(day=23), now.date().replace(day=26)),
+    )
+    group = bootstrap.BuildProfiledSystem(config, profiles=profiles)
+    scope = group.systems[0].run_scope
+    for system in group.systems:
+        for initialize in system.supervisor._initializers:  # noqa: SLF001 - verifies actual composition guards
+            initialize()
+        assert system.run_scope is scope and scope.is_preview
+        status = group.app.test_client().get(f"/api/status?profile={system.profile_id}").get_json()
+        assert status["run_mode"] == "preview"
+        assert status["market_trade_date"] == "2026-10-23"
+        assert status["preview_run_id"] == scope.preview.run_id
+        assert status["preview_state"] == "waiting_inputs"
+        assert not (tmp_path / "data/recommendation" / system.profile_id).exists()
+        assert not (tmp_path / "data/research" / system.profile_id).exists()
+    allocated = [scope.next_sequence(lambda: pytest.fail("preview touched persistent sequence")) for _ in profiles]
+    assert len(set(allocated)) == len(profiles)
 
 
 @pytest.mark.parametrize("profiles", _SELECTIONS)

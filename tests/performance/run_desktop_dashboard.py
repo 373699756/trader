@@ -62,6 +62,7 @@ from trader.recommendation.domain.publication.decision_identity import (  # noqa
     SelectionDiagnostics,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
+from trader.recommendation.domain.publication.preview import PreviewContext  # noqa: E402
 from trader.recommendation.infra.status_projection import InputQualityPayload  # noqa: E402
 from trader.web import CreateApp  # noqa: E402
 
@@ -97,14 +98,130 @@ class _BrowserHistory:
         return ()
 
 
+class _PreviewClock:
+    def now(self) -> datetime:
+        return datetime(2026, 8, 16, 17, 1, tzinfo=_SHANGHAI)
+
+
+class _PreviewBrowserFixtures:
+    def __init__(self, items: tuple[DecisionItem, ...], pipeline: RecommendationPipelineStatus) -> None:
+        started_at = datetime(2026, 8, 16, 17, 0, tzinfo=_SHANGHAI)
+        self.context = PreviewContext("browser-preview", date(2026, 8, 14), started_at)
+        self.generated_at = started_at.replace(second=5)
+        self._state: Literal["waiting_inputs", "running", "ready", "failed"] = "waiting_inputs"
+        self._error: str | None = None
+        self._published_count = 0
+        self._indexes = {profile: UnifiedDecisionIndex() for profile in ("v1", "v2", "v3", "v5")}
+        completed_items = tuple(
+            replace(item, quote=replace(item.quote, source_time=self.context.market_as_of))
+            if item.quote is not None
+            else item
+            for item in items
+        )
+        self._decisions = {
+            (profile, strategy): ScoredDecision(
+                strategy,
+                started_at.date(),
+                1,
+                self.generated_at,
+                "local",
+                None,
+                self._input_versions(profile),
+                "config:browser-preview",
+                "strategy:browser-preview",
+                "fusion:browser-preview",
+                completed_items,
+                (),
+                pipeline=pipeline,
+                preview_context=self.context,
+            )
+            for profile in self._indexes
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
+        }
+        self.services = ProfiledWebServices(
+            {
+                profile: UnifiedWebServices(
+                    UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _BrowserHistory(), _PreviewClock()),
+                    UnifiedDecisionEventStream(),
+                    self._status,
+                    profile_id=profile,
+                )
+                for profile, index in self._indexes.items()
+            },
+            default_profile="v2",
+        )
+
+    @property
+    def published_count(self) -> int:
+        return self._published_count
+
+    @property
+    def event_counts(self) -> tuple[int, ...]:
+        return tuple(service.events.status().sequence for service in self.services.profiles.values())
+
+    def set_state(
+        self, state: Literal["waiting_inputs", "running", "ready", "failed"], error: str | None = None
+    ) -> None:
+        self._state = state
+        self._error = error
+
+    def publish(self) -> None:
+        if self._published_count:
+            raise RuntimeError("preview browser fixture must only compute once")
+        self._state = "running"
+        for (profile, _), decision in self._decisions.items():
+            result = self._indexes[profile].publish(decision, expected_version=None)
+            if not result.accepted or result.event is None:
+                raise RuntimeError("preview browser fixture publication failed")
+            self.services.profiles[profile].events.publish_committed(result.event)
+            self._published_count += 1
+
+    def _status(self) -> dict[str, object]:
+        return {
+            "status": "running",
+            "runtime_started": True,
+            "phase": "after_close",
+            "run_mode": "preview",
+            "preview_run_id": self.context.run_id,
+            "market_trade_date": self.context.market_trade_date.isoformat(),
+            "market_as_of": self.context.market_as_of.isoformat(),
+            "preview_started_at": self.context.started_at.isoformat(),
+            "preview_state": self._state,
+            "preview_error": self._error,
+            "scheduler": {"lanes": [], "input_quality": {}},
+            "market_data": {"active_source": "fixture"},
+            "deepseek": {"enabled": False},
+            "health": {"level": "normal", "issue_count": 0},
+        }
+
+    def _input_versions(self, profile: str) -> tuple[tuple[str, str], ...]:
+        if profile != "v1":
+            return (("score_scale", "weighted_evidence_quality_0_100"), ("score_model", f"{profile}:browser"))
+        return (
+            ("score_scale", "learned_rank_percentile_0_100"),
+            ("score_model_id", "learned_rank"),
+            ("score_model", "learned_rank:" + "b" * 64),
+            ("score_contract_hash", "a" * 64),
+            ("rank_population", "learned-rank-population:" + "c" * 64),
+            ("execution_mode", "shadow"),
+            ("production_authority", "false"),
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--filter-counts-only", action="store_true", help="check filter disposition counts")
+    parser.add_argument("--preview-only", action="store_true", help="check ephemeral preview through HTTP and SSE")
     parser.add_argument("--chrome-binary", type=Path, help="use an explicit Chrome binary for desktop acceptance")
     args = parser.parse_args()
     try:
-        report = _run(args.output.parent, filter_counts_only=args.filter_counts_only, chrome_binary=args.chrome_binary)
+        report = _run(
+            args.output.parent,
+            filter_counts_only=args.filter_counts_only,
+            preview_only=args.preview_only,
+            chrome_binary=args.chrome_binary,
+        )
     except Exception as exc:
         report = {
             "schema_version": REPORT_SCHEMA,
@@ -117,10 +234,21 @@ def main() -> int:
     return 0 if report["passed"] else 1
 
 
-def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: Path | None = None) -> dict[str, object]:
+def _run(
+    output_dir: Path,
+    *,
+    filter_counts_only: bool = False,
+    preview_only: bool = False,
+    chrome_binary: Path | None = None,
+) -> dict[str, object]:
     driver_binary = shutil.which("geckodriver")
     app_port = _free_port()
-    services, publish_empty_draft = _browser_services()
+    preview = (
+        _PreviewBrowserFixtures((_observation_item("600001", rank=1, final_score=74.0),), _browser_pipeline())
+        if preview_only
+        else None
+    )
+    services, publish_empty_draft = _browser_services() if preview is None else (preview.services, preview.publish)
     server = make_server("127.0.0.1", app_port, CreateApp(services=services), threaded=True)
     driver_port = _free_port()
     server_thread = threading.Thread(target=server.serve_forever, name="browser-fixture", daemon=True)
@@ -165,6 +293,8 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: P
             browser_name = "chrome-headless"
         _navigate(base, f"http://127.0.0.1:{app_port}/")
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
+        if preview is not None:
+            return _preview_acceptance(base, preview, output_dir, browser_name)
         if filter_counts_only:
             return _filter_counts(base, browser_name)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -316,6 +446,115 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False, chrome_binary: P
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
+
+
+def _preview_acceptance(
+    base: str | _ChromeSession,
+    fixture: _PreviewBrowserFixtures,
+    output_dir: Path,
+    browser_name: str,
+) -> dict[str, object]:
+    def publication_text() -> str:
+        return str(_execute(base, 'return document.querySelector("#publicationStatus")?.textContent || "";'))
+
+    def refresh() -> None:
+        _execute(base, 'document.querySelector("#refreshButton").click(); return true;')
+
+    _wait(lambda: publication_text() == "测试预览 · 等待输入", "preview waiting inputs")
+    _wait(
+        lambda: _execute(base, 'return document.querySelector("#streamStatus").textContent;') == "实时",
+        "preview SSE connection",
+    )
+    fixture.publish()
+    _wait(
+        lambda: _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) == 1,
+        "preview SSE rows",
+    )
+    sse = _execute(base, "return window.TraderDashboardDiagnostics.snapshot().recommendationPatchesApplied;")
+    fixture.set_state("ready")
+    refresh()
+    _wait(lambda: publication_text() == "测试预览 · 已完成", "preview completed status")
+    before = _execute(
+        base,
+        "return fetch('/api/decisions/tomorrow/current?profile=v2').then(r => r.json()).then(p => p.publication_id);",
+    )
+    refresh()
+    for _ in range(2):
+        _execute(base, "window.__previewReloadPending = true; window.location.reload(); return true;")
+        _wait(
+            lambda: bool(
+                _execute(
+                    base,
+                    """return !window.__previewReloadPending
+                      && document.querySelector('#publicationStatus')?.textContent === '测试预览 · 已完成';""",
+                )
+            ),
+            "preview reload completed status",
+        )
+    after = _execute(
+        base,
+        "return fetch('/api/decisions/tomorrow/current?profile=v2').then(r => r.json()).then(p => p.publication_id);",
+    )
+    profiles = []
+    for profile in ("v1", "v3", "v5", "v2"):
+        _execute(base, f'document.querySelector(".profile-tab[data-profile={profile}]").click(); return true;')
+        _wait(
+            lambda profile=profile: bool(
+                _execute(
+                    base,
+                    f"""const selected = document.querySelector('.profile-tab[aria-selected=true]');
+                      return selected?.dataset.profile === '{profile}'
+                      && document.querySelector('#publicationMeta').textContent.includes('2026-08-14')
+                      && document.querySelector('#sixSeatMeta').textContent.includes('测试预览');""",
+                )
+            ),
+            f"{profile} preview display",
+        )
+        profiles.append(
+            _execute(
+                base,
+                """return {profile: document.querySelector('.profile-tab[aria-selected=true]').dataset.profile,
+                  publication: document.querySelector('#publicationStatus').textContent,
+                  meta: document.querySelector('#publicationMeta').textContent,
+                  six_seat_meta: document.querySelector('#sixSeatMeta').textContent};""",
+            )
+        )
+    fixture.set_state("failed", "production_model_contract_conflict")
+    refresh()
+    _wait(lambda: publication_text() == "测试预览 · 已阻塞", "preview blocked state retains local result")
+    failed = _execute(base, "return document.querySelector('#publicationMeta').textContent;")
+    errors = _execute(base, "return window.TraderDashboardDiagnostics.snapshot().browserErrors;")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "preview.png").write_bytes(base64.b64decode(str(_screenshot(base))))
+    shadow = next((item for item in profiles if isinstance(item, dict) and item.get("profile") == "v1"), {})
+    passed = (
+        isinstance(sse, int)
+        and sse >= 1
+        and before == after
+        and isinstance(before, str)
+        and bool(before)
+        and fixture.published_count == 8
+        and fixture.event_counts == (2, 2, 2, 2)
+        and "Shadow" in str(shadow.get("meta"))
+        and "production_model_contract_conflict" in str(failed)
+        and errors == []
+    )
+    return {
+        "schema_version": REPORT_SCHEMA,
+        "passed": passed,
+        "browser": browser_name,
+        "preview": {
+            "profiles": profiles,
+            "sse_patches": sse,
+            "refresh_version_unchanged": before == after,
+            "published_count": fixture.published_count,
+            "event_counts": fixture.event_counts,
+            "blocked_meta": failed,
+            "browser_errors": errors,
+            "screenshot": "preview.png",
+        },
+        "external_network_calls": 0,
+    }
 
 
 def _filter_counts(base: str | _ChromeSession, browser_name: str) -> dict[str, object]:

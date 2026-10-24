@@ -19,6 +19,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     DisplayQuoteCodes,
     FormalScoredDecision,
     IdentityCodes,
+    IsPreviewDecision,
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import Strategy
@@ -207,6 +208,21 @@ class UnifiedDecisionIndex:
             self._overlays[overlay.strategy] = overlay
             return UnifiedOverlayPublishResult(True, "accepted")
 
+    @property
+    def next_scored_sequence(self) -> int:
+        with self._lock:
+            return (
+                max(
+                    (
+                        decision.sequence
+                        for strategy in (Strategy.TOMORROW, Strategy.D25)
+                        if isinstance((decision := self._current.get(strategy)), ScoredDecision)
+                    ),
+                    default=0,
+                )
+                + 1
+            )
+
     def snapshot(self, strategy: Strategy) -> UnifiedDecisionSnapshot:
         with self._lock:
             return UnifiedDecisionSnapshot(
@@ -264,6 +280,11 @@ class UnifiedDecisionIndex:
         fallback_decision: ScoredDecision | None = None,
     ) -> UnifiedDecisionSealResult:
         with self._lock:
+            current = self._current.get(strategy)
+            if (isinstance(current, ScoredDecision) and IsPreviewDecision(current)) or (
+                fallback_decision is not None and IsPreviewDecision(fallback_decision)
+            ):
+                return UnifiedDecisionSealResult(False, "preview_only")
             existing = self._seals.get(strategy)
             if existing is not None:
                 if existing.boundary_at == boundary_at:
@@ -297,6 +318,8 @@ class UnifiedDecisionIndex:
         boundary_at: datetime,
         official_close_version: str,
     ) -> UnifiedDecisionSealResult:
+        if IsPreviewDecision(decision):
+            return UnifiedDecisionSealResult(False, "preview_only")
         with self._lock:
             existing = self._seals.get(decision.strategy)
             if existing is not None:
@@ -325,6 +348,8 @@ class UnifiedDecisionIndex:
             )
 
     def commit_formal(self, record: CommittedDecisionRecord) -> bool:
+        if IsPreviewDecision(record.decision):
+            return False
         with self._lock:
             existing = self._formal.get(record.strategy)
             if existing is not None:
@@ -339,6 +364,8 @@ class UnifiedDecisionIndex:
             return True
 
     def restore_formal(self, record: CommittedDecisionRecord) -> bool:
+        if IsPreviewDecision(record.decision):
+            return False
         with self._lock:
             current = self._current.get(record.strategy)
             if current is not None and current.trade_date > record.trade_date:

@@ -11,6 +11,7 @@ from trader.recommendation.application.ports.read_only_queries import InputQuali
 from trader.recommendation.application.runtime.cadence import CadencePlannerStatus
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
+from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
@@ -55,11 +56,14 @@ def RuntimeStatus(
     ]
     if observer_error:
         degraded_reasons.append(f"observer:{observer_error}")
+    preview_failed = status.preview_context is not None and status.preview_state == "failed"
+    if preview_failed:
+        degraded_reasons.append(f"preview:{status.preview_error or 'preview_run_failed'}")
     io_failures = tuple(item for item in status.publication_io if item.state is StageState.FAILED)
     degraded_reasons.extend(
         f"{item.target.strategy.value}:publication_io:{item.operation}:{item.reasons[0].code}" for item in io_failures
     )
-    issue_count = len(active_issues) + int(bool(observer_error)) + len(io_failures)
+    issue_count = len(active_issues) + int(bool(observer_error)) + len(io_failures) + int(preview_failed)
     health_level = (
         "error"
         if not status.running or any(issue.severity == "error" for issue in active_issues)
@@ -72,6 +76,7 @@ def RuntimeStatus(
         "runtime_started": status.running,
         "runtime_version": status.config_version,
         "phase": status.phase.value,
+        **_preview_status_payload(status),
         "deepseek_budget": deepseek_budget,
         "deepseek": deepseek,
         "market_data": market_data,
@@ -122,6 +127,21 @@ def RuntimeStatus(
             "input_quality": InputQualityPayload(status.input_quality),
             "publication_io": [PublicationIoPayload(item) for item in status.publication_io],
         },
+    }
+
+
+def _preview_status_payload(status: SchedulerRuntimeStatus) -> dict[str, object]:
+    context = status.preview_context
+    if context is None:
+        return {}
+    return {
+        "run_mode": "preview",
+        "preview_run_id": context.run_id,
+        "market_trade_date": context.market_trade_date.isoformat(),
+        "market_as_of": context.market_as_of.isoformat(),
+        "preview_started_at": context.started_at.isoformat(),
+        "preview_state": status.preview_state,
+        "preview_error": status.preview_error,
     }
 
 

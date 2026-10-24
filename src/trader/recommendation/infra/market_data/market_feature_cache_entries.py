@@ -20,3 +20,4 @@ class _HistoryEntry:
 class _IntradayEntry:
     bars: tuple[MinuteBar, ...]
     expires_at: float
+    degraded: bool = False

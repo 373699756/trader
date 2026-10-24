@@ -23,6 +23,7 @@ from trader.infra.workers import (
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.refresh import IntradayInputIdentity, IntradayRefreshResult
 from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.market_cache_identity import (
     MinuteContentVersion,
     _add_action_restriction,
@@ -56,6 +57,7 @@ class _IntradayLoadRequest:
     observed_at: datetime
     action_restrictions: dict[str, set[str]] | None
     deadline: float
+    preview_context: PreviewContext | None = None
 
 
 @dataclass
@@ -100,6 +102,13 @@ class IntradayLoader:
         self._latest_source_time = ""
         self._sources: tuple[str, ...] = ()
         self._data_versions: tuple[str, ...] = ()
+        self._preview_context: PreviewContext | None = None
+
+    def prepare_preview(self, context: PreviewContext | None) -> None:
+        with self._lock:
+            if self._preview_context != context:
+                self._entries.clear()
+                self._preview_context = context
 
     def refresh(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
         observed_at = observed_at.astimezone(_SHANGHAI)
@@ -130,7 +139,11 @@ class IntradayLoader:
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         request = _IntradayLoadRequest(
-            tuple(codes), observed_at, action_restrictions, self._monotonic() + self._batch_timeout_seconds
+            tuple(codes),
+            observed_at,
+            action_restrictions,
+            self._monotonic() + self._batch_timeout_seconds,
+            self._preview_context,
         )
         source_lanes = self._runner.source_lanes
         if source_lanes is not None and not source_lanes.owns_current_thread("eastmoney_intraday"):
@@ -144,6 +157,14 @@ class IntradayLoader:
         source_lanes = self._runner.source_lanes
         assert source_lanes is not None
         identity = _source_batch_identity("intraday_minutes", request.codes, request.observed_at)
+        if request.preview_context is not None:
+            identity = _source_batch_identity(
+                "intraday_minutes",
+                request.codes,
+                request.observed_at,
+                preview_run_id=request.preview_context.run_id,
+                market_trade_date=request.preview_context.market_trade_date,
+            )
         lane_restrictions: dict[str, set[str]] = {}
         lane_future = source_lanes.submit(
             "eastmoney_intraday",
@@ -181,7 +202,10 @@ class IntradayLoader:
             self._error_count += 1
             self._last_error = "intraday_batch_deadline"
         cache = self._runner.cache
-        if cache is not None:
+        if request.preview_context is not None:
+            for code in fallback:
+                self._cache_intraday_timeout(request, code, self._entries.get(code))
+        if cache is not None and request.preview_context is None:
             for code, bars in fallback.items():
                 if not bars:
                     continue
@@ -207,6 +231,8 @@ class IntradayLoader:
                     state.previous[code] = entry
                 if code not in result and entry is not None and entry.expires_at > now:
                     result[code] = entry.bars
+                    if entry.degraded:
+                        _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
                     self._mark_intraday_actionability(request, code, entry.bars)
         missing = [code for code in request.codes if code not in result]
         if self._client is None:
@@ -225,7 +251,7 @@ class IntradayLoader:
     ) -> dict[str, tuple[MinuteBar, ...]]:
         result: dict[str, tuple[MinuteBar, ...]] = {}
         cache = self._runner.cache
-        if cache is None:
+        if cache is None or request.preview_context is not None:
             return result
         for code in request.codes:
             lookup = cache.get(self._intraday_cache_identity(code, request.observed_at))
@@ -260,11 +286,10 @@ class IntradayLoader:
                         break
                     future = SubmitOrReject(
                         self._minute_pool,
-                        self._client.fetch_intraday_minutes,
+                        self._fetch_minutes,
                         code,
-                        now=state.request.observed_at,
-                        deadline=batch_deadline,
-                        cancelled=cancelled.is_set,
+                        state.request,
+                        cancelled.is_set,
                     )
                     futures[future] = code
                 completed, _ = wait(
@@ -292,12 +317,45 @@ class IntradayLoader:
     ) -> None:
         old_entry = state.previous.get(code)
         bars, ttl, used_fallback = self._resolve_intraday_result(future, old_entry)
+        bars = self._preview_minutes(bars, state.request.preview_context)
         state.result[code] = bars
         self._cache_intraday_result(state.request, code, bars, used_fallback)
         if bars or old_entry is None:
             with self._lock:
                 expires_in = min(15.0, ttl) if used_fallback else ttl
-                self._entries[code] = _IntradayEntry(bars, self._monotonic() + expires_in)
+                self._entries[code] = _IntradayEntry(
+                    bars,
+                    self._monotonic() + expires_in,
+                    degraded=state.request.preview_context is not None and used_fallback,
+                )
+
+    def _fetch_minutes(
+        self, code: str, request: _IntradayLoadRequest, cancelled: Callable[[], bool]
+    ) -> tuple[MinuteBar, ...]:
+        assert self._client is not None
+        if request.preview_context is not None:
+            return self._client.fetch_intraday_minutes(
+                code,
+                now=request.observed_at,
+                deadline=request.deadline,
+                cancelled=cancelled,
+                preview_context=request.preview_context,
+            )
+        return self._client.fetch_intraday_minutes(
+            code, now=request.observed_at, deadline=request.deadline, cancelled=cancelled
+        )
+
+    def _preview_minutes(self, bars: tuple[MinuteBar, ...], context: PreviewContext | None) -> tuple[MinuteBar, ...]:
+        if context is None:
+            return bars
+        observed_at = self._runner.wall_clock()
+        return tuple(
+            bar
+            for bar in bars
+            if bar.source_time.astimezone(_SHANGHAI).date() == context.market_trade_date
+            and bar.source_time <= context.market_as_of
+            and bar.source_time <= bar.received_time <= observed_at
+        )
 
     def _resolve_intraday_result(
         self,
@@ -349,6 +407,10 @@ class IntradayLoader:
         used_fallback: bool,
     ) -> None:
         cache = self._runner.cache
+        if request.preview_context is not None:
+            if used_fallback:
+                _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+            return
         if cache is None:
             return
         identity = self._intraday_cache_identity(code, request.observed_at)
@@ -393,6 +455,13 @@ class IntradayLoader:
         old_entry: _IntradayEntry | None,
     ) -> None:
         cache = self._runner.cache
+        if request.preview_context is not None:
+            if old_entry is not None and old_entry.bars:
+                _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+                with self._lock:
+                    if self._entries.get(code) is old_entry:
+                        self._entries[code] = replace(old_entry, degraded=True)
+            return
         if cache is None:
             return
         identity = self._intraday_cache_identity(code, request.observed_at)
@@ -416,7 +485,7 @@ class IntradayLoader:
         bars: Sequence[MinuteBar],
     ) -> None:
         cache = self._runner.cache
-        if cache is None or not bars:
+        if cache is None or not bars or request.preview_context is not None:
             return
         identity = self._intraday_cache_identity(code, request.observed_at)
         if not cache.is_actionable(identity, max(bar.source_time for bar in bars)):
@@ -441,7 +510,9 @@ class IntradayLoader:
                 )[:excess]
                 for code in oldest:
                     self._entries.pop(code, None)
-            if self._covered_rows == self._requested_rows:
+            if self._covered_rows == self._requested_rows and not any(
+                self._entries[code].degraded for code in state.request.codes if code in self._entries
+            ):
                 self._last_error = ""
 
     def _intraday_cache_identity(self, code: str, observed_at: datetime) -> CacheIdentity:
@@ -483,7 +554,7 @@ class IntradayLoader:
         result: dict[str, tuple[MinuteBar, ...]] = {}
         cache = self._runner.cache
         observed_at = observed_at or self._runner.wall_clock()
-        if cache is not None:
+        if cache is not None and self._preview_context is None:
             for code in codes:
                 identity = self._runner.cache_identity(
                     "intraday_minutes",
@@ -504,18 +575,25 @@ class IntradayLoader:
                 entry = self._entries.get(code)
                 if entry is None or entry.expires_at <= now:
                     continue
-                result[code] = entry.bars
-                if cache is not None and entry.bars:
-                    identity = self._runner.cache_identity(
-                        "intraday_minutes",
-                        "eastmoney",
-                        code,
-                        {"code": code, "scale_minutes": 1, "adjust": "none"},
-                        observed_at,
-                    )
-                    if not cache.is_actionable(identity, max(bar.source_time for bar in entry.bars)):
-                        _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
+                result[code] = self._preview_minutes(entry.bars, self._preview_context)
+                self._mark_retained_intraday_actionability(code, entry, observed_at, action_restrictions)
         return result
+
+    def _mark_retained_intraday_actionability(
+        self,
+        code: str,
+        entry: _IntradayEntry,
+        observed_at: datetime,
+        action_restrictions: dict[str, set[str]] | None,
+    ) -> None:
+        if entry.degraded:
+            _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
+        cache = self._runner.cache
+        if cache is None or not entry.bars or self._preview_context is not None:
+            return
+        identity = self._intraday_cache_identity(code, observed_at)
+        if not cache.is_actionable(identity, max(bar.source_time for bar in entry.bars)):
+            _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
 
     def status(self) -> IntradayLoaderStatus:
         with self._lock:

@@ -16,6 +16,7 @@ from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequ
 if TYPE_CHECKING:
     from trader.recommendation.domain.evidence.review import RiskFact
     from trader.recommendation.domain.market.research import ResearchComponentCoverage
+    from trader.recommendation.domain.publication.preview import PreviewContext
 
 
 class Board(str, Enum):
@@ -241,6 +242,7 @@ class FeatureSnapshot:
     research_components: ResearchComponentCoverage | None = None
     model_sequence: ModelPriceVolumeSequence | None = None
     model_history_quality: ModelHistoryQuality | None = None
+    preview_context: PreviewContext | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))

@@ -25,6 +25,7 @@ from trader.recommendation.domain.publication.decision_identity import (
 )
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 ResyncReason = Literal[
     "cursor_ahead",
@@ -51,6 +52,7 @@ class DecisionReplacementPatch:
     items: tuple[DecisionItem, ...]
     top_scores: tuple[DecisionItem, ...] = ()
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
+    preview_context: PreviewContext | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,7 @@ class UnifiedDecisionEventStream:
                 selected,
                 top_scores,
                 decision.pipeline,
+                decision.preview_context,
             )
         payload = DecisionEventPayload(
             event.strategy,

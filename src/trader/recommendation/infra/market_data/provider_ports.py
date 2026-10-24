@@ -20,6 +20,7 @@ from trader.infra.market_data.source_health import (
 )
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.tail import MinuteBar
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 
 class FullMarketSource(Protocol):
@@ -43,6 +44,7 @@ class IntradaySource(Protocol):
         now: datetime | None = None,
         deadline: float | None = None,
         cancelled: Callable[[], bool] | None = None,
+        preview_context: PreviewContext | None = None,
     ) -> tuple[MinuteBar, ...]: ...
 
 

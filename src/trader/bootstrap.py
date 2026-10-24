@@ -11,6 +11,7 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from flask import Flask
 
@@ -102,6 +103,7 @@ from trader.recommendation.application.pipeline.static_market.static_pipeline im
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
@@ -612,7 +614,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         latency,
         cadence_policy,
         workers,
-        settings.data_paths.budget,
         owns_shared_runtime,
     )
     reference_publication = ReferencePublication(paths.reference)
@@ -630,6 +631,13 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         )
     )
     calendar = ChinaTradingCalendar(references.reference, now=now)
+    run_scope = (
+        shared_inputs.run_scope
+        if shared_inputs
+        else RecommendationRunScope(
+            True, references.initialize, calendar.open_dates, ShanghaiClock(now).now, lambda: uuid4().hex
+        )
+    )
     persistence = _build_persistence(context, shared_inputs.budget if shared_inputs else None)
     profile_id = strategy.scoring_profile
     model_failure = "production_model_missing"
@@ -707,16 +715,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             local_scoring,
             TryBuildCommittedResearchAudit,
             monotonic=time.monotonic,
-            next_sequence=lambda: persistence.sequence.allocate(
-                width=2,
-                minimum=max(
-                    (
-                        current.sequence + 1
-                        for strategy in (Strategy.TOMORROW, Strategy.D25)
-                        if (current := publication.tomorrow_index.snapshot(strategy).current) is not None
-                    ),
-                    default=1,
-                ),
+            next_sequence=lambda: run_scope.next_sequence(
+                lambda: persistence.sequence.allocate(width=2, minimum=publication.tomorrow_index.next_scored_sequence)
             ),
         ),
     )
@@ -751,6 +751,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             publish_overlay=publish_overlay_event,
             latency=latency,
             publication_io=publication_io,
+            run_scope=run_scope,
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -777,29 +778,31 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         RuntimeSupervisorConfig(
             now=now,
             initializers=(
-                persistence.sequence.initialize,
-                publication.tomorrow_records.initialize,
-                lambda: _initialize_if_available(publication.research_trace),
-                lambda: _initialize_if_available(persistence.outcomes),
-                lambda: InitializeReferenceDataPlane(market_data, persistence.data_plane),
+                run_scope.initialize,
+                *(
+                    partial(run_scope.run_live, initialize)
+                    for initialize in (
+                        persistence.sequence.initialize,
+                        publication.tomorrow_records.initialize,
+                        lambda: _initialize_if_available(publication.research_trace),
+                        lambda: _initialize_if_available(persistence.outcomes),
+                        lambda: InitializeReferenceDataPlane(market_data, persistence.data_plane),
+                        lambda: publication.tomorrow_freezer.restore(now().date()),
+                        lambda: publication.d25_freezer.restore(now().date()),
+                    )
+                ),
                 *((persistence.budget.initialize,) if shared_inputs is None else ()),
-                lambda: publication.tomorrow_freezer.restore(now().date()),
-                lambda: publication.d25_freezer.restore(now().date()),
                 *((lambda: persistence.budget.recover_incomplete(now()),) if shared_inputs is None else ()),
             ),
             interval_seconds=SchedulerIntervalSeconds,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            record_error=lambda _error: None,
         ),
     )
     web_services = UnifiedWebServices(
         publication.decision_queries,
         publication.decision_events,
         lambda: _runtime_status(scheduler, reviewer, market_data.health, model_scoring.status()),
-        WebApiConfig(
-            heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
-            snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
-        ),
+        WebApiConfig(settings.pipeline.publish_heartbeat_seconds, settings.api.web_snapshot_retention_seconds),
         profile_id,
     )
     app = CreateApp(services=web_services)
@@ -830,6 +833,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         market_data=market_data,
         budget=persistence.budget,
         review_cache=review_cache,
+        run_scope=run_scope,
         owns_shared_resources=shared_inputs is None,
     )
 
@@ -843,7 +847,12 @@ def BuildProfiledSystem(
     default_profile = "v2" if "v2" in profiles else profiles[0]
     primary = BuildSystem(config_path, scoring_profile=default_profile, runtime_scope=default_profile)
     shared = SharedRecommendationInputs(
-        primary.workers, primary.market_data, primary.budget, primary.review_cache, primary.input_preloader
+        primary.workers,
+        primary.market_data,
+        primary.budget,
+        primary.review_cache,
+        primary.input_preloader,
+        primary.run_scope,
     )
     build_secondary = partial(BuildSystem, config_path, owns_shared_runtime=False, shared_inputs=shared)
     systems = [primary]
@@ -1098,7 +1107,7 @@ def _build_persistence(
     data_plane = SQLiteDataPlane(profile_root / "snapshots.sqlite3")
     outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records)
     budget = shared_budget or DeepSeekBudgetLedger(
-        context.budget_path,
+        settings.data_paths.budget,
         daily_hard_limit=settings.deepseek.daily_hard_limit,
         strategy_limits=settings.deepseek.strategy_limits,
         stage_targets=settings.deepseek.stage_targets,
@@ -1106,13 +1115,8 @@ def _build_persistence(
         health_policy=DeepSeekHealthPolicy.from_settings(settings.deepseek.adaptive),
         write_lock=threading.Lock(),
     )
-    return RuntimePersistenceContext(
-        PublicationSequence(profile_root / "snapshots.sqlite3"),
-        records,
-        data_plane,
-        budget,
-        outcomes,
-    )
+    sequence = PublicationSequence(profile_root / "snapshots.sqlite3")
+    return RuntimePersistenceContext(sequence, records, data_plane, budget, outcomes)
 
 
 def _build_publication(
@@ -1154,8 +1158,6 @@ def _build_publication(
         publication_io=publication_io,
         production_authority=production_authority,
     )
-    tomorrow_freezer = freezer(strategy=Strategy.TOMORROW)
-    d25_freezer = freezer(strategy=Strategy.D25)
     long_runtime = LongRuntime(
         LongRuntimeDependencies(
             market_data,
@@ -1178,8 +1180,8 @@ def _build_publication(
         long_runtime,
         decision_queries,
         decision_events,
-        tomorrow_freezer,
-        d25_freezer,
+        freezer(strategy=Strategy.TOMORROW),
+        freezer(strategy=Strategy.D25),
         observer,
     )
 

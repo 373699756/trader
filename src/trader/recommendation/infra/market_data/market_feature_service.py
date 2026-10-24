@@ -31,6 +31,7 @@ from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.recommendation.domain.market.refresh import IntradayRefreshResult
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
@@ -76,6 +77,18 @@ class MarketFeatureService:
         self._latest_market_quotes: tuple[MarketQuote, ...] = ()
         self._static_pipeline = dependencies.static_pipeline
         self._monotonic = dependencies.monotonic
+        self._preview_context: PreviewContext | None = None
+
+    def prepare_preview(self, context: PreviewContext | None) -> None:
+        """Use one explicit market day throughout collection and feature qualification."""
+        if context == self._preview_context:
+            return
+        self.quotes.prepare_preview(context)
+        self.history.prepare_preview(context)
+        self.intraday.prepare_preview(context)
+        with self._eligibility_lock:
+            self._latest_market_quotes = ()
+            self._preview_context = context
 
     @property
     def static_cache(self) -> StaticMarketCache:

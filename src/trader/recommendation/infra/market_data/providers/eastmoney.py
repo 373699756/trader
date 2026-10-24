@@ -17,6 +17,7 @@ from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.tail import MinuteBar
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.market_cache_identity import MinuteContentVersion
 from trader.recommendation.infra.market_data.outcome_history import PairOutcomeHistory
 from trader.recommendation.infra.normalization.quote import (
@@ -150,11 +151,13 @@ class EastmoneyClient:
         now: datetime | None = None,
         deadline: float | None = None,
         cancelled: Callable[[], bool] | None = None,
+        preview_context: PreviewContext | None = None,
     ) -> tuple[MinuteBar, ...]:
         observed_at = now or self._wall_clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("intraday observation time must be timezone-aware")
         observed_local = observed_at.astimezone(_SHANGHAI)
+        market_as_of = preview_context.market_as_of if preview_context is not None else observed_local
         payload = self._get(
             ("push2his.eastmoney.com",),
             "/api/qt/stock/trends2/get",
@@ -185,7 +188,8 @@ class EastmoneyClient:
             close = ToFloat(parts[2])
             volume = ToFloat(parts[5])
             if (
-                source_time.date() != observed_local.date()
+                source_time.date() != market_as_of.date()
+                or source_time > market_as_of
                 or source_time > observed_local
                 or close is None
                 or close <= 0.0

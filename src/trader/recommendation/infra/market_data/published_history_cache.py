@@ -33,6 +33,7 @@ from trader.recommendation.domain.market.v5.features import (
     ModelPriceVolumeSequence,
     PriceVolumePoint,
 )
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
@@ -150,6 +151,7 @@ class PublishedHistoryCache:
         self._maintenance_stage: str | None = None
         self._maintenance_completed_units = 0
         self._maintenance_total_units = 0
+        self._preview_context: PreviewContext | None = None
 
         self._projection_owner = projection_owner or SharedHistoryProjection(history, monotonic=monotonic)
         self._projection_owner.register(self)
@@ -164,6 +166,10 @@ class PublishedHistoryCache:
 
     def projection_calendar(self) -> tuple[date, ...]:
         return self._open_dates() if self._open_dates else ()
+
+    def prepare_preview(self, context: PreviewContext | None) -> None:
+        with self._lock:
+            self._preview_context = context
 
     def initialize(self, *, cancelled: Callable[[], bool]) -> None:
         self._projection_owner.initialize(cancelled)
@@ -363,6 +369,8 @@ class PublishedHistoryCache:
         deadline: datetime | None,
     ) -> dict[str, tuple[DailyBar, ...]]:
         assert self._tail_recovery is not None
+        if self._preview_context is not None:
+            observed_at = self._preview_context.market_as_of
         with self._lock:
             manifest = self._manifest
         if manifest is None:
@@ -398,6 +406,8 @@ class PublishedHistoryCache:
             result = {code: entry.bars for code in requested if (entry := self._entries.get(code)) is not None}
             manifest = self._manifest
         if self._tail_recovery is not None and observed_at is not None:
+            if self._preview_context is not None:
+                observed_at = self._preview_context.market_as_of
             if manifest is not None:
                 result.update(self._tail_recovery.cached(requested, manifest, self._lookback_sessions, observed_at))
             if fresh_only:
@@ -414,6 +424,9 @@ class PublishedHistoryCache:
         self, entries: dict[str, tuple[DailyBar, ...]], observed_at: datetime
     ) -> dict[str, tuple[DailyBar, ...]]:
         assert self._open_dates is not None
+        if self._preview_context is not None:
+            day = self._preview_context.market_trade_date.isoformat()
+            return {code: bars for code, bars in entries.items() if bars and bars[-1].trade_date == day}
         try:
             observed_at = observed_at.astimezone(SHANGHAI)
             dates = self._open_dates()
@@ -439,6 +452,8 @@ class PublishedHistoryCache:
         }
 
     def _fresh(self, bars: tuple[DailyBar, ...], observed_at: datetime) -> bool:
+        if self._preview_context is not None:
+            return bool(bars) and bars[-1].trade_date == self._preview_context.market_trade_date.isoformat()
         if self._tail_recovery is None:
             return True
         try:
@@ -471,7 +486,11 @@ class PublishedHistoryCache:
         }
 
     def completed_model_inputs(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompletedModelInput, ...]:
-        day = observed_at.astimezone(SHANGHAI).date()
+        day = (
+            self._preview_context.market_trade_date
+            if self._preview_context is not None
+            else observed_at.astimezone(SHANGHAI).date()
+        )
         with self._lock:
             manifest = self._manifest
             entries = {code: self._entries.get(code) for code in codes}
@@ -520,6 +539,8 @@ class PublishedHistoryCache:
         if entry.context.sample_count < required_sessions:
             failure = "history_window_insufficient"
         elif entry.context.latest_trade_date > day.isoformat():
+            failure = "history_model_date_mismatch"
+        elif self._preview_context is not None and entry.context.latest_trade_date != day.isoformat():
             failure = "history_model_date_mismatch"
         elif previous is not None and entry.context.latest_trade_date < previous.isoformat():
             failure = "history_model_date_mismatch"

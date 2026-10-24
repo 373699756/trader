@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
+    IsPreviewDecision,
     IsShadowDecision,
     ScoredDecision,
 )
@@ -41,6 +42,8 @@ class DecisionCheckpoint:
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if IsPreviewDecision(self.decision):
+            raise ValueError("preview decisions cannot become formal checkpoints")
         if IsShadowDecision(self.decision):
             raise ValueError("shadow decisions cannot become formal checkpoints")
         if self.boundary_at.tzinfo is None or self.boundary_at.utcoffset() is None:
