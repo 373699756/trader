@@ -17,6 +17,7 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
     ObservePublicationIo,
     PublicationIoTarget,
 )
+from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPendingError,
@@ -121,6 +122,7 @@ class SchedulerRuntime:
         self._lock = threading.RLock()
         self._session = TradingSession(dependencies.clock.now, dependencies.monotonic)
         self._planned_generation = 0
+        self._preview_long_submitted = False
         self._running = False
         self._stopped = False
         self._shutdown_report: ShutdownReport | None = None
@@ -321,6 +323,22 @@ class SchedulerRuntime:
         return batch.next_delay_seconds
 
     def _submit_preview(self, observed_at: datetime) -> float:
+        observed_at = max(observed_at, ShanghaiNow(self._dependencies.clock.now()))
+        scope = self._dependencies.run_scope
+        long_quotes = self._dependencies.long_quotes
+        with self._lock:
+            if not self._preview_long_submitted and long_quotes is not None and scope is not None:
+                self._preview_long_submitted = long_quotes.offer_refresh(
+                    LongRefreshRequest(
+                        observed_at,
+                        "after_close",
+                        deadline=observed_at
+                        + timedelta(seconds=TaskExecutionBudgetSeconds(PipelineTask.LONG_QUOTES) or 3.0),
+                        force=True,
+                        session=self._session.capture(),
+                        preview_context=scope.preview,
+                    )
+                )
         if self._preview.status().state != "waiting_inputs":
             return 30.0
         lane = self._score_lane.status()

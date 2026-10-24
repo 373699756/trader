@@ -750,6 +750,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             latency=latency,
             publication_io=publication_io,
             run_scope=run_scope,
+            long_quotes=publication.long_runtime,
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,

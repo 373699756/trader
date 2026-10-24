@@ -421,6 +421,7 @@ class MarketFeatureService:
         *,
         force: bool = False,
         deadline: datetime | None = None,
+        preview_context: PreviewContext | None = None,
     ) -> Sequence[FeatureSnapshot]:
         normalized = self._eligible_codes(codes, observed_at)
         if not normalized:
@@ -431,6 +432,7 @@ class MarketFeatureService:
                 observed_at=observed_at,
                 force=force,
                 deadline=deadline,
+                preview_context=preview_context,
             )
         )
         return tuple(

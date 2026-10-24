@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from itertools import count
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
@@ -13,6 +15,7 @@ from trader.recommendation.application.ports.market_data import MarketDataUnavai
 from trader.recommendation.domain.publication.decision_identity import LongProjection
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
@@ -22,10 +25,12 @@ class _Quotes:
     def __init__(self, responses) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[tuple[str, ...], datetime, bool]] = []
+        self.contexts: list[PreviewContext | None] = []
 
-    def refresh_long_quotes(self, codes, observed_at, *, force=False, deadline=None):
+    def refresh_long_quotes(self, codes, observed_at, *, force=False, deadline=None, preview_context=None):
         del deadline
         self.calls.append((tuple(codes), observed_at, force))
+        self.contexts.append(preview_context)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -60,6 +65,36 @@ def _runtime(
         ),
     )
     return runtime, index
+
+
+@pytest.mark.parametrize("days_since_close", (1, 2, 7))
+def test_nontrading_long_preserves_last_close_price_change_and_source_time(
+    application_feature_factory, days_since_close
+):
+    close = datetime(2026, 10, 23, 15, 0, tzinfo=SHANGHAI)
+    observed = close + timedelta(days=days_since_close)
+    context = PreviewContext("long-preview", close.date(), observed)
+    feature = application_feature_factory("600001", observed)
+    feature = replace(feature, quote=replace(feature.quote, source_time=close, pct_change=-2.5))
+    intraday = replace(feature, quote=replace(feature.quote, code="600002", source_time=close - timedelta(minutes=1)))
+    older = replace(feature, quote=replace(feature.quote, code="600003", source_time=close - timedelta(days=1)))
+    quotes = _Quotes([(feature, intraday, older)])
+    runtime, index = _runtime(quotes, completed_at=observed)
+    try:
+        runtime.start()
+        assert runtime.offer_refresh(LongRefreshRequest(observed, "after_close", preview_context=context))
+        assert runtime.wait_idle(2.0)
+        snapshot = index.snapshot(Strategy.LONG)
+        current = snapshot.current
+        assert isinstance(current, LongProjection)
+        assert current.trade_date == observed.date() and current.observed_at == observed
+        assert snapshot.formal is None
+        assert current.items[0].price == 12.0 and current.items[0].pct_change == -2.5
+        assert current.items[0].source_time == close
+        assert all(item.quote_status == "missing" for item in current.items[1:])
+        assert quotes.contexts == [context]
+    finally:
+        assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0)).completed
 
 
 def test_disabled_long_lane_accepts_scheduler_handoffs_without_fetching_or_publishing() -> None:

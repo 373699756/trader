@@ -118,6 +118,7 @@ class _TargetQuoteRequest:
     lane: str = "tencent"
     urgent: bool = False
     max_observation_age_seconds: float | None = None
+    preview_context: PreviewContext | None = None
 
 
 class MarketDataGateway:
@@ -433,6 +434,7 @@ class MarketDataGateway:
         observed_at: datetime | None = None,
         force: bool = False,
         deadline: datetime | None = None,
+        preview_context: PreviewContext | None = None,
     ) -> Sequence[MarketQuote]:
         """Fetch the long watchlist on its caller-owned isolated worker."""
 
@@ -452,6 +454,7 @@ class MarketDataGateway:
                     isolated=True,
                     dataset="long_quotes",
                     max_observation_age_seconds=300.0 if observed_at is not None else None,
+                    preview_context=preview_context,
                 )
             )
         except MarketDataDeadlineExceededError:
@@ -524,7 +527,7 @@ class MarketDataGateway:
             limits=MergeObservationLimits(
                 targeted_codes=codes,
                 max_age_seconds=request.max_observation_age_seconds,
-                preview_context=self._preview_context,
+                preview_context=request.preview_context if isolated else self._preview_context,
             ),
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
@@ -549,7 +552,9 @@ class MarketDataGateway:
                 timeout_seconds=_target_quote_timeout_seconds(request.deadline, self._wall_clock),
             ),
             request.requested_at,
-            request.force or self._preview_context is not None,
+            request.force
+            or request.preview_context is not None
+            or (not request.isolated and self._preview_context is not None),
             request.deadline,
             1,
             request.isolated,

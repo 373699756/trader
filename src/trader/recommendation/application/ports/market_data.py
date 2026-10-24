@@ -15,6 +15,7 @@ from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapsh
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, LiveQuote
 from trader.recommendation.domain.market.refresh import IntradayRefreshResult
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 
 class MarketDataUnavailableError(RuntimeError):
@@ -159,7 +160,13 @@ class QuoteReaderPort(Protocol):
     ) -> Sequence[FeatureSnapshot]: ...
 
     def refresh_long_quotes(
-        self, codes: Sequence[str], observed_at: datetime, *, force: bool = False, deadline: datetime | None = None
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+        preview_context: PreviewContext | None = None,
     ) -> Sequence[FeatureSnapshot]: ...
 
     def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]: ...

@@ -20,6 +20,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQu
 from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,7 @@ class LongRuntime:
                     request.observed_at,
                     force=request.force,
                     deadline=request.deadline,
+                    preview_context=request.preview_context,
                 )
             )
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError):
@@ -180,7 +182,7 @@ class LongRuntime:
                 self._last_error_code = "long_quote_unavailable"
         with SessionGuard(request.session):
             completed_at = max(request.observed_at, _shanghai(self._now()))
-            fresh = _fresh_quotes(features, frozenset(self._codes), completed_at)
+            fresh = _fresh_quotes(features, frozenset(self._codes), completed_at, request.preview_context)
             items, next_retained, live_count, retained_count, missing_count = self._projection_items(
                 fresh,
                 completed_at,
@@ -300,6 +302,7 @@ def _fresh_quotes(
     features: tuple[FeatureSnapshot, ...],
     allowed_codes: frozenset[str],
     observed_at: datetime,
+    preview_context: PreviewContext | None = None,
 ) -> dict[str, MarketQuote]:
     candidates: dict[str, list[MarketQuote]] = {}
     for feature in features:
@@ -313,6 +316,7 @@ def _fresh_quotes(
             quote.code not in allowed_codes
             or source_time > observed_at
             or received_time > observed_at
+            or (preview_context is not None and not preview_context.accepts_quote(source_time, observed_at))
             or quote.price is None
             or not math.isfinite(quote.price)
             or quote.price <= 0.0

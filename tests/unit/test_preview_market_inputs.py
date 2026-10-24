@@ -112,6 +112,43 @@ def test_preview_compares_close_quotes_collected_at_different_real_times():
     assert full.observed_at == observed and targeted.observed_at == received
 
 
+@pytest.mark.parametrize("source_offset", (timedelta(), -timedelta(minutes=1), -timedelta(days=1)))
+def test_long_service_reads_close_without_preparing_short_model_preview(application_feature_factory, source_offset):
+    observed = NOW + timedelta(days=2)
+    context = PreviewContext("long-service-preview", NOW.date(), observed)
+    quote = replace(
+        application_feature_factory("600001", observed).quote,
+        source_time=context.market_as_of + source_offset,
+        received_time=observed,
+        pct_change=-1.25,
+    )
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((quote,)),
+        StaticTencentClient((quote,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: observed,
+    )
+    service = _service(
+        gateway,
+        None,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        wall_clock=lambda: observed,
+    )
+    features = service.refresh_long_quotes((quote.code,), observed, preview_context=context)
+    if source_offset == timedelta():
+        assert len(features) == 1
+        assert features[0].quote.source_time == context.market_as_of
+        assert features[0].quote.received_time == observed
+        assert features[0].quote.pct_change == -1.25
+    else:
+        assert features == ()
+    # Long carries its own context; the shared short-strategy mode stays unchanged.
+    assert gateway._preview_context is None
+
+
 def test_service_prepares_shared_preview_collection_and_feature_builder(application_feature_factory):
     observed = NOW + timedelta(days=2)
     context = PreviewContext("service-preview", NOW.date(), observed)

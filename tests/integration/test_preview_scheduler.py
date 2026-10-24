@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
 from tests.integration.test_scheduler_runtime import Decisions, FixedClock, Freezes, NoopResearchRuntime, Settlement
+from tests.unit.application.test_long_runtime import _Quotes, _runtime
 from tests.unit.application.test_preview_cycle import PreviewData, dependencies
 from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT, preview_decision
 from trader.infra.shutdown import ShutdownDeadline
-from trader.recommendation.application.ports.runtime import CycleRequest, ReviewUnavailableError
+from trader.recommendation.application.ports.runtime import (
+    CycleRequest,
+    DataRefreshUnavailableError,
+    ReviewUnavailableError,
+)
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.decision_identity import LongProjection, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -30,6 +36,59 @@ class PreviewDecisions(Decisions):
 class RejectResearch(NoopResearchRuntime):
     def observe(self, intent, request) -> bool:
         raise AssertionError("preview must not start persistent company research")
+
+
+@pytest.mark.parametrize("model_ready", (False, True))
+def test_long_close_refresh_is_independent_of_short_model_preparation(application_feature_factory, model_ready):
+    class ModelData(PreviewData):
+        def prepare_preview(self, context):
+            if not model_ready:
+                raise DataRefreshUnavailableError("production_model_contract_conflict")
+            super().prepare_preview(context)
+
+    deps = dependencies(ModelData())
+
+    def prepare_calendar():
+        deps.clock.current += timedelta(seconds=5)
+
+    scope = RecommendationRunScope(
+        True, prepare_calendar, lambda: (MARKET_DATE, MARKET_DATE.replace(day=26)), deps.clock.now, lambda: "preview-a"
+    )
+    close = STARTED_AT.replace(day=23, hour=15)
+    feature = application_feature_factory("600001", STARTED_AT)
+    feature = replace(feature, quote=replace(feature.quote, source_time=close, pct_change=1.75))
+    quotes = _Quotes([(feature,)])
+    long_runtime, index = _runtime(quotes, completed_at=STARTED_AT)
+    runtime = SchedulerRuntime(
+        replace(
+            deps,
+            run_scope=scope,
+            long_quotes=long_runtime,
+            index=index,
+            decisions=PreviewDecisions(),
+            publish_decision=lambda _: None,
+        ),
+        config_version="preview-fixture",
+    )
+    try:
+        long_runtime.start()
+        runtime.start()
+        runtime.submit_due()
+        assert runtime.wait_idle(3.0) and long_runtime.wait_idle(3.0)
+        assert runtime.status().preview_state == ("ready" if model_ready else "failed")
+        snapshot = index.snapshot(Strategy.LONG)
+        assert isinstance(snapshot.current, LongProjection)
+        assert snapshot.current.items[0].pct_change == 1.75
+        assert snapshot.current.items[0].source_time == close
+        assert snapshot.formal is None and quotes.contexts == [scope.preview]
+        assert quotes.calls[0][1] == deps.clock.now()
+        runtime.submit_due()
+        assert long_runtime.wait_idle(3.0)
+        assert len(quotes.calls) == 1
+        assert not deps.freezes.calls and not deps.settlement.calls
+    finally:
+        assert runtime.stop(ShutdownDeadline.start(3.0)).completed
+        assert long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(3.0)).completed
 
 
 def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_archive() -> None:

@@ -17,6 +17,7 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
+from trader.recommendation.application.ports.long import LongRefreshPort
 from trader.recommendation.application.ports.publisher import OverlayPublisher
 from trader.recommendation.application.ports.runtime import (
     DataRefreshPort,
@@ -53,3 +54,4 @@ class RuntimeDependencies:
     publication_io: PublicationIoTracker | None = None
     monotonic: Callable[[], float] = time.monotonic
     run_scope: RecommendationRunScope | None = None
+    long_quotes: LongRefreshPort | None = None

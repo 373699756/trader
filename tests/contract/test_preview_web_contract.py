@@ -13,6 +13,7 @@ from trader.recommendation.application.pipeline.freeze_publish.draft_index impor
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.models import RecommendationAction
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.web import CreateApp
@@ -108,6 +109,51 @@ def test_preview_get_sse_and_refresh_share_context_without_losing_algorithm_iden
     if profile == "v1":
         assert current["input_versions"]["execution_mode"] == "shadow"
         assert current["input_versions"]["production_authority"] == "false"
+
+
+def test_nontrading_long_http_keeps_close_change_when_short_models_are_blocked():
+    observed = datetime(2026, 10, 24, 10, tzinfo=NOW.tzinfo)
+    close = observed.replace(day=23, hour=15)
+    projection = LongProjection(
+        observed.date(),
+        1,
+        observed,
+        (("watchlist", "long-fixture"),),
+        (
+            LongProjectionItem(
+                "600001",
+                "group",
+                "close-quote",
+                name="长期样例",
+                price=12.3,
+                pct_change=-1.2,
+                source="tencent",
+                source_time=close,
+                quote_status="live",
+            ),
+        ),
+    )
+    index = UnifiedDecisionIndex()
+    assert index.publish(projection, expected_version=None).accepted
+
+    class Clock:
+        def now(self):
+            return observed
+
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), Clock())
+    client = CreateApp(
+        services=UnifiedWebServices(
+            queries,
+            UnifiedDecisionEventStream(),
+            lambda: {"status": "running", "run_mode": "preview", "preview_error": "production_model_contract_conflict"},
+        )
+    ).test_client()
+    response = client.get("/api/decisions/long/current")
+    assert response.status_code == 200
+    quote = response.get_json()["items"][0]["quote"]
+    assert quote["price"] == 12.3 and quote["pct_change"] == -1.2
+    assert quote["source_time"] == close.isoformat()
+    assert quote["status"] == "live"
 
 
 def test_live_http_status_does_not_acquire_preview_fields():

@@ -8,6 +8,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.runtime.trading_session import SessionLease
+from trader.recommendation.domain.publication.preview import PreviewContext
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class LongRefreshRequest:
     deadline: datetime | None = None
     force: bool = False
     session: SessionLease | None = None
+    preview_context: PreviewContext | None = None
 
     def __post_init__(self) -> None:
         _require_shanghai(self.observed_at, "long refresh observed_at")
