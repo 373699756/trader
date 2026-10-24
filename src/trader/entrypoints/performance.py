@@ -14,16 +14,19 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
+from trader.bootstrap import BuildPerformanceExecutor
 from trader.http_api.route_services import UnifiedWebServices
-from trader.infra.cache_contracts import CanonicalJsonBytes
-from trader.infra.market_data.observations import SourceObservation
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.serialization.canonical import ContentHash
+from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.settings.models import PerformanceBudgetSettings
+from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.workers import WorkerFutureExecutor
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
-    SCORED_STRATEGIES,
     BuildCandidatePlans,
     CandidatePlanningContext,
     CandidatePlanSet,
@@ -39,15 +42,9 @@ from trader.recommendation.application.pipeline.freeze_publish.draft_index impor
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import (
-    ProductionModelScoringService,
-    SharedModelFeatureCache,
-)
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile, ModelScoringPort
+from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.ports.scoring import TomorrowNativeInput
-from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
@@ -60,12 +57,8 @@ from trader.recommendation.domain.publication.decision_identity import (
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.domain.scoring.scoring import ScoreBoardStrategy
-from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
-from trader.recommendation.domain.selection.scored_selection import (
-    ScoredCandidatePlan,
-    ScoredCandidateStageCounts,
-)
 from trader.recommendation.infra.normalization.columnar import ColumnarQuoteBatch, TargetedMarketChanges
 from trader.recommendation.infra.normalization.merge import (
     MergeMarketObservations,
@@ -74,16 +67,21 @@ from trader.recommendation.infra.normalization.merge import (
     OverlayCanonicalSnapshot,
 )
 from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput
+from trader.recommendation.infra.performance.fixtures import (
+    BuildPerformanceFixtures,
+    BuildWorstCaseCandidatePlans,
+    CompleteRealtimeObservations,
+    ProjectCandidateUnionQuotes,
+)
+from trader.recommendation.infra.performance.model_workload import (
+    MeasureModelWorkload,
+    MeasureSteadyState,
+    PerformanceProfileWorkload,
+)
+from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
-from trader.training.application.scoring_hot_path_baseline import (
-    BuildScoringHotPathBaseline,
-    ScoringHotPathBaseline,
-    ScoringHotPathEquivalence,
-    ScoringHotPathLatency,
-    ScoringInputEpoch,
-)
 from trader.web import CreateApp
 
 
@@ -103,7 +101,7 @@ class _CandidateUnionFixture:
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--profile", choices=("v1", "v2", "v3", "v5"))
+    parser.add_argument("--profile", choices=("v1", "v2", "v3", "v5", "v1,v2,v3,v5"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
     return parser
@@ -113,128 +111,209 @@ def Run(
     config_path: Path,
     *,
     baseline_path: Path | None = None,
-    scoring_profile: ScoringProfileId | None = None,
+    scoring_profile: str | None = None,
 ) -> dict[str, object]:
     settings = LoadRuntimeSettings(config_path)
-    strategy_settings = LoadStrategySettings(
-        settings.strategy_config_path,
-        scoring_profile=scoring_profile,
+    selected = (
+        ParseProfileSelection(scoring_profile)
+        if scoring_profile
+        else (LoadStrategySettings(settings.strategy_config_path).scoring_profile,)
     )
-    if strategy_settings.scoring_profile == "v1":
-        return _unavailable_report("learned_rank_shadow_workload_unverified")
-    if strategy_settings.scoring_profile == "v5":
-        return _unavailable_report("tcn_sequence_workload_unverified")
+    if len(selected) not in {1, 4}:
+        raise ValueError("performance accepts one profile or the complete four-profile selection")
+    prepared = _prepare_profiles(settings, selected, config_path)
     budgets = settings.performance_budgets
-    market_inputs, market_quotes, candidates = _fixtures(budgets)
-    context = _OperationContext(
-        settings.config_version,
-        _recommendation_policy(strategy_settings),
-        _model_scoring_router(
-            LoadScoringProfile(
-                strategy_settings.scoring_profile,
-                training_root=settings.data_paths.models,
-            ),
-            LoadExecutionCostPolicy(config_path.parent),
-        ),
-    )
-    worst_case_plans = _worst_case_candidate_plans(budgets.workload.market_rows, market_quotes[0].received_time)
-    candidate_union = _candidate_union_quotes(market_quotes, worst_case_plans)
-    candidate_union_fixture = _CandidateUnionFixture(worst_case_plans, candidate_union)
+    workloads = prepared.workloads
+    market_inputs, market_quotes = prepared.market_inputs, prepared.market_quotes
+    profile_results = _project_profile_loads(prepared.profiles)
+    if len(workloads) != len(selected):
+        report = _unavailable_report("model_unavailable")
+        report.update(
+            profile_results=profile_results,
+            workload={"profiles": list(selected), "profile_count": len(selected), "model_heads": 2 * len(selected)},
+        )
+        return report
+    first = workloads[0]
+    candidates = first.features
+    context = _OperationContext(settings.config_version, first.policy, first.scoring())
+    worst_case_plans = BuildWorstCaseCandidatePlans(budgets.workload.market_rows, market_quotes[0].received_time)
+    union = ProjectCandidateUnionQuotes(market_quotes, worst_case_plans)
     operations, provenance = _operations(
-        market_inputs,
-        market_quotes,
-        candidates,
-        candidate_union_fixture,
-        context,
+        market_inputs, market_quotes, candidates, _CandidateUnionFixture(worst_case_plans, union), context
     )
+    identity: dict[str, object] = {
+        "config_version": settings.config_version,
+        "scoring_profile": ",".join(selected),
+        "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "fixture_sha256": ContentHash(tuple((item.profile.profile_id, item.features) for item in workloads)),
+        "models_sha256": ContentHash(
+            tuple(
+                (
+                    item.profile.profile_id,
+                    tuple((head.value, runtime.predictor.model_hash) for head, runtime in item.profile.heads.items()),
+                )
+                for item in workloads
+            )
+        ),
+        "strategy_contracts_sha256": CanonicalDigest(tuple(item.policy for item in workloads)),
+        "cost_policy_sha256": ContentHash(workloads[0].cost_policy),
+        "performance_budgets_sha256": ContentHash(budgets),
+        "dependencies": {
+            name: version(name) for name in ("numpy", "lightgbm", *(("torch",) if "v5" in selected else ()))
+        },
+        "source_sha256": _source_digest(Path(__file__).resolve().parents[2]),
+        "python": platform.python_version(),
+        "system": platform.system(),
+        "cpu_count": os.cpu_count(),
+        "cpu": _cpu_identity(),
+        "machine": platform.machine(),
+        "kernel": platform.release(),
+    }
+    baseline = _baseline(baseline_path, identity)
     measurements = {
         name: _measure(operation, budgets.rounds.warmup, budgets.rounds.measurement)
         for name, operation in operations.items()
     }
-    baseline = _baseline(baseline_path)
-    failures = _failures(measurements, budgets, baseline)
-    rss_before = _rss_kib()
-    for _ in range(100):
-        operations["two_strategy_board_scoring"]()
-    rss_after = _rss_kib()
-    peak_bytes = rss_after * 1024
-    growth_percent = 0.0 if rss_before == 0 else max(0.0, (rss_after - rss_before) / rss_before * 100.0)
-    if peak_bytes > budgets.memory.process_peak_rss_bytes:
-        failures.append("process_peak_rss:absolute_budget")
-    if growth_percent > budgets.memory.growth_percent:
-        failures.append("process_rss_growth:absolute_budget")
-    local_projection = cast(ScoredLocalProjection, operations["quote_to_draft"]())
-    hot_path_baseline = _hot_path_baseline(
-        candidates,
-        local_projection,
-        measurements,
-        failures,
-        growth_percent,
-        budgets.relative_regression_percent,
+    workers = BuildPerformanceExecutor(2 * len(workloads))
+    workers.start()
+    try:
+        executor = WorkerFutureExecutor(workers)
+        scenarios = MeasureModelWorkload(
+            tuple(workloads), executor, warmup=budgets.rounds.warmup, rounds=budgets.rounds.measurement
+        )
+        steady = MeasureSteadyState(tuple(workloads), executor, ReadPerformanceMemory)
+    finally:
+        stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        if not stopped.completed:
+            raise RuntimeError("performance workers did not stop within the shutdown budget")
+    model_workload = {item.scenario: item.project() for item in scenarios}
+    # The gate uses actual simultaneous cold pipelines, rather than a sum of isolated P95s.
+    measurements["quote_to_draft"] = {key: value for key, value in scenarios[-1].project().items() if key != "heads"}
+    provenance["quote_to_draft"] = (
+        "BuildScoredLocal: simultaneous Tomorrow/D25 for every selected profile; cold scoring state"
     )
-    fixture_hash = hashlib.sha256(
-        "\n".join(f"{item.code}:{item.data_version}" for item in market_inputs).encode()
-    ).hexdigest()
-    source_root = Path(__file__).resolve().parents[2]
+    failures = _failures(measurements, budgets, baseline)
+    for scenario in (scenarios[0], scenarios[-1]):
+        if any(head.predicted_count != head.input_count or head.predictor_calls == 0 for head in scenario.heads):
+            failures.append(f"{scenario.scenario}:model_population_not_exercised")
+    growth = steady.growth_percent
+    if steady.peak_rss_bytes > budgets.memory.process_peak_rss_bytes:
+        failures.append("process_peak_rss:absolute_budget")
+    if growth > budgets.memory.growth_percent:
+        failures.append("process_rss_growth:absolute_budget")
     return {
         "schema_version": "production_performance",
         "status": "passed" if not failures else "failed",
-        "identity": {
-            "config_version": settings.config_version,
-            "strategy_version": strategy_settings.strategy_version,
-            "scoring_profile": strategy_settings.scoring_profile,
-            "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
-            "fixture_sha256": fixture_hash,
-            "source_sha256": _source_digest(source_root),
-            "python": platform.python_version(),
-            "implementation": platform.python_implementation(),
-            "system": platform.system(),
-            "kernel": platform.release(),
-            "architecture": platform.machine(),
-            "cpu": platform.processor() or "unknown",
-            "cpu_count": os.cpu_count(),
-        },
+        "identity": identity,
         "workload": {
+            "profiles": list(selected),
+            "profile_count": len(selected),
+            "model_heads": 2 * len(selected),
+            "execution_mode": "concurrent_heads_same_process",
+            "evidence_scope": "generated_fixture_real_loaded_models_no_release_authority",
             "market_rows": len(market_inputs),
-            "candidate_rows": len(candidate_union),
+            "candidate_rows": len(union),
             "candidate_rows_per_strategy": len(candidates),
-            "candidate_union_is_disjoint": len(candidate_union)
-            == sum(len(worst_case_plans.strategy_codes(strategy)) for strategy in SCORED_STRATEGIES),
-            "strategies": 3,
+            "strategies": 2,
             "warmup_rounds": budgets.rounds.warmup,
             "measurement_rounds": budgets.rounds.measurement,
-            "tick_count": 100,
+            "fixture_build_seconds": prepared.fixture_seconds,
+            "history_scan_count": 0,
+            "history_preload_status": "not_measured_generated_fixture",
+            "tick_count": steady.ticks,
         },
+        "profile_results": profile_results,
         "measurements": measurements,
+        "model_workload": model_workload,
+        "model_call_counting": {
+            "method": "separate_cprofile_probe_excluded_from_latency",
+            "lightgbm_predict_calls": "lightgbm.Booster.predict only; excludes nested wrapper",
+            "tcn_predict_calls": "TcnNetwork.predict",
+            "ridge_batch_evaluations": "bounded Ridge batches preserving scalar dot reduction; not a BLAS kernel count",
+        },
         "operation_provenance": provenance,
         "memory": {
-            "rss_before_kib": rss_before,
-            "rss_after_kib": rss_after,
-            "growth_percent": round(growth_percent, 3),
+            "rss_before_kib": steady.rss_before_bytes / 1024,
+            "rss_after_kib": steady.rss_after_bytes / 1024,
+            "peak_rss_bytes": steady.peak_rss_bytes,
+            "maximum_current_rss_bytes": steady.maximum_current_rss_bytes,
+            "growth_percent": growth,
             "peak_budget_bytes": budgets.memory.process_peak_rss_bytes,
+            "sampling": "current_rss_each_tick_and_process_peak",
+            "logical_cache_status": "not_measured_fixture_has_no_market_cache",
         },
         "relative_regression_percent": budgets.relative_regression_percent,
         "network_calls": 0,
-        "external_checks": {
-            "browser_patch_to_paint": "scripts/diagnose_runtime.py --profile browser",
-            "supplier_realtime": "scripts/diagnose_runtime.py --profile tencent",
-        },
         "failures": failures,
-        "hot_path_baseline": _project_hot_path_baseline(hot_path_baseline),
+        "hot_path_baseline": {
+            "schema_version": "scoring_hot_path_efficiency_baseline",
+            "status": "unverified",
+            "reason": "formal_history_and_equivalence_cases_not_measured",
+        },
     }
 
 
-def _model_scoring_router(profile: LoadedScoringProfile, cost_policy: ExecutionCostPolicy) -> ModelScoringRouter:
-    shared_features = SharedModelFeatureCache()
-    return ModelScoringRouter(
-        profile.profile_id,
-        {
-            strategy: ProductionModelScoringService(
-                profile, strategy, cost_policy=cost_policy, shared_features=shared_features
+@dataclass(frozen=True)
+class _ProfileLoad:
+    profile_id: ScoringProfileId
+    reason: str | None
+    input_count: int = 0
+    models: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class _PerformancePreparation:
+    workloads: tuple[PerformanceProfileWorkload, ...]
+    profiles: tuple[_ProfileLoad, ...]
+    market_inputs: tuple[MarketQuoteInput, ...]
+    market_quotes: tuple[MarketQuote, ...]
+    fixture_seconds: float
+
+
+def _prepare_profiles(
+    settings: RuntimeSettings, selected: tuple[ScoringProfileId, ...], config_path: Path
+) -> _PerformancePreparation:
+    workloads: list[PerformanceProfileWorkload] = []
+    profiles: list[_ProfileLoad] = []
+    inputs: tuple[MarketQuoteInput, ...] = ()
+    quotes: tuple[MarketQuote, ...] = ()
+    fixture_seconds = 0.0
+    cost_policy = LoadExecutionCostPolicy(config_path.parent)
+    for profile_id in selected:
+        strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile_id)
+        try:
+            loaded = LoadScoringProfile(profile_id, training_root=settings.data_paths.models)
+        except ScoringModelsUnavailableError as exc:
+            profiles.append(_ProfileLoad(profile_id, exc.reason))
+            continue
+        started = time.perf_counter()
+        market, market_quotes, features = BuildPerformanceFixtures(settings.performance_budgets, loaded)
+        fixture_seconds += time.perf_counter() - started
+        workloads.append(
+            PerformanceProfileWorkload(
+                loaded, _recommendation_policy(strategy), features, settings.config_version, cost_policy
             )
-            for strategy in profile.heads
-        },
-    )
+        )
+        profiles.append(
+            _ProfileLoad(
+                profile_id,
+                None,
+                len(features),
+                tuple((head.value, runtime.predictor.model_hash) for head, runtime in loaded.heads.items()),
+            )
+        )
+        if not inputs:
+            inputs, quotes = market, market_quotes
+    return _PerformancePreparation(tuple(workloads), tuple(profiles), inputs, quotes, fixture_seconds)
+
+
+def _project_profile_loads(profiles: tuple[_ProfileLoad, ...]) -> dict[str, object]:
+    return {
+        profile.profile_id: {"status": "unverified", "reason": profile.reason}
+        if profile.reason is not None
+        else {"status": "ready", "input_count": profile.input_count, "models": dict(profile.models)}
+        for profile in profiles
+    }
 
 
 def Main(argv: list[str] | None = None) -> int:
@@ -247,6 +326,9 @@ def Main(argv: list[str] | None = None) -> int:
         )
     except ScoringModelsUnavailableError:
         report = _unavailable_report("model_unavailable")
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        report = _unavailable_report("workload_invalid")
+        report["failure_category"] = type(exc).__name__
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if args.output is not None:
         args.output.write_text(f"{payload}\n", encoding="utf-8")
@@ -277,7 +359,7 @@ def _operations(
     policy = context.policy
     model_scoring = context.model_scoring
     observed_at = market_quotes[0].received_time
-    observations = _complete_realtime_observations(market_quotes, observed_at)
+    observations = CompleteRealtimeObservations(market_quotes, observed_at)
     merged = MergeMarketObservations(observations, merge_epoch="performance:market", observed_at=observed_at)
     changed_quotes = tuple(
         replace(
@@ -319,8 +401,7 @@ def _operations(
         merge_epoch="performance:market",
     )
     market_features = tuple(
-        FeatureSnapshot(quote, candidates[index % len(candidates)].values, observed_at, 61)
-        for index, quote in enumerate(market_quotes)
+        replace(candidates[index % len(candidates)], quote=quote) for index, quote in enumerate(market_quotes)
     )
     tomorrow_input = TomorrowNativeInput(
         observed_at.date(),
@@ -631,176 +712,6 @@ def _abstaining_reviews(
     }
 
 
-def _fixtures(
-    budgets: PerformanceBudgetSettings,
-) -> tuple[tuple[MarketQuoteInput, ...], tuple[MarketQuote, ...], tuple[FeatureSnapshot, ...]]:
-    now = datetime(2026, 8, 25, 10, 0, tzinfo=SHANGHAI)
-    market = tuple(_quote_input(index, now) for index in range(budgets.workload.market_rows))
-    quotes = tuple(_complete_quote(BuildMarketQuote(item), now) for item in market)
-    selected = range(len(quotes))
-    candidates = tuple(
-        FeatureSnapshot(
-            quotes[index],
-            _performance_feature_values(position),
-            now,
-            history_days=61,
-        )
-        for position, index in enumerate(selected)
-    )
-    return market, quotes, candidates
-
-
-def _worst_case_candidate_plans(market_rows: int, observed_at: datetime) -> CandidatePlanSet:
-    population = tuple(_quote_input(index, observed_at) for index in range(market_rows))
-    plans: dict[Strategy, ScoredCandidatePlan] = {}
-    for strategy in SCORED_STRATEGIES:
-        reserves = {
-            board: tuple(item.code for item in population if item.board is board)
-            for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
-        }
-        plans[strategy] = ScoredCandidatePlan(
-            evaluations=(),
-            reserves=reserves,
-            population_versions={},
-            stage_counts=ScoredCandidateStageCounts(
-                issuer_eligible_population=market_rows,
-                input_ready_population=market_rows,
-                dynamic_filter_eligible=market_rows,
-                strategy_history_eligible=market_rows,
-                model_input_eligible=market_rows,
-                scoring_input_eligible=market_rows,
-                scoring_input_count=market_rows,
-            ),
-            hard_filter_reason_counts={},
-            population_rejected_count=0,
-            population_filter_reason_counts={},
-        )
-    return CandidatePlanSet(plans, population_evaluated_at=observed_at)
-
-
-def _candidate_union_quotes(
-    market_quotes: tuple[MarketQuote, ...],
-    plans: CandidatePlanSet,
-) -> tuple[MarketQuote, ...]:
-    by_code = {quote.code: quote for quote in market_quotes}
-    return tuple(by_code[code] for code in plans.physical_union())
-
-
-def _performance_feature_values(position: int) -> dict[str, float]:
-    offset = (position % 120) / 10_000.0
-    return {
-        **_FEATURE_VALUES,
-        "qfq_return_1d": 0.002 + offset,
-        "qfq_return_3d": 0.004 + offset,
-        "qfq_return_5d": 0.006 + offset,
-        "qfq_momentum_20d_skip5": 0.01 + offset,
-        "qfq_momentum_40d_skip5": 0.02 + offset,
-        "qfq_momentum_60d_skip5": 0.03 + offset,
-        "qfq_amihud_20d": 0.0001 + position / 1_000_000.0,
-        "qfq_average_amount_20d": 100_000_000.0 + position * 100_000.0,
-    }
-
-
-_COMPLETE_REALTIME_FIELDS = (
-    "name",
-    "price",
-    "previous_close",
-    "open_price",
-    "high",
-    "low",
-    "pct_change",
-    "change_5m",
-    "speed",
-    "volume_ratio",
-    "turnover_rate",
-    "amount",
-    "volume",
-    "amplitude",
-    "market_cap",
-    "industry",
-    "is_st",
-    "is_suspended",
-    "is_one_price_limit",
-    "is_blacklisted",
-    "has_major_regulatory_risk",
-)
-
-
-def _complete_realtime_observations(
-    quotes: tuple[MarketQuote, ...],
-    observed_at: datetime,
-) -> tuple[SourceObservation, ...]:
-    """Build the two admitted full-market provider batches used in production merge."""
-
-    observations: list[SourceObservation] = []
-    for quote in quotes:
-        base = ObservationFromQuote(quote, source="tencent_market", observed_at=observed_at)
-        fields = {name: base.fields[name] for name in _COMPLETE_REALTIME_FIELDS}
-        for source in ("tencent_market", "sina"):
-            data_version = f"{source}:{quote.data_version}"
-            observations.append(
-                replace(
-                    base,
-                    source=source,
-                    data_version=data_version,
-                    fields=fields,
-                    payload_hash=hashlib.sha256(CanonicalJsonBytes(fields)).hexdigest(),
-                )
-            )
-    return tuple(observations)
-
-
-def _quote_input(index: int, now: datetime) -> MarketQuoteInput:
-    if index < 2500:
-        board, code = Board.MAIN, f"{600000 + index:06d}"
-    elif index < 4000:
-        board, code = Board.CHINEXT, f"{300000 + index - 2500:06d}"
-    else:
-        board, code = Board.STAR, f"{688000 + index - 4000:06d}"
-    return MarketQuoteInput(
-        code,
-        f"样本{index}",
-        10.0 + index / 10000.0,
-        10.0,
-        10.0,
-        10.2,
-        9.8,
-        1.0,
-        0.1,
-        0.1,
-        1.2,
-        2.0,
-        100_000_000.0,
-        4.0,
-        5_000_000_000.0,
-        f"样本行业{index % 20}",
-        "eastmoney",
-        now,
-        now,
-        f"fixture:{index}",
-        board=board,
-        board_source="performance_fixture",
-        board_reliability="verified",
-        exchange="SZSE" if board is Board.CHINEXT else "SSE",
-        listing_date=date(2020, 1, 1),
-        volume=10_000_000.0,
-    )
-
-
-def _complete_quote(quote: MarketQuote, now: datetime) -> MarketQuote:
-    return replace(
-        quote,
-        listing_age_sessions=1400,
-        is_relisted_first_session=False,
-        is_delisting_period_first_session=False,
-        has_price_limit=True,
-        exchange_limit_pct=10.0 if quote.board is Board.MAIN else 20.0,
-        strategy_hot_cap_pct=8.0 if quote.board is Board.MAIN else 16.0,
-        rule_version="performance-rule",
-        rule_effective_date=now.date(),
-    )
-
-
 def _measure(operation: Callable[[], object], warmup: int, rounds: int) -> dict[str, object]:
     for _ in range(warmup):
         operation()
@@ -819,181 +730,33 @@ def _measure(operation: Callable[[], object], warmup: int, rounds: int) -> dict[
     }
 
 
-def _hot_path_baseline(  # noqa: PLR0913
-    candidates: tuple[FeatureSnapshot, ...],
-    local_projection: ScoredLocalProjection,
-    measurements: dict[str, dict[str, object]],
-    failures: list[str],
-    allocation_growth_percent: float,
-    relative_limit_percent: float,
-) -> ScoringHotPathBaseline:
-    factor_count = sum(len(feature.values) for feature in candidates)
-    changed_codes = tuple(feature.quote.code for feature in candidates[:18])
-    full_codes = tuple(feature.quote.code for feature in candidates)
-    changed_factor_count = sum(len(feature.values) for feature in candidates[:18])
-    local_cpu_ms = _metric_float(measurements["board_local_scoring"], "p50_ms")
-    epochs = tuple(
-        epoch
-        for strategy in (Strategy.TOMORROW, Strategy.D25)
-        for epoch in (
-            ScoringInputEpoch(
-                strategy,
-                "afternoon",
-                f"performance:{strategy.value}:epoch-1",
-                full_codes,
-                len(candidates),
-                len(candidates),
-                factor_count,
-                cache_miss_count=1,
-                cpu_time_ms=local_cpu_ms,
-            ),
-            ScoringInputEpoch(
-                strategy,
-                "afternoon",
-                f"performance:{strategy.value}:epoch-2",
-                changed_codes,
-                len(candidates),
-                len(changed_codes),
-                changed_factor_count,
-                cache_hit_count=1,
-                cpu_time_ms=local_cpu_ms * len(changed_codes) / len(candidates),
-            ),
-        )
-    )
-    latency_names = {
-        "scoring_data_prepare": "board_ready_to_draft",
-        "local_scoring": "board_local_scoring",
-        "decision_publish": "targeted_overlay_commit",
-        "two_strategy_board_scoring": "two_strategy_board_scoring",
-    }
-    latencies = tuple(
-        ScoringHotPathLatency(
-            stage,
-            _metric_float(measurements[name], "p50_ms"),
-            _metric_float(measurements[name], "p95_ms"),
-            _metric_float(measurements[name], "maximum_ms"),
-            _metric_int(measurements[name], "samples"),
-        )
-        for stage, name in latency_names.items()
-        if name in measurements
-    )
-    result_hash = local_projection.local.content_hash
-    equivalence = tuple(
-        ScoringHotPathEquivalence(case, "passed", result_hash)
-        for case in (
-            "same_input",
-            "random_input_order",
-            "cache_cold",
-            "cache_hot",
-            "partial_source_failure",
-            "latest_wins_replacement",
-            "freeze_boundary",
-        )
-    )
-    return BuildScoringHotPathBaseline(
-        epochs,
-        latencies=latencies,
-        formal_current_decision_count=3,
-        formal_frozen_decision_count=0,
-        deepseek_candidate_count=len(local_projection.review_candidates),
-        equivalence=equivalence,
-        relative_regression_percent=relative_limit_percent,
-        allocation_growth_percent=allocation_growth_percent,
-        absolute_budget_passed=not any(item.endswith(":absolute_budget") for item in failures),
-        relative_budget_passed=not any(item.endswith(":relative_regression") for item in failures),
-        allocation_budget_passed=allocation_growth_percent <= 20.0,
-    )
-
-
-def _metric_float(measurement: dict[str, object], key: str) -> float:
-    value = measurement.get(key)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise ValueError(f"performance measurement {key} is not numeric")
-    return float(value)
-
-
-def _metric_int(measurement: dict[str, object], key: str) -> int:
-    value = measurement.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"performance measurement {key} is not an integer")
-    return value
-
-
-def _project_hot_path_baseline(report: ScoringHotPathBaseline) -> dict[str, object]:
-    """Project the internal baseline values at the CLI/performance JSON boundary."""
-
-    return {
-        "schema_version": report.schema_version,
-        "status": report.status,
-        "content_hash": report.content_hash,
-        "relative_regression_percent": report.relative_regression_percent,
-        "allocation_growth_percent": report.allocation_growth_percent,
-        "absolute_budget_passed": report.absolute_budget_passed,
-        "relative_budget_passed": report.relative_budget_passed,
-        "allocation_budget_passed": report.allocation_budget_passed,
-        "equivalence": [
-            {"case": item.case, "status": item.status, "result_hash": item.result_hash} for item in report.equivalence
-        ],
-        "slices": [
-            {
-                "strategy": item.strategy.value,
-                "phase": item.phase,
-                "freeze_before_completion_rate": item.freeze_before_completion_rate,
-                "recompute_shrink_ratio": item.recompute_shrink_ratio,
-                "epochs": [
-                    {
-                        "version": epoch.version,
-                        "changed_codes": list(epoch.changed_codes),
-                        "changed_code_count": epoch.changed_code_count,
-                        "evaluated_candidate_count": epoch.evaluated_candidate_count,
-                        "recomputed_stock_count": epoch.recomputed_stock_count,
-                        "recomputed_factor_count": epoch.recomputed_factor_count,
-                        "cpu_time_ms": epoch.cpu_time_ms,
-                    }
-                    for epoch in item.epochs
-                ],
-                "cost": {
-                    "completed_epoch_count": item.cost.completed_epoch_count,
-                    "evaluated_candidate_count": item.cost.evaluated_candidate_count,
-                    "formal_current_decision_count": item.cost.formal_current_decision_count,
-                    "formal_frozen_decision_count": item.cost.formal_frozen_decision_count,
-                    "deepseek_candidate_count": item.cost.deepseek_candidate_count,
-                    "recomputed_stock_count": item.cost.recomputed_stock_count,
-                    "recomputed_factor_count": item.cost.recomputed_factor_count,
-                    "external_request_count": item.cost.external_request_count,
-                    "cache_hit_count": item.cost.cache_hit_count,
-                    "cache_miss_count": item.cost.cache_miss_count,
-                    "sqlite_transaction_count": item.cost.sqlite_transaction_count,
-                    "sqlite_bytes": item.cost.sqlite_bytes,
-                    "latest_wins_replacement_count": item.cost.latest_wins_replacement_count,
-                    "cpu_time_ms": item.cost.cpu_time_ms,
-                    "cost_per_epoch": item.cost.cost_per_epoch,
-                    "cost_per_candidate": item.cost.cost_per_candidate,
-                    "cost_per_formal_decision": item.cost.cost_per_formal_decision,
-                    "cost_per_deepseek_candidate": item.cost.cost_per_deepseek_candidate,
-                },
-                "latencies": [
-                    {
-                        "stage": latency.stage,
-                        "p50_ms": latency.p50_ms,
-                        "p95_ms": latency.p95_ms,
-                        "maximum_ms": latency.maximum_ms,
-                        "sample_count": latency.sample_count,
-                    }
-                    for latency in item.latencies
-                ],
-            }
-            for item in report.slices
-        ],
-    }
-
-
-def _baseline(path: Path | None) -> dict[str, object]:
+def _baseline(path: Path | None, identity: dict[str, object]) -> dict[str, object]:
     if path is None:
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or not isinstance(raw.get("measurements"), dict):
         raise ValueError("performance baseline must contain measurements")
+    previous_identity = raw.get("identity")
+    if not isinstance(previous_identity, dict) or any(
+        key not in previous_identity or key not in identity or previous_identity[key] != identity[key]
+        for key in (
+            "config_version",
+            "scoring_profile",
+            "fixture_sha256",
+            "models_sha256",
+            "strategy_contracts_sha256",
+            "cost_policy_sha256",
+            "performance_budgets_sha256",
+            "python",
+            "dependencies",
+            "cpu",
+            "cpu_count",
+            "machine",
+            "system",
+            "kernel",
+        )
+    ):
+        raise ValueError("performance baseline input or model identity does not match")
     return cast(dict[str, object], raw["measurements"])
 
 
@@ -1028,52 +791,12 @@ def _source_digest(source_root: Path) -> str:
     return digest.hexdigest()
 
 
-def _rss_kib() -> int:
-    if os.name == "nt":
-        return _windows_peak_working_set_kib()
-    import resource
-
-    peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    return peak // 1024 if sys.platform == "darwin" else peak
-
-
-def _windows_peak_working_set_kib() -> int:
-    import ctypes
-    from ctypes import wintypes
-
-    size_t = ctypes.c_size_t
-
-    class ProcessMemoryCounters(ctypes.Structure):
-        _fields_ = (
-            ("cb", wintypes.DWORD),
-            ("page_fault_count", wintypes.DWORD),
-            ("peak_working_set_size", size_t),
-            ("working_set_size", size_t),
-            ("quota_peak_paged_pool_usage", size_t),
-            ("quota_paged_pool_usage", size_t),
-            ("quota_peak_non_paged_pool_usage", size_t),
-            ("quota_non_paged_pool_usage", size_t),
-            ("pagefile_usage", size_t),
-            ("peak_pagefile_usage", size_t),
-        )
-
-    counters = ProcessMemoryCounters()
-    counters.cb = ctypes.sizeof(counters)
-    win_dll = ctypes.__dict__["WinDLL"]
-    kernel32 = win_dll("kernel32", use_last_error=True)
-    psapi = win_dll("psapi", use_last_error=True)
-    get_current_process = kernel32.GetCurrentProcess
-    get_current_process.restype = wintypes.HANDLE
-    get_process_memory_info = psapi.GetProcessMemoryInfo
-    get_process_memory_info.argtypes = (
-        wintypes.HANDLE,
-        ctypes.POINTER(ProcessMemoryCounters),
-        wintypes.DWORD,
-    )
-    get_process_memory_info.restype = wintypes.BOOL
-    if not get_process_memory_info(get_current_process(), ctypes.byref(counters), counters.cb):
-        raise ctypes.__dict__["WinError"](ctypes.__dict__["get_last_error"]())
-    return int(counters.peak_working_set_size // 1024)
+def _cpu_identity() -> str:
+    if sys.platform.startswith("linux"):
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("model name"):
+                return line.partition(":")[2].strip()
+    return platform.processor() or platform.machine()
 
 
 class _FixedClock:
@@ -1092,49 +815,6 @@ class _EmptyHistory:
     def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
         del strategy, limit
         return ()
-
-
-_FEATURE_VALUES = {
-    "liquidity_score": 60.0,
-    "short_momentum_score": 60.0,
-    "trend_score": 70.0,
-    "data_completeness_score": 100.0,
-    "amount_median_20d": 200_000_000.0,
-    "turnover_median_20d": 1.5,
-    "return_1d": 2.0,
-    "return_3d": 3.0,
-    "return_5d": 5.0,
-    "return_10d": 7.0,
-    "return_20d": 10.0,
-    "return_60d": 15.0,
-    "volatility_20d": 2.0,
-    "max_drawdown_20d": -8.0,
-    "ma20_60_position": 70.0,
-    "ma20_60_structure": 70.0,
-    "ma_slope": 70.0,
-    "breakout_20d": 70.0,
-    "industry_trend": 70.0,
-    "tail_return_30m": 1.0,
-    "tail_volume_ratio": 1.2,
-    "close_location": 70.0,
-    "capacity_score": 100.0,
-    "moderate_amplitude": 100.0,
-    "price_executability": 100.0,
-    "limit_distance_safety": 70.0,
-    "quality_score": 70.0,
-    "value_score": 70.0,
-    "growth_score": 70.0,
-    "atr20_pct": 2.0,
-    "low_volatility_score": 70.0,
-    "low_drawdown_score": 70.0,
-    "market_breadth": 60.0,
-    "market_regime_score": 50.0,
-    "ma5": 12.0,
-    "ma10": 11.8,
-    "ma20": 11.5,
-    "ma20_slope": 0.1,
-    "high_20d_previous": 11.9,
-}
 
 
 if __name__ == "__main__":

@@ -28,14 +28,15 @@ from trader.infra.market_data.history.history import (
     BuildHistoryContext,
     DailyBar,
     HistoryAdjustmentError,
+    HistoryContext,
     PriceAdjustment,
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.workers import BoundedExecutor, InjectedExecutor
-from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
+from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -55,6 +56,7 @@ from trader.recommendation.application.runtime.source_lanes import (
     SourceRequestSupersededError,
 )
 from trader.recommendation.domain.market.eligibility import IssuerEligibilitySnapshot
+from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.models import (
     Board,
     Evidence,
@@ -86,6 +88,7 @@ from trader.recommendation.infra.market_data.providers.eastmoney import Eastmone
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from trader.recommendation.infra.market_data.published_history_cache import CompletedModelInput
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
 from trader.recommendation.infra.market_data.trading_calendar import (
@@ -165,7 +168,7 @@ class _FixtureHistory:
         self._monotonic = monotonic
         self._lock = threading.RLock()
         self._bars: dict[str, tuple[DailyBar, ...]] = {}
-        self._contexts = {}
+        self._contexts: dict[str, HistoryContext] = {}
         self._universe = 0
 
     def refresh(self) -> bool:
@@ -191,6 +194,22 @@ class _FixtureHistory:
 
     def summaries(self, histories, _observed_at):
         return {code: self._contexts[code] for code in histories if code in self._contexts}
+
+    def completed_model_inputs(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompletedModelInput, ...]:
+        day = observed_at.astimezone(_SHANGHAI).date().isoformat()
+        with self._lock:
+            contexts = {code: self._contexts.get(code) for code in codes}
+        completed = []
+        for code, context in contexts.items():
+            failure = None
+            if context is None:
+                failure = "history_invalid_prices"
+            elif context.sample_count < 61:
+                failure = "history_window_insufficient"
+            elif context.latest_trade_date > day:
+                failure = "history_model_date_mismatch"
+            completed.append(CompletedModelInput(code, ModelHistoryQuality(failure)))
+        return tuple(completed)
 
     def update_coverage(self, codes, _versions=None):
         self._universe = len(tuple(codes))
@@ -224,6 +243,10 @@ class _FixtureHistory:
             entries=len(self._bars),
             raw_rows=sum(len(bars) for bars in self._bars.values()),
             profile_entries=len(self._contexts),
+            estimated_history_codes=0,
+            suspended_history_codes=0,
+            history_scan_count=0,
+            history_window_count=0,
             universe_rows=self._universe,
             covered_rows=sum(len(bars) >= 20 for bars in self._bars.values()),
             error_count=0,

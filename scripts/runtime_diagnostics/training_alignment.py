@@ -72,8 +72,9 @@ def _inputs(history: Path) -> dict[str, object]:
     )
     cache.initialize(cancelled=lambda: False)
     as_of = datetime.combine(manifest.data_cutoff, daytime(20, 0), ZoneInfo("Asia/Shanghai"))
-    features = cache.completed_model_features(manifest.universe_codes, as_of)
-    reasons = Counter(cache.model_history_quality(code, as_of).failure or "ready" for code in manifest.universe_codes)
+    inputs = cache.completed_model_inputs(manifest.universe_codes, as_of)
+    features = {item.code: item.learned_rank_values for item in inputs if item.learned_rank_values}
+    reasons = Counter(item.quality.failure or "ready" for item in inputs)
     status = cache.status()
     return {
         "schema_version": "model-inputs-diagnostic",
@@ -83,6 +84,8 @@ def _inputs(history: Path) -> dict[str, object]:
             "source_codes": len(manifest.universe_codes),
             "input_ready_codes": len(features),
             "processed_codes": status.maintenance_completed_units,
+            "history_scan_count": status.history_scan_count,
+            "history_window_count": status.history_window_count,
             "history_quality": dict(reasons),
             "estimated_history_codes": status.estimated_history_codes,
             "suspended_history_codes": status.suspended_history_codes,

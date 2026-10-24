@@ -13,10 +13,11 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.ports.loaded_profile import ModelInput
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
-from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, LoadHeadBundle
+from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, LoadHeadBundle, ModelBundleContractError
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
 from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles, PublishProfileBundles
+from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT, V3_TRAINING_PROFILE
 
@@ -39,6 +40,38 @@ def _lightgbm_model(width: int) -> str:
 def _hash(document: dict[str, object]) -> dict[str, object]:
     document["content_hash"] = ContentHash(document)
     return document
+
+
+def _prediction_report() -> dict[str, object]:
+    metric = {
+        "input_rows": 400,
+        "predicted_rows": 400,
+        "covered_codes": 2,
+        "covered_dates": 200,
+        "covered_industries": 1,
+        "mean_absolute_error": 0.01,
+        "root_mean_squared_error": 0.02,
+        "mean_daily_rank_ic": 0.0,
+        "rank_ic_dates": 200,
+    }
+    return {
+        "evaluation_contract": PREDICTION_EVALUATION_CONTRACT,
+        "prediction_evaluation_mode": "prediction_diagnostic_only",
+        "prediction_metrics": dict(metric),
+        "industry_prediction_metrics": {"银行": dict(metric)},
+        "calibration_metrics": {
+            "银行": {"rows": 40, "dates": 20, "prediction_variance": 0.0001, "intercept": 0.0, "slope": 1.0}
+        },
+        "rejected_industries": [],
+        "evaluation_coverage": {
+            "candidate_training_rows": 20000,
+            "trained_rows": 20000,
+            "candidate_validation_rows": 400,
+            "predicted_rows": 400,
+            "sealed_holdout_rows": 400,
+            "holdout_status": "sealed_rows_count_only",
+        },
+    }
 
 
 def _documents(
@@ -119,16 +152,15 @@ def _documents(
             "historical_failure_reasons": ["daily_close_proxy_not_point_in_time"],
             "industry_count": 1,
             "training_rows": 20_000,
-            "validation_rows": 1_000,
-            "target_metrics": {
-                target: {"count": 1_000, "mean": 0.01, "standard_deviation": 0.02} for target in targets
-            },
+            "validation_rows": 400,
+            "target_metrics": {target: {"count": 400, "mean": 0.01, "standard_deviation": 0.02} for target in targets},
             "artifact_structure_valid": True,
             "artifact_structure_failure_reasons": [],
             "prediction_return_validation_passed": False,
             "prediction_return_failure_reasons": ["daily_close_proxy_not_point_in_time"],
             "automatic_model_update": False,
             "production_authority": False,
+            **_prediction_report(),
         }
     )
     metadata = _hash(
@@ -150,7 +182,7 @@ def _documents(
             "dependencies": dependencies,
             "training_input": input_document,
             "validation_report": report,
-            "industry_sample_counts": {"银行": {"training_rows": 20_000, "validation_rows": 1_000}},
+            "industry_sample_counts": {"银行": {"training_rows": 20_000, "validation_rows": 400}},
             "model_hash": model["content_hash"],
         }
     )
@@ -166,6 +198,18 @@ def _write_bundle(
     model, metadata = _documents(contract, profile)
     (staging / "model.json").write_text(json.dumps(model), encoding="utf-8")
     (staging / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_old_artifact_without_actual_prediction_contract_requires_retraining():
+    model, metadata = _documents(TOMORROW_HEAD_CONTRACT)
+    report = metadata["validation_report"]
+    report.pop("content_hash")
+    report.pop("evaluation_contract")
+    _hash(report)
+    metadata.pop("content_hash")
+    _hash(metadata)
+    with pytest.raises(ModelBundleContractError, match="fields are invalid"):
+        DecodeHeadBundle(model, metadata, Strategy.TOMORROW, V3_TRAINING_PROFILE)
 
 
 def _publish_profile(training_root: Path, profile: TrainedProfileContract) -> None:

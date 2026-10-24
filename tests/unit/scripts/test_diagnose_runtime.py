@@ -71,6 +71,72 @@ def test_local_dual_profile_selects_only_offline_business_checks():
     )
 
 
+@pytest.mark.parametrize("selection", ("v1,v2,v3,v5", "v5,v3,v1,v2"))
+def test_performance_four_profiles_share_one_child_command(selection: str) -> None:
+    options, _ = _validate(_parser().parse_args(["--profile", "performance", "--scoring-profile", selection]))
+    commands = build_commands(options, python_executable="/python")
+
+    assert options.scoring_profile == "v1,v2,v3,v5"
+    assert len(commands) == 1
+    assert commands[0].name == "production_performance:v1,v2,v3,v5"
+    assert commands[0].argv[:3] == ("/python", "-m", "trader.entrypoints.performance")
+    assert commands[0].argv[-2:] == ("--profile", "v1,v2,v3,v5")
+
+
+@pytest.mark.parametrize("profile", ("local", "research", "web", "runtime", "full"))
+def test_four_profiles_are_rejected_outside_the_performance_diagnostic(profile: str) -> None:
+    with pytest.raises(ValueError, match="only available for performance"):
+        _validate(_parser().parse_args(["--profile", profile, "--scoring-profile", "v1,v2,v3,v5"]))
+
+
+@pytest.mark.parametrize("selection", ("v1,v5", "v1,v2,v3,v3", "v1,v2,v3,v9", "v1,"))
+def test_performance_rejects_partial_duplicate_or_invalid_profile_selections(selection: str) -> None:
+    with pytest.raises(SystemExit) as error:
+        _parser().parse_args(["--profile", "performance", "--scoring-profile", selection])
+    assert error.value.code == 2
+
+
+def test_performance_both_keeps_two_separate_v2_v3_commands() -> None:
+    commands = build_commands(_options(profile="performance", scoring_profile="both"), python_executable="/python")
+
+    assert tuple(command.name for command in commands) == ("production_performance:v2", "production_performance:v3")
+    assert tuple(command.argv[-2:] for command in commands) == (("--profile", "v2"), ("--profile", "v3"))
+
+
+def test_only_the_performance_diagnostic_defaults_to_four_profiles() -> None:
+    performance = build_commands(_options(profile="performance"), python_executable="/python")
+    local = build_commands(_options(profile="local"), python_executable="/python")
+
+    assert len(performance) == 1
+    assert performance[0].argv[-2:] == ("--profile", "v1,v2,v3,v5")
+    local_performance = next(command for command in local if command.name == "production_performance")
+    assert "--profile" not in local_performance.argv
+
+
+def test_four_profile_performance_report_retains_shared_process_and_model_evidence() -> None:
+    evidence = {
+        "workload": {"profiles": ["v1", "v2", "v3", "v5"], "model_heads": 8, "execution_mode": "same_process"},
+        "identity": {"source_hash": "source", "profiles": {"v5": {"model_hash": "model"}}},
+        "network_calls": 0,
+        "model_workload": {"unchanged": {"predictor_calls": 8, "elapsed_ms": 12}},
+        "profile_results": {"v5": {"status": "passed", "head_count": 2}},
+        "measurements": {"quote_to_draft": {"p95_ms": 12}},
+        "memory": {"peak_rss_bytes": 1024},
+        "failures": [],
+    }
+    report = build_report(
+        "performance",
+        (
+            DiagnosticResult(
+                "production_performance:v1,v2,v3,v5", 0, 12.0, {"passed": True, **evidence, "private": "omit"}, None
+            ),
+        ),
+    )
+
+    assert report["status"] == "passed"
+    assert report["checks"][0]["summary"] == evidence
+
+
 def test_history_resume_probe_routes_sample_bound_without_starting_downloads():
     commands = build_commands(_options(profile="history-sqlite", history_resume_samples=8), python_executable="/python")
     assert len(commands) == 1
@@ -244,7 +310,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("research", "research_readiness"),
         ("long-watchlist", "long_watchlist_admission"),
         ("browser", "browser_refresh"),
-        ("performance", "production_performance"),
+        ("performance", "production_performance:v1,v2,v3,v5"),
     ],
 )
 def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, expected: str) -> None:

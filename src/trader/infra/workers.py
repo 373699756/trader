@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from typing import ParamSpec, Protocol, TypeVar, cast
@@ -44,6 +44,19 @@ class ManagedWorkerExecutor(WorkerExecutor, Protocol):
 
 class WorkerResourceRejectedError(RuntimeError):
     """An injected execution resource cannot accept new work."""
+
+
+class WorkerFutureExecutor(Executor):
+    """Use standard future mapping over a resource explicitly owned by the caller."""
+
+    def __init__(self, workers: WorkerExecutor) -> None:
+        self._workers = workers
+
+    def submit(self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> Future[_T]:
+        future = self._workers.submit(fn, *args, **kwargs)
+        if future is None:
+            raise WorkerResourceRejectedError("bounded performance work was rejected")
+        return future
 
 
 @dataclass(frozen=True)
@@ -379,6 +392,7 @@ __all__ = [
     "ManagedWorkerExecutor",
     "WorkerExecutor",
     "WorkerResourceRejectedError",
+    "WorkerFutureExecutor",
     "InjectedExecutor",
     "SubmitOrReject",
     "SubmitWithBackpressure",

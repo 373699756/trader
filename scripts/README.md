@@ -158,6 +158,31 @@ No service or supplier is required. Invalid configuration marks dependent checks
 as unexecuted. Insufficient research evidence is degraded locally; the standalone
 research profile remains strict. Performance results are separate for each profile.
 
+The standalone performance diagnostic defaults to one process concurrently exercising
+all eight Tomorrow/D25 heads. Select one profile when measuring an isolated profile:
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --output /tmp/trader-performance.json
+.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --scoring-profile v3 --output /tmp/trader-performance-v3.json
+```
+
+The explicit selection `--scoring-profile v1,v2,v3,v5` is equivalent to that default;
+`both` keeps its existing separate V2/V3 probes, and `local` keeps its configured
+single-profile default. Models are loaded through the production contract, never
+trained or substituted. Missing/dependency/contract failures retain per-profile
+reasons and empty measurements. V1 remains Shadow and no DeepSeek HTTP is issued.
+
+Fixture history and input preparation occur outside model latency samples. The
+report separates first computation, exact reuse, one-stock fact changes and cold
+score-to-draft wall time, includes a separately profiled native-call count, and
+measures actual current RSS across 100 ticks using the same scoring caches.
+The process peak is reported separately. Source, complete input, model, strategy,
+cost, budget and environment identities bind comparisons; the existing performance
+entrypoint's `--baseline` requires matching inputs, models, contracts and environment,
+while retaining different source digests to compare implementations. This is a synthetic
+scoring workload: history disk scans, shared market-cache occupancy, real suppliers,
+browser latency and formal freeze equivalence remain unmeasured, not passed.
+
 `--profile history-write --download-sizes 16 --history-days 2000` also measures
 `initial_resume`: it first commits half the stocks without publishing the initial
 snapshot, then times the restart against the populated annual files. Reports split

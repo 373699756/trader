@@ -6,12 +6,16 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema, SqliteTransaction
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+if TYPE_CHECKING:
+    from trader.infra.settings.models import DeepSeekAdaptiveSettings
 
 
 @dataclass(frozen=True)
@@ -22,6 +26,17 @@ class DeepSeekHealthPolicy:
     healthy_application_ratio: float
     healthy_batch_count: int
     cooldown_seconds: int
+
+    @classmethod
+    def from_settings(cls, settings: DeepSeekAdaptiveSettings) -> DeepSeekHealthPolicy:
+        return cls(
+            settings.consecutive_failure_limit,
+            settings.rolling_window,
+            settings.minimum_application_ratio,
+            settings.healthy_application_ratio,
+            settings.healthy_batch_count,
+            settings.cooldown_seconds,
+        )
 
 
 @dataclass(frozen=True)

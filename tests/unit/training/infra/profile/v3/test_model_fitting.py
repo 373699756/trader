@@ -53,28 +53,23 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, first_training_rows, first_validation_rows = FitIndustryModels(
-            repository, split, contract, settings.fitting
-        )
+        first = FitIndustryModels(repository, split, contract, settings.fitting)
         cache.seal(repository)
 
     with cache.open() as repository:
         assert cache.reused
-        second, second_training_rows, second_validation_rows = FitIndustryModels(
-            repository, split, contract, settings.fitting
-        )
+        second = FitIndustryModels(repository, split, contract, settings.fitting)
 
     assert TOMORROW_TRAINING_COMPUTE_THREADS == 2
     assert first == second
-    assert first_training_rows == second_training_rows
-    assert first_validation_rows == second_validation_rows
+    assert first.training_rows == second.training_rows
+    assert first.validation_rows == second.validation_rows
+    fitted = next(item.model for item in first.models if item.industry == "银行")
     if profile.algorithm == "lightgbm":
-        assert set(first["银行"]).isdisjoint({"ridge_intercept", "ridge_coefficients"})
-        assert "[num_threads: 2]" in str(first["银行"]["lightgbm_model"])
-        assert "[force_col_wise: 1]" in str(first["银行"]["lightgbm_model"])
+        assert "[num_threads: 2]" in fitted.lightgbm_model
+        assert "[force_col_wise: 1]" in fitted.lightgbm_model
     else:
-        assert set(first["银行"]).isdisjoint({"lightgbm_model", "lightgbm_best_iteration"})
-        assert len(first["银行"]["ridge_coefficients"]) == len(contract.feature_positions)
+        assert len(fitted.ridge_coefficients) == len(contract.feature_positions)
 
 
 def _samples_for_day(day: date, day_position: int, feature_count: int) -> tuple[TrainingSample, ...]:

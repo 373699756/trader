@@ -7,7 +7,8 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, TypedDict
 
@@ -22,8 +23,32 @@ from trader.infra.cache_contracts import (
     CacheRequestKey,
     CacheStatus,
 )
-from trader.recommendation.domain.evidence.review import DeepSeekReview
+from trader.infra.serialization.canonical import ContentHash
+from trader.infra.settings.models import DeepSeekSettings
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewEvidenceBinding, ReviewOutcome
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.infra.deepseek.evidence_router import RoutePromptEvidence
+from trader.recommendation.infra.deepseek.schema_constants import (
+    PROMPT_VERSION,
+    RAW_FACTS_CACHE_GENERATION,
+    SCHEMA_VERSION,
+)
+from trader.recommendation.infra.deepseek.schema_prompts import BuildReviewManifestHash
+
+
+def BuildSharedReviewCacheIdentity(settings: DeepSeekSettings) -> str:
+    """Bind shared facts to their producer contract, excluding credentials and scoring profiles."""
+    return ContentHash(
+        (
+            settings.base_url,
+            settings.model,
+            settings.max_tokens,
+            PROMPT_VERSION,
+            SCHEMA_VERSION,
+            RAW_FACTS_CACHE_GENERATION,
+            "review_binding_evidence_revalidated_600s_price1pct_volume0.3",
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -157,6 +182,44 @@ class ReviewCache:
             self._raw_entries.move_to_end(key)
             while len(self._raw_entries) > self._maximum_entries:
                 self._raw_entries.popitem(last=False)
+
+    def get_bound_raw(
+        self, key: str | CacheRequestKey, candidate: FeatureSnapshot, *, bound_at: datetime
+    ) -> DeepSeekReview | None:
+        """Revalidate a cache hit without changing the original request manifest."""
+        review = self.get_raw(key, candidate)
+        if review is None or review.outcome not in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN}:
+            return None
+        if (
+            review.code != candidate.quote.code
+            or review.evidence_manifest_hash is None
+            or bound_at.tzinfo is None
+            or bound_at.utcoffset() is None
+            or review.completed_at.tzinfo is None
+            or review.completed_at.utcoffset() is None
+            or candidate.observed_at > bound_at
+            or not 0.0 <= (bound_at - review.completed_at).total_seconds() < min(600.0, self._ttl_seconds)
+        ):
+            return None
+        current = RoutePromptEvidence(replace(candidate, observed_at=bound_at))
+        evidence_ids = frozenset(item.evidence_id for item in current.evidence)
+        referenced = {
+            evidence_id for assessment in review.dimensions.values() for evidence_id in assessment.evidence_ids
+        } | {evidence_id for fact in review.risk_facts for evidence_id in fact.evidence_ids}
+        if not referenced <= evidence_ids:
+            return None
+        try:
+            binding = ReviewEvidenceBinding(
+                review.code,
+                review.evidence_manifest_hash,
+                BuildReviewManifestHash(candidate),
+                ContentHash(key),
+                review.completed_at,
+                bound_at,
+            )
+        except ValueError:
+            return None
+        return replace(review, cache_reused=True, evidence_binding=binding)
 
     def claim_raw(self, key: str | CacheRequestKey) -> bool:
         with self._raw_condition:
@@ -308,7 +371,7 @@ class ReviewCache:
 def _quote_changed(entry: _RawCacheEntry, candidate: FeatureSnapshot) -> bool:
     price = _finite(candidate.quote.price)
     volume_ratio = _finite(candidate.quote.volume_ratio)
-    if entry.price is None or price is None:
+    if entry.price is None or price is None or entry.price <= 0.0:
         price_changed = entry.price != price
     else:
         persisted_price = Decimal(str(entry.price))
@@ -341,4 +404,4 @@ def _finite(value: float | None) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-__all__ = ["ReviewCache", "ReviewCacheStatus"]
+__all__ = ["BuildSharedReviewCacheIdentity", "ReviewCache", "ReviewCacheStatus"]

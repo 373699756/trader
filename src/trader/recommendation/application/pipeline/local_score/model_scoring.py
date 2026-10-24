@@ -9,6 +9,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import TypeVar, cast
 
 from trader.recommendation.application.pipeline.static_standardize.static_feature_builder import (
@@ -40,7 +41,7 @@ from trader.recommendation.domain.market.feature_contracts import (
     V2_FEATURE_SPEC_CATALOG,
     V2_TOMORROW_MODEL_FEATURE_MANIFEST,
 )
-from trader.recommendation.domain.market.models import Board, FeatureSnapshot
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import ExposureContract, ResidualizeExposure
 from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
@@ -50,6 +51,7 @@ _AMOUNT_FIELD = "qfq_average_amount_20d"
 _AMIHUD_FIELD = "qfq_amihud_20d"
 _DEFAULT_RETURN_HORIZONS = (1, 3, 5)
 _DEFAULT_MOMENTUM_HORIZONS = (20, 40, 60)
+_PREDICTION_BATCH_SIZE = 256
 _TStage = TypeVar("_TStage")
 
 
@@ -87,6 +89,36 @@ class _ModelRowContract:
     exposure_contract: ExposureContract
     industry_ids: frozenset[str]
     history_required_sessions: int
+
+
+@dataclass(frozen=True)
+class _ModelRowIdentity:
+    code: str
+    board: Board
+    observed_day: date
+    history_days: int
+    displayed_industry: str
+    model_industry: ModelIndustryReference | None
+    history_failure: str | None
+    values: tuple[float | None, ...]
+
+
+@dataclass(frozen=True)
+class _PreparedModelRows:
+    rows: tuple[_RawRow, ...]
+    missing_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CostReferenceIdentity:
+    profile_id: str
+    strategy: Strategy
+    model_version: str
+    population_identity: str
+    round_trip_base_rate: float
+    liquidity_rank_multiplier: float
+    coordinates: tuple[tuple[str, str, float], ...]
+    epochs: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -137,6 +169,24 @@ class SharedModelFeatureCache:
             tuple[tuple[FeatureFactRevision, ...], ExposureContract],
             _SharedFeatureMatrices,
         ] = OrderedDict()
+        self._rows: OrderedDict[tuple[_ModelRowContract, tuple[_ModelRowIdentity, ...]], _PreparedModelRows] = (
+            OrderedDict()
+        )
+
+    def prepare_rows(self, features: tuple[FeatureSnapshot, ...], contract: _ModelRowContract) -> _PreparedModelRows:
+        ordered = tuple(sorted(features, key=lambda feature: feature.quote.code))
+        key = (contract, tuple(_row_identity(feature, contract) for feature in ordered))
+        with self._lock:
+            cached = self._rows.get(key)
+            if cached is not None:
+                self._rows.move_to_end(key)
+                return cached
+            rows, missing = _eligible_rows(ordered, contract)
+            prepared = _PreparedModelRows(tuple(rows), missing)
+            self._rows[key] = prepared
+            while len(self._rows) > self._capacity:
+                self._rows.popitem(last=False)
+            return prepared
 
     def read(
         self,
@@ -249,6 +299,7 @@ class ProductionModelScoringService:
         self._shared_features = shared_features or SharedModelFeatureCache()
         self._lock = threading.RLock()
         self._state: _ModelComputationState | None = None
+        self._cost_references: OrderedDict[_CostReferenceIdentity, _CostReference] = OrderedDict()
         self._request_count = 0
         self._cache_hit_count = 0
         self._predictor_batch_count = 0
@@ -337,7 +388,7 @@ class ProductionModelScoringService:
         cost_boards = frozenset(board for board, _reference in cost_reference.boards)
         population.update((feature.quote.code, feature) for feature in features)
         rows_started = self._monotonic()
-        rows, missing_population_codes = _eligible_rows(
+        prepared_rows = self._shared_features.prepare_rows(
             tuple(
                 feature
                 for feature in population.values()
@@ -345,6 +396,7 @@ class ProductionModelScoringService:
             ),
             self._row_contract,
         )
+        rows, missing_population_codes = prepared_rows.rows, prepared_rows.missing_codes
         self._record_stage("model_rows", rows_started)
         missing_codes = tuple(
             sorted(
@@ -473,17 +525,23 @@ class ProductionModelScoringService:
         elif predictions is None:
             deadline.require_time("before_batch_prediction")
             started_at = self._monotonic()
-            if self._predictor.profile_id == "v5":
-                predicted: list[ModelPrediction] = []
-                for start in range(0, len(inputs), 256):
+            by_industry: dict[str, list[ModelInput]] = {}
+            for item in inputs:
+                by_industry.setdefault(item.industry, []).append(item)
+            predicted: dict[str, ModelPrediction] = {}
+            for industry_inputs in by_industry.values():
+                for start in range(0, len(industry_inputs), _PREDICTION_BATCH_SIZE):
                     deadline.require_time("before_batch_prediction")
-                    predicted.extend(self._predictor.predict(inputs[start : start + 256]))
+                    batch_inputs = tuple(industry_inputs[start : start + _PREDICTION_BATCH_SIZE])
+                    batch_predictions = self._predictor.predict(batch_inputs)
                     self._predictor_batch_count += 1
                     deadline.require_time("completed_after_batch_prediction_deadline")
-                predictions = tuple(predicted)
-            else:
-                predictions = self._predictor.predict(inputs)
-                self._predictor_batch_count += 1
+                    if tuple(item.code for item in batch_predictions) != tuple(item.code for item in batch_inputs):
+                        raise ValueError(
+                            f"{self._strategy.value} production model returned a mismatched prediction batch"
+                        )
+                    predicted.update((item.code, item) for item in batch_predictions)
+            predictions = tuple(predicted[item.code] for item in inputs)
             self._record_stage("batch_prediction", started_at)
             deadline.require_time("completed_after_batch_prediction_deadline")
         if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
@@ -542,13 +600,13 @@ class ProductionModelScoringService:
         features: tuple[FeatureSnapshot, ...],
         population_identity: str,
     ) -> _CostReference:
-        rows, _missing = _eligible_rows(features, self._row_contract)
+        rows = self._shared_features.prepare_rows(features, self._row_contract).rows
         eligible = tuple(
             row for row in rows if not self._exposure_contract.requires_industry or row.industry in self._industry_ids
         )
-        coordinates = (
+        identity = _CostReferenceIdentity(
             self._predictor.profile_id,
-            self._strategy.value,
+            self._strategy,
             self.model_version,
             population_identity,
             self._cost_policy.round_trip_base_rate,
@@ -559,12 +617,40 @@ class ProductionModelScoringService:
                 for feature in sorted(features, key=lambda item: item.quote.code)
             ),
         )
+        cached = self._cost_references.get(identity)
+        if cached is not None:
+            self._cost_references.move_to_end(identity)
+            return cached
+        reference = self._build_cost_reference(identity)
+        self._cost_references[identity] = reference
+        while len(self._cost_references) > 3:
+            self._cost_references.popitem(last=False)
+        return reference
+
+    def _build_cost_reference(self, identity: _CostReferenceIdentity) -> _CostReference:
+        coordinates = (
+            identity.profile_id,
+            identity.strategy.value,
+            identity.model_version,
+            identity.population_identity,
+            identity.round_trip_base_rate,
+            identity.liquidity_rank_multiplier,
+            identity.coordinates,
+            identity.epochs,
+        )
         version = f"board-cost-reference:{hashlib.sha256(repr(coordinates).encode()).hexdigest()}"
         return _CostReference(
             version,
             tuple(
-                (board, PercentileReference(tuple(row.amihud_20d for row in eligible if row.board == board), 0.0, 1.0))
-                for board in sorted({row.board for row in eligible})
+                (
+                    board,
+                    PercentileReference(
+                        tuple(value for _code, item_board, value in identity.coordinates if item_board == board),
+                        0.0,
+                        1.0,
+                    ),
+                )
+                for board in sorted({board for _code, board, _value in identity.coordinates})
             ),
         )
 
@@ -661,6 +747,25 @@ def _score_predictions(
     return ModelScoreBatch(model_version, diagnostics, predictions, missing_codes, cost_reference_version)
 
 
+def _row_identity(feature: FeatureSnapshot, contract: _ModelRowContract) -> _ModelRowIdentity:
+    fields = (
+        *(f"qfq_return_{horizon}d" for horizon in contract.return_horizons),
+        *(f"qfq_momentum_{horizon}d_skip5" for horizon in contract.momentum_horizons),
+        _AMOUNT_FIELD,
+        _AMIHUD_FIELD,
+    )
+    return _ModelRowIdentity(
+        feature.quote.code,
+        BoardForSnapshot(feature),
+        ShanghaiNow(feature.observed_at).date(),
+        feature.history_days,
+        feature.quote.industry,
+        feature.model_industry,
+        feature.model_history_quality.failure if feature.model_history_quality is not None else None,
+        tuple(_optional_finite(feature.values.get(name)) for name in fields),
+    )
+
+
 def _eligible_rows(
     features: tuple[FeatureSnapshot, ...],
     contract: _ModelRowContract,
@@ -718,16 +823,19 @@ def _fact_revisions(
         "qfq_average_amount_20d": tuple((row.code, row.average_amount_20d) for row in rows),
     }
     return_by_horizon = {
-        horizon: tuple((row.code, row.returns[index]) for row in rows)
-        for index, horizon in enumerate(_DEFAULT_RETURN_HORIZONS)
+        horizon: tuple(row.returns[index] for row in rows) for index, horizon in enumerate(_DEFAULT_RETURN_HORIZONS)
     }
     momentum_by_horizon = {
-        horizon: tuple((row.code, row.momentum[index]) for row in rows)
-        for index, horizon in enumerate(momentum_horizons)
+        horizon: tuple(row.momentum[index] for row in rows) for index, horizon in enumerate(momentum_horizons)
     }
     for horizon in (*_DEFAULT_RETURN_HORIZONS, *momentum_horizons):
         values[f"qfq_close_lag_{horizon}"] = tuple(
-            (row.code, return_by_horizon.get(horizon), momentum_by_horizon.get(horizon)) for row in rows
+            (
+                row.code,
+                return_by_horizon[horizon][index] if horizon in return_by_horizon else None,
+                momentum_by_horizon[horizon][index] if horizon in momentum_by_horizon else None,
+            )
+            for index, row in enumerate(rows)
         )
     return tuple(
         FeatureFactRevision(

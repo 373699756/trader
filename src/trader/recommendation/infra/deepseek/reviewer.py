@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -9,6 +10,8 @@ from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
+
+    from trader.recommendation.infra.runtime.composition_inputs import RuntimeBuildContext
 
 from trader.infra.cache_contracts import CacheRequestKey
 from trader.infra.settings import DeepSeekSettings
@@ -58,6 +61,7 @@ class _ReviewerRequiredOptions(TypedDict):
 
 class _ReviewerOptionalOptions(TypedDict, total=False):
     now: Callable[[], datetime]
+    monotonic: Callable[[], float]
 
 
 class ReviewerOptions(_ReviewerRequiredOptions, _ReviewerOptionalOptions):
@@ -87,6 +91,7 @@ class _ExecuteReviewOptions(TypedDict):
     emergency_reason: str
     batch_id: str
     contexts: Mapping[str, ReviewCandidateContext]
+    monotonic_deadline: float
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,7 @@ class _ReviewExecution:
     contexts: Mapping[str, ReviewCandidateContext]
     thinking_mode: str
     requested_model: str
+    monotonic_deadline: float
     claimed_raw_keys: set[CacheRequestKey] = field(default_factory=set)
 
 
@@ -123,6 +129,28 @@ class _ParsedBatch:
 
 
 class DeepSeekReviewer:
+    @classmethod
+    def from_context(
+        cls,
+        context: RuntimeBuildContext,
+        budget: DeepSeekBudgetLedger,
+        client: DeepSeekCompletionClient,
+        cache: ReviewCache,
+    ) -> DeepSeekReviewer:
+        """Parse policy dependencies while retaining explicitly injected resource owners."""
+        strategy = context.strategy
+        return cls(
+            context.settings.deepseek,
+            budget,
+            client,
+            cache,
+            dimension_weights={Strategy(name): weights for name, weights in strategy.dimension_weights.items()},
+            strategy_version=strategy.strategy_version,
+            confidence_coverage_min=strategy.fusion.confidence_coverage_min,
+            minimum_known_dimensions=strategy.fusion.minimum_known_dimensions,
+            now=context.now,
+        )
+
     def __init__(
         self,
         settings: DeepSeekSettings,
@@ -136,6 +164,7 @@ class DeepSeekReviewer:
         confidence_coverage_min = options["confidence_coverage_min"]
         minimum_known_dimensions = options["minimum_known_dimensions"]
         now = options.get("now", lambda: datetime.now(timezone.utc))
+        self._monotonic = options.get("monotonic", time.monotonic)
         self._settings = settings
         self._budget = budget
         self._client = client
@@ -220,6 +249,7 @@ class DeepSeekReviewer:
         emergency_reason = options.get("emergency_reason", "")
         contexts = options.get("contexts")
         now = _in_deadline_timezone(self._now(), deadline)
+        monotonic_deadline = self._monotonic() + max(0.0, (deadline - now).total_seconds())
         unique_candidates = _unique_candidates(candidates)
         if strategy is Strategy.LONG:
             self._status.start(strategy, phase, 0)
@@ -248,6 +278,7 @@ class DeepSeekReviewer:
                 emergency_reason=emergency_reason,
                 batch_id=batch_id,
                 contexts=contexts or {},
+                monotonic_deadline=monotonic_deadline,
             )
         except Exception as exc:
             error = f"internal_{exc.__class__.__name__}"
@@ -281,15 +312,20 @@ class DeepSeekReviewer:
             contexts,
             _thinking_mode(self._client, self._settings.model),
             self._settings.model,
+            options["monotonic_deadline"],
         )
         early = self._early_review_result(execution)
         if early is not None:
             return early
         try:
-            results, missing, cache_hits = self._restore_review_cache(execution)
+            results, missing, waiting = self._restore_review_cache(execution)
+            slice_statuses, physical_attempts, last_error = self._run_primary_batches(execution, missing, results)
+            # All owned requests finish before waiting for another owner. This
+            # prevents crossed candidate orders from holding each other's claims.
+            self._restore_waiting_reviews(execution, waiting, results)
+            cache_hits = sum(review.cache_reused for review in results.values())
             self._budget.set_batch_cache_hits(batch_id, cache_hits)
             self._status.set_cache_hits(cache_hits)
-            slice_statuses, physical_attempts, last_error = self._run_primary_batches(execution, missing, results)
             batch_status = _aggregate_batch_status(slice_statuses, cache_hits=cache_hits)
             self._status.finish_batch(
                 BudgetBatchCompletion(
@@ -356,69 +392,93 @@ class DeepSeekReviewer:
     def _restore_review_cache(
         self,
         execution: _ReviewExecution,
-    ) -> tuple[dict[str, DeepSeekReview], list[FeatureSnapshot], int]:
+    ) -> tuple[dict[str, DeepSeekReview], list[FeatureSnapshot], list[FeatureSnapshot]]:
         results: dict[str, DeepSeekReview] = {}
         missing: list[tuple[int, int, FeatureSnapshot]] = []
+        waiting: list[FeatureSnapshot] = []
         for index, candidate in enumerate(execution.candidates):
             if not _has_callable_features(candidate):
                 self._set_terminal(
                     results,
                     (candidate,),
                     execution,
-                    _TerminalState(
-                        ReviewOutcome.ABSTAIN,
-                        execution.now,
-                        "insufficient_structured_features",
-                    ),
+                    _TerminalState(ReviewOutcome.ABSTAIN, execution.now, "insufficient_structured_features"),
                 )
                 continue
             raw_key = self._raw_cache_key(candidate, execution)
-            was_seen = self._cache.has_seen(candidate.quote.code, candidate.quote.source_time.date().isoformat())
-            raw_review = self._cache.get_raw(raw_key, candidate)
-            if raw_review is None:
-                if not self._cache.claim_raw(raw_key):
-                    remaining = (
-                        execution.deadline - _in_deadline_timezone(self._now(), execution.deadline)
-                    ).total_seconds()
-                    self._cache.wait_raw(raw_key, remaining)
-                    raw_review = self._cache.get_raw(raw_key, candidate)
-                    if raw_review is None:
-                        self._set_terminal(
-                            results,
-                            (candidate,),
-                            execution,
-                            _TerminalState(
-                                ReviewOutcome.REJECTED,
-                                _in_deadline_timezone(self._now(), execution.deadline),
-                                "singleflight_upstream_unavailable",
-                            ),
-                        )
-                        continue
-                else:
-                    execution.claimed_raw_keys.add(raw_key)
-            if raw_review is None:
-                priority = _review_priority(
-                    candidate,
-                    was_seen=was_seen,
-                    context=execution.contexts.get(candidate.quote.code),
-                )
-                missing.append((priority, index, candidate))
+            if self._restore_cached_review(candidate, raw_key, execution, results):
                 continue
-            annotated = self._annotate_primary(raw_review, candidate, execution)
-            fusion_key = self._requests.fusion_cache_key(raw_key, execution.strategy)
-            classified = self._cache.get_fusion(fusion_key)
-            if classified is None:
-                classified = self._requests.classify(annotated, execution.strategy)
-                self._cache.put_fusion(fusion_key, classified)
-            results[candidate.quote.code] = replace(
-                self._annotate_primary(classified, candidate, execution), cache_reused=True
+            if not self._cache.claim_raw(raw_key):
+                waiting.append(candidate)
+                continue
+            execution.claimed_raw_keys.add(raw_key)
+            # The preceding owner can publish between the first lookup and our
+            # claim. Recheck before issuing a duplicate physical request.
+            if self._restore_cached_review(candidate, raw_key, execution, results):
+                self._release_raw_claim(raw_key, execution)
+                continue
+            was_seen = self._cache.has_seen(candidate.quote.code, candidate.quote.source_time.date().isoformat())
+            priority = _review_priority(
+                candidate, was_seen=was_seen, context=execution.contexts.get(candidate.quote.code)
             )
+            missing.append((priority, index, candidate))
         ordered_missing = [item[2] for item in sorted(missing, key=lambda item: (item[0], item[1]))]
-        cache_hits = sum(
-            review.outcome in _SUCCESSFUL_CANDIDATE_OUTCOMES and review.error != "insufficient_structured_features"
-            for review in results.values()
+        return results, ordered_missing, waiting
+
+    def _restore_cached_review(
+        self,
+        candidate: FeatureSnapshot,
+        raw_key: CacheRequestKey,
+        execution: _ReviewExecution,
+        results: dict[str, DeepSeekReview],
+    ) -> bool:
+        now = _in_deadline_timezone(self._now(), execution.deadline)
+        if now >= execution.deadline or self._monotonic() >= execution.monotonic_deadline:
+            return False
+        raw_review = self._cache.get_bound_raw(raw_key, candidate, bound_at=now)
+        if raw_review is None:
+            return False
+        annotated = self._annotate_primary(raw_review, candidate, execution)
+        fusion_key = self._requests.fusion_cache_key(raw_key, execution.strategy)
+        classified = self._cache.get_fusion(fusion_key)
+        if classified is None or classified.evidence_manifest_hash != raw_review.evidence_manifest_hash:
+            classified = self._requests.classify(annotated, execution.strategy)
+            self._cache.put_fusion(fusion_key, classified)
+        results[candidate.quote.code] = replace(
+            self._annotate_primary(classified, candidate, execution),
+            cache_reused=True,
+            evidence_binding=raw_review.evidence_binding,
         )
-        return results, ordered_missing, cache_hits
+        return True
+
+    def _restore_waiting_reviews(
+        self,
+        execution: _ReviewExecution,
+        waiting: Sequence[FeatureSnapshot],
+        results: dict[str, DeepSeekReview],
+    ) -> None:
+        for candidate in waiting:
+            raw_key = self._raw_cache_key(candidate, execution)
+            now = _in_deadline_timezone(self._now(), execution.deadline)
+            remaining = min(
+                (execution.deadline - now).total_seconds(), execution.monotonic_deadline - self._monotonic()
+            )
+            if remaining > 0.0:
+                self._cache.wait_raw(raw_key, remaining)
+            if self._restore_cached_review(candidate, raw_key, execution, results):
+                continue
+            completed = _in_deadline_timezone(self._now(), execution.deadline)
+            late = completed >= execution.deadline or self._monotonic() >= execution.monotonic_deadline
+            self._set_terminal(
+                results,
+                (candidate,),
+                execution,
+                _TerminalState(
+                    ReviewOutcome.LATE if late else ReviewOutcome.REJECTED,
+                    completed,
+                    "deadline_reached" if late else "singleflight_upstream_unavailable",
+                ),
+            )
 
     def _run_primary_batches(
         self,
@@ -439,6 +499,8 @@ class DeepSeekReviewer:
             requested_model=self._settings.model,
             reasoning_effort="",
             reservation_deadline=execution.deadline,
+            monotonic_deadline=execution.monotonic_deadline,
+            monotonic=self._monotonic,
         )
         statuses: list[str] = []
         physical_attempts = 0
@@ -464,7 +526,7 @@ class DeepSeekReviewer:
         results: dict[str, DeepSeekReview],
     ) -> tuple[str, int, str]:
         completed_at = _in_deadline_timezone(self._now(), execution.deadline)
-        if completed_at >= execution.deadline:
+        if completed_at >= execution.deadline or self._monotonic() >= execution.monotonic_deadline:
             self._set_terminal(
                 results,
                 candidates,
@@ -482,7 +544,11 @@ class DeepSeekReviewer:
                 else parse_error or response.error
             )
             error = error or "request_failed"
-            outcome = ReviewOutcome.LATE if completed_at >= execution.deadline else ReviewOutcome.REJECTED
+            outcome = (
+                ReviewOutcome.LATE
+                if completed_at >= execution.deadline or self._monotonic() >= execution.monotonic_deadline
+                else ReviewOutcome.REJECTED
+            )
             terminal_error = "completed_after_deadline" if outcome is ReviewOutcome.LATE else error
             self._set_terminal(
                 results,
@@ -509,7 +575,10 @@ class DeepSeekReviewer:
                     _TerminalState(ReviewOutcome.REJECTED, batch.completed_at, "result_missing"),
                 )
                 continue
-            if batch.completed_at >= batch.execution.deadline:
+            if (
+                batch.completed_at >= batch.execution.deadline
+                or self._monotonic() >= batch.execution.monotonic_deadline
+            ):
                 self._set_terminal(
                     batch.results,
                     (candidate,),

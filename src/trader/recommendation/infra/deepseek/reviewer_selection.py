@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -75,11 +76,19 @@ class _ReservationTracker:
     candidate_count: int = 0
     reservation_ids: list[str] = field(default_factory=list)
     failure_reason: str = ""
+    monotonic_deadline: float | None = None
+    monotonic: Callable[[], float] = time.monotonic
+
+    def remaining_seconds(self) -> float:
+        remaining = (self.deadline - _in_deadline_timezone(self.now(), self.deadline)).total_seconds()
+        if self.monotonic_deadline is not None:
+            remaining = min(remaining, self.monotonic_deadline - self.monotonic())
+        return max(0.0, remaining)
 
     def reserve(self) -> bool:
         requested_at = _in_deadline_timezone(self.now(), self.deadline)
         reservation_deadline = self.reservation_deadline or self.deadline
-        if requested_at >= reservation_deadline:
+        if requested_at >= reservation_deadline or self.remaining_seconds() <= 0.0:
             self.failure_reason = "deadline_reached"
             return False
         reservation = self.budget.reserve(

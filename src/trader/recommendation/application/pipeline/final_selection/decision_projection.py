@@ -523,6 +523,11 @@ def BuildScoredHybrid(
         (
             projection.native_input.evaluated_at,
             *(review.completed_at for review in normalized.values()),
+            *(
+                review.evidence_binding.bound_at
+                for review in normalized.values()
+                if review.evidence_binding is not None
+            ),
         )
     )
     stages = CompleteScoredStages(
@@ -770,15 +775,29 @@ def ValidateReviewManifests(
     reviews: Mapping[str, DeepSeekReview],
     expected: Mapping[str, str],
 ) -> bool:
-    candidate_codes = {item.code for item in projection.review_candidates}
+    candidates = {item.code: item.features for item in projection.review_candidates}
     return not any(
-        code not in candidate_codes
+        code not in candidates
         or review.code != code
         or (
             review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN}
-            and review.evidence_manifest_hash != expected.get(code)
+            and not _review_manifest_matches(review, expected.get(code), candidates[code].observed_at)
         )
         for code, review in reviews.items()
+    )
+
+
+def _review_manifest_matches(review: DeepSeekReview, expected: str | None, observed_at: datetime) -> bool:
+    binding = review.evidence_binding
+    if binding is None:
+        return review.evidence_manifest_hash == expected and expected is not None
+    return (
+        review.cache_reused
+        and binding.code == review.code
+        and binding.original_manifest_hash == review.evidence_manifest_hash
+        and binding.current_manifest_hash == expected
+        and binding.original_completed_at == review.completed_at
+        and binding.bound_at >= observed_at
     )
 
 

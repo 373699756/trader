@@ -28,8 +28,4 @@ class TcnFittingParameters:
             raise ValueError("V5 fitting parameters are outside their bounded contract")
 
 
-class TcnCalibrationError(ValueError):
-    """One industry's independent predictions cannot support a calibration fit."""
-
-
-__all__ = ["TcnFittingParameters", "TcnCalibrationError"]
+__all__ = ["TcnFittingParameters"]

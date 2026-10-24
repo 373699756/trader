@@ -33,13 +33,17 @@ def test_explicit_v1_build_is_lazy_shadow_and_binds_complete_published_history(t
     assert tuple(item.profile_id for item in both.systems) == ("v2", "v3")
     assert both.systems[0].workers.market_cache is both.systems[1].workers.market_cache
     assert both.systems[0].budget is both.systems[1].budget
+    assert both.systems[0].review_cache is both.systems[1].review_cache
+    assert both.systems[0].input_preloader is both.systems[1].input_preloader
+    assert both.systems[0].market_data.history.projection_owner is both.systems[1].market_data.history.projection_owner
 
 
-def test_v1_cli_and_diagnostics_do_not_enter_legacy_training_or_performance(tmp_path: Path) -> None:
+def test_v1_cli_and_diagnostics_require_its_own_model_artifacts(tmp_path: Path) -> None:
     parser = CliParser()
     assert parser.parse_args(["train", "v1"]).profiles == ("v1",)
     assert parser.parse_args(["train", "v1,v5"]).profiles == ("v1", "v5")
     report = PerformanceRun(_config(tmp_path), scoring_profile="v1")
     assert report["status"] == "failed"
-    assert report["failures"] == ["learned_rank_shadow_workload_unverified"]
+    assert report["failures"] == ["model_unavailable"]
+    assert report["profile_results"] == {"v1": {"status": "unverified", "reason": "missing"}}
     assert report["measurements"] == {} and report["network_calls"] == 0

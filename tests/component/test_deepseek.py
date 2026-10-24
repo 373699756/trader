@@ -822,6 +822,7 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
         ReviewCache(),
         **_reviewer_policy(),
         now=clock.now,
+        monotonic=lambda: 0.0,
     )
 
     result = reviewer.review(

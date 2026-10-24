@@ -20,6 +20,11 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.training.infra.model_bundles.contracts import TrainedAlgorithm, TrainedProfileContract
+from trader.training.infra.model_bundles.evaluation_codec import (
+    PREDICTION_REPORT_FIELDS,
+    ValidatePredictionReport,
+    ValidatePredictionSampleCounts,
+)
 from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork, TcnTensor
 
 
@@ -81,6 +86,7 @@ _REPORT_COMMON_FIELDS = {
 }
 _REPORT_FIELDS = {
     *_REPORT_COMMON_FIELDS,
+    *PREDICTION_REPORT_FIELDS,
     "artifact_structure_valid",
     "artifact_structure_failure_reasons",
     "prediction_return_validation_passed",
@@ -241,6 +247,12 @@ def DecodeHeadBundle(
             or _integer(values, "validation_rows") < 1
         ):
             raise ValueError("trained-head industry sample counts are invalid")
+    try:
+        ValidatePredictionSampleCounts(cast(dict[str, object], metadata["validation_report"]), counts)
+    except ValueError as exc:
+        raise ModelBundleContractError(
+            "trained-head actual evaluation coverage conflicts; retraining is required"
+        ) from exc
     if (
         _text(metadata, "schema_version") != f"{profile.profile_id}_head_metadata"
         or _text(metadata, "profile_id") != profile.profile_id
@@ -308,11 +320,7 @@ def _decode_group_document(
     *,
     report: bool,
 ) -> _GroupIdentity:
-    fields = (
-        (_REPORT_FIELDS | ({"prediction_metrics"} if profile.algorithm == "tcn" else set()))
-        if report
-        else _INPUT_FIELDS
-    )
+    fields = _REPORT_FIELDS if report else _INPUT_FIELDS
     payload, declared_hash = _hashed_object(document, fields, "report" if report else "training input")
     contract = profile.head_for_strategy(strategy)
     expected_schema = (
@@ -343,8 +351,13 @@ def _decode_group_document(
         or not _valid_target_metrics(payload.get("target_metrics"), strategy)
     ):
         raise ValueError("trained strategy-head report is invalid")
-    if report and profile.algorithm == "tcn" and not _valid_prediction_metrics(payload.get("prediction_metrics")):
-        raise ValueError("V5 prediction metrics are invalid")
+    if report:
+        try:
+            ValidatePredictionReport(payload)
+        except ValueError as exc:
+            raise ModelBundleContractError(
+                "trained-head evaluation contract conflicts; retraining is required"
+            ) from exc
     if report and (
         not _boolean(payload, "artifact_structure_valid")
         or _string_list(payload, "artifact_structure_failure_reasons")
@@ -436,25 +449,6 @@ def _hashed_object(document: object, fields: set[str], label: str) -> tuple[dict
     if set(payload) != fields:
         raise ModelBundleContractError(f"trained-head {label} fields are invalid")
     return payload, declared_hash
-
-
-def _valid_prediction_metrics(value: object) -> bool:
-    if not isinstance(value, dict) or not value:
-        return False
-    for industry, metrics in value.items():
-        if (
-            not isinstance(industry, str)
-            or not isinstance(metrics, dict)
-            or set(metrics) != {"rows", "mae", "rmse", "best_epoch", "early_stopping_mse"}
-        ):
-            return False
-        if not all(
-            IsFiniteNumber(metrics[name]) and metrics[name] >= 0 for name in ("mae", "rmse", "early_stopping_mse")
-        ):
-            return False
-        if not all(IsInteger(metrics[name]) and metrics[name] > 0 for name in ("rows", "best_epoch")):
-            return False
-    return True
 
 
 def _decode_industries(

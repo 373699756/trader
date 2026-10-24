@@ -8,10 +8,12 @@ from collections.abc import Callable
 import numpy as np
 import torch
 
-from trader.recommendation.domain.market.v5.features import SEQUENCE_CONTRACT
+from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
+from trader.training.infra.model_evaluation import CalibrationAccumulator
+from trader.training.infra.model_fitting_results import FittedIndustryModel
 from trader.training.infra.profile.v5.network import TcnNetwork
-from trader.training.infra.profile.v5.settings import TcnCalibrationError, TcnFittingParameters
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingIndustryCounts, TrainingSplitName
 
 
@@ -21,7 +23,7 @@ def FitTcnIndustry(
     contract: TrainedHeadContract,
     parameters: TcnFittingParameters,
     heartbeat: Callable[[], None],
-) -> dict[str, object]:
+) -> FittedIndustryModel:
     width = len(contract.feature_positions)
     auxiliary = width - 360
     torch.manual_seed(parameters.seed)
@@ -50,7 +52,6 @@ def FitTcnIndustry(
     best = math.inf
     stale = 0
     best_weights = network.tensors()
-    best_epoch = 0
 
     def evaluate(split: TrainingSplitName) -> tuple[float, int]:
         error, count = 0.0, 0
@@ -78,57 +79,31 @@ def FitTcnIndustry(
             raise ValueError("V5 nonfinite early stopping loss")
         if metric < best:
             best, stale, best_weights = metric, 0, network.tensors()
-            best_epoch = _epoch + 1
         else:
             stale += 1
             if stale >= parameters.early_stopping_rounds:
                 break
     network.load_tensors(best_weights)
-    # Only sufficient statistics are retained, never the complete calibration matrix.
-    n = sx = sy = sxx = sxy = 0.0
+    # Only centered sufficient statistics are retained, never the complete calibration matrix.
+    calibration = CalibrationAccumulator()
     for batch in samples.iter_batches(counts.industry, contract, "calibration", batch_size=parameters.batch_size):
         heartbeat()
         predicted = network.predict((batch.features - means) / scales)
-        n += len(predicted)
-        sx += float(predicted.sum())
-        sy += float(batch.labels.sum())
-        sxx += float(predicted @ predicted)
-        sxy += float(predicted @ batch.labels)
-    variance = sxx - sx * sx / n
-    if n < 2 or variance <= 1e-20:
-        raise TcnCalibrationError("V5 calibration predictions are degenerate")
-    slope = (sxy - sx * sy / n) / variance
-    intercept = (sy - slope * sx) / n
-    error, absolute_error, evaluated = 0.0, 0.0, 0
-    for batch in samples.iter_batches(counts.industry, contract, "validation", batch_size=parameters.batch_size):
-        heartbeat()
-        predicted = intercept + slope * network.predict((batch.features - means) / scales)
-        residual = predicted - batch.labels
-        error += float(np.square(residual).sum())
-        absolute_error += float(np.abs(residual).sum())
-        evaluated += len(predicted)
-    if evaluated != counts.validation or not math.isfinite(error):
-        raise ValueError("V5 validation partition is invalid")
-    return {
-        "transformer_means": means.tolist(),
-        "transformer_scales": scales.tolist(),
-        "calibration_intercept": intercept,
-        "calibration_slope": slope,
-        "prediction_metrics": {
-            "rows": evaluated,
-            "mae": absolute_error / evaluated,
-            "rmse": math.sqrt(error / evaluated),
-            "best_epoch": best_epoch,
-            "early_stopping_mse": best,
-        },
-        "tcn_network": {
-            "contract": SEQUENCE_CONTRACT,
-            "dropout": parameters.dropout,
-            "weights": [{"name": t.name, "shape": list(t.shape), "values": list(t.values)} for t in best_weights],
-        },
-        "training_rows": counts.training,
-        "validation_rows": counts.validation,
-    }
+        calibration.add(predicted, batch.labels, batch.trade_dates)
+    calibrated = calibration.finish()
+    return FittedIndustryModel(
+        counts.industry,
+        TrainedTcnModelSnapshot(
+            tuple(float(value) for value in means),
+            tuple(float(value) for value in scales),
+            calibrated.intercept,
+            calibrated.slope,
+            parameters.dropout,
+            best_weights,
+        ),
+        counts.training,
+        calibrated,
+    )
 
 
 __all__ = ["FitTcnIndustry"]

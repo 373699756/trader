@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+    from trader.infra.settings.models import StrategySettings
+
 from trader.infra.cache_contracts import BoundedCache, CacheIdentity, RequestKey
 from trader.infra.market_data.history.history import (
     DailyBar,
@@ -227,6 +229,23 @@ class _CachedQuoteFactors:
 
 
 class FeatureBuilder:
+    @classmethod
+    def from_settings(
+        cls,
+        strategy: StrategySettings,
+        horizons: tuple[int, ...],
+        cache: BoundedCache[object],
+    ) -> FeatureBuilder:
+        return cls(
+            strategy.news_signal,
+            strategy.tomorrow_tail_signal,
+            strategy.market_regime,
+            strategy.long_research,
+            strategy.feature_component_weights,
+            model_momentum_horizons=horizons,
+            cache=cache,
+        )
+
     def __init__(  # noqa: PLR0913 - feature builder receives explicit policy owners at the composition boundary
         self,
         news_signal_policy: NewsSignalPolicy,

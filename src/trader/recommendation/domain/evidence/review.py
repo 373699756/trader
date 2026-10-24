@@ -65,6 +65,34 @@ class DimensionAssessment:
 
 
 @dataclass(frozen=True)
+class ReviewEvidenceBinding:
+    """Retain request provenance while binding reusable facts to a current input."""
+
+    code: str
+    original_manifest_hash: str
+    current_manifest_hash: str
+    facts_identity: str
+    original_completed_at: datetime
+    bound_at: datetime
+
+    def __post_init__(self) -> None:
+        hashes = (self.original_manifest_hash, self.current_manifest_hash, self.facts_identity)
+        if (
+            len(self.code) != 6
+            or not self.code.isdigit()
+            or any(
+                len(value) != 64 or any(character not in "0123456789abcdef" for character in value) for value in hashes
+            )
+            or any(
+                value.tzinfo is None or value.utcoffset() is None
+                for value in (self.original_completed_at, self.bound_at)
+            )
+            or not 0.0 <= (self.bound_at - self.original_completed_at).total_seconds() < 600.0
+        ):
+            raise ValueError("review evidence binding identity or lifetime is invalid")
+
+
+@dataclass(frozen=True)
 class DeepSeekReview:
     code: str
     outcome: ReviewOutcome
@@ -87,6 +115,7 @@ class DeepSeekReview:
     prompt_cache_hit_tokens: int | None = None
     prompt_cache_miss_tokens: int | None = None
     cache_reused: bool = False
+    evidence_binding: ReviewEvidenceBinding | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dimensions", MappingProxyType(dict(self.dimensions)))
@@ -118,6 +147,7 @@ __all__ = [
     "DeepSeekReview",
     "DimensionAssessment",
     "ReviewCandidateContext",
+    "ReviewEvidenceBinding",
     "ReviewOutcome",
     "RiskFact",
     "RiskRule",

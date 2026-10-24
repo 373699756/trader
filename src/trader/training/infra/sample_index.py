@@ -21,7 +21,7 @@ from trader.infra.sqlite_connection import (
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 
-TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation"]
+TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation", "holdout"]
 TRAINING_SAMPLE_CACHE_MIB = 32
 TRAINING_SAMPLE_MMAP_BYTES = 0
 _TARGET_COLUMNS = (
@@ -52,12 +52,21 @@ class TrainingSampleMatrix:
 
 
 @dataclass(frozen=True)
+class TrainingSampleBatch(TrainingSampleMatrix):
+    trade_dates: tuple[date, ...]
+    codes: tuple[str, ...]
+    industries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class TrainingIndustryCounts:
     industry: str
     training: int
     early_stopping: int
     calibration: int
     validation: int
+    calibration_dates: int = 0
+    holdout: int = 0
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,7 @@ class TrainingIndustryData:
     early_stopping: TrainingSampleMatrix
     calibration: TrainingSampleMatrix
     validation_count: int
+    calibration_dates: tuple[date, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,7 +137,7 @@ class SQLiteTrainingSampleIndex:
             CREATE TABLE sample_split_dates (
                 trade_date TEXT PRIMARY KEY,
                 split_name TEXT NOT NULL CHECK (
-                    split_name IN ('training', 'early_stopping', 'calibration', 'validation')
+                    split_name IN ('training', 'early_stopping', 'calibration', 'validation', 'holdout')
                 )
             ) WITHOUT ROWID;
             """
@@ -165,7 +175,8 @@ class SQLiteTrainingSampleIndex:
             *((day.isoformat(), "training") for day in split.model_fit_dates),
             *((day.isoformat(), "early_stopping") for day in split.early_stopping_dates),
             *((day.isoformat(), "calibration") for day in split.calibration_dates),
-            *((day.isoformat(), "validation") for day in (*split.confirmation_dates, *split.daily_proxy_holdout_dates)),
+            *((day.isoformat(), "validation") for day in split.confirmation_dates),
+            *((day.isoformat(), "holdout") for day in split.daily_proxy_holdout_dates),
         )
         self._connection.run_many("INSERT INTO sample_split_dates VALUES (?, ?)", split_dates)
         self._connection.run("CREATE INDEX samples_industry_date ON samples(industry, trade_date, code)")
@@ -192,49 +203,88 @@ class SQLiteTrainingSampleIndex:
         split_name: TrainingSplitName,
         *,
         batch_size: int = 256,
-    ) -> Iterator[TrainingSampleMatrix]:
+    ) -> Iterator[TrainingSampleBatch]:
         """Stream one industry's ordered partition without allocating its full matrix."""
+        yield from self._iter_batches(contract, split_name, industry=industry, batch_size=batch_size)
+
+    def iter_validation_batches(
+        self, contract: TrainedHeadContract, *, batch_size: int = 256
+    ) -> Iterator[TrainingSampleBatch]:
+        """Read only the diagnostic confirmation proxy, in complete same-day population order."""
+        yield from self._iter_batches(contract, "validation", industry=None, batch_size=batch_size)
+
+    def _iter_batches(
+        self,
+        contract: TrainedHeadContract,
+        split_name: TrainingSplitName,
+        *,
+        industry: str | None,
+        batch_size: int,
+    ) -> Iterator[TrainingSampleBatch]:
         if not 1 <= batch_size <= 256:
             raise ValueError("training batch size must be within 1..256")
+        if split_name == "holdout":
+            raise ValueError("training_holdout_is_sealed")
         target = _require_target_column(contract.target_column)
         columns = ",".join(f"s.f{i}" for i in contract.feature_positions)
+        selected = "AND s.industry=? " if industry is not None else ""
         rows = self._connection.run(
-            f"SELECT {columns},s.{target} FROM samples s "
+            f"SELECT s.trade_date,s.code,s.industry,{columns},s.{target} FROM samples s "
             "JOIN sample_split_dates d ON d.trade_date=s.trade_date "
-            f"WHERE s.industry=? AND d.split_name=? AND s.{target} IS NOT NULL ORDER BY s.trade_date,s.code",
-            (industry, split_name),
+            f"WHERE d.split_name=? {selected}AND s.{target} IS NOT NULL ORDER BY s.trade_date,s.code",
+            (split_name, industry) if industry is not None else (split_name,),
         )
         batch: list[tuple[float, ...]] = []
+        days: list[date] = []
+        codes: list[str] = []
+        industries: list[str] = []
         for row in rows:
-            batch.append(tuple(float(v) for v in row))
+            days.append(date.fromisoformat(str(row[0])))
+            codes.append(str(row[1]))
+            industries.append(str(row[2]))
+            batch.append(tuple(float(v) for v in row[3:]))
             if len(batch) == batch_size:
                 matrix = np.asarray(batch, dtype=np.float64)
-                yield TrainingSampleMatrix(matrix[:, :-1], matrix[:, -1])
+                yield TrainingSampleBatch(matrix[:, :-1], matrix[:, -1], tuple(days), tuple(codes), tuple(industries))
                 batch.clear()
+                days.clear()
+                codes.clear()
+                industries.clear()
         if batch:
             matrix = np.asarray(batch, dtype=np.float64)
-            yield TrainingSampleMatrix(matrix[:, :-1], matrix[:, -1])
+            yield TrainingSampleBatch(matrix[:, :-1], matrix[:, -1], tuple(days), tuple(codes), tuple(industries))
 
     def _prepare_industry_counts(self) -> None:
-        aggregates = ",".join(f"COUNT(samples.{target})" for target in _TARGET_COLUMNS)
+        aggregates = ",".join(
+            f"COUNT(samples.{target}),COUNT(DISTINCT CASE WHEN samples.{target} IS NOT NULL THEN samples.trade_date END)"
+            for target in _TARGET_COLUMNS
+        )
         rows = self._connection.run(
             f"SELECT samples.industry, splits.split_name, {aggregates} FROM samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
             "GROUP BY samples.industry, splits.split_name ORDER BY samples.industry, splits.split_name"
         )
-        grouped: dict[str, dict[str, dict[TrainingSplitName, int]]] = {target: {} for target in _TARGET_COLUMNS}
+        grouped: dict[str, dict[str, dict[TrainingSplitName, tuple[int, int]]]] = {
+            target: {} for target in _TARGET_COLUMNS
+        }
         for industry, split_name, *counts in rows:
-            for target, count in zip(_TARGET_COLUMNS, counts, strict=True):
+            for index, target in enumerate(_TARGET_COLUMNS):
+                count, dates = counts[index * 2 : index * 2 + 2]
                 if count:
-                    grouped[target].setdefault(str(industry), {})[cast(TrainingSplitName, split_name)] = int(count)
+                    grouped[target].setdefault(str(industry), {})[cast(TrainingSplitName, split_name)] = (
+                        int(count),
+                        int(dates),
+                    )
         for target, industries in grouped.items():
             self._counts_by_target[target] = tuple(
                 TrainingIndustryCounts(
                     industry,
-                    values.get("training", 0),
-                    values.get("early_stopping", 0),
-                    values.get("calibration", 0),
-                    values.get("validation", 0),
+                    values.get("training", (0, 0))[0],
+                    values.get("early_stopping", (0, 0))[0],
+                    values.get("calibration", (0, 0))[0],
+                    values.get("validation", (0, 0))[0],
+                    values.get("calibration", (0, 0))[1],
+                    values.get("holdout", (0, 0))[0],
                 )
                 for industry, values in industries.items()
             )
@@ -255,13 +305,14 @@ class SQLiteTrainingSampleIndex:
             "early_stopping": 0,
             "calibration": 0,
         }
+        calibration_dates: list[date] = []
         feature_sql = ", ".join(f"samples.f{position}" for position in contract.feature_positions)
         target = _require_target_column(contract.target_column)
         cursor = self._connection.run(
-            f"SELECT splits.split_name, {feature_sql}, samples.{target} FROM samples "  # noqa: S608
+            f"SELECT splits.split_name, samples.trade_date, {feature_sql}, samples.{target} FROM samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
             f"WHERE samples.industry=? AND samples.{target} IS NOT NULL "  # noqa: S608
-            "AND splits.split_name != 'validation' "
+            "AND splits.split_name IN ('training', 'early_stopping', 'calibration') "
             "ORDER BY samples.trade_date, samples.code",
             (counts.industry,),
         )
@@ -271,8 +322,10 @@ class SQLiteTrainingSampleIndex:
                 position = positions[split_name]
                 positions[split_name] += 1
                 matrix = matrices[split_name]
-                matrix.features[position] = tuple(float(cast(float, value)) for value in row[1:-1])
+                matrix.features[position] = tuple(float(cast(float, value)) for value in row[2:-1])
                 matrix.labels[position] = float(cast(float, row[-1]))
+                if split_name == "calibration":
+                    calibration_dates.append(date.fromisoformat(str(row[1])))
         expected = {
             "training": counts.training,
             "early_stopping": counts.early_stopping,
@@ -281,7 +334,11 @@ class SQLiteTrainingSampleIndex:
         if positions != expected:
             raise RuntimeError("training sample split count changed during its read")
         return TrainingIndustryData(
-            matrices["training"], matrices["early_stopping"], matrices["calibration"], counts.validation
+            matrices["training"],
+            matrices["early_stopping"],
+            matrices["calibration"],
+            counts.validation,
+            tuple(calibration_dates),
         )
 
     def split_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:
@@ -363,5 +420,6 @@ __all__ = [
     "TrainingIndustryData",
     "TrainingSample",
     "TrainingSampleMatrix",
+    "TrainingSampleBatch",
     "TrainingSplitName",
 ]

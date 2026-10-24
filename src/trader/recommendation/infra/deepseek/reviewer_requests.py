@@ -57,7 +57,7 @@ class ReviewerRequestExecutor:
             api_key=self._settings.api_key,
             model=self._settings.model,
             messages=BuildMessages(candidates),
-            timeout_seconds=self._settings.timeout_seconds,
+            timeout_seconds=max(0.001, min(self._settings.timeout_seconds, tracker.remaining_seconds())),
             max_tokens=self._settings.max_tokens,
             reserve_attempt=tracker.reserve,
             maximum_attempts=1,
@@ -65,7 +65,12 @@ class ReviewerRequestExecutor:
         self._finish_attempts(tracker.reservation_ids[first_offset:], response)
         completed_at = _in_deadline_timezone(self._now(), tracker.deadline)
         parsed, error = _parse_primary_response(response, candidates, completed_at)
-        if parsed is not None or response.content is None or response.attempts >= 2 or completed_at >= tracker.deadline:
+        if (
+            parsed is not None
+            or response.content is None
+            or response.attempts >= 2
+            or tracker.remaining_seconds() <= 0.0
+        ):
             return parsed, response, error
 
         repair_offset = len(tracker.reservation_ids)
@@ -74,7 +79,7 @@ class ReviewerRequestExecutor:
             api_key=self._settings.api_key,
             model=self._settings.model,
             messages=BuildRepairMessages(candidates, response.content, error),
-            timeout_seconds=self._settings.timeout_seconds,
+            timeout_seconds=max(0.001, min(self._settings.timeout_seconds, tracker.remaining_seconds())),
             max_tokens=self._settings.max_tokens,
             reserve_attempt=tracker.reserve,
             maximum_attempts=1,

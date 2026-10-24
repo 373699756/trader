@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from trader.infra.market_data.history.history import DailyBar
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.industry import QuoteWithIndustry
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,
@@ -181,20 +182,23 @@ class QuoteCache:
     ) -> tuple[FeatureSnapshot, ...]:
         references = self._references.model_industries(tuple(feature.quote.code for feature in features))
         by_time: dict[datetime, list[str]] = {}
-        if self._history.completed_features_enabled:
-            for feature in features:
-                by_time.setdefault(feature.observed_at, []).append(feature.quote.code)
+        for feature in features:
+            by_time.setdefault(feature.observed_at, []).append(feature.quote.code)
         completed: dict[str, tuple[tuple[str, float], ...]] = {}
         sequences: dict[str, ModelPriceVolumeSequence] = {}
+        quality: dict[str, ModelHistoryQuality] = {}
         for observed_at, codes in by_time.items():
-            completed.update(self._history.completed_model_features(codes, observed_at))
-            sequences.update(self._history.completed_model_sequences(codes, observed_at))
+            for item in self._history.completed_model_inputs(codes, observed_at):
+                completed[item.code] = item.learned_rank_values
+                quality[item.code] = item.quality
+                if item.sequence is not None:
+                    sequences[item.code] = item.sequence
         return tuple(
             replace(
                 feature,
                 values={**feature.values, **dict(completed.get(feature.quote.code, ()))},
                 model_sequence=sequences.get(feature.quote.code),
-                model_history_quality=self._history.model_history_quality(feature.quote.code, feature.observed_at),
+                model_history_quality=quality[feature.quote.code],
                 quote=QuoteWithIndustry(
                     feature.quote, references.get(feature.quote.code), ShanghaiNow(feature.observed_at).date()
                 ),

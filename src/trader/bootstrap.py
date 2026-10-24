@@ -116,7 +116,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.recommendation.infra.deepseek.cache import ReviewCache
+from trader.recommendation.infra.deepseek.cache import BuildSharedReviewCacheIdentity, ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
@@ -136,6 +136,7 @@ from trader.recommendation.infra.market_data.published_company_research import P
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
@@ -207,6 +208,10 @@ def _post_external_http(url: str, *, headers: Mapping[str, str], json: object, t
 def BuildIndustrySource(*, cancel_requested: Callable[[], bool] | None = None) -> BaoStockIndustryClient:
     execute = partial(RunIsolatedCall, cancel_requested=cancel_requested)
     return BaoStockIndustryClient(fetch_rows=partial(FetchBaoStockIndustries, execute=execute))
+
+
+def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
+    return BoundedExecutor(worker_count=workers, queue_capacity=workers, thread_name_prefix="performance-models")
 
 
 def ExecuteSync(
@@ -642,7 +647,19 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         training_settings=training_settings,
         shared_market=shared_inputs.market if shared_inputs else None,
     )
-    reviewer = _build_reviewer(context, persistence.budget)
+    review_cache = (
+        shared_inputs.review_cache
+        if shared_inputs
+        else ReviewCache(
+            maximum_entries=2000,
+            ttl_seconds=600,
+            shared_cache=workers.market_cache,
+            config_version=BuildSharedReviewCacheIdentity(settings.deepseek),
+            seen_capacity=6000,
+        )
+    )
+    review_client = DeepSeekHttpClient(post=_post_external_http)
+    reviewer = DeepSeekReviewer.from_context(context, persistence.budget, review_client, review_cache)
     policy = _recommendation_policy(context.strategy)
     model_publications = PublishedTrainingState(
         paths.history,
@@ -747,6 +764,13 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         if not cancelled() and profile_id != "v1":
             model_publications.initialize()
 
+    input_preloader = (
+        shared_inputs.input_preloader
+        if shared_inputs
+        else PublishedInputPreloader(market_data.history, initialize=initialize_published_inputs)
+    )
+    if shared_inputs:
+        input_preloader.register(market_data.history, initialize_published_inputs)
     supervisor = RuntimeSupervisor(
         scheduler,
         RuntimeSupervisorConfig(
@@ -799,11 +823,12 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         tomorrow_records=publication.tomorrow_records,
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
-        input_preloader=PublishedInputPreloader(market_data.history, initialize=initialize_published_inputs),
+        input_preloader=input_preloader,
         web_services=web_services,
         workers=workers,
         market_data=market_data,
         budget=persistence.budget,
+        review_cache=review_cache,
         owns_shared_resources=shared_inputs is None,
     )
 
@@ -816,7 +841,9 @@ def BuildProfiledSystem(
     settings = LoadRuntimeSettings(config_path)
     default_profile = "v2" if "v2" in profiles else profiles[0]
     primary = BuildSystem(config_path, scoring_profile=default_profile, runtime_scope=default_profile)
-    shared = SharedRecommendationInputs(primary.workers, primary.market_data, primary.budget)
+    shared = SharedRecommendationInputs(
+        primary.workers, primary.market_data, primary.budget, primary.review_cache, primary.input_preloader
+    )
     build_secondary = partial(BuildSystem, config_path, owns_shared_runtime=False, shared_inputs=shared)
     systems = [primary]
     for profile in profiles:
@@ -890,16 +917,17 @@ def _build_market_data(
     data_pool = workers.data_pool
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
-    feature_builder = FeatureBuilder(
-        strategy.news_signal,
-        strategy.tomorrow_tail_signal,
-        strategy.market_regime,
-        strategy.long_research,
-        strategy.feature_component_weights,
-        model_momentum_horizons=training_settings.momentum_horizons,
-        cache=market_cache,
-    )
+    feature_builder = FeatureBuilder.from_settings(strategy, training_settings.momentum_horizons, market_cache)
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history))
+    projection_owner = (
+        shared_market.history.projection_owner
+        if shared_market
+        else SharedHistoryProjection(
+            published_history,
+            monotonic=time.monotonic,
+            reserve_bytes=partial(market_cache.reserve_resident, "security_master_calendar", "qfq_shared_bars"),
+        )
+    )
     history_cache = PublishedHistoryCache(
         published_history,
         lookback_sessions=training_settings.history_sessions,
@@ -912,6 +940,7 @@ def _build_market_data(
         require_input_binding=True,
         learned_rank_inputs=strategy.scoring_profile == "v1",
         sequence_inputs=strategy.scoring_profile == "v5",
+        projection_owner=projection_owner,
     )
     if shared_market is None:
         intraday_client = EastmoneyClient(
@@ -1073,14 +1102,7 @@ def _build_persistence(
         strategy_limits=settings.deepseek.strategy_limits,
         stage_targets=settings.deepseek.stage_targets,
         stage_limits=settings.deepseek.stage_limits,
-        health_policy=DeepSeekHealthPolicy(
-            consecutive_failure_limit=settings.deepseek.adaptive.consecutive_failure_limit,
-            rolling_window=settings.deepseek.adaptive.rolling_window,
-            minimum_application_ratio=settings.deepseek.adaptive.minimum_application_ratio,
-            healthy_application_ratio=settings.deepseek.adaptive.healthy_application_ratio,
-            healthy_batch_count=settings.deepseek.adaptive.healthy_batch_count,
-            cooldown_seconds=settings.deepseek.adaptive.cooldown_seconds,
-        ),
+        health_policy=DeepSeekHealthPolicy.from_settings(settings.deepseek.adaptive),
         write_lock=threading.Lock(),
     )
     return RuntimePersistenceContext(
@@ -1089,27 +1111,6 @@ def _build_persistence(
         data_plane,
         budget,
         outcomes,
-    )
-
-
-def _build_reviewer(context: RuntimeBuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
-    strategy = context.strategy
-    return DeepSeekReviewer(
-        context.settings.deepseek,
-        budget,
-        DeepSeekHttpClient(post=_post_external_http),
-        ReviewCache(
-            maximum_entries=2000,
-            ttl_seconds=600,
-            shared_cache=context.workers.market_cache,
-            config_version=context.effective_config_version,
-            seen_capacity=6000,
-        ),
-        dimension_weights={Strategy(name): weights for name, weights in strategy.dimension_weights.items()},
-        strategy_version=strategy.strategy_version,
-        confidence_coverage_min=strategy.fusion.confidence_coverage_min,
-        minimum_known_dimensions=strategy.fusion.minimum_known_dimensions,
-        now=context.now,
     )
 
 
@@ -1184,8 +1185,8 @@ def _build_publication(
 
 
 __all__ = [
-    "ApplicationSystem",
     "BuildIndustrySource",
+    "BuildPerformanceExecutor",
     "BuildProfiledSystem",
     "BuildSystem",
     "ExecuteDownloadTrain",
@@ -1194,5 +1195,4 @@ __all__ = [
     "ExecuteQfqDownload",
     "FetchExternalHttp",
     "OpenExternalHttp",
-    "ProfiledApplicationSystem",
 ]

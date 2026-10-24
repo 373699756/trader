@@ -52,9 +52,16 @@ from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
-from trader.training.infra.model_bundles.documents import BuildIndustryModelDocument, BuildPredictionMetricsDocument
+from trader.training.infra.model_bundles.documents import (
+    BuildIndustryModelDocument,
+    BuildIndustrySampleCountsDocument,
+    BuildPredictionMetricsDocument,
+    BuildTargetMetricDocument,
+)
 from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles, PublishProfileBundles
+from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 from trader.training.infra.model_fitting import FitIndustryModels, FittingParameterDocument, LightGBMFittingParameters
+from trader.training.infra.model_fitting_results import IndustryFitResult
 from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_builder import (
     BuildJointTrainingSamples,
@@ -508,7 +515,8 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
                         ("training", len(split.model_fit_dates)),
                         ("early_stopping", len(split.early_stopping_dates)),
                         ("calibration", len(split.calibration_dates)),
-                        ("validation", len(split.confirmation_dates) + len(split.daily_proxy_holdout_dates)),
+                        ("validation", len(split.confirmation_dates)),
+                        ("holdout", len(split.daily_proxy_holdout_dates)),
                     ),
                 ):
                     if expected and samples.split_distinct_date_count(split_name, contract) != expected:
@@ -595,6 +603,7 @@ def _sample_cache_for(
             feature_count,
             "monthly_samples",
             HISTORY_ALIGNMENT_CONTRACT,
+            PREDICTION_EVALUATION_CONTRACT,
             request.profile.history_sessions,
             request.profile.momentum_horizons,
             request.profile.market_state_momentum_horizons,
@@ -726,13 +735,14 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
     contract = plan.contract
     staging: Path | None = None
     try:
-        models, training_rows, validation_rows = FitIndustryModels(
+        fitted = FitIndustryModels(
             request.samples,
             request.split,
             contract,
             request.settings.fitting,
             progress=request.progress,
         )
+        models, training_rows, validation_rows = fitted.models, fitted.training_rows, fitted.validation_rows
         split_hash = _head_split_hash(request.split, contract)
         training_input = _training_input_document(
             _TrainingInputDocumentContext(
@@ -759,10 +769,10 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
             validation_rows,
             request.run_id,
         )
-        model = BuildIndustryModelDocument(models)
+        model = BuildIndustryModelDocument(fitted)
         model_hash = ContentHash(model)
         model["content_hash"] = model_hash
-        report = _report_document(context, models, model_hash, request.metrics)
+        report = _report_document(context, fitted, model_hash, request.metrics)
         report_hash = ContentHash(report)
         report["content_hash"] = report_hash
         if not report["artifact_structure_valid"]:
@@ -783,7 +793,7 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
                 label_cutoff=plan.label_cutoff,
                 sample_database_peak_bytes=request.peak_bytes,
             ), None
-        metadata = _metadata_document(context, model_hash, models, training_input, report)
+        metadata = _metadata_document(context, model_hash, fitted, training_input, report)
         metadata["content_hash"] = ContentHash(metadata)
         staging = MakeBundleStagingDirectory(request.train_root)
         _write_json(staging / "model.json", model)
@@ -821,19 +831,21 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
 
 def _report_document(
     context: _TrainingRunContext,
-    models: dict[str, dict[str, object]],
+    fitted: IndustryFitResult,
     model_hash: str,
     metrics: tuple[TargetMetric, ...],
 ) -> dict[str, object]:
-    structure_reasons = [] if models and context.validation_rows > 0 else ["industry_model_validation_insufficient"]
+    structure_reasons = (
+        [] if fitted.models and context.validation_rows > 0 else ["industry_model_validation_insufficient"]
+    )
     selected = (
         {
-            item.target: _metric_payload(item)
+            item.target: BuildTargetMetricDocument(item)
             for item in metrics
             if item.target in {"target_t2", "target_t3", "target_t4", "target_t5", "target_d25_aggregate"}
         }
         if context.contract.strategy is Strategy.D25
-        else {item.target: _metric_payload(item) for item in metrics if item.target == "target_t1"}
+        else {item.target: BuildTargetMetricDocument(item) for item in metrics if item.target == "target_t1"}
     )
     document: dict[str, object] = {
         **_common_document(context),
@@ -848,7 +860,7 @@ def _report_document(
         "point_in_time_parity": False,
         "historical_status": "historical_data_insufficient",
         "historical_failure_reasons": ["daily_close_proxy_not_point_in_time"],
-        "industry_count": len(models),
+        "industry_count": len(fitted.models),
         "training_rows": context.training_rows,
         "validation_rows": context.validation_rows,
         "target_metrics": selected,
@@ -858,15 +870,14 @@ def _report_document(
         "prediction_return_failure_reasons": ["daily_close_proxy_not_point_in_time"],
         "automatic_model_update": False,
     }
-    if context.profile.algorithm == "tcn":
-        document["prediction_metrics"] = BuildPredictionMetricsDocument(models)
+    document.update(BuildPredictionMetricsDocument(fitted))
     return document
 
 
 def _metadata_document(
     context: _TrainingRunContext,
     model_hash: str,
-    models: dict[str, dict[str, object]],
+    fitted: IndustryFitResult,
     training_input: dict[str, object],
     report: dict[str, object],
 ) -> dict[str, object]:
@@ -894,10 +905,7 @@ def _metadata_document(
         ),
         "training_input": training_input,
         "validation_report": report,
-        "industry_sample_counts": {
-            industry: {key: parameters[key] for key in ("training_rows", "validation_rows")}
-            for industry, parameters in models.items()
-        },
+        "industry_sample_counts": BuildIndustrySampleCountsDocument(fitted),
         "model_hash": model_hash,
     }
 
@@ -1020,6 +1028,7 @@ def _training_contract_hash(
             "training_cost_bps": 0,
             "evaluation_cost_bps": [20, 50, 100],
             "minimum_industry_training_rows": fitting.minimum_industry_training_rows,
+            "prediction_evaluation_contract": PREDICTION_EVALUATION_CONTRACT,
             "model_parameters": FittingParameterDocument(fitting)
             if isinstance(fitting, TcnFittingParameters)
             else {"ridge_penalty": fitting.penalty}
@@ -1074,14 +1083,6 @@ def _mature_label_cutoff(
     if position is None or position < contract.maturity_sessions:
         return None
     return dates[position - contract.maturity_sessions]
-
-
-def _metric_payload(metric: TargetMetric) -> dict[str, object]:
-    return {
-        "count": metric.count,
-        "mean": metric.mean,
-        "standard_deviation": metric.standard_deviation,
-    }
 
 
 def _base_result(

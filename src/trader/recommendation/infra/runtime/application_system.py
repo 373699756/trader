@@ -24,6 +24,7 @@ from trader.recommendation.application.runtime.source_lanes import SourceLaneSch
 from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
@@ -76,6 +77,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     workers: RuntimeWorkerResources
     market_data: MarketFeatureService
     budget: DeepSeekBudgetLedger
+    review_cache: ReviewCache
     owns_shared_resources: bool = True
 
     @property
@@ -90,7 +92,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             self.quote_pool,
             self.market_quote_pool,
             self.minute_pool,
-            (self.long_runtime, self.input_preloader),
+            (self.long_runtime, *((self.input_preloader,) if self.owns_shared_resources else ())),
             self.market_cache,
             self.owns_shared_resources,
         )

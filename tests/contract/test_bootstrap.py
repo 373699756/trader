@@ -239,7 +239,7 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     native_data = system.scheduler._dependencies.data
     assert isinstance(native_data, MarketInputCoordinator)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
-    assert system.input_preloader._history is native_data._market.history  # noqa: SLF001
+    assert system.input_preloader._profiles[0][0] is native_data._market.history  # noqa: SLF001
     configuration = LoadHistorySyncConfiguration(system.settings.project_root, system.settings.data_paths)
     assert native_data._market.history._history.publication._root == system.settings.data_paths.history  # noqa: SLF001
     assert native_data._market.history._outcome_history.publication._root == configuration.archive_root  # noqa: SLF001

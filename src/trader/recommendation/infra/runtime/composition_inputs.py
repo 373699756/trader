@@ -22,7 +22,9 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.application.runtime.cadence import CadencePolicy
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
+from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
@@ -59,6 +61,8 @@ class SharedRecommendationInputs:
     workers: RuntimeWorkerResources
     market: MarketFeatureService
     budget: DeepSeekBudgetLedger
+    review_cache: ReviewCache
+    input_preloader: PublishedInputPreloader
 
 
 @dataclass(frozen=True)

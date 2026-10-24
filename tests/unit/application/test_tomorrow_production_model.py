@@ -766,3 +766,154 @@ def test_incremental_scoring_fails_closed_at_its_deadline_and_retains_the_last_b
     assert status.deadline_abandon_reason == "before_feature_computation"
     assert status.decision_age_ms >= 2500.0
     assert service.score((feature,)) is accepted
+
+
+def test_raw_rows_and_cost_reference_reuse_complete_fact_identity(application_feature_factory, monkeypatch) -> None:
+    features = tuple(
+        _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100, amihud=index + 1.0)
+        for index in range(3)
+    )
+    row_builds = []
+    cost_builds = []
+    original_rows = model_scoring._eligible_rows
+    original_cost = ProductionModelScoringService._build_cost_reference
+
+    def observe_rows(values, contract):
+        row_builds.append(tuple(item.quote.code for item in values))
+        return original_rows(values, contract)
+
+    def observe_cost(service, identity):
+        cost_builds.append(identity)
+        return original_cost(service, identity)
+
+    monkeypatch.setattr(model_scoring, "_eligible_rows", observe_rows)
+    monkeypatch.setattr(ProductionModelScoringService, "_build_cost_reference", observe_cost)
+    service = _service(_Predictor())
+    context = ModelScoringContext(population_features=features, population_identity="same-population")
+    first = service.score(features, context=context)
+    assert service.score(features, context=context) is first
+    price_only = (replace(features[0], quote=replace(features[0].quote, price=999.0)), *features[1:])
+    assert service.score(price_only, context=replace(context, population_features=price_only)) is first
+    assert len(row_builds) == len(cost_builds) == 1
+
+    corrected = (replace(features[0], values={**features[0].values, "qfq_return_1d": 0.123}), *features[1:])
+    second = service.score(corrected, context=replace(context, population_features=corrected))
+    assert second.predictions != first.predictions
+    assert second.cost_reference_version == first.cost_reference_version
+    assert len(row_builds) == 2 and len(cost_builds) == 1
+
+    changed_phase = service.score(
+        corrected, context=replace(context, population_features=corrected, population_identity="new-phase")
+    )
+    assert changed_phase.cost_reference_version != second.cost_reference_version
+    assert changed_phase.diagnostics == second.diagnostics
+    assert len(row_builds) == 2 and len(cost_builds) == 2
+
+
+@pytest.mark.parametrize("profile_id", ("v2", "v3"))
+def test_industry_batches_check_deadlines_and_keep_the_last_valid_batch(
+    application_feature_factory, profile_id
+) -> None:
+    clock = [0.0]
+
+    class _BatchPredictor(_Predictor):
+        exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
+        industry_ids = ("银行", "制造")
+
+        def __init__(self):
+            self.calls = []
+            self.late = False
+
+        def predict(self, inputs):
+            assert len(inputs) <= 256
+            assert len({item.industry for item in inputs}) == 1
+            self.calls.append(tuple(item.code for item in inputs))
+            if self.late:
+                clock[0] = 2.0
+            return super().predict(inputs)
+
+    predictor = _BatchPredictor()
+    predictor.profile_id = profile_id
+    service = ProductionModelScoringService(
+        profile_for(predictor), Strategy.TOMORROW, cost_policy=_COST_POLICY, monotonic=lambda: clock[0]
+    )
+    features = tuple(
+        replace(
+            _model_feature(application_feature_factory(f"{600000 + index:06d}", NOW), offset=index / 10000, amihud=1.0),
+            model_industry=ModelIndustryReference(
+                "制造" if index == 128 else "银行", "证监会行业分类", NOW.date(), "fixture", "fixture"
+            ),
+        )
+        for index in range(258)
+    )
+    accepted = service.score(features)
+    assert tuple(item.code for item in accepted.predictions) == tuple(item.quote.code for item in features)
+    assert sorted(map(len, predictor.calls)) == [1, 1, 256]
+    assert service.computation_status().predictor_batch_count == 3
+    predictor.late = True
+    corrected = (replace(features[0], values={**features[0].values, "qfq_return_1d": 0.123}), *features[1:])
+    with pytest.raises(ModelScoringDeadlineError, match="completed_after_batch_prediction_deadline"):
+        service.score(corrected, context=ModelScoringContext(time_budget_seconds=1.0))
+    assert service._state is not None and service._state.batch is accepted
+    assert service.score(features) is accepted
+
+
+@pytest.mark.parametrize("changed_fact", ("return", "momentum", "amount", "board", "history", "population"))
+def test_incremental_fact_identity_matches_a_fresh_full_calculation(application_feature_factory, changed_fact) -> None:
+    features = tuple(
+        _model_feature(application_feature_factory(f"60000{index}", NOW), offset=index / 100, amihud=index + 1.0)
+        for index in range(4)
+    )
+    service = _service(_Predictor())
+    service.score(features)
+    first = features[0]
+    if changed_fact == "return":
+        changed = replace(first, values={**first.values, "qfq_return_1d": 0.123})
+    elif changed_fact == "momentum":
+        changed = replace(first, values={**first.values, "qfq_momentum_20d_skip5": 0.321})
+    elif changed_fact == "amount":
+        changed = replace(first, values={**first.values, "qfq_average_amount_20d": 500_000_000.0})
+    elif changed_fact == "board":
+        changed = replace(first, quote=replace(first.quote, board=Board.CHINEXT))
+    elif changed_fact == "history":
+        changed = replace(first, history_days=60)
+    else:
+        changed = first
+    population = features[:-1] if changed_fact == "population" else (changed, *features[1:])
+
+    incremental = service.score(population)
+    complete = _service(_Predictor()).score(population)
+
+    assert incremental == complete
+    if changed_fact == "return":
+        assert service.computation_status().computed_groups == ("daily_return",)
+    elif changed_fact == "momentum":
+        assert service.computation_status().computed_groups == ("skip_recent_momentum", "cross_section_residual")
+    elif changed_fact == "population":
+        assert service.computation_status().computed_groups == (
+            "daily_return",
+            "skip_recent_momentum",
+            "cross_section_residual",
+        )
+
+
+def test_lag_fact_identity_is_linear_and_binds_each_stocks_own_observation() -> None:
+    rows = tuple(
+        model_scoring._RawRow(
+            f"{600000 + index:06d}",
+            "main",
+            (index / 1000, 0.02, 0.03),
+            (index / 100, 0.05, 0.06),
+            1.0,
+            100_000_000.0,
+            "银行",
+        )
+        for index in range(40)
+    )
+    required = ("qfq_close_lag_1", "qfq_close_lag_20", "market_cross_section")
+    short = model_scoring._fact_revisions(rows[:20], (20, 40, 60), required)
+    complete = model_scoring._fact_revisions(rows, (20, 40, 60), required)
+
+    assert complete[0].revision == tuple((row.code, row.returns[0], None) for row in rows)
+    assert complete[1].revision == tuple((row.code, None, row.momentum[0]) for row in rows)
+    assert len(repr(complete)) < 3 * len(repr(short))

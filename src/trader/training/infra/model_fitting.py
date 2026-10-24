@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import logging
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from functools import partial
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import lightgbm as lgb
 import numpy as np
@@ -16,12 +16,36 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgressPort,
 )
 from trader.training.domain.training_dates import TrainingDateSplit
+from trader.training.infra.model_bundles.bundle_codec import (
+    TrainedLightGBMModelSnapshot,
+    TrainedRidgeModelSnapshot,
+    TrainedTcnModelSnapshot,
+)
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
-from trader.training.infra.profile.v5.settings import TcnCalibrationError, TcnFittingParameters
+from trader.training.infra.model_bundles.predictor import PredictRidgeBatch
+from trader.training.infra.model_evaluation import (
+    CalibrationAccumulator,
+    CalibrationUnavailableError,
+    PredictionMetrics,
+    PredictionMetricsAccumulator,
+)
+from trader.training.infra.model_fitting_results import (
+    FittedIndustryModel,
+    FittedModelSnapshot,
+    IndustryFitFailure,
+    IndustryFitResult,
+)
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TrainingIndustryCounts,
 )
+
+if TYPE_CHECKING:
+    from trader.training.infra.profile.v5.network import TcnNetwork
+
+_MINIMUM_CALIBRATION_SAMPLES = 2
+_MINIMUM_FEATURE_DEVIATION = 1e-12
 
 
 @dataclass(frozen=True)
@@ -67,9 +91,10 @@ def FitIndustryModels(
     parameters: ModelFittingParameters,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
-) -> tuple[dict[str, dict[str, object]], int, int]:
+) -> IndustryFitResult:
     samples.require_split(split)
-    models: dict[str, dict[str, object]] = {}
+    models: list[FittedIndustryModel] = []
+    failures: list[IndustryFitFailure] = []
     if progress is not None:
         progress.publish(TomorrowTrainingProgress("industry_statistics", "started", 0, 1, strategy=contract.strategy))
     workloads = samples.industry_counts(contract)
@@ -77,40 +102,87 @@ def FitIndustryModels(
         progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=contract.strategy))
     _publish(progress, contract, _FitProgress("started", 0, len(workloads)))
     for position, counts in enumerate(workloads, start=1):
-        if (
-            counts.training < parameters.minimum_industry_training_rows
-            or counts.calibration == 0
-            or (
-                isinstance(parameters, (LightGBMFittingParameters, TcnFittingParameters)) and counts.early_stopping == 0
+        model, failure = _attempt_industry_fit(
+            samples,
+            counts,
+            contract,
+            parameters,
+            partial(_publish, progress, contract, _FitProgress("running", position - 1, len(workloads), len(models))),
+        )
+        if model is not None:
+            models.append(model)
+        if failure:
+            failures.append(
+                IndustryFitFailure(
+                    counts.industry,
+                    failure,
+                    counts.training,
+                    counts.calibration,
+                    counts.calibration_dates,
+                    counts.validation,
+                )
             )
-            or (isinstance(parameters, TcnFittingParameters) and counts.calibration < 2)
-            or counts.validation == 0
-        ):
-            _publish(progress, contract, _fit_progress(position, len(workloads), len(models)))
-            continue
+        _publish(
+            progress,
+            contract,
+            _FitProgress("running", position, len(workloads), len(models))
+            if models and position == len(workloads)
+            else _fit_progress(position, len(workloads), len(models)),
+        )
+    if not workloads:
+        _publish(progress, contract, _FitProgress("completed", 0, 0))
+    heartbeat = partial(
+        _publish, progress, contract, _FitProgress("running", len(workloads), len(workloads), len(models))
+    )
+    if models:
+        metrics, industry_metrics = _evaluate_validation(samples, contract, tuple(models), heartbeat)
+        expected = {item.industry: item.validation for item in workloads}
+        if any(value.predicted_rows != expected[industry] for industry, value in industry_metrics):
+            raise ValueError("validation_sample_coverage_changed")
+        _publish(progress, contract, _FitProgress("completed", len(workloads), len(workloads), len(models)))
+    else:
+        metrics = PredictionMetrics(sum(item.validation for item in workloads), 0, 0, 0, 0, None, None, None, 0)
+        industry_metrics = ()
+    return IndustryFitResult(
+        tuple(models),
+        tuple(failures),
+        metrics,
+        industry_metrics,
+        sum(item.training for item in workloads),
+        sum(item.holdout for item in workloads),
+    )
+
+
+def _attempt_industry_fit(
+    samples: SQLiteTrainingSampleIndex,
+    counts: TrainingIndustryCounts,
+    contract: TrainedHeadContract,
+    parameters: ModelFittingParameters,
+    heartbeat: Callable[[], None],
+) -> tuple[FittedIndustryModel | None, str]:
+    failure = _coverage_failure(counts, parameters)
+    if failure:
+        return None, failure
+    try:
         if isinstance(parameters, TcnFittingParameters):
             from trader.training.infra.profile.v5.fitting import FitTcnIndustry
 
-            try:
-                models[counts.industry] = FitTcnIndustry(
-                    samples,
-                    counts,
-                    contract,
-                    parameters,
-                    partial(
-                        _publish, progress, contract, _FitProgress("running", position - 1, len(workloads), len(models))
-                    ),
-                )
-            except TcnCalibrationError:
-                logging.getLogger(__name__).warning(
-                    "v5_industry_calibration_unavailable", extra={"industry": counts.industry}
-                )
-        else:
-            models[counts.industry] = _fit_industry(samples, counts, contract, parameters)
-        _publish(progress, contract, _fit_progress(position, len(workloads), len(models)))
-    if not workloads:
-        _publish(progress, contract, _FitProgress("completed", 0, 0))
-    return models, sum(item.training for item in workloads), sum(item.validation for item in workloads)
+            return FitTcnIndustry(samples, counts, contract, parameters, heartbeat), ""
+        return _fit_industry(samples, counts, contract, parameters), ""
+    except CalibrationUnavailableError as exc:
+        return None, exc.reason
+
+
+def _coverage_failure(counts: TrainingIndustryCounts, parameters: ModelFittingParameters) -> str:
+    if counts.training < parameters.minimum_industry_training_rows:
+        return "industry_training_rows_insufficient"
+    if counts.calibration < _MINIMUM_CALIBRATION_SAMPLES or counts.calibration_dates < _MINIMUM_CALIBRATION_SAMPLES:
+        return "calibration_samples_or_dates_insufficient"
+    if isinstance(parameters, (LightGBMFittingParameters, TcnFittingParameters)) and counts.early_stopping == 0:
+        return "industry_early_stopping_rows_insufficient"
+    if counts.validation == 0:
+        return "industry_validation_rows_insufficient"
+    return ""
 
 
 def _publish(
@@ -140,14 +212,12 @@ def _fit_industry(
     counts: TrainingIndustryCounts,
     contract: TrainedHeadContract,
     parameters: LightGBMFittingParameters | RidgeFittingParameters,
-) -> dict[str, object]:
+) -> FittedIndustryModel:
     data = samples.industry_data(counts, contract)
     train = data.training
     means = train.features.mean(axis=0)
     deviations = train.features.std(axis=0)
-    scales = np.where(deviations > 1e-12, deviations, 1.0)
-    # These matrices are private to this industry; normalize in place to avoid
-    # retaining raw, centered and standardized copies under the memory limit.
+    scales = np.where(deviations > _MINIMUM_FEATURE_DEVIATION, deviations, 1.0)
     normalized = train.features
     normalized -= means
     normalized /= scales
@@ -159,29 +229,92 @@ def _fit_industry(
         early_features -= means
         early_features /= scales
         booster = _fit_lightgbm(normalized, train.labels, early_features, data.early_stopping.labels, parameters)
-        predicted = booster.predict(calibration_features, num_iteration=booster.best_iteration)
-        model_fields: dict[str, object] = {
-            "lightgbm_model": booster.model_to_string(num_iteration=booster.best_iteration),
-            "lightgbm_best_iteration": int(booster.best_iteration),
-        }
+        predicted = np.asarray(
+            booster.predict(calibration_features, num_iteration=booster.best_iteration, num_threads=2)
+        )
     else:
         coefficients = _ridge_coefficients(normalized, train.labels, parameters.penalty)
-        predicted = coefficients[0] + calibration_features @ coefficients[1:]
-        model_fields = {
-            "ridge_intercept": float(coefficients[0]),
-            "ridge_coefficients": coefficients[1:].tolist(),
-        }
-    slope, intercept = np.polyfit(predicted, data.calibration.labels, 1) if counts.calibration >= 2 else (1.0, 0.0)
-    result = {
-        "transformer_means": means.tolist(),
-        "transformer_scales": scales.tolist(),
-        **model_fields,
-        "calibration_intercept": float(intercept),
-        "calibration_slope": float(slope),
-        "training_rows": counts.training,
-        "validation_rows": counts.validation,
-    }
-    return result
+        predicted = PredictRidgeBatch(calibration_features, coefficients[1:], intercept=float(coefficients[0]))
+    calibration = CalibrationAccumulator()
+    calibration.add(predicted, data.calibration.labels, data.calibration_dates)
+    calibrated = calibration.finish()
+    common = (
+        tuple(float(value) for value in means),
+        tuple(float(value) for value in scales),
+        calibrated.intercept,
+        calibrated.slope,
+    )
+    if isinstance(parameters, LightGBMFittingParameters):
+        model: FittedModelSnapshot = TrainedLightGBMModelSnapshot(
+            *common, booster.model_to_string(num_iteration=booster.best_iteration), int(booster.best_iteration)
+        )
+    else:
+        model = TrainedRidgeModelSnapshot(
+            *common, float(coefficients[0]), tuple(float(value) for value in coefficients[1:])
+        )
+    return FittedIndustryModel(counts.industry, model, counts.training, calibrated)
+
+
+class _ValidationPredictor:
+    def __init__(self, model: FittedModelSnapshot) -> None:
+        self._model = model
+        self._means = np.asarray(model.transformer_means)
+        self._scales = np.asarray(model.transformer_scales)
+        self._booster = (
+            lgb.Booster(model_str=model.lightgbm_model) if isinstance(model, TrainedLightGBMModelSnapshot) else None
+        )
+        self._network: TcnNetwork | None = None
+        if isinstance(model, TrainedTcnModelSnapshot):
+            from trader.training.infra.profile.v5.network import TcnNetwork
+
+            self._network = TcnNetwork(len(model.transformer_means) - 360, model.dropout)
+            self._network.load_tensors(model.weights)
+        self._coefficients = (
+            np.asarray(model.ridge_coefficients) if isinstance(model, TrainedRidgeModelSnapshot) else None
+        )
+
+    def predict(self, features: np.ndarray) -> np.ndarray:
+        values = (features - self._means) / self._scales
+        model = self._model
+        if isinstance(model, TrainedLightGBMModelSnapshot) and self._booster is not None:
+            predicted = np.asarray(
+                self._booster.predict(values, num_iteration=model.lightgbm_best_iteration, num_threads=2)
+            )
+        elif isinstance(model, TrainedRidgeModelSnapshot) and self._coefficients is not None:
+            predicted = PredictRidgeBatch(values, self._coefficients, intercept=model.ridge_intercept)
+        elif isinstance(model, TrainedTcnModelSnapshot) and self._network is not None:
+            predicted = self._network.predict(values)
+        else:
+            raise ValueError("validation_model_type_invalid")
+        return np.asarray(model.calibration_intercept + model.calibration_slope * predicted, dtype=np.float64)
+
+
+def _evaluate_validation(
+    samples: SQLiteTrainingSampleIndex,
+    contract: TrainedHeadContract,
+    models: tuple[FittedIndustryModel, ...],
+    heartbeat: Callable[[], None],
+) -> tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]]:
+    predictors = {item.industry: _ValidationPredictor(item.model) for item in models}
+    overall = PredictionMetricsAccumulator()
+    industries = {item.industry: PredictionMetricsAccumulator() for item in models}
+    for batch in samples.iter_validation_batches(contract):
+        heartbeat()
+        predictions: list[float | None] = [None] * len(batch.codes)
+        for industry in sorted(set(batch.industries) & predictors.keys()):
+            positions = [index for index, value in enumerate(batch.industries) if value == industry]
+            predicted = predictors[industry].predict(batch.features[positions])
+            if len(predicted) != len(positions):
+                raise ValueError("validation_prediction_count_invalid")
+            for index, value in zip(positions, predicted, strict=True):
+                predictions[index] = float(value)
+        for index, prediction in enumerate(predictions):
+            day, code, industry = batch.trade_dates[index], batch.codes[index], batch.industries[index]
+            target = float(batch.labels[index])
+            overall.add(day, code, industry, target, prediction)
+            if industry in industries:
+                industries[industry].add(day, code, industry, target, prediction)
+    return overall.finish(), tuple((industry, value.finish()) for industry, value in sorted(industries.items()))
 
 
 def _ridge_coefficients(features: np.ndarray, labels: np.ndarray, penalty_value: float) -> np.ndarray:

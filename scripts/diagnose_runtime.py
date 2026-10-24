@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,12 +27,15 @@ from scripts.runtime_diagnostics.diagnostic_types import (  # noqa: E402
     DiagnosticResult,
     Profile,
     Runner,
+    ScoringProfileSelection,
 )
 from scripts.runtime_diagnostics.market_factor_budget import (  # noqa: E402
     MARKET_SOURCE_LOOP_LIMIT_SECONDS,
     MARKET_TASK_LIMIT_SECONDS,
 )
 from scripts.runtime_diagnostics.market_factor_text import RenderMarketFactorText  # noqa: E402
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS  # noqa: E402
+from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
@@ -124,7 +128,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="isolated checkout for five alternating history-write or download-performance comparisons",
     )
-    parser.add_argument("--scoring-profile", choices=("v1", "v2", "v3", "v5", "both"), default=None)
+    parser.add_argument(
+        "--scoring-profile",
+        type=_scoring_profile_selection,
+        default=None,
+        help="one scoring profile, legacy V2/V3 'both', or all four comma-separated profiles for performance",
+    )
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument("--market-sources", nargs="+", choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
     parser.add_argument("--market-profiles", nargs="+", choices=("v2", "v3"), default=("v2", "v3"))
@@ -244,7 +253,23 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _scoring_profile_selection(value: str) -> ScoringProfileSelection:
+    if value == "both":
+        return "both"
+    try:
+        profiles = ParseProfileSelection(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if len(profiles) == 1:
+        return cast(ScoringProfileSelection, profiles[0])
+    if set(profiles) == set(SCORING_PROFILE_IDS):
+        return "v1,v2,v3,v5"
+    raise argparse.ArgumentTypeError("select one scoring profile or all four profiles")
+
+
 def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
+    if args.scoring_profile == "v1,v2,v3,v5" and args.profile != "performance":
+        raise ValueError("four-profile scoring is only available for performance")
     codes = tuple(dict.fromkeys(args.codes))
     if not codes or any(len(code) != 6 or not code.isdigit() for code in codes):
         raise ValueError("--codes must contain six-digit A-share codes")
@@ -826,7 +851,10 @@ def build_commands(
         ),
     }
     selected: list[DiagnosticCommand] = []
-    profiles = ("v2", "v3") if options.scoring_profile == "both" else (options.scoring_profile,)
+    selection = options.scoring_profile
+    if options.profile == "performance" and selection is None:
+        selection = "v1,v2,v3,v5"
+    profiles = ("v2", "v3") if selection == "both" else (selection,)
     for name in _PROFILE_CHECKS[options.profile]:
         command = commands[name]
         if name not in {"configuration", "research_readiness", "production_performance"}:
@@ -1288,6 +1316,10 @@ def _performance_details(_result: DiagnosticResult, source: Mapping[str, object]
         "workload": _mapping(source.get("workload")),
         "measurements": _mapping(source.get("measurements")),
         "memory": _mapping(source.get("memory")),
+        "identity": _mapping(source.get("identity")),
+        "network_calls": source.get("network_calls"),
+        "model_workload": _mapping(source.get("model_workload")),
+        "profile_results": _mapping(source.get("profile_results")),
         "failures": _safe_string_list(source.get("failures"), limit=30),
     }
 

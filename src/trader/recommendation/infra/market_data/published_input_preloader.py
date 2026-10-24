@@ -19,19 +19,27 @@ class PublishedInputPreloader:
         *,
         initialize: Callable[[Callable[[], bool]], None],
     ) -> None:
-        self._history = history
-        self._initialize = initialize
+        self._profiles: list[tuple[PublishedHistoryCache, Callable[[Callable[[], bool]], None]]] = [
+            (history, initialize)
+        ]
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._started = False
+
+    def register(self, history: PublishedHistoryCache, initialize: Callable[[Callable[[], bool]], None]) -> None:
+        with self._lock:
+            if self._started:
+                raise RuntimeError("published input preload registration is closed")
+            self._profiles.append((history, initialize))
 
     def start(self) -> bool:
         with self._lock:
             if self._started:
                 return False
             self._started = True
-            self._history.record_maintenance("loading", stage="reading_active_snapshot")
+            for history, _initialize in self._profiles:
+                history.record_maintenance("loading", stage="reading_active_snapshot")
             self._thread = threading.Thread(target=self._run, name="published-input-preloader", daemon=False)
             self._thread.start()
             return True
@@ -53,10 +61,13 @@ class PublishedInputPreloader:
     def _run(self) -> None:
         if self._cancel.is_set():
             return
-        try:
-            self._initialize(self._cancel.is_set)
-        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-            self._history.record_maintenance("failed", type(exc).__name__, stage="startup_preload")
+        for history, initialize in self._profiles:
+            if self._cancel.is_set():
+                return
+            try:
+                initialize(self._cancel.is_set)
+            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                history.record_maintenance("failed", type(exc).__name__, stage="startup_preload")
 
 
 __all__ = ["PublishedInputPreloader"]

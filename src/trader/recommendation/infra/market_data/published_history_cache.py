@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -32,7 +32,7 @@ from trader.recommendation.domain.market.v5.features import (
     ModelPriceVolumeSequence,
     PriceVolumePoint,
 )
-from trader.recommendation.infra.market_data.aligned_history_bars import BuildAlignedHistoryBars
+from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,
@@ -42,10 +42,10 @@ from trader.recommendation.infra.market_data.history_tail_recovery import (
     HistoryTailStatus,
 )
 from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.training.domain.evaluation.models import OutcomeBar
 
 _RAW_RETENTION_SESSIONS = 20
-_STARTUP_PRELOAD_DEADLINE_SECONDS = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +74,8 @@ class PublishedHistoryStatus:
     restart_required: bool = False
     estimated_history_codes: int = 0
     suspended_history_codes: int = 0
+    history_scan_count: int = 0
+    history_window_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +95,14 @@ class PublishedHistoryEntry:
     latest_observed_date: date | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CompletedModelInput:
+    code: str
+    quality: ModelHistoryQuality
+    learned_rank_values: tuple[tuple[str, float], ...] = ()
+    sequence: ModelPriceVolumeSequence | None = None
+
+
 class PublishedHistoryCache:
     """Derived qfq feature/eligibility view with an independent full-history outcome reader."""
 
@@ -110,6 +120,7 @@ class PublishedHistoryCache:
         require_input_binding: bool = False,
         learned_rank_inputs: bool = False,
         sequence_inputs: bool = False,
+        projection_owner: SharedHistoryProjection | None = None,
     ) -> None:
         self._history = history
         self._outcome_history = outcome_history
@@ -123,12 +134,10 @@ class PublishedHistoryCache:
         self._recovery = recovery
         self._tail_recovery = tail_recovery
         self._lock = threading.RLock()
-        self._refresh_lock = threading.Lock()
         self._manifest: PublishedHistoryManifest | None = None
         self._outcome_manifest: PublishedHistoryManifest | None = None
         self._disk_snapshot_hash: str | None = None
         self._outcome_disk_snapshot_hash: str | None = None
-        self._initialized = False
         self._daily_pack: DailyFeaturePack | None = None
         self._entry_bytes = 0
         self._entries: dict[str, PublishedHistoryEntry] = {}
@@ -141,50 +150,56 @@ class PublishedHistoryCache:
         self._maintenance_completed_units = 0
         self._maintenance_total_units = 0
 
-    def initialize(self, *, cancelled: Callable[[], bool]) -> None:
-        with self._refresh_lock:
-            if self._initialized:
-                return
-            self._initialized = True
-            deadline = self._monotonic() + _STARTUP_PRELOAD_DEADLINE_SECONDS
-            try:
-                self._outcome_manifest = self._outcome_history.manifest() if self._outcome_history else None
-                self._outcome_disk_snapshot_hash = (
-                    self._outcome_manifest.snapshot_hash if self._outcome_manifest else None
-                )
-            except (OSError, RuntimeError, ValueError):
-                self._outcome_manifest = None
-            for _ in range(3):
-                if cancelled() or self._monotonic() >= deadline:
-                    self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
-                    break
-                if self._rebuild_projection(cancelled, deadline):
-                    break
-            self.record_projection_observation()
+        self._projection_owner = projection_owner or SharedHistoryProjection(history, monotonic=monotonic)
+        self._projection_owner.register(self)
 
-    def _rebuild_projection(self, cancelled: Callable[[], bool], deadline: float) -> bool:
+    @property
+    def projection_owner(self) -> SharedHistoryProjection:
+        return self._projection_owner
+
+    @property
+    def history_sessions(self) -> int:
+        return self._lookback_sessions
+
+    def projection_calendar(self) -> tuple[date, ...]:
+        return self._open_dates() if self._open_dates else ()
+
+    def initialize(self, *, cancelled: Callable[[], bool]) -> None:
+        self._projection_owner.initialize(cancelled)
+
+    def initialize_outcome_projection(self) -> None:
+        if self._outcome_history is None or self._outcome_history is self._history:
+            return
         try:
-            manifest = self._history.manifest()
-        except RuntimeError as exc:
-            self._record_error(type(exc).__name__)
-            return False
-        if manifest is None:
-            with self._lock:
-                self._maintenance_reason = "history_snapshot_unavailable"
-            return False
-        try:
-            entries = self._build_entries(manifest, cancelled, deadline)
-            confirmed = self._history.manifest()
-        except (RuntimeError, ValueError) as exc:
-            self._record_error(type(exc).__name__)
-            return False
-        if not self._identity_stable(manifest, confirmed):
-            return False
+            outcome = self._outcome_history.manifest()
+        except (OSError, RuntimeError, ValueError):
+            outcome = None
+        with self._lock:
+            self._outcome_manifest = outcome
+            self._outcome_disk_snapshot_hash = outcome.snapshot_hash if outcome else None
+
+    def bind_outcome_manifest(self, manifest: PublishedHistoryManifest) -> None:
+        if self._outcome_history is not self._history:
+            return
+        with self._lock:
+            self._outcome_manifest = manifest
+            self._outcome_disk_snapshot_hash = manifest.snapshot_hash
+
+    def publish_history_projection(
+        self,
+        manifest: PublishedHistoryManifest,
+        entries: dict[str, PublishedHistoryEntry],
+        cancelled: Callable[[], bool],
+        deadline: float,
+    ) -> bool:
         size_bytes = self._reserve_projection(entries, cancelled, deadline)
         if size_bytes is None:
             return False
+        outcome = manifest if self._outcome_history is self._history else self._outcome_manifest
         with self._lock:
             self._manifest = manifest
+            self._outcome_manifest = outcome
+            self._outcome_disk_snapshot_hash = outcome.snapshot_hash if outcome is not None else None
             self._disk_snapshot_hash = manifest.snapshot_hash
             self._entries = entries
             self._entry_bytes = size_bytes
@@ -193,13 +208,23 @@ class PublishedHistoryCache:
             self._maintenance_reason = None
         return True
 
+    def fail_history_projection(self, reason: str) -> None:
+        self._record_error(reason)
+
     def _reserve_projection(
         self, entries: Mapping[str, PublishedHistoryEntry], cancelled: Callable[[], bool], deadline: float
     ) -> int | None:
         if cancelled() or self._monotonic() >= deadline:
             self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
             return None
-        size_bytes = sum(len(CanonicalJsonBytes((code, entry))) for code, entry in entries.items())
+        size_bytes = sum(
+            len(
+                CanonicalJsonBytes(
+                    (code, replace(entry, bars=()) if self._projection_owner.accounts_shared_bars else entry)
+                )
+            )
+            for code, entry in entries.items()
+        )
         if cancelled() or self._monotonic() >= deadline:
             self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
             return None
@@ -257,12 +282,6 @@ class PublishedHistoryCache:
     def input_identity(self) -> str:
         with self._lock:
             return self._daily_pack.input_identity if self._daily_pack is not None else self.loaded_identity
-
-    def _identity_stable(self, manifest: PublishedHistoryManifest, confirmed: PublishedHistoryManifest | None) -> bool:
-        if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
-            self._record_error("history_snapshot_changed")
-            return False
-        return True
 
     def record_maintenance(
         self,
@@ -333,7 +352,7 @@ class PublishedHistoryCache:
         with self._lock:
             if self._require_input_binding and self._daily_pack is None:
                 raise MarketDataPendingError(self._maintenance_reason or "history_inputs_loading")
-            if self._manifest is None and (self._refresh_lock.locked() or self._maintenance_state == "loading"):
+            if self._manifest is None and (self._projection_owner.is_loading or self._maintenance_state == "loading"):
                 raise MarketDataPendingError("history_projection_loading")
 
     def _load_tail(
@@ -450,39 +469,52 @@ class PublishedHistoryCache:
             if bars
         }
 
-    def completed_model_features(
-        self, codes: Sequence[str], observed_at: datetime
-    ) -> Mapping[str, tuple[tuple[str, float], ...]]:
-        """Project startup-only complete-session inputs without reading the database."""
-        if not self._learned_rank_inputs:
-            return {}
+    def completed_model_inputs(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompletedModelInput, ...]:
         day = observed_at.astimezone(SHANGHAI).date()
-        previous = (
-            max((value for value in self._open_dates() if value < day), default=None) if self._open_dates else None
-        )
-        if previous is None:
-            return {}
         with self._lock:
-            return {
-                code: tuple(zip(LEARNED_RANK_FEATURE_IDS, candidate.values, strict=True))
-                for code in codes
-                if (entry := self._entries.get(code)) is not None
-                for candidate in entry.learned_rank_inputs
-                if candidate.through == previous
-            }
+            manifest = self._manifest
+            entries = {code: self._entries.get(code) for code in codes}
+        if manifest is None:
+            return tuple(
+                CompletedModelInput(code, ModelHistoryQuality("history_snapshot_unavailable")) for code in entries
+            )
+        calendar = self._open_dates() if self._open_dates else ()
+        previous = max((value for value in calendar if value < day), default=None)
+        results: list[CompletedModelInput] = []
+        for code, entry in entries.items():
+            quality = self._history_quality(entry, manifest, day, previous)
+            values = (
+                next(
+                    (
+                        tuple(zip(LEARNED_RANK_FEATURE_IDS, candidate.values, strict=True))
+                        for candidate in entry.learned_rank_inputs
+                        if candidate.through == previous
+                    ),
+                    (),
+                )
+                if entry is not None and self._learned_rank_inputs
+                else ()
+            )
+            sequence = (
+                next((candidate for candidate in entry.model_sequences if candidate.dates[-1] == previous), None)
+                if entry is not None and self._sequence_inputs
+                else None
+            )
+            results.append(CompletedModelInput(code, quality, values, sequence))
+        return tuple(results)
 
-    def model_history_quality(self, code: str, observed_at: datetime) -> ModelHistoryQuality:
-        with self._lock:
-            manifest, entry = self._manifest, self._entries.get(code)
+    def _history_quality(
+        self,
+        entry: PublishedHistoryEntry | None,
+        manifest: PublishedHistoryManifest | None,
+        day: date,
+        previous: date | None,
+    ) -> ModelHistoryQuality:
         if manifest is None:
             return ModelHistoryQuality("history_snapshot_unavailable")
         if entry is None:
             return ModelHistoryQuality("history_invalid_prices")
         failure = None
-        day = observed_at.astimezone(SHANGHAI).date()
-        previous = (
-            max((value for value in self._open_dates() if value < day), default=None) if self._open_dates else None
-        )
         if entry.context.sample_count < self._lookback_sessions:
             failure = "history_window_insufficient"
         elif entry.context.latest_trade_date > day.isoformat():
@@ -495,27 +527,30 @@ class PublishedHistoryCache:
             failure = "history_window_insufficient"
         return ModelHistoryQuality(failure, entry.estimated_sessions, entry.suspended_sessions)
 
+    def completed_model_features(
+        self, codes: Sequence[str], observed_at: datetime
+    ) -> Mapping[str, tuple[tuple[str, float], ...]]:
+        return {
+            item.code: item.learned_rank_values
+            for item in self.completed_model_inputs(codes, observed_at)
+            if item.learned_rank_values
+        }
+
+    def model_history_quality(self, code: str, observed_at: datetime) -> ModelHistoryQuality:
+        return self.completed_model_inputs((code,), observed_at)[0].quality
+
     @property
     def completed_features_enabled(self) -> bool:
         return self._learned_rank_inputs or self._sequence_inputs
 
     def completed_model_sequences(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
+        self, codes: Sequence[str], observed_at: datetime
     ) -> Mapping[str, ModelPriceVolumeSequence]:
-        if not self._sequence_inputs or self._open_dates is None:
-            return {}
-        day = observed_at.astimezone(SHANGHAI).date()
-        previous = max((d for d in self._open_dates() if d < day), default=None)
-        with self._lock:
-            return {
-                code: seq
-                for code in codes
-                if (entry := self._entries.get(code)) is not None
-                for seq in entry.model_sequences
-                if seq.dates[-1] == previous
-            }
+        return {
+            item.code: item.sequence
+            for item in self.completed_model_inputs(codes, observed_at)
+            if item.sequence is not None
+        }
 
     def update_coverage(self, codes: Sequence[str], data_versions: Sequence[str] | None = None) -> None:
         del data_versions
@@ -563,6 +598,8 @@ class PublishedHistoryCache:
                 ),
                 estimated_history_codes=sum(entry.estimated_sessions > 0 for entry in self._entries.values()),
                 suspended_history_codes=sum(entry.suspended_sessions > 0 for entry in self._entries.values()),
+                history_scan_count=self._projection_owner.scan_count,
+                history_window_count=self._projection_owner.window_count,
             )
 
     def entries(self) -> Mapping[str, PublishedHistoryEntry]:
@@ -589,84 +626,33 @@ class PublishedHistoryCache:
             return {}
         return {window.code: paired for window in windows if (paired := OutcomeBars(window.cells))}
 
-    def _build_entries(
-        self, manifest: PublishedHistoryManifest, cancelled: Callable[[], bool], deadline: float
-    ) -> dict[str, PublishedHistoryEntry]:
-        entries: dict[str, PublishedHistoryEntry] = {}
-        lifetimes = {code: (start, end) for code, start, end in manifest.listing_intervals}
-        read_sessions = min(self._lookback_sessions + 1, len(manifest.calendar_dates))
-        completed = 0
-        for completed, window in enumerate(self._history.iter_windows(manifest, sessions=read_sessions), start=1):
-            self.record_maintenance(
-                "loading",
-                stage="reading_active_snapshot",
-                completed_units=completed - 1,
-                total_units=len(manifest.universe_codes),
-            )
-            if cancelled() or self._monotonic() >= deadline:
-                raise RuntimeError("history_preload_cancelled" if cancelled() else "history_preload_deadline")
-            aligned = BuildAlignedHistoryBars(
-                window, manifest.calendar_dates[-read_sessions:], lifetimes.get(window.code)
-            )
-            if len(aligned.bars) < read_sessions:
-                lifetime = lifetimes.get(window.code)
-                # Only a leading no-trade interval needs an older valuation seed.
-                # Keep the normal full-universe scan bounded by the feature window.
-                first = manifest.calendar_dates[-read_sessions]
-                if (lifetime is None or lifetime[0] <= first) and all(
-                    cell.status in {"unknown_missing", "tencent_inferred_suspended", "supplier_marked_suspended"}
-                    for cell in window.cells
-                    if not aligned.bars or cell.trade_date < date.fromisoformat(aligned.bars[0].trade_date)
-                ):
-                    maximum = min(2000, len(manifest.calendar_dates))
-                    extended_sessions = read_sessions
-                    while len(aligned.bars) < read_sessions and extended_sessions < maximum:
-                        if cancelled() or self._monotonic() >= deadline:
-                            raise RuntimeError(
-                                "history_preload_cancelled" if cancelled() else "history_preload_deadline"
-                            )
-                        extended_sessions = min(maximum, extended_sessions + 63)
-                        extended = self._history.read_windows(manifest, (window.code,), sessions=extended_sessions)
-                        if not extended:
-                            break
-                        aligned = BuildAlignedHistoryBars(
-                            extended[0], manifest.calendar_dates[-extended_sessions:], lifetime
-                        )
-            bars = aligned.bars
-            if not bars:
-                continue
-            bars = bars[-(self._lookback_sessions + 1) :]
-            entries[window.code] = PublishedHistoryEntry(
-                bars=bars[-_RAW_RETENTION_SESSIONS:],
-                context=BuildHistoryContext(bars, lookback_sessions=self._lookback_sessions),
-                learned_rank_inputs=tuple(
-                    CompletedRankInput(date.fromisoformat(selected[-1].trade_date), values)
-                    for selected in (bars, bars[:-1])
-                    if self._learned_rank_inputs
-                    and selected
-                    and (values := _completed_model_values(selected, self._open_dates() if self._open_dates else ()))
-                    is not None
-                ),
-                model_sequences=_model_sequences(
-                    window.code, bars, self._open_dates() if self._open_dates else (), manifest.snapshot_hash
-                )
-                if self._sequence_inputs
-                else (),
-                estimated_sessions=sum(
-                    day >= date.fromisoformat(bars[0].trade_date) for day in aligned.estimated_dates
-                ),
-                suspended_sessions=sum(
-                    day >= date.fromisoformat(bars[0].trade_date) for day in aligned.suspended_dates
-                ),
-                latest_observed_date=aligned.latest_observed_date,
-            )
-        self.record_maintenance(
-            "loading",
-            stage="reading_active_snapshot",
-            completed_units=completed,
-            total_units=len(manifest.universe_codes),
+    def project_history_window(
+        self,
+        manifest: PublishedHistoryManifest,
+        code: str,
+        aligned: AlignedHistoryBars,
+        calendar: tuple[date, ...],
+        shared_bars: tuple[DailyBar, ...],
+    ) -> PublishedHistoryEntry:
+        bars = aligned.bars[-(self._lookback_sessions + 1) :]
+        first = date.fromisoformat(bars[0].trade_date)
+        return PublishedHistoryEntry(
+            bars=shared_bars,
+            context=BuildHistoryContext(bars, lookback_sessions=self._lookback_sessions),
+            learned_rank_inputs=tuple(
+                CompletedRankInput(date.fromisoformat(selected[-1].trade_date), values)
+                for selected in (bars, bars[:-1])
+                if self._learned_rank_inputs
+                and selected
+                and (values := _completed_model_values(selected, calendar)) is not None
+            ),
+            model_sequences=_model_sequences(code, bars, calendar, manifest.snapshot_hash)
+            if self._sequence_inputs
+            else (),
+            estimated_sessions=sum(day >= first for day in aligned.estimated_dates),
+            suspended_sessions=sum(day >= first for day in aligned.suspended_dates),
+            latest_observed_date=aligned.latest_observed_date,
         )
-        return entries
 
     def _record_error(self, reason: str) -> None:
         with self._lock:
@@ -756,4 +742,4 @@ def _daily_row(
     )
 
 
-__all__ = ["PublishedHistoryCache", "PublishedHistoryEntry", "PublishedHistoryStatus"]
+__all__ = ["PublishedHistoryCache", "PublishedHistoryEntry", "PublishedHistoryStatus", "CompletedModelInput"]

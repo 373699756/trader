@@ -46,6 +46,7 @@ Profile = Literal[
 CheckStatus = Literal["passed", "degraded", "failed"]
 HistorySource = Literal["composite", "tencent", "eastmoney"]
 TencentHistoryHost = Literal["proxy", "direct"]
+ScoringProfileSelection = Literal["v1", "v2", "v3", "v5", "both", "v1,v2,v3,v5"]
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,7 @@ class DiagnosticOptions:
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
     qfq_database: Path | None = None
-    scoring_profile: Literal["v1", "v2", "v3", "v5", "both"] | None = None
+    scoring_profile: ScoringProfileSelection | None = None
     market_sources: tuple[str, ...] = ("tencent", "eastmoney", "sina", "baostock")
     market_profiles: tuple[str, ...] = ("v2", "v3")
     market_sizes: tuple[int, ...] = (120, 720, 0)
@@ -124,5 +125,6 @@ __all__ = [
     "HistorySource",
     "Profile",
     "Runner",
+    "ScoringProfileSelection",
     "TencentHistoryHost",
 ]

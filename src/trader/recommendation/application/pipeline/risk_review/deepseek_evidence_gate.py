@@ -71,7 +71,10 @@ def NormalizeScoredReviewTimes(
         )
         if any(fact.observed_at > completed_at for fact in risk_facts):
             return None
-        is_late = completed_at >= deadline
+        binding = review.evidence_binding
+        if binding is not None and binding.original_completed_at != review.completed_at:
+            return None
+        is_late = completed_at >= deadline or (binding is not None and binding.bound_at >= deadline)
         normalized[code] = replace(
             review,
             outcome=ReviewOutcome.LATE if is_late else review.outcome,

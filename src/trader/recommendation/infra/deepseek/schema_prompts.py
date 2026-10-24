@@ -93,6 +93,7 @@ def ReviewCacheKey(
     payload = {
         "code": candidate.quote.code,
         "trade_date": candidate.observed_at.date().isoformat(),
+        "issuer": (candidate.quote.name, candidate.quote.industry, candidate.quote.board.value),
         "structured_features": _cache_features(candidate),
         "evidence": sorted(
             _cache_evidence(item)

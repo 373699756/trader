@@ -23,7 +23,10 @@ from trader.training.infra.engine import (
     _training_contract_hash,
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
+from trader.training.infra.model_bundles.bundle_codec import TrainedLightGBMModelSnapshot, TrainedRidgeModelSnapshot
+from trader.training.infra.model_evaluation import CalibrationResult, PredictionMetrics
 from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
+from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v2.training import RunV2Training as _run_v2_training
 from trader.training.infra.profile.v3.contracts import (
@@ -223,7 +226,9 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     monkeypatch.setattr(
         "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
-        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
+        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 200, "holdout": 200}[
+            split_name
+        ],
     )
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fail)
     first = run_training(tmp_path / "history", tmp_path / "train")
@@ -234,7 +239,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
         assert all(head.failure_reasons == ("training_database_failed",) for head in first.heads)
 
     def fit(_samples, _split, contract, algorithm, *_args, **_kwargs):
-        return ({"银行": _industry_model(len(contract.feature_positions), algorithm)}, 1, 1)
+        return _fitted_result(len(contract.feature_positions), algorithm)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args: None)
@@ -325,7 +330,7 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
         del progress
         fitted.append(contract.strategy)
         width = len(contract.feature_positions)
-        return ({"银行": _industry_model(width, algorithm)}, 1, 1)
+        return _fitted_result(width, algorithm)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     published: list[tuple[Strategy, Path]] = []
@@ -345,7 +350,9 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", publish)
     monkeypatch.setattr(
         "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
-        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
+        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 200, "holdout": 200}[
+            split_name
+        ],
     )
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
@@ -408,13 +415,15 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     def fit(_samples, _split, contract, algorithm, *_args, progress):
         del progress
         fitted.append(contract.strategy)
-        return ({"银行": _industry_model(len(contract.feature_positions), algorithm)}, 1, 1)
+        return _fitted_result(len(contract.feature_positions), algorithm)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
-        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
+        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 200, "holdout": 200}[
+            split_name
+        ],
     )
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
@@ -623,7 +632,7 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
 
     progress = SimpleNamespace(publish=updates.append)
 
-    models, training_rows, validation_rows = FitIndustryModels(
+    result = FitIndustryModels(
         Samples(),
         split,
         TOMORROW_HEAD_CONTRACT,
@@ -631,8 +640,8 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
         progress=progress,  # type: ignore[arg-type]
     )
 
-    assert models == {}
-    assert training_rows == validation_rows == 0
+    assert result.models == ()
+    assert result.training_rows == result.validation_rows == 0
     assert [(item.stage, item.state, item.completed_units, item.total_units) for item in updates] == [
         ("industry_statistics", "started", 0, 1),
         ("industry_statistics", "completed", 1, 1),
@@ -650,20 +659,22 @@ def test_training_progress_rejects_impossible_counts() -> None:
         TomorrowTrainingProgress("history_conversion", "running", 101, 100)
 
 
-def _industry_model(width: int, algorithm: str) -> dict[str, object]:
-    model = {
-        "transformer_means": [0.0] * width,
-        "transformer_scales": [1.0] * width,
-        "calibration_intercept": 0.0,
-        "calibration_slope": 1.0,
-        "training_rows": 1,
-        "validation_rows": 1,
-    }
-    if algorithm == "lightgbm":
-        model.update({"lightgbm_model": "fixture", "lightgbm_best_iteration": 1})
-    else:
-        model.update({"ridge_intercept": 0.0, "ridge_coefficients": [0.1] * width})
-    return model
+def _fitted_result(width: int, parameters) -> IndustryFitResult:
+    common = ((0.0,) * width, (1.0,) * width, 0.0, 1.0)
+    model = (
+        TrainedRidgeModelSnapshot(*common, 0.0, (0.1,) * width)
+        if isinstance(parameters, RidgeFittingParameters)
+        else TrainedLightGBMModelSnapshot(*common, "fixture", 1)
+    )
+    metrics = PredictionMetrics(1, 1, 1, 1, 1, 0.0, 0.0, None, 0)
+    return IndustryFitResult(
+        (FittedIndustryModel("银行", model, 1, CalibrationResult(2, 2, 1e-4, 0.0, 1.0)),),
+        (),
+        metrics,
+        (("银行", metrics),),
+        1,
+        0,
+    )
 
 
 def _training_point(day: date, close: float) -> HistoryTrainingPoint:
