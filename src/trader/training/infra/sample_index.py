@@ -6,6 +6,7 @@ import math
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import date
+from itertools import groupby
 from pathlib import Path
 from typing import Literal, cast
 
@@ -86,6 +87,25 @@ class TargetMetric:
     standard_deviation: float | None
 
 
+@dataclass(frozen=True)
+class SampleDateGap:
+    trade_date: date
+    sample_rows: int
+    candidates: int
+    missing_future_returns: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SampleCoverage:
+    target: str
+    partition: TrainingSplitName
+    expected_dates: int
+    effective_dates: int
+    sample_rows: int
+    target_rows: int
+    missing: tuple[SampleDateGap, ...]
+
+
 class SQLiteTrainingSampleIndex:
     """Own one temporary SQLite database shared by both sequential fits."""
 
@@ -140,6 +160,16 @@ class SQLiteTrainingSampleIndex:
                     split_name IN ('training', 'early_stopping', 'calibration', 'validation', 'holdout')
                 )
             ) WITHOUT ROWID;
+            CREATE TABLE sample_statistics (
+                trade_date TEXT NOT NULL, industry TEXT NOT NULL, target TEXT NOT NULL,
+                rows INTEGER NOT NULL, total REAL NOT NULL, squares REAL NOT NULL,
+                PRIMARY KEY (trade_date, industry, target)
+            ) WITHOUT ROWID;
+            CREATE TABLE sample_day_diagnostics (
+                trade_date TEXT PRIMARY KEY, candidates INTEGER NOT NULL,
+                missing_t1 INTEGER NOT NULL, missing_t2 INTEGER NOT NULL,
+                missing_t3 INTEGER NOT NULL, missing_t4 INTEGER NOT NULL, missing_t5 INTEGER NOT NULL
+            ) WITHOUT ROWID;
             """
         schema = SqliteSchema(
             None, tuple(statement.strip() for statement in schema_sql.split(";") if statement.strip())
@@ -161,10 +191,42 @@ class SQLiteTrainingSampleIndex:
 
     def add_final(self, samples: Iterable[TrainingSample]) -> None:
         self._counts_by_target.clear()
+        values = tuple(samples)
         placeholders = ", ".join("?" for _ in range(5 + self._feature_count + len(_TARGET_COLUMNS)))
         self._connection.run_many(
             f"INSERT INTO samples VALUES ({placeholders})",  # noqa: S608
-            (self._encode(sample) for sample in samples),
+            (self._encode(sample) for sample in values),
+        )
+        for (day, industry), group in groupby(
+            sorted(values, key=lambda item: (item.trade_date, item.industry)),
+            key=lambda item: (item.trade_date, item.industry),
+        ):
+            population = tuple(group)
+            statistics = [(day.isoformat(), industry, "rows", len(population), 0.0, 0.0)]
+            for position, target in enumerate(_TARGET_COLUMNS):
+                labels = tuple(item.targets[position] for item in population if item.targets[position] is not None)
+                statistics.append(
+                    (
+                        day.isoformat(),
+                        industry,
+                        target,
+                        len(labels),
+                        math.fsum(cast(float, value) for value in labels),
+                        math.fsum(cast(float, value) ** 2 for value in labels),
+                    )
+                )
+            self._connection.run_many(
+                "INSERT INTO sample_statistics VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(trade_date,industry,target) DO UPDATE SET "
+                "rows=rows+excluded.rows,total=total+excluded.total,squares=squares+excluded.squares",
+                statistics,
+            )
+
+    def record_day(self, day: date, candidates: int, missing: tuple[int, ...]) -> None:
+        if len(missing) != 5:
+            raise ValueError("sample diagnostics require five horizons")
+        self._connection.run(
+            "INSERT INTO sample_day_diagnostics VALUES (?, ?, ?, ?, ?, ?, ?)", (day.isoformat(), candidates, *missing)
         )
 
     def prepare_for_model_fitting(self, split: TrainingDateSplit) -> None:
@@ -256,11 +318,12 @@ class SQLiteTrainingSampleIndex:
 
     def _prepare_industry_counts(self) -> None:
         aggregates = ",".join(
-            f"COUNT(samples.{target}),COUNT(DISTINCT CASE WHEN samples.{target} IS NOT NULL THEN samples.trade_date END)"
+            f"SUM(CASE WHEN target='{target}' THEN rows ELSE 0 END),"
+            f"COUNT(DISTINCT CASE WHEN target='{target}' AND rows>0 THEN samples.trade_date END)"
             for target in _TARGET_COLUMNS
         )
         rows = self._connection.run(
-            f"SELECT samples.industry, splits.split_name, {aggregates} FROM samples "  # noqa: S608
+            f"SELECT samples.industry, splits.split_name, {aggregates} FROM sample_statistics samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
             "GROUP BY samples.industry, splits.split_name ORDER BY samples.industry, splits.split_name"
         )
@@ -344,48 +407,83 @@ class SQLiteTrainingSampleIndex:
     def split_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:
         target = _require_target_column(contract.target_column)
         row = self._connection.run(
-            "SELECT COUNT(*) FROM samples JOIN sample_split_dates AS splits "
-            f"ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.{target} IS NOT NULL",  # noqa: S608
-            (split_name,),
+            "SELECT COALESCE(SUM(samples.rows),0) FROM sample_statistics samples JOIN sample_split_dates AS splits "
+            "ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.target=?",
+            (split_name, target),
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
     def split_distinct_date_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:
         target = _require_target_column(contract.target_column)
         row = self._connection.run(
-            "SELECT COUNT(DISTINCT samples.trade_date) FROM samples JOIN sample_split_dates AS splits "
-            f"ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.{target} IS NOT NULL",  # noqa: S608
-            (split_name,),
+            "SELECT COUNT(DISTINCT samples.trade_date) FROM sample_statistics samples "
+            "JOIN sample_split_dates AS splits "
+            "ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.target=? AND samples.rows>0",
+            (split_name, target),
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
     def validation_target_metrics(self) -> tuple[TargetMetric, ...]:
-        aggregates = ", ".join(
-            f"COUNT(samples.{target}), AVG(samples.{target}), AVG(samples.{target} * samples.{target})"
-            for target in _TARGET_COLUMNS
-        )
-        row = self._connection.run(
-            f"SELECT {aggregates} FROM samples "  # noqa: S608
-            "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
-            "WHERE splits.split_name='validation'"
-        ).fetchone()
         metrics: list[TargetMetric] = []
-        for position, target in enumerate(_TARGET_COLUMNS):
-            offset = position * 3
-            count = int(row[offset]) if row is not None else 0
-            mean = float(row[offset + 1]) if row is not None and row[offset + 1] is not None else None
-            second = float(row[offset + 2]) if row is not None and row[offset + 2] is not None else None
+        rows = self._connection.run(
+            "SELECT target,COALESCE(SUM(rows),0),SUM(total),SUM(squares) FROM sample_statistics s "
+            "JOIN sample_split_dates d ON d.trade_date=s.trade_date WHERE d.split_name='validation' GROUP BY target"
+        ).fetchall()
+        for target in _TARGET_COLUMNS:
+            row = next((tuple(value)[1:] for value in rows if value[0] == target), (0, 0.0, 0.0))
+            count = int(row[0])
+            mean = float(row[1]) / count if count else None
+            second = float(row[2]) / count if count else None
             deviation = math.sqrt(max(0.0, second - mean * mean)) if mean is not None and second is not None else None
             metrics.append(TargetMetric(target, count, mean, deviation))
         return tuple(metrics)
 
     def count(self) -> int:
-        row = self._connection.run("SELECT COUNT(*) FROM samples").fetchone()
+        row = self._connection.run("SELECT COALESCE(SUM(rows),0) FROM sample_statistics WHERE target='rows'").fetchone()
         return int(row[0]) if row is not None else 0
+
+    def coverage(self, contract: TrainedHeadContract) -> tuple[SampleCoverage, ...]:
+        result: list[SampleCoverage] = []
+        for partition in ("training", "early_stopping", "calibration", "validation", "holdout"):
+            rows = self._connection.run(
+                "SELECT d.trade_date,COALESCE(SUM(CASE WHEN s.target='rows' THEN s.rows END),0),"
+                "COALESCE(SUM(CASE WHEN s.target=? THEN s.rows END),0),"
+                "COALESCE(g.candidates,0),g.missing_t1,g.missing_t2,g.missing_t3,g.missing_t4,g.missing_t5 "
+                "FROM sample_split_dates d LEFT JOIN sample_statistics s ON s.trade_date=d.trade_date "
+                "LEFT JOIN sample_day_diagnostics g ON g.trade_date=d.trade_date "
+                "WHERE d.split_name=? GROUP BY d.trade_date ORDER BY d.trade_date",
+                (_require_target_column(contract.target_column), partition),
+            ).fetchall()
+            gaps = tuple(
+                SampleDateGap(
+                    date.fromisoformat(str(row[0])),
+                    int(row[1]),
+                    int(row[3]),
+                    tuple(int(value or 0) for value in row[4:]),
+                )
+                for row in rows
+                if not row[2]
+            )
+            result.append(
+                SampleCoverage(
+                    contract.target_column,
+                    partition,
+                    len(rows),
+                    len(rows) - len(gaps),
+                    sum(int(row[1]) for row in rows),
+                    sum(int(row[2]) for row in rows),
+                    gaps,
+                )
+            )
+        return tuple(result)
 
     @property
     def database_size_bytes(self) -> int:
         return self._path.stat().st_size
+
+    @property
+    def workspace(self) -> Path:
+        return self._path.parent
 
     def _encode(self, sample: TrainingSample) -> tuple[object, ...]:
         if len(sample.features) != self._feature_count:

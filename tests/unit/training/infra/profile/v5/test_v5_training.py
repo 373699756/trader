@@ -28,6 +28,45 @@ from trader.training.infra.training_settings import LoadProfileTrainingSettings
 ROOT = Path(__file__).resolve().parents[6]
 
 
+def test_missing_future_label_reports_exact_partition_without_discarding_other_head(tmp_path, monkeypatch):
+    from trader.training.domain.training_dates import BuildTrainingDateSplit
+
+    archive = _archive(tmp_path / "history")
+    settings = LoadProfileTrainingSettings(ROOT, "v5")
+    split = BuildTrainingDateSplit(
+        archive.snapshot.calendar.open_dates,
+        parent_manifest_hash="a" * 64,
+        fit_dates=settings.fit_dates,
+        history_sessions=62,
+    )
+    signal = split.model_fit_dates[100]
+    absent = archive.snapshot.calendar.open_dates[archive.snapshot.calendar.open_dates.index(signal) + 2]
+    original = archive.iter_training_rows
+
+    def rows(allowed, progress=None):
+        for row in original(allowed, progress):
+            yield (
+                replace(row, point=None, cell_status="unknown_missing")
+                if row.trade_date == absent and row.code == "600005"
+                else row
+            )
+
+    archive.iter_training_rows = rows
+    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: archive)
+    result = RunV5Training(
+        archive.archive_root, tmp_path / "models", sample_root=tmp_path / "samples", settings=settings
+    )
+    assert result.status == "blocked"
+    d25 = next(head for head in result.heads if head.strategy is Strategy.D25)
+    coverage = next(item for item in d25.coverage if item.partition == "training")
+    gap = next(item for item in coverage.missing if item.trade_date == signal)
+    assert gap.sample_rows == gap.candidates == 6
+    assert gap.missing_future_returns == (0, 1, 0, 0, 0)
+    assert coverage.sample_rows > coverage.target_rows > 0
+    assert d25.training_rows == 0
+    assert not tuple((tmp_path / "models").rglob("model.json"))
+
+
 def _point(day: date, position: int, stock: int) -> HistoryTrainingPoint:
     close = 20 * math.exp(position * 0.0001 + 0.04 * math.sin(position / (5 + stock)))
     return HistoryTrainingPoint(

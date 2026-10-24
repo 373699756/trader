@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
-from contextlib import ExitStack, closing
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, closing, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -12,10 +12,12 @@ from typing import Literal
 import numpy as np
 from lightgbm.basic import LightGBMError
 
+from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryPartitionRepackInactive
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
+from trader.training.application.resources import TrainingMemoryAdmission
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
@@ -29,14 +31,15 @@ from trader.training.domain.v1.learned_rank import (
     LearnedRankPair,
     V1TrainingSettings,
 )
-from trader.training.infra.profile.v1.models import PublishLearnedRankPair
 from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions
+from trader.training.infra.profile.v1.models import PublishLearnedRankPair
 from trader.training.infra.profile.v1.samples import (
     BuildLearnedRankSamples,
     CheckV1Cancellation,
     LearnedRankInputPort,
     LearnedRankSampleCounts,
     LearnedRankSampleIndex,
+    LearnedRankSampleStream,
 )
 from trader.training.infra.sample_cache import TemporaryTrainingSamples
 
@@ -61,6 +64,8 @@ def RunV1Training(
     settings: V1TrainingSettings,
     progress: TomorrowTrainingProgressPort | None = None,
     cancel_requested: Callable[[], bool] | None = None,
+    aligned_rows: Iterator[HistoryTrainingRow] | None = None,
+    memory_admission: TrainingMemoryAdmission | None = None,
 ) -> V1TrainingResult:
     """Consume a pinned input; all disposable writes stay in the selected sample root."""
 
@@ -70,8 +75,8 @@ def RunV1Training(
     heads: list[LearnedRankHead] = []
     try:
         with (
-            HistoryMaintenanceLock(history_root.with_name(".history.lock")),
-            HistoryMaintenanceLock(model_root / ".v1.training.lock"),
+            HistoryMaintenanceLock(history_root.with_name(".history.lock")) if aligned_rows is None else nullcontext(),
+            HistoryMaintenanceLock(model_root / ".v1.training.lock") if aligned_rows is None else nullcontext(),
         ):
             CheckV1Cancellation(cancel_requested)
             RequireHistoryPartitionRepackInactive(history_root)
@@ -84,13 +89,23 @@ def RunV1Training(
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=1),
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=5),
             )
-            with TemporaryTrainingSamples(sample_root, "v1") as directory:
+            with TemporaryTrainingSamples(sample_root, "v1") as directory, ExitStack() as fitting_resources:
                 sample_path = directory / "samples.sqlite3"
                 with closing(LearnedRankSampleIndex(sample_path)) as index:
                     counts = BuildLearnedRankSamples(
-                        source, splits, index, progress=progress, cancel_requested=cancel_requested
+                        source,
+                        splits,
+                        index,
+                        stream=LearnedRankSampleStream(progress, cancel_requested, aligned_rows),
                     )
                     peak_bytes = sample_path.stat().st_size
+                if memory_admission is not None:
+                    fitting_resources.enter_context(
+                        memory_admission.reserve(
+                            counts.samples * 512 + 256 * 1024**2, lambda: CheckV1Cancellation(cancel_requested)
+                        )
+                    )
+                with closing(LearnedRankSampleIndex(sample_path, read_only=True)) as index:
                     for strategy, split in zip((Strategy.TOMORROW, Strategy.D25), splits, strict=True):
                         CheckV1Cancellation(cancel_requested)
                         _progress(progress, "model_fit", "started", strategy)

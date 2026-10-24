@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
@@ -55,6 +55,8 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent-history-window": ("tencent_history_window",),
     "v5-training": ("v5_training",),
     "training-alignment": ("training_alignment",),
+    "training-coverage": ("training_coverage",),
+    "training-performance": ("training_alignment",),
     "model-inputs": ("model_inputs",),
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
@@ -126,6 +128,13 @@ def _parser() -> argparse.ArgumentParser:
         "--cpu-profile-dir", type=Path, help="external directory for market-factor-compare feature CPU profiles"
     )
     parser.add_argument("--qfq-database", type=Path)
+    parser.add_argument("--training-signal-date", type=date.fromisoformat, help="read-only V5 label horizon probe")
+    parser.add_argument(
+        "--training-profiles",
+        type=ParseProfileSelection,
+        default=SCORING_PROFILE_IDS,
+        help="comma-separated profiles for training-alignment and training-performance",
+    )
     parser.add_argument(
         "--baseline-checkout",
         type=Path,
@@ -341,10 +350,14 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--cpu-profile-dir is only available for market-factor-compare")
     if args.profile == "v5-training" and args.v5_probe_directory is None:
         raise ValueError("v5-training requires --v5-probe-directory")
-    if args.profile == "training-alignment" and (args.training_probe_directory is None or args.history_root is None):
-        raise ValueError("training-alignment requires --history-root and --training-probe-directory")
+    if args.profile in {"training-alignment", "training-performance"} and (
+        args.training_probe_directory is None or args.history_root is None
+    ):
+        raise ValueError(f"{args.profile} requires --history-root and --training-probe-directory")
     return (
         DiagnosticOptions(
+            training_signal_date=args.training_signal_date,
+            training_profiles=args.training_profiles,
             profile=args.profile,
             base_url=args.base_url,
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
@@ -445,8 +458,24 @@ def build_commands(
             qfq_database=options.qfq_database or paths.daily_window,
             company_evidence_database=options.company_evidence_database or paths.company,
         )
+    if options.profile == "training-performance":
+        from scripts.runtime_diagnostics.training_performance import BuildTrainingBenchmarkCommands
+
+        return BuildTrainingBenchmarkCommands(options, python_executable)
     cli = (python_executable, "-m", "trader.entrypoints.cli", "--config", str(options.runtime_config))
     commands: dict[str, DiagnosticCommand] = {
+        "training_coverage": DiagnosticCommand(
+            "training_coverage",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.training_coverage",
+                "--config",
+                str(options.runtime_config),
+            )
+            + (("--signal-date", options.training_signal_date.isoformat()) if options.training_signal_date else ()),
+            common_timeout,
+        ),
         "model_inputs": DiagnosticCommand(
             "model_inputs",
             (
@@ -469,6 +498,8 @@ def build_commands(
                 str(options.history_root),
                 "--work-root",
                 str(options.training_probe_directory),
+                "--profiles",
+                ",".join(options.training_profiles),
             ),
             common_timeout,
         ),
@@ -968,7 +999,7 @@ def build_report(profile: Profile, results: Sequence[DiagnosticResult]) -> dict[
         "failed": statuses.count("failed"),
         "total": len(statuses),
     }
-    return {
+    report: dict[str, object] = {
         "schema_version": "trader-runtime-diagnostics",
         "status": "failed" if summary["failed"] else "degraded" if summary["degraded"] else "passed",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
@@ -977,6 +1008,14 @@ def build_report(profile: Profile, results: Sequence[DiagnosticResult]) -> dict[
         "findings": [finding for check in checks for finding in _findings(check)],
         "checks": checks,
     }
+    if profile == "training-performance":
+        from scripts.runtime_diagnostics.training_performance import SummarizeTrainingBenchmark
+
+        benchmark = SummarizeTrainingBenchmark(results)
+        report["benchmark"] = benchmark
+        if not benchmark["comparable"] and report["status"] == "passed":
+            report["status"] = "degraded"
+    return report
 
 
 def _check_payload(result: DiagnosticResult, *, local: bool = False) -> dict[str, object]:
@@ -1073,6 +1112,8 @@ def _security_master_details(
     _result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]
 ) -> None:
     payload["summary"] = _mapping(source.get("summary")) or {"error": source.get("error")}
+    if source.get("benchmark_mode") is not None:
+        payload["benchmark_mode"] = source["benchmark_mode"]
 
 
 def _tencent_quote_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
@@ -1464,6 +1505,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tencent_history_window": _security_master_details,
     "v5_training": _security_master_details,
     "training_alignment": _security_master_details,
+    "training_coverage": _security_master_details,
     "model_inputs": _security_master_details,
     "qfq_sqlite_audit": _security_master_details,
     "exchange_security_master": _security_master_details,

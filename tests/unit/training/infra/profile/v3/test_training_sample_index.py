@@ -61,7 +61,7 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
         tomorrow = next(item for item in repository.industry_counts(TOMORROW_HEAD_CONTRACT) if item.industry == "银行")
         d25 = next(item for item in repository.industry_counts(D25_HEAD_CONTRACT) if item.industry == "银行")
         repository._connection.observe_statements(None)
-        assert len(statements) == 1 and "COUNT(samples.target_t1)" in statements[0]
+        assert len(statements) == 1 and "FROM sample_statistics samples" in statements[0]
         tomorrow_data = repository.industry_data(tomorrow, TOMORROW_HEAD_CONTRACT)
         d25_data = repository.industry_data(d25, D25_HEAD_CONTRACT)
 
@@ -92,7 +92,7 @@ def test_sample_index_has_only_the_shared_tables_and_one_build_transaction(tmp_p
             str(row[0])
             for row in repository._connection.run("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         }
-        assert tables == {"sample_split_dates", "samples"}
+        assert tables == {"sample_split_dates", "samples", "sample_statistics", "sample_day_diagnostics"}
         assert repository._connection.in_transaction is True
         assert repository.count() == 1_000
 

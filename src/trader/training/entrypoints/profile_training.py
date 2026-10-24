@@ -2,24 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
-from datetime import datetime
-from threading import Event
-from zoneinfo import ZoneInfo
 
-from trader.infra.settings import RuntimeSettings
-from trader.infra.shutdown import ShutdownSignalController
+from trader.infra.serialization.canonical import CanonicalValue, ContentHash
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
-from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining
-from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
-from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
-from trader.training.infra.model_bundles.contracts import TrainedProfileContract
-from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from trader.training.infra.engine import TrainingRunResult
+from trader.training.infra.profile.v1.training import V1TrainingResult
 
 
-class _CancellableProgress:
+class CancellableTrainingProgress:
     def __init__(self, target: TomorrowTrainingProgressPort, cancelled: Callable[[], bool]) -> None:
         self._target = target
         self._cancelled = cancelled
@@ -30,62 +22,79 @@ class _CancellableProgress:
         self._target.publish(progress)
 
 
-def RunModelTrainingCommand(runtime: RuntimeSettings, profile: TrainedProfileContract) -> int:
-    """Project the explicit offline command; no clients or executors are created here."""
-    paths = runtime.data_paths
-    cancelled = Event()
-    controller = ShutdownSignalController(
-        timeout_seconds=runtime.pipeline.shutdown_timeout_seconds, on_first_signal=lambda _deadline: cancelled.set()
-    )
-    controller.install()
-    try:
-        with StderrTomorrowTrainingProgress(command_label=f"{profile.profile_id.upper()}训练") as progress:
-            result = RunProfileTraining(
-                ProfileTrainingRequest(
-                    paths.history,
-                    paths.models,
-                    profile,
-                    profile.heads,
-                    LoadProfileTrainingSettings(runtime.project_root, profile.profile_id),
-                    _CancellableProgress(progress, cancelled.is_set),
-                    sample_root=paths.samples,
-                )
-            )
-        maintenance = EvaluateAllHistoryTrainingDue(
-            paths.history, paths.models, datetime.now(ZoneInfo("Asia/Shanghai")), selected_profile=profile
-        )
-        print(
-            json.dumps(
-                {
-                    "schema_version": "profile_training_result",
-                    "profile": profile.profile_id,
-                    "status": result.status,
-                    "run_id": result.run_id,
-                    "reused": result.run_id is None and result.status == "engineering_ready",
-                    "training_input_hash": result.training_input_hash,
-                    "maintenance": [ProjectHeadTrainingStatus(head) for head in maintenance],
-                    "heads": [
-                        {
-                            "strategy": h.strategy.value,
-                            "status": h.status,
-                            "training_rows": h.training_rows,
-                            "validation_rows": h.validation_rows,
-                            "failure_reasons": list(h.failure_reasons),
-                        }
-                        for h in result.heads
-                    ],
-                    "prediction_return_validation_passed": False,
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 0 if result.status == "engineering_ready" else 1
-    except (InterruptedError, KeyboardInterrupt):
-        print(json.dumps({"profile": profile.profile_id, "status": "cancelled"}))
-        return 130
-    finally:
-        controller.mark_completed()
-        controller.restore()
+def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunResult) -> dict[str, object]:
+    return {
+        "schema_version": "profile_training_result",
+        "profile": profile,
+        "status": result.status,
+        "run_id": result.run_id,
+        "training_input_hash": result.training_input_hash,
+        "reused": result.reused,
+        "heads": [
+            {
+                "strategy": head.strategy.value,
+                "status": head.status,
+                "model_hash": head.model_hash,
+                "report_hash": head.report_hash,
+                "training_rows": head.training_rows,
+                "validation_rows": head.validation_rows,
+                "failure_reasons": list(head.failure_reasons),
+                "coverage": [
+                    {
+                        "partition": item.partition,
+                        "target": item.target,
+                        "expected_dates": item.expected_dates,
+                        "effective_dates": item.effective_dates,
+                        "sample_rows": item.sample_rows,
+                        "target_rows": item.target_rows,
+                        "missing": [
+                            {
+                                "date": gap.trade_date.isoformat(),
+                                "sample_rows": gap.sample_rows,
+                                "candidates": gap.candidates,
+                                "missing_future_returns": gap.missing_future_returns,
+                            }
+                            for gap in item.missing
+                        ],
+                    }
+                    for item in head.coverage
+                ],
+            }
+            for head in result.heads
+        ],
+        "prediction_return_validation_passed": False,
+    }
 
 
-__all__ = ["RunModelTrainingCommand"]
+def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, object]:
+    return {
+        "schema_version": "profile_training_result",
+        "profile": "v1",
+        "status": result.status,
+        "production_authority": False,
+        "prediction_return_validation_passed": False,
+        "run_id": result.run_id,
+        "training_input_hash": result.training_input_hash,
+        "sample_database_peak_bytes": result.sample_database_peak_bytes,
+        "failure_reasons": list(result.failure_reasons),
+        "sample_counts": CanonicalValue(result.sample_counts),
+        "heads": [
+            {
+                "strategy": head.strategy.value,
+                "status": "engineering_ready",
+                "model_hash": head.content_hash,
+                "report_hash": ContentHash((head.split, head.validation, result.sample_counts)),
+                "training_rows": head.training_rows,
+                "validation_rows": head.validation.predicted_rows,
+                "label_cutoff": head.split.label_cutoff.isoformat(),
+                "mean_absolute_error": head.validation.mean_absolute_error,
+                "mean_daily_rank_ic": head.validation.mean_daily_rank_ic,
+                "mean_daily_ndcg_at_6": head.validation.mean_daily_ndcg_at_6,
+                "prediction_return_validation_passed": False,
+            }
+            for head in result.heads
+        ],
+    }
+
+
+__all__ = ["ProjectProfileTrainingResult", "ProjectLearnedRankTrainingResult", "CancellableTrainingProgress"]

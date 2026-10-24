@@ -391,9 +391,9 @@ def test_train_stops_before_training_on_history_failure(monkeypatch, download_re
     monkeypatch.setattr(research_commands, "ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr("trader.download.entrypoints.commands.RunDownload", lambda *args, **kwargs: download_result)
     monkeypatch.setattr(
-        research_commands, "RunJointTraining", lambda runtime, *, refresh_due: calls.append(runtime) or 7
+        "trader.bootstrap.ExecuteSelectedTraining", lambda runtime, profiles: calls.append(runtime) or 7
     )
-    assert ExecuteDownloadTrain(ROOT / "config/runtime.json", scoring_profiles=("v2", "v3")) == (download_result or 1)
+    assert ExecuteDownloadTrain(ROOT / "config/runtime.json", scoring_profiles=("v2", "v3")) == (download_result or 7)
     assert len(calls) == int(download_result == 0)
 
 

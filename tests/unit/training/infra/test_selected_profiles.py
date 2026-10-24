@@ -1,0 +1,68 @@
+"""Four real profile workers share one synthetic history scan and retain independent pairs."""
+
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
+
+from tests.unit.training.infra.profile.v1.test_learned_rank_training import _settings
+from tests.unit.training.infra.profile.v5.test_v5_training import _archive
+from trader.infra.settings import LoadRuntimeSettings
+from trader.training.application.selected_training import TrainingLocations
+from trader.training.infra.memory_admission import TrainingMemoryBudget
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.selected_training import SelectedTrainingRequest, TrainSelectedProfiles
+from trader.training.infra.training_settings import LoadProfileTrainingSettings
+
+ROOT = Path(__file__).resolve().parents[4]
+
+
+class _Progress:
+    def publish(self, _update):
+        pass
+
+
+def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path, monkeypatch):
+    archive = _archive(tmp_path / "history")
+    original = archive.iter_training_rows
+    scans = []
+
+    def rows(dates, progress=None):
+        scans.append(dates)
+        yield from original(dates, progress)
+
+    archive.iter_training_rows = rows
+    monkeypatch.setattr(
+        "trader.training.infra.selected_training.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: archive
+    )
+    monkeypatch.setattr("trader.training.infra.selected_training.LoadV1TrainingSettings", lambda _p: _settings())
+
+    def settings(project, profile):
+        result = LoadProfileTrainingSettings(project, profile)
+        if profile == "v5":
+            return replace(result, fitting=TcnFittingParameters(10, epochs=2, early_stopping_rounds=2))
+        fitting = replace(result.fitting, minimum_industry_training_rows=10)
+        if profile == "v2":
+            fitting = replace(fitting, boosting_rounds=12, early_stopping_rounds=3, minimum_leaf_rows=5)
+        return replace(result, fitting=fitting)
+
+    monkeypatch.setattr("trader.training.infra.selected_training.LoadProfileTrainingSettings", settings)
+    request = SelectedTrainingRequest(
+        LoadRuntimeSettings(ROOT / "config/runtime.json"),
+        ("v1", "v2", "v3", "v5"),
+        tuple(_Progress() for _ in range(4)),
+        lambda: False,
+        TrainingMemoryBudget(3 * 1024**3),
+        TrainingLocations(archive.archive_root, tmp_path / "models", tmp_path / "samples"),
+    )
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        result = TrainSelectedProfiles(request, executor)
+    assert len(scans) == result.history_scan_passes == 1
+    assert tuple(item.profile for item in result.outcomes) == request.profiles
+    assert all(item.failure is None and item.result.status == "engineering_ready" for item in result.outcomes), result
+    assert len(tuple((tmp_path / "models").rglob("model.json"))) == 8
+    second = replace(request, profiles=("v2", "v3", "v5"), progresses=request.progresses[1:])
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        reused = TrainSelectedProfiles(second, executor)
+    assert len(scans) == 1
+    assert reused.history_scan_passes == reused.history_rows_read == 0
+    assert all(item.result.reused for item in reused.outcomes)

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Literal
+
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,6 +26,8 @@ Profile = Literal[
     "tencent-history-window",
     "v5-training",
     "training-alignment",
+    "training-coverage",
+    "training-performance",
     "model-inputs",
     "history-sqlite",
     "history-source-compare",
@@ -98,6 +103,8 @@ class DiagnosticOptions:
     output_format: str = "json"
     cpu_profile_dir: Path | None = None
     baseline_checkout: Path | None = None
+    training_signal_date: date | None = None
+    training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
 
 
 @dataclass(frozen=True)

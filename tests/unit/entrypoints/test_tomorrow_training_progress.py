@@ -20,8 +20,10 @@ def test_training_progress_prints_real_rows_percent_duration_and_no_rss(capsys) 
 
     lines = capsys.readouterr().err.splitlines()
     assert lines == [
-        "00:00:00 | 资源预检 | 1/1 (100.00%) | 完成 | 阶段耗时 00:00:00 | 计算线程 2 | 峰值 RSS 上限 2048 MiB",
-        "00:12:34 | 历史读取与训练样本生成 | 850/5453 (15.59%) | 运行中 | 阶段耗时 00:00:00 | 已生成样本 612",
+        "00:00:00 | Tomorrow训练 | 资源预检 | 1/1 (100.00%) | 完成 | 阶段耗时 00:00:00 "
+        "| 计算线程 2 | 峰值 RSS 上限 2048 MiB",
+        "00:12:34 | Tomorrow训练 | 历史读取与训练样本生成 | 850/5453 (15.59%) | 运行中 "
+        "| 阶段耗时 00:00:00 | 已生成样本 612",
     ]
 
 
@@ -37,10 +39,12 @@ def test_training_progress_throttles_advances_but_emits_stage_boundaries(capsys)
     output.publish(TomorrowTrainingProgress("history_conversion", "completed", 100, 100))
 
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | 历史读取与训练样本生成 | 0/100 (0.00%) | 开始 | 阶段耗时 00:00:00 | 已生成样本 0",
-        "00:00:10 | 历史读取与训练样本生成 | 1/100 (1.00%) | 运行中 | 阶段耗时 00:00:10 | 已生成样本 0",
-        "00:00:31 | 历史读取与训练样本生成 | 25/100 (25.00%) | 运行中 | 阶段耗时 00:00:31 | 已生成样本 0",
-        "00:00:32 | 历史读取与训练样本生成 | 100/100 (100.00%) | 完成 | 阶段耗时 00:00:32 | 已生成样本 0",
+        "00:00:00 | Tomorrow训练 | 历史读取与训练样本生成 | 0/100 (0.00%) | 开始 | 阶段耗时 00:00:00 | 已生成样本 0",
+        "00:00:10 | Tomorrow训练 | 历史读取与训练样本生成 | 1/100 (1.00%) | 运行中 | 阶段耗时 00:00:10 | 已生成样本 0",
+        "00:00:31 | Tomorrow训练 | 历史读取与训练样本生成 | 25/100 (25.00%) | 运行中 "
+        "| 阶段耗时 00:00:31 | 已生成样本 0",
+        "00:00:32 | Tomorrow训练 | 历史读取与训练样本生成 | 100/100 (100.00%) | 完成 "
+        "| 阶段耗时 00:00:32 | 已生成样本 0",
     ]
     assert output.stage_durations == (("history_conversion", 32.0),)
 
@@ -69,8 +73,8 @@ def test_expensive_index_stage_emits_heartbeat_at_ten_seconds(capsys) -> None:
     output._emit_heartbeat(10.0)
     output._emit_heartbeat(20.0)
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:10 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:10",
-        "00:00:20 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:20",
+        "00:00:10 | Tomorrow训练 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:10",
+        "00:00:20 | Tomorrow训练 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:20",
     ]
     output.publish_result("engineering_ready", None)
     capsys.readouterr()

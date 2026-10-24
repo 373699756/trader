@@ -183,6 +183,14 @@ class _SampleBuildState:
     def flush_matured(self, last_position: int, *, all_days: bool = False) -> None:
         while self.pending_days and (all_days or last_position - self.pending_days[0].calendar_position >= 5):
             pending = self.pending_days.pop(0)
+            self.repository.record_day(
+                pending.trade_date,
+                len(pending.samples),
+                tuple(
+                    sum(item.future_returns[horizon] is None for item in pending.samples.values())
+                    for horizon in range(5)
+                ),
+            )
             finalized = _finalize_sample_day(tuple(pending.samples.values()), self.profile)
             self.missing_labels += len(pending.samples) - len(finalized)
             self.missing_t1 += len(pending.samples) - sum(item.targets[0] is not None for item in finalized)
@@ -201,7 +209,9 @@ class _SampleBuildState:
             )
 
 
-def BuildTrainingSamples(request: TrainingSampleBuildRequest) -> None:
+def BuildTrainingSamples(
+    request: TrainingSampleBuildRequest, *, aligned_rows: Iterator[HistoryTrainingRow] | None = None
+) -> None:
     """Build T+1..T+5 targets with one scan and at most five pending sample days."""
 
     state = _new_sample_state(request)
@@ -210,53 +220,24 @@ def BuildTrainingSamples(request: TrainingSampleBuildRequest) -> None:
     _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows))
 
     read_dates = AlignmentReadDates(request.archive.snapshot.calendar.open_dates, request.window.readable_dates)
-    for row in AlignTrainingRows(
-        request.archive.iter_training_rows(read_dates, state.report_scanned),
-        tuple(sorted(read_dates)),
-        request.archive.snapshot.listing_intervals,
-    ):
+    rows = (
+        aligned_rows
+        if aligned_rows is not None
+        else AlignTrainingRows(
+            request.archive.iter_training_rows(read_dates, state.report_scanned),
+            tuple(sorted(read_dates)),
+            request.archive.snapshot.listing_intervals,
+        )
+    )
+    for row in rows:
         if row.trade_date in request.window.readable_dates:
             state.accept(row)
+            if aligned_rows is not None:
+                state.processed_rows += 1
+                if state.processed_rows % 4096 == 0:
+                    state.report_scanned(state.processed_rows)
 
     _complete_sample_state(state, request)
-
-
-def BuildJointTrainingSamples(requests: tuple[TrainingSampleBuildRequest, ...]) -> int:
-    """Fan one immutable history row stream into independent profile sample databases."""
-
-    if not requests:
-        raise ValueError("joint_training_requests_empty")
-    archive = requests[0].archive
-    if any(
-        request.archive.snapshot.active_snapshot_hash != archive.snapshot.active_snapshot_hash for request in requests
-    ):
-        raise ValueError("joint_training_snapshot_mismatch")
-    if len({request.profile.profile_id for request in requests}) != len(requests):
-        raise ValueError("joint_training_profile_duplicate")
-    states = tuple(_new_sample_state(request) for request in requests)
-    for request, state in zip(requests, states, strict=True):
-        _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, state.total_rows))
-        _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, state.total_rows))
-    union_dates = AlignmentReadDates(
-        archive.snapshot.calendar.open_dates,
-        frozenset().union(*(request.window.readable_dates for request in requests)),
-    )
-    scanned = [0] * len(states)
-    scanned_union = 0
-    for row in AlignTrainingRows(
-        archive.iter_training_rows(union_dates), tuple(sorted(union_dates)), archive.snapshot.listing_intervals
-    ):
-        scanned_union += 1
-        for index, state in enumerate(states):
-            if row.trade_date in state.readable_dates:
-                state.accept(row)
-                scanned[index] += 1
-                if scanned[index] % 4096 == 0:
-                    state.report_scanned(scanned[index])
-    for index, (request, state) in enumerate(zip(requests, states, strict=True)):
-        state.report_scanned(scanned[index])
-        _complete_sample_state(state, request)
-    return scanned_union
 
 
 def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
@@ -510,7 +491,6 @@ __all__ = [
     "TrainingSampleBuildRequest",
     "AlignedSampleDates",
     "BuildTrainingSamples",
-    "BuildJointTrainingSamples",
     "ResidualizeSampleDay",
     "TrainingAlphaTarget",
 ]

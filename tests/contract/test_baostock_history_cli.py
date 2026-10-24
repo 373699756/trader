@@ -36,13 +36,12 @@ def test_train_reports_calendar_timeout_before_model_training(monkeypatch, capsy
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", forbidden)
-    monkeypatch.setattr("trader.training.entrypoints.v1.training.RunLearnedRankTraining", forbidden)
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", forbidden)
 
     assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", *profile_args]) == 1
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {
-        "schema_version": "joint_training_result",
+        "schema_version": "selected_training_result",
         "status": "failed",
         "category": "TimeoutError",
         "stage": "reference_calendar",
@@ -82,10 +81,28 @@ def test_v1_training_uses_its_own_admission_after_published_history(
         return V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0)
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
-    monkeypatch.setattr("trader.bootstrap.EvaluateAllHistoryTrainingDue", forbid_other_profiles)
-    monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", forbid_other_profiles)
+    monkeypatch.setattr(
+        "trader.training.entrypoints.selected_training.EvaluateAllHistoryTrainingDue", forbid_other_profiles
+    )
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", forbid_other_profiles)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr("trader.training.infra.profile.v1.training.RunV1Training", fit_v1)
+
+    def selected(runtime, profiles, **_kwargs):
+        assert profiles == ("v1",)
+        result = fit_v1()
+        print(
+            json.dumps(
+                {
+                    "schema_version": "profile_training_result",
+                    "profile": "v1",
+                    "status": result.status,
+                    "production_authority": False,
+                }
+            )
+        )
+        return 0
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", selected)
 
     assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", "v1"]) == 0
     captured = capsys.readouterr()
@@ -103,7 +120,7 @@ def test_train_preserves_history_cancellation_and_failure(
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
-        "trader.training.entrypoints.commands.RunJointTraining",
+        "trader.bootstrap.ExecuteSelectedTraining",
         lambda _runtime: pytest.fail("cancelled or failed history must not start training"),
     )
     assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train"]) == exit_code
@@ -165,7 +182,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
 
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
-        "trader.training.entrypoints.commands.RunJointTraining",
+        "trader.bootstrap.ExecuteSelectedTraining",
         lambda _runtime: pytest.fail("incomplete history must block training"),
     )
     from trader.download.entrypoints.commands import RunDownload
@@ -211,9 +228,7 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(monk
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", download)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        "trader.training.entrypoints.commands.RunJointTraining", lambda *args, **kwargs: pytest.fail("training ran")
-    )
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", lambda *args, **kwargs: pytest.fail("training ran"))
     assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train"]) == 130
     assert signal.getsignal(signal.SIGTERM) == previous
     assert json.loads(capsys.readouterr().out)["state"] == "cancelled"
@@ -231,9 +246,7 @@ def test_train_cancellation_during_reference_preparation_returns_130(monkeypatch
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        "trader.training.entrypoints.commands.RunJointTraining", lambda *args, **kwargs: pytest.fail("training ran")
-    )
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", lambda *args, **kwargs: pytest.fail("training ran"))
     assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train"]) == 130
     assert signal.getsignal(signal.SIGTERM) == previous
     assert json.loads(capsys.readouterr().out)["status"] == "cancelled"
@@ -276,8 +289,8 @@ def test_train_uses_valid_samples_despite_reported_price_gaps(
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr(
-        "trader.training.entrypoints.commands.RunJointTraining",
-        lambda runtime, **kwargs: calls.append(runtime) or 0,
+        "trader.bootstrap.ExecuteSelectedTraining",
+        lambda runtime, profiles, **kwargs: calls.append(runtime) or 0,
     )
 
     result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train", "v2,v3"])
@@ -286,7 +299,7 @@ def test_train_uses_valid_samples_despite_reported_price_gaps(
     assert len(calls) == int(starts_training)
     captured = capsys.readouterr()
     if starts_training:
-        assert json.loads(captured.out)["status"] == "completed"
+        assert captured.out == ""
     else:
         assert json.loads(captured.out)["price_gaps"]["cells"] == 3267
     assert ("价格缺口待补" in captured.err) == (state != "failed")

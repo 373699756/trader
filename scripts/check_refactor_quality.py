@@ -81,13 +81,9 @@ EXPECTED_DEBT = frozenset(
         ("PLR0915", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
         ("PLR0913", "recommendation/infra/market_data/published_history_cache.py", "PublishedHistoryCache.__init__"),
         ("C901", "training/domain/evaluation/models.py", "RecommendationOutcome.__post_init__"),
-        ("C901", "training/infra/engine.py", "RunJointProfileTraining"),
         ("C901", "training/infra/engine.py", "_run_locked"),
-        ("PLR0912", "training/infra/engine.py", "RunJointProfileTraining"),
         ("PLR0912", "training/infra/engine.py", "_run_locked"),
-        ("PLR0915", "training/infra/engine.py", "RunJointProfileTraining"),
         ("PLR0915", "training/infra/engine.py", "_run_locked"),
-        ("PLR0911", "training/infra/joint_fit_evidence.py", "LoadJointFitEvidence"),
         ("C901", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
         ("PLR0912", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
         ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackTomorrowTraining"),
@@ -98,7 +94,6 @@ RUFF_TIMEOUT_SECONDS = 60
 DECLARATION_HEADER = "| Tool | Owner | Network | Writes | Output | Resource boundary |"
 TOP_LEVEL_SCRIPT_MANIFEST = frozenset(
     {
-        "check_joint_training_performance.py",
         "check_refactor_quality.py",
         "check_tomorrow_training_memory.py",
         "diagnose_runtime.py",

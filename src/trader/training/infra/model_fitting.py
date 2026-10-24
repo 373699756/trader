@@ -39,6 +39,7 @@ from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TrainingIndustryCounts,
+    TrainingSampleMatrix,
 )
 
 if TYPE_CHECKING:
@@ -168,7 +169,10 @@ def _attempt_industry_fit(
             from trader.training.infra.profile.v5.fitting import FitTcnIndustry
 
             return FitTcnIndustry(samples, counts, contract, parameters, heartbeat), ""
-        return _fit_industry(samples, counts, contract, parameters), ""
+        heartbeat()
+        fitted = _fit_industry(samples, counts, contract, parameters, heartbeat)
+        heartbeat()
+        return fitted, ""
     except CalibrationUnavailableError as exc:
         return None, exc.reason
 
@@ -212,6 +216,7 @@ def _fit_industry(
     counts: TrainingIndustryCounts,
     contract: TrainedHeadContract,
     parameters: LightGBMFittingParameters | RidgeFittingParameters,
+    heartbeat: Callable[[], None],
 ) -> FittedIndustryModel:
     data = samples.industry_data(counts, contract)
     train = data.training
@@ -228,7 +233,7 @@ def _fit_industry(
         early_features = data.early_stopping.features
         early_features -= means
         early_features /= scales
-        booster = _fit_lightgbm(normalized, train.labels, early_features, data.early_stopping.labels, parameters)
+        booster = _fit_lightgbm(train, data.early_stopping, parameters, heartbeat)
         predicted = np.asarray(
             booster.predict(calibration_features, num_iteration=booster.best_iteration, num_threads=2)
         )
@@ -334,11 +339,10 @@ def _ridge_coefficients(features: np.ndarray, labels: np.ndarray, penalty_value:
 
 
 def _fit_lightgbm(
-    training_features: np.ndarray,
-    training_labels: np.ndarray,
-    early_features: np.ndarray,
-    early_labels: np.ndarray,
+    training: TrainingSampleMatrix,
+    early: TrainingSampleMatrix,
     parameters: LightGBMFittingParameters,
+    heartbeat: Callable[[], None],
 ) -> lgb.Booster:
     booster = lgb.train(
         {
@@ -359,10 +363,10 @@ def _fit_lightgbm(
             "histogram_pool_size": parameters.histogram_pool_mib,
             "verbosity": -1,
         },
-        lgb.Dataset(training_features, label=training_labels),
+        lgb.Dataset(training.features, label=training.labels),
         num_boost_round=parameters.boosting_rounds,
-        valid_sets=[lgb.Dataset(early_features, label=early_labels)],
-        callbacks=[lgb.early_stopping(parameters.early_stopping_rounds, verbose=False)],
+        valid_sets=[lgb.Dataset(early.features, label=early.labels)],
+        callbacks=[lgb.early_stopping(parameters.early_stopping_rounds, verbose=False), lambda _env: heartbeat()],
     )
     booster.free_dataset()
     return booster

@@ -167,7 +167,7 @@ def _run_history_download(config_path: Path, profiles: tuple[ScoringProfileId, .
     try:
         return ExecuteDownloadTrain(config_path, scoring_profiles=profiles)
     except KeyboardInterrupt:
-        print(json.dumps({"schema_version": "joint_training_result", "status": "cancelled"}))
+        print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled"}))
         return 130
     except AkshareCalendarTimeoutError as exc:
         print(
@@ -178,7 +178,7 @@ def _run_history_download(config_path: Path, profiles: tuple[ScoringProfileId, .
         print(
             json.dumps(
                 {
-                    "schema_version": "joint_training_result",
+                    "schema_version": "selected_training_result",
                     "status": "failed",
                     "category": "TimeoutError",
                     "stage": "reference_calendar",
@@ -190,7 +190,9 @@ def _run_history_download(config_path: Path, profiles: tuple[ScoringProfileId, .
         return 1
     except (OSError, RuntimeError, ValueError) as exc:
         print(
-            json.dumps({"schema_version": "joint_training_result", "status": "failed", "category": type(exc).__name__})
+            json.dumps(
+                {"schema_version": "selected_training_result", "status": "failed", "category": type(exc).__name__}
+            )
         )
         return 1
 

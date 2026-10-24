@@ -23,16 +23,24 @@ and does not mean the whole year or all pending PDFs are complete.
 Adding `--company-query-audit` to that profile performs a read-only count/filter audit instead of a backup or replay.
 It samples up to three failed dates and three failed child cursors, at most 192 logical page queries and 300 seconds (transport retries remain bounded). Reports contain counts and issuer-match diagnostics, never stock identities or source payloads. Matching sampled totals alone does not prove full date coverage.
 
+`--profile training-coverage` audits cached training dates read-only, including older caches without statistics tables.
+Add `--training-signal-date YYYY-MM-DD` to inspect the five future price horizons of a V5 signal with observed T+1 samples.
+The report contains population counts, missing dates and source status counts; it does not repair data or generate labels.
+`--profile training-alignment --history-root /external/history --training-probe-directory /external/new-output`
+runs the shared four-profile training pipeline only on an external history copy.
+`--profile training-performance` uses the same required paths and compares serial, shared parallel, then serial runs in fresh subprocesses.
+Both training probes accept `--training-profiles v1,v5` or any other nonempty combination; the default selects all four.
+All outputs use separate directories; any blocked training marks the comparison incomplete. It no longer gates concurrency or reads an enablement environment variable.
+
 ## Retained tools
 
-This table is the sole declaration of the nine retained top-level tools.
+This table is the sole declaration of the eight retained top-level tools.
 `check_refactor_quality.py` checks its complete fields, unique inventory and
 agreement with the approved script manifest. Declarations describe actual
 behavior; they do not grant permission to write active data.
 
 | Tool | Owner | Network | Writes | Output | Resource boundary |
 | --- | --- | --- | --- | --- | --- |
-| `check_joint_training_performance.py` | Training performance evidence gate | None | Required external benchmark workspace and output; isolated training artifacts only | Aggregate benchmark JSON to explicit external output and stdout; progress to stderr | Three sequential V2/V3 fits against the same external history copy; accepts parallel fit only when at least 10% faster than best serial fit and process peak RSS at most 5 GiB; no hard deadline |
 | `check_refactor_quality.py` | Repository quality gate | None | None; Ruff runs with `--no-cache` | stdout success; stderr violations/failure | Two sequential Ruff subprocesses, 60 s timeout each; finite repository scan, no hard RSS/total I/O limit |
 | `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models and samples under required `--train-root` and `--sample-root`; explicit external `--output` | Result JSON to stdout and result file; progress to stderr | Two sequential full rebuilds; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; stage durations are recorded, with no artificial total deadline |
 | `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; history revision benchmarks and qfq integrity checks write only disposable system-temporary targets, while active qfq data remains read-only; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output and stock identities are not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq audits one shared bounded database and emits aggregate counts; child capture has no fixed byte/RSS cap |

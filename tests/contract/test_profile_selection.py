@@ -1,6 +1,5 @@
 """Free profile combinations preserve one process, one preparation, and isolated delivery."""
 
-import json
 import threading
 from datetime import datetime
 from itertools import combinations
@@ -122,47 +121,14 @@ def test_training_selection_prepares_history_once_and_runs_only_selected_profile
 
     monkeypatch.setattr("trader.download.entrypoints.commands.RunDownload", download)
     monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr(selected_training, "ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr(commands, "RunJointTraining", lambda *_args, **_kwargs: calls.extend(("v2", "v3")) or 0)
-    monkeypatch.setattr(
-        "trader.training.entrypoints.v1.training.RunLearnedRankTraining",
-        lambda *_args, **_kwargs: calls.append("v1") or 0,
-    )
-    monkeypatch.setattr(
-        selected_training, "RunModelTrainingCommand", lambda _runtime, profile: calls.append(profile.profile_id) or 0
-    )
+
+    def train(runtime, selected, *, executor, memory_admission, paths):
+        assert executor.status().workers == len(selected)
+        calls.extend(selected)
+        return 0
+
+    monkeypatch.setattr(selected_training, "RunSelectedTraining", train)
     assert bootstrap.ExecuteDownloadTrain(config, scoring_profiles=profiles) == 0
     assert calls[0] == "history" and calls.count("history") == 1
     assert sorted(calls[1:]) == sorted(profiles)
-    if len(profiles) > 1:
-        assert json.loads(capsys.readouterr().out)["profiles"] == list(profiles)
     assert not (tmp_path / "data").exists()
-
-
-@pytest.mark.parametrize("failure", (1, 130, ModuleNotFoundError("private", name="torch")))
-def test_training_failure_continues_other_profiles_but_cancellation_stops(monkeypatch, capsys, failure):
-    calls = []
-
-    def configure(*, scoring_profile):
-        if isinstance(failure, Exception) and scoring_profile == "v5":
-            raise failure
-
-    def run_standard(_runtime, profile):
-        calls.append(profile.profile_id)
-        return failure if profile.profile_id == "v5" else 0
-
-    monkeypatch.setattr(selected_training, "ConfigureTrainingResources", configure)
-    monkeypatch.setattr(selected_training, "RunModelTrainingCommand", run_standard)
-    exit_code = selected_training.RunSelectedTraining(
-        None,
-        ("v5", "v1"),
-        run_v1=lambda: calls.append("v1") or 0,
-        run_joint=lambda: pytest.fail("unselected profiles ran"),
-    )
-    report = json.loads(capsys.readouterr().out.splitlines()[-1])
-    if failure == 130:
-        assert exit_code == 130 and calls == ["v5"]
-        assert report["not_started"] == ["v1"]
-    else:
-        assert exit_code == 1 and calls[-1] == "v1"
-        assert report["not_started"] == []

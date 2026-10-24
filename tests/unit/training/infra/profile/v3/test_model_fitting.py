@@ -45,11 +45,11 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
         expected_early = (data.early_stopping.features - means) / scales
         reference_fit = model_fitting._fit_lightgbm
 
-        def checked_fit(training_features, training_labels, early_features, early_labels, parameters):
-            assert training_features.dtype == early_features.dtype == np.float64
-            np.testing.assert_array_equal(training_features, expected_training)
-            np.testing.assert_array_equal(early_features, expected_early)
-            return reference_fit(training_features, training_labels, early_features, early_labels, parameters)
+        def checked_fit(training, early, parameters, heartbeat):
+            assert training.features.dtype == early.features.dtype == np.float64
+            np.testing.assert_array_equal(training.features, expected_training)
+            np.testing.assert_array_equal(early.features, expected_early)
+            return reference_fit(training, early, parameters, heartbeat)
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 

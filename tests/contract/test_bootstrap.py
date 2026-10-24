@@ -262,7 +262,7 @@ def test_startup_input_preloader_never_downloads_and_keeps_web_readable(
     monkeypatch.setattr(
         "trader.download.application.download_history.DownloadHistoryUseCase.execute", unexpected_download
     )
-    monkeypatch.setattr("trader.training.entrypoints.commands.RunJointTraining", unexpected_download)
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", unexpected_download)
     now = datetime(2026, 10, 9, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
     system = BuildSystem(_config(tmp_path))

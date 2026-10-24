@@ -171,9 +171,8 @@ from trader.training.application.research_audit import TryBuildCommittedResearch
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.domain.training_reminder import TrainingReminderStatus
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
-from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue, PublishedTrainingState
+from trader.training.infra.history.history_training_due import PublishedTrainingState
 from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
-from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
 from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
 from trader.training.infra.training_settings import LoadRuntimeTrainingSettings, ProfileTrainingSettings
@@ -344,43 +343,42 @@ def _prepare_reference(
 def ExecuteDownloadTrain(
     config_path: Path, *, scoring_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
 ) -> int:
-    """One process, history validation before training, no server resources."""
+    """One history maintenance, one executor sized to the selected profiles."""
     from trader.download.entrypoints.commands import RunDownload
-    from trader.training.entrypoints.commands import ConfigureTrainingResources, RunJointTraining
-    from trader.training.entrypoints.selected_training import RunSelectedTraining
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.entrypoints.v1.training import RunLearnedRankTraining
-    from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
-    from trader.training.infra.profile.v1.training import RunV1Training
+    from trader.training.entrypoints.commands import ConfigureTrainingResources
 
     scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
     runtime = LoadRuntimeSettings(config_path)
-    paths = runtime.data_paths
     ConfigureTrainingResources()
     result = RunDownload(runtime.project_root, config_path, quiet_success=True, allow_price_gaps=True)
-    if result:
-        return result
+    return result or ExecuteSelectedTraining(runtime, scoring_profiles)
+
+
+def ExecuteSelectedTraining(
+    runtime: RuntimeSettings,
+    scoring_profiles: tuple[ScoringProfileId, ...],
+    *,
+    history_root: Path | None = None,
+    training_root: Path | None = None,
+) -> int:
+    """Compose offline training resources, also used by isolated diagnostics."""
+    from trader.training.application.selected_training import TrainingLocations
+    from trader.training.entrypoints.selected_training import RunSelectedTraining
+    from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
+
+    paths = TrainingLocations(
+        history_root or runtime.data_paths.history,
+        training_root / "models" if training_root else runtime.data_paths.models,
+        training_root / "samples" if training_root else runtime.data_paths.samples,
+    )
     return RunSelectedTraining(
         runtime,
         scoring_profiles,
-        run_v1=lambda: RunLearnedRankTraining(
-            runtime,
-            execute=lambda cancelled: RunV1Training(
-                partial(SQLiteHistoryTrainingInputSnapshot.open, paths.history),
-                paths.models,
-                sample_root=paths.samples,
-                history_root=paths.history,
-                settings=LoadV1TrainingSettings(runtime.project_root),
-                progress=StderrTomorrowTrainingProgress(),
-                cancel_requested=cancelled,
-            ),
+        executor=BoundedExecutor(
+            worker_count=len(scoring_profiles), queue_capacity=0, thread_name_prefix="profile-training"
         ),
-        run_joint=lambda: RunJointTraining(
-            runtime,
-            refresh_due=lambda: EvaluateAllHistoryTrainingDue(
-                paths.history, paths.models, ShanghaiClock(_utc_now).now()
-            ),
-        ),
+        memory_admission=TrainingMemoryBudget(FittingMemoryCapacity()),
+        paths=paths,
     )
 
 
@@ -1192,6 +1190,7 @@ __all__ = [
     "BuildProfiledSystem",
     "BuildSystem",
     "ExecuteDownloadTrain",
+    "ExecuteSelectedTraining",
     "ExecuteSync",
     "ExecuteHistoryDownload",
     "ExecuteQfqDownload",

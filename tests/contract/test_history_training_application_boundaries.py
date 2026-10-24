@@ -98,7 +98,8 @@ def test_entrypoints_route_download_and_joint_training_through_current_owners() 
     )
     assert "ExecuteHistoryDownload" in download_commands
     assert "DownloadHistoryUseCase" in (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
-    assert "RunJointProfileTraining" in commands
-    assert "reuse_matching=True" in commands
+    selected = (ROOT / "src/trader/training/infra/selected_training.py").read_text(encoding="utf-8")
+    assert "RunSelectedTrainingTasks" in selected
+    assert "InspectSelectedProfile" in selected
     assert "TrainV2UseCase" not in commands
     assert "TrainV3UseCase" not in commands

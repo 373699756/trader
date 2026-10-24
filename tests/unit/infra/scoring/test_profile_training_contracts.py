@@ -21,7 +21,6 @@ from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research_settings import LoadResearchSettings
 from trader.training.infra.sample_builder import (
-    BuildJointTrainingSamples,
     BuildTrainingSamples,
     TrainingSampleBuildRequest,
 )
@@ -171,30 +170,36 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
         )
         for profile in profiles
     )
-    joint_source = HistorySourceFixture()
-    with (
-        SQLiteTrainingSampleIndex(tmp_path / "joint-v2.sqlite3", 10) as joint_v2,
-        SQLiteTrainingSampleIndex(tmp_path / "joint-v3.sqlite3", 6) as joint_v3,
-        SQLiteTrainingSampleIndex(tmp_path / "single-v2.sqlite3", 10) as single_v2,
-        SQLiteTrainingSampleIndex(tmp_path / "single-v3.sqlite3", 6) as single_v3,
-    ):
-        joint_requests = tuple(
-            TrainingSampleBuildRequest(joint_source, ("600000",), window, repository, profile)
-            for window, repository, profile in zip(windows, (joint_v2, joint_v3), profiles, strict=True)
-        )
-        rows_read = BuildJointTrainingSamples(joint_requests)
-        for window, repository, profile in zip(windows, (single_v2, single_v3), profiles, strict=True):
+    from concurrent.futures import ThreadPoolExecutor
+    from functools import partial
+
+    from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask
+    from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
+
+    source = HistorySourceFixture()
+
+    def build(profile, window, prefix, rows=None):
+        width = max(max(head.feature_positions) for head in profile.heads) + 1
+        with SQLiteTrainingSampleIndex(tmp_path / f"{prefix}-{profile.profile_id}.sqlite3", width) as index:
             BuildTrainingSamples(
-                TrainingSampleBuildRequest(HistorySourceFixture(), ("600000",), window, repository, profile)
+                TrainingSampleBuildRequest(source, ("600000",), window, index, profile), aligned_rows=rows
             )
-        assert joint_source.scans == 1
-        assert rows_read == sum(
-            row.trade_date in windows[0].readable_dates | windows[1].readable_dates for row in points
-        )
-        for joint, single in ((joint_v2, single_v2), (joint_v3, single_v3)):
-            assert joint._connection.run("SELECT * FROM samples ORDER BY trade_date, code").fetchall() == (
-                single._connection.run("SELECT * FROM samples ORDER BY trade_date, code").fetchall()
-            )
+            return tuple(tuple(row) for row in index._connection.run("SELECT * FROM samples ORDER BY trade_date,code"))
+
+    def read(dates):
+        allowed = AlignmentReadDates(source.snapshot.calendar.open_dates, dates)
+        return AlignTrainingRows(source.iter_training_rows(allowed), tuple(sorted(allowed)), ())
+
+    tasks = tuple(
+        SelectedTrainingTask(profile.profile_id, window.readable_dates, partial(build, profile, window, "shared"))
+        for profile, window in zip(profiles, windows, strict=True)
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        result = RunSelectedTrainingTasks(tasks, read, executor, lambda: False)
+    assert source.scans == result.history_scan_passes == 1
+    for outcome, profile, window in zip(result.outcomes, profiles, windows, strict=True):
+        assert outcome.failure is None
+        assert outcome.result == build(profile, window, "single")
 
 
 def test_date_budget_reserves_warmup_and_every_five_day_label_boundary() -> None:

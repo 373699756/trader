@@ -7,13 +7,10 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable
-from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
-from trader.download.infra.history_control_index import HistoryControlError
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
 from trader.infra.settings import LoadStrategySettings, RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -31,9 +28,6 @@ from trader.training.application.tomorrow_research_orchestrator import (
 from trader.training.application.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
-from trader.training.domain.model_publication import HeadTrainingStatus
-from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
-from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceError
 from trader.training.infra.research.h1_point_in_time_snapshot import (
     H1PointInTimeSnapshotConflictError,
     SQLiteH1PointInTimeSnapshot,
@@ -262,118 +256,6 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
-def RunJointTraining(runtime: RuntimeSettings, *, refresh_due: Callable[[], tuple[HeadTrainingStatus, ...]]) -> int:
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.infra.engine import ChooseJointFitMode, ProfileTrainingRequest, RunJointProfileTraining
-    from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-    from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-    from trader.training.infra.training_settings import LoadProfileTrainingSettings
-
-    history_root = runtime.data_paths.history
-    train_root = runtime.data_paths.models
-    with ExitStack() as progress_scope:
-        profiles = (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE)
-        progresses = tuple(
-            progress_scope.enter_context(
-                StderrTomorrowTrainingProgress(command_label=f"{profile.profile_id.upper()}训练")
-            )
-            for profile in profiles
-        )
-        requests = tuple(
-            ProfileTrainingRequest(
-                history_root,
-                train_root,
-                profile,
-                profile.heads,
-                LoadProfileTrainingSettings(runtime.project_root, profile.profile_id),
-                progress,
-                sample_root=runtime.data_paths.samples,
-            )
-            for profile, progress in zip(profiles, progresses, strict=True)
-        )
-        started = time.monotonic()
-        evidence_raw = os.environ.get("TRADER_JOINT_FIT_EVIDENCE")
-        evidence_path = Path(evidence_raw) if evidence_raw and Path(evidence_raw).is_absolute() else None
-        try:
-            result = RunJointProfileTraining(
-                (requests[0], requests[1]),
-                parallel_fit=ChooseJointFitMode(history_root, evidence_path=evidence_path) == "parallel",
-                reuse_matching=True,
-            )
-        except KeyboardInterrupt:
-            for progress in progresses:
-                progress.publish_cancelled()
-            print(json.dumps({"schema_version": "joint_training_result", "status": "cancelled"}))
-            return 130
-        for progress, profile_result in zip(progresses, result.profiles, strict=True):
-            failure = next((reason for head in profile_result.heads for reason in head.failure_reasons), None)
-            progress.publish_result(profile_result.status, failure)
-    process_io = _process_io_bytes()
-    due_failure: str | None = None
-    try:
-        training_heads = refresh_due()
-    except (HistoryControlError, TrainingMaintenanceError, OSError, ValueError) as exc:
-        training_heads = ()
-        due_failure = type(exc).__name__
-    print(
-        json.dumps(
-            {
-                "schema_version": "joint_training_result",
-                "status": result.status,
-                "training_input_hashes": [profile.training_input_hash for profile in result.profiles],
-                "profile_statuses": {
-                    name: profile.status for name, profile in zip(("v2", "v3"), result.profiles, strict=True)
-                },
-                "history_scan_passes": result.history_scan_passes,
-                "history_rows_read": result.history_rows_read,
-                "fit_mode": result.fit_mode,
-                "reused": result.reused,
-                "training_heads": [ProjectHeadTrainingStatus(head) for head in training_heads],
-                "training_due_failure": due_failure,
-                "preparation_seconds": round(result.preparation_seconds, 3),
-                "fit_seconds": round(result.fit_seconds, 3),
-                "elapsed_seconds": round(time.monotonic() - started, 3),
-                "process_peak_rss_bytes": _process_peak_rss_bytes(),
-                "process_major_faults": _process_major_faults(),
-                "process_read_bytes": process_io[0] if process_io is not None else None,
-                "process_write_bytes": process_io[1] if process_io is not None else None,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    )
-    return 0 if result.status == "engineering_ready" and due_failure is None else 1
-
-
-def _process_peak_rss_bytes() -> int | None:
-    try:
-        import resource
-
-        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    except (ImportError, OSError, ValueError):
-        return None
-    return int(value if sys.platform == "darwin" else value * 1024)
-
-
-def _process_major_faults() -> int | None:
-    try:
-        import resource
-
-        return int(resource.getrusage(resource.RUSAGE_SELF).ru_majflt)
-    except (ImportError, OSError, ValueError):
-        return None
-
-
-def _process_io_bytes() -> tuple[int, int] | None:
-    try:
-        lines = Path("/proc/self/io").read_text(encoding="ascii").splitlines()
-        read_bytes = next(int(line.split()[1]) for line in lines if line.startswith("read_bytes:"))
-        write_bytes = next(int(line.split()[1]) for line in lines if line.startswith("write_bytes:"))
-    except (OSError, StopIteration, ValueError, IndexError):
-        return None
-    return read_bytes, write_bytes
-
-
 def _read_tomorrow_research_status(research_root: Path) -> dict[str, object]:
     evidence = TomorrowResearchEvidenceIndex(research_root / "experiments/tomorrow_research")
     try:
@@ -498,4 +380,4 @@ def _read_tomorrow_historical_risk_status(research_root: Path) -> dict[str, obje
         }
 
 
-__all__ = ["ConfigureTrainingResources", "ResearchCommandOptions", "RunJointTraining", "RunResearchCommand"]
+__all__ = ["ConfigureTrainingResources", "ResearchCommandOptions", "RunResearchCommand"]

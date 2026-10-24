@@ -128,6 +128,23 @@ def _patch_archive(monkeypatch: pytest.MonkeyPatch, archive: SimpleNamespace) ->
     )
 
 
+def _populate_samples(request: TrainingSampleBuildRequest) -> None:
+    split = request.window.split
+    days = (
+        split.model_fit_dates
+        + split.early_stopping_dates
+        + split.calibration_dates
+        + split.confirmation_dates
+        + split.daily_proxy_holdout_dates
+    )
+    width = max(max(head.feature_positions) for head in request.profile.heads) + 1
+    request.repository.add_final(
+        V3TrainingSample("600000", day, "main", "银行", 1.0, (0.0,) * width, (0.01, 0.02, 0.03, 0.04, 0.05, 0.035))
+        for day in days
+    )
+    request.repository.prepare_for_model_fitting(split)
+
+
 def test_manual_training_does_not_compare_revisions_or_cadence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
@@ -169,7 +186,7 @@ def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, m
     archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
 
-    def fail_samples(_request):
+    def fail_samples(_request, *, aligned_rows=None):
         raise sqlite3.OperationalError("fixture disk full with private supplier details")
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", fail_samples)
@@ -180,7 +197,7 @@ def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, m
     assert all(not head.model_hash and not head.report_hash for head in result.heads)
     assert result.sample_database_peak_bytes > 0
     assert not tuple((tmp_path / "samples").glob("*/complete.json"))
-    monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", lambda _request: None)
+    monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", lambda _request, **_kwargs: None)
     retry = run_training(tmp_path / "history", tmp_path / "train")
     assert all(head.failure_reasons == ("profile_training_rows_empty",) for head in retry.heads)
 
@@ -202,34 +219,15 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     _patch_archive(monkeypatch, archive)
     builds = 0
 
-    def build_samples(request):
+    def build_samples(request, *, aligned_rows=None):
         nonlocal builds
         builds += 1
-        request.repository.add_final(
-            (
-                V3TrainingSample(
-                    "600000",
-                    request.window.split.model_fit_dates[0],
-                    "main",
-                    "银行",
-                    1.0,
-                    (0.0,) * len(request.profile.heads[0].feature_positions),
-                    (0.01, 0.02, 0.03, 0.04, 0.05, 0.035),
-                ),
-            )
-        )
-        request.repository.prepare_for_model_fitting(request.window.split)
+        _populate_samples(request)
 
     def fail(*_args, **_kwargs):
         raise failure("fixture_fit_failed")
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
-    monkeypatch.setattr(
-        "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
-        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 200, "holdout": 200}[
-            split_name
-        ],
-    )
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fail)
     first = run_training(tmp_path / "history", tmp_path / "train")
     assert first.status == "blocked"
@@ -245,7 +243,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args: None)
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples",
-        lambda _request: pytest.fail("complete sample cache must skip the history scan"),
+        lambda _request, **_kwargs: pytest.fail("complete sample cache must skip the history scan"),
     )
     second = run_training(tmp_path / "history", tmp_path / "train")
     assert second.status == "engineering_ready" and builds == 1
@@ -304,24 +302,10 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     _patch_archive(monkeypatch, archive)
     scan_calls = 0
 
-    def build_samples(request: TrainingSampleBuildRequest) -> None:
+    def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None) -> None:
         nonlocal scan_calls
         scan_calls += 1
-        sample_day = request.window.split.model_fit_dates[0]
-        request.repository.add_final(
-            (
-                V3TrainingSample(
-                    "600000",
-                    sample_day,
-                    "main",
-                    "银行",
-                    1.0,
-                    (0.0,) * 6,
-                    (0.01, 0.02, 0.03, 0.04, 0.05, 0.035),
-                ),
-            )
-        )
-        request.repository.prepare_for_model_fitting(request.window.split)
+        _populate_samples(request)
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
@@ -348,12 +332,6 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
             published.append((strategy, output))
 
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", publish)
-    monkeypatch.setattr(
-        "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
-        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 200, "holdout": 200}[
-            split_name
-        ],
-    )
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
@@ -393,21 +371,8 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
 
-    def build_samples(request: TrainingSampleBuildRequest) -> None:
-        request.repository.add_final(
-            (
-                V3TrainingSample(
-                    "600000",
-                    request.window.split.model_fit_dates[0],
-                    "main",
-                    "银行",
-                    1.0,
-                    (0.0,) * 6,
-                    (0.01, 0.02, 0.03, 0.04, 0.05, 0.035),
-                ),
-            )
-        )
-        request.repository.prepare_for_model_fitting(request.window.split)
+    def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None) -> None:
+        _populate_samples(request)
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
@@ -419,12 +384,6 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
-        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 200, "holdout": 200}[
-            split_name
-        ],
-    )
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 

@@ -99,10 +99,18 @@ class _RollingCode:
 class LearnedRankSampleIndex:
     """Own a disposable sample database; no production/history writes occur here."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self._connection = OpenSqliteConnection(
-            path, SqliteConnectionOptions(journal_mode="OFF", durability="rebuildable", cache_kib=16384)
+            path,
+            SqliteConnectionOptions(
+                read_only=read_only,
+                journal_mode=None if read_only else "OFF",
+                durability="durable" if read_only else "rebuildable",
+                cache_kib=16384,
+            ),
         )
+        if read_only:
+            return
         try:
             EnsureSqliteSchema(
                 self._connection,
@@ -110,7 +118,8 @@ class LearnedRankSampleIndex:
                     None,
                     (
                         "CREATE TABLE samples (day TEXT NOT NULL, code TEXT NOT NULL, industry TEXT NOT NULL, "
-                        "features BLOB NOT NULL, target_t1 REAL, target_d25 REAL, PRIMARY KEY(day, code)) WITHOUT ROWID",
+                        "features BLOB NOT NULL, target_t1 REAL, target_d25 REAL, "
+                        "PRIMARY KEY(day, code)) WITHOUT ROWID",
                     ),
                 ),
                 allow_create=True,
@@ -218,14 +227,24 @@ class LearnedRankSampleIndex:
         return LearnedRankMatrix(features, targets, tuple(codes), tuple(sample_dates), tuple(industries), tuple(groups))
 
 
+@dataclass(frozen=True)
+class LearnedRankSampleStream:
+    progress: TomorrowTrainingProgressPort | None = None
+    cancel_requested: Callable[[], bool] | None = None
+    aligned_rows: Iterator[HistoryTrainingRow] | None = None
+
+
+_STANDALONE_STREAM = LearnedRankSampleStream()
+
+
 def BuildLearnedRankSamples(
     source: LearnedRankInputPort,
     splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit],
     index: LearnedRankSampleIndex,
     *,
-    progress: TomorrowTrainingProgressPort | None = None,
-    cancel_requested: Callable[[], bool] | None = None,
+    stream: LearnedRankSampleStream = _STANDALONE_STREAM,
 ) -> LearnedRankSampleCounts:
+    progress, cancel_requested, aligned_rows = stream.progress, stream.cancel_requested, stream.aligned_rows
     calendar = source.snapshot.calendar.open_dates
     positions = {day: position for position, day in enumerate(calendar)}
     selected = frozenset(day for split in splits for day in split.sample_dates)
@@ -239,9 +258,14 @@ def BuildLearnedRankSamples(
     source_rows = converted = missing_prices = missing_industry = short_window = missing_t1 = missing_d25 = 0
     suspended_sessions = estimated_sessions = 0
     last_key: tuple[date, str] | None = None
-    for row in AlignTrainingRows(
-        source.iter_training_rows(readable), tuple(sorted(readable)), source.snapshot.listing_intervals
-    ):
+    rows = (
+        aligned_rows
+        if aligned_rows is not None
+        else AlignTrainingRows(
+            source.iter_training_rows(readable), tuple(sorted(readable)), source.snapshot.listing_intervals
+        )
+    )
+    for row in rows:
         source_rows += 1
         if source_rows % 512 == 0:
             CheckV1Cancellation(cancel_requested)
