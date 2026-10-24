@@ -423,7 +423,7 @@ class MarketFeatureService:
         deadline: datetime | None = None,
         preview_context: PreviewContext | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        normalized = self._eligible_codes(codes, observed_at)
+        normalized = _normalize_codes(codes)
         if not normalized:
             return ()
         quotes = tuple(

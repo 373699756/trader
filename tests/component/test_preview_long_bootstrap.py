@@ -8,6 +8,7 @@ from tests.contract.test_bootstrap import _config
 from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT
 from trader.bootstrap import BuildProfiledSystem
 from trader.infra.shutdown import ShutdownDeadline
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import ScoringModelsMissingError
 
@@ -24,20 +25,33 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
         raise ScoringModelsMissingError()
 
     def quotes(self, codes, observed_at, **kwargs):
-        calls.append(kwargs["preview_context"])
+        calls.append((tuple(codes), kwargs["preview_context"]))
         if not quote_available:
             return ()
-        feature = application_feature_factory(codes[0], observed_at)
-        return (replace(feature, quote=replace(feature.quote, source_time=close, pct_change=1.75)),)
+        return tuple(
+            replace(application_feature_factory(code, observed_at).quote, source_time=close, pct_change=1.75)
+            for code in codes
+        )
 
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: STARTED_AT)
     monkeypatch.setattr("trader.bootstrap.LoadScoringProfile", missing_model)
     monkeypatch.setattr("trader.bootstrap.PublishedReferences.initialize", lambda self: None)
     monkeypatch.setattr("trader.bootstrap.ChinaTradingCalendar.open_dates", lambda self: (MARKET_DATE,))
-    monkeypatch.setattr("trader.bootstrap.MarketFeatureService.refresh_long_quotes", quotes)
+    monkeypatch.setattr("trader.bootstrap.MarketDataGateway.fetch_long_quotes", quotes)
     system = BuildProfiledSystem(_config(tmp_path), profiles=profiles)
     primary = system.systems[0]
     assert primary.owns_shared_resources
+    codes = primary.long_runtime.codes
+    primary.market_data.eligibility.record(
+        tuple(
+            IssuerEligibilityFact(code, reason, STARTED_AT, f"fixture:{code}", "fixture", "a" * 64)
+            for code, reason in zip(
+                codes[:2],
+                (IssuerEligibilityReason.HISTORICAL_ST, IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING),
+                strict=True,
+            )
+        )
+    )
     primary.run_scope.initialize()
     try:
         primary.long_runtime.start()
@@ -51,7 +65,7 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
         payload = client.get("/api/decisions/long/current").get_json()
         assert payload["status"] == "ready"
         assert len(payload["items"]) == len(primary.long_runtime.codes) > 0
-        assert payload["coverage"]["available_quote_count"] == int(quote_available)
+        assert payload["coverage"]["available_quote_count"] == (len(codes) if quote_available else 0)
         first_quote = payload["items"][0]["quote"]
         assert first_quote["status"] == ("live" if quote_available else "missing")
         if quote_available:
@@ -59,7 +73,8 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
             assert first_quote["source_time"] == close.isoformat()
         primary.scheduler.submit_due()
         assert primary.long_runtime.wait_idle(3.0)
-        assert calls == [primary.run_scope.preview]
+        assert calls == [(codes, primary.run_scope.preview)]
+        assert primary.market_data.eligibility.filter_codes(codes, STARTED_AT) == codes[2:]
         assert primary.tomorrow_index.snapshot(Strategy.LONG).formal is None
         assert not (tmp_path / "data/recommendation").exists()
         assert not (tmp_path / "data/research").exists()
