@@ -10,8 +10,10 @@
 /data/training/*
 !/data/training/models/
 /data/training/models/*
+!/data/training/models/v1/
 !/data/training/models/v2/
 !/data/training/models/v3/
+!/data/training/models/v5/
 /data/training/models/*/*
 !/data/training/models/*/tomorrow/
 !/data/training/models/*/d25/
