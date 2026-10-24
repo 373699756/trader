@@ -8,7 +8,10 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime
+from functools import partial
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import (
@@ -58,35 +61,15 @@ class CninfoMarketDisclosureSource:
         self._next_request = 0.0
         self._securities: tuple[DisclosureSecurity, ...] | None = None
 
-    def fetch(self, partition: DisclosurePartition, *, deadline: float) -> DisclosurePage:
+    def fetch(
+        self, partition: DisclosurePartition, *, deadline: float, order: Literal["", "asc", "desc"] = ""
+    ) -> DisclosurePage:
         if partition.page > 100:
             raise ValueError("cninfo_page_limit")
-        response = self._request(lambda: self._fetch_page(partition, deadline), deadline)
-        payload = response.json()
-        if not isinstance(payload, Mapping):
-            raise ValueError("cninfo_schema_invalid")
-        total, more = payload.get("totalRecordNum"), payload.get("hasMore")
-        rows = payload.get("announcements")
-        if rows is None and total == 0:
-            rows = []
-        if type(total) is not int or total < 0 or type(more) is not bool or not isinstance(rows, list):
-            raise ValueError("cninfo_pagination_invalid")
-        result: list[Disclosure] = []
-        for row in rows:
-            result.append(_parse_disclosure(row, partition))
-        query = partition.query
-        if query is not None:
-            selected = {security.code for security in query.securities}
-            for item in result:
-                if (selected and not selected.intersection(item.codes)) or (
-                    not selected and any(_plate(code) != query.plate for code in item.codes)
-                ):
-                    raise ValueError("cninfo_query_filter_ignored")
-        if more and not result:
-            raise ValueError("cninfo_empty_nonterminal_page")
-        return DisclosurePage(tuple(result), total, more)
+        response = self._request(lambda: self._fetch_page(partition, deadline, order=order), deadline)
+        return _parse_page(response.json(), partition)
 
-    def _fetch_page(self, partition: DisclosurePartition, deadline: float) -> HttpResponse:
+    def _fetch_page(self, partition: DisclosurePartition, deadline: float, *, order: str = "") -> HttpResponse:
         return self._session.post(
             "https://www.cninfo.com.cn/new/hisAnnouncement/query",
             data={
@@ -105,8 +88,8 @@ class CninfoMarketDisclosureSource:
                 "category": "",
                 "trade": "",
                 "seDate": f"{partition.start.isoformat()}~{partition.end.isoformat()}",
-                "sortName": "",
-                "sortType": "",
+                "sortName": "code" if order else "",
+                "sortType": order,
                 "isHLtitle": "false",
             },
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
@@ -160,6 +143,51 @@ class CninfoMarketDisclosureSource:
         if not members:
             raise ValueError("cninfo_security_list_incomplete")
         return tuple(DisclosureQuery(query.plate, members[i : i + 32]) for i in range(0, len(members), 32))
+
+    def repair_queries(
+        self,
+        partition: DisclosurePartition,
+        members: tuple[DisclosureSecurity, ...],
+        *,
+        missing_rows: int,
+        deadline: float,
+        report: Callable[[DisclosurePartition], None] | None = None,
+    ) -> tuple[DisclosureQuery, ...]:
+        """Discover omitted historical issuers without discarding completed queries.
+
+        The current autocomplete list is not a historical issuer universe. Bounded
+        code-sorted parent samples discover absent issuers; only a later exact
+        record-union check can declare coverage, even if discovery is incomplete.
+        """
+        known = {member.org_id for member in members}
+        found: list[DisclosureSecurity] = []
+        records: set[tuple[str, tuple[str, ...]]] = set()
+        for plate in sorted({_plate(member.code) for member in members}):
+            orders = ["asc", "desc"]
+            for number in range(1, 101):
+                for order in tuple(orders):
+                    sample = replace(partition, query=DisclosureQuery(plate), page=number)
+                    response = self._request(partial(self._fetch_page, sample, deadline, order=order), deadline)
+                    payload = response.json()
+                    page = _parse_page(payload, sample)
+                    if report is not None:
+                        report(replace(sample, expected_rows=page.total))
+                    assert isinstance(payload, Mapping)  # The page parser has validated the envelope.
+                    rows = payload.get("announcements") or []
+                    for raw, item in zip(rows, page.rows, strict=True):
+                        issuer = str(raw.get("orgId") or "")
+                        if issuer and issuer not in known:
+                            found.append(DisclosureSecurity(item.codes[0], issuer))
+                            known.add(issuer)
+                        if any(member.org_id == issuer for member in found):
+                            records.add((item.identity, item.codes))
+                    if len(records) >= missing_rows:
+                        return _repair_groups(found)
+                    if not page.has_more:
+                        orders.remove(order)
+                if not orders:
+                    break
+        return _repair_groups(found)
 
     def _request(self, send: Callable[[], HttpResponse], deadline: float) -> HttpResponse:
         # Only the read-only CNInfo protocol owns retries; the shared transport remains single-attempt.
@@ -251,11 +279,48 @@ class CninfoMarketDisclosureSource:
 
 
 def _plate(code: str) -> str:
-    if code.startswith("6"):
+    # CNInfo's main-board announcement totals include Shanghai B-share issuers.
+    # Keep those rows for exact coverage; publication still uses its A-share population.
+    if code.startswith(("6", "900")):
         return "shkcp" if code.startswith(("688", "689")) else "shmb"
     if code.startswith(("4", "8", "9")):
         return "bj"
     return "szcy" if code.startswith(("300", "301")) else "szmb"
+
+
+def _repair_groups(members: list[DisclosureSecurity]) -> tuple[DisclosureQuery, ...]:
+    queries: list[DisclosureQuery] = []
+    for plate in sorted({_plate(member.code) for member in members}):
+        group = tuple(member for member in members if _plate(member.code) == plate)
+        queries.extend(DisclosureQuery(plate, group[start : start + 32]) for start in range(0, len(group), 32))
+    return tuple(queries)
+
+
+def _parse_page(payload: object, partition: DisclosurePartition) -> DisclosurePage:
+    if not isinstance(payload, Mapping):
+        raise ValueError("cninfo_schema_invalid")
+    total, more = payload.get("totalRecordNum"), payload.get("hasMore")
+    rows = payload.get("announcements")
+    if rows is None and total == 0:
+        rows = []
+    if type(total) is not int or total < 0 or type(more) is not bool or not isinstance(rows, list):
+        raise ValueError("cninfo_pagination_invalid")
+    result: list[Disclosure] = []
+    query = partition.query
+    selected = {security.code for security in query.securities} if query else set()
+    issuers = {security.org_id for security in query.securities} if query else set()
+    for raw in rows:
+        item = _parse_disclosure(raw, partition)
+        if query is not None:
+            assert isinstance(raw, Mapping)
+            if (selected and not selected.intersection(item.codes) and str(raw.get("orgId") or "") not in issuers) or (
+                not selected and any(_plate(code) != query.plate for code in item.codes)
+            ):
+                raise ValueError("cninfo_query_filter_ignored")
+        result.append(item)
+    if more and not result:
+        raise ValueError("cninfo_empty_nonterminal_page")
+    return DisclosurePage(tuple(result), total, more)
 
 
 def _parse_disclosure(row: object, partition: DisclosurePartition) -> Disclosure:

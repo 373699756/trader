@@ -117,7 +117,94 @@ def test_incomplete_or_overlapping_query_union_never_publishes_coverage(tmp_path
     with SqliteSession(index.path) as c:
         assert c.run("SELECT count(*) FROM coverage").require_one()[0] == 0
         assert c.run("SELECT count(*) FROM disclosures").require_one()[0] >= 1
-    assert index.disclosure_queries(target) is None  # A new complete query generation is required.
+    pending = index.disclosure_queries(target)
+    if mismatch == "sample":
+        assert len(pending) == 2 and all(p.page == 1 for p in pending)
+    else:
+        assert pending == ()  # Valid child pages survive missing records/overlapping filters.
+
+
+def test_alias_query_overlap_is_accepted_only_when_exact_union_matches_parent(tmp_path, monkeypatch):
+    index, target = _scope(tmp_path, monkeypatch)
+    children = index.split_query(
+        target,
+        (
+            DisclosureQuery("shmb", (DisclosureSecurity("600001", "issuer"),)),
+            DisclosureQuery("shmb", (DisclosureSecurity("600002", "issuer"),)),
+        ),
+    )
+    rows = (fixtures._disclosure("one"), fixtures._disclosure("two"))
+    for child in children:
+        index.commit_page(child, DisclosurePage(rows, 2, False), NOW)
+    index.commit_query_coverage(target, DisclosurePage(rows[:1], 2, True), NOW)
+    with SqliteSession(index.path) as c:
+        assert c.run("SELECT count(*) FROM coverage").require_one()[0] == 1
+        assert c.run("SELECT count(*) FROM partition_rows").require_one()[0] == 2
+
+
+def test_missing_historical_issuer_is_added_without_redownloading_completed_queries(tmp_path, monkeypatch):
+    index, target = _scope(tmp_path, monkeypatch)
+    known = DisclosureQuery("shmb", (DisclosureSecurity("600001", "known"),))
+    missing = DisclosureQuery("shmb", (DisclosureSecurity("600002", "historical"),))
+    child = index.split_query(target, (known,))[0]
+    one, two = fixtures._disclosure("one"), fixtures._disclosure("two")
+    index.commit_page(child, DisclosurePage((one,), 1, False), NOW)
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if not isinstance(query, DisclosurePartition):
+                return super().fetch(query, **kwargs)
+            self.calls.append(query)
+            assert query.query != known
+            return DisclosurePage((two,), 1, False) if query.query else DisclosurePage((one,), 2, True)
+
+        def repair_queries(self, partition, members, **kwargs):
+            assert partition == target and members == known.securities and kwargs["missing_rows"] == 1
+            return (missing,)
+
+    result = _run(index, Source())
+    assert result.pending_partitions == 0 and not result.failures
+    with SqliteSession(index.path) as c:
+        assert c.run("SELECT count(*) FROM coverage").require_one()[0] == 1
+        assert c.run("SELECT sum(complete) FROM disclosure_queries").require_one()[0] == 2
+
+
+def test_query_policy_releases_only_corrected_failures_once(tmp_path, monkeypatch):
+    index, target = _scope(tmp_path, monkeypatch)
+    child = index.split_query(target, (DisclosureQuery("shmb", (DisclosureSecurity("600001", "issuer"),)),))[0]
+    index.commit_page(child, DisclosurePage((fixtures._disclosure(),), 2, True), NOW)
+    index.partition_failure(child, "cninfo_query_filter_ignored")
+    index.defer_partition(child, NOW + timedelta(days=1))
+    index.partition_failure(target, "HttpConnectionError")
+    index.defer_partition(target, NOW + timedelta(minutes=15))
+    with SqliteSession(index.path) as c:
+        c.run("DELETE FROM disclosure_query_policy")
+    index.initialize()
+    assert index.partition_retry_after(child) is None
+    assert index.partition_retry_after(target) == NOW + timedelta(minutes=15)
+    assert index.disclosure_queries(target)[0].page == 2
+    index.defer_partition(child, NOW + timedelta(days=1))
+    index.initialize()
+    assert index.partition_retry_after(child) == NOW + timedelta(days=1)
+
+
+def test_date_completion_removes_only_withdrawn_links_in_its_market_and_day(tmp_path, monkeypatch):
+    index, target = _scope(tmp_path, monkeypatch)
+    target = replace(target, start=NOW.date(), end=NOW.date())
+    rows = tuple(
+        replace(fixtures._disclosure(code), codes=(code,)) for code in ("600001", "900901", "000001", "920001")
+    )
+    other_day = replace(fixtures._disclosure("yesterday"), published_at=NOW - timedelta(days=1))
+    index.commit_news("600001", (*rows, other_day), NOW)
+    index.commit_page(target, DisclosurePage((), 0, False), NOW)
+    with SqliteSession(index.path) as connection:
+        linked = {
+            row[0]
+            for row in connection.run(
+                "SELECT d.source_id FROM disclosures d JOIN disclosure_codes c ON d.id=c.disclosure_id"
+            )
+        }
+    assert linked == {"000001", "920001", "yesterday"}
 
 
 @pytest.mark.parametrize("error", [HttpTimeout("fixture"), HttpConnectionError("fixture")])

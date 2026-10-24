@@ -13,8 +13,10 @@ from contextlib import closing
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
+from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import (
@@ -68,8 +70,10 @@ class _ObservedSource(CninfoMarketDisclosureSource):
         self.pages: list[tuple[str, str, str, str, int]] = []
         self.documents = 0
 
-    def fetch(self, partition: DisclosurePartition, *, deadline: float) -> DisclosurePage:
-        page = super().fetch(partition, deadline=deadline)
+    def fetch(
+        self, partition: DisclosurePartition, *, deadline: float, order: Literal["", "asc", "desc"] = ""
+    ) -> DisclosurePage:
+        page = super().fetch(partition, deadline=deadline, order=order)
         self.pages.append(
             (
                 partition.market,
@@ -124,6 +128,7 @@ def Main() -> int:
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--budget-seconds", required=True, type=float)
+    parser.add_argument("--audit-only", action="store_true")
     args = parser.parse_args()
     implementation = hashlib.sha256()
     for relative in (
@@ -144,6 +149,10 @@ def Main() -> int:
         or not 30 <= args.budget_seconds <= 10800
     ):
         parser.error("external absolute directory and budget within 30..10800 seconds required")
+    if args.audit_only:
+        report = AuditCompanyQueries(source_path, budget_seconds=min(300.0, args.budget_seconds))
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / "evidence.sqlite3"
     if destination.resolve() == source_path or (destination.exists() and destination.samefile(source_path)):

@@ -24,6 +24,18 @@ def test_company_profile_requires_explicit_external_directory(tmp_path):
     commands = build_commands(options)
     assert len(commands) == 1 and commands[0].name == "company_resume"
     assert str(tmp_path) in commands[0].argv
+    audit, _ = _validate(
+        _parser().parse_args(
+            [
+                "--profile",
+                "company-resume",
+                "--company-replay-directory",
+                str(tmp_path),
+                "--company-query-audit",
+            ]
+        )
+    )
+    assert "--audit-only" in build_commands(audit)[0].argv
 
 
 def test_backup_preserves_source_and_is_independently_writable(tmp_path):
@@ -90,6 +102,12 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
                 "saved_pages_replayed": 0,
                 "private_database": "must-not-project",
                 "runs": [{"pages": 100, "document_attempts": 32, "raw_document": "must-not-project"}],
+                "query_audit": {
+                    "read_only": True,
+                    "pages": [{"total": 93, "outside_codes": 2, "same_issuer": 2, "raw_response": "must-not-project"}],
+                    "totals": [{"parent_total": 100, "group_total": 102, "private": "must-not-project"}],
+                    "private": "must-not-project",
+                },
             },
         },
         None,
@@ -100,3 +118,28 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
     summary = report["checks"][0]["summary"]
     assert summary["selected_slices"] == summary["completed_slices"] == 6
     assert summary["runs"][0]["pages"] == 100 and summary["saved_pages_replayed"] == 0
+    assert summary["query_audit"]["pages"][0]["same_issuer"] == 2
+
+
+def test_query_capture_distinguishes_an_issuer_alias_from_an_unrelated_response():
+    from scripts.runtime_diagnostics.company_query_audit import _Capture
+    from trader.infra.http_contracts import HttpRequest, HttpResponse
+
+    capture = _Capture()
+    request = HttpRequest(
+        "POST", "https://www.cninfo.com.cn/new/hisAnnouncement/query", 8, body=b"stock=600001%2Cissuer"
+    )
+    response = HttpResponse(
+        200,
+        json.dumps(
+            {
+                "totalRecordNum": 2,
+                "announcements": [
+                    {"secCode": "600002", "orgId": "issuer"},
+                    {"secCode": "600003", "orgId": "unrelated"},
+                ],
+            }
+        ).encode(),
+    )
+    capture.inspect(request, response)
+    assert capture.total == 2 and capture.outside_codes == 2 and capture.same_issuer == 1

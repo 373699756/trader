@@ -7,7 +7,13 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader import bootstrap
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult, EvidenceSyncProgress
+from trader.download.domain.company_evidence import (
+    CompanyEvidenceSyncResult,
+    DisclosurePartition,
+    DisclosureQuery,
+    DisclosureSecurity,
+    EvidenceSyncProgress,
+)
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
 from trader.entrypoints.cli import Main
 
@@ -35,6 +41,29 @@ def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
     assert "进度 0/? 页（总数待确认）" in unknown
     assert "无需请求，复用有效缓存" in reused
     assert "状态 本地复用" in reused and "100.00%" not in reused
+
+
+def test_announcement_progress_separates_complete_dates_current_pages_and_stage_time():
+    clock = [0.0]
+    stream = StringIO()
+    report = CompanyEvidenceProgress(stream, monotonic=lambda: clock[0])
+    clock[0] = 2100
+    report(EvidenceSyncProgress("financial", 0, None, 0, 0, 0))
+    clock[0] = 2110
+    day = datetime(2026, 10, 24).date()
+    scope = DisclosurePartition(
+        "sse",
+        day,
+        day,
+        page=3,
+        expected_rows=93,
+        query=DisclosureQuery("shmb", (DisclosureSecurity("600001", "issuer"),)),
+    )
+    report(EvidenceSyncProgress("announcements", 0, 36, 100, 1000, 124, scope=scope))
+    output = stream.getvalue().splitlines()[-1]
+    assert "完整日期片 0 | 待补 36 分片" in output and "0.00%" not in output
+    assert "第3/4页" in output and "累计复用 124" in output
+    assert "本阶段 00:00:00" in output and "命令累计 00:35:10" in output
 
 
 def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end():

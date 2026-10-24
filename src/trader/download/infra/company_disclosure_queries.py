@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.download.domain.company_evidence import (
+    DisclosureCoverageMismatch,
     DisclosurePage,
     DisclosurePartition,
     DisclosureQuery,
@@ -23,8 +24,25 @@ def DisclosureQueryKey(partition: DisclosurePartition) -> tuple[str, str, str, s
     return (*DisclosurePartitionKey(partition), partition.query.key if partition.query is not None else "")
 
 
+def ActivateDisclosureQueryPolicy(connection: SqliteConnection) -> None:
+    identity = "issuer_union_board"
+    row = connection.run("SELECT identity FROM disclosure_query_policy WHERE singleton=1").fetchone()
+    if row is not None and row[0] == identity:
+        return
+    # Retry only failures affected by this parser/union correction, once. Keep
+    # network cooldowns, completed pages, facts and published snapshots intact.
+    connection.run(
+        "DELETE FROM partition_retries WHERE (scope='' AND EXISTS(SELECT 1 FROM partitions p "
+        "WHERE p.market=partition_retries.market AND p.start=partition_retries.start AND p.end=partition_retries.end "
+        "AND p.failure IN ('cninfo_query_coverage_mismatch','cninfo_query_filter_ignored'))) OR EXISTS(SELECT 1 FROM disclosure_queries q "
+        "WHERE q.market=partition_retries.market AND q.start=partition_retries.start AND q.end=partition_retries.end "
+        "AND q.scope=partition_retries.scope AND q.failure='cninfo_query_filter_ignored')"
+    )
+    connection.run("INSERT OR REPLACE INTO disclosure_query_policy VALUES(1,?)", (identity,))
+
+
 def ReadDisclosureQueries(
-    connection: SqliteConnection, partition: DisclosurePartition
+    connection: SqliteConnection, partition: DisclosurePartition, *, include_completed: bool = False
 ) -> tuple[DisclosurePartition, ...] | None:
     rows = connection.run(
         "SELECT * FROM disclosure_queries WHERE market=? AND start=? AND end=? "
@@ -42,7 +60,7 @@ def ReadDisclosureQueries(
             query=DisclosureQuery(row["plate"], _decode_securities(row["securities"])),
         )
         for row in rows
-        if not row["complete"]
+        if include_completed or not row["complete"]
     )
 
 
@@ -125,8 +143,10 @@ def ReconcileDisclosureQueries(
     unique = connection.run(
         "SELECT count(DISTINCT record_key) FROM disclosure_query_rows WHERE market=? AND start=? AND end=?", key
     ).require_one()[0]
-    if not counts[0] or counts[0] != counts[1] or counts[2] != page.total or unique != page.total:
-        raise ValueError("cninfo_query_coverage_mismatch")
+    # Issuer aliases can make separate stock filters return the same records.
+    # Only the exact union, not the sum of overlapping query counts, proves coverage.
+    if not counts[0] or counts[0] != counts[1] or counts[2] < page.total or unique != page.total:
+        raise DisclosureCoverageMismatch(max(0, page.total - unique), refresh_required=unique > page.total)
     # Verify that the fresh parent sample is represented, not just that counts happen to agree.
     for item in page.rows:
         if (
@@ -136,7 +156,7 @@ def ReconcileDisclosureQueries(
             ).fetchone()
             is None
         ):
-            raise ValueError("cninfo_query_coverage_mismatch")
+            raise DisclosureCoverageMismatch(0, refresh_required=True)
     connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", key)
     connection.run(
         "INSERT INTO partition_rows SELECT DISTINCT market,start,end,source_id,code FROM disclosure_query_rows "
@@ -176,6 +196,7 @@ def _decode_securities(payload: str) -> tuple[DisclosureSecurity, ...]:
 
 
 __all__ = [
+    "ActivateDisclosureQueryPolicy",
     "DisclosurePartitionKey",
     "DisclosureQueryKey",
     "ReadDisclosureQueries",

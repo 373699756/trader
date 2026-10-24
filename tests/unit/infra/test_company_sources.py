@@ -126,6 +126,75 @@ def test_cninfo_ignored_query_filter_never_returns_a_trusted_page(query):
         source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query), deadline=20)
 
 
+def test_cninfo_historical_code_alias_requires_matching_official_issuer():
+    row = {
+        "announcementId": "one",
+        "secCode": "600002",
+        "orgId": "issuer",
+        "announcementTitle": "公告",
+        "announcementTime": NOW.timestamp() * 1000,
+        "adjunctUrl": "",
+    }
+    session = Session({"totalRecordNum": 1, "hasMore": False, "announcements": [row]})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    query = DisclosureQuery("shmb", (DisclosureSecurity("600001", "issuer"),))
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date(), query=query)
+    assert source.fetch(partition, deadline=20).rows[0].codes == ("600002",)
+    row["orgId"] = "unrelated"
+    with pytest.raises(ValueError, match="cninfo_query_filter_ignored"):
+        source.fetch(partition, deadline=20)
+
+
+def test_historical_issuer_discovery_keeps_known_members_and_stops_when_gap_is_found():
+    row = {
+        "announcementId": "old",
+        "secCode": "600009",
+        "orgId": "historical",
+        "announcementTitle": "公告",
+        "announcementTime": NOW.timestamp() * 1000,
+        "adjunctUrl": "",
+    }
+    session = Session({"totalRecordNum": 4000, "hasMore": True, "announcements": [row]})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    target = DisclosurePartition("sse", NOW.date(), NOW.date())
+    queries = source.repair_queries(target, (DisclosureSecurity("600001", "current"),), missing_rows=1, deadline=20)
+    assert queries == (DisclosureQuery("shmb", (DisclosureSecurity("600009", "historical"),)),)
+    assert len(session.requests) == 1
+    assert session.requests[0]["data"]["sortName"] == "code" and session.requests[0]["data"]["sortType"] == "asc"
+
+
+def test_issuer_discovery_alternates_sort_edges_and_keeps_shanghai_b_share_coverage():
+    class Sorted(Session):
+        def post(self, url, **kwargs):
+            self.requests.append(kwargs)
+            descending = kwargs["data"]["sortType"] == "desc"
+            row = {
+                "announcementId": "old" if descending else "known",
+                "secCode": "900901" if descending else "600001",
+                "orgId": "historical" if descending else "current",
+                "announcementTitle": "公告",
+                "announcementTime": NOW.timestamp() * 1000,
+                "adjunctUrl": "",
+            }
+            return HttpResponse(
+                200, json.dumps({"totalRecordNum": 4000, "hasMore": True, "announcements": [row]}).encode()
+            )
+
+    session = Sorted({})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    queries = source.repair_queries(
+        DisclosurePartition("sse", NOW.date(), NOW.date()),
+        (DisclosureSecurity("600001", "current"),),
+        missing_rows=1,
+        deadline=20,
+    )
+    assert queries == (DisclosureQuery("shmb", (DisclosureSecurity("900901", "historical"),)),)
+    assert [(request["data"]["pageNum"], request["data"]["sortType"]) for request in session.requests] == [
+        ("1", "asc"),
+        ("1", "desc"),
+    ]
+
+
 @pytest.mark.parametrize(("status", "category"), ((403, "access_denied"), (429, "rate_limited"), (500, "http_error")))
 def test_rejections_have_distinct_safe_categories(status, category):
     source = CninfoMarketDisclosureSource(Session({}, status), monotonic=lambda: 0, sleeper=lambda value: None)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import time
 from collections.abc import Callable
@@ -37,16 +38,20 @@ class CompanyEvidenceProgress:
         self._stream = stream if stream is not None else sys.stderr
         self._monotonic = monotonic
         self._started = monotonic()
+        self._component_started = self._started
         self._last = 0.0
         self._previous: EvidenceSyncProgress | None = None
 
     def __call__(self, progress: EvidenceSyncProgress) -> None:
         now = self._monotonic()
         previous = self._previous
+        if previous is None or progress.component != previous.component:
+            self._component_started = now
         boundary = (
             previous is None
             or progress.component != previous.component
             or progress.status != previous.status
+            or progress.activity != previous.activity
             or progress.failure != previous.failure
             or (progress.pending == 0 and previous.pending != 0)
         )
@@ -84,8 +89,10 @@ class CompanyEvidenceProgress:
         print(
             f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
             + _scope(progress)
+            + (" | 补查历史发行人（保留已完成页）" if progress.activity == "repair" else "")
             + f" | 成功页 {progress.fetched_pages} | 变更行 {progress.changed_rows} | "
-            f"累计复用 {progress.reused_partitions} | 累计 {ProgressDuration(now - self._started)} | "
+            f"累计复用 {progress.reused_partitions} | 本阶段 {ProgressDuration(now - self._component_started)} | "
+            f"命令累计 {ProgressDuration(now - self._started)} | "
             f"状态 {statuses[status]}" + (f" | 原因 {failure}" if failure else ""),
             file=self._stream,
             flush=True,
@@ -102,6 +109,8 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
         return "无需请求，复用有效缓存"
     if progress.pending is None:
         return f"进度 {progress.completed}/? {unit}（总数待确认）"
+    if progress.component == "announcements":
+        return f"完整日期片 {progress.completed} | 待补 {progress.pending} 分片（含未完成子查询）"
     total = progress.completed + progress.pending
     if progress.component == "risk_documents":
         return (
@@ -123,8 +132,14 @@ def _scope(progress: EvidenceSyncProgress) -> str:
     if isinstance(scope, DisclosurePartition) and scope.query is not None:
         detail = f" {scope.query.plate}"
         if scope.query.securities:
-            detail += f" 证券组{len(scope.query.securities)}项"
-    return f" | 当前 {market}{scope.start.isoformat()}~{scope.end.isoformat()}{detail} 第{scope.page}页"
+            identity = hashlib.sha256(scope.query.key.encode()).hexdigest()[:8]
+            detail += f" 证券组{identity}（{len(scope.query.securities)}项）"
+    total = (
+        f"/{max(1, (scope.expected_rows + 29) // 30)}"
+        if isinstance(scope, DisclosurePartition) and scope.expected_rows is not None
+        else ""
+    )
+    return f" | 当前 {market}{scope.start.isoformat()}~{scope.end.isoformat()}{detail} 第{scope.page}{total}页"
 
 
 __all__ = ["CompanyEvidenceProgress", "ReportStPreparation"]

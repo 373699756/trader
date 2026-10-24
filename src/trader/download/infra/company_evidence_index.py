@@ -17,10 +17,12 @@ from trader.download.domain.company_evidence import (
     CompanyFinancial,
     CompanyRatio,
     Disclosure,
+    DisclosureCoverageMismatch,
     DisclosureMonths,
     DisclosurePage,
     DisclosurePartition,
     DisclosureQuery,
+    DisclosureSecurity,
     DocumentRetry,
     EvidenceMarket,
     Market,
@@ -28,6 +30,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_disclosure_queries import (
+    ActivateDisclosureQueryPolicy,
     CommitDisclosureQueryPage,
     DeferDisclosurePartition,
     DisclosureQueryKey,
@@ -86,6 +89,7 @@ class SQLiteCompanyEvidenceIndex:
                     connection.run(DOCUMENT_RETRY_SCHEMA)
                     for statement in DISCLOSURE_QUERY_SCHEMA:
                         connection.run(statement)
+                    ActivateDisclosureQueryPolicy(connection)
         except sqlite3.Error as exc:
             raise RuntimeError("company_evidence_persistence_unavailable") from exc
 
@@ -123,18 +127,8 @@ class SQLiteCompanyEvidenceIndex:
                 # Check each recent day separately: fixed pages survive interruption and don't shift at midnight.
                 for offset in range(7):
                     day = today - timedelta(days=offset)
-                    # A pending wider slice already owns this date and its saved page cursor.
-                    if (
-                        connection.run(
-                            "SELECT 1 FROM partitions WHERE market=? AND complete=0 AND start<=? AND end>=? LIMIT 1",
-                            (market, day.isoformat(), day.isoformat()),
-                        ).fetchone()
-                        is None
-                    ):
-                        connection.run(
-                            "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
-                            (market, day.isoformat(), day.isoformat()),
-                        )
+                    # Completed wider slices also own their dates; do not create overlapping owners.
+                    self._add_partition(connection, market, day, day)
                 # One old month per day, excluding the recent overlap. Bound supplier correction audits.
                 months = DisclosureMonths(cutoff, today - timedelta(days=7))
                 if months:
@@ -144,7 +138,7 @@ class SQLiteCompanyEvidenceIndex:
                     connection.run(
                         "DELETE FROM disclosure_queries WHERE market=? AND EXISTS(SELECT 1 FROM partitions p "
                         "WHERE p.market=disclosure_queries.market AND p.start=disclosure_queries.start "
-                        "AND p.end=disclosure_queries.end AND p.complete=1 AND ((p.start>=? AND p.checked_at<?) "
+                        "AND p.end=disclosure_queries.end AND p.complete=1 AND ((p.end>=? AND p.checked_at<?) "
                         "OR (p.start>=? AND p.end<=? AND p.checked_at<?)))",
                         (
                             market,
@@ -157,7 +151,7 @@ class SQLiteCompanyEvidenceIndex:
                     )
                     connection.run(
                         "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                        "WHERE market=? AND complete=1 AND ((start>=? AND checked_at<?) "
+                        "WHERE market=? AND complete=1 AND ((end>=? AND checked_at<?) "
                         "OR (start>=? AND end<=? AND checked_at<?))",
                         (
                             market,
@@ -186,6 +180,17 @@ class SQLiteCompanyEvidenceIndex:
             for row in rows
             if row["market"] in markets
         )
+
+    def reusable_partitions(self, markets: Sequence[Market], observed_at: datetime) -> int:
+        with self._connect() as connection:
+            return sum(
+                row[1]
+                for row in connection.run(
+                    "SELECT market,count(*) FROM partitions WHERE complete=1 AND end>=? GROUP BY market",
+                    ((observed_at.date() - timedelta(days=365)).isoformat(),),
+                )
+                if row[0] in markets
+            )
 
     def _add_partition(self, connection: SqliteConnection, market: str, start: date, end: date) -> None:
         # Seed only dates with no durable owner. Existing children (including old-schema
@@ -294,10 +299,10 @@ class SQLiteCompanyEvidenceIndex:
         connection.run("INSERT OR REPLACE INTO coverage VALUES(?,?,?,?)", (*_key(partition), observed_at.isoformat()))
         stale = connection.run(
             "SELECT d.id,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-            "WHERE d.source='cninfo' AND substr(d.published_at,1,10) BETWEEN ? AND ? "
+            "WHERE d.source='cninfo' AND d.kind='announcement' AND d.published_at>=? AND d.published_at<? "
             "AND NOT EXISTS(SELECT 1 FROM partition_rows p WHERE p.market=? AND p.start=? AND p.end=? "
             "AND p.source_id=d.source_id AND p.code=c.code)",
-            (partition.start.isoformat(), partition.end.isoformat(), *_key(partition)),
+            (partition.start.isoformat(), (partition.end + timedelta(days=1)).isoformat(), *_key(partition)),
         ).fetchall()
         for row in stale:
             if EvidenceMarket(row["code"]) == partition.market:
@@ -306,6 +311,11 @@ class SQLiteCompanyEvidenceIndex:
     def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None:
         with self._connect() as connection:
             return ReadDisclosureQueries(connection, replace(partition, query=None))
+
+    def disclosure_members(self, partition: DisclosurePartition) -> tuple[DisclosureSecurity, ...]:
+        with self._connect() as connection:
+            queries = ReadDisclosureQueries(connection, replace(partition, query=None), include_completed=True)
+        return tuple(member for item in queries or () if item.query for member in item.query.securities)
 
     def split_query(
         self, partition: DisclosurePartition, queries: tuple[DisclosureQuery, ...]
@@ -326,6 +336,8 @@ class SQLiteCompanyEvidenceIndex:
     def commit_query_coverage(
         self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime
     ) -> None:
+        # A failed parent check does not invalidate successfully saved child pages.
+        # Keep them available for targeted issuer repair or a later verification.
         try:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 ReconcileDisclosureQueries(connection, partition, page)
@@ -336,13 +348,19 @@ class SQLiteCompanyEvidenceIndex:
                 )
                 self._finish_partition(connection, partition, observed_at)
                 connection.run("DELETE FROM partition_retries WHERE market=? AND start=? AND end=?", _key(partition))
-        except ValueError:
-            with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-                connection.run("DELETE FROM disclosure_queries WHERE market=? AND start=? AND end=?", _key(partition))
-                connection.run(
-                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0 WHERE market=? AND start=? AND end=?",
-                    _key(partition),
-                )
+        except DisclosureCoverageMismatch as exc:
+            if exc.refresh_required:
+                # A smaller source set or changed sample really invalidates the
+                # saved generation. Preserve its historical issuer membership.
+                with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                    connection.run(
+                        "UPDATE disclosure_queries SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
+                        "WHERE market=? AND start=? AND end=?",
+                        _key(partition),
+                    )
+                    connection.run(
+                        "DELETE FROM disclosure_query_rows WHERE market=? AND start=? AND end=?", _key(partition)
+                    )
             raise
 
     def partition_retry_after(self, partition: DisclosurePartition) -> datetime | None:

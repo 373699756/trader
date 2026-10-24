@@ -15,9 +15,11 @@ from trader.download.domain.company_evidence import (
     CompanySourceFailure,
     CompanySyncConfiguration,
     Disclosure,
+    DisclosureCoverageMismatch,
     DisclosurePage,
     DisclosurePartition,
     DisclosureQuery,
+    DisclosureSecurity,
     DocumentRetry,
     EvidenceMarket,
     EvidenceProgressState,
@@ -31,12 +33,14 @@ from trader.download.domain.company_evidence import (
 class CompanyEvidenceIndex(Protocol):
     def initialize(self) -> None: ...
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]: ...
+    def reusable_partitions(self, markets: Sequence[Market], observed_at: datetime) -> int: ...
     def split_partition(
         self, partition: DisclosurePartition, observed_at: datetime
     ) -> tuple[DisclosurePartition, ...]: ...
     def commit_page(self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime) -> int: ...
     def partition_failure(self, partition: DisclosurePartition, failure: str) -> None: ...
     def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None: ...
+    def disclosure_members(self, partition: DisclosurePartition) -> tuple[DisclosureSecurity, ...]: ...
     def split_query(
         self, partition: DisclosurePartition, queries: tuple[DisclosureQuery, ...]
     ) -> tuple[DisclosurePartition, ...]: ...
@@ -66,6 +70,15 @@ class CompanyDisclosureSource(Protocol):
     def fetch(self, partition: DisclosurePartition, *, deadline: float) -> DisclosurePage: ...
     def document(self, item: Disclosure, *, deadline: float) -> str: ...
     def split_queries(self, partition: DisclosurePartition, *, deadline: float) -> tuple[DisclosureQuery, ...]: ...
+    def repair_queries(
+        self,
+        partition: DisclosurePartition,
+        members: tuple[DisclosureSecurity, ...],
+        *,
+        missing_rows: int,
+        deadline: float,
+        report: Callable[[DisclosurePartition], None] | None = None,
+    ) -> tuple[DisclosureQuery, ...]: ...
 
 
 class CompanyStructuredSource(Protocol):
@@ -256,6 +269,7 @@ class _AnnouncementRun:
             return 0
         markets = tuple(sorted({EvidenceMarket(code) for code in population}))
         self._queue = deque(self._index.partitions(markets, self._schedule.observed_at))
+        state.reused += self._index.reusable_partitions(markets, self._schedule.observed_at)
         while self._queue and _running(dependencies, self._schedule.deadline):
             partition = self._queue.popleft()
             self._report(partition, include_current=True)
@@ -301,7 +315,27 @@ class _AnnouncementRun:
         page = self._dependencies.disclosures.fetch(partition, deadline=self._schedule.deadline)
         self._state.pages += 1
         if verifying:
-            self._index.commit_query_coverage(partition, page, self._schedule.observed_at)
+            try:
+                self._index.commit_query_coverage(partition, page, self._schedule.observed_at)
+            except DisclosureCoverageMismatch as exc:
+                repairs = (
+                    self._dependencies.disclosures.repair_queries(
+                        partition,
+                        self._index.disclosure_members(partition),
+                        missing_rows=exc.missing_rows,
+                        deadline=self._schedule.deadline,
+                        report=self._repair_progress,
+                    )
+                    if exc.missing_rows
+                    else ()
+                )
+                if not repairs:
+                    raise
+                children = self._index.split_query(partition, repairs)
+                self._queue = _replace_query_queue(self._queue, partition, children, self._deferred)
+                self._circuit.success()
+                self._report(partition)
+                return
             self._state.completed += 1
             self._circuit.success()
         elif page.total > 3000:
@@ -311,7 +345,18 @@ class _AnnouncementRun:
             self._state.changes += self._index.commit_page(partition, page, self._schedule.observed_at)
             self._circuit.success()
             self._advance(partition, page)
-        self._report(partition)
+        self._report(replace(partition, expected_rows=page.total))
+
+    def _repair_progress(self, partition: DisclosurePartition) -> None:
+        self._state.pages += 1
+        _report(
+            self._dependencies,
+            "announcements",
+            self._state,
+            _pending_count(self._queue, self._deferred, partition),
+            scope=partition,
+            activity="repair",
+        )
 
     def _advance(self, partition: DisclosurePartition, page: DisclosurePage) -> None:
         if page.has_more:
@@ -720,6 +765,7 @@ def _report(
     pending_documents: int = 0,
     attempted_documents: int = 0,
     deferred_documents: int = 0,
+    activity: Literal["download", "repair"] = "download",
 ) -> None:
     if dependencies.progress is not None:
         failures = tuple(
@@ -741,6 +787,7 @@ def _report(
                 pending_documents,
                 attempted_documents,
                 deferred_documents,
+                activity,
             )
         )
 

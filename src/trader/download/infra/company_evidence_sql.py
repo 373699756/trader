@@ -107,6 +107,9 @@ CREATE TABLE IF NOT EXISTS document_retries (
 """
 
 DISCLOSURE_QUERY_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS disclosure_query_policy (
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1), identity TEXT NOT NULL
+    )""",
     """CREATE TABLE IF NOT EXISTS disclosure_queries (
       market TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, scope TEXT NOT NULL,
       plate TEXT NOT NULL, securities TEXT NOT NULL, next_page INTEGER NOT NULL DEFAULT 1,

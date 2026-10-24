@@ -75,6 +75,13 @@ class CompanySourceFailure(RuntimeError):
         super().__init__(category)
 
 
+class DisclosureCoverageMismatch(ValueError):
+    def __init__(self, missing_rows: int, *, refresh_required: bool = False) -> None:
+        self.missing_rows = missing_rows
+        self.refresh_required = refresh_required
+        super().__init__("cninfo_query_coverage_mismatch")
+
+
 @dataclass(frozen=True)
 class CompanyEvidenceRequest:
     codes: tuple[str, ...]
@@ -306,6 +313,7 @@ class EvidenceSyncProgress:
     pending_documents: int = 0
     attempted_documents: int = 0
     deferred_documents: int = 0
+    activity: Literal["download", "repair"] = "download"
 
 
 @dataclass(frozen=True)
@@ -331,7 +339,7 @@ class CompanyEvidenceSyncResult:
 def EvidenceMarket(code: str) -> Market:
     if len(code) != 6 or not code.isdigit():
         raise ValueError("invalid stock code")
-    return "sse" if code.startswith("6") else "bse" if code.startswith(("4", "8", "9")) else "szse"
+    return "sse" if code.startswith(("6", "900")) else "bse" if code.startswith(("4", "8", "9")) else "szse"
 
 
 def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
@@ -345,6 +353,7 @@ def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
 
 
 __all__ = [
+    "DisclosureCoverageMismatch",
     "DisclosureSecurity",
     "DisclosureQuery",
     "CompanySyncConfiguration",

@@ -102,6 +102,9 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--company-query-audit", action="store_true", help="read-only bounded CNInfo query coverage audit"
+    )
+    parser.add_argument(
         "--company-replay-directory",
         type=Path,
         help="explicit repository-external directory for an isolated company backup and resumable evidence",
@@ -375,6 +378,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             long_evidence_output=long_evidence_output,
             company_evidence_database=args.company_evidence_database,
             company_replay_directory=company_replay_directory,
+            company_query_audit=args.company_query_audit,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
             else None,
@@ -758,6 +762,7 @@ def build_commands(
                 str(options.company_replay_directory),
                 "--budget-seconds",
                 str(max(30.0, common_timeout - 30)),
+                *(("--audit-only",) if options.company_query_audit else ()),
             ),
             common_timeout,
         ),
@@ -1370,6 +1375,50 @@ def _company_resume_details(
         if isinstance(runs, list)
         else []
     )
+    audit = _mapping(summary.get("query_audit"))
+    if audit:
+        audit_pages = audit.get("pages")
+        audit_totals = audit.get("totals")
+        selected["query_audit"] = {
+            "read_only": audit.get("read_only"),
+            "pages": [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "market",
+                        "start",
+                        "end",
+                        "plate",
+                        "page",
+                        "members",
+                        "total",
+                        "rows",
+                        "outside_codes",
+                        "same_issuer",
+                        "b_share_rows",
+                        "failure",
+                        "order",
+                    )
+                }
+                for row in (audit_pages[:192] if isinstance(audit_pages, list) else [])
+                if isinstance(row, dict)
+            ],
+            "totals": [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "market",
+                        "start",
+                        "parent_total",
+                        "board_total",
+                        "group_total",
+                        "sample_complete",
+                    )
+                }
+                for row in (audit_totals[:3] if isinstance(audit_totals, list) else [])
+                if isinstance(row, dict)
+            ],
+        }
     payload["summary"] = selected
 
 

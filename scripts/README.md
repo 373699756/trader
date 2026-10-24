@@ -20,6 +20,9 @@ selection and sanitized `report.json`; the unified `--output` remains the report
 The active database stays read-only. A passed replay covers selected slices only,
 and does not mean the whole year or all pending PDFs are complete.
 
+Adding `--company-query-audit` to that profile performs a read-only count/filter audit instead of a backup or replay.
+It samples up to three failed dates and three failed child cursors, at most 192 logical page queries and 300 seconds (transport retries remain bounded). Reports contain counts and issuer-match diagnostics, never stock identities or source payloads. Matching sampled totals alone does not prove full date coverage.
+
 ## Retained tools
 
 This table is the sole declaration of the nine retained top-level tools.

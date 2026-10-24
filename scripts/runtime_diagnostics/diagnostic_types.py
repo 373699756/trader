@@ -81,6 +81,7 @@ class DiagnosticOptions:
     long_evidence_output: Path | None = None
     company_evidence_database: Path | None = None
     company_replay_directory: Path | None = None
+    company_query_audit: bool = False
     v5_probe_directory: Path | None = None
     training_probe_directory: Path | None = None
     eligibility_evidence: tuple[Path, ...] = ()

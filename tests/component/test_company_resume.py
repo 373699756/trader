@@ -15,6 +15,26 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 NOW = fixtures.NOW
 
 
+def test_recent_day_planning_never_duplicates_a_completed_wider_owner(tmp_path):
+    index = fixtures._index(tmp_path)
+    index.partitions(("sse",), NOW)
+    start, end = NOW.date() - timedelta(days=8), NOW.date() - timedelta(days=1)
+    with SqliteSession(index.path) as c, SqliteTransaction(c):
+        c.run("DELETE FROM partitions WHERE start>=? AND end<=?", (str(start), str(end)))
+        c.run(
+            "INSERT INTO partitions(market,start,end,complete,checked_at) VALUES('sse',?,?,1,?)",
+            (str(start), str(end), NOW.isoformat()),
+        )
+    index.partitions(("sse",), NOW)
+    with SqliteSession(index.path) as c:
+        assert (
+            c.run("SELECT count(*) FROM partitions WHERE start>=? AND end<=?", (str(start), str(end))).require_one()[0]
+            == 1
+        )
+    reopened = index.partitions(("sse",), NOW + timedelta(minutes=16))
+    assert sum(p.start == start and p.end == end for p in reopened) == 1
+
+
 def test_old_overlapping_parent_and_child_cursors_are_consumed_once(tmp_path):
     index = fixtures._index(tmp_path)
     index.partitions(("sse",), NOW)
