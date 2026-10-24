@@ -4,7 +4,7 @@
   const descriptions = Object.freeze({
     tomorrow: "尾盘策略 · 面向 T+1 · 15:00 冻结",
     d25: "尾盘策略 · 面向 T+2 至 T+5 · 15:00 冻结",
-    long: "长期研究 · 名单资格待核实 · 仅展示当前数据",
+    long: "长期研究 · 名单资格待核实\n· 仅展示当前数据",
   });
 
   function initialStrategy(statusPayload) {
@@ -151,7 +151,7 @@
   }
 
   function strategyLabel(strategy) {
-    return ({ tomorrow: "明", d25: "2-5", long: "长期" })[strategy] || strategy;
+    return ({ tomorrow: "明", d25: "D25", long: "长期" })[strategy] || strategy;
   }
 
   function appendOption(select, value, text) {

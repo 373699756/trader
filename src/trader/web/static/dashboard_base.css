@@ -406,6 +406,7 @@ tr:focus-visible {
   color: var(--muted);
   font-size: 12px;
   line-height: 17px;
+  white-space: pre-line;
   overflow-wrap: anywhere;
 }
 
