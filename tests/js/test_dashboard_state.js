@@ -375,6 +375,58 @@ function summaryFixture() {
     observationStageList: { innerHTML: "" },
   };
 }
+const modelBlockedPayload = { status: "not_ready", strategy: "tomorrow", view: "current", items: [] };
+const modelBlockedRuntime = {
+  run_mode: "preview", preview_state: "failed", preview_error: "production_model_contract_conflict",
+  market_trade_date: "2026-10-23", preview_started_at: "2026-10-24T16:00:00+08:00",
+  market_data: { active_source: "unavailable", candidate_quote_cache_entries: 0, candidate_quote_age: { sample_count: 0 } },
+};
+function renderModelBlockedSummary(runtime, payload = modelBlockedPayload, firstVisible = null) {
+  const elements = summaryFixture();
+  state.renderSummary(elements, payload, [], "closed", firstVisible,
+    sandbox.window.TraderSelection, sandbox.window.TraderRender, runtime);
+  return elements;
+}
+for (const reason of ["missing", "corrupt", "integrity_conflict", "contract_conflict", "publication_busy", "dependency_missing"]) {
+  for (const strategy of ["tomorrow", "d25"]) {
+    const summary = renderModelBlockedSummary(
+      { ...modelBlockedRuntime, preview_error: `production_model_${reason}` },
+      { ...modelBlockedPayload, strategy },
+    );
+    assert.strictEqual(summary.quoteSource.textContent, "行情尚未准备");
+    assert.strictEqual(summary.inputQualityScoreTime.textContent, "模型未就绪，预览已阻断");
+    assert.strictEqual(summary.publicationStatus.textContent, "测试预览 · 已阻塞");
+  }
+}
+const cachedQuoteRuntime = { ...modelBlockedRuntime, market_data: {
+  active_source: "unavailable", candidate_quote_latest_source: "tencent", candidate_quote_cache_entries: 1,
+  candidate_quote_age: { sample_count: 1, latest_source_time: "2026-10-23T15:00:00+08:00" },
+} };
+assert.strictEqual(renderModelBlockedSummary(cachedQuoteRuntime).quoteSource.textContent, "腾讯行情");
+assert.strictEqual(renderModelBlockedSummary(cachedQuoteRuntime).inputQualityScoreTime.textContent,
+  "模型未就绪，预览已阻断");
+assert.strictEqual(renderModelBlockedSummary(modelBlockedRuntime, modelBlockedPayload, {
+  source: "tencent", source_time: "2026-10-23T15:00:00+08:00",
+}).quoteSource.textContent, "腾讯行情");
+for (const runtime of [
+  { ...modelBlockedRuntime, preview_error: "quote_timeout" },
+  { ...modelBlockedRuntime, preview_error: "production_model_features_missing" },
+  { ...modelBlockedRuntime, preview_state: "waiting_inputs" },
+  { ...modelBlockedRuntime, run_mode: "production" },
+]) {
+  const summary = renderModelBlockedSummary(runtime);
+  assert.strictEqual(summary.quoteSource.textContent, "行情暂不可用");
+  assert(!summary.inputQualityScoreTime.textContent.includes("预览已阻断"));
+}
+for (const payload of [
+  { ...modelBlockedPayload, strategy: "long" },
+  { ...modelBlockedPayload, historical: true, view: "history" },
+  { ...modelBlockedPayload, status: "ready" },
+]) {
+  const summary = renderModelBlockedSummary(modelBlockedRuntime, payload);
+  assert.notStrictEqual(summary.quoteSource.textContent, "行情尚未准备");
+  assert(!summary.inputQualityScoreTime.textContent.includes("预览已阻断"));
+}
 const switchingElements = {
   ...summaryFixture(),
   recommendationTable: { classList: { remove() {}, add() {} } },
@@ -392,6 +444,7 @@ const switchRenderer = sandbox.window.TraderStatusView.createDashboardStateRende
   switchingElements, switchState, sandbox.window.TraderSelection, sandbox.window.TraderRender,
 );
 switchRenderer.renderLoadingState();
+assert.strictEqual(switchingElements.quoteSource.textContent, "行情待确认");
 assert.strictEqual((switchingElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length, 11);
 assert.strictEqual(switchingElements.budgetStatus.textContent, "—");
 assert.ok(switchingElements.tableHead.innerHTML.includes("<th>排名</th><th>状态</th><th>股票</th>"));

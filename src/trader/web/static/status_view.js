@@ -38,7 +38,7 @@
       renderObservationStages(els, null, null, state.strategy === "long", []);
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
-      els.quoteSource.textContent = "来源不可用";
+      els.quoteSource.textContent = "行情待确认";
       els.inputQualityStrategy.textContent = selection.strategyLabel(state.strategy);
       els.inputQualityScoreTime.textContent = "等待本轮评分完成";
       els.publicationStatus.textContent = "未就绪";
@@ -191,7 +191,12 @@
     }
     const marketFreshness = currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible);
     const runtimeSource = marketFreshness.source;
-    els.quoteSource.textContent = runtimeSource
+    const modelBlocked = modelBlockedPreview(payload, statusPayload);
+    const availableSource = [runtimeSource, firstVisible && visibleText(firstVisible.source),
+      visibleText(strategySummary.latest_quote_source)].find((source) => source && source !== "unavailable");
+    els.quoteSource.textContent = modelBlocked
+      ? availableSource ? render.sourceLabel(availableSource) : "行情尚未准备"
+      : runtimeSource
       ? render.sourceLabel(runtimeSource)
       : firstVisible && firstVisible.source
         ? render.sourceLabel(firstVisible.source)
@@ -203,6 +208,7 @@
     els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.inputQualityScoreTime.textContent = payload.strategy === "long"
       ? "长期策略不评分"
+      : modelBlocked ? "模型未就绪，预览已阻断"
       : payload.generated_at || payload.observed_at
         ? `评分于 ${payload.run_mode === "preview" ? render.formatDateTime(payload.generated_at) : render.formatTime(payload.observed_at)} 完成`
         : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
@@ -215,6 +221,19 @@
         els.publicationMeta.textContent += " · 本地资料或模型已有更新，重启后采用";
       }
     }
+  }
+
+  function modelBlockedPreview(payload, statusPayload) {
+    if (!payload || payload.status !== "not_ready" || !STRATEGIES.has(payload.strategy)
+      || payload.strategy === "long" || payload.historical === true || payload.view === "history"
+      || !statusPayload || statusPayload.run_mode !== "preview" || statusPayload.preview_state !== "failed") {
+      return false;
+    }
+    return [
+      "production_model_missing", "production_model_corrupt", "production_model_integrity_conflict",
+      "production_model_contract_conflict", "production_model_publication_busy", "production_model_dependency_missing",
+      "model_scoring_unavailable",
+    ].includes(statusPayload.preview_error);
   }
 
   function pipelineHasProgress(pipeline) {
