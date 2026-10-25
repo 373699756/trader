@@ -32,8 +32,8 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.download.infra.history_write_tuning import HistoryWriteTuning
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteSession, SqliteTransaction
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))

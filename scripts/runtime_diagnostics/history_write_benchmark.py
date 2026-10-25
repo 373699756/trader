@@ -34,17 +34,17 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
-from trader.download.infra.history_storage_profile import (
-    ClassifyHistoryStorage,
+from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.download.infra.history_write_tuning import (
     HistoryWriteTuning,
 )
-from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
     SqliteSession,
     SqliteTransaction,
 )
+from trader.infra.storage_probe import StorageProbe
 
 from .reporting import emit_report
 
@@ -152,7 +152,14 @@ def _measure_case(
     now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
     started, written = time.monotonic(), _write_bytes()
     stage_times = _StageTimes()
-    result = RunHistorySync(config, supplier, clock=_clock(now), write_tuning=tuning, progress=stage_times)
+    result = RunHistorySync(
+        config,
+        supplier,
+        clock=_clock(now),
+        write_tuning=tuning,
+        progress=stage_times,
+        storage_kind=StorageProbe().inspect(config.archive_root).kind,
+    )
     rows = 0
     for path in config.archive_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
         with (
@@ -205,11 +212,12 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
             cancel_requested=lambda: interrupted.cancelled,
             write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions),
             progress=interrupted,
+            storage_kind=StorageProbe().inspect(resume_config.archive_root).kind,
         )
         if seeded.state != "cancelled":
             raise RuntimeError("history_write_resume_seed_failed")
         results.append(_measure_case("initial_resume", resume_config, supplier, tuning))
-        storage_kind = ClassifyHistoryStorage(root)
+        storage_kind = StorageProbe().inspect(root).kind
     return {
         "schema_version": "history-write-benchmark",
         "status": "passed"

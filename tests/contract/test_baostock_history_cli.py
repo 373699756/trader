@@ -219,7 +219,8 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(monk
 
     previous = signal.getsignal(signal.SIGTERM)
 
-    def download(configuration, *, progress, cancel_requested):
+    def download(configuration, *, progress, cancel_requested, storage_overrides):
+        assert storage_overrides == ()
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)
@@ -237,7 +238,8 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(monk
 def test_train_cancellation_during_reference_preparation_returns_130(monkeypatch, capsys):
     previous = signal.getsignal(signal.SIGTERM)
 
-    def prepare(configuration, *, progress, cancel_requested):
+    def prepare(configuration, *, progress, cancel_requested, storage_overrides):
+        assert storage_overrides == ()
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)

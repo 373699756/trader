@@ -9,6 +9,7 @@ from datetime import datetime
 from trader.download.application.history_ports import HistorySupplierPort
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
+from trader.infra.storage_types import StorageKind
 from trader.infra.workers import WorkerExecutor
 
 
@@ -24,6 +25,7 @@ class HistorySyncGateway:
 
     worker_pool: WorkerExecutor | None = None
     writer_pool: WorkerExecutor | None = None
+    storage_kind: StorageKind = "unknown"
 
     def download(
         self,
@@ -44,6 +46,7 @@ class HistorySyncGateway:
             cancel_requested=cancel_requested,
             worker_pool=self.worker_pool,
             writer_pool=self.writer_pool,
+            storage_kind=self.storage_kind,
         )
 
 

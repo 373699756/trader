@@ -70,6 +70,9 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.storage_probe import StorageProbe
+from trader.infra.storage_runtime import InspectDataStorage, ReportStorageProfiles
+from trader.infra.storage_types import StorageOverride
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
@@ -215,6 +218,11 @@ def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
     return BoundedExecutor(worker_count=workers, queue_capacity=workers, thread_name_prefix="performance-models")
 
 
+def PrepareRuntimeStorage(settings: RuntimeSettings, *, additional_paths: tuple[Path, ...] = ()) -> None:
+    probe = StorageProbe(settings.storage_overrides)
+    ReportStorageProfiles(settings, InspectDataStorage(settings, probe, additional_paths=additional_paths))
+
+
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False
 ) -> SyncResult:
@@ -232,7 +240,11 @@ def ExecuteSync(
             settings.data_paths.reference, clock.now(), progress, cancel_requested=cancel_requested
         ),
         history=lambda reference: ExecuteHistoryDownload(
-            configuration, reference=reference, progress=history_progress, cancel_requested=cancel_requested
+            configuration,
+            reference=reference,
+            progress=history_progress,
+            cancel_requested=cancel_requested,
+            storage_overrides=settings.storage_overrides,
         ),
         market=lambda reference: ExecuteQfqDownload(
             settings.data_paths, reference=reference, cancel_requested=cancel_requested
@@ -366,6 +378,8 @@ def ExecuteSelectedTraining(
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
+    if history_root is not None or training_root is not None:
+        PrepareRuntimeStorage(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
     paths = TrainingLocations(
         history_root or runtime.data_paths.history,
         training_root / "models" if training_root else runtime.data_paths.models,
@@ -411,8 +425,9 @@ def ExecuteHistoryDownload(
     progress: HistorySyncProgressPort | None = None,
     clock: Callable[[], datetime] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
+    storage_overrides: tuple[StorageOverride, ...] = (),
 ) -> HistoryMaintenanceStatus:
-    """Compose explicit history maintenance with the shared manual reference."""
+    storage_kind = StorageProbe(storage_overrides).inspect(configuration.archive_root).kind
     if reference is None:
         reference = _prepare_reference(
             configuration.reference_root,
@@ -439,9 +454,7 @@ def ExecuteHistoryDownload(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
                 )
             )
-            return DownloadHistoryUseCase(
-                HistorySyncGateway(worker_pool=history_pool, writer_pool=history_writer)
-            ).execute(
+            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, storage_kind)).execute(
                 configuration,
                 HistorySupplierRouter(
                     baseline,
@@ -592,6 +605,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
         settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
+    if owns_shared_runtime:
+        PrepareRuntimeStorage(settings)
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=scoring_profile)
     paths = settings.data_paths
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)
@@ -1183,18 +1198,3 @@ def _build_publication(
         freezer(strategy=Strategy.D25),
         observer,
     )
-
-
-__all__ = [
-    "BuildIndustrySource",
-    "BuildPerformanceExecutor",
-    "BuildProfiledSystem",
-    "BuildSystem",
-    "ExecuteDownloadTrain",
-    "ExecuteSelectedTraining",
-    "ExecuteSync",
-    "ExecuteHistoryDownload",
-    "ExecuteQfqDownload",
-    "FetchExternalHttp",
-    "OpenExternalHttp",
-]

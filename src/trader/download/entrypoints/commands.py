@@ -11,6 +11,7 @@ from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
+from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 
 
@@ -21,11 +22,17 @@ def RunDownload(
 
     from trader.bootstrap import ExecuteHistoryDownload
 
-    configuration = BuildHistorySyncConfiguration(repository_root, config_path)
+    runtime = LoadRuntimeSettings(config_path)
+    configuration = LoadHistorySyncConfiguration(repository_root, runtime.data_paths)
     progress = StderrHistorySyncProgress()
     with ManualCancellation() as cancelled:
         try:
-            status = ExecuteHistoryDownload(configuration, progress=progress, cancel_requested=cancelled.is_set)
+            status = ExecuteHistoryDownload(
+                configuration,
+                progress=progress,
+                cancel_requested=cancelled.is_set,
+                storage_overrides=runtime.storage_overrides,
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             if not cancelled.is_set():
                 raise
@@ -48,8 +55,6 @@ def RunDownload(
 
 
 def BuildHistorySyncConfiguration(repository_root: Path, config_path: Path) -> HistorySyncConfiguration:
-    from trader.infra.settings import LoadRuntimeSettings
-
     runtime = LoadRuntimeSettings(config_path)
     return LoadHistorySyncConfiguration(repository_root, runtime.data_paths)
 

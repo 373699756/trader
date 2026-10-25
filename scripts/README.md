@@ -5,6 +5,10 @@ Its profile implementations live under `scripts/runtime_diagnostics/` and
 must return bounded, sanitized summaries. A new runtime probe is added as a
 module and profile there; it is not added as another top-level script.
 
+`--profile storage`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
+可重复使用`--storage-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
+unknown结果附带实际runtime配置文件、`storage.overrides`字段和修改示例。机械硬盘填写`hdd`，固态填写`ssd`，重启后生效。
+
 `--profile download-performance` runs three rounds on disposable synthetic SQLite databases outside the repository.
 It reports company write/publication/cold and warm reads, unchanged publication, and equivalent per-stock versus batch gap queries.
 It makes zero HTTP requests and cannot establish full-market supplier download speed.

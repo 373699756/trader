@@ -31,8 +31,6 @@ DAYS = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
 
 def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, monkeypatch):
-    from trader.download.infra import history_sync_runner as runner
-
     cancelled = False
     tunings = []
     initialize = module.HistoryDownloadFlow.__init__
@@ -47,15 +45,19 @@ def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, 
             if progress.stage == "tencent_history" and progress.state == "completed":
                 cancelled = True
 
-    monkeypatch.setattr(runner, "ClassifyHistoryStorage", lambda root: "hdd")
     monkeypatch.setattr(module.HistoryDownloadFlow, "__init__", tracked_initialize)
     configuration = _configuration(tmp_path)
     first = RunHistorySync(
-        configuration, FakeSupplier(DAYS), clock=lambda: NOW, cancel_requested=lambda: cancelled, progress=Interrupted()
+        configuration,
+        FakeSupplier(DAYS),
+        clock=lambda: NOW,
+        cancel_requested=lambda: cancelled,
+        progress=Interrupted(),
+        storage_kind="hdd",
     )
     assert first.state == "cancelled"
     assert HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot is None
-    resumed = RunHistorySync(configuration, FakeSupplier(DAYS), clock=lambda: NOW)
+    resumed = RunHistorySync(configuration, FakeSupplier(DAYS), clock=lambda: NOW, storage_kind="hdd")
     assert resumed.state == "completed"
     assert len(tunings) == 2 and tunings[0] == tunings[1]
     assert tunings[1].flush_cells == 16384

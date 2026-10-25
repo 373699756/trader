@@ -33,6 +33,7 @@ from trader.download.infra.history_reference_codec import ReadBoundHistoryRefere
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.storage_probe import StorageProbe
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
@@ -136,6 +137,7 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
             configuration,
             _FrozenSubsetSupplier(source, state.snapshot, context),
             worker_pool=workers,
+            storage_kind=StorageProbe().inspect(configuration.archive_root).kind,
             clock=lambda: datetime.combine(state.snapshot.data_cutoff, daytime(20, 30), ZoneInfo("Asia/Shanghai")),
         )
     if exported.active_snapshot_hash is None:

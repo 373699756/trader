@@ -42,6 +42,7 @@ _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
 _MARKET_SOURCES = ("tencent", "eastmoney", "sina", "baostock")
 
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
+    "storage": ("storage_profile",),
     "local": ("configuration", "history_maintenance", "research_readiness", "production_performance"),
     "web": ("web_health",),
     "history": ("history_sources",),
@@ -128,6 +129,9 @@ def _parser() -> argparse.ArgumentParser:
         "--cpu-profile-dir", type=Path, help="external directory for market-factor-compare feature CPU profiles"
     )
     parser.add_argument("--qfq-database", type=Path)
+    parser.add_argument(
+        "--storage-path", type=Path, action="append", default=[], help="additional read-only storage probe path"
+    )
     parser.add_argument("--training-signal-date", type=date.fromisoformat, help="read-only V5 label horizon probe")
     parser.add_argument(
         "--training-profiles",
@@ -361,6 +365,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             profile=args.profile,
             base_url=args.base_url,
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
+            storage_paths=tuple(path.expanduser().resolve() for path in args.storage_path),
             codes=codes,
             web_samples=args.web_samples,
             web_interval_seconds=args.web_interval_seconds,
@@ -448,7 +453,15 @@ def build_commands(
     options: DiagnosticOptions, *, python_executable: str = sys.executable
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
-    if options.profile not in {"local", "research", "performance", "web", "runtime", "browser"}:
+    if options.profile not in {
+        "storage",
+        "local",
+        "research",
+        "performance",
+        "web",
+        "runtime",
+        "browser",
+    }:
         from trader.infra.settings import LoadRuntimeSettings
 
         paths = LoadRuntimeSettings(options.runtime_config).data_paths
@@ -464,6 +477,18 @@ def build_commands(
         return BuildTrainingBenchmarkCommands(options, python_executable)
     cli = (python_executable, "-m", "trader.entrypoints.cli", "--config", str(options.runtime_config))
     commands: dict[str, DiagnosticCommand] = {
+        "storage_profile": DiagnosticCommand(
+            "storage_profile",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.storage_profile",
+                "--config",
+                str(options.runtime_config),
+            )
+            + tuple(value for path in options.storage_paths for value in ("--path", str(path))),
+            common_timeout,
+        ),
         "training_coverage": DiagnosticCommand(
             "training_coverage",
             (
@@ -1496,6 +1521,7 @@ def _maintenance_details(_result: DiagnosticResult, source: Mapping[str, object]
 
 
 _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
+    "storage_profile": _security_master_details,
     "configuration": _configuration_details,
     "history_maintenance": _maintenance_details,
     "long_watchlist_admission": _long_admission_details,

@@ -37,8 +37,8 @@ from trader.download.infra.history_download_index import (
     HistoryDownloadTask,
 )
 from trader.download.infra.history_prices import HistoryPricePartitionError
-from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_failure import HistoryFailureDetail, HistorySyncFailureError
+from trader.download.infra.history_write_tuning import HistoryWriteTuning
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
 
 _FATAL = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})

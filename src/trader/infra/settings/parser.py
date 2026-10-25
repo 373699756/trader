@@ -31,10 +31,11 @@ def ReadConfigSections(
     section_files: dict[str, set[str]],
     *,
     label: str,
+    optional_root_keys: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
     """Read one fixed, non-recursive set of sibling configuration sections."""
     root = ReadJsonObject(path)
-    RequireExactKeys(root, root_keys, label)
+    RequireExactKeys(root, root_keys | (set(root) & optional_root_keys), label)
     merged = dict(root)
     for filename, section_keys in section_files.items():
         section = ReadJsonObject(path.parent / filename)

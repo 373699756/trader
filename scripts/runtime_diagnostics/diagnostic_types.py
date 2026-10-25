@@ -13,6 +13,7 @@ from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFIL
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 Profile = Literal[
+    "storage",
     "local",
     "web",
     "history",
@@ -105,6 +106,7 @@ class DiagnosticOptions:
     baseline_checkout: Path | None = None
     training_signal_date: date | None = None
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
+    storage_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -52,18 +52,17 @@ from trader.download.infra.history_reference_codec import (
 )
 from trader.download.infra.history_snapshot_publication import HistoryPublication, PublishHistorySnapshot
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.download.infra.history_storage_profile import (
-    ChooseHistoryWriteTuning,
-    ClassifyHistoryStorage,
-    HistoryStorageKind,
-    HistoryWriteTuning,
-)
 from trader.download.infra.history_sync_failure import (
     HistoryFailureCode,
     HistoryFailureDetail,
     HistorySyncFailureError,
 )
+from trader.download.infra.history_write_tuning import (
+    ChooseHistoryWriteTuning,
+    HistoryWriteTuning,
+)
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.storage_types import StorageKind
 from trader.infra.workers import InjectedExecutor, WorkerExecutor
 
 Clock: TypeAlias = Callable[[], datetime]
@@ -96,7 +95,7 @@ class _HistorySync:
     writer: WorkerExecutor
     control: HistoryControlIndex
     index: HistoryDownloadIndex
-    storage_kind: HistoryStorageKind
+    storage_kind: StorageKind
     write_tuning: HistoryWriteTuning | None
 
     def execute(self) -> HistoryMaintenanceStatus:
@@ -331,6 +330,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     worker_pool: WorkerExecutor | None = None,
     writer_pool: WorkerExecutor | None = None,
     write_tuning: HistoryWriteTuning | None = None,
+    storage_kind: StorageKind = "unknown",
 ) -> HistoryMaintenanceStatus:
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -342,7 +342,6 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(configuration.archive_root.with_name(".history.lock")):
-            storage_kind = ClassifyHistoryStorage(configuration.archive_root)
             _publish_progress(progress, "storage_profile", "completed", current_item=storage_kind)
             if (configuration.archive_root / "control.sqlite3").exists() or (
                 not (configuration.archive_root / "catalog.sqlite3").exists()
