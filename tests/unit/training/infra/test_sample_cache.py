@@ -86,3 +86,40 @@ def test_empty_sample_directories_are_pruned_without_deleting_retained_cache(tmp
     retained.unlink()
     PruneEmptySampleDirectories(v3_root, samples_root)
     assert not samples_root.exists()
+
+
+def test_cache_reports_separate_byte_progress_and_cancelled_seal_is_not_reusable(tmp_path):
+    split = BuildTrainingDateSplit(
+        tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(2000)), parent_manifest_hash="a" * 64
+    )
+    events = []
+    cache = TrainingSampleCache(tmp_path, "input", 1, split.content_hash, progress=lambda *event: events.append(event))
+    with cache.open() as samples:
+        samples.add_final(
+            (
+                TrainingSample(
+                    "600001", split.model_fit_dates[0], "main", "bank", 1.0, (1.0,), (0.1, None, None, None, None, None)
+                ),
+            )
+        )
+        samples.prepare_for_model_fitting(split)
+        cache.seal(samples)
+    assert cache.inspect()
+    for phase in ("checking", "sealing"):
+        selected = [item for item in events if item[0] == phase]
+        size = cache.path.stat().st_size
+        assert selected[0] == (phase, "started", 0, size)
+        assert selected[-1] == (phase, "completed", size, size)
+        assert all(0 <= done <= total == size for _, _, done, total in selected)
+
+    def cancel(phase, state, done, total):
+        if phase == "sealing" and state == "running":
+            raise InterruptedError("cancelled")
+
+    interrupted = TrainingSampleCache(tmp_path, "new-input", 1, split.content_hash, progress=cancel)
+    with interrupted.open() as samples:
+        samples.prepare_for_model_fitting(split)
+        with pytest.raises(InterruptedError):
+            interrupted.seal(samples)
+    assert not interrupted.manifest.exists()
+    assert not interrupted.inspect()

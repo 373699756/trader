@@ -17,6 +17,8 @@ TomorrowTrainingStage = Literal[
     "cross_section_conversion",
     "sample_index",
     "sample_cache",
+    "sample_cache_check",
+    "sample_cache_seal",
     "target_statistics",
     "industry_statistics",
     "model_fit",

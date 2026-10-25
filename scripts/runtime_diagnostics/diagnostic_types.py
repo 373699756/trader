@@ -26,6 +26,7 @@ Profile = Literal[
     "tencent-download",
     "tencent-history-window",
     "v5-training",
+    "v5-samples",
     "training-alignment",
     "training-coverage",
     "training-performance",
@@ -107,6 +108,7 @@ class DiagnosticOptions:
     training_signal_date: date | None = None
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
     storage_paths: tuple[Path, ...] = ()
+    wide_sample_source: Path | None = None
 
 
 @dataclass(frozen=True)

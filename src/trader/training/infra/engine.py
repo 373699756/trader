@@ -76,6 +76,7 @@ from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TargetMetric,
 )
+from trader.training.infra.sample_sequences import SEQUENCE_STORAGE_CONTRACT, SampleSequenceLayout
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
 TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
@@ -369,7 +370,10 @@ def _run_locked(
                 raise ValueError("profile_training_effective_dates_insufficient")
         with (
             SQLiteTrainingSampleIndex(
-                cache.path, cache.feature_count, prepared_split_hash=split.content_hash
+                cache.path,
+                cache.feature_count,
+                prepared_split_hash=split.content_hash,
+                sequence_layout=cache.sequence_layout,
             ) as samples,
             ExitStack() as fitting_resources,
         ):
@@ -459,6 +463,7 @@ def _sample_cache_for(
     request: ProfileTrainingRequest,
 ) -> TrainingSampleCache:
     feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
+    sequence_layout = SampleSequenceLayout(6, 60, 6) if request.profile.algorithm == "tcn" else None
     cache_identity = ContentHash(
         (
             TrainingImplementationIdentity(),
@@ -467,7 +472,7 @@ def _sample_cache_for(
             request.profile.profile_id,
             split.content_hash,
             feature_count,
-            "monthly_samples",
+            SEQUENCE_STORAGE_CONTRACT if sequence_layout else "monthly_samples",
             HISTORY_ALIGNMENT_CONTRACT,
             PREDICTION_EVALUATION_CONTRACT,
             request.profile.history_sessions,
@@ -486,7 +491,13 @@ def _sample_cache_for(
         cache_identity,
         feature_count,
         split.content_hash,
-        lambda: _publish(request.progress, TomorrowTrainingProgress("sample_cache", "running", 0, 1)),
+        sequence_layout=sequence_layout,
+        progress=lambda phase, state, done, total: _publish(
+            request.progress,
+            TomorrowTrainingProgress(
+                "sample_cache_check" if phase == "checking" else "sample_cache_seal", state, done, total
+            ),
+        ),
     )
 
 
@@ -498,11 +509,11 @@ def _prepare_samples(
 ) -> tuple[TargetMetric, ...]:
     if not cache.reused:
         BuildTrainingSamples(request, aligned_rows=aligned_rows)
-    _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
     if request.repository.count() == 0:
         raise ValueError("profile_training_rows_empty")
     if not cache.reused:
         cache.seal(request.repository)
+    _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
     metrics = request.repository.validation_target_metrics()
     _publish(request.progress, TomorrowTrainingProgress("target_statistics", "completed", 1, 1))
     return metrics

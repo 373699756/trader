@@ -9,6 +9,11 @@ module and profile there; it is not added as another top-level script.
 可重复使用`--storage-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
 unknown结果附带实际runtime配置文件、`storage.overrides`字段和修改示例。机械硬盘填写`hdd`，固态填写`ssd`，重启后生效。
 
+`--profile v5-samples --training-probe-directory /absolute/new/external/directory`
+隔离比较V5宽表与float64紧凑序列块的大小、构建、封存及双头批量读取，逐值检查顺序和标签。
+默认使用8192条合成样本；附加`--wide-sample-source /absolute/samples.sqlite3`可只读抽取旧缓存一个行业前4096行、最多500个日期，源查询限30秒。
+源文件不写入，输出目录必须为仓库外新路径；不拟合模型，不把子集和未控制操作系统缓存的时延当成完整训练成绩。
+
 `--profile download-performance` runs three rounds on disposable synthetic SQLite databases outside the repository.
 It reports company write/publication/cold and warm reads, unchanged publication, and equivalent per-stock versus batch gap queries.
 It makes zero HTTP requests and cannot establish full-market supplier download speed.

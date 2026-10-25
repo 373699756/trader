@@ -27,6 +27,8 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "cross_section_conversion": "横截面转换",
     "sample_index": "样本索引",
     "sample_cache": "完整样本缓存",
+    "sample_cache_check": "样本缓存完整性校验",
+    "sample_cache_seal": "样本缓存封存",
     "target_statistics": "标签统计",
     "industry_statistics": "行业统计",
     "model_fit": "行业模型",
@@ -188,6 +190,10 @@ class StderrTomorrowTrainingProgress:
             )
         elif progress.stage == "sample_cache" and progress.state == "completed":
             parts.append("复用已校验完整样本" if progress.produced_units else "需要构建样本")
+        elif progress.stage in {"sample_cache_check", "sample_cache_seal"}:
+            parts[3] = (
+                f"{progress.completed_units / 1024**2:.1f}/{progress.total_units / 1024**2:.1f} MiB ({percent:.2f}%)"
+            )
         elif progress.stage == "history_conversion":
             parts.append(f"已生成样本 {progress.produced_units}")
         elif progress.stage == "cross_section_conversion":

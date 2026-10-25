@@ -16,6 +16,17 @@ class _Clock:
         return next(self._values)
 
 
+def test_cache_sealing_has_its_own_clock_and_byte_progress(capsys):
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0, 7200, 7210, 7211), start_heartbeat=False)
+    output.publish(TomorrowTrainingProgress("sample_cache", "started", 0, 1))
+    output.publish(TomorrowTrainingProgress("sample_cache_seal", "started", 0, 2 * 1024**2))
+    output.publish(TomorrowTrainingProgress("sample_cache_seal", "running", 1024**2, 2 * 1024**2))
+    output.publish(TomorrowTrainingProgress("sample_cache_seal", "completed", 2 * 1024**2, 2 * 1024**2))
+    output_text = capsys.readouterr().err
+    assert "样本缓存封存 | 1.0/2.0 MiB (50.00%) | 运行中 | 阶段耗时 00:00:10" in output_text
+    assert ("sample_cache_seal", 11.0) in output.stage_durations
+
+
 def test_training_progress_prints_real_rows_percent_duration_and_no_rss(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(100.0, 100.0, 854.0), start_heartbeat=False)
 
