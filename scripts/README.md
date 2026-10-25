@@ -131,6 +131,16 @@ Missing trading dates remain pending. Supplier socket timeouts are inactivity
 limits; the diagnostic child deadline bounds the whole child command.
 The report never authorizes replacing complete history with Tencent.
 
+V5卷积执行可通过统一入口与冻结的原Conv1d执行做合成float64 CPU对照（需v5可选依赖）：
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile v5-training \
+  --v5-kernel-probe --command-timeout-seconds 180 \
+  --output /tmp/trader-v5-kernel-report.json
+```
+
+该模式不读取历史、不写活动模型或样本，比较原Conv1d与当前卷积执行的固定种子多步更新及预测误差，并报告5组交替顺序的单批耗时、算子CPU时间和进程RSS；任一线程设置的成对中位数变慢则标记degraded。RSS是包含算子分析开销的进程峰值，系统不支持时为null。该合成对照只用于定位计算内核，不能证明完整训练提速或收益准入。优先在无其它训练负载时测量；存在后台负载时须记录，不能据此推算全市场训练时长。
+
 V5的真实小范围训练通过同一入口执行（先安装v5可选CPU依赖）：
 
 ```bash

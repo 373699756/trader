@@ -248,7 +248,11 @@ def _parser() -> argparse.ArgumentParser:
         help="rows copied into the disposable revision batch-write probe",
     )
     parser.add_argument("--output", default="-", help="report output path outside the repository, or -")
-    parser.add_argument("--v5-probe-directory", type=Path, help="new external directory for isolated V5 training")
+    v5_probe = parser.add_mutually_exclusive_group()
+    v5_probe.add_argument("--v5-probe-directory", type=Path, help="new external directory for isolated V5 training")
+    v5_probe.add_argument(
+        "--v5-kernel-probe", action="store_true", help="synthetic CPU kernel comparison; no history reads"
+    )
     parser.add_argument("--training-probe-directory", type=Path, help="new external directory for all-profile training")
     parser.add_argument(
         "--format",
@@ -379,7 +383,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             raise ValueError("--cpu-profile-dir requires --performance-replay-ticks 1")
     if args.cpu_profile_mode == "gc" and (args.profile != "performance" or args.cpu_profile_dir is None):
         raise ValueError("--cpu-profile-mode gc requires performance and --cpu-profile-dir")
-    if args.profile == "v5-training" and args.v5_probe_directory is None:
+    if args.v5_kernel_probe and args.profile != "v5-training":
+        raise ValueError("--v5-kernel-probe requires --profile v5-training")
+    if args.profile == "v5-training" and not args.v5_kernel_probe and args.v5_probe_directory is None:
         raise ValueError("v5-training requires --v5-probe-directory")
     if args.profile == "v5-samples" and args.training_probe_directory is None:
         raise ValueError("v5-samples requires --training-probe-directory")
@@ -429,6 +435,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_evidence_database=args.company_evidence_database,
             company_replay_directory=company_replay_directory,
             company_query_audit=args.company_query_audit,
+            v5_kernel_probe=args.v5_kernel_probe,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
             else None,
@@ -488,7 +495,7 @@ def build_commands(
     options: DiagnosticOptions, *, python_executable: str = sys.executable
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
-    if options.profile not in {
+    if not options.v5_kernel_probe and options.profile not in {
         "storage",
         "v5-samples",
         "local",
@@ -584,10 +591,11 @@ def build_commands(
                 python_executable,
                 "-m",
                 "scripts.runtime_diagnostics.v5_training",
-                "--history-root",
-                str(options.history_root),
-                "--work-root",
-                str(options.v5_probe_directory),
+                *(
+                    ("--kernel-probe",)
+                    if options.v5_kernel_probe
+                    else ("--history-root", str(options.history_root), "--work-root", str(options.v5_probe_directory))
+                ),
             ),
             common_timeout,
         ),

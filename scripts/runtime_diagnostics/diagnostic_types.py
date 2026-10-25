@@ -90,6 +90,7 @@ class DiagnosticOptions:
     company_replay_directory: Path | None = None
     company_query_audit: bool = False
     v5_probe_directory: Path | None = None
+    v5_kernel_probe: bool = False
     training_probe_directory: Path | None = None
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)

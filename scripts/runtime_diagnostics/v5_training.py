@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import platform
-import resource
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -88,6 +87,8 @@ class _FrozenSubsetSupplier:
 
 
 def _probe(source: Path, work: Path) -> dict[str, object]:
+    import resource
+
     project = Path(__file__).resolve().parents[2]
     source, work = source.resolve(), work.resolve()
     if work.is_relative_to(project) or work == source or work.is_relative_to(source) or source.is_relative_to(work):
@@ -196,12 +197,20 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--history-root", type=Path, required=True)
-    parser.add_argument("--work-root", type=Path, required=True)
+    parser.add_argument("--history-root", type=Path)
+    parser.add_argument("--work-root", type=Path)
+    parser.add_argument("--kernel-probe", action="store_true")
     args = parser.parse_args()
     try:
-        report = _probe(args.history_root, args.work_root)
-    except (OSError, RuntimeError, ValueError) as exc:
+        if args.kernel_probe:
+            from .v5_kernels import ProbeV5Kernels
+
+            report = ProbeV5Kernels()
+        else:
+            if args.history_root is None or args.work_root is None:
+                raise ValueError("V5 training probe requires history and output directories")
+            report = _probe(args.history_root, args.work_root)
+    except (OSError, RuntimeError, ValueError, AssertionError) as exc:
         report = {
             "schema_version": "v5-training-diagnostic",
             "status": "failed",
