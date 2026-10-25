@@ -220,14 +220,47 @@ if len(FEATURE_SCHEMA_NAMES) != len(set(FEATURE_SCHEMA_NAMES)):
 
 
 @dataclass(frozen=True)
+class _QuoteFactorInputs:
+    """Only quote facts read by base arithmetic; observation health stays outside."""
+
+    code: str
+    observation_date: str
+    price: float | None
+    high: float | None
+    low: float | None
+    pct_change: float | None
+    amount: float | None
+    amplitude: float | None
+    volume: float | None
+    exchange_limit_pct: float | None
+    has_price_limit: bool | None
+
+    @classmethod
+    def from_quote(cls, quote: MarketQuote) -> _QuoteFactorInputs:
+        return cls(
+            quote.code,
+            quote.source_time.astimezone(_SHANGHAI).date().isoformat(),
+            quote.price,
+            quote.high,
+            quote.low,
+            quote.pct_change,
+            quote.amount,
+            quote.amplitude,
+            quote.volume,
+            quote.exchange_limit_pct,
+            quote.has_price_limit,
+        )
+
+
+@dataclass(frozen=True)
 class _CachedQuoteFactors:
-    quote: MarketQuote
+    inputs: _QuoteFactorInputs
     bars: tuple[DailyBar, ...]
     context: HistoryContext | None
     values: tuple[tuple[str, float | None], ...]
 
-    def matches(self, quote: MarketQuote, bars: tuple[DailyBar, ...], context: HistoryContext | None) -> bool:
-        return self.quote == quote and self.bars == bars and self.context == context
+    def matches(self, inputs: _QuoteFactorInputs, bars: tuple[DailyBar, ...], context: HistoryContext | None) -> bool:
+        return self.inputs == inputs and self.bars == bars and self.context == context
 
 
 class FeatureBuilder:
@@ -505,7 +538,8 @@ class FeatureBuilder:
         bars: tuple[DailyBar, ...],
         history_summary: HistoryContext | None = None,
     ) -> dict[str, float | None]:
-        observation_date = quote.source_time.astimezone(_SHANGHAI).date().isoformat()
+        inputs = _QuoteFactorInputs.from_quote(quote)
+        observation_date = inputs.observation_date
         context = history_summary
         if context is not None and context.latest_trade_date > observation_date:
             context = None
@@ -521,7 +555,7 @@ class FeatureBuilder:
         )
         cache = self._cache
         if cache is None:
-            values = self._base_features(quote, bars, base_context)
+            values = self._base_features(inputs, bars, base_context)
         else:
             # Base factors depend on the same <=60-day facts in either profile.
             # Profile publication/model identities remain bound by DailyFeaturePack.
@@ -529,7 +563,7 @@ class FeatureBuilder:
                 "quote_factor_inputs",
                 "local_history",
                 quote.code,
-                RequestKey({"version": quote.data_version, "source_time": quote.source_time.isoformat()}),
+                RequestKey({"inputs": "latest"}),
                 observation_date,
                 "quote_factors",
                 "qfq",
@@ -541,10 +575,10 @@ class FeatureBuilder:
                 found = cache.get(identity)
                 if found is not None and found.value is not None:
                     cached = cast(_CachedQuoteFactors, found.value)
-                    if cached.matches(quote, bars, base_context):
+                    if cached.matches(inputs, bars, base_context):
                         return cached
                 result = _CachedQuoteFactors(
-                    quote, bars, base_context, tuple(sorted(self._base_features(quote, bars, base_context).items()))
+                    inputs, bars, base_context, tuple(sorted(self._base_features(inputs, bars, base_context).items()))
                 )
                 cache.put(
                     identity,
@@ -556,9 +590,9 @@ class FeatureBuilder:
                 return result
 
             cached = cast(_CachedQuoteFactors, cache.coalesce(identity, build))
-            # Opaque provider versions can be reused for corrected facts. Check
-            # the full immutable input even after joining a concurrent request.
-            if not cached.matches(quote, bars, base_context):
+            # A concurrent owner may have different facts under the same latest
+            # slot. Recheck the arithmetic inputs before consuming its result.
+            if not cached.matches(inputs, bars, base_context):
                 cached = build()
             values = dict(cached.values)
         anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *self._model_momentum_horizons)))
@@ -584,11 +618,11 @@ class FeatureBuilder:
 
     def _base_features(
         self,
-        quote: MarketQuote,
+        quote: _QuoteFactorInputs,
         bars: tuple[DailyBar, ...],
         history_summary: HistoryContext | None = None,
     ) -> dict[str, float | None]:
-        observation_date = quote.source_time.astimezone(_SHANGHAI).date().isoformat()
+        observation_date = quote.observation_date
         context = history_summary
         if context is not None and context.latest_trade_date > observation_date:
             context = None
@@ -616,7 +650,7 @@ class FeatureBuilder:
         volatility = history.volatility_20d
         drawdown = history.max_drawdown_20d
         amount_median = history.median_amount_20d
-        volume_to_5d_average = _volume_to_5d_average(quote, setup_history)
+        volume_to_5d_average = _volume_to_5d_average(quote.volume, setup_history)
         ma_position = _ma_position(quote.price, ma20, ma60)
         breakout = _breakout_score(quote.price, bars)
         slope = _slope_score(ma5, ma20)
@@ -641,7 +675,7 @@ class FeatureBuilder:
         risk_adjusted = None
         if returns[20] is not None and volatility is not None and volatility > 0:
             risk_adjusted = Clamp(50.0 + returns[20] / volatility * 5.0)
-        close_location = _close_location(quote)
+        close_location = _close_location(quote.price, quote.high, quote.low)
         trend_score = (
             None
             if ma_position is None
@@ -749,8 +783,7 @@ def _live_return_pct(
     return (current_price / start - 1.0) * 100.0
 
 
-def _volume_to_5d_average(quote: MarketQuote, history: HistoryProfile) -> float | None:
-    volume = quote.volume
+def _volume_to_5d_average(volume: float | None, history: HistoryProfile) -> float | None:
     average_volume = history.average_volume_5d
     if (
         volume is None

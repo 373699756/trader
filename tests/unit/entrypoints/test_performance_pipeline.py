@@ -60,9 +60,18 @@ def test_continuous_chain_keeps_instances_and_fingerprints_while_counting_real_w
         if profile != "v1":
             assert all(head["predictor_batches"] == 0 for head in current["heads"])
         assert round_["wall_ms"] >= current["wall_ms"] >= sum(current["stage_ms"].values())
-    observation = report["scenarios"]["observation_time"]["rounds"][0]
-    assert observation["recomputed_stocks"] == 0
-    assert observation["profiles"][0]["feature_hash"] == cold["profiles"][0]["feature_hash"]
+    for scenario in ("observation_time", "delivery_time", "quote_time"):
+        for round_ in report["scenarios"][scenario]["rounds"]:
+            assert round_["factor_computations"] == round_["recomputed_stocks"] == 0
+            current = round_["profiles"][0]
+            assert current["input_revision_changed"] == (scenario == "quote_time")
+            assert current["feature_hash"] == cold["profiles"][0]["feature_hash"]
+            # Source timestamps are retained in filter audits; those hashes
+            # change legitimately even when cached arithmetic stays equal.
+            if scenario != "quote_time":
+                assert [head["result_hash"] for head in current["heads"]] == [
+                    head["result_hash"] for head in cold["profiles"][0]["heads"]
+                ]
     # A fresh source timestamp and changed price must reach the real factor builder.
     changed = report["scenarios"]["one_price"]["rounds"][0]
     assert changed["recomputed_stocks"] == 1

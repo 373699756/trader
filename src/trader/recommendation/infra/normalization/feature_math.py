@@ -84,16 +84,10 @@ def _price_volume_confirmation(
     return Clamp(50.0 + direction * volume_signal / 2.0)
 
 
-def _close_location(quote: MarketQuote) -> float | None:
-    if (
-        not _all_finite(quote.price, quote.high, quote.low)
-        or quote.price is None
-        or quote.high is None
-        or quote.low is None
-        or quote.high <= quote.low
-    ):
+def _close_location(price: float | None, high: float | None, low: float | None) -> float | None:
+    if not _all_finite(price, high, low) or price is None or high is None or low is None or high <= low:
         return None
-    return Clamp((quote.price - quote.low) / (quote.high - quote.low) * 100.0)
+    return Clamp((price - low) / (high - low) * 100.0)
 
 
 def _ma_deviation_inverse(price: float | None, ma20: float | None) -> float | None:

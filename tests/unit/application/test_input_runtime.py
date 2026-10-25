@@ -34,7 +34,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
     PIPELINE_STAGES,
 )
-from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.models import Board, Evidence
 from trader.recommendation.domain.market.refresh import (
     IntradayInputIdentity,
     IntradayRefreshResult,
@@ -279,6 +279,52 @@ def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_chan
     assert first.changed_codes == ("600001",)
     assert second.changed is False
     assert second.data_version == first.data_version
+
+
+def test_generated_evidence_refresh_reuses_scoring_but_current_time_still_expires_quotes(
+    application_feature_factory,
+) -> None:
+    observed_at = TEST_NOW
+    now = [observed_at]
+    feature = application_feature_factory("600001", observed_at)
+    generated = Evidence("structured:600001:2026-08-12", "structured_point_in_time", "摘要", "fixture", observed_at)
+    feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN), evidence=(generated,))
+    market = _Market((feature,))
+    adapter = build_cycle_fixture(
+        market,
+        config_version="test-config",
+        decision_build=_decision_build(now=lambda: now[0]),
+    )
+    _prime_scoring_cache(adapter, observed_at)
+    first_epoch = adapter.data.scoring_epoch()
+    first_request = _request(observed_at, phase="afternoon")
+    adapter.data.refresh(first_request)
+    assert adapter.decisions.build_local(first_request).items
+    reads = len(market.candidate_reads)
+    now[0] = observed_at + timedelta(seconds=1)
+    market._features = (
+        replace(
+            feature,
+            observed_at=now[0],
+            quote=replace(feature.quote, received_time=now[0]),
+            evidence=(replace(generated, published_at=now[0], received_at=now[0]),),
+        ),
+    )
+    refreshed = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, now[0]))
+    assert not refreshed.changed
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, now[0]))
+    assert adapter.data.scoring_epoch() == first_epoch
+    request = _request(now[0], phase="afternoon")
+    adapter.data.refresh(request)
+    assert adapter.decisions.build_local(request).items
+    assert len(market.candidate_reads) == reads
+    assert market.market_fetch_count == market.candidate_quote_refresh_count == 2
+    now[0] = observed_at + timedelta(seconds=31)
+    expired = _request(now[0], phase="afternoon")
+    adapter.data.refresh(expired)
+    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
+        adapter.decisions.build_local(expired)
+    assert len(market.candidate_reads) == reads
 
 
 def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(

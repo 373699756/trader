@@ -42,6 +42,14 @@ class InputVersionClock:
                 feature,
                 observed_at=feature.quote.source_time,
                 quote=replace(feature.quote, received_time=feature.quote.source_time),
+                # Generated summaries describe the quote, not a newly published
+                # external event. Keep all real evidence dates and source age.
+                evidence=tuple(
+                    replace(item, published_at=feature.quote.source_time, received_at=feature.quote.source_time)
+                    if item.evidence_type == "structured_point_in_time"
+                    else item
+                    for item in feature.evidence
+                ),
             )
             for feature in features
         )
