@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import cast
 
 from trader.infra.cache_contracts import CanonicalJsonBytes
+from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
@@ -38,17 +39,64 @@ _FIXTURE_SOURCE = "performance-completed-history"
 _HISTORY_SESSIONS = {"v1": 251, "v2": 251, "v3": 61, "v5": 62}
 
 
+@dataclass(frozen=True)
+class PerformanceHistoryInput:
+    code: str
+    bars: tuple[DailyBar, ...]
+    context: HistoryContext
+    model_feature: FeatureSnapshot
+
+
+def BuildPerformanceHistory(features: tuple[FeatureSnapshot, ...]) -> tuple[PerformanceHistoryInput, ...]:
+    """Reuse the model fixture's daily generator; retain the production-sized raw tail."""
+    if not features:
+        raise ValueError("performance history requires a population")
+    days = _completed_dates(features[0].observed_at.date(), 251)
+    result: list[PerformanceHistoryInput] = []
+    for position, feature in enumerate(features):
+        points = _history_points(feature.quote, position, days)[-feature.history_days :]
+        bars = tuple(
+            DailyBar(
+                point.trade_date.isoformat(),
+                point.open_price,
+                point.close,
+                point.high,
+                point.low,
+                point.volume,
+                point.amount,
+                0.0,
+                1.5,
+                adjustment=PriceAdjustment.QFQ,
+                source=_FIXTURE_SOURCE,
+            )
+            for point in points
+        )
+        result.append(
+            PerformanceHistoryInput(
+                feature.quote.code,
+                bars[-20:],
+                BuildHistoryContext(bars, lookback_sessions=feature.history_days),
+                feature,
+            )
+        )
+    return tuple(result)
+
+
 def BuildPerformanceFixtures(
     budgets: PerformanceBudgetSettings,
     profile: LoadedScoringProfile,
+    *,
+    rows: int | None = None,
 ) -> tuple[tuple[MarketQuoteInput, ...], tuple[MarketQuote, ...], tuple[FeatureSnapshot, ...]]:
     """Build every profile's complete synthetic workload outside measured operations."""
 
     now = datetime(2026, 8, 25, 14, 50, tzinfo=SHANGHAI)
+    row_count = budgets.workload.market_rows if rows is None else rows
+    if not 1 <= row_count <= budgets.workload.market_rows:
+        raise ValueError("performance fixture rows must be within the configured population")
     industries = _shared_industries(profile)
     market = tuple(
-        replace(_quote_input(index, now), industry=industries[index % len(industries)])
-        for index in range(budgets.workload.market_rows)
+        replace(_quote_input(index, now), industry=industries[index % len(industries)]) for index in range(row_count)
     )
     quotes = tuple(_complete_quote(BuildMarketQuote(item), now) for item in market)
     days = _completed_dates(now.date(), 251)
@@ -331,6 +379,8 @@ _FEATURE_VALUES = {
 
 
 __all__ = [
+    "BuildPerformanceHistory",
+    "PerformanceHistoryInput",
     "BuildPerformanceFixtures",
     "BuildWorstCaseCandidatePlans",
     "ProjectCandidateUnionQuotes",

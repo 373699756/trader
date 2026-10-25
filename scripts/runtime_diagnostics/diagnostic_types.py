@@ -109,6 +109,8 @@ class DiagnosticOptions:
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
     storage_paths: tuple[Path, ...] = ()
     wide_sample_source: Path | None = None
+    performance_replay_ticks: int = 0
+    performance_replay_rows: int | None = None
 
 
 @dataclass(frozen=True)

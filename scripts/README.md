@@ -203,6 +203,48 @@ while retaining different source digests to compare implementations. This is a s
 scoring workload: history disk scans, shared market-cache occupancy, real suppliers,
 browser latency and formal freeze equivalence remain unmeasured, not passed.
 
+For continuous calculations after quote acquisition, select the same performance
+entrypoint with an explicit replay length:
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --scoring-profile v3 --performance-replay-ticks 5 --command-timeout-seconds 1800 --output /tmp/trader-continuous-v3.json
+.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --scoring-profile v3 --performance-replay-ticks 3 --performance-replay-rows 120 --output /tmp/trader-continuous-small.json
+```
+
+`--performance-replay-ticks` accepts 1–1000 measured rounds **per scenario**;
+zero retains the existing model microbenchmarks. One cold round is followed by
+unchanged inputs, observation-time-only, delivery-time-only, source-time-only,
+one-price, all-price and stale-input cases. The same model services, synthetic
+history projection, factor cache, injected clock and in-memory publication indices
+survive all rounds. Four-profile selection runs profiles concurrently with one
+shared factor-cache budget and serial Tomorrow/D25 calculations within each profile.
+Models are read once; no training or active data writes occur.
+Optional `--performance-replay-rows` bounds this diagnostic to 1–5500 generated
+stocks, records both measured/configured populations and binds baseline comparisons
+to that exact population. It requires continuous replay; the existing production
+performance configuration and its fixed 5500-stock gate remain unchanged.
+
+The `continuous_pipeline` report includes actual whole-process wall/CPU samples,
+per-profile and per-strategy stages, cold/steady P50/P95, RSS, logical factor-cache
+bytes, cache lookups, factor computations and distinct recomputed stocks,
+model prediction-batch deltas, input revision changes, and result fingerprints.
+Input preparation and fingerprint collection are timed separately. Model timings
+are children of score-to-draft; do not add them to their parent. A separate final
+CPU probe is labelled with its stale-input scenario and excluded from latency/RSS
+samples. A cache hit can still require a same-key replacement; computation counts
+do not infer the reason for invalidation. Controlled scenario changes and observed
+input/model revisions are reported separately.
+
+This is a calculation baseline, not a service-cycle measurement: every round
+requests the calculations, including unchanged inputs. Supplier I/O, scheduler
+skip gates, industry refresh cadence, minute/research inputs, disk preload,
+formal freezing and Web delivery remain excluded. Synthetic missing research and
+minute facts retain their normal quality restrictions. No absolute whole-chain
+latency pass is claimed; existing memory limits still apply. Large full-market
+runs can exceed the default 180-second child deadline; choose an explicit bounded
+timeout and keep the report outside the repository. Missing models retain the
+existing per-profile unavailable result rather than silently substituting fixtures.
+
 `--profile history-write --download-sizes 16 --history-days 2000` also measures
 `initial_resume`: it first commits half the stocks without publishing the initial
 snapshot, then times the restart against the populated annual files. Reports split

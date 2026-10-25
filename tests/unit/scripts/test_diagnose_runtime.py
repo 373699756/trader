@@ -96,6 +96,53 @@ def test_performance_rejects_partial_duplicate_or_invalid_profile_selections(sel
     assert error.value.code == 2
 
 
+def test_continuous_performance_option_reaches_the_existing_child_and_report():
+    options, _ = _validate(
+        _parser().parse_args(
+            [
+                "--profile",
+                "performance",
+                "--scoring-profile",
+                "v3",
+                "--performance-replay-ticks",
+                "100",
+                "--performance-replay-rows",
+                "120",
+            ]
+        )
+    )
+    command = build_commands(options, python_executable="/python")[0]
+    position = command.argv.index("--replay-ticks")
+    assert command.argv[position + 1] == "100"
+    assert command.argv[command.argv.index("--replay-rows") + 1] == "120"
+    result = DiagnosticResult(
+        command.name,
+        0,
+        1.0,
+        {
+            "status": "passed",
+            "continuous_pipeline": {"contract": "fixture-replay", "cold": {"wall_ms": 2}},
+        },
+        None,
+    )
+    report = build_report("performance", (result,))
+    assert report["checks"][0]["summary"]["continuous_pipeline"]["contract"] == "fixture-replay"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ["--profile", "runtime", "--performance-replay-ticks", "2"],
+        ["--profile", "performance", "--performance-replay-ticks", "1001"],
+        ["--profile", "performance", "--performance-replay-ticks", "-1"],
+        ["--profile", "performance", "--performance-replay-rows", "120"],
+    ),
+)
+def test_continuous_performance_option_rejects_wrong_profile_and_unbounded_runs(arguments):
+    with pytest.raises(ValueError, match="performance-replay-"):
+        _validate(_parser().parse_args(arguments))
+
+
 def test_performance_both_keeps_two_separate_v2_v3_commands() -> None:
     commands = build_commands(_options(profile="performance", scoring_profile="both"), python_executable="/python")
 

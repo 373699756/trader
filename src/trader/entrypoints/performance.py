@@ -79,6 +79,11 @@ from trader.recommendation.infra.performance.model_workload import (
     PerformanceProfileWorkload,
 )
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
+from trader.recommendation.infra.performance.pipeline_workload import (
+    CONTINUOUS_REPLAY_CONTRACT,
+    MeasureContinuousPipeline,
+    PipelineReplayWorkload,
+)
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
@@ -104,6 +109,15 @@ def BuildParser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", choices=("v1", "v2", "v3", "v5", "v1,v2,v3,v5"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument(
+        "--replay-rows", type=int, help="bounded replay population; cannot establish the full-market gate"
+    )
+    parser.add_argument(
+        "--replay-ticks",
+        type=int,
+        default=0,
+        help="1..1000 ticks per continuous scenario; 0 keeps model microbenchmarks",
+    )
     return parser
 
 
@@ -112,7 +126,13 @@ def Run(
     *,
     baseline_path: Path | None = None,
     scoring_profile: str | None = None,
+    replay_ticks: int = 0,
+    replay_rows: int | None = None,
 ) -> dict[str, object]:
+    if not 0 <= replay_ticks <= 1000:
+        raise ValueError("replay ticks must be within 0..1000")
+    if replay_rows is not None and (replay_rows < 1 or not replay_ticks):
+        raise ValueError("bounded replay rows require continuous replay and a positive population")
     settings = LoadRuntimeSettings(config_path)
     selected = (
         ParseProfileSelection(scoring_profile)
@@ -121,7 +141,7 @@ def Run(
     )
     if len(selected) not in {1, 4}:
         raise ValueError("performance accepts one profile or the complete four-profile selection")
-    prepared = _prepare_profiles(settings, selected, config_path)
+    prepared = _prepare_profiles(settings, selected, config_path, replay_rows=replay_rows)
     budgets = settings.performance_budgets
     workloads = prepared.workloads
     market_inputs, market_quotes = prepared.market_inputs, prepared.market_quotes
@@ -135,12 +155,6 @@ def Run(
         return report
     first = workloads[0]
     candidates = first.features
-    context = _OperationContext(settings.config_version, first.policy, first.scoring())
-    worst_case_plans = BuildWorstCaseCandidatePlans(budgets.workload.market_rows, market_quotes[0].received_time)
-    union = ProjectCandidateUnionQuotes(market_quotes, worst_case_plans)
-    operations, provenance = _operations(
-        market_inputs, market_quotes, candidates, _CandidateUnionFixture(worst_case_plans, union), context
-    )
     identity: dict[str, object] = {
         "config_version": settings.config_version,
         "scoring_profile": ",".join(selected),
@@ -168,8 +182,19 @@ def Run(
         "cpu": _cpu_identity(),
         "machine": platform.machine(),
         "kernel": platform.release(),
+        "replay_ticks": replay_ticks,
+        "replay_rows": replay_rows,
+        "continuous_contract": CONTINUOUS_REPLAY_CONTRACT if replay_ticks else None,
     }
     baseline = _baseline(baseline_path, identity)
+    if replay_ticks:
+        return _continuous_report(settings, prepared, identity, replay_ticks, baseline)
+    context = _OperationContext(settings.config_version, first.policy, first.scoring())
+    worst_case_plans = BuildWorstCaseCandidatePlans(budgets.workload.market_rows, market_quotes[0].received_time)
+    union = ProjectCandidateUnionQuotes(market_quotes, worst_case_plans)
+    operations, provenance = _operations(
+        market_inputs, market_quotes, candidates, _CandidateUnionFixture(worst_case_plans, union), context
+    )
     measurements = {
         name: _measure(operation, budgets.rounds.warmup, budgets.rounds.measurement)
         for name, operation in operations.items()
@@ -270,8 +295,93 @@ class _PerformancePreparation:
     fixture_seconds: float
 
 
+def _continuous_report(
+    settings: RuntimeSettings,
+    prepared: _PerformancePreparation,
+    identity: dict[str, object],
+    ticks: int,
+    baseline: dict[str, object],
+) -> dict[str, object]:
+    workloads = tuple(
+        PipelineReplayWorkload(
+            item,
+            LoadStrategySettings(settings.strategy_config_path, scoring_profile=item.profile.profile_id),
+        )
+        for item in prepared.workloads
+    )
+    workers = BuildPerformanceExecutor(len(workloads))
+    workers.start()
+    try:
+        replay = MeasureContinuousPipeline(
+            workloads,
+            settings.market_data.cache_policy,
+            WorkerFutureExecutor(workers),
+            ReadPerformanceMemory,
+            ticks=ticks,
+        )
+    finally:
+        stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        if not stopped.completed:
+            raise RuntimeError("continuous replay workers did not stop")
+    memory = cast(dict[str, float], replay["memory"])
+    scenarios = cast(dict[str, dict[str, object]], replay["scenarios"])
+    measurements = {
+        f"continuous_{name}": {key: case[key] for key in ("samples", "p50_ms", "p95_ms", "maximum_ms")}
+        for name, case in scenarios.items()
+    }
+    failures: list[str] = []
+    limits = settings.performance_budgets.memory
+    cold = cast(dict[str, object], replay["cold"])
+    for profile in cast(list[dict[str, object]], cold["profiles"]):
+        for head in cast(list[dict[str, object]], profile["heads"]):
+            if head["predicted_count"] == 0 or head["predictor_batches"] == 0:
+                failures.append(f"continuous_cold:{profile['profile']}:{head['strategy']}:model_not_exercised")
+    if memory["peak_rss_bytes"] > limits.process_peak_rss_bytes:
+        failures.append("process_peak_rss:absolute_budget")
+    if memory["growth_percent"] > limits.growth_percent:
+        failures.append("process_rss_growth:absolute_budget")
+    if memory["factor_cache_max_bytes"] > memory["factor_group_budget_bytes"]:
+        failures.append("factor_cache:absolute_budget")
+    for name, measurement in measurements.items():
+        previous = baseline.get(name)
+        if isinstance(previous, dict) and isinstance(previous.get("p95_ms"), (int, float)):
+            if cast(float, measurement["p95_ms"]) > previous["p95_ms"] * (
+                1 + settings.performance_budgets.relative_regression_percent / 100
+            ):
+                failures.append(f"{name}:relative_regression")
+    return {
+        "schema_version": "production_performance",
+        "status": "failed" if failures else "passed",
+        "identity": {**identity, "continuous_contract": replay["contract"]},
+        "profile_results": _project_profile_loads(prepared.profiles),
+        "workload": {
+            "profiles": [item.model.profile.profile_id for item in workloads],
+            "market_rows": len(prepared.market_quotes),
+            "configured_market_rows": settings.performance_budgets.workload.market_rows,
+            "acceptance": "diagnostic_execution_only_not_full_market_acceptance",
+            "ticks_per_scenario": ticks,
+            "fixture_build_seconds": prepared.fixture_seconds,
+            "evidence_scope": replay["scope"],
+            "execution_mode": replay["execution_mode"],
+        },
+        "measurements": measurements,
+        "continuous_pipeline": replay,
+        "memory": memory,
+        "failures": failures,
+        "network_calls": 0,
+        "hot_path_baseline": {
+            "status": "unverified",
+            "reason": "synthetic_calculation_replay_not_live_scheduler_or_freeze_acceptance",
+        },
+    }
+
+
 def _prepare_profiles(
-    settings: RuntimeSettings, selected: tuple[ScoringProfileId, ...], config_path: Path
+    settings: RuntimeSettings,
+    selected: tuple[ScoringProfileId, ...],
+    config_path: Path,
+    *,
+    replay_rows: int | None = None,
 ) -> _PerformancePreparation:
     workloads: list[PerformanceProfileWorkload] = []
     profiles: list[_ProfileLoad] = []
@@ -287,7 +397,9 @@ def _prepare_profiles(
             profiles.append(_ProfileLoad(profile_id, exc.reason))
             continue
         started = time.perf_counter()
-        market, market_quotes, features = BuildPerformanceFixtures(settings.performance_budgets, loaded)
+        market, market_quotes, features = BuildPerformanceFixtures(
+            settings.performance_budgets, loaded, rows=replay_rows
+        )
         fixture_seconds += time.perf_counter() - started
         workloads.append(
             PerformanceProfileWorkload(
@@ -323,6 +435,8 @@ def Main(argv: list[str] | None = None) -> int:
             args.config.resolve(),
             baseline_path=args.baseline.resolve() if args.baseline else None,
             scoring_profile=args.profile,
+            replay_ticks=args.replay_ticks,
+            replay_rows=args.replay_rows,
         )
     except ScoringModelsUnavailableError:
         report = _unavailable_report("model_unavailable")
@@ -737,6 +851,16 @@ def _baseline(path: Path | None, identity: dict[str, object]) -> dict[str, objec
     if not isinstance(raw, dict) or not isinstance(raw.get("measurements"), dict):
         raise ValueError("performance baseline must contain measurements")
     previous_identity = raw.get("identity")
+    if isinstance(previous_identity, dict) and previous_identity.get("replay_rows") != identity.get("replay_rows"):
+        raise ValueError("performance baseline replay population does not match")
+    if isinstance(previous_identity, dict) and previous_identity.get("continuous_contract") != identity.get(
+        "continuous_contract"
+    ):
+        raise ValueError("performance baseline continuous contract does not match")
+    if isinstance(previous_identity, dict) and previous_identity.get("replay_ticks", 0) != identity.get(
+        "replay_ticks", 0
+    ):
+        raise ValueError("performance baseline replay identity does not match")
     if not isinstance(previous_identity, dict) or any(
         key not in previous_identity or key not in identity or previous_identity[key] != identity[key]
         for key in (

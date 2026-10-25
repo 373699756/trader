@@ -153,6 +153,17 @@ def _parser() -> argparse.ArgumentParser:
         help="one scoring profile, legacy V2/V3 'both', or all four comma-separated profiles for performance",
     )
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
+    parser.add_argument(
+        "--performance-replay-ticks",
+        type=int,
+        default=0,
+        help="1..1000 continuous ticks per scenario instead of model microbenchmarks",
+    )
+    parser.add_argument(
+        "--performance-replay-rows",
+        type=int,
+        help="bounded diagnostic population; requires replay ticks, excludes full-market acceptance",
+    )
     parser.add_argument("--market-sources", nargs="+", choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
     parser.add_argument("--market-profiles", nargs="+", choices=("v2", "v3"), default=("v2", "v3"))
     parser.add_argument("--market-sizes", nargs="+", type=int, choices=(0, 120, 720), default=(120, 720, 0))
@@ -286,6 +297,14 @@ def _scoring_profile_selection(value: str) -> ScoringProfileSelection:
 
 
 def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
+    if args.performance_replay_rows is not None and (
+        args.performance_replay_rows < 1 or not args.performance_replay_ticks
+    ):
+        raise ValueError("--performance-replay-rows requires positive rows and --performance-replay-ticks")
+    if not 0 <= args.performance_replay_ticks <= 1000 or (
+        args.performance_replay_ticks and args.profile != "performance"
+    ):
+        raise ValueError("--performance-replay-ticks requires performance and a value within 0..1000")
     if args.scoring_profile == "v1,v2,v3,v5" and args.profile != "performance":
         raise ValueError("four-profile scoring is only available for performance")
     codes = tuple(dict.fromkeys(args.codes))
@@ -414,6 +433,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             download_sizes=tuple(args.download_sizes),
             qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database else None,
             scoring_profile=args.scoring_profile,
+            performance_replay_ticks=args.performance_replay_ticks,
+            performance_replay_rows=args.performance_replay_rows,
             market_sources=tuple(args.market_sources),
             market_profiles=tuple(args.market_profiles),
             market_sizes=tuple(args.market_sizes),
@@ -894,6 +915,13 @@ def build_commands(
                 "trader.entrypoints.performance",
                 "--config",
                 str(options.runtime_config),
+                "--replay-ticks",
+                str(options.performance_replay_ticks),
+                *(
+                    ("--replay-rows", str(options.performance_replay_rows))
+                    if options.performance_replay_rows is not None
+                    else ()
+                ),
             ),
             common_timeout,
         ),
@@ -1415,6 +1443,9 @@ def _performance_details(_result: DiagnosticResult, source: Mapping[str, object]
         "profile_results": _mapping(source.get("profile_results")),
         "failures": _safe_string_list(source.get("failures"), limit=30),
     }
+    if isinstance(source.get("continuous_pipeline"), Mapping):
+        summary = cast(dict[str, object], payload["summary"])
+        summary["continuous_pipeline"] = _mapping(source["continuous_pipeline"])
 
 
 def _long_admission_details(
