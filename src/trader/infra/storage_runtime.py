@@ -57,11 +57,11 @@ def ReportStorageProfiles(settings: RuntimeSettings, locations: tuple[StorageLoc
         groups.setdefault(key, []).append(item)
     for items in groups.values():
         profile = items[0].profile
-        names = ", ".join(DisplayStoragePath(item.path, settings.project_root) for item in items)
         source = "已使用手动配置" if profile.source == "configuration" else "自动检测"
-        print(f"[存储检测] {profile.kind.upper()}（{source}）目录：{names}", file=sys.stderr)
+        print(f"[存储检测] {profile.kind.upper()}（{source}）", file=sys.stderr)
         if profile.kind != "unknown":
             continue
+        names = ", ".join(DisplayStoragePath(item.path, settings.project_root) for item in items)
         # Every listed entry is an exact scope: never suggest a broad override across separate mounts.
         example = json.dumps(
             {"path": DisplayStoragePath(items[0].path, settings.project_root), "kind": "hdd"},
@@ -70,6 +70,7 @@ def ReportStorageProfiles(settings: RuntimeSettings, locations: tuple[StorageLoc
         print(
             "[存储配置需修改] "
             f"原因：{_REASONS.get(profile.reason, profile.reason)}。unknown按保守策略处理。\n"
+            f"受影响目录：{names}\n"
             f"请修改 {DisplayStoragePath(settings.config_path, settings.project_root)} 的 storage.overrides，"
             f"为上述实际数据目录添加条目，例如：{example}\n"
             "机械硬盘填写 hdd，固态硬盘填写 ssd；路径相对项目根目录，最具体路径优先。保存后重新启动命令生效。",
