@@ -5,6 +5,8 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
@@ -137,7 +139,8 @@ def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
     assert 'name="trader-long-scoring-profile" content="v2"' in page
 
 
-def test_new_v1_lane_keeps_rank_scale_and_shadow_identity_in_get_and_sse() -> None:
+@pytest.mark.parametrize("production_authority", (True, False), ids=("production", "legacy_shadow"))
+def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(production_authority: bool) -> None:
     _, existing_queries, existing_stream = _app()
     source = _decision()
     decision = replace(
@@ -148,10 +151,16 @@ def test_new_v1_lane_keeps_rank_scale_and_shadow_identity_in_get_and_sse() -> No
             ("score_model", "learned_rank:" + "b" * 64),
             ("score_contract_hash", "a" * 64),
             ("rank_population", "learned-rank-population:" + "c" * 64),
-            ("execution_mode", "shadow"),
-            ("production_authority", "false"),
+            ("execution_mode", "production" if production_authority else "shadow"),
+            ("production_authority", "true" if production_authority else "false"),
         ),
-        items=(replace(source.items[0], action=RecommendationAction.OBSERVE, final_score=99.5),),
+        items=(
+            replace(
+                source.items[0],
+                action=RecommendationAction.EXECUTABLE if production_authority else RecommendationAction.OBSERVE,
+                final_score=99.5,
+            ),
+        ),
     )
     index = UnifiedDecisionIndex()
     assert index.publish(decision, expected_version=None).accepted
@@ -164,7 +173,7 @@ def test_new_v1_lane_keeps_rank_scale_and_shadow_identity_in_get_and_sse() -> No
             "heads": {
                 "tomorrow": {
                     "score_scale": "learned_rank_percentile_0_100",
-                    "production_authority": False,
+                    "production_authority": production_authority,
                     "private_internal": "must-not-leak",
                 }
             },
@@ -188,7 +197,7 @@ def test_new_v1_lane_keeps_rank_scale_and_shadow_identity_in_get_and_sse() -> No
     assert payload["input_versions"] == dict(decision.input_versions)
     assert payload["items"][0]["scores"]["local"] == 84.0
     assert payload["items"][0]["scores"]["final"] == 99.5
-    assert payload["items"][0]["action"] == "observe"
+    assert payload["items"][0]["action"] == ("executable" if production_authority else "observe")
     assert client.get("/api/decisions/tomorrow/current?profile=v2").get_json()["items"][0]["scores"]["final"] == 84.0
     long = client.get("/api/decisions/long/current?profile=v1").get_json()
     assert long["scoring_profile"] == "v2"
@@ -196,11 +205,12 @@ def test_new_v1_lane_keeps_rank_scale_and_shadow_identity_in_get_and_sse() -> No
     assert "scores" not in long["items"][0]
     status_response = client.get("/api/status?profile=v1")
     head = status_response.get_json()["scoring_profile"]["heads"]["tomorrow"]
-    assert head == {"score_scale": "learned_rank_percentile_0_100", "production_authority": False}
+    assert head == {"score_scale": "learned_rank_percentile_0_100", "production_authority": production_authority}
     assert "must-not-leak" not in status_response.get_data(as_text=True)
     page = client.get("/").get_data(as_text=True)
     assert 'data-profile="v1"' in page
-    assert "V1 · Shadow" in page
+    assert 'aria-label="V1"' in page
+    assert "V1 · Shadow" not in page
 
     events = client.get("/api/events?profile=v1", headers={"Last-Event-ID": "0"}, buffered=False)
     iterator = iter(events.response)

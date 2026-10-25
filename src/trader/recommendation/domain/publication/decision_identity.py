@@ -287,16 +287,14 @@ class ScoredDecision:
         learned_rank = dict(versions).get("score_scale") == LEARNED_RANK_SCORE_SCALE
         if learned_rank:
             if (
-                dict(versions).get("execution_mode") != "shadow"
-                or dict(versions).get("production_authority") != "false"
+                (dict(versions).get("execution_mode"), dict(versions).get("production_authority"))
+                not in {("shadow", "false"), ("production", "true")}
                 or dict(versions).get("score_model_id") != "learned_rank"
                 or not all(
                     dict(versions).get(name) for name in ("score_model", "score_contract_hash", "rank_population")
                 )
-                or self.is_formal
-                or any(item.action is RecommendationAction.EXECUTABLE for item in items)
             ):
-                raise ValueError("learned rank decisions require a complete non-executable shadow identity")
+                raise ValueError("learned rank decisions require a complete execution and model identity")
         elif self.stage == "local" and any(item.final_score != item.local_score for item in items):
             raise ValueError("local decision final scores must equal local scores")
         if any(item.quote is not None and item.quote.source_time > self.observed_at for item in items):

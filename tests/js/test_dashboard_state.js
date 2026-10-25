@@ -206,6 +206,14 @@ assert(!rankEmpty.includes("已达到正式线"));
 const rankNotice = state.snapshotNotice(rankSnapshot, null);
 assert.match(rankNotice.message, /Shadow/);
 assert.match(rankNotice.message, /不计入正式推荐业绩/);
+const productionRankSnapshot = {
+  ...rankSnapshot,
+  input_versions: { ...rankSnapshot.input_versions, execution_mode: "production", production_authority: "true" },
+};
+assert.strictEqual(sandbox.window.TraderRender.scorePresentation(productionRankSnapshot).shadow, false);
+assert.match(sandbox.window.TraderRender.tableDefinition(productionRankSnapshot).head, /模型排序/);
+assert(!state.drawer(rankItem, productionRankSnapshot).includes("Shadow"));
+assert(!JSON.stringify(state.snapshotNotice(productionRankSnapshot, null)).includes("Shadow"));
 const v5Snapshot = {
   ...rankSnapshot,
   scoring_profile: "v5",

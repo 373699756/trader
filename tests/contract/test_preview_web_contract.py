@@ -33,8 +33,8 @@ def test_preview_get_sse_and_refresh_share_context_without_losing_algorithm_iden
                 ("score_model", "learned_rank:" + "b" * 64),
                 ("score_contract_hash", "a" * 64),
                 ("rank_population", "learned-rank-population:" + "c" * 64),
-                ("execution_mode", "shadow"),
-                ("production_authority", "false"),
+                ("execution_mode", "production"),
+                ("production_authority", "true"),
             ),
             items=(replace(source.items[0], action=RecommendationAction.OBSERVE),),
         )
@@ -107,8 +107,8 @@ def test_preview_get_sse_and_refresh_share_context_without_losing_algorithm_iden
     assert stream.status().sequence == 1
     assert index.snapshot(preview.strategy).current is preview
     if profile == "v1":
-        assert current["input_versions"]["execution_mode"] == "shadow"
-        assert current["input_versions"]["production_authority"] == "false"
+        assert current["input_versions"]["execution_mode"] == "production"
+        assert current["input_versions"]["production_authority"] == "true"
 
 
 def test_nontrading_long_http_keeps_close_change_when_short_models_are_blocked():

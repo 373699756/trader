@@ -81,6 +81,7 @@ from trader.recommendation.domain.risk.scored_fusion import (
     ScoredReviewCandidate,
     SelectScoredReviewCandidates,
 )
+from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
 from trader.recommendation.domain.selection.scored_selection import ApplySelectionRisks, ScoredCandidateStageCounts
 
 
@@ -217,12 +218,8 @@ def BuildScoredLocal(
     production_authority = (profile_status is None or profile_status.production_authority) and (
         model_batch is None or model_batch.production_authority
     )
-    if learned_rank and (
-        model_batch is None
-        or model_batch.score_scale != "learned_rank_percentile_0_100"
-        or model_batch.production_authority
-    ):
-        raise ValueError("learned_rank_shadow_model_unavailable")
+    if learned_rank and (model_batch is None or model_batch.score_scale != LEARNED_RANK_SCORE_SCALE):
+        raise ValueError("learned_rank_model_unavailable")
     profile_history_qualified_codes = (
         frozenset(
             feature.quote.code
@@ -309,7 +306,7 @@ def BuildScoredLocal(
     selection = ApplySelectionRisks(
         selection, policy.risk_rules, policy.fusion.local_risk_cap, native_input.evaluated_at, strategy
     )
-    if not production_authority:
+    if learned_rank or not production_authority:
         ranked = {
             item.code: replace(
                 item,
@@ -318,7 +315,7 @@ def BuildScoredLocal(
                     if learned_rank and model_batch is not None
                     else item.ranking_score
                 ),
-                shadow_only=True,
+                shadow_only=not production_authority,
             )
             for item in selection.scored_candidates
         }
@@ -619,6 +616,11 @@ def _scored_decision(
     context: _DecisionProjectionContext,
 ) -> ScoredDecision:
     downside_assessments = dict(context.downside_assessments)
+    execution_versions: tuple[tuple[str, str], ...] = ()
+    if not context.production_authority:
+        execution_versions = (("production_authority", "false"), ("execution_mode", "shadow"))
+    elif context.score_scale == LEARNED_RANK_SCORE_SCALE:
+        execution_versions = (("production_authority", "true"), ("execution_mode", "production"))
     return ScoredDecision(
         strategy=context.strategy,
         trade_date=epoch.trade_date,
@@ -637,13 +639,12 @@ def _scored_decision(
                 ("score_model", context.score_model_version),
                 ("score_model_id", context.score_model_id),
                 ("score_contract_hash", context.score_contract_hash),
-                ("production_authority", "false" if not context.production_authority else None),
-                ("execution_mode", "shadow" if not context.production_authority else None),
                 ("rank_population", context.rank_population_version),
                 ("cost_reference", context.cost_reference_version),
             )
             if value is not None
         )
+        + execution_versions
         + tuple((f"board_population:{board}", version) for board, version in sorted(epoch.population_versions.items())),
         config_version=epoch.config_version,
         strategy_version=epoch.strategy_version,

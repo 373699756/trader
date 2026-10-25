@@ -45,8 +45,6 @@ class LearnedRankScoringService:
         if profile.profile_id != "v1" or strategy not in profile.heads:
             raise ValueError("learned rank requires its own complete profile head")
         self._head = profile.heads[strategy]
-        if self._head.evidence.production_authority:
-            raise ValueError("learned rank production authority has not been validated")
         self._predictor = cast(LearnedRankPredictorPort, self._head.predictor)
         self._strategy = strategy
         self._cost_policy = cost_policy
@@ -183,7 +181,7 @@ class LearnedRankScoringService:
             score_scale=LEARNED_RANK_SCORE_SCALE,
             score_model_id=self._predictor.model_id,
             score_contract_hash=self._contract_hash,
-            production_authority=False,
+            production_authority=self._head.evidence.production_authority,
             rank_population_version="learned-rank-population:"
             + self._content_hash(
                 (
@@ -220,7 +218,7 @@ class LearnedRankScoringService:
             runtime_anchor=evidence.runtime_anchor,
             point_in_time_parity=evidence.point_in_time_parity,
             score_scale=LEARNED_RANK_SCORE_SCALE,
-            production_authority=False,
+            production_authority=evidence.production_authority,
             training_label_cutoff=evidence.training_label_cutoff,
             computation=ModelComputationStatus(
                 candidate_count=self._candidate_count,

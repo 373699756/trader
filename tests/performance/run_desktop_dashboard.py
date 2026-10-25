@@ -196,15 +196,18 @@ class _PreviewBrowserFixtures:
 
     def _input_versions(self, profile: str) -> tuple[tuple[str, str], ...]:
         if profile != "v1":
-            return (("score_scale", "weighted_evidence_quality_0_100"), ("score_model", f"{profile}:browser"))
+            identity = (("score_scale", "weighted_evidence_quality_0_100"), ("score_model", f"{profile}:browser"))
+            if profile == "v5":
+                identity += (("execution_mode", "shadow"), ("production_authority", "false"))
+            return identity
         return (
             ("score_scale", "learned_rank_percentile_0_100"),
             ("score_model_id", "learned_rank"),
             ("score_model", "learned_rank:" + "b" * 64),
             ("score_contract_hash", "a" * 64),
             ("rank_population", "learned-rank-population:" + "c" * 64),
-            ("execution_mode", "shadow"),
-            ("production_authority", "false"),
+            ("execution_mode", "production"),
+            ("production_authority", "true"),
         )
 
 
@@ -526,7 +529,8 @@ def _preview_acceptance(
     errors = _execute(base, "return window.TraderDashboardDiagnostics.snapshot().browserErrors;")
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "preview.png").write_bytes(base64.b64decode(str(_screenshot(base))))
-    shadow = next((item for item in profiles if isinstance(item, dict) and item.get("profile") == "v1"), {})
+    learned_rank = next((item for item in profiles if isinstance(item, dict) and item.get("profile") == "v1"), {})
+    shadow = next((item for item in profiles if isinstance(item, dict) and item.get("profile") == "v5"), {})
     passed = (
         isinstance(sse, int)
         and sse >= 1
@@ -535,6 +539,7 @@ def _preview_acceptance(
         and bool(before)
         and fixture.published_count == 8
         and fixture.event_counts == (2, 2, 2, 2)
+        and "Shadow" not in str(learned_rank.get("meta"))
         and "Shadow" in str(shadow.get("meta"))
         and "production_model_contract_conflict" in str(failed)
         and errors == []

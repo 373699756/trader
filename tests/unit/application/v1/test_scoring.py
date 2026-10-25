@@ -6,10 +6,12 @@ from datetime import timedelta
 
 import pytest
 
+from tests.unit.application.review_helpers import review
 from tests.unit.application.test_input_runtime import _policy
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+    BuildScoredHybrid,
     BuildScoredLocal,
     ScoredProjectionInputs,
 )
@@ -42,12 +44,16 @@ class _Predictor:
         return tuple(ModelPrediction(item.code, 0.02, item.alpha_features[0]) for item in inputs)
 
 
-def _service(strategy: Strategy = Strategy.TOMORROW, predictor=None) -> LearnedRankScoringService:
+def _service(
+    strategy: Strategy = Strategy.TOMORROW, predictor=None, *, production_authority: bool = True
+) -> LearnedRankScoringService:
     head = HeadRuntime(
         strategy,
         predictor or _Predictor(),
         SingleHeadCombiner(),
-        ProfileEvidence("historical_unavailable", (), "trained_artifact", production_authority=False),
+        ProfileEvidence(
+            "historical_unavailable", (), "manual_user_override", production_authority=production_authority
+        ),
     )
     return LearnedRankScoringService(
         LoadedScoringProfile("v1", {strategy: head}),
@@ -112,7 +118,8 @@ def test_fixed_population_percentiles_cost_once_and_subset_order_are_determinist
     subset = service.score(
         tuple(reversed(population[3:8])), context=replace(context, population_features=tuple(reversed(population)))
     )
-    assert full.score_scale == "learned_rank_percentile_0_100" and full.production_authority is False
+    assert full.score_scale == "learned_rank_percentile_0_100" and full.production_authority is True
+    assert service.status().production_authority is True
     assert full.rank_population_version == subset.rank_population_version
     assert dict(subset.diagnostics) == {item.quote.code: full.diagnostics[item.quote.code] for item in population[3:8]}
     assert full.diagnostics[population[0].quote.code].signal_score == 0.0
@@ -134,8 +141,9 @@ def test_fixed_population_percentiles_cost_once_and_subset_order_are_determinist
 
 
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
+@pytest.mark.parametrize("production_authority", (True, False), ids=("production", "legacy_shadow"))
 def test_v1_model_actually_changes_fixed_six_and_keeps_local_action_score(
-    application_feature_factory, native_type
+    application_feature_factory, native_type, production_authority
 ) -> None:
     features = _features(application_feature_factory)
     strategy = native_type.strategy
@@ -145,7 +153,7 @@ def test_v1_model_actually_changes_fixed_six_and_keeps_local_action_score(
         for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
     }
     policy = replace(policy, board_local_strategy_weights={**policy.board_local_strategy_weights, strategy: weights})
-    router = ModelScoringRouter("v1", {strategy: _service(strategy)})
+    router = ModelScoringRouter("v1", {strategy: _service(strategy, production_authority=production_authority)})
     projection = BuildScoredLocal(
         _native_input(tuple(reversed(features)), native_type),
         policy,
@@ -156,8 +164,15 @@ def test_v1_model_actually_changes_fixed_six_and_keeps_local_action_score(
     assert tuple(item.code for item in seats) == tuple(item.quote.code for item in reversed(features[6:]))
     assert all(item.final_score != item.local_score for item in seats)
     assert tuple(item.local_score for item in seats) == (84.0, 85.0, 86.0, 87.0, 88.0, 89.0)
-    assert all(item.action is not RecommendationAction.EXECUTABLE for item in seats)
-    assert IsShadowDecision(projection.local)
+    if production_authority:
+        # Four stocks per board do not meet the existing reliability floor.
+        assert all(item.reason == "filter_observe_only" for item in seats)
+        assert projection.review_candidates == ()
+        assert dict(projection.local.input_versions)["execution_mode"] == "production"
+        assert dict(projection.local.input_versions)["production_authority"] == "true"
+    else:
+        assert all(item.action is not RecommendationAction.EXECUTABLE for item in seats)
+    assert IsShadowDecision(projection.local) is not production_authority
     assert dict(projection.local.input_versions)["rank_population"].startswith("learned-rank-population:")
     # A high model percentile never bypasses the existing local evidence threshold.
     weak = replace(features[-1], values={**features[-1].values, "entry_quality": 0.0})
@@ -169,6 +184,58 @@ def test_v1_model_actually_changes_fixed_six_and_keeps_local_action_score(
     )
     assert VisibleScoredSeats(weaker.local)[0].action is RecommendationAction.UNAVAILABLE
     assert VisibleScoredSeats(weaker.local)[0].final_score == 100.0
+
+
+@pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
+def test_production_rank_allows_qualified_actions_and_review_preserves_ranking(
+    application_feature_factory, native_type
+):
+    strategy = native_type.strategy
+    policy = _policy()
+    weights = {
+        board: {key: float(key == "entry_quality") for key in policy.board_local_strategy_weights[strategy][board]}
+        for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
+    }
+    policy = replace(policy, board_local_strategy_weights={**policy.board_local_strategy_weights, strategy: weights})
+    base = _features(application_feature_factory)[0]
+    features = tuple(
+        replace(
+            base,
+            quote=replace(base.quote, code=f"600{index:03d}"),
+            values={
+                **base.values,
+                "completed_return_1d": float(index),
+                "entry_quality": 90.0,
+                "volume_to_5d_average": 0.6,
+                "max_drawdown_20d": -2.0,
+            },
+        )
+        for index in range(100)
+    )
+    projection = BuildScoredLocal(
+        _native_input(features, native_type),
+        policy,
+        sequence=1,
+        runtime=ScoredProjectionInputs(model_scoring=ModelScoringRouter("v1", {strategy: _service(strategy)})),
+    )
+    seats = VisibleScoredSeats(projection.local)
+    assert seats and all(item.action is RecommendationAction.EXECUTABLE for item in seats), [
+        item.reason for item in seats
+    ]
+    code = projection.review_candidates[0].code
+    applied = replace(review(code, 0.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
+    hybrid = BuildScoredHybrid(
+        projection,
+        policy,
+        {code: applied},
+        review_deadline=EVALUATED_AT.replace(hour=14, minute=48),
+    )
+    assert hybrid is not None and hybrid.decision is not None
+    assert hybrid.decision.input_versions == projection.local.input_versions
+    assert [(item.code, item.local_score, item.final_score) for item in VisibleScoredSeats(hybrid.decision)] == [
+        (item.code, item.local_score, item.final_score) for item in seats
+    ]
+    assert next(item for item in hybrid.decision.items if item.code == code).review_outcome == "applied"
 
 
 def test_non_positive_gross_minus_cost_closes_selection_before_local_score(application_feature_factory) -> None:

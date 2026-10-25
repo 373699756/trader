@@ -252,7 +252,9 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
         assert predicted == public_profile.heads[head.strategy].predictor.predict(inputs)
         assert tuple(item.rank_raw for item in predicted) != (None,) * len(inputs)
         assert predicted[0].predicted_excess_return < predicted[-1].predicted_excess_return
-        assert profile.heads[head.strategy].evidence.production_authority is False
+        assert profile.heads[head.strategy].evidence.production_authority is True
+        assert profile.heads[head.strategy].evidence.activation_basis == "manual_user_override"
+        assert profile.heads[head.strategy].evidence.historical_status == "historical_unavailable"
         assert LearnedRankPredictor(head).predict(()) == ()
     # Failed and cancelled retraining leave the complete previously published pair intact.
     failed = RunV1Training(

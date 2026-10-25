@@ -25,7 +25,7 @@ usage() {
     "  ./run.sh train                   历史维护后处理全部档位 V1、V2、V3、V5" \
     "  ./run.sh train v1,v5             历史维护后只训练所列档位" \
     "" \
-    "档位以逗号分隔，可自由组合；省略时选择全部。V1为工程Shadow，V5需可选CPU依赖。" \
+    "档位以逗号分隔，可自由组合；省略时选择全部。V1已正式接入，V5保持工程Shadow并需可选CPU依赖。" \
     "本地检测使用 scripts/diagnose_runtime.py --profile local。" \
     "" \
     "高级配置（一般无需设置）:" \

@@ -120,7 +120,7 @@ def test_loaded_dual_head_authority_matches_artifact_admission(profile, authorit
         assert not batch.predictions
 
 
-@pytest.mark.parametrize(("profile_id", "authority"), (("v1", False), ("v2", True), ("v3", True), ("v5", False)))
+@pytest.mark.parametrize(("profile_id", "authority"), (("v1", True), ("v2", True), ("v3", True), ("v5", False)))
 def test_missing_dual_head_status_preserves_profile_authority(profile_id, authority):
     scorer = BuildProfileScoring(
         profile_id,
@@ -136,6 +136,6 @@ def test_missing_dual_head_status_preserves_profile_authority(profile_id, author
     for strategy, head in status.heads.items():
         assert head.active is False
         assert head.production_authority is authority
-        assert head.activation_basis == "trained_artifact"
+        assert head.activation_basis == ("manual_user_override" if profile_id == "v1" else "trained_artifact")
         with pytest.raises(RuntimeError, match="production_model_missing"):
             scorer.score(strategy, ())

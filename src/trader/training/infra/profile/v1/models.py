@@ -409,10 +409,12 @@ def LoadV1ScoringProfile(model_root: Path) -> LoadedScoringProfile:
     evidence = ProfileEvidence(
         "historical_unavailable",
         ("prediction_return_validation_not_passed", "point_in_time_parity_unverified"),
-        "trained_artifact",
+        "manual_user_override",
         training_anchor="15:00_close_proxy",
         point_in_time_parity=False,
-        production_authority=False,
+        # Runtime use is explicitly authorized; historical validation above
+        # and the immutable training report retain their original evidence.
+        production_authority=True,
     )
     return LoadedScoringProfile(
         "v1",

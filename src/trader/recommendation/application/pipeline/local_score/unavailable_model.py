@@ -41,14 +41,14 @@ class UnavailableModelCapability:
             model_id="",
             model_hash="",
             scoring_version="",
-            activation_basis="trained_artifact",
+            activation_basis="manual_user_override" if self.profile_id == "v1" else "trained_artifact",
             historical_status="historical_unavailable",
             historical_failure_reasons=(self.reason,),
             monitoring_mode="automatic_t1_outcome_settlement",
             automatic_model_update=False,
             loss_probability_status="not_modeled",
             score_scale=LEARNED_RANK_SCORE_SCALE if self.profile_id == "v1" else WEIGHTED_EVIDENCE_SCORE_SCALE,
-            production_authority=self.profile_id not in {"v1", "v5"},
+            production_authority=self.profile_id != "v5",
         )
 
 
