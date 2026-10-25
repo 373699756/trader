@@ -46,19 +46,19 @@
     },
     {
       "profile": "v5",
-      "fit_dates": 750,
+      "fit_dates": 250,
       "minimum_industry_training_rows": 20000,
       "tcn": {
         "learning_rate": 0.001,
         "weight_decay": 0.0001,
         "dropout": 0.1,
         "batch_size": 256,
-        "epochs": 100,
-        "early_stopping_rounds": 10,
+        "epochs": 30,
+        "early_stopping_rounds": 5,
         "seed": 0,
-        "hidden_channels": 16,
-        "compute_dtype": "float64",
-        "early_stopping_relative_delta": 0.0,
+        "hidden_channels": 8,
+        "compute_dtype": "float32",
+        "early_stopping_relative_delta": 0.001,
         "compute_threads": 2
       }
     }
