@@ -64,7 +64,7 @@ def test_training_restores_smallest_loss_weights_not_significant_anchor_or_last_
     assert weights[1] != weights[0] and weights[1] != weights[2]
 
 
-def test_annual_split_preserves_evaluation_dates_and_legacy_default_identity():
+def test_annual_split_preserves_evaluation_dates_and_supplier_neutral_default_identity():
     dates = tuple(date(2018, 1, 1) + timedelta(days=index) for index in range(2000))
     old = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, fit_dates=750, history_sessions=62)
     new = BuildTrainingDateSplit(
@@ -77,7 +77,7 @@ def test_annual_split_preserves_evaluation_dates_and_legacy_default_identity():
     assert new.confirmation_dates == old.confirmation_dates
     assert new.daily_proxy_holdout_dates == old.daily_proxy_holdout_dates
     assert new.point_in_time_holdout_dates == old.point_in_time_holdout_dates
-    assert old.schema_version == "baostock_training_split"
+    assert old.schema_version == "training_date_split"
     assert new.schema_version == "v5_annual_training_split"
     assert old.content_hash != new.content_hash
     with pytest.raises(ValueError):

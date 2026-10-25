@@ -55,7 +55,7 @@ class TrainingDateSplit:
     point_in_time_parity: bool = False
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "baostock_training_split"
+    schema_version: str = "training_date_split"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -66,7 +66,7 @@ class TrainingDateSplit:
             raise ValueError("training split must remain a daily-close proxy")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("training split cannot open holdouts or authorize production")
-        if self.schema_version not in {"baostock_training_split", "v5_annual_training_split"}:
+        if self.schema_version not in {"training_date_split", "v5_annual_training_split"}:
             raise ValueError("training split schema is invalid")
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
@@ -159,7 +159,7 @@ def BuildTrainingDateSplit(
     warmup = take(history_sessions - 1)
     development = model_fit + fit_embargo + early_stopping + calibration_embargo + calibration
     return TrainingDateSplit(
-        schema_version="v5_annual_training_split" if annual_fit else "baostock_training_split",
+        schema_version="v5_annual_training_split" if annual_fit else "training_date_split",
         parent_manifest_hash=parent_manifest_hash,
         label_contract=TrainingLabelContract(),
         model_fit_dates=model_fit,
