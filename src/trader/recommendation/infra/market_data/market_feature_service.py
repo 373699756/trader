@@ -455,23 +455,12 @@ class MarketFeatureService:
         )
 
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]:
-        quotes = self.quotes.market_quotes()
-        quotes = self._eligible_quotes(quotes, observed_at)
-        if not quotes:
-            return ()
-        action_restrictions: dict[str, set[str]] = {}
-        histories = self.history.cached(
-            tuple(quote.code for quote in quotes),
-            observed_at=observed_at,
-            action_restrictions=action_restrictions,
-        )
-        features = self.quotes.build_market_features(
-            quotes,
-            histories,
-            observed_at,
-            action_restrictions=action_restrictions,
-        )
-        return self.quotes.publish_market_features(features, reference_epoch=self.reference_version())
+        # Every accepted full-market build already computes industry statistics
+        # over that same population. Reading it preserves research, source age and
+        # expiry, and cannot overwrite a newer market publication after a race.
+        features = self.quotes.market_features()
+        eligible = set(self._eligible_codes(tuple(feature.quote.code for feature in features), observed_at))
+        return tuple(feature for feature in features if feature.quote.code in eligible)
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
         return self.intraday.refresh(self._eligible_codes(codes, observed_at), observed_at)
@@ -564,10 +553,6 @@ class MarketFeatureService:
             for feature in features
         )
 
-    def _eligible_quotes(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> tuple[MarketQuote, ...]:
-        eligible = set(self._eligible_codes(tuple(quote.code for quote in quotes), observed_at))
-        return tuple(quote for quote in quotes if quote.code in eligible)
-
     def _record_eligibility(self, facts: Sequence[IssuerEligibilityFact]) -> None:
         try:
             self.eligibility.record(facts)
@@ -591,7 +576,7 @@ class MarketFeatureService:
     def cached_quotes(self, codes: Sequence[str]) -> Mapping[str, MarketQuote]:
         """Return the newest cached full quote without performing external I/O."""
         normalized = _normalize_codes(codes)
-        market = {quote.code: quote for quote in self.quotes.market_quotes()}
+        market = {feature.quote.code: feature.quote for feature in self.quotes.market_features()}
         candidates = self.quotes.candidate_entries()
         result: dict[str, MarketQuote] = {}
         for code in normalized:

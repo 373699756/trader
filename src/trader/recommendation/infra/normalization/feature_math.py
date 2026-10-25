@@ -3,36 +3,14 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import datetime
 
-from trader.infra.market_data.history.history import (
-    DailyBar,
-)
-from trader.recommendation.domain.market.factors import BandScore, Clamp, PercentileScoresWithMetadata
+from trader.recommendation.domain.market.factors import BandScore, Clamp
 from trader.recommendation.domain.market.models import (
-    CrossSectionStats,
     Evidence,
     MarketQuote,
 )
-
-
-def _industry_scores(
-    quotes: Sequence[MarketQuote], data_version: str
-) -> tuple[dict[str, float], CrossSectionStats, dict[str, float]]:
-    changes: dict[str, list[float]] = defaultdict(list)
-    for quote in quotes:
-        if quote.industry and quote.pct_change is not None and math.isfinite(quote.pct_change):
-            changes[quote.industry].append(quote.pct_change)
-    averages = {industry: sum(values) / len(values) for industry, values in changes.items() if values}
-    strength_by_industry, stats = PercentileScoresWithMetadata(averages, population_data_version=data_version)
-    breadth = {
-        industry: 100.0 * sum(value > 0 for value in values) / len(values)
-        for industry, values in changes.items()
-        if values
-    }
-    return strength_by_industry, stats, breadth
 
 
 def _ma_position(price: float | None, ma20: float | None, ma60: float | None) -> float | None:
@@ -55,10 +33,9 @@ def _slope_score(ma5: float | None, ma20: float | None) -> float | None:
     return Clamp(50.0 + (ma5 / ma20 - 1.0) * 1000.0)
 
 
-def _breakout_score(price: float | None, bars: tuple[DailyBar, ...]) -> float | None:
-    if not _all_finite(price) or price is None or len(bars) < 20:
+def _breakout_score(price: float | None, high: float | None) -> float | None:
+    if not _all_finite(price) or price is None or high is None:
         return None
-    high = max(bar.high for bar in bars[-20:])
     if high <= 0:
         return None
     return Clamp((price / high - 0.90) * 1000.0)
@@ -95,10 +72,6 @@ def _ma_deviation_inverse(price: float | None, ma20: float | None) -> float | No
         return None
     deviation = abs(price / ma20 - 1.0) * 100.0
     return Clamp(100.0 - deviation * 10.0)
-
-
-def _if_present(raw: float | None, score: float) -> float | None:
-    return score if raw is not None and math.isfinite(raw) else None
 
 
 def _optional_band_score(
@@ -155,21 +128,3 @@ def _structured_evidence(
         received_at=observed_at,
         data_version=quote.data_version,
     )
-
-
-_CROSS_SECTION_FIELDS = frozenset(
-    {
-        "amount_percentile_20d",
-        "speed_percentile",
-        "relative_strength_3d",
-        "relative_strength_5d",
-        "relative_strength_10d",
-        "relative_strength_20d",
-        "industry_strength",
-        "industry_breadth",
-        "industry_trend",
-        "market_breadth",
-        "low_volatility_score",
-        "low_drawdown_score",
-    }
-)

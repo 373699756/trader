@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
@@ -19,12 +19,10 @@ from trader.infra.cache_contracts import BoundedCache, CacheIdentity, RequestKey
 from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,
-    HistoryProfile,
     RequireQfqHistory,
-    SummarizeHistoryMetrics,
 )
 from trader.infra.serialization.canonical import ContentHash
-from trader.recommendation.domain.market.factors import Clamp, PercentileScoresWithMetadata, WeightedScore
+from trader.recommendation.domain.market.factors import Clamp, WeightedScore
 from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
     CalculateProfileQfqAlpha,
@@ -56,12 +54,18 @@ from trader.recommendation.domain.market.tail import (
 )
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.risk.downside import DeriveEntrySetupValues
+from trader.recommendation.infra.normalization.factor_history import (
+    BuildFactorHistory,
+    CompletedHistoryClose,
+    FactorHistory,
+)
+from trader.recommendation.infra.normalization.feature_cross_section import (
+    BuildCrossSectionFeatures,
+    CrossSectionReferences,
+)
 from trader.recommendation.infra.normalization.feature_math import (
-    _CROSS_SECTION_FIELDS,
     _breakout_score,
     _close_location,
-    _if_present,
-    _industry_scores,
     _ma_deviation_inverse,
     _ma_position,
     _missing_quote_fields,
@@ -255,12 +259,13 @@ class _QuoteFactorInputs:
 @dataclass(frozen=True)
 class _CachedQuoteFactors:
     inputs: _QuoteFactorInputs
-    bars: tuple[DailyBar, ...]
-    context: HistoryContext | None
+    history: FactorHistory
+    # Only callers without published summaries need to retain raw fallback inputs.
+    raw_history: tuple[DailyBar, ...] | None
     values: tuple[tuple[str, float | None], ...]
 
-    def matches(self, inputs: _QuoteFactorInputs, bars: tuple[DailyBar, ...], context: HistoryContext | None) -> bool:
-        return self.inputs == inputs and self.bars == bars and self.context == context
+    def matches(self, inputs: _QuoteFactorInputs, history: FactorHistory) -> bool:
+        return self.inputs == inputs and self.history == history
 
 
 class FeatureBuilder:
@@ -369,57 +374,12 @@ class FeatureBuilder:
             )
             for quote in quotes
         }
-        amount_percentiles, amount_stats = PercentileScoresWithMetadata(
-            {code: values.get("amount_median_20d") for code, values in raw.items()},
-            population_data_version=data_version,
-        )
-        speed_percentiles, speed_stats = PercentileScoresWithMetadata(
-            {quote.code: quote.speed for quote in quotes}, population_data_version=data_version
-        )
-        strength_results = {
-            days: PercentileScoresWithMetadata(
-                {code: values.get(f"return_{days}d") for code, values in raw.items()},
-                population_data_version=data_version,
-            )
-            for days in (3, 5, 10, 20)
-        }
-        volatility_scores, volatility_stats = PercentileScoresWithMetadata(
-            {code: values.get("volatility_20d") for code, values in raw.items()},
-            inverse=True,
-            population_data_version=data_version,
-        )
-        drawdown_scores, drawdown_stats = PercentileScoresWithMetadata(
-            {code: values.get("max_drawdown_20d") for code, values in raw.items()},
-            population_data_version=data_version,
-        )
-        industry_strength, industry_strength_stats, industry_breadth = _industry_scores(quotes, data_version)
-        valid_changes = [
-            quote.pct_change for quote in quotes if quote.pct_change is not None and math.isfinite(quote.pct_change)
-        ]
-        market_breadth = (
-            100.0 * sum(value > 0 for value in valid_changes) / len(valid_changes) if valid_changes else None
-        )
-        market_breadth_stats = CrossSectionStats(
-            None,
-            None,
-            len(valid_changes),
-            len(quotes) - len(valid_changes),
-            0.025,
-            0.975,
+        cross_sections = BuildCrossSectionFeatures(
+            quotes,
+            raw,
             data_version,
+            CrossSectionReferences(cross_section_reference or {}, cross_section_normalization_reference or {}),
         )
-        shared_normalization = {
-            "amount_percentile_20d": amount_stats,
-            "speed_percentile": speed_stats,
-            "relative_strength_3d": strength_results[3][1],
-            "relative_strength_5d": strength_results[5][1],
-            "relative_strength_10d": strength_results[10][1],
-            "relative_strength_20d": strength_results[20][1],
-            "industry_strength": industry_strength_stats,
-            "market_breadth": market_breadth_stats,
-            "low_volatility_score": volatility_stats,
-            "low_drawdown_score": drawdown_stats,
-        }
 
         snapshots: list[FeatureSnapshot] = []
         for quote in quotes:
@@ -435,20 +395,7 @@ class FeatureBuilder:
             )
             values.update(
                 {
-                    "amount_percentile_20d": _if_present(
-                        values.get("amount_median_20d"), amount_percentiles[quote.code]
-                    ),
-                    "speed_percentile": _if_present(quote.speed, speed_percentiles[quote.code]),
-                    "relative_strength_3d": _if_present(values.get("return_3d"), strength_results[3][0][quote.code]),
-                    "relative_strength_5d": _if_present(values.get("return_5d"), strength_results[5][0][quote.code]),
-                    "relative_strength_10d": _if_present(values.get("return_10d"), strength_results[10][0][quote.code]),
-                    "relative_strength_20d": _if_present(values.get("return_20d"), strength_results[20][0][quote.code]),
-                    "industry_strength": industry_strength.get(quote.industry),
-                    "industry_breadth": industry_breadth.get(quote.industry),
-                    "industry_trend": industry_strength.get(quote.industry),
-                    "market_breadth": market_breadth,
-                    "low_volatility_score": _if_present(values.get("volatility_20d"), volatility_scores[quote.code]),
-                    "low_drawdown_score": _if_present(values.get("max_drawdown_20d"), drawdown_scores[quote.code]),
+                    **cross_sections[quote.code].values,
                     "news_sentiment": news_signals.sentiment_score,
                     "evidence_freshness": news_signals.freshness_score,
                 }
@@ -463,10 +410,6 @@ class FeatureBuilder:
                         "tail_volume_ratio": tail_signal.volume_score,
                     }
                 )
-            reference = (cross_section_reference or {}).get(quote.code, {})
-            for name in _CROSS_SECTION_FIELDS:
-                if name in reference:
-                    values[name] = reference[name]
             market_regime = DeriveMarketRegime(values.get("market_breadth"), self._market_regime_policy)
             observation = research_observation or ResearchObservation()
             values.update(
@@ -498,8 +441,6 @@ class FeatureBuilder:
                     valid_minute_count=tail_signal.valid_bar_count if tail_signal is not None else None,
                 )
             )
-            normalization = dict(shared_normalization)
-            normalization.update((cross_section_normalization_reference or {}).get(quote.code, {}))
             missing = tuple(
                 sorted(
                     {
@@ -525,7 +466,7 @@ class FeatureBuilder:
                         *((intraday_evidence,) if intraday_evidence is not None else ()),
                         *candidate_evidence,
                     ),
-                    normalization=normalization,
+                    normalization=cross_sections[quote.code].normalization,
                     research_components=ResearchComponentsFromObservation(research_observation),
                     preview_context=options.get("preview_context"),
                 )
@@ -544,18 +485,24 @@ class FeatureBuilder:
         if context is not None and context.latest_trade_date > observation_date:
             context = None
             bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
-        base_context = (
-            replace(
-                context,
-                sample_count=min(61, context.sample_count),
-                return_anchors=tuple((lag, price) for lag, price in context.return_anchors if lag <= 60),
-            )
-            if context is not None
-            else None
-        )
+        history: FactorHistory | None = None
+
+        def prepared_history(cached: _CachedQuoteFactors | None) -> FactorHistory:
+            nonlocal history
+            if history is None:
+                history = (
+                    cached.history
+                    if context is None
+                    and cached is not None
+                    and cached.raw_history == bars
+                    and cached.inputs.observation_date == observation_date
+                    else BuildFactorHistory(bars, context, observation_date)
+                )
+            return history
+
         cache = self._cache
         if cache is None:
-            values = self._base_features(inputs, bars, base_context)
+            values = self._base_features(inputs, prepared_history(None))
         else:
             # Base factors depend on the same <=60-day facts in either profile.
             # Profile publication/model identities remain bound by DailyFeaturePack.
@@ -575,10 +522,14 @@ class FeatureBuilder:
                 found = cache.get(identity)
                 if found is not None and found.value is not None:
                     cached = cast(_CachedQuoteFactors, found.value)
-                    if cached.matches(inputs, bars, base_context):
+                    if cached.matches(inputs, prepared_history(cached)):
                         return cached
+                historical = prepared_history(None)
                 result = _CachedQuoteFactors(
-                    inputs, bars, base_context, tuple(sorted(self._base_features(inputs, bars, base_context).items()))
+                    inputs,
+                    historical,
+                    bars if context is None else None,
+                    tuple(sorted(self._base_features(inputs, historical).items())),
                 )
                 cache.put(
                     identity,
@@ -592,7 +543,7 @@ class FeatureBuilder:
             cached = cast(_CachedQuoteFactors, cache.coalesce(identity, build))
             # A concurrent owner may have different facts under the same latest
             # slot. Recheck the arithmetic inputs before consuming its result.
-            if not cached.matches(inputs, bars, base_context):
+            if not cached.matches(inputs, prepared_history(cached)):
                 cached = build()
             values = dict(cached.values)
         anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *self._model_momentum_horizons)))
@@ -606,7 +557,7 @@ class FeatureBuilder:
                             days,
                             context.anchor_price(days, observation_date)
                             if context is not None
-                            else _lag_close(bars, days, observation_date),
+                            else CompletedHistoryClose(bars, days, observation_date),
                         )
                         for days in anchor_horizons
                     ),
@@ -614,45 +565,24 @@ class FeatureBuilder:
                 self._model_momentum_horizons,
             )
         }
-        return {**values, **qfq_alpha}
+        return {**values, **dict.fromkeys(_DEFERRED_FEATURES), **qfq_alpha}
 
     def _base_features(
         self,
         quote: _QuoteFactorInputs,
-        bars: tuple[DailyBar, ...],
-        history_summary: HistoryContext | None = None,
+        history: FactorHistory,
     ) -> dict[str, float | None]:
-        observation_date = quote.observation_date
-        context = history_summary
-        if context is not None and context.latest_trade_date > observation_date:
-            context = None
-            bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
-        history = context.profile if context is not None else SummarizeHistoryMetrics(bars)
-        completed_bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
-        if (
-            context is not None
-            and context.latest_trade_date >= observation_date
-            and context.previous_profile is not None
-        ):
-            setup_history = context.previous_profile
-        else:
-            setup_history = SummarizeHistoryMetrics(completed_bars) if len(completed_bars) != len(bars) else history
-        returns = {
-            days: context.return_pct(days, quote.price, observation_date)
-            if context is not None
-            else _live_return_pct(bars, days, quote.price, observation_date)
-            for days in (1, 3, 5, 10, 20, 40, 60)
-        }
-        ma5 = setup_history.moving_average_5d
-        ma10 = setup_history.moving_average_10d
-        ma20 = setup_history.moving_average_20d
-        ma60 = history.moving_average_60d
+        returns = history.returns(quote.price)
+        ma5 = history.ma5
+        ma10 = history.ma10
+        ma20 = history.ma20
+        ma60 = history.ma60
         volatility = history.volatility_20d
         drawdown = history.max_drawdown_20d
         amount_median = history.median_amount_20d
-        volume_to_5d_average = _volume_to_5d_average(quote.volume, setup_history)
+        volume_to_5d_average = _volume_to_5d_average(quote.volume, history.average_volume_5d)
         ma_position = _ma_position(quote.price, ma20, ma60)
-        breakout = _breakout_score(quote.price, bars)
+        breakout = _breakout_score(quote.price, history.breakout_high)
         slope = _slope_score(ma5, ma20)
         capacity = (
             None
@@ -689,7 +619,7 @@ class FeatureBuilder:
             if quote.price is not None and math.isfinite(quote.price) and ma20 is not None and ma20 > 0.0
             else None
         )
-        prior_high = setup_history.high_20d
+        prior_high = history.prior_high_20d
         breakout_deviation = (
             (quote.price / prior_high - 1.0) * 100.0
             if quote.price is not None and quote.price > 0.0 and prior_high is not None and prior_high > 0.0
@@ -707,11 +637,11 @@ class FeatureBuilder:
             "qfq_average_amount_20d": history.average_amount_20d,
             "volatility_20d": volatility,
             "max_drawdown_20d": drawdown,
-            "atr20_pct": setup_history.atr20_pct,
+            "atr20_pct": history.atr20_pct,
             "ma5": ma5,
             "ma10": ma10,
             "ma20": ma20,
-            "ma20_slope_pct": setup_history.ma20_slope_pct,
+            "ma20_slope_pct": history.ma20_slope_pct,
             "volume_to_5d_average": volume_to_5d_average,
             "prior_high_20d": prior_high,
             "breakout_deviation_pct": breakout_deviation,
@@ -733,58 +663,42 @@ class FeatureBuilder:
             "ma20_deviation_pct": ma20_deviation,
             "low_crowding_score": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
             "limit_proximity": limit_proximity,
-            "price_volume_divergence": None,
-            "latest_disclosed_report_loss": None,
-            "financial_deterioration": None,
-            "reduction_or_unlock": None,
-            "shareholder_reduction_level": None,
-            "unlock_risk": None,
-            "pledge_risk": None,
-            "negative_announcement_level": None,
-            "major_shareholder_reduction": None,
-            "financial_fraud_history": None,
-            "official_investigation_history": None,
-            "major_illegal_history": None,
-            "fund_occupation_history": None,
-            "illegal_guarantee_history": None,
-            "forced_delisting_risk": None,
-            "corporate_risk_window_unavailable": None,
-            "news_sentiment": None,
-            "evidence_freshness": None,
-            "value_score": None,
-            "growth_score": None,
-            "quality_score": None,
-            "industry_policy_score": None,
-            "risk_protection_score": None,
-            "short_term_overheat": None,
-            "intraday_reversal": None,
-            "liquidity_contraction": None,
-            "trend_breakdown": None,
-            "entry_quality": None,
         }
 
 
-def _lag_close(bars: tuple[DailyBar, ...], days: int, observation_date: str) -> float | None:
-    if days < 1:
-        return None
-    completed = tuple(bar for bar in bars if bar.trade_date < observation_date)
-    if len(completed) < days:
-        return None
-    value = completed[-days].close
-    return value if math.isfinite(value) and value > 0.0 else None
+_DEFERRED_FEATURES = (
+    "price_volume_divergence",
+    "latest_disclosed_report_loss",
+    "financial_deterioration",
+    "reduction_or_unlock",
+    "shareholder_reduction_level",
+    "unlock_risk",
+    "pledge_risk",
+    "negative_announcement_level",
+    "major_shareholder_reduction",
+    "financial_fraud_history",
+    "official_investigation_history",
+    "major_illegal_history",
+    "fund_occupation_history",
+    "illegal_guarantee_history",
+    "forced_delisting_risk",
+    "corporate_risk_window_unavailable",
+    "news_sentiment",
+    "evidence_freshness",
+    "value_score",
+    "growth_score",
+    "quality_score",
+    "industry_policy_score",
+    "risk_protection_score",
+    "short_term_overheat",
+    "intraday_reversal",
+    "liquidity_contraction",
+    "trend_breakdown",
+    "entry_quality",
+)
 
 
-def _live_return_pct(
-    bars: tuple[DailyBar, ...], days: int, current_price: float | None, observation_date: str
-) -> float | None:
-    start = _lag_close(bars, days, observation_date)
-    if start is None or current_price is None or not math.isfinite(current_price) or current_price <= 0:
-        return None
-    return (current_price / start - 1.0) * 100.0
-
-
-def _volume_to_5d_average(volume: float | None, history: HistoryProfile) -> float | None:
-    average_volume = history.average_volume_5d
+def _volume_to_5d_average(volume: float | None, average_volume: float | None) -> float | None:
     if (
         volume is None
         or not math.isfinite(volume)

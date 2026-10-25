@@ -22,6 +22,7 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import BuildHistoryContext
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.infra.normalization.features import FeatureBuilder
+from trader.recommendation.infra.normalization import factor_history
 
 
 def _builder(cache=None):
@@ -162,3 +163,91 @@ def test_concurrent_input_join_rechecks_facts_and_keeps_newer_cache(factor_cache
     count = len(calls)
     assert builder._raw_features(newer, bars) == _builder()._raw_features(newer, bars)
     assert len(calls) == count
+
+
+@pytest.mark.parametrize("published", (False, True))
+def test_quote_changes_reuse_prepared_history_without_repeating_daily_statistics(factor_cache, monkeypatch, published):
+    bars = _history_bars()
+    context = BuildHistoryContext(bars) if published else None
+    builder = _builder(factor_cache)
+    calls = []
+    original = factor_history.SummarizeHistoryMetrics
+
+    def counted(history):
+        calls.append(len(history))
+        return original(history)
+
+    monkeypatch.setattr(factor_history, "SummarizeHistoryMetrics", counted)
+    for index in range(10):
+        quote = replace(_quote(), price=12.0 + index / 10)
+        got = builder._raw_features(quote, bars, context)
+        assert got["ma20"] == sum(bar.close for bar in bars[-20:]) / 20
+    assert len(calls) == (0 if published else 1)
+
+
+def test_long_model_anchor_change_does_not_rebuild_common_base_factors(factor_cache, monkeypatch):
+    bars = _history_bars()
+    context = replace(BuildHistoryContext(bars), return_anchors=(*BuildHistoryContext(bars).return_anchors, (249, 8.0)))
+    builder = FeatureBuilder(
+        NEWS_POLICY,
+        TAIL_POLICY,
+        MARKET_REGIME_POLICY,
+        LONG_POLICY,
+        FEATURE_WEIGHT_POLICY,
+        model_momentum_horizons=(20, 40, 60, 120, 250),
+        cache=factor_cache,
+    )
+    first = builder._raw_features(_quote(), bars[-20:], context)
+
+    def forbidden(*args):
+        raise AssertionError("long model anchors must not invalidate the shared base")
+
+    monkeypatch.setattr(builder, "_base_features", forbidden)
+    corrected = replace(
+        context, return_anchors=tuple((lag, 9.0 if lag == 249 else value) for lag, value in context.return_anchors)
+    )
+    second = builder._raw_features(_quote(), bars[-20:], corrected)
+    assert first["return_20d"] == second["return_20d"]
+    assert first != second
+
+
+def test_unused_bar_fields_do_not_retain_raw_history_in_published_factor_cache(factor_cache, monkeypatch):
+    bars = _history_bars()
+    context = BuildHistoryContext(bars)
+    builder = _builder(factor_cache)
+    first = builder._raw_features(_quote(), bars[-20:], context)
+
+    def forbidden(*args):
+        raise AssertionError("unused raw metadata changed the numerical history inputs")
+
+    monkeypatch.setattr(builder, "_base_features", forbidden)
+    corrected = tuple(replace(bar, source="new-publication", open_price=bar.open_price + 1) for bar in bars[-20:])
+    assert builder._raw_features(_quote(), corrected, context) == first
+    # At this measured per-stock payload, all 5500 stocks fit the existing group budget.
+    stats = factor_cache.status().datasets["quote_factor_inputs"]["local_history"]
+    assert stats.estimated_bytes * 5500 < 51380224
+
+
+def test_complete_market_base_factors_fit_existing_budget_and_reuse_every_stock(factor_cache, monkeypatch):
+    bars = _history_bars()
+    context = BuildHistoryContext(bars)
+    builder = _builder(factor_cache)
+    quotes = tuple(replace(_quote(str(600000 + index)), price=12.0 + index / 1000) for index in range(5500))
+    for quote in quotes:
+        builder._raw_features(quote, bars[-20:], context)
+    cold = factor_cache.status().datasets["quote_factor_inputs"]["local_history"]
+    assert cold.entries == 5500
+    assert cold.eviction == 0
+    assert cold.estimated_bytes < 51380224
+
+    def forbidden(*args):
+        raise AssertionError("full-market warm traversal evicted an unchanged stock")
+
+    monkeypatch.setattr(builder, "_base_features", forbidden)
+    for quote in quotes:
+        got = builder._raw_features(quote, bars[-20:], context)
+        assert got["return_5d"] == context.return_pct(5, quote.price, NOW.date().isoformat())
+    warm = factor_cache.status().datasets["quote_factor_inputs"]["local_history"]
+    assert warm.entries == cold.entries
+    assert warm.estimated_bytes == cold.estimated_bytes
+    assert warm.eviction == 0

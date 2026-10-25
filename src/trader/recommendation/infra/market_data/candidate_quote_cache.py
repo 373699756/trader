@@ -255,9 +255,9 @@ class QuoteCache:
             self._market_expires_at = self._monotonic() + self._market_ttl_seconds
         return published
 
-    def market_quotes(self) -> tuple[MarketQuote, ...]:
+    def market_features(self) -> tuple[FeatureSnapshot, ...]:
         with self._lock:
-            return tuple(feature.quote for feature in self._market_features)
+            return self._market_features
 
     def update_candidate_quotes(
         self,
