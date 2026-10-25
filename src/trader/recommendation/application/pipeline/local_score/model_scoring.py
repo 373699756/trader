@@ -486,36 +486,56 @@ class ProductionModelScoringService:
             )
             affected.clear()
         computed_groups = () if shared is not None else invalidation.affected_groups
-        vector_started = self._monotonic()
-        inputs_by_row: list[ModelInput] = []
-        for index, row in enumerate(ordered_rows):
-            if row.code not in requested_codes or (
-                self._exposure_contract.requires_industry and row.industry not in self._industry_ids
-            ):
-                continue
-            vector = _model_feature_vector(
-                index,
-                _ModelFeatureVectorContext(
-                    daily_returns[index],
-                    momenta[index],
-                    residuals,
-                    market_state,
-                    self._runtime_features.return_horizons,
-                    self._runtime_features.momentum_horizons,
-                    self._runtime_features.market_state_horizons,
-                    self._feature_ids,
-                ),
+        requested_rows = tuple(
+            (index, row)
+            for index, row in enumerate(ordered_rows)
+            if row.code in requested_codes
+            and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
+        )
+        # The head owns one previous input tuple. Fact equality includes the
+        # complete residual/market population, not merely the requested subset.
+        # V5 additionally binds its full sequence, dates and publication identity.
+        if (
+            previous is not None
+            and previous.fact_revisions == revisions
+            and len(previous.inputs) == len(requested_rows)
+            and all(
+                item.code == row.code
+                and item.industry == row.industry
+                and item.sequence
+                == (population[row.code].model_sequence if self._predictor.profile_id == "v5" else None)
+                for item, (_, row) in zip(previous.inputs, requested_rows, strict=True)
             )
-            inputs_by_row.append(
-                ModelInput(
-                    row.code,
-                    tuple(vector[feature_id] for feature_id in self._feature_ids),
-                    row.industry,
-                    population[row.code].model_sequence if self._predictor.profile_id == "v5" else None,
+        ):
+            inputs = previous.inputs
+        else:
+            vector_started = self._monotonic()
+            inputs_by_row: list[ModelInput] = []
+            for index, row in requested_rows:
+                vector = _model_feature_vector(
+                    index,
+                    _ModelFeatureVectorContext(
+                        daily_returns[index],
+                        momenta[index],
+                        residuals,
+                        market_state,
+                        self._runtime_features.return_horizons,
+                        self._runtime_features.momentum_horizons,
+                        self._runtime_features.market_state_horizons,
+                        self._feature_ids,
+                    ),
                 )
-            )
-        inputs = tuple(inputs_by_row)
-        self._record_stage("model_input_vectors", vector_started)
+                inputs_by_row.append(
+                    ModelInput(
+                        row.code,
+                        tuple(vector[feature_id] for feature_id in self._feature_ids),
+                        row.industry,
+                        population[row.code].model_sequence if self._predictor.profile_id == "v5" else None,
+                    )
+                )
+            inputs = tuple(inputs_by_row)
+            self._record_stage("model_input_vectors", vector_started)
+        deadline.require_time("after_model_input_vectors")
         predictions = previous.predictions if previous is not None and inputs == previous.inputs else None
         if not inputs:
             predictions = ()

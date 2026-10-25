@@ -6,6 +6,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import cast
 
 from trader.recommendation.application.ports.loaded_profile import (
@@ -15,6 +16,7 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelComputationStatus,
     ModelDiagnostics,
     ModelInput,
+    ModelPrediction,
     ModelScoreBatch,
     ModelScoringContext,
     ModelScoringDeadlineError,
@@ -26,6 +28,14 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
 from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
+
+
+@dataclass(frozen=True)
+class _PredictionBatch:
+    model_version: str
+    feature_ids: tuple[str, ...]
+    inputs: tuple[ModelInput, ...]
+    predictions: tuple[ModelPrediction, ...]
 
 
 class LearnedRankScoringService:
@@ -53,11 +63,13 @@ class LearnedRankScoringService:
         self._content_hash = content_hash
         self._monotonic = monotonic
         self._request_count = 0
+        self._cache_hit_count = 0
         self._predictor_batch_count = 0
         self._candidate_count = 0
         self._lock = threading.RLock()
         self._prediction_ms = 0.0
         self._cumulative_prediction_ms = 0.0
+        self._prediction_batch: _PredictionBatch | None = None
         self._contract_hash = content_hash(
             (
                 "completed_daily_251",
@@ -126,14 +138,27 @@ class LearnedRankScoringService:
             )
             for item in population
         )
-        if inputs:
-            self._predictor_batch_count += 1
-        started = self._monotonic()
-        try:
-            predictions = self._predictor.predict(inputs) if inputs else ()
-        finally:
-            self._prediction_ms = max(0.0, (self._monotonic() - started) * 1000.0) if inputs else 0.0
-            self._cumulative_prediction_ms += self._prediction_ms
+        previous = self._prediction_batch
+        reused = (
+            previous is not None
+            and previous.model_version == self.model_version
+            and previous.feature_ids == self._predictor.feature_ids
+            and previous.inputs == inputs
+        )
+        self._prediction_ms = 0.0
+        if reused and previous is not None:
+            predictions = previous.predictions
+        else:
+            if deadline is not None and self._monotonic() >= deadline:
+                raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
+            if inputs:
+                self._predictor_batch_count += 1
+            started = self._monotonic()
+            try:
+                predictions = self._predictor.predict(inputs) if inputs else ()
+            finally:
+                self._prediction_ms = max(0.0, (self._monotonic() - started) * 1000.0) if inputs else 0.0
+                self._cumulative_prediction_ms += self._prediction_ms
         if deadline is not None and self._monotonic() >= deadline:
             raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
         if tuple(item.code for item in predictions) != population_codes or any(
@@ -166,7 +191,7 @@ class LearnedRankScoringService:
             )
         requested = frozenset(requested_codes)
         selected = tuple(item for item in predictions if item.code in requested)
-        return ModelScoreBatch(
+        batch = ModelScoreBatch(
             self.model_version,
             {item.code: diagnostics[item.code] for item in selected},
             selected,
@@ -192,6 +217,13 @@ class LearnedRankScoringService:
                 )
             ),
         )
+        if deadline is not None and self._monotonic() >= deadline:
+            raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
+        # Only raw predictions survive the call. Eligibility, ranks, costs and
+        # publication identities above always belong to the current population.
+        self._prediction_batch = _PredictionBatch(self.model_version, self._predictor.feature_ids, inputs, predictions)
+        self._cache_hit_count += int(reused)
+        return batch
 
     def status(self) -> ScoringHeadRuntimeStatus:
         with self._lock:
@@ -220,6 +252,7 @@ class LearnedRankScoringService:
             computation=ModelComputationStatus(
                 candidate_count=self._candidate_count,
                 request_count=self._request_count,
+                cache_hit_count=self._cache_hit_count,
                 predictor_batch_count=self._predictor_batch_count,
                 stage_durations=(
                     ModelComputationStageStatus(

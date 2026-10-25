@@ -1,19 +1,19 @@
 """Continuous diagnostic evidence must distinguish cache reuse from skipped work."""
 
-import socket
 import json
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from tests.unit.entrypoints.test_performance_models import _workload
 from tests.unit.entrypoints.test_performance_fixtures import _budgets
+from tests.unit.entrypoints.test_performance_models import _workload
 from trader.entrypoints import performance
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
-from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceFixtures
+from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
 from trader.recommendation.infra.performance.pipeline_workload import MeasureContinuousPipeline, PipelineReplayWorkload
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 
@@ -57,8 +57,7 @@ def test_continuous_chain_keeps_instances_and_fingerprints_while_counting_real_w
         assert [head["result_hash"] for head in current["heads"]] == [
             head["result_hash"] for head in cold["profiles"][0]["heads"]
         ]
-        if profile != "v1":
-            assert all(head["predictor_batches"] == 0 for head in current["heads"])
+        assert all(head["predictor_batches"] == 0 for head in current["heads"])
         assert round_["wall_ms"] >= current["wall_ms"] >= sum(current["stage_ms"].values())
     for scenario in ("observation_time", "delivery_time", "quote_time"):
         for round_ in report["scenarios"][scenario]["rounds"]:
