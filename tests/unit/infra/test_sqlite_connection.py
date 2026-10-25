@@ -275,3 +275,17 @@ def test_unsupported_parameter_is_rejected_before_sql_execution(parameters):
     with SqliteSession(":memory:") as connection:
         with pytest.raises(ValueError, match="sqlite_parameter_type_invalid"):
             connection.run("SELECT :value", parameters)
+
+
+@pytest.mark.parametrize("ticks", ((2.0,), (0.0, 2.0)))
+def test_backup_deadline_preserves_target_before_and_during_copy(ticks):
+    clock = iter(ticks)
+    with SqliteSession(":memory:") as source, SqliteSession(":memory:") as target:
+        source.run("CREATE TABLE payload(value BLOB)")
+        source.run("INSERT INTO payload VALUES(zeroblob(2000000))")
+        target.run("CREATE TABLE previous(value INTEGER)")
+        target.run("INSERT INTO previous VALUES(7)")
+        with pytest.raises(TimeoutError, match="sqlite_backup_deadline_exceeded"):
+            source.backup_to(target, deadline=1.0, monotonic=lambda: next(clock))
+        assert target.run("SELECT value FROM previous").require_one()[0] == 7
+        assert target.run("SELECT name FROM sqlite_master WHERE name='payload'").fetchone() is None

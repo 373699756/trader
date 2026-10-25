@@ -1414,10 +1414,11 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
     original = PublishedHistoryCache(reader, lookback_sessions=251, monotonic=time.monotonic, outcome_history=reader)
     projection.initialize(cancelled=lambda: False)
     original.initialize(cancelled=lambda: False)
+    assert calendar_calls == 1  # Startup aligns the shared history projection to the calendar.
     restrictions = {}
     loaded = projection.load(("600001", "600002"), observed_at=NOW, action_restrictions=restrictions)
     assert tuple(loaded) == ("600001",)
-    assert calendar_calls == 1
+    assert calendar_calls == 2  # Freshness is checked once for the whole requested batch.
     assert restrictions == {"600002": {"history_data_pending"}}
     expected = original.load(("600001",), observed_at=NOW)
     assert loaded == expected
@@ -1503,13 +1504,14 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
         return SyncResult((SyncTaskResult("market", "pending" if market.needs_retry else "completed", market=market),))
 
     monkeypatch.setattr("trader.bootstrap.ExecuteSync", execute)
+    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeStorage", lambda runtime: None)
     config = PROJECT_ROOT / "config/runtime.json"
     assert cli.Main(["--config", str(config), "sync", "market"]) == exit_code
     captured = capsys.readouterr()
     summary = json.loads(captured.out)
     assert summary["schema_version"] == "data_sync"
     payload = summary["tasks"][0]
-    assert captured.err == "qfq fixture progress\n"
+    assert captured.err == "sync: 正在准备官方总体、ST资格、交易日历及当前行业。\nqfq fixture progress\n"
     assert payload["pending_codes"] == pending
     assert payload["no_trade_data_codes"] == no_trade_data
     assert payload["latest_missing_codes"] == latest_missing

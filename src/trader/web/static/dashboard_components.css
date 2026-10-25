@@ -415,6 +415,13 @@ table.is-long-table td:nth-child(2) {
   box-shadow: 1px 0 0 var(--line);
 }
 
+table.is-long-table td:nth-child(3),
+table.is-long-table td:nth-child(4),
+table.is-long-table td:nth-child(5),
+table.is-long-table td:nth-child(6) {
+  text-align: center;
+}
+
 thead th:first-child,
 thead th:nth-child(2),
 table:not(.is-long-table) thead th:nth-child(3) {

@@ -379,12 +379,13 @@ def test_candidate_source_lane_deadline_returns_baseline_and_discards_late_quote
         circuit_breaker_seconds=60,
         worker_pool=pool,
         source_lanes=lanes,
+        wall_clock=lambda: NOW,
     )
     pool.start()
-    observed_at = datetime.now(timezone.utc)
+    observed_at = NOW
     gateway.fetch_market(observed_at=observed_at)
     baseline_observed_at = gateway.canonical_snapshot().observed_at
-    deadline = datetime.now(timezone.utc) + timedelta(seconds=0.01)
+    deadline = observed_at + timedelta(seconds=0.01)
     release_timer = threading.Timer(0.6, tencent.release.set)
     release_timer.start()
 

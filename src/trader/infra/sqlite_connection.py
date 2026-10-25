@@ -77,6 +77,18 @@ class SqliteConnection:
     def observe_progress(self, callback: Callable[[], int] | None, steps: int) -> None:
         self._driver.set_progress_handler(callback, steps)
 
+    def backup_to(self, target: SqliteConnection, *, deadline: float, monotonic: Callable[[], float]) -> None:
+        """Copy a consistent snapshot, including committed WAL pages, within a caller-owned deadline."""
+        if not isfinite(deadline):
+            raise ValueError("sqlite_backup_deadline_invalid")
+
+        def check_progress(status: int, remaining: int, total: int) -> None:
+            if monotonic() >= deadline:
+                raise TimeoutError("sqlite_backup_deadline_exceeded")
+
+        check_progress(0, 0, 0)
+        self._driver.backup(target._driver, pages=256, progress=check_progress, sleep=0.05)
+
     def close(self) -> None:
         """Close the handle, rolling back any unfinished transaction."""
         self._driver.close()

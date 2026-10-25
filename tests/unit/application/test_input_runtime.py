@@ -369,7 +369,7 @@ def test_production_adapter_rejects_transient_invalid_empty_projection(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
-    feature = application_feature_factory("600001", observed_at - timedelta(minutes=1))
+    feature = application_feature_factory("600001", observed_at.replace(hour=14, minute=59))
     stale = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
     adapter = build_cycle_fixture(
         _Market((stale,)),
@@ -385,11 +385,30 @@ def test_production_adapter_rejects_transient_invalid_empty_projection(
         adapter.decisions.build_local(request)
 
 
-def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
+@pytest.mark.parametrize("minute", (0, 4))
+def test_production_adapter_accepts_same_day_closing_quote(application_feature_factory, minute) -> None:
+    observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at.replace(minute=minute))
+    closing = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
+    adapter = build_cycle_fixture(
+        _Market((closing,)),
+        config_version="test-config",
+        decision_build=_decision_build(),
+    )
+    request = _request(observed_at)
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.data.refresh(request)
+
+    result = adapter.decisions.build_local(request)
+
+    assert tuple(item.code for item in result.items) == ("600001",)
+
+
+def test_primary_blocker_reports_blocked_history_and_retains_partial_stale_market(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
-    stale_source = application_feature_factory("600001", observed_at - timedelta(minutes=1))
+    stale_source = application_feature_factory("600001", observed_at.replace(hour=14, minute=59))
     stale = replace(stale_source, quote=replace(stale_source.quote, board=Board.MAIN))
     fresh_source = application_feature_factory("600002", observed_at - timedelta(seconds=1))
     history_incomplete = replace(
@@ -415,7 +434,7 @@ def test_primary_blocker_reports_dominant_stale_market_before_partial_history(
     assert status.pipeline.stage("dynamic_filter").reason_counts[0].reason == "stale_quote"
     assert status.pipeline.stage("dynamic_filter").reason_counts[0].count == 1
     assert status.pipeline.stage("dynamic_filter").state == "degraded"
-    assert status.primary_blocker == "stale_quote"
+    assert status.primary_blocker == "strategy_history_insufficient"
 
 
 def test_primary_blocker_reports_dominant_missing_market_liquidity_history(

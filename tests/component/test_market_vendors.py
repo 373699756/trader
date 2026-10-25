@@ -848,14 +848,15 @@ def test_gateway_starts_sina_after_primary_timeout_without_waiting_for_slow_prim
         worker_pool=pool,
         source_lanes=lanes,
         full_market_primary_timeout_seconds=0.02,
+        wall_clock=lambda: NOW,
     )
 
     started = time.monotonic()
     try:
         result = tuple(
             gateway.fetch_market(
-                observed_at=datetime.now(timezone.utc),
-                deadline=datetime.now(timezone.utc) + timedelta(seconds=0.5),
+                observed_at=NOW,
+                deadline=NOW + timedelta(seconds=0.5),
             )
         )
         elapsed = time.monotonic() - started
@@ -900,8 +901,9 @@ def test_late_primary_does_not_overwrite_sina_backup_quote() -> None:
         worker_pool=pool,
         source_lanes=lanes,
         full_market_primary_timeout_seconds=0.02,
+        wall_clock=lambda: NOW,
     )
-    observed_at = datetime.now(timezone.utc)
+    observed_at = NOW
     deadline = observed_at + timedelta(seconds=0.5)
 
     try:

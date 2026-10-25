@@ -1,8 +1,8 @@
 """The public company diagnostic isolates writes and retains bounded recovery evidence."""
 
 import json
-import sqlite3
 import sys
+import time
 
 import pytest
 
@@ -11,6 +11,7 @@ from scripts.runtime_diagnostics.company_resume import Main, _copy, _saved_pages
 from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import DisclosurePage, DisclosureQuery
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
 def test_company_profile_requires_explicit_external_directory(tmp_path):
@@ -40,21 +41,47 @@ def test_company_profile_requires_explicit_external_directory(tmp_path):
 
 def test_backup_preserves_source_and_is_independently_writable(tmp_path):
     source, replica = tmp_path / "source.sqlite3", tmp_path / "replica.sqlite3"
-    connection = sqlite3.connect(source)
-    connection.execute("CREATE TABLE facts(value INTEGER)")
-    connection.execute("INSERT INTO facts VALUES(7)")
-    connection.commit()
-    connection.close()
+    with SqliteSession(source) as connection, SqliteTransaction(connection):
+        connection.run("CREATE TABLE facts(value INTEGER)")
+        connection.run("INSERT INTO facts VALUES(7)")
     before = source.read_bytes()
     # A stale intermediate name must never let the backup write through a source hard link.
     stale = replica.with_suffix(".copying.sqlite3")
     stale.hardlink_to(source)
-    _copy(source, replica)
-    connection = sqlite3.connect(replica)
-    connection.execute("UPDATE facts SET value=9")
-    connection.commit()
-    connection.close()
+    _copy(source, replica, deadline=time.monotonic() + 5)
+    with SqliteSession(replica) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE facts SET value=9")
     assert source.read_bytes() == before and stale.samefile(source)
+
+
+def test_backup_includes_committed_wal_without_changing_the_source(tmp_path):
+    source, replica = tmp_path / "source.sqlite3", tmp_path / "replica.sqlite3"
+    with SqliteSession(source, SqliteConnectionOptions(journal_mode="WAL")) as writer:
+        with SqliteTransaction(writer):
+            writer.run("CREATE TABLE facts(value INTEGER)")
+            writer.run("INSERT INTO facts VALUES(7)")
+        wal = source.with_name(source.name + "-wal")
+        before = (source.read_bytes(), wal.read_bytes())
+        assert before[1]
+        _copy(source, replica, deadline=time.monotonic() + 5)
+        with SqliteSession(replica) as connection:
+            assert connection.run("SELECT value FROM facts").require_one()[0] == 7
+            connection.run("UPDATE facts SET value=9")
+        assert writer.run("SELECT value FROM facts").require_one()[0] == 7
+        assert (source.read_bytes(), wal.read_bytes()) == before
+
+
+def test_backup_timeout_preserves_previous_replica_and_removes_partial_file(tmp_path):
+    source, replica = tmp_path / "source.sqlite3", tmp_path / "replica.sqlite3"
+    with SqliteSession(source) as connection:
+        connection.run("CREATE TABLE facts(value INTEGER)")
+    with SqliteSession(replica) as connection:
+        connection.run("CREATE TABLE previous(value INTEGER)")
+    before = replica.read_bytes()
+    with pytest.raises(TimeoutError, match="sqlite_backup_deadline_exceeded"):
+        _copy(source, replica, deadline=time.monotonic() - 1)
+    assert replica.read_bytes() == before
+    assert list(tmp_path.glob(".company-copy-*")) == []
 
 
 def test_discovery_response_is_not_counted_as_a_saved_page_replayed_by_parent_verification(tmp_path):
@@ -70,9 +97,8 @@ def test_discovery_response_is_not_counted_as_a_saved_page_replayed_by_parent_ve
 
 def test_replay_rejects_hard_link_to_active_database_before_any_write(tmp_path, monkeypatch):
     source = tmp_path / "active.sqlite3"
-    connection = sqlite3.connect(source)
-    connection.execute("CREATE TABLE facts(value INTEGER)")
-    connection.close()
+    with SqliteSession(source) as connection:
+        connection.run("CREATE TABLE facts(value INTEGER)")
     directory = tmp_path / "replay"
     directory.mkdir()
     (directory / "evidence.sqlite3").hardlink_to(source)

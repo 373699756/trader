@@ -5,11 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sqlite3
 import tempfile
 import time
 from collections.abc import Sequence
-from contextlib import closing
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -90,15 +88,15 @@ class _ObservedSource(CninfoMarketDisclosureSource):
         return super().document(item, deadline=deadline)
 
 
-def _copy(source: Path, destination: Path) -> None:
+def _copy(source: Path, destination: Path, *, deadline: float) -> None:
     with tempfile.NamedTemporaryFile(
         prefix=".company-copy-", suffix=".sqlite3", dir=destination.parent, delete=False
     ) as temporary:
         pending = Path(temporary.name)
     try:
-        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=8)) as original:
-            with closing(sqlite3.connect(pending, timeout=8)) as replica:
-                original.backup(replica)
+        with SqliteSession(source, SqliteConnectionOptions(read_only=True, timeout_seconds=8)) as original:
+            with SqliteSession(pending, SqliteConnectionOptions(timeout_seconds=8)) as replica:
+                original.backup_to(replica, deadline=deadline, monotonic=time.monotonic)
         pending.replace(destination)
     finally:
         pending.unlink(missing_ok=True)
@@ -157,8 +155,9 @@ def Main() -> int:
     destination = directory / "evidence.sqlite3"
     if destination.resolve() == source_path or (destination.exists() and destination.samefile(source_path)):
         parser.error("source and replay database must differ")
+    started = time.monotonic()
     if not destination.exists():
-        _copy(source_path, destination)
+        _copy(source_path, destination, deadline=started + args.budget_seconds)
     selection_path = directory / "selection.json"
     with SqliteSession(destination, SqliteConnectionOptions(read_only=True)) as c:
         codes = tuple(row[0] for row in c.run("SELECT code FROM published ORDER BY code"))
@@ -178,7 +177,6 @@ def Main() -> int:
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     configuration = LoadCompanySyncConfiguration(_ROOT)
     configuration = replace(configuration, budget_seconds=args.budget_seconds)
-    started = time.monotonic()
     runs = []
     saved: set[tuple[str, str, str, str, int]] = set()
     replayed = 0
