@@ -115,13 +115,22 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
     skill_files = (
         SKILL_ROOT / "SKILL.md",
         *(SKILL_ROOT / "references").glob("*.md"),
+        SKILL_ROOT.parent / "python-engineering-guide" / "SKILL.md",
+        *(SKILL_ROOT.parent / "python-engineering-guide" / "references").glob("*.md"),
     )
     active_text = "\n".join(path.read_text(encoding="utf-8") for path in skill_files)
 
     for source in skill_files:
         content = source.read_text(encoding="utf-8")
-        for target in re.findall(r"\[[^]]+\]\(([^)]+\.md)(?:#[^)]+)?\)", content):
-            assert (source.parent / target).is_file(), f"missing skill reference: {source.name} -> {target}"
+        for target, anchor in re.findall(r"\[[^]]+\]\(([^)]+\.md)(?:#([^)]+))?\)", content):
+            if "://" in target:
+                continue
+            linked = source.parent / target
+            assert linked.is_file(), f"missing skill reference: {source.name} -> {target}"
+            if anchor:
+                headings = re.findall(r"^#{1,6}\s+(.+)$", linked.read_text(encoding="utf-8"), re.MULTILINE)
+                anchors = {re.sub(r"[^\w\s-]", "", heading.lower()).replace(" ", "-") for heading in headings}
+                assert anchor in anchors, f"missing skill anchor: {source.name} -> {target}#{anchor}"
 
     assert "docs/1_评分逻辑.md" in active_text
     assert "docs/2_工程设计.md" in active_text
