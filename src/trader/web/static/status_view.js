@@ -782,10 +782,17 @@
     const market = statusPayload && statusPayload.market_data;
     if (payload && payload.status === "not_ready" && payload.historical !== true
         && payload.strategy !== "long" && market
-        && market.published_history_state === "unavailable"
-        && market.history_maintenance_state === "loading"
-        && market.history_maintenance_stage === "reading_active_snapshot") {
-      return { primary_blocker: "history_projection_loading" };
+        && market.published_history_state === "unavailable") {
+      if (market.history_maintenance_state === "loading"
+          && market.history_maintenance_stage === "reading_active_snapshot") {
+        return { primary_blocker: "history_projection_loading" };
+      }
+      if (["failed", "unavailable"].includes(market.history_maintenance_state)) {
+        return {
+          primary_blocker: "history_projection_failed",
+          failure_reason: market.history_maintenance_reason || "history_inputs_unavailable",
+        };
+      }
     }
     const inputQuality = strategyInputQuality(payload, statusPayload);
     if (inputQuality) return inputQuality;

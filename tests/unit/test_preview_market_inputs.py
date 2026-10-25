@@ -1,7 +1,9 @@
 """Preview keeps the signal day independent from the actual collection day."""
 
+from concurrent.futures import Future
 from dataclasses import replace
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -34,6 +36,7 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_norm
     NormalizeCandidateDiscoveryPopulation,
 )
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
+from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.candidate.filters import LevelOneFilterRules
 from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
 from trader.recommendation.domain.market.tail import DeriveTailSignals
@@ -262,6 +265,14 @@ def test_preview_minute_lane_preserves_real_failure_and_retained_close_qualifica
     pool.start()
     try:
         assert loader.load(("600001",), observed)["600001"] == bars
+        superseded = Future()
+        superseded.set_exception(SourceRequestSupersededError("replaced by another profile"))
+        with patch.object(lanes, "submit", return_value=superseded):
+            restrictions = {}
+            retained = loader.load(("600001", "600002"), observed, action_restrictions=restrictions)
+        assert retained == {"600001": bars}
+        assert restrictions == {"600001": {"intraday_data_degraded"}}
+        assert loader.status().last_error == "intraday_request_superseded"
         clock.value = 2
         restrictions = {}
         assert loader.load(("600001",), observed, action_restrictions=restrictions)["600001"] == bars

@@ -76,9 +76,9 @@ def test_leading_absence_uses_earlier_valuation_without_compressing_calendar():
     class History(_Archive):
         read_sessions = []
 
-        def read_windows(self, manifest, codes, *, sessions):
+        def read_windows(self, manifest, codes, *, sessions, check=None):
             self.read_sessions.append(sessions)
-            return super().read_windows(manifest, codes, sessions=sessions)
+            return super().read_windows(manifest, codes, sessions=sessions, check=check)
 
         @staticmethod
         def window(code, selected):

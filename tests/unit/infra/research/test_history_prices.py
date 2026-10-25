@@ -57,6 +57,72 @@ def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> Non
     assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 1
 
 
+def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision(tmp_path: Path) -> None:
+    path = tmp_path / "prices_2026.sqlite3"
+    repository = HistoryPricePartition(path, 2026, 9)
+    repository.initialize()
+    day = date(2026, 9, 10)
+    repository.save_revisions((_revision(date(2026, 1, 10), 1, 8.0), _revision(day, 1, 10.0)))
+    repository.save_revisions((_revision(day, 2, 12.0),))
+    with closing(repository._read_connection()) as connection:
+        plan = tuple(
+            str(row[3])
+            for row in connection.run(
+                "EXPLAIN QUERY PLAN " + partition_module._PUBLISHED_RANGE_BY_CODE_SQL,
+                ("2026-09-01", "2026-09-30", 1),
+            )
+        )
+    assert any("SEARCH records" in item and "trade_date>? AND trade_date<?" in item for item in plan)
+    assert not any("SCAN records" in item for item in plan)
+    before = tuple(repository.iter_published_cells(day, day, snapshot_sequence=1))
+    after = tuple(repository.iter_published_cells(day, day, snapshot_sequence=2))
+    assert len(before) == len(after) == 1
+    assert before[0].qfq.close_price == 9.0 and after[0].qfq.close_price == 11.0
+
+
+@pytest.mark.parametrize("operation", ("proof", "cells"))
+def test_published_history_read_checks_budget_inside_sqlite(tmp_path: Path, operation: str) -> None:
+    path = tmp_path / "prices_2026.sqlite3"
+    repository = HistoryPricePartition(path, 2026, 9)
+    repository.initialize()
+    revisions = []
+    for number in range(500):
+        original = _revision(date(2026, 9, 10), 1, 10.0)
+        code = f"{600000 + number:06d}"
+        revisions.append(
+            replace(
+                original,
+                cell=replace(
+                    original.cell,
+                    code=code,
+                    unadjusted=replace(original.cell.unadjusted, code=code),
+                    qfq=replace(original.cell.qfq, code=code),
+                ),
+            )
+        )
+    repository.save_revisions(revisions)
+    reference = repository.seal(1)
+    calls = 0
+
+    def deadline():
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise RuntimeError("history_preload_deadline")
+
+    with pytest.raises(RuntimeError, match="^history_preload_deadline$"):
+        if operation == "proof":
+            HistoryPricePartition.verify_logical_content(path, reference, check=deadline)
+        else:
+            tuple(
+                repository.iter_published_cells(
+                    date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1, check=deadline
+                )
+            )
+    HistoryPricePartition.verify_logical_content(path, reference)
+    assert len(tuple(repository.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 500
+
+
 def test_resume_read_skips_absent_stocks_and_preserves_partial_and_sequence_views(tmp_path: Path) -> None:
     statements: list[str] = []
     month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)

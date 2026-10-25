@@ -27,6 +27,7 @@ from trader.download.infra.history_snapshot_reader import (
     HistorySnapshotReadError,
     RouteHistoryMonths,
 )
+from trader.download.infra.history_sqlite_read_connection import PrefetchHistoryPricePages
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
@@ -361,17 +362,27 @@ def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002")) + (changed,)
     ordered = tuple(sorted(rows, key=lambda row: (row.trade_date, row.code, row.first_seen_sequence, row.revision_id)))
     snapshot = replace(_build_snapshot(root, ordered), sequence=2)
+    expected = tuple(
+        ProjectHistoryCell(row.cell) for row in HistorySnapshotReader(root).read_code_window("600001", dates, snapshot)
+    )
     reader = HistorySnapshotReader(root)
-    expected = tuple(ProjectHistoryCell(row.cell) for row in reader.read_code_window("600001", dates, snapshot))
 
     def unexpected_revision_decode(_row):
         pytest.fail("published daily projection must not decode or hash complete revisions")
 
     monkeypatch.setattr(partition_module, "_decode_row", unexpected_revision_decode)
+    prefetched = []
+
+    def prefetch(path, check=None):
+        prefetched.append(path.name)
+        PrefetchHistoryPricePages(path, check)
+
+    monkeypatch.setattr("trader.download.infra.history_snapshot_reader.PrefetchHistoryPricePages", prefetch)
     assert reader.read_published_code_window("600001", dates, snapshot) == expected
     streamed = tuple(reader.iter_published_range_by_code(dates[0], dates[-1], snapshot))
     assert tuple(cell for cell in streamed if cell.code == "600001") == expected
     assert len(streamed) == len(dates) * 2
+    assert prefetched == ["prices_2026.sqlite3"]
 
 
 def test_published_alignment_seed_window_and_valid_looking_payload_corruption(tmp_path):

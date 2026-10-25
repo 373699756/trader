@@ -92,11 +92,15 @@ class _Archive:
     def manifest(self):
         return self.current
 
-    def iter_windows(self, manifest, *, sessions):
+    def iter_windows(self, manifest, *, sessions, check=None):
         for code in manifest.universe_codes:
+            if check is not None:
+                check()
             yield self.window(code, manifest.calendar_dates[-sessions:])
 
-    def read_windows(self, manifest, codes, *, sessions):
+    def read_windows(self, manifest, codes, *, sessions, check=None):
+        if check is not None:
+            check()
         self.reads.append(tuple(codes))
         return tuple(self.window(code, manifest.calendar_dates[-sessions:]) for code in codes)
 
@@ -332,7 +336,7 @@ def test_incomplete_base_cannot_acquire_model_eligibility_from_a_valid_tail():
     history, archive, supplier, _, _ = _cache()
     original_read = archive.read_windows
 
-    def incomplete_base(manifest, codes, *, sessions):
+    def incomplete_base(manifest, codes, *, sessions, check=None):
         return tuple(
             replace(window, cells=window.cells[4:]) for window in original_read(manifest, codes, sessions=sessions)
         )

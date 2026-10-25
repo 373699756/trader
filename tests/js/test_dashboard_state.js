@@ -118,6 +118,24 @@ const historyLoadingStatus = { market_data: {
   history_maintenance_stage: "reading_active_snapshot",
 } };
 const historyLoadingPayload = { strategy: "tomorrow", status: "not_ready", trade_date: "2026-10-08" };
+for (const strategy of ["tomorrow", "d25"]) {
+  const failedPayload = { ...historyLoadingPayload, strategy };
+  const readiness = sandbox.window.TraderStatusView.recommendationReadinessStatus(failedPayload, {
+    market_data: {
+      ...historyLoadingStatus.market_data,
+      history_maintenance_state: "failed",
+      history_maintenance_reason: "history_preload_deadline",
+    },
+  });
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(state.notReadyMessage(failedPayload, readiness))),
+    {
+      message: "本地历史加载失败，暂不能生成荐股",
+      notice: "原因：history_preload_deadline；处理后重启服务重新加载",
+      level: "warn",
+    },
+  );
+}
 const historyReadiness = sandbox.window.TraderStatusView.recommendationReadinessStatus(
   historyLoadingPayload, historyLoadingStatus,
 );

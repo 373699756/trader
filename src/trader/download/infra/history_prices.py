@@ -25,7 +25,7 @@ from trader.download.infra.history_revision_codec import (
     RevisionFromColumns,
 )
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.download.infra.history_sqlite_read_connection import OpenHistoryPriceReader
+from trader.download.infra.history_sqlite_read_connection import OpenHistoryPriceReader, WatchHistoryRead
 from trader.download.infra.price_columns import PRICE_COLUMNS, PRICE_SQL, PriceValues
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
@@ -109,7 +109,7 @@ ORDER BY records.trade_date, records.code
 _LATEST_RANGE_SQL = _LATEST_WINDOW.format(columns=_REVISION_COLUMNS, observation_filter="", record_filter="")
 _RANGE_BY_CODE = """
 SELECT {columns}
-FROM daily_records AS records INDEXED BY history_price_code_date_idx
+FROM daily_records AS records INDEXED BY {index}
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
       SELECT observed.revision_id
@@ -121,8 +121,11 @@ WHERE records.trade_date BETWEEN ? AND ?
   )
 ORDER BY records.code, records.trade_date
 """
-_LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_REVISION_COLUMNS)
-_PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_REVISION_COLUMNS)
+_LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_REVISION_COLUMNS, index="history_price_code_date_idx")
+# Published month windows must seek dates in the annual file, then sort only the requested rows.
+_PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
+    columns=_REVISION_COLUMNS, index="sqlite_autoindex_daily_records_1"
+)
 _LATEST_SHADOW_SQL = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
@@ -620,7 +623,8 @@ class HistoryPricePartition:
         *,
         snapshot_sequence: int,
         code: str | None = None,
-    ) -> Iterator[PublishedHistoryCell]:
+        check: Callable[[], None] | None = None,
+    ) -> Generator[PublishedHistoryCell, None, None]:
         """Project sealed daily facts without materializing full revision objects."""
         if start > end or snapshot_sequence < 1 or (code is not None and _CODE.fullmatch(code) is None):
             raise ValueError("published daily query range is invalid")
@@ -632,10 +636,12 @@ class HistoryPricePartition:
             else (snapshot_sequence, start.isoformat(), end.isoformat(), code)
         )
         try:
-            with closing(self._read_connection()) as connection:
+            with closing(self._read_connection()) as connection, WatchHistoryRead(connection, check):
                 self._require_metadata(connection)
                 cursor = connection.run(query, parameters)
                 while rows := cursor.fetchmany(512):
+                    if check is not None:
+                        check()
                     for row in rows:
                         yield PublishedCellFromRevisionColumns(tuple(row))
         except (sqlite3.Error, TypeError, ValueError) as exc:
@@ -718,11 +724,16 @@ class HistoryPricePartition:
         *,
         retain_pages: bool = False,
         validate_payloads: bool = False,
+        check: Callable[[], None] | None = None,
     ) -> None:
         del retain_pages
         candidate = cls(path, reference.calendar_year, reference.calendar_month)
         try:
-            with closing(candidate._read_connection()) as connection, SqliteTransaction(connection):
+            with (
+                closing(candidate._read_connection()) as connection,
+                WatchHistoryRead(connection, check),
+                SqliteTransaction(connection),
+            ):
                 candidate._require_metadata(connection)
                 candidate._require_schema(connection)
                 proof = CalculateHistoryProof(
@@ -731,6 +742,7 @@ class HistoryPricePartition:
                     validate_payloads=validate_payloads,
                     dates=candidate._month_bounds(),
                     heartbeat=lambda count: progress(count, reference.row_count, "logical") if progress else None,
+                    check=check,
                 )
                 if proof.logical_hash != reference.logical_hash or proof.row_count != reference.row_count:
                     raise HistoryPricePartitionError("history month logical hash mismatch")

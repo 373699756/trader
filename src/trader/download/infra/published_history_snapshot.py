@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import date
 from itertools import groupby
 from pathlib import Path
@@ -49,13 +49,16 @@ class SQLitePublishedHistorySnapshot:
         manifest: PublishedHistoryManifest,
         *,
         sessions: int,
+        check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryWindow]:
+        if check is not None:
+            check()
         archive = self._matching_snapshot(manifest)
         dates = _session_dates(manifest, sessions)
         allowed_codes = frozenset(manifest.universe_codes)
         seen_dates: set[date] = set()
         try:
-            cells = self._reader.iter_published_range_by_code(dates[0], dates[-1], archive.snapshot)
+            cells = self._reader.iter_published_range_by_code(dates[0], dates[-1], archive.snapshot, check=check)
             for code, group in groupby(cells, key=lambda row: row.code):
                 if code in allowed_codes:
                     window = PublishedHistoryWindow(code, tuple(group))
@@ -73,7 +76,10 @@ class SQLitePublishedHistorySnapshot:
         codes: Sequence[str],
         *,
         sessions: int,
+        check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
+        if check is not None:
+            check()
         archive = self._matching_snapshot(manifest)
         dates = _session_dates(manifest, sessions)
         windows: list[PublishedHistoryWindow] = []
@@ -82,7 +88,7 @@ class SQLitePublishedHistorySnapshot:
             for code in tuple(dict.fromkeys(codes)):
                 if code not in allowed_codes:
                     continue
-                rows = self._reader.read_published_code_window(code, dates, archive.snapshot)
+                rows = self._reader.read_published_code_window(code, dates, archive.snapshot, check=check)
                 if rows:
                     windows.append(PublishedHistoryWindow(code, rows))
             self._matching_snapshot(manifest)

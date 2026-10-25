@@ -7,7 +7,7 @@ import heapq
 import re
 import threading
 from collections.abc import Callable, Collection, Generator, Iterator
-from contextlib import closing
+from contextlib import ExitStack, closing
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -31,6 +31,7 @@ from trader.download.infra.history_reference_codec import (
     HistoryReferenceIndex,
     ReadBoundHistoryReference,
 )
+from trader.download.infra.history_sqlite_read_connection import PrefetchHistoryPricePages
 
 _CODE = re.compile(r"^[0-9]{6}$")
 
@@ -346,6 +347,8 @@ class HistorySnapshotReader:
         code: str,
         session_dates: tuple[date, ...],
         snapshot: HistoryActiveSnapshot,
+        *,
+        check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryCell, ...]:
         if _CODE.fullmatch(code) is None:
             raise ValueError("published history code is invalid")
@@ -363,35 +366,53 @@ class HistorySnapshotReader:
         rows: list[PublishedHistoryCell] = []
         for year, month in RouteHistoryMonths(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
-            partition = self._partition_with_trust(reference, None, required_level=None, establish_level="logical")
+            partition = self._partition_with_trust(
+                reference, None, required_level=None, establish_level="logical", check=check
+            )
             rows.extend(
                 row
                 for row in partition.iter_published_cells(
-                    dates[0], dates[-1], snapshot_sequence=reference.sequence, code=code
+                    dates[0], dates[-1], snapshot_sequence=reference.sequence, code=code, check=check
                 )
                 if row.trade_date in allowed
             )
-            self._partition_with_trust(reference, None, required_level=None, establish_level="logical")
+            self._partition_with_trust(reference, None, required_level=None, establish_level="logical", check=check)
         return tuple(rows)
 
     def iter_published_range_by_code(
-        self, start: date, end: date, snapshot: HistoryActiveSnapshot
+        self,
+        start: date,
+        end: date,
+        snapshot: HistoryActiveSnapshot,
+        *,
+        check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryCell]:
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("published history range is invalid")
         references = tuple(self._reference(snapshot, year, month) for year, month in RouteHistoryMonths(start, end))
-        streams = tuple(
-            self._partition_with_trust(
-                reference, None, required_level=None, establish_level="logical"
-            ).iter_published_cells(start, end, snapshot_sequence=reference.sequence)
-            for reference in references
-        )
-        index = self.reference_index(snapshot)
-        yield from (
-            row for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date)) if index.eligible(row.code)
-        )
+        with ExitStack() as stack:
+            streams = []
+            for reference in references:
+                partition = self._partition_with_trust(
+                    reference, None, required_level=None, establish_level="logical", check=check
+                )
+                streams.append(
+                    stack.enter_context(
+                        closing(
+                            partition.iter_published_cells(
+                                start, end, snapshot_sequence=reference.sequence, check=check
+                            )
+                        )
+                    )
+                )
+            index = self.reference_index(snapshot)
+            yield from (
+                row
+                for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+                if index.eligible(row.code)
+            )
         for reference in references:
-            self._partition_with_trust(reference, None, required_level=None, establish_level="logical")
+            self._partition_with_trust(reference, None, required_level=None, establish_level="logical", check=check)
 
     def iter_shadow_facts(
         self,
@@ -538,7 +559,10 @@ class HistorySnapshotReader:
         required_level: Literal["full"] | None,
         establish_level: Literal["logical", "full"],
         retain_pages: bool = False,
+        check: Callable[[], None] | None = None,
     ) -> HistoryPricePartition:
+        if check is not None:
+            check()
         path = self._root / reference.relative_path
         with self._verification_lock:
             try:
@@ -555,7 +579,14 @@ class HistorySnapshotReader:
                 if establish_level == "full":
                     HistoryPricePartition.verify(path, reference, progress)
                 else:
-                    HistoryPricePartition.verify_logical_content(path, reference, progress, retain_pages=retain_pages)
+                    if not any(
+                        value.reference.relative_path == reference.relative_path and value.identity == identity
+                        for value in self._verified.values()
+                    ):
+                        PrefetchHistoryPricePages(path, check)
+                    HistoryPricePartition.verify_logical_content(
+                        path, reference, progress, retain_pages=retain_pages, check=check
+                    )
             except (HistorySnapshotReadError, HistoryPricePartitionError, OSError) as exc:
                 self._verified.pop((reference.relative_path, reference.calendar_month), None)
                 if isinstance(exc, HistorySnapshotReadError):

@@ -15,20 +15,133 @@ from tests.component.market_data_test_support import (
     TAIL_POLICY,
     CountingHistoryClient,
     FeatureBuilder,
+    MarketDataGateway,
     StaticGateway,
+    StaticMarketClient,
+    StaticTencentClient,
     _history_bars,
     _quote,
     _service,
 )
+from tests.component.test_candidate_history_tail import _Archive
 from tests.reference_fixtures import PreparedFixture
 from tests.unit.infra.test_history_supplier_router import _current_universe
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.recommendation.application.pipeline.static_market import static_pipeline
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
+from trader.recommendation.application.ports.market_data import MarketDataPendingError, MarketDataUnavailableError
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
+from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
+
+
+def test_startup_binds_published_security_facts_before_preview_quotes_are_merged():
+    observed = NOW + timedelta(days=2)
+    context = PreviewContext("startup-reference-preview", NOW.date(), observed)
+    reference = PreparedFixture(observed)
+    references = PublishedReferences(lambda: reference, lambda: reference.identity, lambda _: (), max_age_seconds=86400)
+    quote = replace(
+        _quote(),
+        source_time=context.market_as_of,
+        received_time=observed,
+        listing_date=None,
+        listing_age_sessions=None,
+    )
+    gateway = MarketDataGateway(
+        StaticMarketClient((quote,)),
+        StaticMarketClient((quote,)),
+        StaticTencentClient((quote,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        listing_open_dates=lambda: reference.open_dates,
+        wall_clock=lambda: observed,
+    )
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(_Archive(62, 0, ("600001",))),
+        lookback_sessions=61,
+        monotonic=lambda: 0.0,
+        require_input_binding=True,
+    )
+    service = _service(
+        gateway,
+        None,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        published_references=references,
+        published_history=history,
+        wall_clock=lambda: observed,
+    )
+    service.initialize_published_inputs(lambda: False, model_version="fixture", config_version="fixture")
+    service.prepare_preview(context)
+    merged = gateway.fetch_market(observed_at=observed)
+    assert len(merged) == 1
+    assert merged[0].listing_date == reference.official_universe[0].listed_on
+    assert merged[0].listing_age_sessions > 250
+    assert "board_identity_degraded" not in merged[0].execution_restrictions
+    assert merged[0].source_time == context.market_as_of
+
+
+@pytest.mark.parametrize("fail_static", (False, True))
+def test_startup_does_not_open_refresh_before_static_eligibility_finishes(fail_static):
+    class RecordingGateway(StaticGateway):
+        calls = 0
+
+        def fetch_market(self, **kwargs):
+            self.calls += 1
+            return super().fetch_market(**kwargs)
+
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(_Archive(62, 0, ("600001",))),
+        lookback_sessions=61,
+        monotonic=lambda: 0.0,
+        require_input_binding=True,
+    )
+    gateway = RecordingGateway((_quote(),))
+    service = _service(
+        gateway,
+        None,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        published_history=history,
+    )
+    service._static_pipeline = StaticMarketPipeline(
+        service.eligibility, cache=StaticMarketCache(), monotonic=lambda: 0.0
+    )
+    initialize = service._static_pipeline.initialize
+    observed_pending = []
+
+    def initializing(reference, observed_at):
+        with pytest.raises(MarketDataPendingError):
+            service.fetch_market_feature_batch(NOW)
+        observed_pending.append(True)
+        assert gateway.calls == 0
+        if fail_static:
+            raise RuntimeError("static_eligibility_preload_capacity")
+        initialize(reference, observed_at)
+
+    preloader = PublishedInputPreloader(
+        history,
+        initialize=lambda cancelled: service.initialize_published_inputs(
+            cancelled, model_version="model:fixture", config_version="config:fixture"
+        ),
+    )
+    with patch.object(service._static_pipeline, "initialize", side_effect=initializing):
+        preloader.start()
+        preloader._thread.join(timeout=5)
+        assert not preloader._thread.is_alive()
+    assert observed_pending == [True]
+    if fail_static:
+        with pytest.raises(MarketDataUnavailableError) as failure:
+            service.fetch_market_feature_batch(NOW)
+        assert not isinstance(failure.value, MarketDataPendingError)
+        assert gateway.calls == 0
+    else:
+        assert service.fetch_market_feature_batch(NOW).features
+        assert gateway.calls == 1
 
 
 def test_static_eligibility_is_built_once_shared_by_matching_profiles_and_rebuilt_on_restart() -> None:

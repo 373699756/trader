@@ -20,6 +20,7 @@ from trader.infra.workers import (
     SubmitOrReject,
     WorkerExecutor,
 )
+from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.refresh import IntradayInputIdentity, IntradayRefreshResult
 from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
@@ -178,17 +179,21 @@ class IntradayLoader:
         except FutureTimeoutError:
             # Another profile may have joined or refreshed this queued request.
             # Its own batch deadline stops expired I/O when the lane reaches it.
-            return self._intraday_timeout_fallback(request)
+            return self._retain_after_batch_failure(request)
+        except SourceRequestSupersededError:
+            return self._retain_after_batch_failure(request, reason="intraday_request_superseded")
         if self._monotonic() >= request.deadline:
-            return self._intraday_timeout_fallback(request)
+            return self._retain_after_batch_failure(request)
         for code, restrictions in lane_restrictions.items():
             for restriction in restrictions:
                 _add_action_restriction(request.action_restrictions, code, restriction)
         return lane_result
 
-    def _intraday_timeout_fallback(
+    def _retain_after_batch_failure(
         self,
         request: _IntradayLoadRequest,
+        *,
+        reason: str = "intraday_batch_deadline",
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         with self._lock:
             now = self._monotonic()
@@ -200,7 +205,7 @@ class IntradayLoader:
             self._requested_rows = len(request.codes)
             self._covered_rows = sum(bool(fallback.get(code)) for code in request.codes)
             self._error_count += 1
-            self._last_error = "intraday_batch_deadline"
+            self._last_error = reason
         cache = self._runner.cache
         if request.preview_context is not None:
             for code in fallback:
@@ -219,7 +224,7 @@ class IntradayLoader:
         request: _IntradayLoadRequest,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         if self._monotonic() >= request.deadline:
-            return self._intraday_timeout_fallback(request)
+            return self._retain_after_batch_failure(request)
         now = self._monotonic()
         result = self._shared_cached_intraday(request)
         state = _IntradayLoadState(request, result, {})

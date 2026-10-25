@@ -114,9 +114,16 @@ class MarketFeatureService:
         config_version: str,
     ) -> None:
         self.references.initialize()
+        self.quotes.gateway.update_reference_observations(self.references.security_observations())
         self.history.initialize(cancelled=cancelled)
         observed_at = self.runner.wall_clock()
         self.research.initialize(self.risk_universe_codes(observed_at), cancelled=cancelled)
+        if cancelled():
+            return
+        self._static_pipeline.initialize(self.references.static_reference(), observed_at)
+        if cancelled():
+            return
+        # Binding opens the refresh gate only after every fixed input is ready.
         self.history.bind_inputs(
             observed_at,
             versions={
@@ -126,8 +133,6 @@ class MarketFeatureService:
             },
             config_version=config_version,
         )
-        if not cancelled():
-            self._static_pipeline.initialize(self.references.static_reference(), observed_at)
 
     def risk_universe_codes(self, observed_at: datetime) -> tuple[str, ...]:
         """Return the official non-ST research population without requiring quotes."""

@@ -85,7 +85,13 @@ def MergeOverlayQuote(quotes: dict[str, DecisionQuote], feature: FeatureSnapshot
 
 
 def TaskDeadline(request: PipelineTaskRequest) -> datetime | None:
-    seconds = TaskExecutionBudgetSeconds(request.task)
+    budget_task = (
+        PipelineTask.CLOSE_QUOTES
+        if request.preview_context is not None
+        and request.task in {PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES}
+        else request.task
+    )
+    seconds = TaskExecutionBudgetSeconds(budget_task)
     if seconds is None:
         return None
     return request.observed_at + timedelta(seconds=seconds)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -17,6 +17,7 @@ class PublishedHistoryReadPort(Protocol):
         manifest: PublishedHistoryManifest,
         *,
         sessions: int,
+        check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryWindow]: ...
 
     def read_windows(
@@ -25,6 +26,7 @@ class PublishedHistoryReadPort(Protocol):
         codes: Sequence[str],
         *,
         sessions: int,
+        check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]: ...
 
 
@@ -40,8 +42,9 @@ class ReadPublishedHistoryUseCase:
         manifest: PublishedHistoryManifest,
         *,
         sessions: int,
+        check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryWindow]:
-        return self.publication.iter_windows(manifest, sessions=sessions)
+        return self.publication.iter_windows(manifest, sessions=sessions, check=check)
 
     def read_windows(
         self,
@@ -49,8 +52,9 @@ class ReadPublishedHistoryUseCase:
         codes: Sequence[str],
         *,
         sessions: int,
+        check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
-        return self.publication.read_windows(manifest, codes, sessions=sessions)
+        return self.publication.read_windows(manifest, codes, sessions=sessions, check=check)
 
 
 __all__ = ["PublishedHistoryReadPort", "ReadPublishedHistoryUseCase"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing
 from datetime import date
 from pathlib import Path
@@ -15,6 +15,7 @@ from uuid import uuid4
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
+from trader.download.infra.history_sqlite_read_connection import WatchHistoryRead
 from trader.download.infra.price_columns import (
     PRICE_COLUMNS,
     PRICE_WINDOW_SQL,
@@ -462,20 +463,35 @@ class SQLiteQfqWindowCache:
         if identity is None or identity != manifest.publication_id:
             raise RuntimeError("qfq_publication_changed")
 
-    def iter_windows(self, manifest: PublishedHistoryManifest, *, sessions: int) -> Iterator[PublishedHistoryWindow]:
+    def iter_windows(
+        self, manifest: PublishedHistoryManifest, *, sessions: int, check: Callable[[], None] | None = None
+    ) -> Iterator[PublishedHistoryWindow]:
         allowed = frozenset(manifest.universe_codes)
         for start in range(0, len(manifest.universe_codes), 32):
             yield from self._read_windows(
-                manifest, manifest.universe_codes[start : start + 32], sessions=sessions, allowed=allowed
+                manifest, manifest.universe_codes[start : start + 32], sessions=sessions, allowed=allowed, check=check
             )
 
     def read_windows(
-        self, manifest: PublishedHistoryManifest, codes: Sequence[str], *, sessions: int
+        self,
+        manifest: PublishedHistoryManifest,
+        codes: Sequence[str],
+        *,
+        sessions: int,
+        check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
-        return self._read_windows(manifest, codes, sessions=sessions, allowed=frozenset(manifest.universe_codes))
+        return self._read_windows(
+            manifest, codes, sessions=sessions, allowed=frozenset(manifest.universe_codes), check=check
+        )
 
     def _read_windows(
-        self, manifest: PublishedHistoryManifest, codes: Sequence[str], *, sessions: int, allowed: frozenset[str]
+        self,
+        manifest: PublishedHistoryManifest,
+        codes: Sequence[str],
+        *,
+        sessions: int,
+        allowed: frozenset[str],
+        check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
         if not 1 <= sessions <= self.sessions:
             raise ValueError("qfq_read_window_invalid")
@@ -485,9 +501,11 @@ class SQLiteQfqWindowCache:
         first = manifest.calendar_dates[-min(sessions, len(manifest.calendar_dates))]
         windows: list[PublishedHistoryWindow] = []
         try:
-            with closing(self._connection()) as connection:
+            with closing(self._connection()) as connection, WatchHistoryRead(connection, check):
                 self._require_publication(connection, manifest)
                 for start in range(0, len(requested), 32):
+                    if check is not None:
+                        check()
                     with SqliteTransaction(connection):
                         rows = self._batch_rows(connection, requested[start : start + 32])
                     windows.extend(

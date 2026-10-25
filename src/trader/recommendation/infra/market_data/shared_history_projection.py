@@ -111,6 +111,9 @@ class SharedHistoryProjection:
             raise RuntimeError("history_snapshot_unavailable")
         for profile in self._profiles:
             profile.bind_outcome_manifest(manifest)
+            profile.record_maintenance(
+                "loading", stage="reading_active_snapshot", total_units=len(manifest.universe_codes)
+            )
         entries = self._scan(manifest, budget)
         confirmed = self._history.manifest()
         if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
@@ -146,7 +149,9 @@ class SharedHistoryProjection:
         results: tuple[dict[str, PublishedHistoryEntry], ...] = tuple({} for _profile in self._profiles)
         lifetimes = {code: (start, end) for code, start, end in manifest.listing_intervals}
         self._scan_count += 1
-        for completed, window in enumerate(self._history.iter_windows(manifest, sessions=sessions), start=1):
+        for completed, window in enumerate(
+            self._history.iter_windows(manifest, sessions=sessions, check=budget.require_time), start=1
+        ):
             budget.require_time()
             aligned = self._aligned(window, manifest, lifetimes.get(window.code), sessions, budget)
             self._window_count += 1
@@ -188,7 +193,9 @@ class SharedHistoryProjection:
         while len(aligned.bars) < sessions and extended_sessions < maximum:
             budget.require_time()
             extended_sessions = min(maximum, extended_sessions + 63)
-            extended = self._history.read_windows(manifest, (window.code,), sessions=extended_sessions)
+            extended = self._history.read_windows(
+                manifest, (window.code,), sessions=extended_sessions, check=budget.require_time
+            )
             if not extended:
                 break
             aligned = BuildAlignedHistoryBars(extended[0], manifest.calendar_dates[-extended_sessions:], lifetime)

@@ -25,6 +25,7 @@ def CalculateHistoryProof(
     validate_payloads: bool,
     dates: tuple[str, str],
     heartbeat: Callable[[int], None] = lambda count: None,
+    check: Callable[[], None] | None = None,
 ) -> HistoryLogicalProof:
     """Hash visible keys and content identities; unrelated appends cannot invalidate this proof."""
     payload = "," + ",".join(f"r.{name}" for name in PRICE_COLUMNS) if validate_payloads else ""
@@ -49,6 +50,8 @@ def CalculateHistoryProof(
         digest.update(b"\n")
         count += 1
         if count % 4096 == 0:
+            if check is not None:
+                check()
             heartbeat(count)
     heartbeat(count)
     return HistoryLogicalProof(digest.hexdigest(), count)

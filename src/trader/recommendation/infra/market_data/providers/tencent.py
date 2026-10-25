@@ -125,8 +125,6 @@ class TencentClient:
         return tuple(
             replace(
                 quote,
-                source_time=completed_at,
-                received_time=completed_at,
                 data_version=f"tencent-market:{int(completed_at.timestamp())}",
             )
             for quote in quotes

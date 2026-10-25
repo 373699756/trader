@@ -7,6 +7,47 @@ import pytest
 from trader.download.infra import history_sqlite_read_connection
 from trader.download.infra.history_sync_failure import HistoryFailureDetail
 from trader.infra import sqlite_connection
+from trader.infra.sqlite_connection import SqliteSession
+
+
+def test_read_ahead_is_read_only_and_cancellable_between_bounded_chunks(tmp_path):
+    path = tmp_path / "pages.sqlite3"
+    original = b"p" * (2 * 1024 * 1024 + 11)
+    path.write_bytes(original)
+    checks = []
+    history_sqlite_read_connection.PrefetchHistoryPricePages(path, lambda: checks.append(True))
+    assert len(checks) == 4 and path.read_bytes() == original
+    checks.clear()
+
+    def cancelled():
+        checks.append(True)
+        if len(checks) == 3:
+            raise RuntimeError("history_preload_cancelled")
+
+    with pytest.raises(RuntimeError, match="history_preload_cancelled"):
+        history_sqlite_read_connection.PrefetchHistoryPricePages(path, cancelled)
+    assert len(checks) == 3 and path.read_bytes() == original
+
+
+def test_read_budget_interrupts_sqlite_before_first_row_and_removes_callback(tmp_path):
+    calls = 0
+
+    def deadline():
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            raise RuntimeError("history_preload_deadline")
+
+    with SqliteSession(tmp_path / "bounded.sqlite3") as connection:
+        with pytest.raises(RuntimeError, match="history_preload_deadline") as failure:
+            with history_sqlite_read_connection.WatchHistoryRead(connection, deadline):
+                connection.run(
+                    "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000000) "
+                    "SELECT sum(x) FROM n"
+                ).fetchone()
+        assert isinstance(failure.value.__cause__, sqlite3.OperationalError)
+        assert tuple(connection.run("SELECT 42").fetchone()) == (42,)
+    assert calls == 3
 
 
 @pytest.mark.parametrize("code,attempts", ((sqlite3.SQLITE_BUSY, 2), (sqlite3.SQLITE_IOERR, 1), (None, 2)))

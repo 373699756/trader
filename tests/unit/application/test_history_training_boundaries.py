@@ -32,12 +32,12 @@ class _Publication:
     def manifest(self):
         return None
 
-    def iter_windows(self, manifest, *, sessions):
-        del manifest, sessions
+    def iter_windows(self, manifest, *, sessions, check=None):
+        del manifest, sessions, check
         return iter(())
 
-    def read_windows(self, manifest, codes, *, sessions):
-        del manifest, codes, sessions
+    def read_windows(self, manifest, codes, *, sessions, check=None):
+        del manifest, codes, sessions, check
         return ()
 
 

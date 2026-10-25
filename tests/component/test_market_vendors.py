@@ -167,13 +167,14 @@ def test_tencent_full_market_rejects_partial_coverage_and_preserves_targeted_par
         client.fetch_market(("600001", "600002"))
 
 
-def test_tencent_full_market_uses_completed_batch_time_without_changing_targeted_event_time() -> None:
+@pytest.mark.parametrize("receipt_delay", (timedelta(seconds=2), timedelta(days=2)))
+def test_tencent_full_market_preserves_supplier_time_and_uses_completion_only_for_batch_identity(receipt_delay) -> None:
     fields = [""] * 50
     fields[1:5] = ["测试股份", "600001", "12.00", "11.65"]
     fields[30] = "20260716100000"
     body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
     session = FakeSession([body, body])
-    received_at = NOW + timedelta(seconds=2)
+    received_at = NOW + receipt_delay
     client = TencentClient(
         worker_pool=None,
         timeout_seconds=2,
@@ -185,7 +186,7 @@ def test_tencent_full_market_uses_completed_batch_time_without_changing_targeted
     market = client.fetch_market(("600001",))[0]
 
     assert targeted.source_time == NOW
-    assert market.source_time == received_at
+    assert market.source_time == targeted.source_time
     assert market.received_time == received_at
     assert market.data_version == f"tencent-market:{int(received_at.timestamp())}"
 

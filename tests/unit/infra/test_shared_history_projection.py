@@ -9,6 +9,7 @@ from tests.component.test_candidate_history_tail import CALENDAR, NOW, _Archive
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.infra.shutdown import ShutdownDeadline
+from trader.recommendation.application.ports.market_data import MarketDataPendingError, MarketDataUnavailableError
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
@@ -89,6 +90,34 @@ def test_cancelled_shared_preload_publishes_no_partial_profile():
         _cache(source, 61, owner)
 
 
+def test_deadline_before_first_window_becomes_terminal_without_publishing_partial_inputs():
+    ticks = [0.0]
+
+    class SlowHistory(_Archive):
+        def iter_windows(self, manifest, *, sessions, check=None):
+            ticks[0] = 301.0
+            assert check is not None
+            check()
+            yield from super().iter_windows(manifest, sessions=sessions, check=check)
+
+    source = SlowHistory(252, 0, ("600001",))
+    history = ReadPublishedHistoryUseCase(source)
+    owner = SharedHistoryProjection(history, monotonic=lambda: ticks[0])
+    cache = PublishedHistoryCache(
+        history, lookback_sessions=251, require_input_binding=True, projection_owner=owner, monotonic=lambda: ticks[0]
+    )
+    cache.record_maintenance("loading", stage="reading_active_snapshot")
+    with pytest.raises(MarketDataPendingError):
+        cache.require_projection()
+    cache.initialize(cancelled=lambda: False)
+    assert not cache.entries() and owner.window_count == 0 and owner.scan_count == 1
+    assert cache.status().maintenance_state == "failed"
+    assert cache.status().maintenance_total_units == 1
+    with pytest.raises(MarketDataUnavailableError, match="history_preload_deadline") as failure:
+        cache.require_projection()
+    assert not isinstance(failure.value, MarketDataPendingError)
+
+
 def test_manifest_change_retries_entire_shared_scan_without_mixing_profiles():
     class History(_Archive):
         def manifest(self):
@@ -131,9 +160,9 @@ def test_seed_extension_stops_when_the_original_history_window_is_complete():
                 ),
             )
 
-        def read_windows(self, manifest, codes, *, sessions):
+        def read_windows(self, manifest, codes, *, sessions, check=None):
             self.requested_sessions.append(sessions)
-            return super().read_windows(manifest, codes, sessions=sessions)
+            return super().read_windows(manifest, codes, sessions=sessions, check=check)
 
     source = History()
     owner = SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0)

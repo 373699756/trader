@@ -227,6 +227,13 @@
         level: "idle",
       };
     }
+    if (blocker === "history_projection_failed") {
+      return {
+        message: "本地历史加载失败，暂不能生成荐股",
+        notice: `原因：${inputQuality.failure_reason}；处理后重启服务重新加载`,
+        level: "warn",
+      };
+    }
     const historyStage = pipelineStage(inputQuality, "strategy_history");
     const modelStage = pipelineStage(inputQuality, "model_input");
     const refreshStage = pipelineStage(inputQuality, "candidate_refresh");

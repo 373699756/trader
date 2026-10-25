@@ -22,6 +22,7 @@ from tests.integration.test_scheduler_runtime import (
 from tests.unit.domain.test_decision_identity import decision
 from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT, preview_decision
 from trader.infra.workers import BoundedExecutor
+from trader.recommendation.application.pipeline.data_source.input_assembly import TaskDeadline
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.runtime import (
@@ -37,6 +38,23 @@ from trader.recommendation.application.runtime.runtime_dependencies import Runti
 from trader.recommendation.application.runtime.trading_session import TradingSession
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
+
+
+@pytest.mark.parametrize(
+    "task,live_seconds,preview_seconds",
+    (
+        (PipelineTask.FULL_MARKET, 20, 180),
+        (PipelineTask.CANDIDATE_QUOTES, 15, 180),
+        (PipelineTask.INTRADAY_TAIL, 3, 3),
+        (PipelineTask.SCORE, 15, 15),
+        (PipelineTask.LONG_QUOTES, 3, 3),
+    ),
+)
+def test_preview_close_collection_has_a_bounded_budget_independent_of_live_refresh(task, live_seconds, preview_seconds):
+    request = PipelineTaskRequest(task, STARTED_AT)
+    context = PreviewContext("collection-budget", MARKET_DATE, STARTED_AT)
+    assert TaskDeadline(request) == STARTED_AT + timedelta(seconds=live_seconds)
+    assert TaskDeadline(replace(request, preview_context=context)) == STARTED_AT + timedelta(seconds=preview_seconds)
 
 
 class PreviewData(DataRefresh):

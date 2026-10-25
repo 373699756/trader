@@ -16,7 +16,7 @@ from trader.infra.market_data.history.history import (
     HistoryContext,
     RequireQfqHistory,
 )
-from trader.recommendation.application.ports.market_data import MarketDataPendingError
+from trader.recommendation.application.ports.market_data import MarketDataPendingError, MarketDataUnavailableError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.epochs import DailyFeaturePack, DailyFeatureRow, DataPlaneCoverageEvidence
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
@@ -358,6 +358,8 @@ class PublishedHistoryCache:
         """Defer a realtime attempt while its first local projection is loading."""
         with self._lock:
             if self._require_input_binding and self._daily_pack is None:
+                if self._maintenance_state in {"failed", "unavailable"}:
+                    raise MarketDataUnavailableError(self._maintenance_reason or "history_inputs_unavailable")
                 raise MarketDataPendingError(self._maintenance_reason or "history_inputs_loading")
             if self._manifest is None and (self._projection_owner.is_loading or self._maintenance_state == "loading"):
                 raise MarketDataPendingError("history_projection_loading")
