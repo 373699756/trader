@@ -497,7 +497,11 @@ def _model_eligible_features(
             policy=policy.hard_filter,
         )
         if filtered.allowed:
-            eligible.append(replace(feature, quote=replace(feature.quote, board=filtered.board)))
+            eligible.append(
+                feature
+                if feature.quote.board is filtered.board
+                else replace(feature, quote=replace(feature.quote, board=filtered.board))
+            )
     return tuple(eligible)
 
 

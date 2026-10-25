@@ -1,5 +1,6 @@
 """Continuous diagnostic evidence must distinguish cache reuse from skipped work."""
 
+import gc
 import json
 import socket
 from concurrent.futures import ThreadPoolExecutor
@@ -12,13 +13,14 @@ from tests.unit.entrypoints.test_performance_fixtures import _budgets
 from tests.unit.entrypoints.test_performance_models import _workload
 from trader.entrypoints import performance
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.recommendation.infra.performance.cpu_trace import PerformanceCpuTrace
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceFixtures
 from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
 from trader.recommendation.infra.performance.pipeline_workload import MeasureContinuousPipeline, PipelineReplayWorkload
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 
 
-def _replay(profiles, ticks=2):
+def _replay(profiles, ticks=2, trace=None):
     settings = LoadRuntimeSettings(Path("config/runtime.json"))
     workloads = tuple(
         PipelineReplayWorkload(
@@ -28,8 +30,45 @@ def _replay(profiles, ticks=2):
     )
     with ThreadPoolExecutor(max_workers=len(workloads)) as executor:
         return MeasureContinuousPipeline(
-            workloads, settings.market_data.cache_policy, executor, ReadPerformanceMemory, ticks=ticks
+            workloads, settings.market_data.cache_policy, executor, ReadPerformanceMemory, ticks=ticks, trace=trace
         )
+
+
+@pytest.mark.parametrize("functions", (False, True))
+def test_opt_in_trace_keeps_completed_rounds_and_releases_gc_callback(tmp_path, functions):
+    before = tuple(gc.callbacks)
+    with PerformanceCpuTrace(tmp_path, functions=functions) as trace:
+        report = _replay(("v3",), ticks=1, trace=trace)
+    assert tuple(gc.callbacks) == before
+    events = [json.loads(line) for line in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    completed = [event for event in events if event["event"] == "round"]
+    assert len(completed) == 8
+    assert completed[0]["result"]["profiles"] == report["cold"]["profiles"]
+    assert bool(tuple(tmp_path.glob("*.pstats"))) is functions
+
+
+def test_trace_flushes_failed_phase_and_gc_without_leaking_callback(tmp_path):
+    before = tuple(gc.callbacks)
+
+    def fail():
+        gc.collect(2)
+        raise RuntimeError("injected failure")
+
+    with pytest.raises(RuntimeError, match="injected failure"), PerformanceCpuTrace(tmp_path) as trace:
+        trace.run("failed", fail)
+    assert tuple(gc.callbacks) == before
+    events = [json.loads(line) for line in (tmp_path / "progress.jsonl").read_text().splitlines()]
+    assert events[0]["event"] == "start"
+    assert events[-1]["event"] == "end"
+    assert any(event["phase"] == "generation_2" for event in events)
+    assert (tmp_path / "failed.pstats").is_file()
+
+
+def test_instrumented_results_cannot_be_used_as_latency_baseline(tmp_path):
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"identity": {"instrumented": True}, "measurements": {}}))
+    with pytest.raises(ValueError, match="instrumented"):
+        performance._baseline(path, {})
 
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
@@ -57,7 +96,10 @@ def test_continuous_chain_keeps_instances_and_fingerprints_while_counting_real_w
         assert [head["result_hash"] for head in current["heads"]] == [
             head["result_hash"] for head in cold["profiles"][0]["heads"]
         ]
-        assert all(head["predictor_batches"] == 0 for head in current["heads"])
+        if profile != "v1":
+            assert all(head["predictor_batches"] == 0 for head in current["heads"])
+        else:
+            assert all(head["predictor_batches"] > 0 for head in current["heads"])
         assert round_["wall_ms"] >= current["wall_ms"] >= sum(current["stage_ms"].values())
     for scenario in ("observation_time", "delivery_time", "quote_time"):
         for round_ in report["scenarios"][scenario]["rounds"]:

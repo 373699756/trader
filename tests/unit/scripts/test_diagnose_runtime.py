@@ -284,6 +284,28 @@ def test_cpu_profile_keeps_the_selected_diagnostic_and_external_output(tmp_path:
         )
 
 
+def test_continuous_cpu_trace_modes_reach_child_and_reject_unbounded_capture(tmp_path):
+    arguments = [
+        "--profile",
+        "performance",
+        "--scoring-profile",
+        "v2",
+        "--performance-replay-ticks",
+        "1",
+        "--cpu-profile-dir",
+        str(tmp_path),
+        "--cpu-profile-mode",
+        "gc",
+    ]
+    options, _ = _validate(_parser().parse_args(arguments))
+    command = build_commands(options, python_executable="python3")[0]
+    assert command.argv[command.argv.index("--cpu-profile-dir") + 1] == str(tmp_path)
+    assert command.argv[command.argv.index("--cpu-profile-mode") + 1] == "gc"
+    arguments[arguments.index("--performance-replay-ticks") + 1] = "2"
+    with pytest.raises(ValueError, match="replay-ticks 1"):
+        _validate(_parser().parse_args(arguments))
+
+
 def test_tencent_download_profile_uses_actual_updater_with_bounded_samples():
     commands = build_commands(_options(profile="tencent-download", download_sizes=(10, 50, 100)))
     assert len(commands) == 1 and commands[0].name == "tencent_download"

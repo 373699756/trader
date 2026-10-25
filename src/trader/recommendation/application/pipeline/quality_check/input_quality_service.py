@@ -56,7 +56,10 @@ class QualityScoringBatch:
 
     def __post_init__(self) -> None:
         RequirePreviousStage(self.output, PipelineStage.MODEL_FILTER)
-        if any(item not in self.native_input.candidate_features for item in self.output.records):
+        # Native inputs already require unique stock codes. Preserve full-value
+        # equality without comparing every record against the entire population.
+        candidates = {item.quote.code: item for item in self.native_input.candidate_features}
+        if any(candidates.get(item.quote.code) != item for item in self.output.records):
             raise ValueError("quality scoring records must belong to the native candidate batch")
 
 

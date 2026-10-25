@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import threading
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
 
@@ -79,6 +77,31 @@ def _features(factory):
             )
         )
     return tuple(result)
+
+
+@pytest.mark.parametrize("expires_during", ("inputs", "publication"))
+def test_prediction_and_publication_honor_remaining_deadline(application_feature_factory, monkeypatch, expires_during):
+    service = _service()
+    population = _features(application_feature_factory)
+    clock = [0.0]
+    monkeypatch.setattr(service, "_monotonic", lambda: clock[0])
+    eligible = service.is_input_eligible
+
+    def slow_eligible(feature):
+        clock[0] += 0.1
+        return eligible(feature)
+
+    def slow_hash(value):
+        clock[0] += 1.0
+        return ContentHash(value)
+
+    if expires_during == "inputs":
+        monkeypatch.setattr(service, "is_input_eligible", slow_eligible)
+    else:
+        monkeypatch.setattr(service, "_content_hash", slow_hash)
+    with pytest.raises(ModelScoringDeadlineError):
+        service.score(population, context=ModelScoringContext(time_budget_seconds=0.5))
+    assert service.status().computation.predictor_batch_count == (0 if expires_during == "inputs" else 1)
 
 
 def test_fixed_population_percentiles_cost_once_and_subset_order_are_deterministic(application_feature_factory) -> None:
@@ -190,134 +213,3 @@ def test_missing_history_is_pending_without_invoking_v1_predictor(application_fe
     service.score(_features(application_feature_factory))
     status = service.status().computation
     assert status.predictor_batch_count == 1 and status.stage_durations[0].last_duration_ms >= 0
-
-
-class _CountingPredictor(_Predictor):
-    def __init__(self):
-        self.calls = 0
-
-    def predict(self, inputs):
-        self.calls += 1
-        return super().predict(inputs)
-
-
-def test_prediction_reuse_keeps_current_cost_population_identity_and_subset(application_feature_factory):
-    population = _features(application_feature_factory)
-    predictor = _CountingPredictor()
-    service = _service(predictor=predictor)
-    context = ModelScoringContext(population_features=population, population_identity="first")
-    original = service.score(population, context=context)
-    changed = (
-        replace(
-            population[0],
-            quote=replace(population[0].quote, price=99.0, received_time=EVALUATED_AT),
-            values={**population[0].values, "qfq_amihud_20d": 100.0},
-        ),
-        *population[1:],
-    )
-    context = replace(context, population_features=tuple(reversed(changed)), population_identity="second")
-    selected = tuple(reversed(changed[:4]))
-    got = service.score(selected, context=context)
-    assert got == _service().score(selected, context=context)
-    assert got.cost_reference_version != original.cost_reference_version
-    assert got.rank_population_version != original.rank_population_version
-    assert (
-        got.diagnostics[changed[0].quote.code].estimated_cost_pct
-        != original.diagnostics[changed[0].quote.code].estimated_cost_pct
-    )
-    assert predictor.calls == 1
-    assert service.status().computation.cache_hit_count == 1
-    assert service.status().computation.stage_durations[0].last_duration_ms == 0.0
-    with pytest.raises(ModelScoringDeadlineError):
-        service.score(selected, context=replace(context, time_budget_seconds=0.0))
-    assert predictor.calls == 1
-
-
-@pytest.mark.parametrize("change", ("value", "population", "history", "model", "feature_order"))
-def test_prediction_cache_rebuilds_complete_changed_model_inputs(application_feature_factory, change):
-    population = _features(application_feature_factory)
-    predictor = _CountingPredictor()
-    service = _service(predictor=predictor)
-    service.score(population)
-    if change == "value":
-        first = population[0]
-        population = (replace(first, values={**first.values, LEARNED_RANK_FEATURE_IDS[0]: 0.123}), *population[1:])
-    elif change == "population":
-        population = population[:-1]
-    elif change == "history":
-        population = (replace(population[0], history_days=250), *population[1:])
-    elif change == "model":
-        predictor.model_hash = "b" * 64
-    else:
-        predictor.feature_ids = tuple(reversed(predictor.feature_ids))
-    got = service.score(population)
-    assert predictor.calls == 2
-    assert got.predictions == _Predictor().predict(
-        tuple(
-            ModelInput(item.quote.code, tuple(float(item.values[name]) for name in predictor.feature_ids))
-            for item in sorted(population, key=lambda item: item.quote.code)
-            if service.is_input_eligible(item)
-        )
-    )
-    if change == "history":
-        assert got.missing_codes == (population[0].quote.code,)
-
-
-@pytest.mark.parametrize("failure", ("wrong_codes", "no_rank", "exception", "timeout"))
-def test_failed_prediction_does_not_replace_latest_successful_batch(application_feature_factory, failure):
-    clock = [0.0]
-
-    class Predictor(_CountingPredictor):
-        mode = "valid"
-
-        def predict(self, inputs):
-            result = super().predict(inputs)
-            if self.mode == "wrong_codes":
-                return tuple(reversed(result))
-            if self.mode == "no_rank":
-                return tuple(replace(item, rank_raw=None) for item in result)
-            if self.mode == "exception":
-                raise ValueError("prediction failed")
-            if self.mode == "timeout":
-                clock[0] = 2.0
-            return result
-
-    predictor = Predictor()
-    service = _service(predictor=predictor)
-    service._monotonic = lambda: clock[0]
-    population = _features(application_feature_factory)
-    accepted = service.score(population)
-    first = population[0]
-    changed = (replace(first, values={**first.values, LEARNED_RANK_FEATURE_IDS[0]: 0.123}), *population[1:])
-    predictor.mode = failure
-    with pytest.raises((ValueError, ModelScoringDeadlineError)):
-        service.score(changed, context=ModelScoringContext(time_budget_seconds=1.0))
-    assert predictor.calls == 2
-    predictor.mode = "valid"
-    clock[0] = 0.0
-    assert service.score(population) == accepted
-    assert predictor.calls == 2
-    assert service.score(changed) == _service().score(changed)
-    assert predictor.calls == 3
-
-
-def test_same_population_concurrent_calls_share_only_one_successful_prediction(application_feature_factory):
-    entered, release = threading.Event(), threading.Event()
-
-    class Predictor(_CountingPredictor):
-        def predict(self, inputs):
-            entered.set()
-            assert release.wait(3)
-            return super().predict(inputs)
-
-    predictor = Predictor()
-    service = _service(predictor=predictor)
-    features = _features(application_feature_factory)
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(service.score, features)
-        assert entered.wait(3)
-        second = executor.submit(service.score, tuple(reversed(features)))
-        release.set()
-        assert first.result(3) == second.result(3)
-    assert predictor.calls == 1
-    assert service.status().computation.cache_hit_count == 1

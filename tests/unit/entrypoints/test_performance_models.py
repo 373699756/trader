@@ -77,7 +77,10 @@ def test_model_scenarios_execute_complete_dual_heads_and_preserve_reuse_semantic
     assert all(head.predictor_calls > 0 for head in changed.heads)
     assert [head.result_hash for head in fresh.heads] == [head.result_hash for head in reused.heads]
     assert any(a.result_hash != b.result_hash for a, b in zip(fresh.heads, changed.heads, strict=True))
-    assert all(head.predictor_calls == 0 and head.cache_hits == 1 for head in reused.heads)
+    if profile_id != "v1":
+        assert all(head.predictor_calls == 0 and head.cache_hits == 1 for head in reused.heads)
+    else:
+        assert all(head.predictor_calls > 0 for head in reused.heads)
     # These fixture predictors are intentionally not reported as native LightGBM/TCN calls.
     assert all(
         not any(

@@ -43,6 +43,7 @@ from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.normalization.features import FeatureBuilder
+from trader.recommendation.infra.performance.cpu_trace import PerformanceCpuTrace
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceHistory
 from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
 from trader.recommendation.infra.performance.process_memory import PerformanceMemorySample
@@ -75,12 +76,14 @@ class _ReplayClock:
 
 
 class _Timings:
-    def __init__(self) -> None:
+    def __init__(self, trace: PerformanceCpuTrace | None = None, prefix: str = "") -> None:
         self.values: list[tuple[str, float]] = []
+        self.trace = trace
+        self.prefix = prefix
 
     def run(self, name: str, operation: Callable[[], _T]) -> _T:
         started = time.perf_counter()
-        result = operation()
+        result = operation() if self.trace is None else self.trace.run(f"{self.prefix}.{name}", operation)
         self.values.append((name, (time.perf_counter() - started) * 1000))
         return result
 
@@ -286,9 +289,9 @@ class _ProfileReplay:
             raise ValueError("continuous replay requires model computation counters")
         return status.heads[strategy].computation
 
-    def run(self) -> None:
+    def run(self, trace: PerformanceCpuTrace | None = None) -> None:
         self.sequence += 1
-        timings = _Timings()
+        timings = _Timings(trace, f"{self.workload.profile.profile_id}.{self.sequence}")
         start, cpu = time.perf_counter(), time.thread_time()
         self.market = timings.run("market_features", lambda: self._build(self.quotes))
         version = timings.run("input_identity", lambda: self.versions.features("market", self.market))
@@ -460,6 +463,7 @@ def MeasureContinuousPipeline(
     read_memory: Callable[[], PerformanceMemorySample],
     *,
     ticks: int,
+    trace: PerformanceCpuTrace | None = None,
 ) -> dict[str, object]:
     """Keep one clock, cache, model service and publication index throughout all cases."""
     if not workloads or not 1 <= ticks <= 1000:
@@ -480,7 +484,7 @@ def MeasureContinuousPipeline(
                 before = _cache_stats(cache)
                 cache.begin_round()
                 started, cpu = time.perf_counter(), time.process_time()
-                tuple(executor.map(lambda state: state.run(), states))
+                tuple(executor.map(lambda state: state.run(trace), states))
                 wall_ms = (time.perf_counter() - started) * 1000
                 cpu_ms = (time.process_time() - cpu) * 1000
                 observation_started = time.perf_counter()
@@ -503,6 +507,8 @@ def MeasureContinuousPipeline(
                         results,
                     )
                 )
+                if trace is not None:
+                    trace.record(f"{scenario}.{tick + 1}", rows[-1].project())
         # Profiling is a separate additional unchanged request on the already warm services.
         probes = tuple(executor.map(_profile, states))
         return _project(rows, preparation_ms, probes, cache_policy, ticks)

@@ -224,6 +224,16 @@ stocks, records both measured/configured populations and binds baseline comparis
 to that exact population. It requires continuous replay; the existing production
 performance configuration and its fixed 5500-stock gate remain unchanged.
 
+For the requested post-ST population size, use `--performance-replay-rows 4401`;
+the inputs remain synthetic.
+To locate a slow phase, add `--cpu-profile-dir /tmp/trader-replay-cpu` with
+`--performance-replay-ticks 1`. Each selected profile gets a separate subdirectory
+containing flushed `progress.jsonl` phase/GC events, completed round projections
+and per-phase `.pstats` files. Interrupted commands retain finished phases and
+rounds. `--cpu-profile-mode gc` omits function profiling to observe GC pauses with
+less interference. Both modes are instrumented diagnostics, not latency acceptance
+or valid latency baselines; run again without these options for comparisons.
+
 The `continuous_pipeline` report includes actual whole-process wall/CPU samples,
 per-profile and per-strategy stages, cold/steady P50/P95, RSS, logical factor-cache
 bytes, cache lookups, factor computations and distinct recomputed stocks,

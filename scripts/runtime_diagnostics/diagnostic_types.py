@@ -104,6 +104,7 @@ class DiagnosticOptions:
     market_task_seconds: float = 600.0
     output_format: str = "json"
     cpu_profile_dir: Path | None = None
+    cpu_profile_mode: str = "functions"
     baseline_checkout: Path | None = None
     training_signal_date: date | None = None
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS

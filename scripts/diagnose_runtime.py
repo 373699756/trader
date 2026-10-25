@@ -127,8 +127,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
     parser.add_argument(
-        "--cpu-profile-dir", type=Path, help="external directory for market-factor-compare feature CPU profiles"
+        "--cpu-profile-dir", type=Path, help="external CPU evidence directory for market-factor-compare or performance"
     )
+    parser.add_argument("--cpu-profile-mode", choices=("functions", "gc"), default="functions")
     parser.add_argument("--qfq-database", type=Path)
     parser.add_argument("--wide-sample-source", type=Path, help="bounded read-only V5 wide-cache storage comparison")
     parser.add_argument(
@@ -371,8 +372,13 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--format text is only available for market-factor-compare")
     if args.baseline_checkout is not None and args.profile not in {"history-write", "download-performance"}:
         raise ValueError("--baseline-checkout is only available for history-write or download-performance")
-    if args.cpu_profile_dir is not None and args.profile != "market-factor-compare":
-        raise ValueError("--cpu-profile-dir is only available for market-factor-compare")
+    if args.cpu_profile_dir is not None:
+        if args.profile not in {"market-factor-compare", "performance"}:
+            raise ValueError("--cpu-profile-dir requires market-factor-compare or performance")
+        if args.profile == "performance" and args.performance_replay_ticks != 1:
+            raise ValueError("--cpu-profile-dir requires --performance-replay-ticks 1")
+    if args.cpu_profile_mode == "gc" and (args.profile != "performance" or args.cpu_profile_dir is None):
+        raise ValueError("--cpu-profile-mode gc requires performance and --cpu-profile-dir")
     if args.profile == "v5-training" and args.v5_probe_directory is None:
         raise ValueError("v5-training requires --v5-probe-directory")
     if args.profile == "v5-samples" and args.training_probe_directory is None:
@@ -446,6 +452,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             cpu_profile_dir=_external_path(args.cpu_profile_dir, "--cpu-profile-dir")
             if args.cpu_profile_dir is not None
             else None,
+            cpu_profile_mode=args.cpu_profile_mode,
         ),
         output,
     )
@@ -917,6 +924,9 @@ def build_commands(
                 str(options.runtime_config),
                 "--replay-ticks",
                 str(options.performance_replay_ticks),
+                "--cpu-profile-mode",
+                options.cpu_profile_mode,
+                *(("--cpu-profile-dir", str(options.cpu_profile_dir)) if options.cpu_profile_dir is not None else ()),
                 *(
                     ("--replay-rows", str(options.performance_replay_rows))
                     if options.performance_replay_rows is not None

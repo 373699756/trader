@@ -131,10 +131,25 @@ def _validate_feature_times(
 
 
 def _normalize_feature_times(feature: FeatureSnapshot) -> FeatureSnapshot:
+    source_time = _shanghai(feature.quote.source_time)
+    received_time = _shanghai(feature.quote.received_time)
+    observed_at = _shanghai(feature.observed_at)
+    if (
+        source_time is feature.quote.source_time
+        and received_time is feature.quote.received_time
+        and observed_at is feature.observed_at
+        and all(
+            _shanghai(item.published_at) is item.published_at
+            and (item.received_at is None or _shanghai(item.received_at) is item.received_at)
+            for item in feature.evidence
+        )
+        and all(_shanghai(fact.observed_at) is fact.observed_at for fact in feature.external_risk_facts)
+    ):
+        return feature
     quote = replace(
         feature.quote,
-        source_time=_shanghai(feature.quote.source_time),
-        received_time=_shanghai(feature.quote.received_time),
+        source_time=source_time,
+        received_time=received_time,
     )
     evidence = tuple(
         replace(
@@ -148,7 +163,7 @@ def _normalize_feature_times(feature: FeatureSnapshot) -> FeatureSnapshot:
     return replace(
         feature,
         quote=quote,
-        observed_at=_shanghai(feature.observed_at),
+        observed_at=observed_at,
         evidence=evidence,
         external_risk_facts=risk_facts,
     )

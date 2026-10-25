@@ -16,6 +16,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
     BuildScoredHybrid,
     BuildScoredLocal,
     ScoredProjectionInputs,
+    _model_eligible_features,
 )
 from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import ScoredDecisionCoverage
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
@@ -90,6 +91,45 @@ class _NonPositiveProductionPredictor(_ProductionPredictor):
 class _IndustryProductionPredictor(_ProductionPredictor):
     exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
     industry_ids = ("J66货币金融服务",)
+
+
+def test_model_eligibility_reuses_known_boards_but_preserves_freshness_and_board_correction(
+    application_feature_factory,
+):
+    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    feature = _verified_feature(application_feature_factory("600000", EVALUATED_AT - timedelta(seconds=10)))
+    feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
+    assert _model_eligible_features((feature,), policy, evaluated_at=EVALUATED_AT, max_age_seconds=30)[0] is feature
+    unknown = replace(feature, quote=replace(feature.quote, board=Board.UNSUPPORTED))
+    corrected = _model_eligible_features((unknown,), policy, evaluated_at=EVALUATED_AT, max_age_seconds=30)[0]
+    assert corrected.quote.board is Board.MAIN
+    assert corrected == feature
+    assert not _model_eligible_features((feature,), policy, evaluated_at=EVALUATED_AT, max_age_seconds=1)
+
+
+def test_quality_batch_membership_is_linear_and_checks_complete_values(application_feature_factory, monkeypatch):
+    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    features = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
+        for index in range(40)
+    )
+    native = _native_input(features)
+    _, quality = observed_quality_input(features, policy, EVALUATED_AT)
+    comparisons = 0
+    original = FeatureSnapshot.__eq__
+
+    def counted_equal(first, second):
+        nonlocal comparisons
+        comparisons += 1
+        return original(first, second)
+
+    monkeypatch.setattr(FeatureSnapshot, "__eq__", counted_equal)
+    QualityScoringBatch(quality, native)
+    assert len(quality.records) == len(features)
+    assert comparisons <= len(features)
+    changed = replace(features[0], values={**features[0].values, "ma5": 12345.0})
+    with pytest.raises(ValueError, match="must belong"):
+        QualityScoringBatch(quality, replace(native, candidate_features=(changed, *features[1:])))
 
 
 def test_fourteenth_stage_cannot_select_beyond_the_global_score_six(application_feature_factory) -> None:
@@ -553,6 +593,28 @@ def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert hybrid_result.event is not None
     assert hybrid_result.event.decision_version == hybrid.version
     assert index.snapshot(Strategy.D25).current == hybrid
+
+
+@pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
+def test_native_inputs_reuse_already_normalized_immutable_features(application_feature_factory, native_type):
+    feature = _verified_feature(application_feature_factory("600000", EVALUATED_AT - timedelta(seconds=10)))
+    native = native_type(
+        TRADE_DATE,
+        "afternoon",
+        "data",
+        "config",
+        EVALUATED_AT,
+        (feature,),
+        (feature.quote.code,),
+        (feature,),
+        30.0,
+        30.0,
+    )
+    assert native.market_features[0] is feature
+    assert native.candidate_features[0] is feature
+    invalid = replace(feature, observed_at=feature.observed_at.replace(tzinfo=None))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        replace(native, candidate_features=(invalid,))
 
 
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))

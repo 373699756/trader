@@ -12,6 +12,7 @@ import statistics
 import sys
 import time
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from importlib.metadata import version
@@ -67,6 +68,7 @@ from trader.recommendation.infra.normalization.merge import (
     OverlayCanonicalSnapshot,
 )
 from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput
+from trader.recommendation.infra.performance.cpu_trace import PerformanceCpuTrace
 from trader.recommendation.infra.performance.fixtures import (
     BuildPerformanceFixtures,
     BuildWorstCaseCandidatePlans,
@@ -78,12 +80,12 @@ from trader.recommendation.infra.performance.model_workload import (
     MeasureSteadyState,
     PerformanceProfileWorkload,
 )
-from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 from trader.recommendation.infra.performance.pipeline_workload import (
     CONTINUOUS_REPLAY_CONTRACT,
     MeasureContinuousPipeline,
     PipelineReplayWorkload,
 )
+from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
@@ -109,6 +111,8 @@ def BuildParser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", choices=("v1", "v2", "v3", "v5", "v1,v2,v3,v5"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--cpu-profile-dir", type=Path, help="instrumented replay evidence; not a latency gate")
+    parser.add_argument("--cpu-profile-mode", choices=("functions", "gc"), default="functions")
     parser.add_argument(
         "--replay-rows", type=int, help="bounded replay population; cannot establish the full-market gate"
     )
@@ -128,11 +132,14 @@ def Run(
     scoring_profile: str | None = None,
     replay_ticks: int = 0,
     replay_rows: int | None = None,
+    trace: PerformanceCpuTrace | None = None,
 ) -> dict[str, object]:
     if not 0 <= replay_ticks <= 1000:
         raise ValueError("replay ticks must be within 0..1000")
     if replay_rows is not None and (replay_rows < 1 or not replay_ticks):
         raise ValueError("bounded replay rows require continuous replay and a positive population")
+    if trace is not None and (replay_ticks != 1 or baseline_path is not None):
+        raise ValueError("CPU tracing requires one tick per scenario and no latency baseline")
     settings = LoadRuntimeSettings(config_path)
     selected = (
         ParseProfileSelection(scoring_profile)
@@ -141,7 +148,11 @@ def Run(
     )
     if len(selected) not in {1, 4}:
         raise ValueError("performance accepts one profile or the complete four-profile selection")
-    prepared = _prepare_profiles(settings, selected, config_path, replay_rows=replay_rows)
+
+    def prepare() -> _PerformancePreparation:
+        return _prepare_profiles(settings, selected, config_path, replay_rows=replay_rows)
+
+    prepared = prepare() if trace is None else trace.run("prepare_profiles", prepare)
     budgets = settings.performance_budgets
     workloads = prepared.workloads
     market_inputs, market_quotes = prepared.market_inputs, prepared.market_quotes
@@ -185,10 +196,11 @@ def Run(
         "replay_ticks": replay_ticks,
         "replay_rows": replay_rows,
         "continuous_contract": CONTINUOUS_REPLAY_CONTRACT if replay_ticks else None,
+        "instrumented": trace is not None,
     }
     baseline = _baseline(baseline_path, identity)
     if replay_ticks:
-        return _continuous_report(settings, prepared, identity, replay_ticks, baseline)
+        return _continuous_report(settings, prepared, identity, replay_ticks, baseline, trace)
     context = _OperationContext(settings.config_version, first.policy, first.scoring())
     worst_case_plans = BuildWorstCaseCandidatePlans(budgets.workload.market_rows, market_quotes[0].received_time)
     union = ProjectCandidateUnionQuotes(market_quotes, worst_case_plans)
@@ -301,6 +313,7 @@ def _continuous_report(
     identity: dict[str, object],
     ticks: int,
     baseline: dict[str, object],
+    trace: PerformanceCpuTrace | None = None,
 ) -> dict[str, object]:
     workloads = tuple(
         PipelineReplayWorkload(
@@ -318,6 +331,7 @@ def _continuous_report(
             WorkerFutureExecutor(workers),
             ReadPerformanceMemory,
             ticks=ticks,
+            trace=trace,
         )
     finally:
         stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
@@ -431,13 +445,26 @@ def _project_profile_loads(profiles: tuple[_ProfileLoad, ...]) -> dict[str, obje
 def Main(argv: list[str] | None = None) -> int:
     args = BuildParser().parse_args(argv)
     try:
-        report = Run(
-            args.config.resolve(),
-            baseline_path=args.baseline.resolve() if args.baseline else None,
-            scoring_profile=args.profile,
-            replay_ticks=args.replay_ticks,
-            replay_rows=args.replay_rows,
+        if args.cpu_profile_dir is not None and (args.replay_ticks != 1 or args.baseline is not None):
+            raise ValueError("CPU tracing requires one tick per scenario and no latency baseline")
+        if args.cpu_profile_mode == "gc" and args.cpu_profile_dir is None:
+            raise ValueError("GC tracing requires --cpu-profile-dir")
+        tracing = (
+            PerformanceCpuTrace(
+                args.cpu_profile_dir / (args.profile or "configured"), functions=args.cpu_profile_mode == "functions"
+            )
+            if args.cpu_profile_dir
+            else nullcontext()
         )
+        with tracing as trace:
+            report = Run(
+                args.config.resolve(),
+                baseline_path=args.baseline.resolve() if args.baseline else None,
+                scoring_profile=args.profile,
+                replay_ticks=args.replay_ticks,
+                replay_rows=args.replay_rows,
+                trace=trace,
+            )
     except ScoringModelsUnavailableError:
         report = _unavailable_report("model_unavailable")
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -851,6 +878,8 @@ def _baseline(path: Path | None, identity: dict[str, object]) -> dict[str, objec
     if not isinstance(raw, dict) or not isinstance(raw.get("measurements"), dict):
         raise ValueError("performance baseline must contain measurements")
     previous_identity = raw.get("identity")
+    if identity.get("instrumented") or isinstance(previous_identity, dict) and previous_identity.get("instrumented"):
+        raise ValueError("instrumented replay cannot be a latency baseline")
     if isinstance(previous_identity, dict) and previous_identity.get("replay_rows") != identity.get("replay_rows"):
         raise ValueError("performance baseline replay population does not match")
     if isinstance(previous_identity, dict) and previous_identity.get("continuous_contract") != identity.get(
