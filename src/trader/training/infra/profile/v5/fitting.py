@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from trader.training.application.tomorrow_training import TrainingFitDetail, TrainingFitPhase
+from trader.training.domain.v5.early_stopping import TcnEarlyStopping
 from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.model_evaluation import CalibrationAccumulator
@@ -36,7 +37,7 @@ def FitTcnIndustry(
     with CacheTcnBatches(samples, counts, contract, parameters.batch_size, heartbeat) as cache:
         auxiliary = len(contract.feature_positions) - 360
         torch.manual_seed(parameters.seed)
-        network = TcnNetwork(auxiliary, parameters.dropout)
+        network = TcnNetwork(auxiliary, parameters.dropout, parameters.architecture)
         progress.publish("normalization")
         means, scales = _transforms(cache, auxiliary, heartbeat)
         epoch = _TcnFitState(network, parameters, cache, heartbeat, means, scales, progress).train()
@@ -60,6 +61,7 @@ def FitTcnIndustry(
                 calibrated.slope,
                 parameters.dropout,
                 network.tensors(),
+                parameters.architecture,
             ),
             counts.training,
             calibrated,
@@ -131,7 +133,8 @@ class _TcnFitState:
         optimizer = torch.optim.AdamW(
             network.parameters(), lr=parameters.learning_rate, weight_decay=parameters.weight_decay
         )
-        best, stale, best_weights = math.inf, 0, network.tensors()
+        stopping = TcnEarlyStopping(parameters.early_stopping_relative_delta)
+        best_weights = network.tensors()
         batches = math.ceil(len(self.cache.training) / self.cache.batch_size)
         for epoch in range(1, parameters.epochs + 1):
             network.train()
@@ -139,20 +142,20 @@ class _TcnFitState:
             for number, batch in enumerate(self.cache.batches("training"), start=1):
                 self.heartbeat()
                 optimizer.zero_grad(set_to_none=True)
-                predicted = network(torch.from_numpy((batch.features - self.means) / self.scales))
-                loss = torch.square(predicted - torch.from_numpy(batch.labels.copy())).mean()
+                predicted = network(
+                    torch.from_numpy((batch.features - self.means) / self.scales).to(network.compute_dtype)
+                )
+                loss = torch.square(predicted - torch.from_numpy(batch.labels.copy()).to(network.compute_dtype)).mean()
                 if not torch.isfinite(loss):
                     raise ValueError("V5 nonfinite training loss")
                 loss.backward()
                 optimizer.step()
                 self.progress.publish("training", epoch, number, batches)
             metric = self._evaluate(epoch)
-            if metric < best:
-                best, stale, best_weights = metric, 0, network.tensors()
-            else:
-                stale += 1
-                if stale >= parameters.early_stopping_rounds:
-                    break
+            if stopping.observe(metric):
+                best_weights = network.tensors()
+            if stopping.stale >= parameters.early_stopping_rounds:
+                break
         network.load_tensors(best_weights)
         return epoch
 

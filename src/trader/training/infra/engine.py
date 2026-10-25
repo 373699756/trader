@@ -62,6 +62,7 @@ from trader.training.infra.model_bundles.profile_publication import InspectActiv
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 from trader.training.infra.model_fitting import FitIndustryModels, FittingParameterDocument, LightGBMFittingParameters
 from trader.training.infra.model_fitting_results import IndustryFitResult
+from trader.training.infra.profile.v5.configuration import TcnConfigurationDocument
 from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_builder import (
     BuildTrainingSamples,
@@ -564,6 +565,7 @@ def _prepare_locked_split(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.active_snapshot_hash,
             fit_dates=settings.fit_dates,
+            annual_fit=profile.profile_id == "v5",
             early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
             history_sessions=profile.history_sessions,
         )
@@ -682,6 +684,10 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
                 sample_database_peak_bytes=request.peak_bytes,
             ), None
         metadata = _metadata_document(context, model_hash, fitted, training_input, report)
+        if isinstance(request.settings.fitting, TcnFittingParameters):
+            metadata["training_configuration"] = TcnConfigurationDocument(
+                request.settings.fit_dates, request.settings.fitting
+            )
         metadata["content_hash"] = ContentHash(metadata)
         staging = MakeBundleStagingDirectory(request.train_root)
         _write_json(staging / "model.json", model)
@@ -906,7 +912,9 @@ def _training_contract_hash(
             "fit_dates": settings.fit_dates,
             "algorithm": profile.algorithm,
             "strategy_head": contract.strategy.value,
-            "compute_threads": TOMORROW_TRAINING_COMPUTE_THREADS,
+            "compute_threads": fitting.compute_threads
+            if isinstance(fitting, TcnFittingParameters)
+            else TOMORROW_TRAINING_COMPUTE_THREADS,
             "peak_rss_mib": TOMORROW_TRAINING_PEAK_RSS_MIB,
             "training_input_scope": "complete_manifest",
             "feature_manifest_hash": contract.feature_manifest.content_hash,

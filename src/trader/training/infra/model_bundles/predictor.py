@@ -85,7 +85,7 @@ class TrainedHeadPredictor:
             for industry, model in bundle.industries:
                 if not isinstance(model, TrainedTcnModelSnapshot):
                     raise ValueError("V5 requires TCN industry models")
-                network = TcnNetwork(len(bundle.feature_ids) - 360, model.dropout)
+                network = TcnNetwork(len(bundle.feature_ids) - 360, model.dropout, model.architecture)
                 network.load_tensors(model.weights)
                 network.eval()
                 self._tcn[industry] = network

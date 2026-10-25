@@ -10,6 +10,7 @@ from trader.training.infra.model_bundles.bundle_codec import (
 )
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
+from trader.training.infra.profile.v5.settings import TCN_NETWORK_CONTRACT
 from trader.training.infra.sample_index import TargetMetric
 
 
@@ -36,6 +37,9 @@ def _model_document(item: FittedIndustryModel) -> dict[str, object]:
     elif isinstance(model, TrainedTcnModelSnapshot):
         document["tcn_network"] = {
             "contract": SEQUENCE_CONTRACT,
+            "architecture": TCN_NETWORK_CONTRACT,
+            "hidden_channels": model.architecture.hidden_channels,
+            "compute_dtype": model.architecture.compute_dtype,
             "dropout": model.dropout,
             "weights": [{"name": t.name, "shape": list(t.shape), "values": list(t.values)} for t in model.weights],
         }

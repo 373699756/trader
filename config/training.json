@@ -55,7 +55,11 @@
         "batch_size": 256,
         "epochs": 100,
         "early_stopping_rounds": 10,
-        "seed": 0
+        "seed": 0,
+        "hidden_channels": 16,
+        "compute_dtype": "float64",
+        "early_stopping_relative_delta": 0.0,
+        "compute_threads": 2
       }
     }
   ]

@@ -56,6 +56,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent-history-window": ("tencent_history_window",),
     "v5-training": ("v5_training",),
     "v5-samples": ("v5_samples",),
+    "v5-lite": ("v5_lite",),
     "training-alignment": ("training_alignment",),
     "training-coverage": ("training_coverage",),
     "training-performance": ("training_alignment",),
@@ -132,6 +133,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cpu-profile-mode", choices=("functions", "gc"), default="functions")
     parser.add_argument("--qfq-database", type=Path)
     parser.add_argument("--wide-sample-source", type=Path, help="bounded read-only V5 wide-cache storage comparison")
+    parser.add_argument("--v5-sample-root", type=Path, help="sealed compact V5 cache for isolated lite comparison")
     parser.add_argument(
         "--storage-path", type=Path, action="append", default=[], help="additional read-only storage probe path"
     )
@@ -387,10 +389,12 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--v5-kernel-probe requires --profile v5-training")
     if args.profile == "v5-training" and not args.v5_kernel_probe and args.v5_probe_directory is None:
         raise ValueError("v5-training requires --v5-probe-directory")
-    if args.profile == "v5-samples" and args.training_probe_directory is None:
-        raise ValueError("v5-samples requires --training-probe-directory")
+    if args.profile in {"v5-samples", "v5-lite"} and args.training_probe_directory is None:
+        raise ValueError(f"{args.profile} requires --training-probe-directory")
     if args.wide_sample_source is not None and args.profile != "v5-samples":
         raise ValueError("--wide-sample-source requires --profile v5-samples")
+    if args.v5_sample_root is not None and args.profile != "v5-lite":
+        raise ValueError("--v5-sample-root requires --profile v5-lite")
     if args.profile in {"training-alignment", "training-performance"} and (
         args.training_probe_directory is None or args.history_root is None
     ):
@@ -404,6 +408,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
             storage_paths=tuple(path.expanduser().resolve() for path in args.storage_path),
             wide_sample_source=args.wide_sample_source.expanduser().resolve() if args.wide_sample_source else None,
+            v5_sample_root=args.v5_sample_root.expanduser().resolve() if args.v5_sample_root else None,
             codes=codes,
             web_samples=args.web_samples,
             web_interval_seconds=args.web_interval_seconds,
@@ -498,6 +503,7 @@ def build_commands(
     if not options.v5_kernel_probe and options.profile not in {
         "storage",
         "v5-samples",
+        "v5-lite",
         "local",
         "research",
         "performance",
@@ -520,6 +526,18 @@ def build_commands(
         return BuildTrainingBenchmarkCommands(options, python_executable)
     cli = (python_executable, "-m", "trader.entrypoints.cli", "--config", str(options.runtime_config))
     commands: dict[str, DiagnosticCommand] = {
+        "v5_lite": DiagnosticCommand(
+            "v5_lite",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.v5_lite",
+                "--work-root",
+                str(options.training_probe_directory),
+            )
+            + (("--sample-root", str(options.v5_sample_root)) if options.v5_sample_root else ()),
+            common_timeout,
+        ),
         "v5_samples": DiagnosticCommand(
             "v5_samples",
             (
@@ -1594,6 +1612,7 @@ def _maintenance_details(_result: DiagnosticResult, source: Mapping[str, object]
 _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
     "storage_profile": _security_master_details,
     "v5_samples": _security_master_details,
+    "v5_lite": _security_master_details,
     "configuration": _configuration_details,
     "history_maintenance": _maintenance_details,
     "long_watchlist_admission": _long_admission_details,

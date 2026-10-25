@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from concurrent.futures import Executor
 from contextlib import ExitStack
@@ -37,6 +38,7 @@ from trader.training.infra.profile.v1.training import RunV1Training, V1TrainingR
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 SelectedProfileResult = TrainingRunResult | V1TrainingResult
@@ -145,10 +147,22 @@ class _TrainingTaskFactory:
             for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
             if item.profile_id == profile
         )
-        if profile == "v5":
+        settings = LoadProfileTrainingSettings(selection.runtime.project_root, profile)
+        if isinstance(settings.fitting, TcnFittingParameters):
             from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
 
-            ConfigureTcnRuntime(training=True)
+            ConfigureTcnRuntime(training=True, compute_threads=settings.fitting.compute_threads)
+            logging.getLogger(__name__).warning(
+                "V5训练配置 | 拟合日 %s | 隐藏通道 %s | 精度 %s | 线程 %s | 最大轮数 %s "
+                "| 早停耐心 %s | 相对改善阈值 %s",
+                settings.fit_dates,
+                settings.fitting.hidden_channels,
+                settings.fitting.compute_dtype,
+                settings.fitting.compute_threads,
+                settings.fitting.epochs,
+                settings.fitting.early_stopping_rounds,
+                settings.fitting.early_stopping_relative_delta,
+            )
         request, cache, dates, reused = InspectSelectedProfile(
             self.archive,
             ProfileTrainingRequest(
@@ -156,7 +170,7 @@ class _TrainingTaskFactory:
                 paths.models,
                 contract,
                 contract.heads,
-                LoadProfileTrainingSettings(selection.runtime.project_root, profile),
+                settings,
                 progress,
                 sample_root=paths.samples,
                 memory_admission=selection.memory_admission,

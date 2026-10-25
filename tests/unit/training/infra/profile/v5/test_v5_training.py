@@ -37,6 +37,7 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
         archive.snapshot.calendar.open_dates,
         parent_manifest_hash="a" * 64,
         fit_dates=settings.fit_dates,
+        annual_fit=True,
         history_sessions=62,
     )
     signal = split.model_fit_dates[100]
@@ -123,7 +124,16 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
     archive = _archive(tmp_path / "history")
     monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: archive)
     settings = replace(
-        LoadProfileTrainingSettings(ROOT, "v5"), fitting=TcnFittingParameters(10, epochs=2, early_stopping_rounds=2)
+        LoadProfileTrainingSettings(ROOT, "v5"),
+        fit_dates=250,
+        fitting=TcnFittingParameters(
+            10,
+            epochs=2,
+            early_stopping_rounds=2,
+            hidden_channels=8,
+            compute_dtype="float32",
+            early_stopping_relative_delta=0.001,
+        ),
     )
     models = tmp_path / "models"
     updates = []
@@ -208,12 +218,16 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
 
 
 def test_v5_tensor_codec_rejects_duplicate_wrong_shape_and_nonfinite():
+    from trader.training.infra.profile.v5.settings import TcnArchitecture
+
+    architecture = TcnArchitecture(8, "float32")
     weights = [
-        {"name": name, "shape": list(shape), "values": [0.0] * math.prod(shape)} for name, shape in TensorShapes(6)
+        {"name": name, "shape": list(shape), "values": [0.0] * math.prod(shape)}
+        for name, shape in TensorShapes(6, architecture)
     ]
-    assert DecodeTcnTensors(weights, 6)
+    assert DecodeTcnTensors(weights, 6, architecture)
     with pytest.raises(ValueError):
-        DecodeTcnTensors([weights[0]] * len(weights), 6)
+        DecodeTcnTensors([weights[0]] * len(weights), 6, architecture)
     weights[0]["values"][0] = float("nan")
     with pytest.raises(ValueError):
-        DecodeTcnTensors(weights, 6)
+        DecodeTcnTensors(weights, 6, architecture)

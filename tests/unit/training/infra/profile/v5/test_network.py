@@ -4,6 +4,8 @@ from importlib.util import find_spec
 
 import pytest
 
+from trader.training.infra.profile.v5.settings import TcnArchitecture
+
 pytestmark = pytest.mark.skipif(find_spec("torch") is None, reason="V5 requires the optional CPU tensor dependency")
 
 
@@ -17,8 +19,8 @@ def test_float64_network_matches_reference_outputs_input_and_parameter_gradients
 
     ConfigureTcnRuntime(training=True)
     torch.manual_seed(7)
-    candidate = TcnNetwork(auxiliary, 0.1)
-    reference = ReferenceTcnNetwork(auxiliary, 0.1)
+    candidate = TcnNetwork(auxiliary, 0.1, TcnArchitecture(16, "float64"))
+    reference = ReferenceTcnNetwork(auxiliary, 0.1, TcnArchitecture(16, "float64"))
     reference.load_state_dict(candidate.state_dict())
     candidate.train(training)
     reference.train(training)
@@ -48,8 +50,8 @@ def test_float64_network_preserves_seeded_adam_updates_and_roundtrip(auxiliary):
 
     ConfigureTcnRuntime(training=True)
     torch.manual_seed(7)
-    candidate = TcnNetwork(auxiliary, 0.1)
-    reference = ReferenceTcnNetwork(auxiliary, 0.1)
+    candidate = TcnNetwork(auxiliary, 0.1, TcnArchitecture(16, "float64"))
+    reference = ReferenceTcnNetwork(auxiliary, 0.1, TcnArchitecture(16, "float64"))
     reference.load_state_dict(candidate.state_dict())
     left = torch.optim.AdamW(reference.parameters(), lr=0.001, weight_decay=0.0001)
     right = torch.optim.AdamW(candidate.parameters(), lr=0.001, weight_decay=0.0001)
@@ -65,7 +67,7 @@ def test_float64_network_preserves_seeded_adam_updates_and_roundtrip(auxiliary):
             torch.testing.assert_close(actual, expected, rtol=1e-9, atol=1e-11)
     candidate.eval()
     reference.eval()
-    restored = TcnNetwork(auxiliary, 0.1)
+    restored = TcnNetwork(auxiliary, 0.1, TcnArchitecture(16, "float64"))
     restored.load_tensors(candidate.tensors())
     restored.eval()
     with torch.inference_mode():

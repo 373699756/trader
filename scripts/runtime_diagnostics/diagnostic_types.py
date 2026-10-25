@@ -27,6 +27,7 @@ Profile = Literal[
     "tencent-history-window",
     "v5-training",
     "v5-samples",
+    "v5-lite",
     "training-alignment",
     "training-coverage",
     "training-performance",
@@ -111,6 +112,7 @@ class DiagnosticOptions:
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
     storage_paths: tuple[Path, ...] = ()
     wide_sample_source: Path | None = None
+    v5_sample_root: Path | None = None
     performance_replay_ticks: int = 0
     performance_replay_rows: int | None = None
 

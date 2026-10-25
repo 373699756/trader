@@ -222,6 +222,8 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         LoadExecutionCostPolicy,
     )
     from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
+    from trader.training.infra.profile.v5.configuration import TcnConfigurationDocument
+    from trader.training.infra.profile.v5.settings import TcnFittingParameters
     from trader.training.infra.research_settings import LoadResearchSettings
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
@@ -234,8 +236,10 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
     cost = LoadExecutionCostPolicy(config_dir)
     cost_scenarios = LoadEvaluationCostScenarios(config_dir)
     fit_dates = {"v1": training_v1.fit_dates, "v2": training_v2.fit_dates, "v3": training_v3.fit_dates}
-    if strategy.scoring_profile == "v5":
-        fit_dates["v5"] = LoadProfileTrainingSettings(runtime.project_root, "v5").fit_dates
+    training_v5 = LoadProfileTrainingSettings(runtime.project_root, "v5")
+    if not isinstance(training_v5.fitting, TcnFittingParameters):
+        raise ValueError("V5 training requires TCN parameters")
+    fit_dates["v5"] = training_v5.fit_dates
     return {
         "status": "ok",
         "runtime_version": runtime.config_version,
@@ -246,6 +250,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "data_dir": str(runtime.data_paths.root),
         "history_sessions": download.sessions,
         "training_fit_dates": fit_dates,
+        "v5_training_configuration": TcnConfigurationDocument(training_v5.fit_dates, training_v5.fitting),
         "research_arms": len(research.ablation_arms),
         "terminal_holdout_sessions": research.terminal_holdout_sessions,
         "online_round_trip_base_rate": cost.round_trip_base_rate,

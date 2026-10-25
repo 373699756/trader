@@ -24,8 +24,8 @@ from trader.training.infra.model_fitting import (
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.profile.v5.configuration import ParseTcnParameters
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
 
 if TYPE_CHECKING:
     from trader.training.infra.model_bundles.contracts import TrainedProfileContract
@@ -94,21 +94,7 @@ def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId
     elif profile_id == "v5":
         RequireExactKeys(profile, common_keys | {"tcn"}, "training.v5")
         model = RequireMapping(profile, "tcn")
-        RequireExactKeys(
-            model,
-            {"learning_rate", "weight_decay", "dropout", "batch_size", "epochs", "early_stopping_rounds", "seed"},
-            "training.v5.tcn",
-        )
-        fitting = TcnFittingParameters(
-            Integer(profile, "minimum_industry_training_rows", minimum=1),
-            Number(model, "learning_rate", minimum=0.000001),
-            Number(model, "weight_decay", minimum=0),
-            Number(model, "dropout", minimum=0),
-            Integer(model, "batch_size", minimum=1),
-            Integer(model, "epochs", minimum=1),
-            Integer(model, "early_stopping_rounds", minimum=1),
-            Integer(model, "seed", minimum=0),
-        )
+        fitting = ParseTcnParameters(model, Integer(profile, "minimum_industry_training_rows", minimum=1))
     else:
         RequireExactKeys(profile, common_keys | {"ridge"}, "training.v3")
         model = RequireMapping(profile, "ridge")
@@ -128,7 +114,7 @@ def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId
     heads = RequireMapping(inputs, "heads")
     RequireExactKeys(heads, {"tomorrow", "d25"}, f"features.model_contracts.{profile_id}.heads")
     return ProfileTrainingSettings(
-        Integer(profile, "fit_dates", minimum=1),
+        Integer(profile, "fit_dates", minimum=250 if profile_id == "v5" else 1),
         Integer(inputs, "history_sessions", minimum=61),
         _positive_integer_tuple(
             inputs.get("momentum_horizons"), f"features.model_contracts.{profile_id}.momentum_horizons"

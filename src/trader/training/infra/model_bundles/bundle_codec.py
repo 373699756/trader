@@ -25,6 +25,8 @@ from trader.training.infra.model_bundles.evaluation_codec import (
     ValidatePredictionReport,
     ValidatePredictionSampleCounts,
 )
+from trader.training.infra.profile.v5.configuration import DecodeTcnConfiguration
+from trader.training.infra.profile.v5.settings import TcnArchitecture
 from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork, TcnTensor
 
 
@@ -148,6 +150,7 @@ class TrainedLightGBMModelSnapshot(TrainedIndustryModelSnapshot):
 class TrainedTcnModelSnapshot(TrainedIndustryModelSnapshot):
     dropout: float
     weights: tuple[TcnTensor, ...]
+    architecture: TcnArchitecture
 
 
 @dataclass(frozen=True)
@@ -228,11 +231,21 @@ def DecodeHeadBundle(
     profile: TrainedProfileContract,
 ) -> TrainedHeadModelBundle:
     model, declared_hash = _hashed_object(model_document, _MODEL_FIELDS, "model")
-    metadata, metadata_hash = _hashed_object(metadata_document, _METADATA_FIELDS, "metadata")
+    metadata_fields = _METADATA_FIELDS | {"training_configuration"} if profile.algorithm == "tcn" else _METADATA_FIELDS
+    metadata, metadata_hash = _hashed_object(metadata_document, metadata_fields, "metadata")
     contract = profile.head_for_strategy(strategy)
     feature_ids = tuple(_string_list(metadata, "feature_ids"))
     feature_units = tuple(_string_list(metadata, "feature_units"))
     industries = _decode_industries(model, len(feature_ids), profile.algorithm)
+    if profile.algorithm == "tcn":
+        _, parameters = DecodeTcnConfiguration(metadata["training_configuration"])
+        if any(
+            not isinstance(item, TrainedTcnModelSnapshot)
+            or item.architecture != parameters.architecture
+            or item.dropout != parameters.dropout
+            for _, item in industries
+        ):
+            raise ValueError("V5 model architecture conflicts with training configuration")
     dependencies = _dependencies(metadata, profile.algorithm)
     training_input = _decode_group_document(metadata.get("training_input"), strategy, profile, report=False)
     report = _decode_group_document(metadata.get("validation_report"), strategy, profile, report=True)
@@ -491,8 +504,10 @@ def _decode_industries(
                 )
             )
         elif algorithm == "tcn":
-            dropout, weights = DecodeTcnNetwork(values["tcn_network"], width - 360)
-            model = TrainedTcnModelSnapshot(means, scales, calibration_intercept, calibration_slope, dropout, weights)
+            dropout, weights, architecture = DecodeTcnNetwork(values["tcn_network"], width - 360)
+            model = TrainedTcnModelSnapshot(
+                means, scales, calibration_intercept, calibration_slope, dropout, weights, architecture
+            )
         else:
             coefficients = tuple(_number_list(values, "ridge_coefficients"))
             if len(coefficients) != width:

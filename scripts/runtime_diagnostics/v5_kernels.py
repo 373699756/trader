@@ -6,12 +6,22 @@ import copy
 import statistics
 import sys
 import time
-from typing import cast
+from typing import Protocol, cast
 
 import torch
+from torch import nn
 from torch.nn import functional
 
 from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+from trader.training.infra.profile.v5.settings import TcnArchitecture
+
+
+class _ReferenceBlock(Protocol):
+    first: nn.Module
+    second: nn.Module
+    shortcut: nn.Module
+    dropout: nn.Module
+    padding: int
 
 
 class ReferenceTcnNetwork(TcnNetwork):
@@ -20,7 +30,8 @@ class ReferenceTcnNetwork(TcnNetwork):
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         auxiliary = values[:, : self.auxiliary_width]
         hidden = values[:, self.auxiliary_width :].reshape(-1, 60, 6).transpose(1, 2)
-        for block in self.blocks:
+        for module in self.blocks:
+            block = cast(_ReferenceBlock, module)
             before = hidden
             hidden = block.dropout(functional.relu(block.first(functional.pad(hidden, (block.padding, 0)))))
             hidden = block.dropout(functional.relu(block.second(functional.pad(hidden, (block.padding, 0)))))
@@ -60,8 +71,8 @@ def ProbeV5Kernels() -> dict[str, object]:
     torch.manual_seed(0)
     values = torch.randn(256, 366, dtype=torch.float64)
     labels = torch.randn(256, dtype=torch.float64)
-    candidate = TcnNetwork(6, 0.1)
-    reference = ReferenceTcnNetwork(6, 0.1)
+    candidate = TcnNetwork(6, 0.1, TcnArchitecture(16, "float64"))
+    reference = ReferenceTcnNetwork(6, 0.1, TcnArchitecture(16, "float64"))
     reference.load_state_dict(candidate.state_dict())
     left = copy.deepcopy(reference)
     right = copy.deepcopy(candidate)

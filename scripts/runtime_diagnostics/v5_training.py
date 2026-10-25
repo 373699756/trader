@@ -37,6 +37,7 @@ from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfi
 from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 from .reporting import emit_report
@@ -115,7 +116,10 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
         for item in selected
     )
     settings = LoadProfileTrainingSettings(project, "v5")
-    settings = replace(settings, fitting=replace(settings.fitting, epochs=2, early_stopping_rounds=2))
+    if not isinstance(settings.fitting, TcnFittingParameters):
+        raise ValueError("V5 diagnostic requires TCN parameters")
+    fitting = replace(settings.fitting, epochs=2, early_stopping_rounds=2)
+    settings = replace(settings, fitting=fitting)
     work.mkdir(parents=True)
     history_root = work / "history"
     codes = {item.code for item in universe}
@@ -144,7 +148,7 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
     if exported.active_snapshot_hash is None:
         raise ValueError("V5 isolated source export did not publish")
     export_seconds = time.monotonic() - export_started
-    ConfigureTcnRuntime(training=True)
+    ConfigureTcnRuntime(training=True, compute_threads=fitting.compute_threads)
     started = time.monotonic()
     result = RunProfileTraining(
         ProfileTrainingRequest(

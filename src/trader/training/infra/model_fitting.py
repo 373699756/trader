@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from functools import partial
@@ -115,6 +116,16 @@ def FitIndustryModels(
     if progress is not None:
         progress.publish(TomorrowTrainingProgress("industry_statistics", "started", 0, 1, strategy=contract.strategy))
     workloads = samples.industry_counts(contract)
+    if isinstance(parameters, TcnFittingParameters):
+        logger = logging.getLogger(__name__)
+        for counts in workloads:
+            logger.warning(
+                "V5行业预检 | %s | %s | 训练样本 %s | %s",
+                contract.strategy.value,
+                counts.industry,
+                counts.training,
+                IndustryCoverageFailure(counts, parameters) or "合格",
+            )
     if progress is not None:
         progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=contract.strategy))
     _publish(progress, contract, _FitProgress("started", 0, len(workloads)))
@@ -187,7 +198,7 @@ def _attempt_industry_fit(
     heartbeat: Callable[[], None],
     report: Callable[[TrainingFitDetail], None],
 ) -> tuple[FittedIndustryModel | None, str]:
-    failure = _coverage_failure(counts, parameters)
+    failure = IndustryCoverageFailure(counts, parameters)
     if failure:
         return None, failure
     try:
@@ -203,7 +214,7 @@ def _attempt_industry_fit(
         return None, exc.reason
 
 
-def _coverage_failure(counts: TrainingIndustryCounts, parameters: ModelFittingParameters) -> str:
+def IndustryCoverageFailure(counts: TrainingIndustryCounts, parameters: ModelFittingParameters) -> str:
     if counts.training < parameters.minimum_industry_training_rows:
         return "industry_training_rows_insufficient"
     if counts.calibration < _MINIMUM_CALIBRATION_SAMPLES or counts.calibration_dates < _MINIMUM_CALIBRATION_SAMPLES:
@@ -299,7 +310,7 @@ class _ValidationPredictor:
         if isinstance(model, TrainedTcnModelSnapshot):
             from trader.training.infra.profile.v5.network import TcnNetwork
 
-            self._network = TcnNetwork(len(model.transformer_means) - 360, model.dropout)
+            self._network = TcnNetwork(len(model.transformer_means) - 360, model.dropout, model.architecture)
             self._network.load_tensors(model.weights)
         self._coefficients = (
             np.asarray(model.ridge_coefficients) if isinstance(model, TrainedRidgeModelSnapshot) else None
@@ -400,6 +411,7 @@ def _fit_lightgbm(
 
 
 __all__ = [
+    "IndustryCoverageFailure",
     "LightGBMFittingParameters",
     "ModelFittingParameters",
     "FittingParameterDocument",
