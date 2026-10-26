@@ -23,11 +23,7 @@ from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
-from trader.download.domain.company_evidence import (
-    CompanyEvidenceRequest,
-    CompanyEvidenceSyncResult,
-    EvidenceSyncProgress,
-)
+from trader.download.domain import company_evidence
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.prepared_reference import PreparedReference
@@ -251,7 +247,7 @@ def ExecuteSync(
         company=lambda reference: _sync_company_evidence(
             settings.data_paths.company.parent,
             progress,
-            CompanyEvidenceRequest(
+            company_evidence.CompanyEvidenceRequest(
                 tuple(item.code for item in reference.eligible_universe),
                 clock.now(),
                 news_codes=RecentPublishedNewsCodes(
@@ -271,11 +267,11 @@ def ExecuteSync(
 
 def _sync_company_evidence(
     root: Path,
-    progress: Callable[[EvidenceSyncProgress], None] | None,
-    request: CompanyEvidenceRequest,
+    progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
+    request: company_evidence.CompanyEvidenceRequest,
     *,
     cancel_requested: Callable[[], bool] | None = None,
-) -> CompanyEvidenceSyncResult:
+) -> company_evidence.CompanyEvidenceSyncResult:
     with ProcessLock(root / "evidence.lock", label="sync company"), ProgressHeartbeat(progress) as heartbeat:
         with OpenExternalHttp() as disclosure_session, OpenExternalHttp() as structured_session:
             source_timeout = request.configuration.source_timeout_seconds
@@ -313,7 +309,7 @@ def _sync_company_evidence(
 def _prepare_reference(
     reference_root: Path,
     observed_at: datetime,
-    progress: Callable[[EvidenceSyncProgress], None] | None,
+    progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
     *,
     cancel_requested: Callable[[], bool],
 ) -> PreparedReference:
@@ -334,21 +330,21 @@ def _prepare_reference(
             lambda: cancel_requested() or not workers.is_running(),
             report=partial(ReportStPreparation, progress),
         )
-        return PrepareReference(
-            universe,
-            observed_at,
-            ReferencePreparationDependencies(
-                source.fetch,
-                partial(
-                    FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
-                ),
-                CurrentIndustryPublication(
-                    reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested)
-                ).fetch,
-                ReferencePublication(reference_root).publish,
-                cancel_requested,
-            ),
+        publication = ReferencePublication(reference_root)
+        calendar = partial(
+            FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
         )
+        industry = CurrentIndustryPublication(
+            reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested)
+        )
+        dependencies = ReferencePreparationDependencies(
+            source.fetch,
+            partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress),
+            industry.fetch,
+            publication.publish,
+            cancel_requested,
+        )
+        return PrepareReference(universe, observed_at, dependencies)
     finally:
         stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         resources.close()

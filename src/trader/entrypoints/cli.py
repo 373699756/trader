@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from trader.download.application.sync_data import SyncResult
 from trader.download.infra.akshare_calendar import AkshareCalendarTimeoutError
 from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
@@ -107,6 +108,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
         with ManualCancellation() as cancelled:
             result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set)
+        _report_sync_failure(result)
         print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True))
         return result.exit_code
     if args.command == "history-automation-status":
@@ -139,6 +141,21 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command.startswith("research-"):
         return _run_training_command(args, config_path, runtime, parser)
     return _run_config_validation(runtime, profile_override)
+
+
+def _report_sync_failure(result: SyncResult) -> None:
+    if result.failure == "preparation_AkshareCalendarTimeoutError":
+        print(
+            "sync: 交易日历准备超时，AkShare/Sina 在30秒内未完成；本轮尚未进入下载，已有断点保留，请稍后重试。",
+            file=sys.stderr,
+        )
+    for task in result.tasks:
+        if task.task == "company" and task.reason == "ProcessLockError":
+            print(
+                "sync company: 公司同步锁正由另一个任务持有。若曾按 Ctrl+Z，请在原终端用 jobs 查看，"
+                "用 fg 恢复对应任务后按 Ctrl+C 退出，等待释放锁后再续传。",
+                file=sys.stderr,
+            )
 
 
 def _run_training_command(

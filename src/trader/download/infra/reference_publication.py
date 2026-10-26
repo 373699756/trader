@@ -1,11 +1,13 @@
 """Atomic publication of the complete manual reference input."""
 
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
+from trader.download.domain.company_evidence import EvidenceSyncProgress
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
@@ -14,6 +16,40 @@ from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 class ReferencePublication:
     def __init__(self, reference_root: Path) -> None:
         self._path = reference_root / "inputs.json"
+
+    def calendar(
+        self,
+        checked_on: date,
+        *,
+        fetch: Callable[[], tuple[date, ...]],
+        progress: Callable[[EvidenceSyncProgress], None] | None,
+    ) -> tuple[date, ...]:
+        failure = ""
+        try:
+            reference = self.read()
+        except (OSError, ValueError):
+            reference = None
+            failure = "reference_cache_invalid"
+        reused = reference is not None and reference.checked_at.date() == checked_on
+        if progress is not None:
+            progress(
+                EvidenceSyncProgress(
+                    "calendar",
+                    int(reused),
+                    0 if reused else None,
+                    0,
+                    0,
+                    int(reused),
+                    failure,
+                    status="reused" if reused else "running",
+                )
+            )
+        if reused and reference is not None:
+            return reference.open_dates
+        calendar = fetch()
+        if progress is not None:
+            progress(EvidenceSyncProgress("calendar", 1, 0, 0, 0, 0, status="complete"))
+        return calendar
 
     def publish(self, reference: PreparedReference) -> None:
         AtomicWriteJson(

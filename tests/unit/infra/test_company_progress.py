@@ -6,7 +6,10 @@ from io import StringIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader import bootstrap
+from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.domain.company_evidence import (
     CompanyEvidenceSyncResult,
     DisclosurePartition,
@@ -16,6 +19,23 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
 from trader.entrypoints.cli import Main
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    (
+        (SyncResult((), failure="preparation_AkshareCalendarTimeoutError"), "交易日历准备超时"),
+        (SyncResult((SyncTaskResult("company", "failed", "ProcessLockError"),)), "用 fg 恢复对应任务后按 Ctrl+C"),
+    ),
+)
+def test_sync_failures_explain_recovery_without_polluting_json(monkeypatch, capsys, result, expected):
+    monkeypatch.setattr(bootstrap, "ExecuteSync", lambda *args, **kwargs: result)
+    config = Path(__file__).resolve().parents[3] / "config/runtime.json"
+    assert Main(["--config", str(config), "sync", "company"]) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["schema_version"] == "data_sync" and payload["status"] == "failed"
+    assert expected in captured.err and expected not in captured.out
 
 
 def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window():
@@ -118,8 +138,6 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
         314.09,
         3,
     )
-    from trader.download.application.sync_data import SyncResult, SyncTaskResult
-
     monkeypatch.setattr(
         bootstrap,
         "ExecuteSync",

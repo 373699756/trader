@@ -60,6 +60,7 @@ class CompanyEvidenceProgress:
         self._last, self._previous = now, progress
         labels = {
             "st_eligibility": "ST资格",
+            "calendar": "交易日历",
             "financial": "财务增量",
             "pledge": "最新质押",
             "unlock": "未来90天解禁",
@@ -71,6 +72,7 @@ class CompanyEvidenceProgress:
         }
         units = {
             "st_eligibility": "股",
+            "calendar": "份",
             "financial": "页",
             "pledge": "页",
             "unlock": "页",

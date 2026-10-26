@@ -15,6 +15,34 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 NOW = fixtures.NOW
 
 
+def test_document_inventory_switches_progress_before_reading_after_announcement_failure(tmp_path):
+    events = []
+    inventories = []
+
+    class Index(SQLiteCompanyEvidenceIndex):
+        def pending_documents(self, codes, observed_at):
+            if not inventories:
+                assert events[-2].component == "announcements" and events[-2].status == "deferred"
+                assert events[-1].component == "risk_documents" and events[-1].status == "running"
+                assert events[-1].pending is None and events[-1].completed == 0
+            inventories.append(True)
+            return super().pending_documents(codes, observed_at)
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, *args, **kwargs):
+            if isinstance(query, DisclosurePartition):
+                raise TimeoutError("fixture")
+            return super().fetch(query, *args, **kwargs)
+
+    source = Source()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(Index(tmp_path / "company.sqlite3"), source, source, lambda: 0, events.append),
+        ("600001",),
+        NOW,
+    )
+    assert inventories and result.needs_retry and result.published_codes == 1
+
+
 def test_recent_day_planning_never_duplicates_a_completed_wider_owner(tmp_path):
     index = fixtures._index(tmp_path)
     index.partitions(("sse",), NOW)
