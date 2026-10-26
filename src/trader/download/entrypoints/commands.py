@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import CancelledError
 from dataclasses import replace
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def RunDownload(
                 cancel_requested=cancelled.is_set,
                 storage_overrides=runtime.storage_overrides,
             )
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (CancelledError, OSError, RuntimeError, ValueError) as exc:
             if not cancelled.is_set():
                 raise
             # Public reference preparation precedes the typed history result.

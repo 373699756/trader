@@ -1,3 +1,4 @@
+from concurrent.futures import CancelledError
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -104,3 +105,20 @@ def test_cancel_before_preparation_has_no_side_effects():
         pytest.fail("cancelled work ran")
 
     assert SyncData(forbidden, forbidden, forbidden, forbidden, lambda: True).execute("all").exit_code == 130
+
+
+@pytest.mark.parametrize("during_preparation", (False, True))
+@pytest.mark.parametrize("error", (InterruptedError, CancelledError))
+def test_interrupted_io_is_cancelled_instead_of_failed(during_preparation, error):
+    cancelled = False
+
+    def interrupt(*_args):
+        nonlocal cancelled
+        cancelled = True
+        raise error("cancelled")
+
+    prepare = interrupt if during_preparation else lambda: PreparedFixture(_NOW)
+    result = SyncData(prepare, interrupt, interrupt, interrupt, lambda: cancelled).execute("company")
+    assert result.exit_code == 130 and result.failure is None
+    assert not result.tasks if during_preparation else result.tasks[0].status == "cancelled"
+    assert ProjectSyncResult(result)["status"] == "cancelled"

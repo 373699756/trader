@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import signal
+from concurrent.futures import CancelledError
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -214,9 +215,11 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     assert "total_units" not in captured.err
 
 
-def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(monkeypatch, capsys):
+def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(tmp_path, monkeypatch, capsys):
+    from tests.contract.test_cold_start import _empty_config
     from tests.unit.application.test_sync_data import _history
 
+    config = _empty_config(tmp_path)
     previous = signal.getsignal(signal.SIGTERM)
 
     def download(configuration, *, progress, cancel_requested, storage_overrides):
@@ -230,12 +233,16 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(monk
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", download)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", lambda *args, **kwargs: pytest.fail("training ran"))
-    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train"]) == 130
+    assert Main(["--config", str(config), "train"]) == 130
     assert signal.getsignal(signal.SIGTERM) == previous
     assert json.loads(capsys.readouterr().out)["state"] == "cancelled"
 
 
-def test_train_cancellation_during_reference_preparation_returns_130(monkeypatch, capsys):
+@pytest.mark.parametrize("error", (RuntimeError, CancelledError))
+def test_train_cancellation_during_reference_preparation_returns_130(tmp_path, monkeypatch, capsys, error):
+    from tests.contract.test_cold_start import _empty_config
+
+    config = _empty_config(tmp_path)
     previous = signal.getsignal(signal.SIGTERM)
 
     def prepare(configuration, *, progress, cancel_requested, storage_overrides):
@@ -244,12 +251,12 @@ def test_train_cancellation_during_reference_preparation_returns_130(monkeypatch
         assert callable(handler)
         handler(signal.SIGTERM, None)
         assert cancel_requested()
-        raise RuntimeError("reference_preparation_cancelled")
+        raise error("reference_preparation_cancelled")
 
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", lambda *args, **kwargs: pytest.fail("training ran"))
-    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train"]) == 130
+    assert Main(["--config", str(config), "train"]) == 130
     assert signal.getsignal(signal.SIGTERM) == previous
     assert json.loads(capsys.readouterr().out)["status"] == "cancelled"
 

@@ -241,31 +241,44 @@ class CninfoMarketDisclosureSource:
             )
         except HttpResponseTooLarge as exc:
             raise ValueError("disclosure_document_oversized") from exc
-        remaining = min(self._document_parse_timeout, deadline - self._monotonic())
-        if remaining <= 0:
-            raise TimeoutError("disclosure_deadline")
+        return self._parse_document(response.content, deadline)
+
+    def _parse_document(self, payload: bytes, deadline: float) -> str:
+        self._check(deadline)
+        parse_deadline = min(deadline, self._monotonic() + self._document_parse_timeout)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "trader.download.infra.company_document_parser",
+                "--max-bytes",
+                str(self._document_limits.max_bytes),
+                "--max-pages",
+                str(self._document_limits.max_pages),
+                "--max-text-characters",
+                str(self._document_limits.max_text_characters),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        pending_input: bytes | None = payload
         try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "trader.download.infra.company_document_parser",
-                    "--max-bytes",
-                    str(self._document_limits.max_bytes),
-                    "--max-pages",
-                    str(self._document_limits.max_pages),
-                    "--max-text-characters",
-                    str(self._document_limits.max_text_characters),
-                ],
-                input=response.content,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=remaining,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError("disclosure_document_parse_timeout") from exc
-        if result.returncode:
+            while True:
+                self._check(deadline)
+                remaining = parse_deadline - self._monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("disclosure_document_parse_timeout")
+                try:
+                    output, _ = process.communicate(input=pending_input, timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    # communicate retains partial writes and reads after a timeout.
+                    pending_input = None
+            self._check(deadline)
+        finally:
+            _close_parser(process)
+        if process.returncode:
             reason = {
                 3: "encrypted",
                 4: "page_limit",
@@ -274,8 +287,24 @@ class CninfoMarketDisclosureSource:
                 7: "no_text",
                 8: "short_text",
             }
-            raise ValueError(f"disclosure_document_{reason.get(result.returncode, 'unreadable')}")
-        return result.stdout.decode("utf-8")
+            raise ValueError(f"disclosure_document_{reason.get(process.returncode, 'unreadable')}")
+        return output.decode("utf-8")
+
+
+def _close_parser(process: subprocess.Popen[bytes]) -> None:
+    try:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def _plate(code: str) -> str:

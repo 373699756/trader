@@ -1,8 +1,12 @@
 """Run real isolated PDF extraction against bounded synthetic documents."""
 
 import io
+import os
+import select
 import subprocess
 import sys
+import time
+from threading import Event, Timer
 
 import pytest
 from pypdf import PdfWriter
@@ -11,7 +15,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from tests.unit.infra.test_company_sources import NOW, Session
 from trader.download.domain.company_evidence import CompanyDocumentLimits, Disclosure
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.infra.http_contracts import HttpResponse
+from trader.infra.http_contracts import HttpCancelled, HttpResponse
 
 
 def _pdf(pages=1, *, encrypted=False, blank=False, short=False):
@@ -105,3 +109,54 @@ def test_real_parser_reason_and_config_limits_reach_the_source():
     with pytest.raises(ValueError, match="disclosure_document_page_limit"):
         source.document(item, deadline=30)
     assert session.requests[0]["max_response_bytes"] == 65536
+
+
+@pytest.mark.skipif(os.name != "posix", reason="signal-based parser termination probe")
+@pytest.mark.parametrize("cancel,ignore_term", [(True, False), (True, True), (False, False)])
+def test_blocked_parser_is_cancelled_or_times_out_and_is_reaped(monkeypatch, cancel, ignore_term):
+    cancelled = Event()
+    children = []
+    timers = []
+    popen = subprocess.Popen
+
+    def start(_command, **kwargs):
+        program = (
+            "import signal,time\n"
+            + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+            + "print('READY', flush=True)\ntime.sleep(30)\n"
+        )
+        child = popen([sys.executable, "-c", program], **kwargs)
+        children.append(child)
+        assert select.select([child.stdout], [], [], 5)[0]
+        assert child.stdout.readline() == b"READY\n"
+        if cancel:
+            timer = Timer(0.1, cancelled.set)
+            timers.append(timer)
+            timer.start()
+        return child
+
+    monkeypatch.setattr("trader.download.infra.company_disclosure_source.subprocess.Popen", start)
+    source = CninfoMarketDisclosureSource(
+        Session({}),
+        monotonic=time.monotonic,
+        sleeper=time.sleep,
+        document_parse_timeout_seconds=5 if cancel else 0.2,
+        cancel_requested=cancelled.is_set,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(HttpCancelled if cancel else TimeoutError):
+            source._parse_document(b"fixture", deadline=started + 10)
+        assert time.monotonic() - started < 5
+        assert len(children) == 1 and children[0].poll() is not None
+        assert children[0].stdin.closed and children[0].stdout.closed
+        if ignore_term:
+            assert children[0].returncode == -9
+    finally:
+        for timer in timers:
+            timer.cancel()
+            timer.join(timeout=1)
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=2)

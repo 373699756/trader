@@ -19,19 +19,28 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_http import CheckCompanyResponse
-from trader.infra.http_contracts import HttpTransport
+from trader.infra.http_contracts import HttpCancelled, HttpTransport
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 
 class EastmoneyCompanySource:
-    def __init__(self, session: HttpTransport, *, monotonic: Callable[[], float], timeout_seconds: float = 8.0) -> None:
+    def __init__(
+        self,
+        session: HttpTransport,
+        *,
+        monotonic: Callable[[], float],
+        timeout_seconds: float = 8.0,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> None:
         self._session = session
         self._monotonic = monotonic
         self._timeout = timeout_seconds
+        self._cancel_requested = cancel_requested
 
     def _json(self, url: str, params: Mapping[str, str], deadline: float) -> Mapping[str, object]:
+        self._check_cancelled()
         remaining = deadline - self._monotonic()
         if remaining <= 0:
             raise TimeoutError("company_source_deadline")
@@ -41,7 +50,9 @@ class EastmoneyCompanySource:
             timeout=min(self._timeout, remaining),
             deadline=deadline,
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"},
+            cancel_requested=self._cancel_requested,
         )
+        self._check_cancelled()
         CheckCompanyResponse(response)
         payload = response.json()
         if self._monotonic() >= deadline:
@@ -49,6 +60,10 @@ class EastmoneyCompanySource:
         if not isinstance(payload, Mapping):
             raise ValueError("company_source_schema_invalid")
         return payload
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_requested is not None and self._cancel_requested():
+            raise HttpCancelled("http_cancelled")
 
     def pledge_day(self, observed_at: datetime, *, deadline: float) -> date:
         payload = self._json(

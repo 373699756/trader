@@ -1,6 +1,6 @@
 """Real worker fan-out, failure isolation, cancellation and memory admission."""
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from datetime import date
 from itertools import combinations
 from threading import Barrier, Event
@@ -209,7 +209,8 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
     assert reports[-1]["status"] == "failed"
 
 
-def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("error", (InterruptedError, CancelledError, RuntimeError))
+def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_path, monkeypatch, capsys, error):
     import signal
 
     from tests.contract.test_cold_start import _empty_config
@@ -223,7 +224,7 @@ def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_pa
         workers.append(executor._workers)
         signal.raise_signal(signal.SIGTERM)
         assert request.cancelled()
-        raise InterruptedError("cancelled")
+        raise error("cancelled")
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
     assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1", "v5")) == 130

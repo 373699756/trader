@@ -57,26 +57,43 @@ from trader.infra.sqlite_connection import (
 class SQLiteCompanyEvidenceIndex:
     """Own writes to the fresh database; all connections have bounded lifetimes."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, cancel_requested: Callable[[], bool] | None = None) -> None:
         self.path = path
+        self._cancel_requested = cancel_requested
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_requested is not None and self._cancel_requested():
+            raise InterruptedError("company_sync_cancelled")
 
     @contextmanager
     def _connect(self) -> Iterator[SqliteConnection]:
+        self._check_cancelled()
         try:
-            with SqliteSession(self.path, SqliteConnectionOptions(timeout_seconds=8, foreign_keys=True)) as connection:
+            with SqliteSession(
+                self.path,
+                SqliteConnectionOptions(timeout_seconds=8, foreign_keys=True),
+                cancel_requested=self._cancel_requested,
+            ) as connection:
                 yield connection
         except sqlite3.Error as exc:
+            if str(exc) == "interrupted" and self._cancel_requested is not None and self._cancel_requested():
+                raise InterruptedError("company_sync_cancelled") from exc
             raise RuntimeError("company_evidence_persistence_unavailable") from exc
 
     def initialize(self) -> None:
+        self._check_cancelled()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             if self.path.exists():
-                with SqliteSession(self.path, SqliteConnectionOptions(read_only=True)) as connection:
+                with SqliteSession(
+                    self.path, SqliteConnectionOptions(read_only=True), cancel_requested=self._cancel_requested
+                ) as connection:
                     if connection.run("SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' LIMIT 1").fetchone():
                         self._validate_contract(connection)
             with SqliteSession(
-                self.path, SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=8, foreign_keys=True)
+                self.path,
+                SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=8, foreign_keys=True),
+                cancel_requested=self._cancel_requested,
             ) as connection:
                 EnsureSqliteSchema(
                     connection,
@@ -91,6 +108,8 @@ class SQLiteCompanyEvidenceIndex:
                         connection.run(statement)
                     ActivateDisclosureQueryPolicy(connection)
         except sqlite3.Error as exc:
+            if str(exc) == "interrupted" and self._cancel_requested is not None and self._cancel_requested():
+                raise InterruptedError("company_sync_cancelled") from exc
             raise RuntimeError("company_evidence_persistence_unavailable") from exc
 
     @staticmethod
@@ -697,7 +716,11 @@ class SQLiteCompanyEvidenceIndex:
         # TEMP belongs to this connection and disappears on close. It is never a second publication.
         with (
             self._connect() as connection,
-            SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=8)) as source,
+            SqliteSession(
+                self.path,
+                SqliteConnectionOptions(read_only=True, timeout_seconds=8),
+                cancel_requested=self._cancel_requested,
+            ) as source,
         ):
             connection.run("PRAGMA temp_store=FILE")
             connection.run(
@@ -712,6 +735,7 @@ class SQLiteCompanyEvidenceIndex:
                     inputs = _snapshot_rows(source, batch, observed_at)
                     values = []
                     for code in batch:
+                        self._check_cancelled()
                         snapshot = _build_snapshot(code, observed_at, inputs[code], shared)
                         version, payload = EncodeCompanyPublication(snapshot)
                         versions[code] = version
@@ -721,6 +745,7 @@ class SQLiteCompanyEvidenceIndex:
             digest = hashlib.sha256()
             for code in sorted(versions):
                 digest.update(versions[code].encode())
+            self._check_cancelled()
             with SqliteTransaction(connection, immediate=True):
                 # This same read handle observes every concurrent commit, including other publications.
                 if source.run("PRAGMA data_version").require_one()[0] != source_version:

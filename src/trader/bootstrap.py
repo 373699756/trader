@@ -280,7 +280,7 @@ def _sync_company_evidence(
         with OpenExternalHttp() as disclosure_session, OpenExternalHttp() as structured_session:
             source_timeout = request.configuration.source_timeout_seconds
             dependencies = CompanyEvidenceDependencies(
-                SQLiteCompanyEvidenceIndex(root / "evidence.sqlite3"),
+                SQLiteCompanyEvidenceIndex(root / "evidence.sqlite3", cancel_requested=cancel_requested),
                 CninfoMarketDisclosureSource(
                     disclosure_session,
                     monotonic=time.monotonic,
@@ -291,7 +291,12 @@ def _sync_company_evidence(
                     request_interval_seconds=request.configuration.request_interval_seconds,
                     cancel_requested=cancel_requested,
                 ),
-                EastmoneyCompanySource(structured_session, monotonic=time.monotonic, timeout_seconds=source_timeout),
+                EastmoneyCompanySource(
+                    structured_session,
+                    monotonic=time.monotonic,
+                    timeout_seconds=source_timeout,
+                    cancel_requested=cancel_requested,
+                ),
                 time.monotonic,
                 heartbeat,
                 cancel_requested,

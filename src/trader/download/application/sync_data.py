@@ -1,6 +1,7 @@
 """Sequential data synchronization with independent results and one prepared population."""
 
 from collections.abc import Callable
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from typing import Literal
 
@@ -54,8 +55,10 @@ class SyncData:
                 reference = self.prepare()
                 if not reference.eligible_universe:
                     raise ValueError("sync_population_empty")
-            except (OSError, RuntimeError, ValueError) as exc:
-                return SyncResult((), failure=f"preparation_{type(exc).__name__}", cancelled=self.cancelled())
+            except (CancelledError, OSError, RuntimeError, ValueError) as exc:
+                if self.cancelled():
+                    return SyncResult((), cancelled=True)
+                return SyncResult((), failure=f"preparation_{type(exc).__name__}")
             selected: tuple[Literal["history", "market", "company"], ...] = (
                 ("history", "market", "company") if target == "all" else (target,)
             )
@@ -67,10 +70,11 @@ class SyncData:
                     tasks.append(result)
                     if result.status == "cancelled":
                         return SyncResult(tuple(tasks), cancelled=True)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    tasks.append(SyncTaskResult(task, "failed", type(exc).__name__))
+                except (CancelledError, OSError, RuntimeError, ValueError) as exc:
                     if self.cancelled():
+                        tasks.append(SyncTaskResult(task, "cancelled"))
                         return SyncResult(tuple(tasks), cancelled=True)
+                    tasks.append(SyncTaskResult(task, "failed", type(exc).__name__))
             return SyncResult(tuple(tasks))
         except KeyboardInterrupt:
             return SyncResult(tuple(tasks), cancelled=True)

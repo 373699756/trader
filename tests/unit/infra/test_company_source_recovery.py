@@ -2,7 +2,6 @@
 
 import json
 from datetime import date, datetime
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -141,12 +140,12 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
     transport = _Transport(clock, [(HttpTimeout("fixture"), 8), (HttpResponse(200, b"PDF fixture"), 0.1)])
     parsed = []
 
-    def parse(*args, **kwargs):
-        parsed.append(kwargs["input"])
-        assert kwargs["timeout"] == 4.0
-        return SimpleNamespace(returncode=0, stdout=b"verified body")
+    def parse(self, payload, deadline):
+        parsed.append(payload)
+        assert self._document_parse_timeout == 4.0 and deadline == 120
+        return "verified body"
 
-    monkeypatch.setattr("trader.download.infra.company_disclosure_source.subprocess.run", parse)
+    monkeypatch.setattr(CninfoMarketDisclosureSource, "_parse_document", parse)
     source = CninfoMarketDisclosureSource(
         transport,
         monotonic=clock,

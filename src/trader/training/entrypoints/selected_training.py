@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import CancelledError
 from contextlib import ExitStack
 from datetime import datetime
 from threading import Event
 from zoneinfo import ZoneInfo
 
 from trader.infra.settings import RuntimeSettings
-from trader.infra.shutdown import ShutdownSignalController
+from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingMemoryAdmission
@@ -42,12 +43,19 @@ def RunSelectedTraining(
     memory_admission: TrainingMemoryAdmission,
     paths: TrainingLocations,
 ) -> int:
-    cancelled = Event()
-    controller = ShutdownSignalController(
-        timeout_seconds=runtime.pipeline.shutdown_timeout_seconds, on_first_signal=lambda _deadline: cancelled.set()
-    )
+    with ManualCancellation() as cancelled:
+        return _run_selected_training(runtime, profiles, executor, memory_admission, paths, cancelled)
+
+
+def _run_selected_training(
+    runtime: RuntimeSettings,
+    profiles: tuple[ScoringProfileId, ...],
+    executor: ManagedWorkerExecutor,
+    memory_admission: TrainingMemoryAdmission,
+    paths: TrainingLocations,
+    cancelled: Event,
+) -> int:
     started = time.monotonic()
-    controller.install()
     try:
         executor.start()
         with ExitStack() as scope:
@@ -136,17 +144,18 @@ def RunSelectedTraining(
                 )
             )
         return code
-    except (KeyboardInterrupt, InterruptedError):
+    except (KeyboardInterrupt, InterruptedError, CancelledError):
         cancelled.set()
         print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles}))
         return 130
     except (OSError, RuntimeError, ValueError) as exc:
+        if cancelled.is_set():
+            print(
+                json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles})
+            )
+            return 130
         reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
         print(json.dumps({"schema_version": "selected_training_result", "status": "failed", "failure": reason}))
         return 1
     finally:
-        try:
-            executor.stop(wait=True, cancel_futures=True)
-        finally:
-            controller.mark_completed()
-            controller.restore()
+        executor.stop(wait=True, cancel_futures=True)
