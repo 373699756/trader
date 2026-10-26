@@ -78,10 +78,12 @@ def ConfigureStorage(
 
 
 def ReportStorageProfiles(settings: RuntimeSettings, locations: tuple[StorageLocation, ...]) -> None:
-    """Group warnings by device and effective override; keep command stdout machine-readable."""
-    groups: dict[tuple[str, str, str], list[StorageLocation]] = {}
+    """Summarize known media and keep unknown warnings per device on stderr."""
+    groups: dict[tuple[str, ...], list[StorageLocation]] = {}
     for item in locations:
-        key = (item.profile.device, item.profile.kind, item.profile.source)
+        key: tuple[str, ...] = (item.profile.kind, item.profile.source)
+        if item.profile.kind == "unknown":
+            key += (item.profile.device,)
         groups.setdefault(key, []).append(item)
     for items in groups.values():
         profile = items[0].profile
