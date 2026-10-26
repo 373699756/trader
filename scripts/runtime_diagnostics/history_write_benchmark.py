@@ -38,6 +38,7 @@ from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.history_write_tuning import (
     HistoryWriteTuning,
 )
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
@@ -173,6 +174,7 @@ def _measure_case(
             SqliteTransaction(connection),
         ):
             rows += connection.run("SELECT COUNT(*) FROM daily_records").require_one()[0]
+    manifest = SQLitePublishedHistorySnapshot(config.archive_root).manifest()
     return {
         "case": name,
         "seconds": round(time.monotonic() - started, 3),
@@ -182,6 +184,7 @@ def _measure_case(
         "requests": len(supplier.requests),
         "requested_rows": sum(supplier.requests),
         "rows": rows,
+        "publication_hash": manifest.snapshot_hash if manifest is not None else None,
         "gaps": result.unresolved_price_cells,
         "files_bytes": sum(path.stat().st_size for path in config.archive_root.rglob("*") if path.is_file()),
         "phase_seconds": stage_times.summary(),

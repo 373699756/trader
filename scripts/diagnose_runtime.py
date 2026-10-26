@@ -154,7 +154,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--baseline-checkout",
         type=Path,
-        help="isolated checkout for five alternating history-write or download-performance comparisons",
+        help="isolated checkout for history-write, download-performance or database-baseline comparisons",
     )
     parser.add_argument(
         "--scoring-profile",
@@ -404,8 +404,14 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         output_format = "json"
     if output_format == "text" and args.profile != "market-factor-compare":
         raise ValueError("--format text is only available for market-factor-compare")
-    if args.baseline_checkout is not None and args.profile not in {"history-write", "download-performance"}:
-        raise ValueError("--baseline-checkout is only available for history-write or download-performance")
+    if args.baseline_checkout is not None and args.profile not in {
+        "history-write",
+        "download-performance",
+        "database-baseline",
+    }:
+        raise ValueError(
+            "--baseline-checkout is only available for history-write, download-performance or database-baseline"
+        )
     if args.cpu_profile_dir is not None:
         if args.profile not in {"market-factor-compare", "performance"}:
             raise ValueError("--cpu-profile-dir requires market-factor-compare or performance")
@@ -926,7 +932,8 @@ def build_commands(
                 str(options.history_days),
                 "--rounds",
                 str(options.database_rounds),
-            ),
+            )
+            + (("--baseline-checkout", str(options.baseline_checkout)) if options.baseline_checkout else ()),
             common_timeout,
         ),
         "company_resume": DiagnosticCommand(

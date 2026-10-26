@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -13,9 +14,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import median
 from tempfile import TemporaryDirectory
-from typing import TypeVar, cast
+from typing import TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
 
+import trader
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
@@ -62,6 +64,14 @@ class _InputIdentities:
 class _Startup:
     identities: _InputIdentities
     observations: dict[str, object]
+
+
+class _MetricComparison(TypedDict):
+    metric: str
+    baseline_median: float
+    candidate_median: float
+    ratio: float | None
+    improved_rounds: int
 
 
 class _Supplier(HistoryFixtureSupplier):
@@ -350,6 +360,125 @@ def _median_metrics(runs: list[dict[str, object]]) -> dict[str, float]:
     return {key: median(run[key] for run in measurements) for key in sorted(common)}
 
 
+def _run_worker(checkout: Path, size: int, sessions: int, storage_kind: StorageKind) -> dict[str, object]:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.runtime_diagnostics.database_baseline",
+            "--worker",
+            "--size",
+            str(size),
+            "--sessions",
+            str(sessions),
+            "--storage-kind",
+            storage_kind,
+            "--expected-product-root",
+            str(checkout),
+        ],
+        cwd=PROJECT_ROOT,
+        env={**os.environ, "PYTHONPATH": str(checkout / "src"), "PYTHONHASHSEED": "0"},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=600,
+    )
+    decoded = json.loads(completed.stdout)
+    if not isinstance(decoded, dict) or set(decoded) != {"sync", "history"}:
+        raise ValueError("database_baseline_invalid_worker_report")
+    return cast(dict[str, object], decoded)
+
+
+def _publication_facts(value: object, prefix: str = "") -> dict[str, object]:
+    facts: dict[str, object] = {}
+    if isinstance(value, dict):
+        for key, child in value.items():
+            path = f"{prefix}.{key}"
+            if key in {"identities", "publication_hash", "rows", "gaps", "state", "requests", "requested_rows"}:
+                facts[path] = child
+            else:
+                facts.update(_publication_facts(child, path))
+    elif isinstance(value, list):
+        for position, child in enumerate(value):
+            facts.update(_publication_facts(child, f"{prefix}.{position}"))
+    return facts
+
+
+def _compare(baseline: Path, size: int, sessions: int, rounds: int, storage_kind: StorageKind) -> dict[str, object]:
+    baseline = baseline.resolve(strict=True)
+    if baseline == PROJECT_ROOT or baseline.is_relative_to(PROJECT_ROOT) or not (baseline / "src/trader").is_dir():
+        raise ValueError("database comparison requires an external product checkout")
+    runs: dict[str, list[dict[str, object]]] = {"baseline": [], "candidate": []}
+    for number in range(rounds):
+        order = ("baseline", "candidate") if number % 2 == 0 else ("candidate", "baseline")
+        for variant in order:
+            checkout = baseline if variant == "baseline" else PROJECT_ROOT
+            runs[variant].append(_run_worker(checkout, size, sessions, storage_kind))
+        if _publication_facts(runs["baseline"][-1]) != _publication_facts(runs["candidate"][-1]):
+            raise RuntimeError("database_comparison_publication_changed")
+    old, new = _median_metrics(runs["baseline"]), _median_metrics(runs["candidate"])
+    comparisons: list[_MetricComparison] = []
+    before_metrics = [_numeric_metrics(run) for run in runs["baseline"]]
+    after_metrics = [_numeric_metrics(run) for run in runs["candidate"]]
+    for key in sorted(old.keys() & new.keys()):
+        previous = [run[key] for run in before_metrics]
+        current = [run[key] for run in after_metrics]
+        comparisons.append(
+            {
+                "metric": key,
+                "baseline_median": old[key],
+                "candidate_median": new[key],
+                "ratio": new[key] / old[key] if old[key] else (1.0 if new[key] == 0 else None),
+                "improved_rounds": sum(after < before for before, after in zip(previous, current, strict=True)),
+            }
+        )
+    history_walls = tuple(
+        f"history.cases.{case}.database.wall_seconds"
+        for case in ("initial", "next_day", "two_weeks", "same_day", "initial_resume")
+    )
+    improved = [
+        row["metric"]
+        for row in comparisons
+        if row["metric"] in history_walls
+        and row["ratio"] is not None
+        and row["ratio"] <= 0.9
+        and row["improved_rounds"] >= 4
+    ]
+    regression_keys = (
+        history_walls
+        + tuple(
+            f"sync.targets.{target}.{phase}.wall_seconds"
+            for target in ("all", "history", "market", "company")
+            for phase in ("initial", "same_day")
+        )
+        + tuple(f"sync.targets.{target}.startup.phases.startup_history.wall_seconds" for target in ("all", "history"))
+    )
+    regressions = [key for key in regression_keys if new[key] > old[key] * 1.05]
+    space_ok = all(new[key] <= old[key] * 1.05 for key in old if key.endswith(".files_bytes"))
+    rss_ok = (
+        max(
+            value
+            for metrics in after_metrics
+            for key, value in metrics.items()
+            if key.endswith("process_peak_rss_bytes")
+        )
+        <= 2 * 1024**3
+    )
+    return {
+        "runs": runs,
+        "comparison": comparisons,
+        "publication_equal": True,
+        "acceptance": {
+            "accepted": rounds >= 5 and bool(improved) and not regressions and space_ok and rss_ok,
+            "improved_history_cases": improved,
+            "regressions": regressions,
+            "database_size_within_5_percent": space_ok,
+            "process_rss_within_2_gib": rss_ok,
+            "policy": "5 alternating pairs; history wall median improves at least 10% and wins 4/5; other wall medians regress at most 5%; file size +5% max; RSS <= 2 GiB",
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--size", type=int, default=8)
@@ -357,40 +486,28 @@ def main() -> int:
     parser.add_argument("--rounds", type=int, choices=range(1, 6), default=5)
     parser.add_argument("--storage-kind", choices=("ssd", "hdd", "unknown"), default="unknown")
     parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--baseline-checkout", type=Path)
+    parser.add_argument("--expected-product-root", type=Path, default=PROJECT_ROOT)
     args = parser.parse_args()
     if not 1 <= args.size <= 32 or not 5 <= args.sessions <= 2000:
         parser.error("database baseline requires 1..32 stocks and 5..2000 sessions")
     if args.worker:
+        if Path(trader.__file__).resolve().parents[2] != args.expected_product_root.resolve():
+            raise RuntimeError("database_comparison_wrong_product_import")
         emit_report(_worker(args.size, args.sessions, args.storage_kind))
         return 0
-    runs: list[dict[str, object]] = []
-    for _ in range(args.rounds):
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "scripts.runtime_diagnostics.database_baseline",
-                "--worker",
-                "--size",
-                str(args.size),
-                "--sessions",
-                str(args.sessions),
-                "--storage-kind",
-                args.storage_kind,
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=600,
-        )
-        decoded = json.loads(completed.stdout)
-        if not isinstance(decoded, dict) or set(decoded) != {"sync", "history"}:
-            raise ValueError("database_baseline_invalid_worker_report")
-        runs.append(cast(dict[str, object], decoded))
+    if args.baseline_checkout is not None:
+        result = _compare(args.baseline_checkout, args.size, args.sessions, args.rounds, args.storage_kind)
+        acceptance = cast(dict[str, object], result["acceptance"])
+        status = "passed" if acceptance["accepted"] else "degraded"
+    else:
+        runs = [_run_worker(PROJECT_ROOT, args.size, args.sessions, args.storage_kind) for _ in range(args.rounds)]
+        result = {"runs": runs, "median_metrics": _median_metrics(runs)}
+        status = "passed"
     emit_report(
         {
             "schema_version": "database-baseline-v1",
-            "status": "passed",
+            "status": status,
             "summary": {
                 "fixture": True,
                 "rounds": args.rounds,
@@ -398,8 +515,7 @@ def main() -> int:
                 "sessions": args.sessions,
                 "physical_http_requests": 0,
                 "storage_kind": args.storage_kind,
-                "runs": runs,
-                "median_metrics": _median_metrics(runs),
+                **result,
                 "cache_policy": "fresh worker and databases per round; operating-system cache is uncontrolled",
                 "measurement_policy": "scoped public SQLite wrapper instrumentation; statements count submitted run/run_many rows; successful BEGIN/COMMIT counts; WAL sampled every 50 ms; SQL time includes commit and fetch, excludes connection setup/PRAGMAs; RSS is process peak",
                 "scope": "SyncData orchestration, real persistence and startup input projections; synthetic prices and one company announcement page; no full service, models, PDF or supplier acceptance",

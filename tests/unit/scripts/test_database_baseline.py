@@ -10,7 +10,7 @@ import pytest
 
 from scripts.diagnose_runtime import _parser, _validate, build_commands, execute_command
 from scripts.runtime_diagnostics import database_workspace
-from scripts.runtime_diagnostics.database_baseline import MeasureSyncBaseline
+from scripts.runtime_diagnostics.database_baseline import MeasureSyncBaseline, _compare
 from scripts.runtime_diagnostics.database_measurement import DatabaseMeasurement
 from scripts.runtime_diagnostics.database_workspace import (
     DatabaseWorkerEnvironment,
@@ -119,6 +119,91 @@ def test_worker_tempfiles_and_filesystem_evidence_reach_the_report(tmp_path: Pat
     assert result.payload["summary"]["temporary_root"] == str(target)
     assert "database_workspace" in result.payload["summary"]
     assert result.payload["summary"]["database_workspace"]["filesystem"] != "unknown"
+
+
+def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tmp_path: Path) -> None:
+    options, _ = _validate(
+        _parser().parse_args(
+            [
+                "--profile",
+                "database-baseline",
+                "--database-probe-directory",
+                str(tmp_path / "probe"),
+                "--baseline-checkout",
+                str(tmp_path / "baseline"),
+                "--database-rounds",
+                "5",
+            ]
+        )
+    )
+    command = build_commands(options, python_executable=sys.executable)[0]
+    assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path / "baseline"))
+    assert command.argv[command.argv.index("--rounds") + 1] == "5"
+    assert command.name == "database_baseline"
+
+
+@pytest.mark.parametrize("failure", (None, "rss", "identity"))
+def test_comparison_requires_equal_publications_and_every_round_within_memory_budget(tmp_path, monkeypatch, failure):
+    baseline = tmp_path / "baseline"
+    (baseline / "src/trader").mkdir(parents=True)
+    candidate_round = 0
+    calls = []
+
+    def worker(checkout, size, sessions, storage_kind):
+        nonlocal candidate_round
+        candidate = checkout == PROJECT_ROOT
+        candidate_round += int(candidate)
+        calls.append("candidate" if candidate else "baseline")
+        seconds = 0.8 if candidate else 1.0
+        rss = 2 * 1024**3 + 1 if candidate and candidate_round == 1 and failure == "rss" else 1024
+        identity = "changed" if candidate and failure == "identity" else "same"
+        return {
+            "history": {
+                "cases": [
+                    {
+                        "case": name,
+                        "publication_hash": identity,
+                        "files_bytes": 1024,
+                        "database": {"wall_seconds": seconds, "process_peak_rss_bytes": rss},
+                    }
+                    for name in ("initial", "next_day", "two_weeks", "same_day", "initial_resume")
+                ]
+            },
+            "sync": {
+                "targets": {
+                    target: {
+                        "initial": {"wall_seconds": seconds},
+                        "same_day": {"wall_seconds": seconds},
+                        "startup": {
+                            "identities": {"history": identity},
+                            "phases": {"startup_history": {"wall_seconds": seconds}},
+                        },
+                    }
+                    for target in ("all", "history", "market", "company")
+                }
+            },
+        }
+
+    monkeypatch.setattr("scripts.runtime_diagnostics.database_baseline._run_worker", worker)
+    if failure == "identity":
+        with pytest.raises(RuntimeError, match="publication_changed"):
+            _compare(baseline, 2, 61, 5, "unknown")
+    else:
+        report = _compare(baseline, 2, 61, 5, "unknown")
+        assert report["acceptance"]["accepted"] is (failure is None)
+        assert report["acceptance"]["process_rss_within_2_gib"] is (failure is None)
+        assert calls == [
+            "baseline",
+            "candidate",
+            "candidate",
+            "baseline",
+            "baseline",
+            "candidate",
+            "candidate",
+            "baseline",
+            "baseline",
+            "candidate",
+        ]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group diagnostic")

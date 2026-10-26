@@ -314,6 +314,15 @@ competing for the same disk.
 将子进程及其对照进程的临时数据库放在指定文件系统上；不提供该参数时沿用系统临时目录，
 其结果不能仅凭目录名认定为磁盘性能。活动数据目录和已存在的目标目录均被拒绝。
 
+`database-baseline`可再加`--baseline-checkout /absolute/external/baseline`做新旧对照。
+两边运行当前同一套fixture和插桩，只通过子进程`PYTHONPATH`选择产品源码，并校验实际导入位置；
+配置和输入保持相同，新旧执行顺序每组交替。报告逐组核对历史五场景发布摘要、请求/行/缺口数量，
+以及联合/单项下载和重启输入身份，再给出耗时、语句、I/O、空间和RSS中位数及逐组胜出数。
+默认5组；至少一个历史场景墙钟中位数减少10%、胜出至少4组，其余场景墙钟回退不超过5%、
+数据库大小增幅不超过5%、RSS不超过2 GiB才标记`acceptance.accepted=true`，否则报告degraded。
+SQL次数减少本身不能替代整轮收益；保持单独指标，不能相加解释为墙钟。可按负载显式提高
+`--command-timeout-seconds`，例如1800秒；小于5组只作诊断，不能通过收益门。
+
 Compare the annual layout with an isolated checkout of the pre-migration monthly
 layout (for example, commit `c235ffa3` extracted outside this repository):
 
