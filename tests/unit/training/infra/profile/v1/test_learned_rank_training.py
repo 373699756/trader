@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -36,7 +38,7 @@ from trader.training.infra.profile.v1.models import (
     ReadLearnedRankPair,
 )
 from trader.training.infra.profile.v1.samples import BuildLearnedRankSamples, LearnedRankSampleIndex
-from trader.training.infra.profile.v1.training import RunV1Training
+from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training
 
 
 class _History:
@@ -92,6 +94,166 @@ def _settings() -> V1TrainingSettings:
         boosting_rounds=12,
         early_stopping_rounds=3,
     )
+
+
+@pytest.fixture(scope="module")
+def reusable_pair(tmp_path_factory):
+    directory = tmp_path_factory.mktemp("v1-reuse")
+    result = RunV1Training(
+        _History,
+        directory / "models",
+        history_root=directory / "history",
+        sample_root=directory / "samples",
+        settings=_settings(),
+    )
+    assert result.status == "engineering_ready" and not result.reused
+    return directory / "models", result
+
+
+def test_matching_v1_pair_reuses_without_scanning_fitting_or_republishing(tmp_path, monkeypatch, reusable_pair):
+    root, original = reusable_pair
+    model_root = tmp_path / "models"
+    shutil.copytree(root, model_root)
+    before = {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")}
+    history = _History()
+    monkeypatch.setattr(history, "iter_training_rows", lambda _dates: pytest.fail("cache hit scanned history"))
+    monkeypatch.setattr(
+        "trader.training.infra.profile.v1.training.BuildLearnedRankSamples",
+        lambda *args, **kwargs: pytest.fail("cache hit rebuilt samples"),
+    )
+    monkeypatch.setattr(
+        "trader.training.infra.profile.v1.training.FitLearnedRankHead",
+        lambda *args, **kwargs: pytest.fail("cache hit fitted model"),
+    )
+    result = RunV1Training(
+        lambda: history,
+        model_root,
+        history_root=tmp_path / "history",
+        sample_root=tmp_path / "samples",
+        settings=_settings(),
+    )
+    assert result.reused and result.heads == original.heads and result.run_id == original.run_id
+    assert not (tmp_path / "samples").exists()
+    assert {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")} == before
+    first, repeated = ProjectLearnedRankTrainingResult(original), ProjectLearnedRankTrainingResult(result)
+    assert repeated["reused"] is True and repeated["heads"] == first["heads"]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    (
+        "settings",
+        "active_snapshot_hash",
+        "source_identity_hash",
+        "calendar_hash",
+        "input_descriptor_hash",
+        "training_codes",
+        "label_cutoff",
+        "listing_intervals",
+        "implementation",
+        "dependency",
+        "split",
+        "missing",
+        "corrupt",
+        "legacy",
+    ),
+)
+def test_v1_reuse_rejects_any_changed_identity_or_invalid_head(tmp_path, monkeypatch, reusable_pair, changed):
+    root, _ = reusable_pair
+    model_root = tmp_path / "models"
+    shutil.copytree(root, model_root)
+    history, settings = _History(), _settings()
+    if changed == "settings":
+        settings = replace(settings, boosting_rounds=settings.boosting_rounds + 1)
+    elif changed in {"active_snapshot_hash", "source_identity_hash", "calendar_hash", "input_descriptor_hash"}:
+        history.snapshot = replace(history.snapshot, **{changed: "e" * 64})
+    elif changed == "training_codes":
+        history.snapshot = replace(history.snapshot, training_codes=history.codes[:-1])
+    elif changed == "label_cutoff":
+        history.snapshot = replace(history.snapshot, label_cutoff=history.dates[-3])
+    elif changed == "listing_intervals":
+        history.snapshot = replace(history.snapshot, listing_intervals=((history.codes[0], history.dates[0], None),))
+    elif changed == "implementation":
+        monkeypatch.setattr(
+            "trader.training.infra.profile.v1.training.TrainingImplementationIdentity", lambda: "e" * 64
+        )
+    elif changed == "dependency":
+        monkeypatch.setattr("trader.training.infra.profile.v1.training.version", lambda _name: "changed")
+    elif changed == "split":
+        pair = ReadLearnedRankPair(model_root)
+        split = BuildLearnedRankDateSplit(history.dates, replace(settings, fit_dates=29), maturity_sessions=1)
+        PublishLearnedRankPair(model_root, replace(pair, heads=(replace(pair.heads[0], split=split), pair.heads[1])))
+    elif changed == "missing":
+        (model_root / "v1/d25/model.json").unlink()
+    elif changed == "corrupt":
+        (model_root / "v1/tomorrow/model.json").write_text("{}", encoding="utf-8")
+    else:
+        for strategy in ("tomorrow", "d25"):
+            path = model_root / "v1" / strategy / "metadata.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            del document["training_input"]["training_identity_hash"]
+            del document["content_hash"]
+            document["content_hash"] = ContentHash(document)
+            path.write_text(json.dumps(document), encoding="utf-8")
+    assert InspectV1Training(history, model_root, settings) is None
+
+
+def test_v1_cache_inspection_propagates_cancellation_and_publication_busy(tmp_path, reusable_pair):
+    root, _ = reusable_pair
+    model_root = tmp_path / "models"
+    shutil.copytree(root, model_root)
+    checks = 0
+
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks >= 2
+
+    with pytest.raises(InterruptedError):
+        InspectV1Training(_History(), model_root, _settings(), cancel_requested=cancelled)
+    with ProcessLock(model_root / ".v1.publication.lock"), pytest.raises(RuntimeError, match="publication_busy"):
+        InspectV1Training(_History(), model_root, _settings())
+
+
+def test_v1_releases_each_head_memory_before_publishing(tmp_path, monkeypatch):
+    import trader.training.infra.profile.v1.training as training
+
+    leases = []
+    active = []
+
+    class Budget:
+        @contextmanager
+        def reserve(self, required_bytes, heartbeat):
+            heartbeat()
+            assert not active
+            active.append(required_bytes)
+            leases.append(required_bytes)
+            try:
+                yield
+            finally:
+                active.clear()
+
+    original_fit, original_publish = training.FitLearnedRankHead, training.PublishLearnedRankPair
+
+    def fit(*args, **kwargs):
+        assert len(active) == 1
+        return original_fit(*args, **kwargs)
+
+    def publish(*args, **kwargs):
+        assert not active
+        return original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(training, "FitLearnedRankHead", fit)
+    monkeypatch.setattr(training, "PublishLearnedRankPair", publish)
+    result = RunV1Training(
+        _History,
+        tmp_path / "models",
+        history_root=tmp_path / "history",
+        sample_root=tmp_path / "samples",
+        settings=_settings(),
+        memory_admission=Budget(),
+    )
+    assert result.status == "engineering_ready" and len(leases) == 2 and not active
 
 
 def test_recent_split_matures_labels_and_never_overlaps_partitions() -> None:

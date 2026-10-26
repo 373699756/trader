@@ -344,8 +344,12 @@ def _evaluate_validation(
     for batch in samples.iter_validation_batches(contract):
         heartbeat()
         predictions: list[float | None] = [None] * len(batch.codes)
-        for industry in sorted(set(batch.industries) & predictors.keys()):
-            positions = [index for index, value in enumerate(batch.industries) if value == industry]
+        positions_by_industry: dict[str, list[int]] = {}
+        for index, industry in enumerate(batch.industries):
+            if industry in predictors:
+                positions_by_industry.setdefault(industry, []).append(index)
+        for industry in sorted(positions_by_industry):
+            positions = positions_by_industry[industry]
             predicted = predictors[industry].predict(batch.features[positions])
             if len(predicted) != len(positions):
                 raise ValueError("validation_prediction_count_invalid")

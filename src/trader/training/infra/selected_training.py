@@ -34,7 +34,7 @@ from trader.training.infra.engine import (
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-from trader.training.infra.profile.v1.training import RunV1Training, V1TrainingResult
+from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training, V1TrainingResult
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
@@ -48,7 +48,7 @@ def _run_v1(execute: Callable[..., V1TrainingResult], rows: Iterator[HistoryTrai
     return execute(aligned_rows=rows)
 
 
-def _reused(result: TrainingRunResult, _rows: Iterator[HistoryTrainingRow]) -> TrainingRunResult:
+def _reused(result: SelectedProfileResult, _rows: Iterator[HistoryTrainingRow]) -> SelectedProfileResult:
     return result
 
 
@@ -121,6 +121,9 @@ class _TrainingTaskFactory:
         paths = selection.paths
         calendar = self.archive.snapshot.calendar.open_dates
         settings = LoadV1TrainingSettings(selection.runtime.project_root)
+        reused = InspectV1Training(self.archive, paths.models, settings, cancel_requested=selection.cancelled)
+        if reused is not None:
+            return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
         splits = tuple(BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=h) for h in (1, 5))
         first = min(calendar.index(day) for split in splits for day in split.sample_dates) - 251
         dates = AlignmentReadDates(calendar, frozenset(calendar[first:]))

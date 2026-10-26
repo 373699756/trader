@@ -56,7 +56,11 @@ def test_compact_samples_match_all_head_partitions_statistics_and_order(tmp_path
             samples.prepare_for_model_fitting(split)
         assert wide.count() == compact.count()
         assert wide.validation_target_metrics() == compact.validation_target_metrics()
-        for contract in V5_TRAINING_PROFILE.heads:
+        contracts = (
+            *V5_TRAINING_PROFILE.heads,
+            replace(V5_TRAINING_PROFILE.heads[0], feature_positions=(365, 2, 0, 4)),
+        )
+        for contract in contracts:
             assert wide.industry_counts(contract) == compact.industry_counts(contract)
             assert wide.coverage(contract) == compact.coverage(contract)
             for partition in ("training", "early_stopping", "calibration", "validation"):
@@ -114,6 +118,31 @@ def test_missing_or_truncated_blocks_are_rejected(tmp_path, corruption):
         samples._connection.run(corruption)
         with pytest.raises(ValueError):
             tuple(samples.iter_batches("industry1", V5_TRAINING_PROFILE.heads[0], "training"))
+
+
+def test_reused_sequence_blocks_are_immutable_and_keep_the_cache_byte_limit(tmp_path, monkeypatch):
+    split = _split()
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", 366, sequence_layout=LAYOUT) as samples:
+        samples.add_final(item for batch in _samples(split.model_fit_dates[:6]) for item in batch)
+        samples.prepare_for_model_fitting(split)
+        reader = sample_sequences.SampleSequenceReader(samples._connection, LAYOUT)
+        windows = (("000001", 0), ("000001", 5))
+        expected = reader.read(windows)
+        for vector in reader._blocks.values():
+            assert not vector.flags.writeable
+            with pytest.raises(ValueError, match="read-only"):
+                vector[0] = 1.0
+        queries = []
+        samples._connection.observe_statements(queries.append)
+        returned = reader.read(windows)
+        returned.fill(np.nan)
+        np.testing.assert_array_equal(reader.read(windows), expected)
+        assert not queries
+        monkeypatch.setattr(sample_sequences, "_READER_BYTES", 3072)
+        np.testing.assert_array_equal(reader.read(windows), expected)
+        assert reader._bytes <= 3072
+        np.testing.assert_array_equal(reader.read(windows), expected)
+        assert any("WITH wanted" in query for query in queries)
 
 
 def test_compact_cache_reopens_and_layout_change_rebuilds_with_same_input_identity(tmp_path):

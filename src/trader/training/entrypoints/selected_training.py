@@ -108,6 +108,7 @@ def RunSelectedTraining(
                     "status": "cancelled" if outcome.cancelled else "failed",
                     "failure": outcome.failure,
                 }
+            payload["stage_seconds"] = dict(outputs[profiles.index(outcome.profile)].stage_durations)
             print(json.dumps(payload, ensure_ascii=False))
             codes.append(
                 130

@@ -9,12 +9,15 @@ import pytest
 from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra import model_fitting
+from trader.training.infra.model_bundles.bundle_codec import TrainedRidgeModelSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
+from trader.training.infra.model_evaluation import CalibrationResult, PredictionMetricsAccumulator
 from trader.training.infra.model_fitting import FitIndustryModels
+from trader.training.infra.model_fitting_results import FittedIndustryModel
 from trader.training.infra.profile.v2.contracts import V2_HEAD_CONTRACTS, V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS, V3_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
-from trader.training.infra.sample_index import TrainingSample
+from trader.training.infra.sample_index import TrainingSample, TrainingSampleBatch
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[6]
@@ -85,3 +88,69 @@ def _samples_for_day(day: date, day_position: int, feature_count: int) -> tuple[
         )
         for code in range(1, 36)
     )
+
+
+def test_validation_keeps_sorted_industry_calls_batch_membership_and_metric_row_order(monkeypatch):
+    first, second = date(2026, 1, 5), date(2026, 1, 6)
+    batches = tuple(
+        TrainingSampleBatch(
+            np.asarray([[value, value * 2, 0.0, 0.0, 0.0, 0.0] for value in values]),
+            np.asarray(labels),
+            (day,) * len(values),
+            tuple(f"{number:06d}" for number in range(len(values))),
+            industries,
+        )
+        for day, values, labels, industries in (
+            (
+                first,
+                (20.0, 30.0, 10.0, 40.0, 50.0),
+                (0.1, 0.2, 0.3, 0.4, 0.5),
+                ("beta", "missing", "alpha", "beta", "alpha"),
+            ),
+            (second, (60.0, 70.0, 80.0), (0.6, 0.7, 0.8), ("beta", "alpha", "missing")),
+        )
+    )
+    models = tuple(
+        FittedIndustryModel(
+            industry,
+            TrainedRidgeModelSnapshot((0.0,) * 6, (1.0,) * 6, 3.0, 0.5, intercept, coefficients),
+            10,
+            CalibrationResult(2, 2, 1.0, 3.0, 0.5),
+        )
+        for industry, intercept, coefficients in (
+            ("beta", 2.0, (0.0, 1.0, 0.0, 0.0, 0.0, 0.0)),
+            ("alpha", 1.0, (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
+        )
+    )
+
+    class Samples:
+        def iter_validation_batches(self, contract):
+            assert contract == HEAD_CONTRACTS[0]
+            yield from batches
+
+    calls = []
+    predict = model_fitting._ValidationPredictor.predict
+
+    def observed(predictor, features):
+        calls.append((predictor._model.ridge_intercept, features.copy()))
+        return predict(predictor, features)
+
+    monkeypatch.setattr(model_fitting._ValidationPredictor, "predict", observed)
+    heartbeats = []
+    actual = model_fitting._evaluate_validation(Samples(), HEAD_CONTRACTS[0], models, lambda: heartbeats.append(True))
+
+    assert len(heartbeats) == 2
+    assert [intercept for intercept, _ in calls] == [1.0, 2.0, 1.0, 2.0]
+    for (_, features), expected in zip(calls, ((10.0, 50.0), (20.0, 40.0), (70.0,), (60.0,)), strict=True):
+        np.testing.assert_array_equal(features[:, 0], expected)
+        assert features.shape == (len(expected), 6)
+    overall = PredictionMetricsAccumulator()
+    industries = {industry: PredictionMetricsAccumulator() for industry in ("alpha", "beta")}
+    for batch, predictions in zip(batches, ((24.0, None, 8.5, 44.0, 28.5), (64.0, 38.5, None)), strict=True):
+        for day, code, industry, target, prediction in zip(
+            batch.trade_dates, batch.codes, batch.industries, batch.labels, predictions, strict=True
+        ):
+            overall.add(day, code, industry, float(target), prediction)
+            if industry in industries:
+                industries[industry].add(day, code, industry, float(target), prediction)
+    assert actual == (overall.finish(), tuple((industry, value.finish()) for industry, value in industries.items()))

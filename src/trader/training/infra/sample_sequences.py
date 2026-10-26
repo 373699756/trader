@@ -105,7 +105,7 @@ class SampleSequenceReader:
     def __init__(self, connection: SqliteConnection, layout: SampleSequenceLayout) -> None:
         self._connection = connection
         self._layout = layout
-        self._blocks: OrderedDict[tuple[str, int], bytes] = OrderedDict()
+        self._blocks: OrderedDict[tuple[str, int], np.ndarray] = OrderedDict()
         self._bytes = 0
 
     def read(self, windows: Sequence[tuple[str, int]]) -> np.ndarray:
@@ -132,8 +132,9 @@ class SampleSequenceReader:
             for code, block, payload in rows:
                 if not isinstance(payload, bytes) or not 0 < len(payload) <= _BLOCK_STEPS * self._layout.channels * 8:
                     raise ValueError("sample sequence block is invalid")
-                self._blocks[(str(code), int(block))] = payload
-                self._bytes += len(payload)
+                vector = np.frombuffer(payload, dtype="<f8")
+                self._blocks[(str(code), int(block))] = vector
+                self._bytes += vector.nbytes
         if any(key not in self._blocks for key in keys):
             raise ValueError("sample sequence block is missing")
         values: np.ndarray = np.empty((len(windows), self._layout.steps * self._layout.channels), dtype=np.float64)
@@ -141,7 +142,7 @@ class SampleSequenceReader:
             position = 0
             for block in range(start // _BLOCK_STEPS, (start + self._layout.steps - 1) // _BLOCK_STEPS + 1):
                 key = (code, block)
-                payload = self._blocks[key]
+                vector = self._blocks[key]
                 self._blocks.move_to_end(key)
                 first = max(start - block * _BLOCK_STEPS, 0) * self._layout.channels
                 count = (
@@ -151,14 +152,13 @@ class SampleSequenceReader:
                     )
                     * self._layout.channels
                 )
-                vector = np.frombuffer(payload, dtype="<f8")
                 if len(vector) < first + count:
                     raise ValueError("sample sequence block is truncated")
                 values[index, position : position + count] = vector[first : first + count]
                 position += count
         while self._bytes > _READER_BYTES:
-            _, payload = self._blocks.popitem(last=False)
-            self._bytes -= len(payload)
+            _, vector = self._blocks.popitem(last=False)
+            self._bytes -= vector.nbytes
         if not np.isfinite(values).all():
             raise ValueError("sample sequence contains nonfinite values")
         return values

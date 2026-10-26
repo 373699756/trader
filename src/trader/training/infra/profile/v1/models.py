@@ -69,7 +69,14 @@ _HEAD_INPUT_FIELDS = frozenset(
     }
 )
 _SHARED_INPUT_FIELDS = frozenset(
-    {"training_input_hash", "source_identity_hash", "calendar_hash", "source_cutoff", "settings"}
+    {
+        "training_input_hash",
+        "source_identity_hash",
+        "calendar_hash",
+        "source_cutoff",
+        "settings",
+        "training_identity_hash",
+    }
 )
 _MODEL_DOCUMENT_FIELDS = frozenset(
     {"schema_version", "profile_id", "strategy_head", "pair_content_hash", "head_content_hash", "components"}
@@ -207,6 +214,7 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
                     "calendar_hash": pair.calendar_hash,
                     "source_cutoff": pair.source_cutoff.isoformat(),
                     "settings": CanonicalValue(pair.settings),
+                    "training_identity_hash": pair.training_identity_hash,
                     **{key: values[key] for key in _HEAD_INPUT_FIELDS},
                 },
                 "validation_report": {
@@ -380,6 +388,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         date.fromisoformat(_text(first_input, "source_cutoff")),
         ParseV1TrainingSettings(_object(first_input["settings"])),
         (heads[0], heads[1]),
+        _text(first_input, "training_identity_hash"),
     )
     if first["pair_content_hash"] != pair.content_hash:
         raise ModelBundleIntegrityError("V1 pair content hash differs")

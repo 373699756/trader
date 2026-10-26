@@ -239,20 +239,32 @@ class LearnedRankSampleIndex:
                 (dates[0].isoformat(), dates[-1].isoformat()),
             )
         ) as cursor:
-            for index, raw in enumerate(cursor):
-                day_text, code, industry, blob, target = cast(tuple[str, str, str, bytes, float], raw)
-                day = date_values.get(day_text)
-                if day not in allowed_dates:
-                    raise ValueError("learned-rank sample crossed a date partition")
-                assert day is not None
-                features[index] = _FEATURE_BYTES.unpack(blob)
-                targets[index] = target
-                if not sample_dates or day != sample_dates[-1]:
-                    groups.append(0)
-                groups[-1] += 1
-                codes.append(code_values.setdefault(code, code))
-                sample_dates.append(day)
-                industries.append(industry_values.setdefault(industry, industry))
+            position = 0
+            while batch := cursor.fetchmany(4_096):
+                blobs: list[bytes] = []
+                labels: list[float] = []
+                for raw in batch:
+                    day_text, code, industry, blob, target = cast(tuple[str, str, str, bytes, float], raw)
+                    day = date_values.get(day_text)
+                    if day not in allowed_dates:
+                        raise ValueError("learned-rank sample crossed a date partition")
+                    assert day is not None
+                    if len(blob) != _FEATURE_BYTES.size:
+                        raise struct.error(f"unpack requires a buffer of {_FEATURE_BYTES.size} bytes")
+                    blobs.append(blob)
+                    labels.append(target)
+                    if not sample_dates or day != sample_dates[-1]:
+                        groups.append(0)
+                    groups[-1] += 1
+                    codes.append(code_values.setdefault(code, code))
+                    sample_dates.append(day)
+                    industries.append(industry_values.setdefault(industry, industry))
+                end = position + len(batch)
+                features[position:end] = np.frombuffer(b"".join(blobs), dtype="<f8").reshape(
+                    len(batch), len(LEARNED_RANK_FEATURE_IDS)
+                )
+                targets[position:end] = labels
+                position = end
         return LearnedRankMatrix(features, targets, tuple(codes), tuple(sample_dates), tuple(industries), tuple(groups))
 
 

@@ -70,6 +70,7 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
     return {
         "schema_version": "profile_training_result",
         "profile": "v1",
+        "reused": result.reused,
         "status": result.status,
         "production_authority": False,
         "prediction_return_validation_passed": False,
@@ -93,7 +94,7 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
                 "strategy": head.strategy.value,
                 "status": "engineering_ready",
                 "model_hash": head.content_hash,
-                "report_hash": ContentHash((head.split, head.validation, result.sample_counts)),
+                "report_hash": ContentHash((head.split, head.validation)),
                 "training_rows": head.training_rows,
                 "validation_rows": head.validation.predicted_rows,
                 "label_cutoff": head.split.label_cutoff.isoformat(),

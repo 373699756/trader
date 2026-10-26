@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import resource
 import time
 from _thread import LockType
@@ -22,6 +23,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockDailyCell,
     BaoStockDailyFact,
     BaoStockDailySide,
+    BaoStockIndustryInterval,
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
@@ -57,6 +59,7 @@ class HistoryFixtureSupplier:
     days: tuple[date, ...]
     size: int
     requests: list[int] = field(default_factory=list)
+    varying_prices: bool = field(default=False, kw_only=True)
 
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         universe = tuple(
@@ -67,7 +70,9 @@ class HistoryFixtureSupplier:
             BaoStockCalendar(self.days[-sessions:]),
             universe,
             BaoStockSourceVersions("fixture", "3.10", ()),
-            (),
+            tuple(BaoStockIndustryInterval(item.code, self.days[0], None, "fixture", "fixture") for item in universe)
+            if self.varying_prices
+            else (),
             tuple(HistoryStEvidence(item.code, as_of, "clear") for item in universe),
         )
 
@@ -79,6 +84,9 @@ class HistoryFixtureSupplier:
     def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
         cells = []
         for day in dates:
+            if self.varying_prices:
+                cells.append(self._varying_cell(security.code, day))
+                continue
             raw = BaoStockDailySide(
                 security.code, day, "unadjusted", 10.0, 10.0, 10.0, 10.0, 100.0, 1000.0, 10.0, 0.0, 0.0, "trading"
             )
@@ -90,6 +98,52 @@ class HistoryFixtureSupplier:
             BaoStockCodeBatch(security.code, tuple(cells)),
             tuple(BaoStockDailyFact(security.code, day, False) for day in dates),
         )
+
+    def _varying_cell(self, code: str, day: date) -> BaoStockDailyCell:
+        stock = int(code)
+        offset = (day - date(2018, 1, 1)).days
+        base = 10.0 + (stock % 1000) * 0.03
+        preclose, close = (
+            base
+            * math.exp(
+                0.08 * math.sin(position / 503 + stock * 0.017)
+                + 0.04 * math.sin(position / 97 + stock * 0.11)
+                + 0.02 * math.sin(position / 13 + stock * 0.37)
+                + 0.006 * math.sin(position / 3 + stock * 0.19)
+            )
+            for position in (offset - 1, offset)
+        )
+        opening = preclose * (1.0 + 0.002 * math.sin(offset / 7 + stock * 0.13))
+        high = max(opening, close) * 1.003
+        low = min(opening, close) * 0.997
+        volume = 100_000.0 * (1.0 + (stock % 11) * 0.04 + 0.15 * math.sin(offset / 11 + stock * 0.23))
+        raw = BaoStockDailySide(
+            code,
+            day,
+            "unadjusted",
+            opening,
+            high,
+            low,
+            close,
+            volume,
+            volume * (opening + close) / 2,
+            preclose,
+            (close / preclose - 1.0) * 100,
+            0.5 + 0.2 * math.cos(offset / 17 + stock * 0.29),
+            "trading",
+        )
+        qfq = replace(
+            raw,
+            adjustment="qfq",
+            open_price=opening * 0.9,
+            high_price=high * 0.9,
+            low_price=low * 0.9,
+            close_price=close * 0.9,
+            preclose=None,
+            pct_change=None,
+            turnover=None,
+        )
+        return BaoStockDailyCell(code, day, "complete", raw, qfq)
 
 
 @dataclass

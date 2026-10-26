@@ -409,9 +409,11 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         "history-write",
         "download-performance",
         "database-baseline",
+        "training-performance",
     }:
         raise ValueError(
-            "--baseline-checkout is only available for history-write, download-performance or database-baseline"
+            "--baseline-checkout is only available for history-write, download-performance, database-baseline "
+            "or training-performance"
         )
     if args.cpu_profile_dir is not None:
         if args.profile not in {"market-factor-compare", "performance"}:

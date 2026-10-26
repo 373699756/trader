@@ -328,6 +328,15 @@ class SQLiteTrainingSampleIndex:
             (split_name, industry) if industry is not None else (split_name,),
         )
         decoder = SampleSequenceReader(self._connection, self._sequence_layout) if self._sequence_layout else None
+        positions = contract.feature_positions
+        feature_selection: slice | tuple[int, ...] = positions
+        if (
+            decoder is not None
+            and positions
+            and 0 <= positions[0] <= positions[-1] < self._feature_count
+            and positions == tuple(range(positions[0], positions[-1] + 1))
+        ):
+            feature_selection = slice(positions[0], positions[-1] + 1)
         try:
             while batch := rows.fetchmany(batch_size):
                 codes = tuple(str(row[1]) for row in batch)
@@ -337,7 +346,7 @@ class SQLiteTrainingSampleIndex:
                 else:
                     auxiliary = np.asarray([row[3 : 3 + self._column_features] for row in batch], dtype=np.float64)
                     sequence = decoder.read(tuple((str(row[1]), int(row[-2])) for row in batch))
-                    features = np.concatenate((auxiliary, sequence), axis=1)[:, contract.feature_positions]
+                    features = np.concatenate((auxiliary, sequence), axis=1)[:, feature_selection]
                     labels = np.asarray([row[-1] for row in batch], dtype=np.float64)
                 yield TrainingSampleBatch(
                     features,

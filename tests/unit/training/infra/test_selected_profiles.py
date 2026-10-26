@@ -66,8 +66,8 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
     assert tuple(item.profile for item in result.outcomes) == request.profiles
     assert all(item.failure is None and item.result.status == "engineering_ready" for item in result.outcomes), result
     assert len(tuple((tmp_path / "models").rglob("model.json"))) == 8
-    second = replace(request, profiles=("v2", "v3", "v5"), progresses=request.progresses[1:])
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    second = request
+    with ThreadPoolExecutor(max_workers=4) as executor:
         reused = TrainSelectedProfiles(second, executor)
     assert len(scans) == 1
     assert reused.history_scan_passes == reused.history_rows_read == 0

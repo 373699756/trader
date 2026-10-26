@@ -39,6 +39,7 @@ The report contains population counts, missing dates and source status counts; i
 runs the shared four-profile training pipeline only on an external history copy.
 `--profile training-performance` uses the same required paths and compares serial, shared parallel, then serial runs in fresh subprocesses.
 Both training probes accept `--training-profiles v1,v5` or any other nonempty combination; the default selects all four.
+Each worker now records both the initial training and a second execution in the same model directory, including reuse and history-scan counts. Add `--baseline-checkout /external/baseline` to `training-performance` to run the same harness and configuration against baseline, candidate, then baseline again. The comparison checks persisted model values and validation metrics while recording configuration and implementation identities separately; it does not replay a separate prediction dataset or include history download time. Incomplete or changed results are not comparable, and one bracketed comparison does not prove a stable production speedup.
 All outputs use separate directories; any blocked training marks the comparison incomplete. It no longer gates concurrency or reads an enablement environment variable.
 
 ## Retained tools

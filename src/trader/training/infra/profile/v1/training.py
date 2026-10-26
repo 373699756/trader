@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import platform
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, nullcontext
 from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
 
@@ -31,8 +33,10 @@ from trader.training.domain.v1.learned_rank import (
     LearnedRankPair,
     V1TrainingSettings,
 )
+from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
+from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions
-from trader.training.infra.profile.v1.models import PublishLearnedRankPair
+from trader.training.infra.profile.v1.models import LearnedRankPredictor, PublishLearnedRankPair, ReadLearnedRankPair
 from trader.training.infra.profile.v1.samples import (
     BuildLearnedRankSamples,
     CheckV1Cancellation,
@@ -55,6 +59,57 @@ class V1TrainingResult:
     sample_counts: LearnedRankSampleCounts | None = None
     failure_reasons: tuple[str, ...] = ()
     coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
+    reused: bool = False
+
+
+def _training_identity(snapshot: HistoryTrainingInputSnapshot, settings: V1TrainingSettings) -> str:
+    return ContentHash(
+        (
+            snapshot,
+            settings,
+            LEARNED_RANK_CONTRACT,
+            TrainingImplementationIdentity(),
+            (platform.python_version(), version("numpy"), version("lightgbm")),
+        )
+    )
+
+
+def InspectV1Training(
+    source: LearnedRankInputPort,
+    model_root: Path,
+    settings: V1TrainingSettings,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> V1TrainingResult | None:
+    """Reuse only a fully verified pair bound to this exact input and implementation."""
+    CheckV1Cancellation(cancel_requested)
+    snapshot = source.snapshot
+    identity = _training_identity(snapshot, settings)
+    try:
+        pair = ReadLearnedRankPair(model_root)
+        if (
+            pair.training_identity_hash != identity
+            or pair.training_input_hash != snapshot.active_snapshot_hash
+            or pair.source_identity_hash != snapshot.source_identity_hash
+            or pair.calendar_hash != snapshot.calendar_hash
+            or pair.source_cutoff != snapshot.source_cutoff
+            or pair.settings != settings
+            or tuple(head.split for head in pair.heads)
+            != tuple(
+                BuildLearnedRankDateSplit(snapshot.calendar.open_dates, settings, maturity_sessions=maturity)
+                for maturity in (1, 5)
+            )
+        ):
+            return None
+        for head in pair.heads:
+            CheckV1Cancellation(cancel_requested)
+            LearnedRankPredictor(head)
+    except InterruptedError:
+        raise
+    except (OSError, ValueError, LightGBMError):
+        return None
+    CheckV1Cancellation(cancel_requested)
+    return V1TrainingResult("engineering_ready", identity, snapshot.active_snapshot_hash, 0, pair.heads, reused=True)
 
 
 def RunV1Training(
@@ -86,13 +141,16 @@ def RunV1Training(
             source = input_factory()
             snapshot = source.snapshot
             input_hash = snapshot.active_snapshot_hash
-            run_id = ContentHash((snapshot, settings, LEARNED_RANK_CONTRACT))
+            run_id = _training_identity(snapshot, settings)
+            reused = InspectV1Training(source, model_root, settings, cancel_requested=cancel_requested)
+            if reused is not None:
+                return reused
             calendar = snapshot.calendar.open_dates
             splits = (
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=1),
                 BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=5),
             )
-            with TemporaryTrainingSamples(sample_root, "v1") as directory, ExitStack() as fitting_resources:
+            with TemporaryTrainingSamples(sample_root, "v1") as directory:
                 sample_path = directory / "samples.sqlite3"
                 with closing(LearnedRankSampleIndex(sample_path)) as index:
                     counts = BuildLearnedRankSamples(
@@ -115,17 +173,19 @@ def RunV1Training(
                         return V1TrainingResult(
                             "failed", run_id, input_hash, peak_bytes, (), counts, failures, coverage
                         )
-                if memory_admission is not None:
-                    fitting_resources.enter_context(
-                        memory_admission.reserve(
-                            counts.samples * 512 + 256 * 1024**2, lambda: CheckV1Cancellation(cancel_requested)
-                        )
-                    )
                 with closing(LearnedRankSampleIndex(sample_path, read_only=True)) as index:
                     for strategy, split in zip((Strategy.TOMORROW, Strategy.D25), splits, strict=True):
                         CheckV1Cancellation(cancel_requested)
                         _progress(progress, "model_fit", "started", strategy)
-                        with ExitStack() as resources:
+                        required_bytes = (
+                            sum(item.rows for item in coverage if item.strategy is strategy) * 512 + 256 * 1024**2
+                        )
+                        with (
+                            memory_admission.reserve(required_bytes, lambda: CheckV1Cancellation(cancel_requested))
+                            if memory_admission is not None
+                            else nullcontext(),
+                            ExitStack() as resources,
+                        ):
                             matrices = tuple(
                                 index.matrix(dates, strategy, directory / strategy.value / name, resources)
                                 for name, dates in (
@@ -144,6 +204,7 @@ def RunV1Training(
                                     cancel_requested=cancel_requested,
                                 )
                             )
+                            del matrices
                         _progress(progress, "model_fit", "completed", strategy)
                 _progress(progress, "artifact_publish", "started", None)
                 pair = LearnedRankPair(
@@ -153,6 +214,7 @@ def RunV1Training(
                     snapshot.source_cutoff,
                     settings,
                     (heads[0], heads[1]),
+                    run_id,
                 )
                 CheckV1Cancellation(cancel_requested)
                 PublishLearnedRankPair(model_root, pair)
@@ -192,4 +254,4 @@ def _progress(
         )
 
 
-__all__ = ["RunV1Training", "V1TrainingResult"]
+__all__ = ["InspectV1Training", "RunV1Training", "V1TrainingResult"]

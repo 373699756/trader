@@ -283,12 +283,18 @@ class LearnedRankPair:
     source_cutoff: date
     settings: V1TrainingSettings
     heads: tuple[LearnedRankHead, LearnedRankHead]
+    training_identity_hash: str
 
     def __post_init__(self) -> None:
         if (
             any(
                 len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
-                for value in (self.training_input_hash, self.source_identity_hash, self.calendar_hash)
+                for value in (
+                    self.training_input_hash,
+                    self.source_identity_hash,
+                    self.calendar_hash,
+                    self.training_identity_hash,
+                )
             )
             or tuple(head.strategy for head in self.heads) != (Strategy.TOMORROW, Strategy.D25)
             or any(head.split.label_cutoff >= self.source_cutoff for head in self.heads)
