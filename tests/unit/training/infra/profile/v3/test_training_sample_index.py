@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -95,6 +96,52 @@ def test_sample_index_has_only_the_shared_tables_and_one_build_transaction(tmp_p
         assert tables == {"sample_split_dates", "samples", "sample_statistics", "sample_day_diagnostics"}
         assert repository._connection.in_transaction is True
         assert repository.count() == 1_000
+
+
+@pytest.mark.parametrize("contract,target_position", ((TOMORROW_HEAD_CONTRACT, 0), (D25_HEAD_CONTRACT, 5)))
+def test_industry_matrices_preserve_order_and_split_boundaries_across_read_batches(tmp_path, contract, target_position):
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
+    split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
+    sample_dates = (
+        (split.model_fit_dates[0],) * 4_097
+        + (split.early_stopping_dates[0],) * 2
+        + (split.calibration_dates[0],) * 2
+        + (split.calibration_dates[1],) * 3
+    )
+    samples = tuple(
+        replace(
+            _sample(f"{600000 + number:06d}", day, targets=(number / 10, 0.03, 0.04, 0.05, 0.06, number / 20)),
+            features=tuple(float(number * 10 + position) for position in range(6)),
+        )
+        for number, day in enumerate(sample_dates)
+    ) + (_sample("650000", split.model_fit_dates[0], targets=(0.9, None, None, None, None, None)),)
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository:
+        repository.add_final(reversed(samples))
+        repository.prepare_for_model_fitting(split)
+        counts = repository.industry_counts(contract)[0]
+        data = repository.industry_data(counts, contract)
+        for selected_dates, matrix in (
+            (split.model_fit_dates, data.training),
+            (split.early_stopping_dates, data.early_stopping),
+            (split.calibration_dates, data.calibration),
+        ):
+            expected = sorted(
+                (
+                    sample
+                    for sample in samples
+                    if sample.trade_date in selected_dates and sample.targets[target_position] is not None
+                ),
+                key=lambda sample: (sample.trade_date, sample.code),
+            )
+            np.testing.assert_array_equal(
+                matrix.features,
+                [[sample.features[position] for position in contract.feature_positions] for sample in expected],
+            )
+            np.testing.assert_array_equal(matrix.labels, [sample.targets[target_position] for sample in expected])
+        assert data.calibration_dates == (split.calibration_dates[0],) * 2 + (split.calibration_dates[1],) * 3
+        for delta in (-1, 1):
+            with pytest.raises(RuntimeError, match="split count changed"):
+                repository.industry_data(replace(counts, training=counts.training + delta), contract)
 
 
 def test_validation_statistics_use_one_scan_and_include_validation_only_industries(tmp_path: Path) -> None:

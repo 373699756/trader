@@ -658,12 +658,13 @@ class PublishedHistoryCache:
         aligned: AlignedHistoryBars,
         calendar: tuple[date, ...],
         shared_bars: tuple[DailyBar, ...],
+        context: HistoryContext,
     ) -> PublishedHistoryEntry:
         bars = aligned.bars[-(self._lookback_sessions + 1) :]
         first = date.fromisoformat(bars[0].trade_date)
         return PublishedHistoryEntry(
             bars=shared_bars,
-            context=BuildHistoryContext(bars, lookback_sessions=self._lookback_sessions),
+            context=context,
             learned_rank_inputs=tuple(
                 CompletedRankInput(date.fromisoformat(selected[-1].trade_date), values)
                 for selected in (bars, bars[:-1])

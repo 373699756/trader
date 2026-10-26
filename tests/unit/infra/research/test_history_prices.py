@@ -57,27 +57,38 @@ def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> Non
     assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 1
 
 
-def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision(tmp_path: Path) -> None:
+@pytest.mark.parametrize("consumer", ("published", "training"))
+def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision(tmp_path: Path, consumer: str) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     repository = HistoryPricePartition(path, 2026, 9)
     repository.initialize()
     day = date(2026, 9, 10)
     repository.save_revisions((_revision(date(2026, 1, 10), 1, 8.0), _revision(day, 1, 10.0)))
     repository.save_revisions((_revision(day, 2, 12.0),))
+    query = (
+        partition_module._PUBLISHED_RANGE_BY_CODE_SQL
+        if consumer == "published"
+        else partition_module._TRAINING_RANGE_SQL
+    )
     with closing(repository._read_connection()) as connection:
         plan = tuple(
             str(row[3])
             for row in connection.run(
-                "EXPLAIN QUERY PLAN " + partition_module._PUBLISHED_RANGE_BY_CODE_SQL,
+                "EXPLAIN QUERY PLAN " + query,
                 ("2026-09-01", "2026-09-30", 1),
             )
         )
     assert any("SEARCH records" in item and "trade_date>? AND trade_date<?" in item for item in plan)
     assert not any("SCAN records" in item for item in plan)
-    before = tuple(repository.iter_published_cells(day, day, snapshot_sequence=1))
-    after = tuple(repository.iter_published_cells(day, day, snapshot_sequence=2))
+    assert any("SEARCH observed USING PRIMARY KEY (trade_date=? AND code=?" in item for item in plan)
+    read = repository.iter_published_cells if consumer == "published" else repository.iter_training_rows
+    before = tuple(read(day, day, snapshot_sequence=1))
+    after = tuple(read(day, day, snapshot_sequence=2))
     assert len(before) == len(after) == 1
-    assert before[0].qfq.close_price == 9.0 and after[0].qfq.close_price == 11.0
+    if consumer == "published":
+        assert before[0].qfq.close_price == 9.0 and after[0].qfq.close_price == 11.0
+    else:
+        assert before[0].point.qfq_close_price == 9.0 and after[0].point.qfq_close_price == 11.0
 
 
 @pytest.mark.parametrize("operation", ("proof", "cells"))

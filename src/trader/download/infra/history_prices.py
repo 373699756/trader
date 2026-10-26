@@ -113,7 +113,7 @@ FROM daily_records AS records INDEXED BY {index}
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
       SELECT observed.revision_id
-      FROM daily_observations AS observed
+      FROM daily_observations AS observed INDEXED BY {observation_index}
       WHERE observed.code = records.code AND observed.trade_date = records.trade_date
         AND observed.sync_sequence <= ?
       ORDER BY observed.sync_sequence DESC
@@ -121,10 +121,16 @@ WHERE records.trade_date BETWEEN ? AND ?
   )
 ORDER BY records.code, records.trade_date
 """
-_LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_REVISION_COLUMNS, index="history_price_code_date_idx")
+_LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
+    columns=_REVISION_COLUMNS,
+    index="history_price_code_date_idx",
+    observation_index="history_price_observation_code_date_idx",
+)
 # Published month windows must seek dates in the annual file, then sort only the requested rows.
 _PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
-    columns=_REVISION_COLUMNS, index="sqlite_autoindex_daily_records_1"
+    columns=_REVISION_COLUMNS,
+    index="sqlite_autoindex_daily_records_1",
+    observation_index="sqlite_autoindex_daily_observations_1",
 )
 _LATEST_SHADOW_SQL = """
 WITH latest AS (
@@ -182,7 +188,7 @@ FROM daily_records AS records
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
       SELECT observed.revision_id
-      FROM daily_observations AS observed
+      FROM daily_observations AS observed INDEXED BY sqlite_autoindex_daily_observations_1
       WHERE observed.code = records.code AND observed.trade_date = records.trade_date
         AND observed.sync_sequence <= ?
       ORDER BY observed.sync_sequence DESC

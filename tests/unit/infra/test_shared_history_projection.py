@@ -50,6 +50,11 @@ def test_shared_scan_matches_independent_profile_projections_and_reuses_retained
     assert owner.scan_count == 1 and owner.window_count == 2
     assert len(reservations) == 1 and reservations[0] > 0
     assert shared[0].entries()["600001"].bars is shared[-1].entries()["600001"].bars
+    for code in source.current.universe_codes:
+        contexts = tuple(profile.entries()[code].context for profile in shared)
+        assert contexts[0] is contexts[1]
+        assert contexts[0] is not contexts[2] and contexts[2] is not contexts[3]
+        assert tuple(context.sample_count for context in contexts) == (251, 251, 61, 62)
 
 
 def test_batch_model_quality_reads_calendar_once_and_keeps_date_failures():

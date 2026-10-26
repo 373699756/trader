@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.infra.cache_contracts import CanonicalJsonBytes
+from trader.infra.market_data.history.history import BuildHistoryContext
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars, BuildAlignedHistoryBars
 
 if TYPE_CHECKING:
@@ -146,6 +147,7 @@ class SharedHistoryProjection:
     ) -> tuple[dict[str, PublishedHistoryEntry], ...]:
         sessions = min(max(profile.history_sessions for profile in self._profiles) + 1, len(manifest.calendar_dates))
         calendars = tuple(profile.projection_calendar() for profile in self._profiles)
+        lookbacks = tuple(sorted({profile.history_sessions for profile in self._profiles}))
         results: tuple[dict[str, PublishedHistoryEntry], ...] = tuple({} for _profile in self._profiles)
         lifetimes = {code: (start, end) for code, start, end in manifest.listing_intervals}
         self._scan_count += 1
@@ -157,9 +159,13 @@ class SharedHistoryProjection:
             self._window_count += 1
             if aligned.bars:
                 shared_bars = aligned.bars[-20:]
+                contexts = {
+                    lookback: BuildHistoryContext(aligned.bars[-lookback:], lookback_sessions=lookback)
+                    for lookback in lookbacks
+                }
                 for profile, values, calendar in zip(self._profiles, results, calendars, strict=True):
                     values[window.code] = profile.project_history_window(
-                        manifest, window.code, aligned, calendar, shared_bars
+                        manifest, window.code, aligned, calendar, shared_bars, contexts[profile.history_sessions]
                     )
             for profile in self._profiles:
                 profile.record_maintenance(

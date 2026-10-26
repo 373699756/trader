@@ -432,15 +432,20 @@ class SQLiteTrainingSampleIndex:
             (counts.industry,),
         )
         while rows := cursor.fetchmany(4_096):
-            for row in rows:
-                split_name = cast(TrainingSplitName, str(row[0]))
+            for name, group in groupby(rows, key=lambda row: row[0]):
+                split_name = cast(TrainingSplitName, name)
+                split_rows = tuple(group)
                 position = positions[split_name]
-                positions[split_name] += 1
+                end = position + len(split_rows)
                 matrix = matrices[split_name]
-                matrix.features[position] = tuple(float(cast(float, value)) for value in row[2:-1])
-                matrix.labels[position] = float(cast(float, row[-1]))
+                if end > len(matrix.labels):
+                    raise RuntimeError("training sample split count changed during its read")
+                values = np.asarray([row[2:] for row in split_rows], dtype=np.float64)
+                matrix.features[position:end] = values[:, :-1]
+                matrix.labels[position:end] = values[:, -1]
+                positions[split_name] = end
                 if split_name == "calibration":
-                    calibration_dates.append(date.fromisoformat(str(row[1])))
+                    calibration_dates.extend(date.fromisoformat(str(row[1])) for row in split_rows)
         expected = {
             "training": counts.training,
             "early_stopping": counts.early_stopping,
