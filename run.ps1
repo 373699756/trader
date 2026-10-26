@@ -115,6 +115,14 @@ if (-not $NeedsInstall) {
     }
 }
 if ($NeedsInstall -or $env:FORCE_INSTALL_DEPS -eq "1") {
+    # pip 25.1.1 can raise InvalidVersion: '' while resolving extras on Python 3.14.
+    & $VenvPython -c 'import pip, sys; raise SystemExit(not (sys.version_info[:2] == (3, 14) and int(pip.__version__.split(".", 1)[0]) < 26))'
+    if ($LASTEXITCODE -eq 0) {
+        & $VenvPython -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27'
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+    }
     & $VenvPython -m pip install --disable-pip-version-check -e $RootDir | ForEach-Object { [Console]::Error.WriteLine($_) }
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE

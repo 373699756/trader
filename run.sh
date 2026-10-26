@@ -125,6 +125,10 @@ elif ! "$ENTRYPOINT" --help >/dev/null 2>&1; then
 fi
 
 if ((NEEDS_INSTALL)); then
+  # pip 25.1.1 can raise InvalidVersion: '' while resolving extras on Python 3.14.
+  if "$VENV_DIR/bin/python3" -c 'import pip, sys; raise SystemExit(not (sys.version_info[:2] == (3, 14) and int(pip.__version__.split(".", 1)[0]) < 26))'; then
+    "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27' >&2
+  fi
   # Let pip provision the build requirements declared in pyproject.toml;
   # a fresh virtual environment may contain pip without setuptools.
   "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" >&2
