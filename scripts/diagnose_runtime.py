@@ -68,7 +68,6 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "training-performance": ("training_alignment",),
     "model-inputs": ("model_inputs",),
     "history-sqlite": ("history_sqlite_performance",),
-    "history-indexes": ("history_index_evaluation",),
     "history-source-compare": ("history_source_compare",),
     "market-factor-compare": ("market_factor_compare",),
     "research-source-compare": ("research_source_compare",),
@@ -325,14 +324,11 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         "database-baseline",
         "history-write",
         "history-sqlite",
-        "history-indexes",
         "download-performance",
     }:
         raise ValueError("--database-probe-directory requires a database performance profile")
     if args.profile == "database-baseline" and args.database_probe_directory is None:
         raise ValueError("database-baseline requires --database-probe-directory")
-    if args.profile == "history-indexes" and args.database_probe_directory is None:
-        raise ValueError("history-indexes requires --database-probe-directory")
     if args.profile == "database-baseline" and not 5 <= args.history_days <= 2000:
         raise ValueError("database-baseline requires 5..2000 history days")
     if args.profile == "database-baseline" and (len(args.download_sizes) != 1 or not 1 <= args.download_sizes[0] <= 32):
@@ -857,21 +853,6 @@ def build_commands(
                 str(options.sqlite_revision_write_sample_count),
                 "--resume-samples",
                 str(options.history_resume_samples),
-            ),
-            common_timeout,
-        ),
-        "history_index_evaluation": DiagnosticCommand(
-            "history_index_evaluation",
-            (
-                python_executable,
-                "-m",
-                "scripts.runtime_diagnostics.history_index_evaluation",
-                "--history-root",
-                str(options.history_root),
-                "--query-rounds",
-                str(options.sqlite_query_rounds),
-                "--write-sample-count",
-                str(options.sqlite_revision_write_sample_count),
             ),
             common_timeout,
         ),
@@ -1737,7 +1718,6 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "history_daily_capability": _history_daily_capability_details,
     "baostock_concurrency": _baostock_concurrency_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
-    "history_index_evaluation": _history_sqlite_performance_details,
     "history_source_compare": _history_sqlite_performance_details,
     "market_factor_compare": _market_factor_compare_details,
     "research_source_compare": _research_source_compare_details,

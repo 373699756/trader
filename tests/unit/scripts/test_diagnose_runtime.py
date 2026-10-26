@@ -53,6 +53,15 @@ def _options(**overrides: object) -> DiagnosticOptions:
     return replace(defaults, **overrides)
 
 
+def test_removed_index_experiment_is_rejected_before_execution(capsys):
+    parser = _parser()
+    assert "history-indexes" not in parser.format_help()
+    with pytest.raises(SystemExit) as failure:
+        parser.parse_args(["--profile", "history-indexes"])
+    assert failure.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
 def test_local_dual_profile_selects_only_offline_business_checks():
     commands = build_commands(_options(profile="local", scoring_profile="both"), python_executable="/python")
     assert tuple(command.name for command in commands) == (
