@@ -33,6 +33,7 @@ from trader.recommendation.domain.publication.models import (
     ScoredStockEvaluation,
     Strategy,
 )
+from trader.recommendation.domain.publication.score_ledger import ScoreLedger
 from trader.recommendation.domain.risk.downside import AssessDownside
 from trader.recommendation.domain.risk.fusion import (
     DIMENSION_NAMES,
@@ -103,6 +104,7 @@ class ScoredDecisionEntry:
     review: DeepSeekReview | None
     review_outcome: ReviewOutcome | None
     veto: bool
+    score_ledger: ScoreLedger | None = field(default=None, kw_only=True)
     selection_rank: int = 0
     local_selection_skip_reason: str = ""
     decision_skip_reason: str = ""
@@ -546,6 +548,7 @@ def _action_entry(fused: FusedScoredEvaluation, policy: ScoredDecisionPolicy) ->
     review = fused.review
     action, action_reason = _action_for(evaluation, fused.score, fused.veto, policy)
     return ScoredDecisionEntry(
+        score_ledger=evaluation.score_ledger,
         features=evaluation.features,
         disposition=evaluation.disposition,
         score=fused.score,

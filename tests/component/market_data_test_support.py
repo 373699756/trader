@@ -334,7 +334,7 @@ def _service(
         def publication_version(self):
             return ""
 
-        def visit(self, codes, consume):
+        def visit(self, codes, consume, *, cancel_requested=None):
             return None
 
     research = PublishedCompanyResearch(

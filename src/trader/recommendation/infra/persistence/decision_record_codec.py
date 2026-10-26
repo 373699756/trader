@@ -41,6 +41,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
     HistoricalStageStatus,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.infra.persistence.score_ledger_codec import DecodeScoreLedger
 
 _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "_Json"]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -96,7 +97,7 @@ _ITEM_FIELDS = frozenset(
         "research_coverage",
     }
 )
-_ITEM_OPTIONAL_FIELDS = frozenset({"name", "industry", "quote", "model_diagnostics", "risk_details"})
+_ITEM_OPTIONAL_FIELDS = frozenset({"name", "industry", "quote", "model_diagnostics", "risk_details", "score_ledger"})
 _DOWNSIDE_FIELDS = frozenset({"status", "reasons", "atr20_pct", "intraday_reversal_atr", "historical_drawdown_pct"})
 _RESEARCH_FIELDS = frozenset({"evidence_count", "structured_risk_fact_count", "review_eligible"})
 _MODEL_DIAGNOSTIC_FIELDS = frozenset(
@@ -228,6 +229,7 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
         local_score=_number(value, "local_score"),
         final_score=_number(value, "final_score"),
         score_components=_score_pairs(value.get("score_components")),
+        score_ledger=DecodeScoreLedger(value["score_ledger"]) if "score_ledger" in value else None,
         risk_codes=tuple(_strings(value.get("risk_codes"), "risk_codes")),
         risk_details=tuple(_risk_detail_from_json(item) for item in _list(value["risk_details"], "risk details"))
         if "risk_details" in value

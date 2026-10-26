@@ -9,6 +9,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from trader.infra.settings.company import ParseCompanyScoringPolicy
 from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_identity
 from trader.infra.settings.models import (
     ApiSettings,
@@ -70,6 +71,7 @@ from trader.recommendation.domain.market.tail import TailSignalPolicy
 from trader.recommendation.domain.scoring.profile_identity import ParseScoringProfile, ScoringProfileId
 
 _STRATEGY_KEYS = {
+    "company_scoring",
     "scoring_profile",
     "fusion",
     "selection",
@@ -90,6 +92,7 @@ _STRATEGY_SECTION_FILES = {
     "selection.json": {"selection"},
     "filter.json": {"hard_filters"},
     "scoring.json": {
+        "company_scoring",
         "fusion",
         "board_local_strategy_weights",
         "local_component_weights",
@@ -223,6 +226,7 @@ def LoadStrategySettings(
         local_component_weights=local_component_weights,
         feature_component_weights=feature_component_weights,
         risk_rules=risk_rules,
+        company_scoring=ParseCompanyScoringPolicy(_mapping(raw, "company_scoring")),
         factor_contract=dict(_mapping(raw, "factor_contract")),
         factor_index=factor_index,
     )
@@ -529,31 +533,6 @@ def _parse_long_research_policy(raw: Mapping[str, object]) -> LongResearchPolicy
             financial_core_profit_deterioration_pct=_number(deterioration, "core_profit_growth_lte"),
             pledge_thresholds=_threshold_tuple(raw, "pledge_thresholds", section="long_research"),
             unlock_thresholds=_threshold_tuple(unlock, "thresholds", section="long_research.unlock"),
-            policy_keyword_score_step=_number(announcements, "policy_keyword_score_step", minimum=0.01),
-            negative_high_keywords=_keyword_tuple(
-                announcements, "negative_high_keywords", section="long_research.announcements"
-            ),
-            negative_medium_keywords=_keyword_tuple(
-                announcements, "negative_medium_keywords", section="long_research.announcements"
-            ),
-            negative_low_keywords=_keyword_tuple(
-                announcements, "negative_low_keywords", section="long_research.announcements"
-            ),
-            reduction_high_keywords=_keyword_tuple(
-                announcements, "reduction_high_keywords", section="long_research.announcements"
-            ),
-            reduction_medium_keywords=_keyword_tuple(
-                announcements, "reduction_medium_keywords", section="long_research.announcements"
-            ),
-            reduction_low_keywords=_keyword_tuple(
-                announcements, "reduction_low_keywords", section="long_research.announcements"
-            ),
-            policy_positive_keywords=_keyword_tuple(
-                announcements, "policy_positive_keywords", section="long_research.announcements"
-            ),
-            policy_negative_keywords=_keyword_tuple(
-                announcements, "policy_negative_keywords", section="long_research.announcements"
-            ),
         )
     except ValueError as exc:
         raise ConfigurationError(f"long_research {exc}") from exc

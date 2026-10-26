@@ -5,13 +5,15 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import (
     CompanyDocument,
-    CompanyEvidenceSnapshot,
+    CompanyEvidenceInput,
     CompanyFinancial,
     CompanyRatio,
     Disclosure,
 )
+from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.recommendation.domain.market.research import ResearchComponentsFromObservation
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
@@ -23,7 +25,7 @@ def _snapshot():
     report = CompanyFinancial("600001", date(2026, 6, 30), _AT, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
     future = replace(report, report_date=date(2026, 9, 30), published_at=_AT + timedelta(days=10))
     disclosure = Disclosure("cninfo", "investigation", ("600001",), "收到中国证监会立案告知书", _AT, "", "digest")
-    return CompanyEvidenceSnapshot(
+    return CompanyEvidenceInput(
         "600001",
         _AT,
         _AT.date() - timedelta(days=365),
@@ -38,6 +40,9 @@ def _snapshot():
         (),
         False,
         (),
+        source_checked_at=_AT,
+        unlock_checked_at=_AT,
+        unlock_coverage_end=_AT.date() + timedelta(days=180),
     )
 
 
@@ -49,9 +54,9 @@ class _Reader:
     def publication_version(self):
         return self.snapshot.version
 
-    def visit(self, codes, consume):
+    def visit(self, codes, consume, *, cancel_requested=None):
         self.visits += 1
-        consume(self.snapshot)
+        consume(CompileCompanyFacts(self.snapshot, CompanyEventPolicy()))
 
 
 def _research(reader, now, monotonic=time.monotonic):
@@ -85,8 +90,8 @@ def test_previous_actual_session_survives_holiday_then_expires_only_risk_coverag
 
 def test_changed_publication_retries_without_accepting_mixed_rows():
     class Changing(_Reader):
-        def visit(self, codes, consume):
-            super().visit(codes, consume)
+        def visit(self, codes, consume, **kwargs):
+            super().visit(codes, consume, **kwargs)
             self.snapshot = replace(self.snapshot, version="second")
 
     reader = Changing(_snapshot())
@@ -107,8 +112,8 @@ def test_preload_deadline_rejects_partial_company_projection():
     clock = [0.0]
 
     class Slow(_Reader):
-        def visit(self, codes, consume):
-            super().visit(codes, consume)
+        def visit(self, codes, consume, **kwargs):
+            super().visit(codes, consume, **kwargs)
             clock[0] = 31.0
 
     research = _research(Slow(_snapshot()), _AT, lambda: clock[0])

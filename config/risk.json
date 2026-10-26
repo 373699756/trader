@@ -233,7 +233,7 @@
         ]
       },
       "severity": "low",
-      "penalty": 3,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
       "group": "ownership_change",
@@ -267,7 +267,7 @@
         ]
       },
       "severity": "medium",
-      "penalty": 5,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
       "group": "ownership_change",
@@ -301,7 +301,7 @@
         ]
       },
       "severity": "high",
-      "penalty": 8,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
       "group": "ownership_change",
@@ -335,7 +335,7 @@
         ]
       },
       "severity": "low",
-      "penalty": 3,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
       "group": "pledge",
@@ -369,7 +369,7 @@
         ]
       },
       "severity": "medium",
-      "penalty": 5,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
       "group": "pledge",
@@ -403,7 +403,7 @@
         ]
       },
       "severity": "high",
-      "penalty": 8,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
       "group": "pledge",
@@ -437,7 +437,7 @@
         ]
       },
       "severity": "high",
-      "penalty": 6,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 2160,
       "group": "financial",
@@ -472,7 +472,7 @@
         ]
       },
       "severity": "medium",
-      "penalty": 5,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 720,
       "group": "event",
@@ -506,7 +506,7 @@
         ]
       },
       "severity": "high",
-      "penalty": 15,
+      "penalty": 0,
       "minimum_confidence": 0.7,
       "evidence_ttl_hours": 2160,
       "group": "event",

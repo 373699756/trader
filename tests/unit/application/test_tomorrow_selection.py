@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.unit.domain.test_company_score_ledger import _document, _facts
 from tests.unit.epoch_helpers import (
     candidate_field_values,
     coverage,
@@ -35,6 +36,12 @@ from trader.recommendation.domain.market.research import (
     ResearchObservation,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.company import (
+    AssessCompanyAdjustments,
+    BuildCompanyScoringContext,
+    CompanyFinancialScores,
+    CompanyScoringPolicy,
+)
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=SHANGHAI)
@@ -282,6 +289,35 @@ def test_feature_assembly_does_not_let_late_candidate_price_replace_newer_market
     assert assembled[0].values["tail_return_30m"] == 70.0
     assert snapshot.market is not None
     assert assembled[0].merge_epoch == snapshot.market.version
+
+
+def test_feature_assembly_keeps_company_context_and_does_not_label_soft_risk_clear() -> None:
+    facts = _facts(
+        (_document("warning", "关于收到警示函的公告", "本公司收到证监会出具警示函的决定。", NOW - timedelta(hours=1)),),
+        at=NOW,
+    )
+    policy = CompanyScoringPolicy(enabled=True)
+    context = BuildCompanyScoringContext(facts, (), policy)
+    research = ResearchEpoch(
+        NOW.date(),
+        1,
+        NOW,
+        NOW,
+        "runtime-current",
+        {"600001": ResearchObservation(company_context=context, announcements_available=True, loaded_at=NOW)},
+        {"company": "company-fixture"},
+        field_values={
+            "600001": research_field_values(source_time=NOW, received_time=NOW, data_version="company-fixture")
+        },
+    )
+    feature = AssembleScoredFeatures(replace(_data_snapshot(), research=research))[0]
+    assert feature.company_context is context
+    assert feature.research_components.announcements == "known_risk"
+    result = AssessCompanyAdjustments(
+        feature.company_context, policy, "tomorrow", NOW, financial_scores=CompanyFinancialScores(100, 100, 100)
+    )
+    assert result.risks[0].penalty == 3
+    assert not any(item.reason == "eligible" for item in result.bonuses)
 
 
 def test_feature_assembly_applies_coherent_research_evidence_and_current_corporate_risk() -> None:

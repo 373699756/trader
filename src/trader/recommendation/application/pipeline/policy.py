@@ -14,6 +14,7 @@ from trader.recommendation.domain.publication.models import (
     Strategy,
 )
 from trader.recommendation.domain.risk.fusion import FusionPolicy
+from trader.recommendation.domain.scoring.company import CompanyScoringPolicy
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class RecommendationPolicy:
     board_local_strategy_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]]
     local_component_weights: Mapping[Strategy, Mapping[str, Mapping[str, float]]]
     hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
+    company_scoring: CompanyScoringPolicy = CompanyScoringPolicy()
 
     def __post_init__(self) -> None:
         object.__setattr__(

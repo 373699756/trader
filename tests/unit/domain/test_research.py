@@ -4,11 +4,12 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
+from trader.download.domain.company_event_extraction import ExtractCompanyEvents
+from trader.download.domain.company_events import CompanyEventPolicy, CompanyRiskType
+from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 from trader.recommendation.domain.market.research import (
-    AnnouncementRiskVerified,
     CorporateRiskCategory,
     CorporateRiskFact,
-    CorporateRiskFactsFromAnnouncements,
     DeriveCorporateRiskFeatures,
     DeriveLatestDisclosedReportLoss,
     DeriveLongResearchFeatures,
@@ -24,6 +25,18 @@ from trader.recommendation.domain.market.research import (
 )
 
 NOW = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
+
+
+def _extract(announcements):
+    documents = tuple(
+        CompanyDocument(
+            Disclosure(item.source, item.announcement_id, ("600001",), item.title, item.published_at, "", "fixture"),
+            item.body,
+            item.body_checked,
+        )
+        for item in announcements
+    )
+    return ExtractCompanyEvents(documents, NOW, CompanyEventPolicy())
 
 
 def test_market_regime_uses_exact_configured_boundaries() -> None:
@@ -128,12 +141,12 @@ def test_long_research_features_use_point_in_time_financial_and_event_inputs() -
     assert features["value_score"] == pytest.approx(92.8571428571)
     assert features["growth_score"] == pytest.approx(70.0)
     assert features["quality_score"] == pytest.approx(67.5)
-    assert features["industry_policy_score"] == pytest.approx(76.0)
+    assert features["industry_policy_score"] == pytest.approx(68.0)
     assert features["risk_protection_score"] == pytest.approx(75.0)
     assert features["financial_deterioration"] == 0.0
-    assert features["negative_announcement_level"] == 2.0
+    assert features["negative_announcement_level"] == 0.0
     assert features["pledge_risk"] == 1.0
-    assert features["reduction_or_unlock"] == 3.0
+    assert features["reduction_or_unlock"] == 2.0
 
 
 def test_long_research_missing_sources_stay_missing_instead_of_becoming_zero() -> None:
@@ -175,8 +188,8 @@ def test_long_research_composite_scores_consume_explicit_weight_policy() -> None
         ),
     )
 
-    assert baseline["industry_policy_score"] == 72.0
-    assert changed["industry_policy_score"] == 75.0
+    assert baseline["industry_policy_score"] == 68.0
+    assert changed["industry_policy_score"] == 72.5
     assert baseline["risk_protection_score"] == 80.0
     assert changed["risk_protection_score"] == 90.0
 
@@ -342,15 +355,15 @@ def test_titles_alone_never_create_hard_risks_and_official_bodies_are_required()
         ResearchAnnouncement("公司不存在资金占用及违规担保的说明", NOW, "official:negative"),
     )
 
-    facts = CorporateRiskFactsFromAnnouncements(announcements)
+    facts = _extract(announcements).risks
 
-    assert {fact.category for fact in facts} == {
-        CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION,
-        CorporateRiskCategory.FINANCIAL_FRAUD,
+    assert {fact.risk_type for fact in facts} == {
+        CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION,
+        CompanyRiskType.FINANCIAL_FRAUD,
     }
     title_only = ResearchAnnouncement("关于收到立案告知书的公告", NOW, "unverified")
-    assert not AnnouncementRiskVerified(title_only)
-    assert not CorporateRiskFactsFromAnnouncements((title_only,))
+    assert _extract((title_only,)).reviews
+    assert not _extract((title_only,)).risks
 
 
 def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -> None:
@@ -395,7 +408,7 @@ def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -
         ),
     )
 
-    facts = CorporateRiskFactsFromAnnouncements(announcements)
+    facts = _extract(announcements).risks
 
     assert len(facts) == 2
     assert all(fact.resolved_at == NOW for fact in facts)
@@ -412,12 +425,12 @@ def test_closure_cannot_resolve_an_unrelated_case_and_negation_cannot_create_ris
     unrelated = ResearchAnnouncement(
         "立案调查终结", NOW, "case-b", body="本公司收到证监会〔2026〕调查2号，立案调查终结。", body_checked=True
     )
-    facts = CorporateRiskFactsFromAnnouncements((opened, unrelated))
+    facts = _extract((opened, unrelated)).risks
     assert len(facts) == 1 and facts[0].resolved_at is None
     negated = ResearchAnnouncement(
         "公司不存在财务造假的说明", NOW, "negated", body="本公司不存在财务造假。", body_checked=True
     )
-    assert not CorporateRiskFactsFromAnnouncements((negated,))
+    assert not _extract((negated,)).risks
 
 
 def test_investigation_ends_without_three_year_cooldown_and_window_has_exact_boundary() -> None:
@@ -485,24 +498,4 @@ def _long_policy() -> LongResearchPolicy:
         financial_core_profit_deterioration_pct=-20.0,
         pledge_thresholds=(10.0, 20.0, 35.0),
         unlock_thresholds=(1.0, 5.0, 10.0),
-        policy_keyword_score_step=10.0,
-        negative_high_keywords=("立案", "行政处罚", "重大违法", "强制退市", "终止上市", "债务违约"),
-        negative_medium_keywords=("问询函", "监管函", "诉讼", "仲裁", "业绩预亏", "预亏", "资金占用", "股份冻结"),
-        negative_low_keywords=("风险提示", "业绩下滑", "终止", "延期回复"),
-        reduction_high_keywords=("控股股东减持", "实际控制人减持"),
-        reduction_medium_keywords=("减持计划", "拟减持", "集中竞价减持", "大宗交易减持"),
-        reduction_low_keywords=("减持完成", "减持结果", "减持进展"),
-        policy_positive_keywords=(
-            "政策支持",
-            "专项资金",
-            "政府补助",
-            "产业扶持",
-            "获批",
-            "中标",
-            "战略合作",
-            "技术突破",
-            "回购",
-            "增持",
-        ),
-        policy_negative_keywords=("行业监管", "限产", "禁售", "取消补贴", "产能过剩"),
     )

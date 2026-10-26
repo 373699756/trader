@@ -17,6 +17,11 @@ unknown结果附带实际runtime配置文件、`storage.overrides`字段和修�
 `--profile download-performance` runs three rounds on disposable synthetic SQLite databases outside the repository.
 It reports company write/publication/cold and warm reads, unchanged publication, and equivalent per-stock versus batch gap queries.
 It makes zero HTTP requests and cannot establish full-market supplier download speed.
+With `--baseline-checkout /absolute/isolated/checkout`, it alternates five baseline/candidate runs using the same synthetic issuer corpus and reports publication bytes, preload latency and RSS separately. Both diagnostic fixtures must use the same document bodies; this is not a live database benchmark.
+
+`--profile company-ledger` renders the production score column and drawer using isolated V1/V2/legacy fixtures in headless Chrome. It checks actual score text, model/local separation, evidence controls and layout overflow. `TRADER_DIAGNOSTIC_CHROME` can select an installed Chrome executable. The probe does not read the active database or contact suppliers; it does not replace a live recommendation acceptance run.
+
+The isolated layout migration also leaves `company_facts` for a fresh download; it never imports legacy company evidence into the new publication schema.
 
 `--profile company-resume --company-replay-directory /absolute/external/path`
 backs up `--company-evidence-database` through SQLite, then resumes the failed

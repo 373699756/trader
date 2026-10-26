@@ -12,6 +12,7 @@ import pytest
 
 from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
+from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
     CompanyRatio,
     CompanySourceFailure,
@@ -104,8 +105,41 @@ def test_second_run_reuses_baseline_without_redownloading(tmp_path):
     assert not source.calls
     assert second.published_codes == 1
     snapshot = SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0]
-    assert snapshot.announcement_complete
-    assert snapshot.window_start == NOW.date() - timedelta(days=365)
+    assert snapshot.announcement_state is CompanyDataState.COMPLETE
+    assert snapshot.announcement_coverage_start == NOW.date() - timedelta(days=365)
+
+
+def test_compact_reader_binds_rule_identity_and_links_remain_issuer_scoped(tmp_path):
+    index = _index(tmp_path)
+    partition = index.partitions(("sse",), NOW)[0]
+    item = _disclosure(
+        "notice", "关于收到立案告知书的公告", when=datetime.combine(partition.start, NOW.time(), NOW.tzinfo)
+    )
+    index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
+    index.commit_document(item, "本公司收到证监会立案告知书。")
+    index.publish(("600001",), NOW)
+    reader = SQLiteCompanyEvidenceReader(index.path)
+    assert reader.document_links("600002", ("notice",)) == ()
+    assert reader.document_links("600001", ("notice",))[0].body_checked
+    assert reader.read(("600001",))[0].risk_events[0].risk_level == 4
+    changed_policy = SQLiteCompanyEvidenceReader(index.path, event_policy=replace(CompanyEventPolicy(), risk_days=366))
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        changed_policy.read(("600001",))
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        changed_policy.publication_version()
+    later = NOW + timedelta(days=366)
+    index.publish(("600001",), later)
+    assert reader.read(("600001",))[0].risk_events[0].risk_level == 4
+    assert reader.document_links("600001", ("notice",))[0].body_checked
+
+
+def test_compact_reader_cancels_before_decoding_and_delivers_no_partial_rows(tmp_path):
+    index = _index(tmp_path)
+    index.publish(("600001",), NOW)
+    observed = []
+    with pytest.raises(InterruptedError, match="company_preload_cancelled"):
+        SQLiteCompanyEvidenceReader(index.path).visit(("600001",), observed.append, cancel_requested=lambda: True)
+    assert observed == []
 
 
 @pytest.mark.parametrize(
@@ -243,10 +277,11 @@ def test_unfinished_announcement_precedes_due_recent_recheck(tmp_path):
             (unfinished.market, unfinished.start.isoformat(), unfinished.end.isoformat()),
         )
     resumed = index.partitions(("sse",), NOW)
-    assert resumed[0].start == unfinished.start and resumed[0].page == 3
+    assert resumed[0].start == recent.start and resumed[0].page == 1
+    assert any(item.start == unfinished.start and item.page == 3 for item in resumed)
     assert any(item.start == recent.start and item.end == recent.end and item.page == 1 for item in resumed)
     already_reopened = index.partitions(("sse",), NOW)
-    assert already_reopened[0].start == unfinished.start and already_reopened[0].page == 3
+    assert any(item.start == unfinished.start and item.page == 3 for item in already_reopened)
 
     class ResumingSources(Sources):
         def fetch(self, first, *args, **kwargs):
@@ -261,7 +296,8 @@ def test_unfinished_announcement_precedes_due_recent_recheck(tmp_path):
     source = ResumingSources()
     result = _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     requested = [item for item in source.calls if isinstance(item, DisclosurePartition)]
-    assert requested[0].start == unfinished.start and requested[0].page == 3
+    assert requested[0].start == recent.start
+    assert any(item.start == unfinished.start and item.page == 3 for item in requested)
     assert result.pending_partitions == 0
 
 
@@ -329,7 +365,7 @@ def test_publication_isolated_from_unpublished_changes_and_failure(tmp_path):
     index.publish(("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.path)
     before = reader.read(("600001",))
-    index.commit_page(partition, DisclosurePage((_disclosure(title="修订", digest="b"),), 1, False), NOW)
+    index.commit_page(partition, DisclosurePage((_disclosure(title="收到立案告知书", digest="b"),), 1, False), NOW)
     assert reader.read(("600001",)) == before
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run(
@@ -376,8 +412,10 @@ def test_company_publication_build_allows_writes_and_rejects_a_changed_source(tm
     assert changed and reader.publication_version() == identity and reader.read(("600001",)) == before
     monkeypatch.setattr(publication, "EncodeCompanyPublication", encode)
     index.publish(("600001",), NOW)
-    assert reader.publication_version() != identity
-    assert reader.read(("600001",))[0].announcements[0].disclosure.title == "更正"
+    assert reader.publication_version() == identity  # Ordinary title changes do not alter compact risk facts.
+    with SqliteSession(index.path, SqliteConnectionOptions(read_only=True)) as connection:
+        assert connection.run("SELECT title FROM disclosures").require_one()[0] == "更正"
+    assert not reader.read(("600001",))[0].risk_events
 
 
 def test_reader_releases_transaction_before_consumers_and_pins_all_requested_rows(tmp_path):
@@ -544,7 +582,7 @@ def test_same_day_later_run_checks_new_disclosures_without_restarting_year(tmp_p
     source.calls.clear()
     _sync_company_evidence(deps, ("600001",), NOW + timedelta(minutes=30))
     partitions = [item for item in source.calls if isinstance(item, DisclosurePartition)]
-    assert len(partitions) == 7
+    assert len(partitions) == 1
     assert all(item.start == item.end for item in partitions)
 
 
@@ -633,8 +671,8 @@ def test_corrupt_read_model_is_rejected_and_previous_memory_is_retained(tmp_path
     research.initialize(("600001", "600002"), cancelled=lambda: False)
     before = research.load(("600001",), NOW, include_structured=True)
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE published SET payload=replace(payload,'window_incomplete','unexpected')")
-    with pytest.raises(ValueError, match="digest"):
+        connection.run("UPDATE published SET announcement_state='unexpected'")
+    with pytest.raises(ValueError, match="CompanyDataState"):
         reader.read(("600001",))
     assert research.load(("600001",), NOW, include_structured=True) == before
     restarted = PublishedCompanyResearch(
@@ -763,7 +801,7 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
 
         def document(self, item, **kwargs):
             self.documents.append(item.identity)
-            return "已取得正文"
+            return "本公司收到证监会立案告知书，已被立案调查。"
 
     source = Resumable()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
@@ -792,7 +830,7 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
         next(event for event in events if event.component == component).status == "reused"
         for component in ("financial", "pledge", "unlock")
     )
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
 
 
 def test_document_failure_counts_unique_pending_documents_and_retries_only_unfinished_bodies(tmp_path):
@@ -813,7 +851,7 @@ def test_document_failure_counts_unique_pending_documents_and_retries_only_unfin
             self.document_calls += 1
             if self.blocked:
                 raise HttpTimeout("private transport message")
-            return "已取得正文"
+            return "本公司收到证监会立案告知书，已被立案调查。"
 
     source = Documents()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
@@ -825,7 +863,7 @@ def test_document_failure_counts_unique_pending_documents_and_retries_only_unfin
     )
     assert first.pending_partitions == 0 and first.pending_documents == 1
     assert first.failures == ("risk_documents:pending", "risk_documents:timeout")
-    body = next(event for event in events if event.component == "risk_documents")
+    body = next(event for event in events if event.component == "risk_documents" and event.pending is not None)
     assert body.pending == 1  # One disclosure associated with two stocks is still one PDF.
     assert events[-1].pending_documents == 1
     source.blocked = False
@@ -858,7 +896,7 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
             self.document_calls.append(item.identity)
             if item.identity == "slow" and self.blocked:
                 raise TimeoutError("disclosure_document_parse_timeout")
-            return "已核验正文"
+            return "本公司收到证监会立案告知书，已被立案调查。"
 
     source = Documents()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0)
@@ -871,7 +909,9 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
     assert source.document_calls == ["slow", "healthy"]
     assert first.pending_documents == 1
     assert first.failures == ("risk_documents:disclosure_document_parse_timeout", "risk_documents:pending")
-    assert not SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert (
+        SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is not CompanyDataState.COMPLETE
+    )
     with SqliteSession(index.path) as connection:
         checked = connection.run("SELECT source_id,body_checked FROM disclosures ORDER BY source_id").fetchall()
     assert [(row[0], row[1]) for row in checked] == [("healthy", 1), ("slow", 0)]
@@ -881,7 +921,7 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
     resumed = _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(seconds=1))
     assert source.document_calls == ["slow"]
     assert resumed.pending_documents == 0 and not resumed.needs_retry
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
 
 
 def test_document_parse_timeout_at_stage_deadline_stops_later_bodies(tmp_path):
@@ -934,7 +974,7 @@ def test_company_sync_configuration_controls_component_deadlines(tmp_path, monke
 
         def document(self, item, *, deadline):
             deadlines["documents"] = deadline
-            return "已核验正文"
+            return "本公司收到证监会立案告知书，已被立案调查。"
 
     source = TimedSources()
     configuration = replace(
@@ -1011,4 +1051,4 @@ def test_cninfo_recovers_same_uncommitted_page_without_replaying_saved_prefix(tm
     assert not result.needs_retry and result.pending_partitions == 0
     assert pages == [1] + [2] * (failures_before_success + 1)
     assert events[-1].status == "complete" and not events[-1].failure
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE

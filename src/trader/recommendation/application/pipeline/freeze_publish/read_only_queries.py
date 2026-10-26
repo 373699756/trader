@@ -22,6 +22,7 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.application.ports.clock import Clock
 from trader.recommendation.application.ports.decision_records import DecisionRecordError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
@@ -40,6 +41,7 @@ from trader.recommendation.domain.publication.decision_identity import (
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.recommendation.domain.publication.score_ledger import ScoreLedger
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
@@ -74,11 +76,16 @@ class OutcomeSummaryReader(Protocol):
     def summaries(self, strategy: Strategy, *, limit: int = 31) -> tuple[OutcomeTierSummary, ...]: ...
 
 
+class CompanyDocumentLinkReader(Protocol):
+    def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyDocumentReference, ...]: ...
+
+
 @dataclass(frozen=True)
 class DecisionQuerySources:
     cached_quotes: CachedQuoteReader | None = None
     outcome_summaries: OutcomeSummaryReader | None = None
     industry_classifications: _IndustryClassificationReader | None = None
+    company_documents: CompanyDocumentLinkReader | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +135,7 @@ class DecisionItemView:
     model_disagreement_pct: float | None = None
     research_components: ResearchComponentCoverage | None = None
     risk_details: tuple[DecisionRiskDisclosure, ...] = ()
+    score_ledger: ScoreLedger | None = None
     anchor_daily_return_pct: float | None = None
     anchor_to_now_pct: float | None = None
     classified_industry: str | None = None
@@ -195,6 +203,16 @@ class UnifiedDecisionQueries:
         self._cached_quotes = sources.cached_quotes if sources is not None else None
         self._outcome_summaries = sources.outcome_summaries if sources is not None else None
         self._industry_classifications = sources.industry_classifications if sources is not None else None
+        self._company_documents = sources.company_documents if sources is not None else None
+
+    def company_documents(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyDocumentReference, ...]:
+        if len(code) != 6 or not code.isascii() or not code.isdigit() or not 1 <= len(evidence_ids) <= 32:
+            raise ValueError("company_document_query_invalid")
+        if any(not identity or len(identity) > 200 for identity in evidence_ids):
+            raise ValueError("company_document_identity_invalid")
+        if self._company_documents is None:
+            return ()
+        return self._company_documents.document_links(code, tuple(dict.fromkeys(evidence_ids)))
 
     def current(self, strategy: Strategy) -> DecisionView:
         now = self._clock.now()
@@ -459,6 +477,7 @@ def _scored_item(
             else None
         ),
         risk_details=item.risk_details,
+        score_ledger=item.score_ledger,
         research_components=(item.research_coverage.components if item.research_coverage is not None else None),
         setup_type=item.setup_type,
         downside_status=item.downside.status if item.downside is not None else None,

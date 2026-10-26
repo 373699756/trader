@@ -27,7 +27,7 @@
       35
     ],
     "unlock": {
-      "forward_days": 90,
+      "forward_days": 180,
       "thresholds": [
         1,
         5,
@@ -36,66 +36,7 @@
     },
     "announcements": {
       "lookback_days": 180,
-      "maximum_rows": 100,
-      "policy_keyword_score_step": 10,
-      "negative_high_keywords": [
-        "立案",
-        "行政处罚",
-        "重大违法",
-        "强制退市",
-        "终止上市",
-        "债务违约"
-      ],
-      "negative_medium_keywords": [
-        "问询函",
-        "监管函",
-        "诉讼",
-        "仲裁",
-        "业绩预亏",
-        "预亏",
-        "资金占用",
-        "股份冻结"
-      ],
-      "negative_low_keywords": [
-        "风险提示",
-        "业绩下滑",
-        "终止",
-        "延期回复"
-      ],
-      "reduction_high_keywords": [
-        "控股股东减持",
-        "实际控制人减持"
-      ],
-      "reduction_medium_keywords": [
-        "减持计划",
-        "拟减持",
-        "集中竞价减持",
-        "大宗交易减持"
-      ],
-      "reduction_low_keywords": [
-        "减持完成",
-        "减持结果",
-        "减持进展"
-      ],
-      "policy_positive_keywords": [
-        "政策支持",
-        "专项资金",
-        "政府补助",
-        "产业扶持",
-        "获批",
-        "中标",
-        "战略合作",
-        "技术突破",
-        "回购",
-        "增持"
-      ],
-      "policy_negative_keywords": [
-        "行业监管",
-        "限产",
-        "禁售",
-        "取消补贴",
-        "产能过剩"
-      ]
+      "maximum_rows": 100
     }
   }
 }

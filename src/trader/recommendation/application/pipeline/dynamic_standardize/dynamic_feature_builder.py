@@ -131,7 +131,8 @@ def _assemble_feature(context: _AssemblyContext, code: str) -> FeatureSnapshot:
         missing_fields=tuple(sorted(missing_fields)),
         missing_reasons=missing_reasons,
         evidence=_unique_evidence(evidence),
-        research_components=ResearchComponentsFromObservation(research),
+        research_components=ResearchComponentsFromObservation(research, max(observed_times)),
+        company_context=research.company_context if research else None,
         merge_epoch=context.merge_epoch,
     )
 

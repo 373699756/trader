@@ -75,6 +75,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "download-performance": ("download_performance",),
     "database-baseline": ("database_baseline",),
     "company-resume": ("company_resume",),
+    "company-ledger": ("company_ledger_browser",),
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
     "qfq-sqlite": ("qfq_sqlite_audit",),
@@ -916,6 +917,11 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "company_ledger_browser": DiagnosticCommand(
+            "company_ledger_browser",
+            (python_executable, "-m", "scripts.runtime_diagnostics.company_ledger_browser"),
+            common_timeout,
+        ),
         "download_performance": DiagnosticCommand(
             "download_performance",
             (python_executable, "-m", "scripts.runtime_diagnostics.download_performance")
@@ -1409,7 +1415,7 @@ def _history_sqlite_performance_details(
     payload["summary"] = _mapping(source.get("summary"))
 
 
-def _market_factor_compare_details(
+def _summary_with_findings(
     _result: DiagnosticResult,
     source: Mapping[str, object],
     payload: dict[str, object],
@@ -1721,7 +1727,8 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "baostock_concurrency": _baostock_concurrency_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
     "history_source_compare": _history_sqlite_performance_details,
-    "market_factor_compare": _market_factor_compare_details,
+    "market_factor_compare": _summary_with_findings,
+    "company_ledger_browser": _summary_with_findings,
     "research_source_compare": _research_source_compare_details,
     "history_write_benchmark": _history_sqlite_performance_details,
     "download_performance": _history_sqlite_performance_details,

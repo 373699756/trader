@@ -65,7 +65,7 @@ def test_company_preload_is_single_and_waits_for_the_complete_publication():
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
     class Reader(_Reader):
-        def visit(self, codes, consume):
+        def visit(self, codes, consume, *, cancel_requested=None):
             entered.set()
             assert release.wait(2)
             super().visit(codes, consume)

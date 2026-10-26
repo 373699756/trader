@@ -10,7 +10,6 @@ import pytest
 from tests.unit.application.pipeline_helpers import observed_input_stages, observed_quality_input
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
-from trader.bootstrap import _recommendation_policy
 from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     BuildScoredHybrid,
@@ -47,6 +46,7 @@ from trader.recommendation.infra.persistence.decision_record_codec import (
     CommittedRecordBytes,
     CommittedRecordFromBytes,
 )
+from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.training.application.research_audit import BuildCommittedResearchAudit
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

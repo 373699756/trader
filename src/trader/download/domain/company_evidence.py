@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Literal
 
+from trader.download.domain.company_events import CompanyEventPolicy
+
 Market = Literal["sse", "szse", "bse"]
 Component = Literal["announcements", "financial", "pledge", "unlock", "news"]
 EvidenceProgressState = Literal["running", "complete", "reused", "deferred"]
@@ -88,6 +90,8 @@ class CompanyEvidenceRequest:
     observed_at: datetime
     configuration: CompanySyncConfiguration
     news_codes: tuple[str, ...] = ()
+    stock_names: tuple[tuple[str, str], ...] = ()
+    event_policy: CompanyEventPolicy = CompanyEventPolicy()
 
     def __post_init__(self) -> None:
         if self.observed_at.utcoffset() is None:
@@ -246,7 +250,7 @@ class DocumentRetry:
 
 
 @dataclass(frozen=True)
-class CompanyEvidenceSnapshot:
+class CompanyEvidenceInput:
     code: str
     published_at: datetime
     window_start: date
@@ -261,6 +265,9 @@ class CompanyEvidenceSnapshot:
     news: tuple[Disclosure, ...]
     news_checked: bool
     failures: tuple[str, ...]
+    source_checked_at: datetime | None = None
+    unlock_checked_at: datetime | None = None
+    unlock_coverage_end: date | None = None
 
     def __post_init__(self) -> None:
         EvidenceMarket(self.code)
@@ -300,6 +307,23 @@ class StructuredCompanyPage:
 
 
 @dataclass(frozen=True)
+class CompanyStockProgress:
+    code: str
+    name: str = ""
+    processed: int = 0
+    total: int = 0
+    announcements: int = 0
+    analyzed: int = 0
+    pending: int = 0
+    risks: int = 0
+    positives: int = 0
+    published: bool = False
+    coverage_complete: bool = False
+    reused: bool = False
+    review_count: int = 0
+
+
+@dataclass(frozen=True)
 class EvidenceSyncProgress:
     component: str
     completed: int
@@ -314,6 +338,7 @@ class EvidenceSyncProgress:
     attempted_documents: int = 0
     deferred_documents: int = 0
     activity: Literal["download", "repair"] = "download"
+    stock: CompanyStockProgress | None = None
 
 
 @dataclass(frozen=True)
@@ -362,7 +387,7 @@ __all__ = [
     "StructuredCompanyQuery",
     "CompanyDocument",
     "DocumentRetry",
-    "CompanyEvidenceSnapshot",
+    "CompanyEvidenceInput",
     "CompanyEvidenceSyncResult",
     "CompanyFinancial",
     "CompanyRatio",

@@ -133,6 +133,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
         "review_outcome": None,
         "risks": [],
         "scores": {
+            "ledger": None,
             "candidate_score": 88.0,
             "deepseek_risk_penalty": None,
             "deepseek_score": None,

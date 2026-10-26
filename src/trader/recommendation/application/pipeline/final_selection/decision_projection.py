@@ -82,7 +82,11 @@ from trader.recommendation.domain.risk.scored_fusion import (
     SelectScoredReviewCandidates,
 )
 from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
-from trader.recommendation.domain.selection.scored_selection import ApplySelectionRisks, ScoredCandidateStageCounts
+from trader.recommendation.domain.selection.scored_selection import (
+    ApplySelectionRisks,
+    LocalRiskPolicy,
+    ScoredCandidateStageCounts,
+)
 
 
 @dataclass(frozen=True)
@@ -304,7 +308,10 @@ def BuildScoredLocal(
     )
     started = runtime.monotonic()
     selection = ApplySelectionRisks(
-        selection, policy.risk_rules, policy.fusion.local_risk_cap, native_input.evaluated_at, strategy
+        selection,
+        LocalRiskPolicy(policy.risk_rules, policy.fusion.local_risk_cap, policy.company_scoring),
+        native_input.evaluated_at,
+        strategy,
     )
     if learned_rank or not production_authority:
         ranked = {
@@ -678,6 +685,7 @@ def _decision_item(
 ) -> DecisionItem:
     reason = entry.decision_skip_reason or entry.action_reason or "not_selected"
     return DecisionItem(
+        score_ledger=entry.score_ledger,
         code=entry.code,
         action=entry.action,
         selected=entry.selected,

@@ -63,6 +63,7 @@ def _create_product_blueprint(services: WebServices | None) -> Blueprint:
         partial(_dates, services),
     )
     blueprint.add_url_rule("/api/status", "status", partial(_status, services))
+    blueprint.add_url_rule("/api/company/<code>/documents", "company_documents", partial(_company_documents, services))
     blueprint.add_url_rule("/api/events", "events", partial(_events, services))
     return blueprint
 
@@ -142,6 +143,37 @@ def _dates(services: WebServices | None, strategy_name: str) -> RouteResponse:
             "strategy": strategy.value,
             "scoring_profile": profile_id,
             "dates": [value.isoformat() for value in lane.queries.dates(strategy)],
+        }
+    )
+
+
+def _company_documents(services: WebServices | None, code: str) -> RouteResponse:
+    invalid_profile = _invalid_profile_response(services)
+    if invalid_profile is not None:
+        return invalid_profile
+    selected = _select_services(services)
+    if selected is None:
+        return _not_ready()
+    try:
+        documents = selected[1].queries.company_documents(code, tuple(request.args.getlist("evidence_id")))
+    except ValueError:
+        return _error("invalid_company_evidence_query", "code and 1–32 evidence IDs are required", 400)
+    except (OSError, RuntimeError):
+        return _error("company_evidence_unavailable", "company evidence is temporarily unavailable", 503)
+    return jsonify(
+        {
+            "schema_version": "company_documents",
+            "code": code,
+            "documents": [
+                {
+                    "evidence_id": item.evidence_id,
+                    "title": item.title,
+                    "url": item.url,
+                    "published_at": item.disclosed_at.isoformat(),
+                    "body_checked": item.text_status == "extracted",
+                }
+                for item in documents
+            ],
         }
     )
 

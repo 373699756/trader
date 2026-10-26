@@ -13,7 +13,6 @@ from tests.unit.application.test_input_runtime import _decision_build, _Market, 
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from tests.unit.application.test_tomorrow_selection import _data_snapshot
 from tests.unit.application.test_tomorrow_selection import _policy as snapshot_policy
-from trader.bootstrap import _recommendation_policy
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.settings import LoadStrategySettings
@@ -42,6 +41,7 @@ from trader.recommendation.application.ports.runtime import DecisionUnavailableE
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.policy_settings import _recommendation_policy
 
 
 def _features(factory) -> tuple[FeatureSnapshot, ...]:

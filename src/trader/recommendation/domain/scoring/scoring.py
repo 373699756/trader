@@ -435,8 +435,26 @@ def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -
     )
     quality = AssessMissingValues(snapshot, MissingValuePolicy(rules))
     penalty = float(quality.quality_penalty)
+    financial_weights = policy.local_component_weights.get("quality_value", {})
+    financial_contribution = sum(
+        (
+            (snapshot.optional_value(key) or 0.0) * weight * policy.local_weights.get("quality_value", 0.0)
+            for key, weight in financial_weights.items()
+        ),
+        0.0,
+    )
+    growth_contribution = (
+        (snapshot.optional_value("growth_score") or 0.0)
+        * financial_weights.get("growth_score", 0.0)
+        * policy.local_weights.get("quality_value", 0.0)
+    )
     return LocalScoreResult(
-        components={**result.components, "quality_penalty": penalty},
+        components={
+            **result.components,
+            "quality_penalty": penalty,
+            "financial_contribution": financial_contribution,
+            "growth_contribution": growth_contribution,
+        },
         base_score=Clamp(result.base_score - penalty),
     )
 

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from trader.recommendation.domain.evidence.review import DeepSeekReview, RiskFact
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
+from trader.recommendation.domain.publication.score_ledger import ScoreLedger
 
 if TYPE_CHECKING:
     from trader.recommendation.domain.risk.downside import DownsideAssessment
@@ -124,6 +125,7 @@ class ScoredStockEvaluation:
     local_risk_penalty: float | None = None
     local_score: float | None = None
     local_risk_facts: tuple[RiskFact, ...] = ()
+    score_ledger: ScoreLedger | None = None
     board_rank: int = 0
     rank: int = 0
     selection_skip_reason: str = ""

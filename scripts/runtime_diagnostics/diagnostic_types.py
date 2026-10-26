@@ -40,6 +40,7 @@ Profile = Literal[
     "download-performance",
     "database-baseline",
     "company-resume",
+    "company-ledger",
     "history-space",
     "history-industry",
     "qfq-sqlite",

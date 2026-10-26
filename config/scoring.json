@@ -140,5 +140,42 @@
       "industry_policy": 0,
       "risk_quality": 0.1875
     }
+  },
+  "company_scoring": {
+    "enabled": false,
+    "tomorrow_cap": 2,
+    "d25_cap": 5,
+    "financial_max_bonus": 2,
+    "financial_neutral": 50,
+    "financial_weights": [
+      0.5,
+      0.3,
+      0.2
+    ],
+    "positive_points": [
+      1,
+      2,
+      3
+    ],
+    "risk_points": [
+      3,
+      5,
+      8
+    ],
+    "tomorrow_sessions": 5,
+    "d25_sessions": 20,
+    "share_thresholds": [
+      0.1,
+      0.3,
+      0.5
+    ],
+    "contract_thresholds": [
+      5,
+      10,
+      20
+    ],
+    "risk_days": 365,
+    "reduction_tail_days": 90,
+    "unlock_days": 180
   }
 }

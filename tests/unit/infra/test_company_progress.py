@@ -12,6 +12,7 @@ from trader import bootstrap
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.domain.company_evidence import (
     CompanyEvidenceSyncResult,
+    CompanyStockProgress,
     DisclosurePartition,
     DisclosureQuery,
     DisclosureSecurity,
@@ -79,10 +80,24 @@ def test_announcement_progress_separates_complete_dates_current_pages_and_stage_
         expected_rows=93,
         query=DisclosureQuery("shmb", (DisclosureSecurity("600001", "issuer"),)),
     )
-    report(EvidenceSyncProgress("announcements", 0, 36, 100, 1000, 124, scope=scope))
+    report(
+        EvidenceSyncProgress(
+            "announcements",
+            0,
+            36,
+            100,
+            1000,
+            124,
+            scope=scope,
+            stock=CompanyStockProgress(
+                "600001", "示例", processed=2, total=4401, announcements=12, analyzed=4, pending=8
+            ),
+        )
+    )
     output = stream.getvalue().splitlines()[-1]
-    assert "完整日期片 0 | 待补 36 分片" in output and "0.00%" not in output
-    assert "第3/4页" in output and "累计复用 124" in output
+    assert "2/4401 股" in output and "600001 示例" in output
+    assert "公告 12 篇" in output and "已分析 4 篇" in output
+    assert "第3/4页" not in output and "证券组" not in output and "分片" not in output
     assert "本阶段 00:00:00" in output and "命令累计 00:35:10" in output
 
 
@@ -124,7 +139,7 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
         )
     )
     output = stream.getvalue()
-    assert "已发布投影 4402 股 | 待补公告 26 分片 | 待补正文 3 篇" in output
+    assert "已发布 4402 股（含待核实） | 公告覆盖待补 | 待补正文 3 篇" in output
     assert "100.00%" not in output and "状态 待续传" in output
     result = CompanyEvidenceSyncResult(
         datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),

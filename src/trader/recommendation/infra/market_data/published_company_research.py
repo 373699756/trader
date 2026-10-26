@@ -6,39 +6,54 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
-from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.download.domain.company_evidence import CompanyEvidenceSnapshot
-from trader.infra.cache_contracts import CanonicalJsonBytes
+from trader.download.domain.company_events import (
+    CompanyDataState,
+    CompanyEvidenceLink,
+    CompanyPositiveEvent,
+    CompanyRiskEvent,
+    CompanyRiskType,
+)
+from trader.download.domain.company_facts import CompanyFacts
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.market.epochs import ResearchEpoch
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.domain.market.research import (
-    AnnouncementRiskVerified,
-    CorporateRiskFactsFromAnnouncements,
+    CorporateRiskCategory,
+    CorporateRiskFact,
     FinancialReport,
-    ResearchAnnouncement,
     ResearchObservation,
 )
+from trader.recommendation.domain.scoring.company import BuildCompanyScoringContext, CompanyScoringPolicy
 from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoaderStatus
 
 
 class CompanyEvidenceReadPort(Protocol):
     def publication_version(self) -> str: ...
 
-    def visit(self, codes: Sequence[str], consume: Callable[[CompanyEvidenceSnapshot], None]) -> None: ...
+    def visit(
+        self,
+        codes: Sequence[str],
+        consume: Callable[[CompanyFacts], None],
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> None: ...
+
+    def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyEvidenceLink, ...]: ...
 
 
 class _CompanyInputOptions(TypedDict, total=False):
     reserve_bytes: Callable[[int], bool]
     source_versions: Callable[[], Mapping[str, str]]
     config_version: str
+    company_policy: CompanyScoringPolicy
 
 
 class PublishedCompanyResearch:
@@ -57,6 +72,7 @@ class PublishedCompanyResearch:
         self._monotonic = monotonic
         self._reserve_bytes = options.get("reserve_bytes")
         self._source_versions = options.get("source_versions")
+        self._company_policy = options.get("company_policy", CompanyScoringPolicy())
         self._config_version = options.get("config_version", "company")
         self._initialization_lock = threading.Lock()
         self._lock = threading.RLock()
@@ -65,6 +81,18 @@ class PublishedCompanyResearch:
         self._publication_version = ""
         self._disk_version = ""
         self._initialized = False
+
+    def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyDocumentReference, ...]:
+        return tuple(
+            CompanyDocumentReference(
+                item.evidence_id,
+                item.title,
+                item.url if item.url.startswith(("https://", "http://")) else None,
+                item.published_at,
+                "extracted" if item.body_checked else "pending",
+            )
+            for item in self._reader.document_links(code, evidence_ids)
+        )
 
     def initialize(self, codes: Sequence[str], *, cancelled: Callable[[], bool]) -> None:
         with self._initialization_lock:
@@ -82,18 +110,12 @@ class PublishedCompanyResearch:
         deadline = self._monotonic() + 30.0
         observed_at = ShanghaiNow(self._wall_clock())
         for _ in range(3):
-            rows: dict[str, ResearchObservation] = {}
-
             try:
-                before = self._reader.publication_version()
-                for offset in range(0, len(requested), 64):
-                    if cancelled() or self._monotonic() >= deadline:
-                        self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
-                        return
-                    self._reader.visit(
-                        requested[offset : offset + 64], partial(_capture_published_observation, rows, observed_at)
-                    )
+                before, rows = self._capture_publication(requested, observed_at, cancelled, deadline)
                 after = self._reader.publication_version()
+            except InterruptedError:
+                self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+                return
             except (OSError, RuntimeError, ValueError, TypeError) as exc:
                 self._last_error = f"company_snapshot:{type(exc).__name__}"
                 return
@@ -105,6 +127,22 @@ class PublishedCompanyResearch:
             self._adopt_projection(rows, observed_at, after, cancelled, deadline)
             return
         self._last_error = "company_publication_changed"
+
+    def _capture_publication(
+        self, requested: tuple[str, ...], observed_at: datetime, cancelled: Callable[[], bool], deadline: float
+    ) -> tuple[str, dict[str, ResearchObservation]]:
+        before = self._reader.publication_version()
+        open_dates = self._open_dates()
+        rows: dict[str, ResearchObservation] = {}
+
+        def capture(snapshot: CompanyFacts) -> None:
+            if cancelled() or self._monotonic() >= deadline:
+                raise InterruptedError("company_preload_stopped")
+            if snapshot.published_at <= observed_at:
+                rows[snapshot.code] = _observation(snapshot, observed_at, before, open_dates, self._company_policy)
+
+        self._reader.visit(requested, capture, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline)
+        return before, rows
 
     def _adopt_projection(
         self,
@@ -121,7 +159,8 @@ class PublishedCompanyResearch:
             self._config_version,
             self._source_versions() if self._source_versions is not None else {},
         )
-        size_bytes = len(CanonicalJsonBytes(epoch))
+        # Conservative retained-size reservation: fixed observations/lineage plus bounded event strings.
+        size_bytes = sum(8192 + _event_reservation(row) for row in rows.values())
         if cancelled() or self._monotonic() >= deadline:
             self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
             return
@@ -272,11 +311,14 @@ def _research_epoch(
     )
 
 
-def _capture_published_observation(
-    rows: dict[str, ResearchObservation], observed_at: datetime, snapshot: CompanyEvidenceSnapshot
-) -> None:
-    if snapshot.published_at <= observed_at:
-        rows[snapshot.code] = _observation(snapshot, observed_at)
+def _event_reservation(row: ResearchObservation) -> int:
+    if row.company_context is None:
+        return 0
+    facts = row.company_context.facts
+    events: tuple[CompanyRiskEvent | CompanyPositiveEvent, ...] = (*facts.risk_events, *facts.positive_events)
+    return sum(4096 + 4 * (len(event.summary) + sum(map(len, event.evidence_ids))) for event in events) + 1024 * len(
+        facts.review_reasons
+    )
 
 
 def _action_ready(item: ResearchObservation) -> bool:
@@ -302,6 +344,7 @@ def _qualified(item: ResearchObservation, now: datetime, required: date | None) 
     # Keep verified facts and disclosed financial reports; missing coverage cannot erase a known risk.
     return replace(
         item,
+        company_context=replace(item.company_context, coverage_current=False) if item.company_context else None,
         corporate_risk_window_complete=False,
         pledge_ratio_pct=None,
         unlock_ratio_pct=None,
@@ -310,94 +353,101 @@ def _qualified(item: ResearchObservation, now: datetime, required: date | None) 
     )
 
 
-def _observation(snapshot: CompanyEvidenceSnapshot, now: datetime) -> ResearchObservation:
-    announcements = tuple(
-        ResearchAnnouncement(
-            item.disclosure.title,
-            ShanghaiNow(item.disclosure.published_at),
-            item.disclosure.identity,
-            "issuer_disclosure",
-            item.text,
-            item.checked,
-        )
-        for item in snapshot.announcements
-        if now - timedelta(days=365) <= item.disclosure.published_at <= now
-    )
-    reports = tuple(
+def _observation(
+    snapshot: CompanyFacts, now: datetime, publication: str, open_dates: tuple[date, ...], policy: CompanyScoringPolicy
+) -> ResearchObservation:
+    financial = snapshot.financial
+    report = (
         FinancialReport(
-            item.report_date,
-            ShanghaiNow(item.published_at),
-            item.basic_eps,
-            item.book_value_per_share,
-            item.revenue_growth_pct,
-            item.net_profit_growth_pct,
-            item.core_profit_growth_pct,
-            item.roe_pct,
-            item.parent_net_profit,
-            item.core_net_profit,
+            financial.report_date,
+            ShanghaiNow(financial.published_at),
+            financial.basic_eps,
+            financial.book_value_per_share,
+            financial.revenue_growth_pct,
+            financial.net_profit_growth_pct,
+            financial.core_profit_growth_pct,
+            financial.roe_pct,
+            financial.parent_net_profit,
+            financial.core_net_profit,
         )
-        for item in snapshot.financials
-        if item.published_at <= now and item.report_date <= now.date()
+        if financial is not None and financial.published_at <= now and financial.report_date <= now.date()
+        else None
     )
+    categories = {
+        CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION: CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION,
+        CompanyRiskType.FINANCIAL_FRAUD: CorporateRiskCategory.FINANCIAL_FRAUD,
+        CompanyRiskType.OFFICIAL_INVESTIGATION: CorporateRiskCategory.OFFICIAL_INVESTIGATION,
+        CompanyRiskType.MAJOR_ILLEGAL: CorporateRiskCategory.MAJOR_ILLEGAL,
+        CompanyRiskType.FUND_OCCUPATION: CorporateRiskCategory.FUND_OCCUPATION,
+        CompanyRiskType.ILLEGAL_GUARANTEE: CorporateRiskCategory.ILLEGAL_GUARANTEE,
+        CompanyRiskType.FORCED_DELISTING: CorporateRiskCategory.FORCED_DELISTING,
+    }
+    facts = tuple(
+        CorporateRiskFact(
+            categories[event.risk_type],
+            ShanghaiNow(event.first_disclosed_at),
+            event.event_id,
+            "issuer_disclosure",
+            ShanghaiNow(event.resolved_at) if event.resolved_at else None,
+            event.case_id or "",
+            expires_at=ShanghaiNow(event.expires_at) if event.expires_at else None,
+            persistent=event.expires_at is None,
+        )
+        for event in snapshot.risk_events
+        if event.risk_type in categories and event.first_disclosed_at <= now
+    )
+    events: tuple[CompanyRiskEvent | CompanyPositiveEvent, ...] = (*snapshot.risk_events, *snapshot.positive_events)
     evidence = tuple(
         Evidence(
-            item.identity,
-            "news",
-            item.title[:240],
-            item.source,
-            ShanghaiNow(item.published_at),
-            ShanghaiNow(snapshot.published_at),
-            item.digest,
-        )
-        for item in snapshot.news
-        if now - timedelta(days=7) <= item.published_at <= now
-    ) + tuple(
-        Evidence(
-            item.announcement_id,
+            event.evidence_ids[-1],
             "regulatory_filing",
-            item.title[:240],
-            item.source,
-            item.published_at,
+            event.summary,
+            "issuer_disclosure",
+            ShanghaiNow(event.last_disclosed_at),
             ShanghaiNow(snapshot.published_at),
-            snapshot.version,
+            publication,
         )
-        for item in announcements
-        if item.body_checked
+        for event in events
+        if event.last_disclosed_at <= now
     )
-    failures = snapshot.failures
+    errors = tuple(
+        sorted({f"{item.scope}:{item.reason_code}" for item in snapshot.review_reasons if item.scope != "positive"})
+    )
     return ResearchObservation(
-        data_version=snapshot.version,
+        company_context=BuildCompanyScoringContext(snapshot, open_dates, policy),
+        data_version=publication,
         snapshot_at=ShanghaiNow(snapshot.published_at),
         loaded_at=now,
-        queried_on=snapshot.window_end,
+        queried_on=snapshot.checked_at.date(),
         pledge_checked_on=snapshot.pledge.day if snapshot.pledge else None,
-        financial=max(reports, key=lambda item: (item.report_date, item.published_at)) if reports else None,
-        financial_history=reports,
-        financial_history_complete=bool(reports) and not any(item.startswith("financial:") for item in failures),
-        announcements=tuple(replace(item, body="", body_checked=False) for item in announcements),
-        announcements_available=bool(announcements) or snapshot.announcement_complete,
+        financial=report,
+        financial_history=(report,) if report else (),
+        financial_history_complete=report is not None and snapshot.financial_state is CompanyDataState.COMPLETE,
+        announcements_available=snapshot.announcement_state is CompanyDataState.COMPLETE,
         pledge_ratio_pct=snapshot.pledge.ratio_pct
-        if snapshot.pledge
+        if snapshot.pledge is not None
         and snapshot.pledge.day <= now.date()
-        and not any(item.startswith("pledge:") for item in failures)
+        and snapshot.pledge_state is CompanyDataState.COMPLETE
         else None,
-        unlock_ratio_pct=min(100.0, sum(item.ratio_pct for item in snapshot.unlocks))
-        if snapshot.unlock_checked and not any(item.startswith("unlock:") for item in failures)
+        unlock_ratio_pct=min(
+            100.0,
+            sum(
+                item.ratio_pct
+                for item in snapshot.unlock_schedule
+                if now.date() <= item.day <= now.date() + timedelta(days=180)
+            ),
+        )
+        if snapshot.unlock_state is CompanyDataState.COMPLETE
         else None,
-        unlock_window_start=snapshot.window_end,
-        unlock_window_end=snapshot.window_end + timedelta(days=90),
-        corporate_risk_facts=CorporateRiskFactsFromAnnouncements(announcements),
-        corporate_risk_window_complete=snapshot.announcement_complete
-        and all(
-            AnnouncementRiskVerified(item, tuple(row.announcement_id for row in announcements if row.announcement_id))
-            for item in announcements
-        ),
-        risk_window_start=snapshot.window_start,
-        risk_window_end=snapshot.window_end,
-        corporate_risk_evidence_version=snapshot.version,
-        news_queried=snapshot.news_checked,
+        unlock_window_start=snapshot.checked_at.date(),
+        unlock_window_end=snapshot.unlock_coverage_end,
+        corporate_risk_facts=facts,
+        corporate_risk_window_complete=snapshot.announcement_state is CompanyDataState.COMPLETE,
+        risk_window_start=snapshot.announcement_coverage_start,
+        risk_window_end=snapshot.announcement_coverage_end,
+        corporate_risk_evidence_version=publication,
         evidence=evidence,
-        source_errors=failures,
+        source_errors=errors,
     )
 
 

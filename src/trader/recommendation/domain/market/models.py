@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from trader.recommendation.domain.evidence.review import RiskFact
     from trader.recommendation.domain.market.research import ResearchComponentCoverage
     from trader.recommendation.domain.publication.preview import PreviewContext
+    from trader.recommendation.domain.scoring.company import CompanyScoringContext
 
 
 class Board(str, Enum):
@@ -243,6 +244,7 @@ class FeatureSnapshot:
     model_sequence: ModelPriceVolumeSequence | None = None
     model_history_quality: ModelHistoryQuality | None = None
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
+    company_context: CompanyScoringContext | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))

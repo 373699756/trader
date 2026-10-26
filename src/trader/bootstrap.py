@@ -28,7 +28,7 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
-from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportStPreparation
+from trader.download.entrypoints import company_evidence_progress
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
@@ -75,14 +75,11 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_se
 from trader.recommendation.application.pipeline.data_source import source_router
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
+from trader.recommendation.application.pipeline.freeze_publish import freeze_coordinator
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
-    DecisionRuntimeIdentity,
-    ScoredFreezeCoordinator,
-)
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
     DecisionQuerySources,
@@ -100,35 +97,29 @@ from trader.recommendation.application.pipeline.score_merge.score_fusion import 
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
+from trader.recommendation.application.runtime import supervisor as runtime_supervisor
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
-from trader.recommendation.application.runtime.supervisor import (
-    RuntimeSupervisor,
-    RuntimeSupervisorConfig,
-    SchedulerIntervalSeconds,
-)
 from trader.recommendation.domain.market.eligibility import SelectQuotePopulation
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
+from trader.recommendation.infra import policy_settings
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import BuildSharedReviewCacheIdentity, ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.market_data import market_feature_service
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.recommendation.infra.market_data.market_feature_service import (
-    MarketFeatureDependencies,
-    MarketFeatureService,
-)
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
@@ -145,19 +136,8 @@ from trader.recommendation.infra.persistence.data_plane_initialization import In
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
-from trader.recommendation.infra.policy_settings import (
-    _long_group_definitions,
-    _long_item_definitions,
-    _recommendation_policy,
-)
+from trader.recommendation.infra.runtime import composition_inputs
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem, RuntimeWorkerResources
-from trader.recommendation.infra.runtime.composition_inputs import (
-    RuntimeBuildContext,
-    RuntimePersistenceContext,
-    RuntimePublicationContext,
-    RuntimePublicationDependencies,
-    SharedRecommendationInputs,
-)
 from trader.recommendation.infra.runtime.initialization import FixedCacheTtl as _fixed_cache_ttl
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
 from trader.recommendation.infra.runtime.startup_readiness import WarnMissingLocalData
@@ -221,12 +201,11 @@ def PrepareRuntimeStorage(settings: RuntimeSettings, *, choose: bool = False, re
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False
 ) -> SyncResult:
-    """Compose one sync wave with shared official population and ST evidence."""
     from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 
     settings = LoadRuntimeSettings(config_path)
     clock = ShanghaiClock(_utc_now)
-    progress = CompanyEvidenceProgress()
+    progress = company_evidence_progress.CompanyEvidenceProgress()
     history_progress = StderrHistorySyncProgress()
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
@@ -245,7 +224,7 @@ def ExecuteSync(
             settings.data_paths, reference=reference, cancel_requested=cancel_requested
         ),
         company=lambda reference: _sync_company_evidence(
-            settings.data_paths.company.parent,
+            settings.data_paths.company,
             progress,
             company_evidence.CompanyEvidenceRequest(
                 tuple(item.code for item in reference.eligible_universe),
@@ -258,6 +237,8 @@ def ExecuteSync(
                     clock.now(),
                 ),
                 configuration=company_configuration,
+                stock_names=tuple((item.code, item.name) for item in reference.eligible_universe),
+                event_policy=LoadStrategySettings(settings.strategy_config_path).company_scoring.events,
             ),
             cancel_requested=cancel_requested,
         ),
@@ -266,17 +247,27 @@ def ExecuteSync(
 
 
 def _sync_company_evidence(
-    root: Path,
+    database_path: Path,
     progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
     request: company_evidence.CompanyEvidenceRequest,
     *,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> company_evidence.CompanyEvidenceSyncResult:
-    with ProcessLock(root / "evidence.lock", label="sync company"), ProgressHeartbeat(progress) as heartbeat:
+    with (
+        ProcessLock(database_path.parent / "evidence.lock", label="sync company"),
+        ProgressHeartbeat(progress) as heartbeat,
+    ):
         with OpenExternalHttp() as disclosure_session, OpenExternalHttp() as structured_session:
             source_timeout = request.configuration.source_timeout_seconds
             dependencies = CompanyEvidenceDependencies(
-                SQLiteCompanyEvidenceIndex(root / "evidence.sqlite3", cancel_requested=cancel_requested),
+                SQLiteCompanyEvidenceIndex(
+                    database_path,
+                    cancel_requested=cancel_requested,
+                    event_policy=request.event_policy,
+                    stock_progress=partial(
+                        company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names
+                    ),
+                ),
                 CninfoMarketDisclosureSource(
                     disclosure_session,
                     monotonic=time.monotonic,
@@ -296,6 +287,7 @@ def _sync_company_evidence(
                 time.monotonic,
                 heartbeat,
                 cancel_requested,
+                request.stock_names,
             )
             return SyncCompanyEvidence(
                 dependencies,
@@ -328,7 +320,7 @@ def _prepare_reference(
             sessions.borrow,
             workers,
             lambda: cancel_requested() or not workers.is_running(),
-            report=partial(ReportStPreparation, progress),
+            report=partial(company_evidence_progress.ReportStPreparation, progress),
         )
         publication = ReferencePublication(reference_root)
         calendar = partial(
@@ -600,7 +592,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     scoring_profile: ScoringProfileId | None = None,
     runtime_scope: ScoringProfileId | None = None,
     owns_shared_runtime: bool = True,
-    shared_inputs: SharedRecommendationInputs | None = None,
+    shared_inputs: composition_inputs.SharedRecommendationInputs | None = None,
 ) -> ApplicationSystem[SQLiteResearchTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
@@ -618,7 +610,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
     cadence_planner = CadencePlanner(cadence_policy, started_at=ShanghaiClock(now).now())
     workers = _build_worker_context(settings, latency, shared_inputs.workers if shared_inputs else None)
-    context = RuntimeBuildContext(
+    context = composition_inputs.RuntimeBuildContext(
         settings,
         strategy,
         watchlist,
@@ -681,7 +673,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     review_client = DeepSeekHttpClient(post=_post_external_http)
     reviewer = DeepSeekReviewer.from_context(context, persistence.budget, review_client, review_cache)
-    policy = _recommendation_policy(context.strategy)
+    policy = policy_settings._recommendation_policy(context.strategy)
     model_publications = PublishedTrainingState(
         paths.history,
         paths.models,
@@ -703,7 +695,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     next_long_sequence = partial(run_scope.next_sequence, persistence.sequence.allocate)
     publication = _build_publication(
         context,
-        RuntimePublicationDependencies(next_long_sequence, persistence.records, market_data, persistence.outcomes),
+        composition_inputs.RuntimePublicationDependencies(
+            next_long_sequence, persistence.records, market_data, persistence.outcomes
+        ),
         publication_io=publication_io,
         production_authority=bool((profile_status := model_scoring.status()) and profile_status.production_authority),
     )
@@ -788,9 +782,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     if shared_inputs:
         input_preloader.register(market_data.history, initialize_published_inputs)
-    supervisor = RuntimeSupervisor(
+    supervisor = runtime_supervisor.RuntimeSupervisor(
         scheduler,
-        RuntimeSupervisorConfig(
+        runtime_supervisor.RuntimeSupervisorConfig(
             now=now,
             initializers=(
                 run_scope.initialize,
@@ -809,7 +803,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 *((persistence.budget.initialize,) if shared_inputs is None else ()),
                 *((lambda: persistence.budget.recover_incomplete(now()),) if shared_inputs is None else ()),
             ),
-            interval_seconds=SchedulerIntervalSeconds,
+            interval_seconds=runtime_supervisor.SchedulerIntervalSeconds,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
         ),
     )
@@ -861,7 +855,7 @@ def BuildProfiledSystem(
     settings = LoadRuntimeSettings(config_path)
     default_profile = "v2" if "v2" in profiles else profiles[0]
     primary = BuildSystem(config_path, scoring_profile=default_profile, runtime_scope=default_profile)
-    shared = SharedRecommendationInputs(
+    shared = composition_inputs.SharedRecommendationInputs(
         primary.workers,
         primary.market_data,
         primary.budget,
@@ -928,13 +922,13 @@ def _build_worker_context(
 
 
 def _build_market_data(
-    context: RuntimeBuildContext,
+    context: composition_inputs.RuntimeBuildContext,
     calendar: ChinaTradingCalendar,
     references: PublishedReferences,
     *,
     training_settings: ProfileTrainingSettings | V1TrainingSettings,
-    shared_market: MarketFeatureService | None = None,
-) -> MarketFeatureService:
+    shared_market: market_feature_service.MarketFeatureService | None = None,
+) -> market_feature_service.MarketFeatureService:
     settings, strategy = context.settings, context.strategy
     paths = settings.data_paths
     workers = context.workers
@@ -1051,13 +1045,14 @@ def _build_market_data(
                 pass
         eligibility: IssuerEligibilityPort = eligibility_index
         research = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(paths.company.parent / "evidence.sqlite3"),
+            SQLiteCompanyEvidenceReader(paths.company, event_policy=strategy.company_scoring.events),
             wall_clock=now,
             open_dates=calendar.open_dates,
             monotonic=time.monotonic,
             reserve_bytes=partial(market_cache.reserve_resident, "security_master_calendar", "company"),
             source_versions=references.versions,
             config_version=settings.config_version,
+            company_policy=strategy.company_scoring,
         )
         intraday_loader = IntradayLoader(
             intraday_client,
@@ -1085,8 +1080,8 @@ def _build_market_data(
         MarketDataHealthDependencies(quote_cache, history_cache, research, intraday_loader, references, eligibility),
         wall_clock=now,
     )
-    return MarketFeatureService(
-        MarketFeatureDependencies(
+    return market_feature_service.MarketFeatureService(
+        market_feature_service.MarketFeatureDependencies(
             quote_cache,
             history_cache,
             research,
@@ -1114,8 +1109,8 @@ def _build_market_data(
 
 
 def _build_persistence(
-    context: RuntimeBuildContext, shared_budget: DeepSeekBudgetLedger | None = None
-) -> RuntimePersistenceContext:
+    context: composition_inputs.RuntimeBuildContext, shared_budget: DeepSeekBudgetLedger | None = None
+) -> composition_inputs.RuntimePersistenceContext:
     settings = context.settings
     profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
     records = SQLiteDecisionRecords(profile_root / "decisions.sqlite3")
@@ -1131,16 +1126,16 @@ def _build_persistence(
         write_lock=threading.Lock(),
     )
     sequence = PublicationSequence(profile_root / "snapshots.sqlite3")
-    return RuntimePersistenceContext(sequence, records, data_plane, budget, outcomes)
+    return composition_inputs.RuntimePersistenceContext(sequence, records, data_plane, budget, outcomes)
 
 
 def _build_publication(
-    context: RuntimeBuildContext,
-    dependencies: RuntimePublicationDependencies,
+    context: composition_inputs.RuntimeBuildContext,
+    dependencies: composition_inputs.RuntimePublicationDependencies,
     *,
     publication_io: PublicationIoTracker,
     production_authority: bool,
-) -> RuntimePublicationContext:
+) -> composition_inputs.RuntimePublicationContext:
     settings, records, market_data = context.settings, dependencies.records, dependencies.market_data
     tomorrow_decisions = UnifiedDecisionIndex()
     decision_drafts = UnifiedDecisionDraftIndex()
@@ -1150,7 +1145,12 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    query_sources = DecisionQuerySources(market_data, dependencies.outcomes, market_data.references)
+    query_sources = DecisionQuerySources(
+        market_data,
+        dependencies.outcomes,
+        market_data.references,
+        market_data.research,
+    )
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, query_sources)
     research_trace = SQLiteResearchTraceIndex(
         settings.data_paths.research(context.strategy.scoring_profile),
@@ -1163,17 +1163,17 @@ def _build_publication(
         prepare=DecisionObservation.materialize,
     )
     freezer = partial(
-        ScoredFreezeCoordinator,
+        freeze_coordinator.ScoredFreezeCoordinator,
         tomorrow_decisions,
         records,
         clock,
-        runtime_identity=DecisionRuntimeIdentity(
+        runtime_identity=freeze_coordinator.DecisionRuntimeIdentity(
             context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
         ),
         publication_io=publication_io,
         production_authority=production_authority,
     )
-    return RuntimePublicationContext(
+    return composition_inputs.RuntimePublicationContext(
         records,
         tomorrow_decisions,
         decision_drafts,
@@ -1189,8 +1189,8 @@ def _build_publication(
             ),
             config_version=context.effective_config_version,
             watchlist_version=context.watchlist.watchlist_version,
-            items=_long_item_definitions(context.watchlist),
-            groups=_long_group_definitions(context.watchlist),
+            items=policy_settings._long_item_definitions(context.watchlist),
+            groups=policy_settings._long_group_definitions(context.watchlist),
         ),
         decision_queries,
         decision_events,

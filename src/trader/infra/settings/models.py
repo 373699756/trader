@@ -16,6 +16,7 @@ from trader.recommendation.domain.market.research import (
     MarketRegimePolicy,
 )
 from trader.recommendation.domain.market.tail import TailSignalPolicy
+from trader.recommendation.domain.scoring.company import CompanyScoringPolicy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
@@ -234,6 +235,7 @@ class StrategySettings:
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
     factor_index: Mapping[str, FactorDefinition]
+    company_scoring: CompanyScoringPolicy = CompanyScoringPolicy()
 
 
 @dataclass(frozen=True)

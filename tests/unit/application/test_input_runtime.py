@@ -11,7 +11,6 @@ import pytest
 from tests.unit.application.cycle_fixture import CycleFixture, CycleFixtureDependencies, build_cycle_fixture
 from tests.unit.application.pipeline_helpers import observed_market_batch
 from tests.unit.domain.test_decision_identity import decision
-from trader.bootstrap import _recommendation_policy
 from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     BuildModelScoringContext as _model_scoring_context,
@@ -42,6 +41,7 @@ from trader.recommendation.domain.market.refresh import (
 )
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.infra.policy_settings import _recommendation_policy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 

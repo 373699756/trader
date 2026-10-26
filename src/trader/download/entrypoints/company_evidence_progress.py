@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TextIO
 
 from trader.download.application.progress_message import ProgressDuration
-from trader.download.domain.company_evidence import DisclosurePartition, EvidenceSyncProgress
+from trader.download.domain.company_evidence import CompanyStockProgress, EvidenceSyncProgress
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
 
 
@@ -33,6 +33,19 @@ def ReportStPreparation(
         )
 
 
+def ReportCompanyStock(
+    report: Callable[[EvidenceSyncProgress], None],
+    names: tuple[tuple[str, str], ...],
+    stock: CompanyStockProgress,
+) -> None:
+    name = next((name for code, name in names if code == stock.code), "")
+    report(
+        EvidenceSyncProgress(
+            "publish", stock.processed, stock.total - stock.processed, 0, 0, 0, stock=replace(stock, name=name)
+        )
+    )
+
+
 class CompanyEvidenceProgress:
     def __init__(self, stream: TextIO | None = None, *, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._stream = stream if stream is not None else sys.stderr
@@ -41,10 +54,13 @@ class CompanyEvidenceProgress:
         self._component_started = self._started
         self._last = 0.0
         self._previous: EvidenceSyncProgress | None = None
+        self._stocks: dict[str, CompanyStockProgress] = {}
 
     def __call__(self, progress: EvidenceSyncProgress) -> None:
         now = self._monotonic()
         previous = self._previous
+        if progress.component == "publish" and progress.stock is not None:
+            self._stocks[progress.stock.code] = progress.stock
         if previous is None or progress.component != previous.component:
             self._component_started = now
         boundary = (
@@ -55,7 +71,7 @@ class CompanyEvidenceProgress:
             or progress.failure != previous.failure
             or (progress.pending == 0 and previous.pending != 0)
         )
-        if not boundary and now - self._last < 2:
+        if not boundary and now - self._last < 1:
             return
         self._last, self._previous = now, progress
         labels = {
@@ -63,9 +79,9 @@ class CompanyEvidenceProgress:
             "calendar": "交易日历",
             "financial": "财务增量",
             "pledge": "最新质押",
-            "unlock": "未来90天解禁",
-            "announcements": "巨潮日期分片",
-            "risk_documents": "风险正文核验",
+            "unlock": "未来180天解禁",
+            "announcements": "公告增量下载",
+            "risk_documents": "公告正文分析",
             "news": "候选新闻",
             "publish": "发布公司投影",
             "complete": "本轮结束",
@@ -90,7 +106,8 @@ class CompanyEvidenceProgress:
             failure = ",".join(item for item in failure.split(",") if item and item not in reported)
         print(
             f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
-            + _scope(progress)
+            + _stock(progress)
+            + (self._summary(progress.completed) if progress.component == "complete" else "")
             + (" | 补查历史发行人（保留已完成页）" if progress.activity == "repair" else "")
             + f" | 成功页 {progress.fetched_pages} | 变更行 {progress.changed_rows} | "
             f"累计复用 {progress.reused_partitions} | 本阶段 {ProgressDuration(now - self._component_started)} | "
@@ -100,11 +117,24 @@ class CompanyEvidenceProgress:
             flush=True,
         )
 
+    def _summary(self, published: int) -> str:
+        if not self._stocks:
+            return ""
+        stocks = tuple(self._stocks.values())
+        complete = sum(stock.coverage_complete for stock in stocks)
+        reused = sum(stock.reused for stock in stocks)
+        return (
+            f" | 已处理 {len(stocks)} 股 | 完整 {complete} 股 | 部分 {len(stocks) - complete} 股"
+            f" | 未发布 {max(0, len(stocks) - published)} 股 | 更新 {len(stocks) - reused} 股 | 复用 {reused} 股"
+            f" | 风险 {sum(stock.risks for stock in stocks)} 条 | 利好 {sum(stock.positives for stock in stocks)} 条"
+            f" | 待核实 {sum(stock.review_count for stock in stocks)} 项"
+        )
+
 
 def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
     if progress.component == "complete":
         return (
-            f"已发布投影 {progress.completed} 股 | 待补公告 {progress.pending} 分片 | "
+            f"已发布 {progress.completed} 股（含待核实） | 公告覆盖{'待补' if progress.pending else '已核对'} | "
             f"待补正文 {progress.pending_documents} 篇"
         )
     if progress.status == "reused":
@@ -112,8 +142,18 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
     if progress.pending is None:
         return f"进度 {progress.completed}/? {unit}（总数待确认）"
     if progress.component == "announcements":
-        return f"完整日期片 {progress.completed} | 待补 {progress.pending} 分片（含未完成子查询）"
-    total = progress.completed + progress.pending
+        return (
+            f"已获取公告 {progress.stock.processed}/{progress.stock.total} 股（覆盖核验中）"
+            if progress.stock is not None
+            else "正在定位待补公告，股票总进度待核验"
+        )
+    if progress.component == "publish" and progress.stock is not None:
+        return f"已分析股票 {progress.stock.processed}/{progress.stock.total} 股（等待原子发布）"
+    return _page_counts(progress, unit, progress.pending)
+
+
+def _page_counts(progress: EvidenceSyncProgress, unit: str, pending: int) -> str:
+    total = progress.completed + pending
     if progress.component == "risk_documents":
         return (
             f"已尝试 {progress.attempted_documents}/{total} 篇 | 已核验 {progress.completed} 篇 | "
@@ -123,25 +163,21 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
     return f"进度 {progress.completed}/{total} {unit}（{percent}） | 待处理 {progress.pending} {unit}"
 
 
-def _scope(progress: EvidenceSyncProgress) -> str:
-    scope = progress.scope
-    if scope is None:
+def _stock(progress: EvidenceSyncProgress) -> str:
+    stock = progress.stock
+    if stock is None:
         return ""
-    market = (
-        {"sse": "沪市", "szse": "深市", "bse": "北市"}[scope.market] if isinstance(scope, DisclosurePartition) else ""
+    return (
+        f" | 当前 {stock.code} {stock.name} | 公告 {stock.announcements} 篇"
+        f" | 已分析 {stock.analyzed} 篇 | 待分析 {stock.pending} 篇"
+        + (
+            f" | 风险 {stock.risks} 条 | 利好 {stock.positives} 条 | 待核实 {stock.review_count} 项"
+            + (" | 资料完整" if stock.coverage_complete else " | 资料部分覆盖")
+            if progress.component == "publish"
+            else " | 事件待核验"
+        )
+        + (" | 已发布" if stock.published else " | 处理中")
     )
-    detail = ""
-    if isinstance(scope, DisclosurePartition) and scope.query is not None:
-        detail = f" {scope.query.plate}"
-        if scope.query.securities:
-            identity = hashlib.sha256(scope.query.key.encode()).hexdigest()[:8]
-            detail += f" 证券组{identity}（{len(scope.query.securities)}项）"
-    total = (
-        f"/{max(1, (scope.expected_rows + 29) // 30)}"
-        if isinstance(scope, DisclosurePartition) and scope.expected_rows is not None
-        else ""
-    )
-    return f" | 当前 {market}{scope.start.isoformat()}~{scope.end.isoformat()}{detail} 第{scope.page}{total}页"
 
 
 __all__ = ["CompanyEvidenceProgress", "ReportStPreparation"]

@@ -32,6 +32,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.recommendation.domain.publication.score_ledger import ScoreLedgerPayload
 
 
 def SerializeDecisionView(view: DecisionView) -> dict[str, object]:
@@ -278,6 +279,7 @@ def SerializeDecisionItem(item: DecisionItemView) -> dict[str, object]:
         "action_reason": item.action_reason,
         "score_status": item.score_status,
         "scores": {
+            "ledger": ScoreLedgerPayload(item.score_ledger) if item.score_ledger is not None else None,
             "candidate": item.candidate_score,
             "local": item.local_score,
             "deepseek": item.deepseek_score,
@@ -520,6 +522,7 @@ def _serialize_decision_patch_item(item: DecisionItem, *, rank: int) -> dict[str
             else None
         ),
         "scores": {
+            "ledger": ScoreLedgerPayload(item.score_ledger) if item.score_ledger is not None else None,
             "candidate_score": item.candidate_score,
             "local_score": item.local_score,
             "deepseek_score": components.get("deepseek_score"),

@@ -69,6 +69,7 @@
   };
 
   const RISK_LABELS = {
+    company_regulatory: "公司监管风险",
     near_limit_crowding: "接近涨跌幅限制",
     price_volume_divergence: "价格与量能背离",
     high_volatility: "波动率偏高",
@@ -283,10 +284,10 @@
         '<col style="width:85px">',
         '<col style="width:95px">',
         '<col style="width:100px">',
-        '<col style="width:165px">',
+        '<col style="width:185px">',
         '<col style="width:185px">',
       ].join(""),
-      head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>板块行业</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>本地 / 风险复核 / ${finalLabel}</th><th class="reason-heading">原因</th></tr>`,
+      head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>板块行业</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>${finalLabel}评分 / 加减分 / 复核</th><th class="reason-heading">原因</th></tr>`,
     };
   }
 
@@ -360,6 +361,10 @@
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const review = reviewStatus(item);
     const finalLabel = scorePresentation(snapshot).finalLabel;
+    const ledger = scores.ledger;
+    const scoreDetail = ledger
+      ? `基础 ${number(ledger.weighted_base_score, 2)} · +${number(ledger.applied_bonus, 2)} · −${number(ledger.applied_risk_penalty, 2)}`
+      : "旧记录无加减分明细";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
@@ -370,7 +375,7 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span aria-label="本地评分"><b>${number(scores.local_score, 2)}</b></span><span aria-label="风险复核"><b>${review}</b></span><span aria-label="${finalLabel}"><b>${number(scores.final_score, 2)}</b></span></div></td>
+      <td><div class="score-stack"><span aria-label="${finalLabel}"><b>${number(scores.final_score, 2)}</b></span><span aria-label="加减分明细">${scoreDetail}</span><span aria-label="风险复核">${finalLabel === "模型排序分" ? `本地 ${number(scores.local_score, 2)} · ` : ""}${review}</span></div></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
   }
@@ -506,6 +511,46 @@
       ["旧版DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
     const scoreParts = [detailGrid(scoreValues)];
+    const ledger = scores.ledger;
+    if (ledger) {
+      scoreParts.push(detailGrid([
+        ["原策略基础分（已扣缺失）", valueNumber(ledger.weighted_base_score, 2)],
+        ["规则奖励合计", valueNumber(ledger.requested_bonus, 2)],
+        ["策略上限后奖励", valueNumber(ledger.capped_bonus, 2)],
+        ["实际加分", valueNumber(ledger.applied_bonus, 2)],
+        ["加分后基础分", valueNumber(ledger.base_score, 2)],
+        ["风险规则合计", valueNumber(ledger.raw_risk_penalty, 2)],
+        ["上限后风险扣分", valueNumber(ledger.local_risk_penalty, 2)],
+        ["实际扣分", valueNumber(ledger.applied_risk_penalty, 2)],
+        ["基础分已含财务贡献", valueNumber(ledger.financial_contribution, 2)],
+        ["其中成长贡献（不重复加分）", valueNumber(ledger.growth_contribution, 2)],
+        ["公司公告风险等级", ledger.company_risk_level == null ? "覆盖不足，待核实" : `${ledger.company_risk_level} 级`],
+        ["公告覆盖截止", ledger.company_coverage_end || "待核实"],
+        ["显示舍入差额", valueNumber(ledger.rounding_adjustment, 2)],
+      ]));
+      scoreParts.push(note("本地分 = 基础分 + 实际加分 − 实际扣分；风险最多扣25分，最终限制在0至100分。", "muted"));
+      if (!ledger.enabled) scoreParts.push(note("公司额外加减分尚未启用；已确认硬风险仍参与资格过滤。", "warn"));
+      const adjustmentReasons = {
+        eligible: "符合条件", bonus_cap: "受奖励或100分上限限制", same_group_lower: "同组仅取最高",
+        company_policy_pending: "公司奖励和监管扣分未启用", company_risk_active: "存在公司风险，不加分",
+        company_coverage_incomplete: "风险覆盖不足，不加分", financial_inputs_incomplete: "财务输入不完整",
+        below_financial_threshold: "财务分未达到奖励线", event_cancelled: "已取消", not_implemented: "尚未实施",
+        below_event_threshold: "未达到事件阈值", event_expired_or_calendar_missing: "已到期或交易日历不足",
+        revision_pending: "修订待核实", risk_group_contribution: "风险组规则值（合计受25分及0分下限约束）",
+      };
+      for (const entry of ledger.items || []) {
+        if (entry.kind === "review") {
+          scoreParts.push(note(`待核实：${entry.label}`, "warn"));
+        } else {
+          scoreParts.push(note(`${entry.label} · 等级 ${entry.level} · 规则${entry.kind === "risk" ? "扣" : "加"} ${number(entry.rule_points, 2)}${entry.kind === "risk" ? "" : ` · 实际加 ${number(entry.applied_points, 2)}`} · ${adjustmentReasons[entry.reason] || "证据条件尚未满足"}${entry.expires_at ? ` · 有效至 ${formatDateTime(entry.expires_at)}` : ""}`, "muted"));
+        }
+        if (Array.isArray(entry.evidence_ids) && entry.evidence_ids.length) {
+          scoreParts.push(`<button type="button" data-company-documents="${escapeHtml(JSON.stringify(entry.evidence_ids.slice(-32)))}">查看公告证据</button><div class="company-documents" aria-live="polite"></div>`);
+        }
+      }
+    } else {
+      scoreParts.push(note("该历史记录未保存加减分账本，无法还原明细。", "muted"));
+    }
     if (presentation.learnedRank) {
       scoreParts.push(note("模型排序分为同轮合格总体内的排名百分位，不是上涨概率；动作资格依据本地评分和风险条件。", "muted"));
     }

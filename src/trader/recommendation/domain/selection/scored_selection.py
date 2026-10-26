@@ -8,7 +8,6 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from decimal import Decimal
 from itertools import pairwise
 from types import MappingProxyType
 from zoneinfo import ZoneInfo
@@ -31,7 +30,14 @@ from trader.recommendation.domain.publication.models import (
     ScoredStockEvaluation,
     Strategy,
 )
-from trader.recommendation.domain.risk.rules import AggregateRiskPenalty, DeriveLocalRiskFacts
+from trader.recommendation.domain.risk.rules import DeduplicateRiskFacts, DeriveLocalRiskFacts
+from trader.recommendation.domain.scoring.company import (
+    AssessCompanyAdjustments,
+    BuildScoreLedger,
+    CompanyFinancialScores,
+    CompanyScoringPolicy,
+    ScoreLedgerInput,
+)
 from trader.recommendation.domain.scoring.scoring import (
     ApplyBoardPolicy,
     BoardCrossSection,
@@ -98,6 +104,7 @@ class ScoredSelectionPolicy:
     minimum_local_score: float = 0.0
     hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
     strategy: Strategy = Strategy.TOMORROW
+    company_scoring: CompanyScoringPolicy = CompanyScoringPolicy()
 
     def __post_init__(self) -> None:
         policies = dict(self.board_policies)
@@ -309,8 +316,7 @@ def _validated_population_window(
 def SelectScored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
     return ApplySelectionRisks(
         ScoreLocalEvidence(request),
-        request.policy.risk_rules,
-        request.policy.local_risk_cap,
+        LocalRiskPolicy(request.policy.risk_rules, request.policy.local_risk_cap, request.policy.company_scoring),
         request.evaluated_at,
         request.policy.strategy,
     )
@@ -600,24 +606,57 @@ def _score_board_candidates(
     return tuple(selected_codes)
 
 
+@dataclass(frozen=True, slots=True)
+class LocalRiskPolicy:
+    rules: Mapping[str, RiskRule]
+    cap: float
+    company: CompanyScoringPolicy
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rules", MappingProxyType(dict(self.rules)))
+
+
 def ApplySelectionRisks(
     selection: ScoredSelectionResult,
-    risk_rules: Mapping[str, RiskRule],
-    local_risk_cap: float,
+    policy: LocalRiskPolicy,
     evaluated_at: datetime,
     strategy: Strategy,
 ) -> ScoredSelectionResult:
     evaluations = {item.code: item for item in selection.evaluations}
     scored_codes: list[str] = []
     for original in selection.scored_candidates:
-        facts = DeriveLocalRiskFacts(original.features, evaluated_at, risk_rules, strategy=strategy)
-        penalty = AggregateRiskPenalty(facts, cap=local_risk_cap)
+        facts = DeriveLocalRiskFacts(original.features, evaluated_at, policy.rules, strategy=strategy)
+        adjustments = AssessCompanyAdjustments(
+            original.features.company_context,
+            policy.company,
+            strategy.value,
+            evaluated_at,
+            financial_scores=CompanyFinancialScores(
+                original.features.optional_value("quality_score"),
+                original.features.optional_value("value_score"),
+                original.features.optional_value("growth_score"),
+            ),
+        )
+        facts = DeduplicateRiskFacts((*facts, *adjustments.risks), rules=policy.rules)
+        ledger = BuildScoreLedger(
+            ScoreLedgerInput(
+                original.local_base_score or 0.0,
+                adjustments,
+                facts,
+                financial_contribution=original.local_components.get("financial_contribution", 0.0),
+                growth_contribution=original.local_components.get("growth_contribution", 0.0),
+            ),
+            strategy=strategy.value,
+            policy=policy.company,
+            risk_cap=policy.cap,
+        )
         evaluations[original.code] = replace(
             original,
-            local_base_score=RoundScore(original.local_base_score or 0.0),
+            local_base_score=RoundScore(ledger.base_score),
+            score_ledger=ledger,
             local_risk_facts=facts,
-            local_risk_penalty=RoundScore(penalty),
-            local_score=RoundScore(Decimal(str(original.local_base_score or 0.0)) - Decimal(str(penalty))),
+            local_risk_penalty=RoundScore(ledger.local_risk_penalty),
+            local_score=ledger.local_score,
             disposition=ScoredDisposition.OBSERVE_ONLY if any(fact.veto for fact in facts) else original.disposition,
             selection_skip_reason="local_risk_veto"
             if any(fact.veto for fact in facts)

@@ -20,6 +20,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.recommendation.domain.publication.score_ledger import ScoreLedger, ScoreLedgerPayload
 from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
 
 DecisionStage = Literal["local", "hybrid"]
@@ -188,6 +189,7 @@ class DecisionItem:
     research_coverage: DecisionResearchCoverage | None = None
     model_diagnostics: DecisionModelDiagnostics | None = None
     risk_details: tuple[DecisionRiskDisclosure, ...] = ()
+    score_ledger: ScoreLedger | None = None
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -780,6 +782,8 @@ def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
         "board": item.board.value,
         "selection_rank": item.selection_rank,
     }
+    if item.score_ledger is not None:
+        payload["score_ledger"] = ScoreLedgerPayload(item.score_ledger)
     if item.name:
         payload["name"] = item.name
     if item.industry:

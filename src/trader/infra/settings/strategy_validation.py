@@ -114,7 +114,7 @@ def _validate_signal_policies(settings: StrategySettings) -> None:
         long.financial_max_age_days != 550
         or long.announcement_lookback_days != 180
         or long.announcement_limit != 100
-        or long.unlock_forward_days != 90
+        or long.unlock_forward_days != 180
         or long.pe_full_score_max != 10.0
         or long.pe_zero_score_min != 50.0
         or long.pb_full_score_max != 1.0
@@ -127,7 +127,6 @@ def _validate_signal_policies(settings: StrategySettings) -> None:
         or long.financial_core_profit_deterioration_pct != -20.0
         or long.pledge_thresholds != (10.0, 20.0, 35.0)
         or long.unlock_thresholds != (1.0, 5.0, 10.0)
-        or long.policy_keyword_score_step != 10.0
     ):
         raise ConfigurationError("long research windows, scoring slopes and risk thresholds are fixed")
 

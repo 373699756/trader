@@ -467,7 +467,8 @@ class FeatureBuilder:
                         *candidate_evidence,
                     ),
                     normalization=cross_sections[quote.code].normalization,
-                    research_components=ResearchComponentsFromObservation(research_observation),
+                    research_components=ResearchComponentsFromObservation(research_observation, observed_at),
+                    company_context=research_observation.company_context if research_observation else None,
                     preview_context=options.get("preview_context"),
                 )
             )

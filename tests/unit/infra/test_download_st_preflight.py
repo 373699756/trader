@@ -130,7 +130,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     monkeypatch.setattr(bootstrap, "_sync_company_evidence", download)
     stream = StringIO()
     monkeypatch.setattr(
-        "trader.bootstrap.CompanyEvidenceProgress",
+        "trader.bootstrap.company_evidence_progress.CompanyEvidenceProgress",
         lambda: CompanyEvidenceProgress(stream),
     )
     result = bootstrap.ExecuteSync(Path("unused"), "company")

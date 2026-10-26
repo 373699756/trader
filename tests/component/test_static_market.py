@@ -400,12 +400,14 @@ def test_new_quote_st_risk_is_dynamic_and_remains_excluded_after_name_recovers(t
 
 
 def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory():
-    from trader.download.domain.company_evidence import CompanyDocument, CompanyEvidenceSnapshot, Disclosure
+    from trader.download.domain.company_events import CompanyEventPolicy
+    from trader.download.domain.company_evidence import CompanyDocument, CompanyEvidenceInput, Disclosure
+    from trader.download.domain.company_facts import CompileCompanyFacts
     from trader.recommendation.domain.candidate.filters import HardFilter
 
     effective = NOW
     disclosure = Disclosure("cninfo", "case", ("600001",), "收到中国证监会立案告知书", effective, "", "digest")
-    snapshot = CompanyEvidenceSnapshot(
+    snapshot = CompanyEvidenceInput(
         "600001",
         NOW,
         NOW.date() - timedelta(days=365),
@@ -428,9 +430,9 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
         def publication_version(self):
             return snapshot.version
 
-        def visit(self, codes, consume):
+        def visit(self, codes, consume, *, cancel_requested=None):
             self.visits += 1
-            consume(snapshot)
+            consume(CompileCompanyFacts(snapshot, CompanyEventPolicy()))
 
     reader = Reader()
     service = _service(
@@ -445,7 +447,7 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
     expired = service.fetch_market_feature_batch(expired_at)
     assert before.features[0].values["official_investigation_history"] == 1
     assert active.features[0].values["official_investigation_history"] == 1
-    assert expired.features[0].values["official_investigation_history"] == 0
+    assert expired.features[0].values["official_investigation_history"] == 1
     assert "research_data_degraded" in expired.features[0].quote.execution_restrictions
     assert "official_investigation_history" in {
         reason.filter_code for reason in HardFilter(active.features[0], now=effective, max_age_seconds=30).reasons

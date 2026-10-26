@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import Enum
 from types import MappingProxyType
 from typing import Literal
 
+from trader.download.domain.company_events import CompanyRiskType
 from trader.recommendation.domain.market.factors import Clamp, WeightedScore
 from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.scoring.company import CompanyRiskActive, CompanyScoringContext
 
 
 @dataclass(frozen=True)
@@ -46,19 +47,9 @@ class LongResearchPolicy:
     financial_core_profit_deterioration_pct: float
     pledge_thresholds: tuple[float, float, float]
     unlock_thresholds: tuple[float, float, float]
-    policy_keyword_score_step: float
-    negative_high_keywords: tuple[str, ...]
-    negative_medium_keywords: tuple[str, ...]
-    negative_low_keywords: tuple[str, ...]
-    reduction_high_keywords: tuple[str, ...]
-    reduction_medium_keywords: tuple[str, ...]
-    reduction_low_keywords: tuple[str, ...]
-    policy_positive_keywords: tuple[str, ...]
-    policy_negative_keywords: tuple[str, ...]
 
     def __post_init__(self) -> None:
         _validate_long_numeric_policy(self)
-        _validate_long_keyword_policy(self)
 
 
 @dataclass(frozen=True)
@@ -107,7 +98,6 @@ def _validate_long_numeric_policy(policy: LongResearchPolicy) -> None:
         policy.financial_core_profit_deterioration_pct,
         *policy.pledge_thresholds,
         *policy.unlock_thresholds,
-        policy.policy_keyword_score_step,
     )
     if not all(math.isfinite(value) for value in numeric):
         raise ValueError("long research numeric policy values must be finite")
@@ -123,39 +113,6 @@ def _validate_long_numeric_policy(policy: LongResearchPolicy) -> None:
         raise ValueError("long pledge thresholds must strictly increase")
     if not _strictly_increasing_nonnegative(policy.unlock_thresholds):
         raise ValueError("long unlock thresholds must strictly increase")
-    if not 0.0 < policy.policy_keyword_score_step <= 100.0:
-        raise ValueError("long policy keyword score step must be in (0, 100]")
-
-
-def _validate_long_keyword_policy(policy: LongResearchPolicy) -> None:
-    keyword_groups = (
-        policy.negative_high_keywords,
-        policy.negative_medium_keywords,
-        policy.negative_low_keywords,
-        policy.reduction_high_keywords,
-        policy.reduction_medium_keywords,
-        policy.reduction_low_keywords,
-        policy.policy_positive_keywords,
-        policy.policy_negative_keywords,
-    )
-    if any(not group or any(not keyword.strip() for keyword in group) for group in keyword_groups):
-        raise ValueError("long research keyword groups must contain non-empty values")
-    if any(len(group) != len(set(group)) for group in keyword_groups):
-        raise ValueError("long research keyword groups must contain unique values")
-    negative_levels = (
-        set(policy.negative_high_keywords),
-        set(policy.negative_medium_keywords),
-        set(policy.negative_low_keywords),
-    )
-    reduction_levels = (
-        set(policy.reduction_high_keywords),
-        set(policy.reduction_medium_keywords),
-        set(policy.reduction_low_keywords),
-    )
-    if _groups_overlap(negative_levels) or _groups_overlap(reduction_levels):
-        raise ValueError("long research severity keyword levels must not overlap")
-    if set(policy.policy_positive_keywords) & set(policy.policy_negative_keywords):
-        raise ValueError("long policy positive and negative keywords must not overlap")
 
 
 @dataclass(frozen=True)
@@ -232,6 +189,8 @@ class CorporateRiskFact:
     source: str
     resolved_at: datetime | None = None
     case_id: str = ""
+    expires_at: datetime | None = None
+    persistent: bool = False
 
     def __post_init__(self) -> None:
         if self.announced_at.tzinfo is None or self.announced_at.utcoffset() is None:
@@ -249,6 +208,7 @@ class CorporateRiskFact:
 
 @dataclass(frozen=True)
 class ResearchObservation:
+    company_context: CompanyScoringContext | None = None
     data_version: str = "research:unassigned"
     queried_on: date | None = None
     pledge_checked_on: date | None = None
@@ -301,19 +261,24 @@ class ResearchComponentCoverage:
             raise ValueError("research component status is invalid")
 
 
-def ResearchComponentsFromObservation(observation: ResearchObservation | None) -> ResearchComponentCoverage:
+def ResearchComponentsFromObservation(
+    observation: ResearchObservation | None, observed_at: datetime | None = None
+) -> ResearchComponentCoverage:
     if observation is None:
         return ResearchComponentCoverage("unknown", "unknown", "unknown", "unknown")
     financial: ResearchComponentStatus = "known_clear" if observation.financial is not None else "unknown"
     if any(item.startswith(("financial:", "company_snapshot:")) for item in observation.source_errors):
         financial = "stale" if observation.financial is not None else "unknown"
-    if not observation.announcements_available:
-        announcements: ResearchComponentStatus = "unknown"
-    elif any(
-        fact.category in {CorporateRiskCategory.OFFICIAL_INVESTIGATION, CorporateRiskCategory.MAJOR_ILLEGAL}
-        for fact in observation.corporate_risk_facts
-    ):
-        announcements = "known_risk"
+    at = observed_at or observation.loaded_at or observation.snapshot_at
+    known_risk = any(at is None or _corporate_risk_is_active(fact, at) for fact in observation.corporate_risk_facts)
+    if observation.company_context is not None and at is not None:
+        known_risk = known_risk or any(
+            CompanyRiskActive(event, at) for event in observation.company_context.facts.risk_events
+        )
+    if known_risk:
+        announcements: ResearchComponentStatus = "known_risk"
+    elif not observation.announcements_available:
+        announcements = "unknown"
     elif "risk_coverage:stale" in observation.source_errors:
         announcements = "stale"
     else:
@@ -400,138 +365,12 @@ def DeriveCorporateRiskFeatures(
     return values
 
 
-def CorporateRiskFactsFromAnnouncements(
-    announcements: tuple[ResearchAnnouncement, ...],
-) -> tuple[CorporateRiskFact, ...]:
-    """Accept official document conclusions, never a title alone or unrelated party."""
-
-    ordered = sorted(announcements, key=lambda item: (item.published_at, item.announcement_id, item.title))
-    known_ids = tuple(item.announcement_id for item in ordered if item.announcement_id)
-    facts: list[CorporateRiskFact] = []
-    for announcement in ordered:
-        normalized = "".join(announcement.title.split())
-        body = "".join(announcement.body.split())
-        if not AnnouncementRiskVerified(announcement, known_ids) or _negated_risk_title(normalized):
-            continue
-        # A bounded deterministic verifier intentionally abstains on ambiguous subjects.
-        own_subject = any(marker in body for marker in ("本公司", "公司收到", "控股股东", "实际控制人", "持股5%以上"))
-        authority = any(
-            marker in body for marker in ("中国证券监督管理", "证监会", "证券交易所", "人民法院", "减持计划")
-        )
-        if not own_subject or not authority:
-            continue
-        resolved_categories = _resolved_categories_for_title(normalized)
-        for category in _risk_categories_for_title(normalized):
-            if category in resolved_categories:
-                continue
-            facts.append(
-                CorporateRiskFact(
-                    category=category,
-                    announced_at=announcement.published_at,
-                    evidence_id=announcement.announcement_id
-                    or f"official:{category.value}:{announcement.published_at.isoformat()}",
-                    source=announcement.source,
-                    case_id=_case_ids(body)[0] if _case_ids(body) else "",
-                )
-            )
-        for category in resolved_categories:
-            if category not in _resolved_categories_for_title(body):
-                continue
-            # Only an explicit original disclosure ID closes a case. Same-category chronology is insufficient.
-            for index, fact in enumerate(facts):
-                if (
-                    fact.category is category
-                    and fact.resolved_at is None
-                    and (fact.evidence_id in body or fact.case_id and fact.case_id in _case_ids(body))
-                ):
-                    facts[index] = replace(fact, resolved_at=announcement.published_at)
-    return tuple(sorted(facts, key=lambda item: (item.category.value, item.announced_at, item.evidence_id)))
-
-
-def AnnouncementRiskVerified(announcement: ResearchAnnouncement, known_ids: tuple[str, ...] = ()) -> bool:
-    title = "".join(announcement.title.split())
-    categories = _risk_categories_for_title(title)
-    closures = _resolved_categories_for_title(title)
-    if not categories and not closures:
-        return not any(marker in title for marker in ("处罚", "处分", "造假", "违法", "立案", "退市"))
-    body = "".join(announcement.body.split())
-    if (
-        not announcement.body_checked
-        or not body
-        or _negated_risk_title(body)
-        or announcement.source
-        not in {"issuer_disclosure", "exchange_disclosure", "regulator_disclosure", "court_disclosure"}
+def _corporate_risk_is_active(fact: CorporateRiskFact, observed_at: datetime) -> bool:
+    if fact.announced_at > observed_at or (
+        not fact.persistent and fact.expires_at is None and fact.announced_at < observed_at - timedelta(days=365)
     ):
         return False
-    if any(marker in title for marker in ("董事", "监事", "高级管理", "子公司", "参股")) and "公司及" not in title:
-        return False
-    if not any(marker in body for marker in ("本公司", "公司收到", "控股股东", "实际控制人", "持股5%以上")):
-        return False
-    if not any(marker in body for marker in ("中国证券监督管理", "证监会", "证券交易所", "人民法院", "减持计划")):
-        return False
-    return (
-        all(item in _risk_categories_for_title(body) for item in categories)
-        and all(item in _resolved_categories_for_title(body) for item in closures)
-        and (not closures or bool(_case_ids(body)) or any(identity in body for identity in known_ids))
-    )
-
-
-def _case_ids(text: str) -> tuple[str, ...]:
-    return tuple(sorted(set(re.findall(r"(?:证监立案字|[〔（(【]\d{4}[〕）)】])[\w—\-]{1,30}号", text))))
-
-
-def _risk_categories_for_title(title: str) -> tuple[CorporateRiskCategory, ...]:
-    decision = any(marker in title for marker in ("行政处罚决定", "纪律处分决定", "处罚决定书", "判决书"))
-    categories: list[CorporateRiskCategory] = []
-    major_holder = any(marker in title for marker in ("控股股东", "实际控制人", "持股5%以上", "5%以上股东", "大股东"))
-    reduction_start = any(marker in title for marker in ("拟减持", "减持股份预披露", "减持股份的预披露")) or (
-        "减持计划" in title and not any(marker in title for marker in ("进展", "实施情况", "结果"))
-    )
-    if major_holder and reduction_start:
-        categories.append(CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION)
-    fraud = any(marker in title for marker in ("财务造假", "虚假记载", "虚增收入", "虚增利润", "重大遗漏"))
-    if decision and fraud:
-        categories.append(CorporateRiskCategory.FINANCIAL_FRAUD)
-    investigation_start = any(marker in title for marker in ("立案告知书", "收到立案", "决定立案", "被立案"))
-    if investigation_start:
-        categories.append(CorporateRiskCategory.OFFICIAL_INVESTIGATION)
-    if decision and "重大违法" in title:
-        categories.append(CorporateRiskCategory.MAJOR_ILLEGAL)
-    if decision and "资金占用" in title:
-        categories.append(CorporateRiskCategory.FUND_OCCUPATION)
-    if decision and any(marker in title for marker in ("违规担保", "违法担保")):
-        categories.append(CorporateRiskCategory.ILLEGAL_GUARANTEE)
-    if any(marker in title for marker in ("强制退市决定", "终止上市决定", "强制退市程序")):
-        categories.append(CorporateRiskCategory.FORCED_DELISTING)
-    return tuple(categories)
-
-
-def _resolved_categories_for_title(title: str) -> tuple[CorporateRiskCategory, ...]:
-    result: list[CorporateRiskCategory] = []
-    if any(marker in title for marker in ("减持完成", "减持结果", "减持期限届满", "终止减持", "提前终止减持")):
-        result.append(CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION)
-    if any(marker in title for marker in ("撤销立案", "终止调查", "调查终结", "不予处罚决定")):
-        result.append(CorporateRiskCategory.OFFICIAL_INVESTIGATION)
-    if any(marker in title for marker in ("撤回终止上市", "终止强制退市", "撤销退市决定")):
-        result.append(CorporateRiskCategory.FORCED_DELISTING)
-    return tuple(result)
-
-
-def _negated_risk_title(title: str) -> bool:
-    return any(
-        marker in title
-        for marker in (
-            "不存在财务造假",
-            "未被立案",
-            "不涉及立案",
-            "不存在资金占用",
-            "不存在违规担保",
-        )
-    )
-
-
-def _corporate_risk_is_active(fact: CorporateRiskFact, observed_at: datetime) -> bool:
-    if not observed_at - timedelta(days=365) <= fact.announced_at <= observed_at:
+    if fact.expires_at is not None and observed_at >= fact.expires_at:
         return False
     if fact.resolved_at is None:
         return True
@@ -621,10 +460,14 @@ def _event_features(
         reduction_level = None
         negative_level = None
     else:
-        negative_level = float(
-            max((_announcement_level(item.title, policy) for item in observation.announcements), default=0)
+        context = observation.company_context
+        events = context.facts.risk_events if context else ()
+        at = observation.loaded_at or observation.snapshot_at
+        active = tuple(event for event in events if at is not None and CompanyRiskActive(event, at))
+        negative_level = float(min(3, max((event.risk_level for event in active), default=0)))
+        reduction_level = (
+            3 if any(event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for event in active) else 0
         )
-        reduction_level = max((_reduction_level(item.title, policy) for item in observation.announcements), default=0)
     unlock_level = _severity(observation.unlock_ratio_pct, policy.unlock_thresholds)
     return {
         "negative_announcement_level": negative_level,
@@ -643,10 +486,7 @@ def _industry_policy_score(
 ) -> float | None:
     if not observation.announcements_available:
         return None
-    titles = tuple(item.title for item in observation.announcements)
-    positive_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_positive_keywords)
-    negative_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_negative_keywords)
-    evidence_score = Clamp(50.0 + policy.policy_keyword_score_step * (positive_hits - negative_hits))
+    evidence_score = 50.0
     industry_value = _finite_or_none(industry_strength)
     if industry_value is None:
         return None
@@ -665,51 +505,6 @@ def _protection_score(inputs: LongResearchInputs, weights: Mapping[str, float]) 
         {"low_volatility_score": volatility, "low_drawdown_score": drawdown},
         weights,
     )
-
-
-def AnnouncementLevel(title: str, policy: LongResearchPolicy) -> int:
-    return _announcement_level(title, policy)
-
-
-def ReductionLevel(title: str, policy: LongResearchPolicy) -> int:
-    return _reduction_level(title, policy)
-
-
-def _announcement_level(title: str, policy: LongResearchPolicy) -> int:
-    return _keyword_level(
-        title,
-        high=policy.negative_high_keywords,
-        medium=policy.negative_medium_keywords,
-        low=policy.negative_low_keywords,
-    )
-
-
-def _reduction_level(title: str, policy: LongResearchPolicy) -> int:
-    normalized = "".join(title.split())
-    if "终止" in normalized and any(marker in normalized for marker in ("未实施", "未减持", "尚未实施")):
-        return 0
-    return _keyword_level(
-        title,
-        high=policy.reduction_high_keywords,
-        medium=policy.reduction_medium_keywords,
-        low=policy.reduction_low_keywords,
-    )
-
-
-def _keyword_level(
-    title: str,
-    *,
-    high: tuple[str, ...],
-    medium: tuple[str, ...],
-    low: tuple[str, ...],
-) -> int:
-    if any(keyword in title for keyword in high):
-        return 3
-    if any(keyword in title for keyword in medium):
-        return 2
-    if any(keyword in title for keyword in low):
-        return 1
-    return 0
 
 
 def _severity(value: float | None, thresholds: tuple[float, float, float]) -> float | None:
@@ -753,10 +548,6 @@ def _strictly_increasing_nonnegative(values: tuple[float, float, float]) -> bool
     return 0.0 <= values[0] < values[1] < values[2]
 
 
-def _groups_overlap(groups: tuple[set[str], set[str], set[str]]) -> bool:
-    return bool((groups[0] & groups[1]) or (groups[0] & groups[2]) or (groups[1] & groups[2]))
-
-
 __all__ = [
     "CorporateRiskCategory",
     "CorporateRiskFact",
@@ -766,12 +557,8 @@ __all__ = [
     "LongResearchInputs",
     "ResearchAnnouncement",
     "ResearchObservation",
-    "AnnouncementLevel",
-    "AnnouncementRiskVerified",
-    "CorporateRiskFactsFromAnnouncements",
     "DeriveCorporateRiskFeatures",
     "DeriveLatestDisclosedReportLoss",
     "DeriveMarketRegime",
     "DeriveLongResearchFeatures",
-    "ReductionLevel",
 ]

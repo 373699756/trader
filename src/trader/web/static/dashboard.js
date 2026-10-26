@@ -157,6 +157,7 @@
     });
     els.observationStageList.addEventListener("click", toggleObservationStage);
     els.drawerClose.addEventListener("click", closeDrawer);
+    els.drawerContent.addEventListener("click", loadCompanyDocuments);
     els.drawerBackdrop.addEventListener("click", () => {
       closeDrawer();
       errorDrawer.close(false);
@@ -490,6 +491,7 @@
       review_outcome: item.review_outcome || null,
       research_coverage: item.research_coverage || null,
       scores: {
+        ledger: scores.ledger,
         candidate_score: scores.candidate,
         local_score: scores.local,
         deepseek_score: scores.deepseek,
@@ -687,6 +689,41 @@
     const item = selection.detailItem(payload, row.dataset.code);
     if (!item) return;
     showDetail(item, payload);
+  }
+
+  async function loadCompanyDocuments(event) {
+    const button = event.target.closest("[data-company-documents]");
+    if (!button || !state.selectedCode) return;
+    const code = state.selectedCode;
+    const query = new URLSearchParams(profileQuery());
+    for (const id of JSON.parse(button.dataset.companyDocuments)) query.append("evidence_id", id);
+    button.disabled = true;
+    const result = button.nextElementSibling;
+    result.textContent = "正在读取本地证据…";
+    try {
+      const response = await fetch(`/api/company/${encodeURIComponent(code)}/documents?${query}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("evidence_unavailable");
+      const payload = await response.json();
+      if (state.selectedCode !== code || !button.isConnected) return;
+      result.replaceChildren();
+      for (const document of payload.documents || []) {
+        const line = window.document.createElement("p");
+        const link = window.document.createElement("a");
+        link.textContent = document.title;
+        if (typeof document.url === "string" && /^https?:\/\//.test(document.url)) {
+          link.href = document.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+        }
+        line.append(link, ` · ${document.body_checked ? "正文已提取" : "正文待核实"}`);
+        result.append(line);
+      }
+      if (!result.childNodes.length) result.textContent = "本地证据当前不可用；评分仍沿用该记录保存的账本。";
+    } catch (_error) {
+      if (button.isConnected) result.textContent = "本地证据读取失败，可稍后重试。";
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
   }
 
   function showDetail(item, payload) {

@@ -8,6 +8,7 @@ import pytest
 
 from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
+from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -59,7 +60,8 @@ def test_recent_day_planning_never_duplicates_a_completed_wider_owner(tmp_path):
             c.run("SELECT count(*) FROM partitions WHERE start>=? AND end<=?", (str(start), str(end))).require_one()[0]
             == 1
         )
-    reopened = index.partitions(("sse",), NOW + timedelta(minutes=16))
+    assert not any(p.start == start and p.end == end for p in index.partitions(("sse",), NOW + timedelta(minutes=16)))
+    reopened = index.partitions(("sse",), NOW + timedelta(days=1))
     assert sum(p.start == start and p.end == end for p in reopened) == 1
 
 
@@ -94,7 +96,7 @@ def test_old_overlapping_parent_and_child_cursors_are_consumed_once(tmp_path):
     assert requests[(child.start, child.end, 2)] == 1
     assert not result.needs_retry
     assert not SQLiteCompanyEvidenceIndex(index.path).partitions(("sse",), NOW)
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
 
 
 def test_split_descendants_survive_restarts_and_old_month_audits(tmp_path):
@@ -121,7 +123,8 @@ def test_existing_page_one_precedes_new_calendar_day_and_rechecks(tmp_path):
             "UPDATE partitions SET complete=0 WHERE start=? AND end=?", (old.start.isoformat(), old.end.isoformat())
         )
     pending = index.partitions(("sse",), NOW + timedelta(days=1))
-    assert pending[0] == old
+    assert pending[0].end == NOW.date() + timedelta(days=1)
+    assert old in pending
     assert any(item.start == item.end == NOW.date() + timedelta(days=1) for item in pending)
 
 
@@ -153,7 +156,9 @@ def test_already_deferred_child_is_not_retried_when_parent_splits(tmp_path):
     requests = [p for p in source.calls if isinstance(p, DisclosurePartition) and p.start == p.end == NOW.date()]
     assert len(requests) == 1 and requests[0].page == 2
     assert result.pending_partitions == 1
-    assert not SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert (
+        SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is not CompanyDataState.COMPLETE
+    )
 
 
 def test_duplicate_multiday_page_splits_and_converges(tmp_path):
@@ -185,9 +190,9 @@ def test_partial_recheck_cannot_borrow_old_complete_coverage(tmp_path):
     index.commit_page(pending[0], DisclosurePage((fixtures._disclosure(when=later),), 2, True), later)
     index.publish(("600001",), later)
     snapshot = SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0]
-    assert not snapshot.announcement_complete
-    assert "announcements:pending" in snapshot.failures
-    assert snapshot.announcements  # Keep confirmed facts while exposing the coverage gap.
+    assert snapshot.announcement_state is not CompanyDataState.COMPLETE
+    assert any(item.scope == "risk" and item.reason_code == "pending" for item in snapshot.review_reasons)
+    assert snapshot.announcement_coverage_end == later.date()
 
 
 def test_oldest_calendar_day_risk_body_is_queued_and_published(tmp_path):
@@ -196,21 +201,21 @@ def test_oldest_calendar_day_risk_body_is_queued_and_published(tmp_path):
     deps = CompanyEvidenceDependencies(index, source, source, lambda: 0)
     oldest = min(index.partitions(("sse",), NOW), key=lambda p: p.start)
     fixtures._sync_company_evidence(deps, ("600001",), NOW)
-    risk = fixtures._disclosure(title="关于立案调查的公告", when=NOW - timedelta(days=365, hours=1))
+    risk = fixtures._disclosure(title="关于收到立案告知书的公告", when=NOW - timedelta(days=365, hours=1))
     index.commit_page(oldest, DisclosurePage((risk,), 1, False), NOW)
     assert index.pending_documents(("600001",), NOW) == (risk,)
 
     class Documents(fixtures.Sources):
         def document(self, item, **kwargs):
             assert item == risk
-            return "正文已核验"
+            return "本公司收到证监会立案告知书。"
 
     source = Documents()
     result = fixtures._sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW
     )
     assert result.pending_documents == 0 and not result.needs_retry
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
 
 
 @pytest.mark.parametrize("recovery", ["expiry", "digest", "configuration"])
@@ -219,7 +224,7 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     source = fixtures.Sources()
     fixtures._sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     day = DisclosurePartition("sse", NOW.date(), NOW.date())
-    item = fixtures._disclosure(title="关于立案调查的公告")
+    item = fixtures._disclosure(title="关于收到立案告知书的公告")
     index.commit_page(day, DisclosurePage((item,), 1, False), NOW)
 
     class Documents(fixtures.Sources):
@@ -230,7 +235,7 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
             self.attempts += 1
             if self.blocked:
                 raise ValueError("disclosure_document_oversized")
-            return "完整正文"
+            return "本公司收到证监会立案告知书。"
 
     source = Documents()
     events = []
@@ -243,7 +248,9 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     assert source.attempts == 1 and first.pending_documents == second.pending_documents == 1
     final_body = [event for event in events if event.component == "risk_documents"][-1]
     assert final_body.deferred_documents == 1 and final_body.attempted_documents == 0
-    assert not SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert (
+        SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is not CompanyDataState.COMPLETE
+    )
     now = NOW
     if recovery == "expiry":
         now += timedelta(seconds=10)
@@ -254,7 +261,7 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     source.blocked = False
     third = fixtures._sync_company_evidence(deps, ("600001",), now, configuration=configuration)
     assert source.attempts == 2 and not third.needs_retry
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
 
 
 def test_retry_schema_extension_preserves_old_cursors_and_publication(tmp_path):

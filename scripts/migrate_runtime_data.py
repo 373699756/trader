@@ -117,7 +117,7 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
         data, runtime = source / "data", source / ".runtime/trader"
         ImportSt(data / "reference/historical_st.json", paths.reference / "historical_st.sqlite3")
         MergeDatabase(data / "reference/industry_queries.sqlite3", paths.reference / "industry.sqlite3")
-        MergeDatabase(data / "risk/company_evidence.sqlite3", paths.company)
+        # Company facts require a fresh extraction; legacy evidence is never copied into the new contract.
         ImportEligibility(data / "reference", runtime / "issuer-eligibility.sqlite3", paths.eligibility)
         # All existing budget histories contribute. Duplicate request identities must agree.
         runtime_roots = (runtime, runtime / "profiles/v2", runtime / "profiles/v3")
@@ -157,7 +157,12 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
             if (runtime / name).exists()
         )
         manifest = MigrationManifest(
-            before, digest, count, size, ("market_history", "daily_window", "models", "training_samples"), cleanup
+            before,
+            digest,
+            count,
+            size,
+            ("market_history", "daily_window", "models", "training_samples", "company_facts"),
+            cleanup,
         )
         (staging / MANIFEST_NAME).write_text(json.dumps(ProjectManifest(manifest), sort_keys=True, indent=2) + "\n")
         inspect_layout(staging)

@@ -22,6 +22,13 @@ from trader.recommendation.application.ports.decision_records import (
 )
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmentItem, ScoreLedgerPayload
+from trader.recommendation.domain.scoring.company import (
+    BuildScoreLedger,
+    CompanyAdjustments,
+    CompanyScoringPolicy,
+    ScoreLedgerInput,
+)
 from trader.recommendation.infra.persistence import decision_records as decision_records_module
 from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
@@ -50,6 +57,48 @@ def test_eleven_stage_audit_restarts_and_has_identical_get_sse_projections(tmp_p
     event = SerializeEvent(UnifiedDecisionEventStream().publish_committed(BuildDecisionCommitted(restored.decision)))
     assert history["pipeline"] == event["pipeline"]
     assert len(history["pipeline"]["stage_snapshots"]) == 11
+
+
+def test_score_ledger_survives_freeze_reload_and_get_sse_without_changing_old_records(tmp_path):
+    class Clock:
+        def now(self):
+            return NOW
+
+    old = record()
+    old_bytes = CommittedRecordBytes(old)
+    ledger = BuildScoreLedger(
+        ScoreLedgerInput(
+            84,
+            CompanyAdjustments(
+                (ScoreAdjustmentItem("financial", "financial_bonus", "财务奖励", 0, 2, 0, "eligible"),),
+                (),
+                0,
+                NOW.date(),
+            ),
+            (),
+        ),
+        strategy="tomorrow",
+        policy=CompanyScoringPolicy(enabled=True),
+        risk_cap=25,
+    )
+    new = CommittedDecisionRecord(
+        replace(
+            old.decision,
+            items=(replace(old.decision.items[0], local_score=86.0, final_score=86.0, score_ledger=ledger),),
+        ),
+        NOW,
+        "scheduled",
+    )
+    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    records.initialize()
+    records.commit(new)
+    restored = records.load(Strategy.TOMORROW, NOW.date())
+    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), records, Clock())
+    get = SerializeDecisionView(queries.history(Strategy.TOMORROW, NOW.date()))
+    event = SerializeEvent(UnifiedDecisionEventStream().publish_committed(BuildDecisionCommitted(restored.decision)))
+    assert get["items"][0]["scores"]["ledger"] == event["upserts"][0]["scores"]["ledger"] == ScoreLedgerPayload(ledger)
+    assert CommittedRecordBytes(restored) == CommittedRecordBytes(new)
+    assert CommittedRecordBytes(old) == old_bytes and b'"score_ledger"' not in old_bytes
 
 
 def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_path: Path) -> None:

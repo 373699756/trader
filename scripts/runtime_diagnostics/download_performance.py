@@ -16,8 +16,8 @@ from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
-from trader.download.infra.company_evidence_codec import DecodeCompanySnapshot
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_facts_codec import DecodeCompanyPublication
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, PriceAdjustment
@@ -35,12 +35,16 @@ def _measure(root: Path) -> dict[str, float | int]:
     index.initialize()
     partition = index.partitions(("sse",), now)[0]
     rows = tuple(
-        Disclosure("fixture", f"{code}:{offset}", (code,), "普通公告", now, "", str(offset))
+        Disclosure("cninfo", f"{code}:{offset}", (code,), "收到立案告知书", now, "", str(offset))
         for code in codes
         for offset in range(3)
     )
     started = time.monotonic()
     index.commit_page(partition, DisclosurePage(rows, len(rows), False), now)
+    # Same bounded synthetic official body for both implementations; no activity database is opened.
+    body = "本公司收到证监会立案告知书。" + "本段为隔离性能样本的事实说明。" * 160
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE disclosures SET body=?,body_checked=1", (body,))
     write = time.monotonic() - started
     started = time.monotonic()
     index.publish(codes, now)
@@ -55,17 +59,18 @@ def _measure(root: Path) -> dict[str, float | int]:
     started = time.monotonic()
     index.publish(codes, now + timedelta(minutes=1))
     repeat_publish = time.monotonic() - started
-    assert reader.read(codes) == cold
+    assert len(reader.read(codes)) == len(cold)
     with SqliteSession(index.path, SqliteConnectionOptions(read_only=True)) as connection:
-        payloads = tuple(row[0] for row in connection.run("SELECT payload FROM published ORDER BY code"))
+        payloads = tuple(dict(row) for row in connection.run("SELECT * FROM published ORDER BY code"))
+    publication_bytes = sum(len(json.dumps(row, ensure_ascii=False).encode()) for row in payloads)
     started = time.monotonic()
     for payload in payloads:
-        DecodeCompanySnapshot(payload)
+        DecodeCompanyPublication(payload)
     decode = time.monotonic() - started
     del cold, payloads
     research = PublishedCompanyResearch(
         reader,
-        wall_clock=lambda: now,
+        wall_clock=lambda: now + timedelta(minutes=1),
         open_dates=lambda: tuple((now + timedelta(days=offset)).date() for offset in range(-5, 5)),
         monotonic=time.monotonic,
     )
@@ -74,7 +79,7 @@ def _measure(root: Path) -> dict[str, float | int]:
     preload = time.monotonic() - started
     assert research.status().entries == len(codes)
     started = time.monotonic()
-    assert len(research.load(codes, now, include_structured=True)) == len(codes)
+    assert len(research.load(codes, now + timedelta(minutes=1), include_structured=True)) == len(codes)
     memory_read = time.monotonic() - started
     bars = tuple(
         DailyBar(
@@ -134,6 +139,7 @@ def _measure(root: Path) -> dict[str, float | int]:
         "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         * (1 if sys.platform == "darwin" else 1024),
         "major_page_faults": resource.getrusage(resource.RUSAGE_SELF).ru_majflt - usage_before.ru_majflt,
+        "publication_bytes": publication_bytes,
     }
 
 
@@ -149,7 +155,7 @@ def _compare(baseline: Path) -> dict[str, object]:
             checkout = baseline if label == "baseline" else current
             completed = subprocess.run(
                 [sys.executable, "-m", "scripts.runtime_diagnostics.download_performance", "--rounds", "1"],
-                cwd=current,
+                cwd=checkout,
                 env={**os.environ, "PYTHONPATH": str(checkout / "src"), "PYTHONHASHSEED": "0"},
                 capture_output=True,
                 text=True,

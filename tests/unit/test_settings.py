@@ -41,6 +41,7 @@ _STRATEGY_FILES = {
     "selection.json": ("selection",),
     "filter.json": ("hard_filters",),
     "scoring.json": (
+        "company_scoring",
         "fusion",
         "board_local_strategy_weights",
         "local_component_weights",
@@ -1088,11 +1089,11 @@ def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None
         LoadStrategySettings(changed_path)
 
 
-def test_long_research_contract_is_required_and_hashes_keyword_changes(tmp_path) -> None:
+def test_long_research_contract_is_required_and_hashes_company_policy_changes(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     baseline = LoadStrategySettings(source)
     raw = _strategy_document()
-    raw["long_research"]["announcements"]["policy_positive_keywords"].append("设备更新")
+    raw["company_scoring"]["enabled"] = True
     changed_path = _write_strategy_config(tmp_path, raw)
 
     changed = LoadStrategySettings(changed_path)
@@ -1105,13 +1106,12 @@ def test_long_research_contract_is_required_and_hashes_keyword_changes(tmp_path)
         LoadStrategySettings(changed_path)
 
 
-def test_long_research_severity_keyword_levels_cannot_overlap(tmp_path) -> None:
+def test_company_financial_weights_must_sum_to_one(tmp_path) -> None:
     raw = _strategy_document()
-    duplicate = raw["long_research"]["announcements"]["negative_high_keywords"][0]
-    raw["long_research"]["announcements"]["negative_medium_keywords"].append(duplicate)
+    raw["company_scoring"]["financial_weights"] = [0.5, 0.4, 0.2]
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="severity keyword levels must not overlap"):
+    with pytest.raises(ValueError, match="company_financial_policy_invalid"):
         LoadStrategySettings(changed_path)
 
 

@@ -22,7 +22,7 @@ class DataPaths:
 
     @property
     def company(self) -> Path:
-        return self.root / "company/evidence.sqlite3"
+        return self.root / "company/company_facts.sqlite3"
 
     @property
     def eligibility(self) -> Path:

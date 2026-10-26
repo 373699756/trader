@@ -11,8 +11,12 @@ from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServic
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
+    DecisionQuerySources,
+    UnifiedDecisionQueries,
+)
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
     PipelineStageStatus,
@@ -109,6 +113,45 @@ def test_only_unified_product_routes_are_registered() -> None:
         "/api/v2/tomorrow/current",
     ):
         assert client.get(removed).status_code == 404
+
+
+def test_company_evidence_links_are_bounded_read_only_and_explicitly_projected():
+    calls = []
+
+    class Links:
+        def document_links(self, code, identities):
+            calls.append((code, identities))
+            return (
+                CompanyDocumentReference("notice", "正式公告", "https://example.test/notice.pdf", NOW, "extracted"),
+            )
+
+    queries = UnifiedDecisionQueries(
+        UnifiedDecisionIndex(),
+        UnifiedDecisionDraftIndex(),
+        _Repository(),
+        _Clock(),
+        sources=DecisionQuerySources(company_documents=Links()),
+    )
+    client = CreateApp(services=UnifiedWebServices(queries, UnifiedDecisionEventStream(), lambda: {})).test_client()
+    response = client.get("/api/company/600001/documents?evidence_id=notice&evidence_id=notice")
+    assert response.status_code == 200
+    assert calls == [("600001", ("notice",))]
+    assert response.get_json()["documents"] == [
+        {
+            "evidence_id": "notice",
+            "title": "正式公告",
+            "url": "https://example.test/notice.pdf",
+            "published_at": NOW.isoformat(),
+            "body_checked": True,
+        }
+    ]
+    for query in (
+        "/api/company/600001/documents",
+        "/api/company/invalid/documents?evidence_id=notice",
+        "/api/company/600001/documents?" + "&".join("evidence_id=" + str(i) for i in range(33)),
+    ):
+        assert client.get(query).status_code == 400
+    assert len(calls) == 1
 
 
 def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
