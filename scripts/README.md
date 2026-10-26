@@ -310,6 +310,17 @@ competing for the same disk.
 `configuration_same_filesystem`，不冒充自动检测。tmpfs/ramfs始终标记为内存文件系统，
 不能作为SSD/HDD性能证据。介质未知时保留unknown。
 
+`history-indexes`评估年库索引，必须指定新的仓库外`--database-probe-directory`。只读选择历史目录中最大的一个年度文件（最多2 GiB），通过公共SQLite封装备份一致副本；不要求已有正式发布，不把正在续传的数据视为已发布数据。只在副本删除日期板块索引，对真实adapter记录的查询执行计划、结果摘要、约每1000条VM指令计数和交替时延做比较，然后重建索引并核对月度逻辑证明。最多5000条最近有数据月份的实际行用于独立首次写入对照，延后创建一侧计入建索引和关闭/checkpoint成本；建空库、空索引删除及封存不计入写入时延。其余索引不变，不执行VACUUM，不自动采纳生产schema变更。
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile history-indexes \
+  --database-probe-directory /absolute/external/new-index-probe \
+  --sqlite-query-rounds 5 --sqlite-revision-write-sample-count 5000 \
+  --command-timeout-seconds 900 --output /absolute/external/index-report.json
+```
+
+先确认没有正在执行的sync/train；也可用`--history-root`指向已有仓库外一致副本，避免扫描活动源。默认3轮/512行，可设置1–9轮/1–5000行；每次备份最多60秒，SQL计量及DDL有60秒预算，整个子进程受统一超时及进程组回收约束。至少预留源文件4倍加256 MiB空间；默认临时副本正常退出即清理，强制中断可能留在指定目录。报告中的`passed`仅表示测量结果及恢复后的月度证明一致，不是性能收益通过；同进程/新连接、未控制OS缓存，SQL时延不包含完整解码、预读或训练编排。某索引在样本查询中未被选择也不构成删除依据；tmpfs结果只能辅助核对算法与查询计划，不是SSD/HDD吞吐证据。
+
 `--database-probe-directory`也适用于`history-write`、`history-sqlite`和`download-performance`，
 将子进程及其对照进程的临时数据库放在指定文件系统上；不提供该参数时沿用系统临时目录，
 其结果不能仅凭目录名认定为磁盘性能。活动数据目录和已存在的目标目录均被拒绝。
