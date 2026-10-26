@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import median
 from tempfile import TemporaryDirectory
-from typing import TypedDict, TypeVar, cast
+from typing import Literal, TypedDict, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 import trader
@@ -159,24 +159,31 @@ class _SyncFixture:
         def publish() -> CompanyEvidenceSyncResult:
             started = time.monotonic()
             index = SQLiteCompanyEvidenceIndex(self.paths.company)
-            self._measure("company_initialize", index.initialize)
-            partition = index.partitions(("sse",), _NOW)[0]
+            index.initialize()
             codes = tuple(item.code for item in reference.eligible_universe)
             rows = tuple(
                 Disclosure("fixture", f"{code}:{offset}", (code,), "普通公告", _NOW, "", str(offset))
                 for code in codes
                 for offset in range(3)
             )
-            changed = self._measure(
-                "company_page", lambda: index.commit_page(partition, DisclosurePage(rows, len(rows), False), _NOW)
-            )
-            published = self._measure("company_publish", lambda: index.publish(codes, _NOW))
+            partition = index.partitions(("sse",), _NOW)[0]
+            changed = 0
+            for offset in range(0, len(rows), 30):
+                page = DisclosurePage(rows[offset : offset + 30], len(rows), offset + 30 < len(rows))
+                changed += index.commit_page(partition, page, _NOW)
+                partition = replace(
+                    partition,
+                    page=partition.page + 1,
+                    expected_rows=len(rows),
+                    received_rows=partition.received_rows + len(page.rows),
+                )
+            published = index.publish(codes, _NOW)
             return CompanyEvidenceSyncResult(
-                _NOW, len(codes), published, 1, changed, 0, 0, (), time.monotonic() - started
+                _NOW, len(codes), published, (len(rows) + 29) // 30, changed, 0, 0, (), time.monotonic() - started
             )
 
-        # Page and publication measurements are separate scopes, not nested patches.
-        return publish()
+        # Include initialization, all page commits and close/checkpoint work in one scope.
+        return self._measure("company", publish)
 
     def execute(self, target: SyncTarget) -> dict[str, object]:
         self.phases.clear()
@@ -189,6 +196,11 @@ class _SyncFixture:
         return {
             "target": target,
             "wall_seconds": time.monotonic() - started,
+            "files_bytes": sum(
+                path.stat().st_size
+                for path in self.root.rglob("*")
+                if path.is_file() and (path.suffix == ".sqlite3" or path.name.endswith(("-wal", "-shm")))
+            ),
             "prepare_calls": self.preparations - before,
             "tasks": [item.task for item in result.tasks],
             "phases": dict(self.phases),
@@ -404,7 +416,14 @@ def _publication_facts(value: object, prefix: str = "") -> dict[str, object]:
     return facts
 
 
-def _compare(baseline: Path, size: int, sessions: int, rounds: int, storage_kind: StorageKind) -> dict[str, object]:
+def _compare(
+    baseline: Path,
+    size: int,
+    sessions: int,
+    rounds: int,
+    storage_kind: StorageKind,
+    focus: Literal["history", "market-company"] = "history",
+) -> dict[str, object]:
     baseline = baseline.resolve(strict=True)
     if baseline == PROJECT_ROOT or baseline.is_relative_to(PROJECT_ROOT) or not (baseline / "src/trader").is_dir():
         raise ValueError("database comparison requires an external product checkout")
@@ -436,10 +455,18 @@ def _compare(baseline: Path, size: int, sessions: int, rounds: int, storage_kind
         f"history.cases.{case}.database.wall_seconds"
         for case in ("initial", "next_day", "two_weeks", "same_day", "initial_resume")
     )
+    primary_groups = (
+        (history_walls,)
+        if focus == "history"
+        else tuple(
+            tuple(f"sync.targets.{target}.{phase}.wall_seconds" for phase in ("initial", "same_day"))
+            for target in ("market", "company")
+        )
+    )
     improved = [
         row["metric"]
         for row in comparisons
-        if row["metric"] in history_walls
+        if any(row["metric"] in group for group in primary_groups)
         and row["ratio"] is not None
         and row["ratio"] <= 0.9
         and row["improved_rounds"] >= 4
@@ -452,6 +479,7 @@ def _compare(baseline: Path, size: int, sessions: int, rounds: int, storage_kind
             for phase in ("initial", "same_day")
         )
         + tuple(f"sync.targets.{target}.startup.phases.startup_history.wall_seconds" for target in ("all", "history"))
+        + tuple(f"sync.targets.{target}.startup.phases.startup_company.wall_seconds" for target in ("all", "company"))
     )
     regressions = [key for key in regression_keys if new[key] > old[key] * 1.05]
     space_ok = all(new[key] <= old[key] * 1.05 for key in old if key.endswith(".files_bytes"))
@@ -469,12 +497,17 @@ def _compare(baseline: Path, size: int, sessions: int, rounds: int, storage_kind
         "comparison": comparisons,
         "publication_equal": True,
         "acceptance": {
-            "accepted": rounds >= 5 and bool(improved) and not regressions and space_ok and rss_ok,
-            "improved_history_cases": improved,
+            "accepted": rounds >= 5
+            and all(any(key in improved for key in group) for group in primary_groups)
+            and not regressions
+            and space_ok
+            and rss_ok,
+            "focus": focus,
+            "improved_cases": improved,
             "regressions": regressions,
             "database_size_within_5_percent": space_ok,
             "process_rss_within_2_gib": rss_ok,
-            "policy": "5 alternating pairs; history wall median improves at least 10% and wins 4/5; other wall medians regress at most 5%; file size +5% max; RSS <= 2 GiB",
+            "policy": "5 alternating pairs; each primary group has a wall median improvement of at least 10% with 4/5 wins; all wall medians regress at most 5%; file size +5% max; RSS <= 2 GiB",
         },
     }
 
@@ -487,6 +520,7 @@ def main() -> int:
     parser.add_argument("--storage-kind", choices=("ssd", "hdd", "unknown"), default="unknown")
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--baseline-checkout", type=Path)
+    parser.add_argument("--acceptance-focus", choices=("history", "market-company"), default="history")
     parser.add_argument("--expected-product-root", type=Path, default=PROJECT_ROOT)
     args = parser.parse_args()
     if not 1 <= args.size <= 32 or not 5 <= args.sessions <= 2000:
@@ -497,7 +531,9 @@ def main() -> int:
         emit_report(_worker(args.size, args.sessions, args.storage_kind))
         return 0
     if args.baseline_checkout is not None:
-        result = _compare(args.baseline_checkout, args.size, args.sessions, args.rounds, args.storage_kind)
+        result = _compare(
+            args.baseline_checkout, args.size, args.sessions, args.rounds, args.storage_kind, args.acceptance_focus
+        )
         acceptance = cast(dict[str, object], result["acceptance"])
         status = "passed" if acceptance["accepted"] else "degraded"
     else:
@@ -518,7 +554,7 @@ def main() -> int:
                 **result,
                 "cache_policy": "fresh worker and databases per round; operating-system cache is uncontrolled",
                 "measurement_policy": "scoped public SQLite wrapper instrumentation; statements count submitted run/run_many rows; successful BEGIN/COMMIT counts; WAL sampled every 50 ms; SQL time includes commit and fetch, excludes connection setup/PRAGMAs; RSS is process peak",
-                "scope": "SyncData orchestration, real persistence and startup input projections; synthetic prices and one company announcement page; no full service, models, PDF or supplier acceptance",
+                "scope": "SyncData orchestration, real persistence and startup input projections; synthetic prices and company announcements in 30-row pages; no full service, models, PDF or supplier acceptance",
             },
         }
     )

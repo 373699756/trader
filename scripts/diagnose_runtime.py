@@ -267,6 +267,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--database-rounds", type=int, choices=range(1, 6), default=5, help="database baseline repetitions"
     )
+    parser.add_argument("--database-acceptance-focus", choices=("history", "market-company"), default="history")
     parser.add_argument(
         "--format",
         choices=("auto", "json", "text"),
@@ -442,6 +443,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             if args.database_probe_directory is not None
             else None,
             database_rounds=args.database_rounds,
+            database_acceptance_focus=args.database_acceptance_focus,
             base_url=args.base_url,
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
             storage_paths=tuple(path.expanduser().resolve() for path in args.storage_path),
@@ -932,6 +934,11 @@ def build_commands(
                 str(options.history_days),
                 "--rounds",
                 str(options.database_rounds),
+            )
+            + (
+                ("--acceptance-focus", options.database_acceptance_focus)
+                if options.database_acceptance_focus != "history"
+                else ()
             )
             + (("--baseline-checkout", str(options.baseline_checkout)) if options.baseline_checkout else ()),
             common_timeout,

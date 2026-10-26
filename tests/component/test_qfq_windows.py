@@ -1504,7 +1504,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
         return SyncResult((SyncTaskResult("market", "pending" if market.needs_retry else "completed", market=market),))
 
     monkeypatch.setattr("trader.bootstrap.ExecuteSync", execute)
-    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeStorage", lambda runtime: None)
+    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeStorage", lambda runtime, **kwargs: runtime)
     config = PROJECT_ROOT / "config/runtime.json"
     assert cli.Main(["--config", str(config), "sync", "market"]) == exit_code
     captured = capsys.readouterr()

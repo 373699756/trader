@@ -133,17 +133,23 @@ def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tm
                 str(tmp_path / "baseline"),
                 "--database-rounds",
                 "5",
+                "--database-acceptance-focus",
+                "market-company",
             ]
         )
     )
     command = build_commands(options, python_executable=sys.executable)[0]
     assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path / "baseline"))
     assert command.argv[command.argv.index("--rounds") + 1] == "5"
+    assert command.argv[command.argv.index("--acceptance-focus") + 1] == "market-company"
     assert command.name == "database_baseline"
 
 
-@pytest.mark.parametrize("failure", (None, "rss", "identity"))
-def test_comparison_requires_equal_publications_and_every_round_within_memory_budget(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("focus", ("history", "market-company"))
+@pytest.mark.parametrize("failure", (None, "rss", "identity", "company_no_gain", "company_space", "company_startup"))
+def test_comparison_requires_equal_publications_and_every_round_within_memory_budget(
+    tmp_path, monkeypatch, failure, focus
+):
     baseline = tmp_path / "baseline"
     (baseline / "src/trader").mkdir(parents=True)
     candidate_round = 0
@@ -172,11 +178,25 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
             "sync": {
                 "targets": {
                     target: {
-                        "initial": {"wall_seconds": seconds},
-                        "same_day": {"wall_seconds": seconds},
+                        "initial": {
+                            "wall_seconds": 1.0 if target == "company" and failure == "company_no_gain" else seconds,
+                            "files_bytes": 2048
+                            if candidate and target == "company" and failure == "company_space"
+                            else 1024,
+                        },
+                        "same_day": {
+                            "wall_seconds": 1.0 if target == "company" and failure == "company_no_gain" else seconds
+                        },
                         "startup": {
                             "identities": {"history": identity},
-                            "phases": {"startup_history": {"wall_seconds": seconds}},
+                            "phases": {
+                                "startup_history": {"wall_seconds": seconds},
+                                "startup_company": {
+                                    "wall_seconds": 1.1
+                                    if candidate and target == "company" and failure == "company_startup"
+                                    else seconds
+                                },
+                            },
                         },
                     }
                     for target in ("all", "history", "market", "company")
@@ -187,11 +207,15 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
     monkeypatch.setattr("scripts.runtime_diagnostics.database_baseline._run_worker", worker)
     if failure == "identity":
         with pytest.raises(RuntimeError, match="publication_changed"):
-            _compare(baseline, 2, 61, 5, "unknown")
+            _compare(baseline, 2, 61, 5, "unknown", focus)
     else:
-        report = _compare(baseline, 2, 61, 5, "unknown")
-        assert report["acceptance"]["accepted"] is (failure is None)
-        assert report["acceptance"]["process_rss_within_2_gib"] is (failure is None)
+        report = _compare(baseline, 2, 61, 5, "unknown", focus)
+        assert report["acceptance"]["accepted"] is (
+            failure not in {"rss", "company_space", "company_startup"}
+            and not (focus == "market-company" and failure == "company_no_gain")
+        )
+        assert report["acceptance"]["database_size_within_5_percent"] is (failure != "company_space")
+        assert report["acceptance"]["process_rss_within_2_gib"] is (failure != "rss")
         assert calls == [
             "baseline",
             "candidate",
@@ -232,10 +256,15 @@ def test_real_sync_adapters_preserve_joint_single_restart_and_memory_reads(tmp_p
     targets = result["targets"]
     for target in ("all", "history", "market", "company"):
         data = targets[target]
+        assert data["initial"]["files_bytes"] > 0
+        assert data["same_day"]["files_bytes"] > 0
         assert data["initial"]["prepare_calls"] == data["same_day"]["prepare_calls"] == 1
         assert data["startup"]["identities"] == data["restarted"]["identities"]
         assert not any(name.startswith("startup") for name in data["same_day"]["phases"])
         assert data["startup"]["phases"]["loaded_memory_reads"]["connections"] == 0
         assert data["startup"]["history_available"] is (target in {"all", "history"})
+        if target in {"all", "company"}:
+            company = data["initial"]["phases"]["company"]
+            assert company["connections"] > 0 and company["commits"] > 0
     assert targets["all"]["startup"]["history_scan_count"] == 1
     assert targets["all"]["startup"]["profile_entries"] == [2, 2, 2, 2]

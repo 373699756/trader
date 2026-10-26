@@ -303,7 +303,7 @@ competing for the same disk.
 进程物理读写、50ms采样WAL峰值和进程峰值RSS，保留每轮值及中位数。SQL时间包含取行和提交，
 不包含打开连接时的内部PRAGMA；采样WAL可能漏掉短峰值，操作系统缓存未清空。
 
-这是合成价格、单页公司公告和真实持久化/启动投影的fixture，不包含供应商HTTP、PDF、模型或
+这是合成价格、每股3条且每页30条公司公告和真实持久化/启动投影的fixture，不包含供应商HTTP、PDF、模型或
 完整服务启动，不能据此声称生产全市场提速。`--download-sizes`在本profile限一个1–32的数量，
 默认8；日期数5–2000，轮数1–5，默认5。显式目录模式当前限POSIX，超时清理整个子进程组。
 报告同时给出文件系统、介质与识别来源；同文件系统的唯一手动配置标记为
@@ -322,6 +322,12 @@ competing for the same disk.
 数据库大小增幅不超过5%、RSS不超过2 GiB才标记`acceptance.accepted=true`，否则报告degraded。
 SQL次数减少本身不能替代整轮收益；保持单独指标，不能相加解释为墙钟。可按负载显式提高
 `--command-timeout-seconds`，例如1800秒；小于5组只作诊断，不能通过收益门。
+
+market/company候选加`--database-acceptance-focus market-company`，两项目标各自至少一个首次/同日
+场景达到10%和4/5胜出，其它耗时、空间和内存门保持；同时核对公司启动预读回退。
+例如使用`--download-sizes 32 --history-days 251 --database-rounds 5`覆盖多页公告与短窗。
+公司计量覆盖初始化、多页提交、发布及最终连接关闭/checkpoint；不把延后写盘漏出计量范围。
+每个联合/独立任务收尾统计SQLite及其WAL/SHM字节，和历史五场景一起执行空间门。
 
 Compare the annual layout with an isolated checkout of the pre-migration monthly
 layout (for example, commit `c235ffa3` extracted outside this repository):

@@ -118,6 +118,7 @@ class DiagnosticOptions:
     performance_replay_rows: int | None = None
     database_probe_directory: Path | None = None
     database_rounds: int = 5
+    database_acceptance_focus: Literal["history", "market-company"] = "history"
 
 
 @dataclass(frozen=True)
