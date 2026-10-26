@@ -21,7 +21,7 @@ from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 from zoneinfo import ZoneInfo
 
 
@@ -441,7 +441,11 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
         return connection
 
     sqlite_connection.OpenSqliteConnection = observed_open
-    from scripts.runtime_diagnostics.history_write_benchmark import _FixtureSupplier
+    if TYPE_CHECKING or layout == "annual":
+        from scripts.runtime_diagnostics.history_write_benchmark import HistoryFixtureSupplier as SupplierBase
+    else:
+        # This worker imports the retired checkout's fixture, whose API is unchanged there.
+        from scripts.runtime_diagnostics.history_write_benchmark import _FixtureSupplier as SupplierBase
     from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
     from trader.download.infra.history_control_index import HistoryControlIndex
     from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
@@ -453,7 +457,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
     codes = tuple(f"{('600', '000', '300', '688')[index % 4]}{index // 4:03d}" for index in range(size))
     days = tuple(date(2018 + month // 12, month % 12 + 1, day) for month in range(100) for day in range(1, 21))
 
-    class Supplier(_FixtureSupplier):
+    class Supplier(SupplierBase):
         def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
             context = super().load_context(as_of, sessions)
             universe = tuple(

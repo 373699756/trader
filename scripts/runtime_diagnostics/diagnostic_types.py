@@ -38,6 +38,7 @@ Profile = Literal[
     "research-source-compare",
     "history-write",
     "download-performance",
+    "database-baseline",
     "company-resume",
     "history-space",
     "history-industry",
@@ -115,6 +116,8 @@ class DiagnosticOptions:
     v5_sample_root: Path | None = None
     performance_replay_ticks: int = 0
     performance_replay_rows: int | None = None
+    database_probe_directory: Path | None = None
+    database_rounds: int = 5
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,8 @@ class DiagnosticCommand:
     name: str
     argv: tuple[str, ...]
     timeout_seconds: float
+    database_probe_directory: Path | None = None
+    runtime_config: Path | None = None
 
 
 @dataclass(frozen=True)

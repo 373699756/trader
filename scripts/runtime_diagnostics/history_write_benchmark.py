@@ -45,12 +45,14 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 from trader.infra.storage_probe import StorageProbe
+from trader.infra.storage_types import StorageKind
 
+from .database_measurement import DatabaseMeasurement
 from .reporting import emit_report
 
 
 @dataclass
-class _FixtureSupplier:
+class HistoryFixtureSupplier:
     days: tuple[date, ...]
     size: int
     requests: list[int] = field(default_factory=list)
@@ -128,6 +130,8 @@ class _StageTimes:
         if self.pipeline is not None:
             result["writer_cumulative"] = round(self.pipeline.write_seconds, 3)
             result["supplier_attempts_cumulative"] = round(self.pipeline.download_seconds, 3)
+            result["resume_reads_cumulative"] = round(self.pipeline.read_seconds, 3)
+            result["validation_cumulative"] = round(self.pipeline.validation_seconds, 3)
         return result
 
 
@@ -145,21 +149,23 @@ def _clock(observed: datetime) -> Callable[[], datetime]:
 def _measure_case(
     name: str,
     config: HistorySyncConfiguration,
-    supplier: _FixtureSupplier,
+    supplier: HistoryFixtureSupplier,
     tuning: HistoryWriteTuning | None,
+    storage_kind: StorageKind | None,
 ) -> dict[str, object]:
     supplier.requests.clear()
     now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
     started, written = time.monotonic(), _write_bytes()
     stage_times = _StageTimes()
-    result = RunHistorySync(
-        config,
-        supplier,
-        clock=_clock(now),
-        write_tuning=tuning,
-        progress=stage_times,
-        storage_kind=StorageProbe().inspect(config.archive_root).kind,
-    )
+    with DatabaseMeasurement(config.archive_root) as measurement:
+        result = RunHistorySync(
+            config,
+            supplier,
+            clock=_clock(now),
+            write_tuning=tuning,
+            progress=stage_times,
+            storage_kind=storage_kind or StorageProbe().inspect(config.archive_root).kind,
+        )
     rows = 0
     for path in config.archive_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
         with (
@@ -179,12 +185,15 @@ def _measure_case(
         "gaps": result.unresolved_price_cells,
         "files_bytes": sum(path.stat().st_size for path in config.archive_root.rglob("*") if path.is_file()),
         "phase_seconds": stage_times.summary(),
+        "database": measurement.result,
     }
 
 
-def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) -> dict[str, object]:
+def MeasureHistoryWrites(
+    size: int, sessions: int, tuning: HistoryWriteTuning | None = None, *, storage_kind: StorageKind | None = None
+) -> dict[str, object]:
     days = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(sessions))
-    supplier = _FixtureSupplier(days, size)
+    supplier = HistoryFixtureSupplier(days, size)
     results = []
     with TemporaryDirectory(prefix="trader-history-write-") as scratch:
         root = Path(scratch) / "history"
@@ -199,7 +208,7 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
         for name, added in (("initial", 0), ("next_day", 1), ("two_weeks", 10), ("same_day", 0)):
             if added:
                 supplier.days += tuple(supplier.days[-1] + timedelta(days=i + 1) for i in range(added))
-            results.append(_measure_case(name, config, supplier, tuning))
+            results.append(_measure_case(name, config, supplier, tuning, storage_kind))
         # Seed committed annual rows without publishing the first snapshot.
         # The measured restart includes disjoint stocks, unlike an empty-file write probe.
         resume_config = replace(config, archive_root=Path(scratch) / "resume")
@@ -212,12 +221,12 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
             cancel_requested=lambda: interrupted.cancelled,
             write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions),
             progress=interrupted,
-            storage_kind=StorageProbe().inspect(resume_config.archive_root).kind,
+            storage_kind=storage_kind or StorageProbe().inspect(resume_config.archive_root).kind,
         )
         if seeded.state != "cancelled":
             raise RuntimeError("history_write_resume_seed_failed")
-        results.append(_measure_case("initial_resume", resume_config, supplier, tuning))
-        storage_kind = StorageProbe().inspect(root).kind
+        results.append(_measure_case("initial_resume", resume_config, supplier, tuning, storage_kind))
+        storage_kind = storage_kind or StorageProbe().inspect(root).kind
     return {
         "schema_version": "history-write-benchmark",
         "status": "passed"
@@ -245,6 +254,7 @@ def main() -> int:
     parser.add_argument("--sessions", type=int, default=2000)
     parser.add_argument("--flush-codes", type=int)
     parser.add_argument("--flush-cells", type=int)
+    parser.add_argument("--storage-kind", choices=("ssd", "hdd", "unknown"), default=None)
     args = parser.parse_args()
     if args.baseline_checkout is not None:
         from .storage_layout_comparison import CompareLayouts
@@ -261,7 +271,7 @@ def main() -> int:
     if args.flush_codes is not None and (not 1 <= args.flush_codes <= 64 or not 1 <= args.flush_cells <= 32768):
         parser.error("flush thresholds must fit the bounded pipeline")
     tuning = HistoryWriteTuning(args.flush_codes, args.flush_cells) if args.flush_codes is not None else None
-    report = measure(args.size, args.sessions, tuning)
+    report = MeasureHistoryWrites(args.size, args.sessions, tuning, storage_kind=args.storage_kind)
     emit_report(report)
     return int(report["status"] != "passed")
 

@@ -20,6 +20,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.runtime_diagnostics.database_workspace import (  # noqa: E402
+    DatabaseWorkerEnvironment,
+    PrepareDatabaseProbeDirectory,
+    ProjectDatabaseProbeLocation,
+    RunDatabaseProbe,
+)
 from scripts.runtime_diagnostics.diagnostic_types import (  # noqa: E402
     CheckStatus,
     DiagnosticCommand,
@@ -67,6 +73,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "research-source-compare": ("research_source_compare",),
     "history-write": ("history_write_benchmark",),
     "download-performance": ("download_performance",),
+    "database-baseline": ("database_baseline",),
     "company-resume": ("company_resume",),
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
@@ -256,6 +263,10 @@ def _parser() -> argparse.ArgumentParser:
         "--v5-kernel-probe", action="store_true", help="synthetic CPU kernel comparison; no history reads"
     )
     parser.add_argument("--training-probe-directory", type=Path, help="new external directory for all-profile training")
+    parser.add_argument("--database-probe-directory", type=Path, help="new external directory for SQLite benchmarks")
+    parser.add_argument(
+        "--database-rounds", type=int, choices=range(1, 6), default=5, help="database baseline repetitions"
+    )
     parser.add_argument(
         "--format",
         choices=("auto", "json", "text"),
@@ -304,6 +315,23 @@ def _scoring_profile_selection(value: str) -> ScoringProfileSelection:
 
 
 def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
+    if args.profile == "database-baseline" and args.download_sizes == (10, 50, 100):
+        args.download_sizes = (8,)
+    if args.database_probe_directory is not None and not args.database_probe_directory.expanduser().is_absolute():
+        raise ValueError("--database-probe-directory must be absolute")
+    if args.database_probe_directory is not None and args.profile not in {
+        "database-baseline",
+        "history-write",
+        "history-sqlite",
+        "download-performance",
+    }:
+        raise ValueError("--database-probe-directory requires a database performance profile")
+    if args.profile == "database-baseline" and args.database_probe_directory is None:
+        raise ValueError("database-baseline requires --database-probe-directory")
+    if args.profile == "database-baseline" and not 5 <= args.history_days <= 2000:
+        raise ValueError("database-baseline requires 5..2000 history days")
+    if args.profile == "database-baseline" and (len(args.download_sizes) != 1 or not 1 <= args.download_sizes[0] <= 32):
+        raise ValueError("database-baseline requires one download size in 1..32")
     if args.performance_replay_rows is not None and (
         args.performance_replay_rows < 1 or not args.performance_replay_ticks
     ):
@@ -404,6 +432,10 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             training_signal_date=args.training_signal_date,
             training_profiles=args.training_profiles,
             profile=args.profile,
+            database_probe_directory=_external_path(args.database_probe_directory, "--database-probe-directory")
+            if args.database_probe_directory is not None
+            else None,
+            database_rounds=args.database_rounds,
             base_url=args.base_url,
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
             storage_paths=tuple(path.expanduser().resolve() for path in args.storage_path),
@@ -882,6 +914,21 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "database_baseline": DiagnosticCommand(
+            "database_baseline",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.database_baseline",
+                "--size",
+                str(options.download_sizes[0]),
+                "--sessions",
+                str(options.history_days),
+                "--rounds",
+                str(options.database_rounds),
+            ),
+            common_timeout,
+        ),
         "company_resume": DiagnosticCommand(
             "company_resume",
             (
@@ -1018,6 +1065,15 @@ def build_commands(
                 else command.argv[:-1] + arguments + command.argv[-1:]
             )
             selected.append(replace(command, name=f"{name}:{scoring_profile}", argv=argv))
+    if options.database_probe_directory is not None:
+        selected = [
+            replace(
+                command,
+                database_probe_directory=options.database_probe_directory,
+                runtime_config=options.runtime_config,
+            )
+            for command in selected
+        ]
     return tuple(selected)
 
 
@@ -1045,27 +1101,44 @@ def _history_command(options: DiagnosticOptions, python_executable: str) -> tupl
 
 def execute_command(command: DiagnosticCommand) -> DiagnosticResult:
     started = time.monotonic()
+    location = None
     try:
-        completed = subprocess.run(
-            command.argv,
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=command.timeout_seconds,
-        )
+        argv = command.argv
+        if command.database_probe_directory is not None:
+            if command.runtime_config is None:
+                raise ValueError("database probe requires runtime configuration")
+            location = PrepareDatabaseProbeDirectory(command.database_probe_directory, command.runtime_config)
+            environment = DatabaseWorkerEnvironment(location.directory)
+            if command.name in {"history_write_benchmark", "database_baseline"}:
+                argv += ("--storage-kind", location.storage_kind)
+            completed = RunDatabaseProbe(argv, timeout=command.timeout_seconds, environment=environment)
+        else:
+            completed = subprocess.run(
+                argv,
+                cwd=PROJECT_ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=command.timeout_seconds,
+            )
     except subprocess.TimeoutExpired:
         return DiagnosticResult(command.name, 124, _elapsed_ms(started), None, "command_timeout")
     except OSError:
         return DiagnosticResult(command.name, 126, _elapsed_ms(started), None, "command_launch_failed")
     except UnicodeError:
         return DiagnosticResult(command.name, 1, _elapsed_ms(started), None, "invalid_output_encoding")
+    except ValueError:
+        return DiagnosticResult(command.name, 2, _elapsed_ms(started), None, "database_probe_directory_invalid")
     try:
         decoded = json.loads(completed.stdout)
     except (UnicodeError, json.JSONDecodeError):
         return DiagnosticResult(command.name, completed.returncode, _elapsed_ms(started), None, "invalid_json")
     if not isinstance(decoded, dict) or any(not isinstance(key, str) for key in decoded):
         return DiagnosticResult(command.name, completed.returncode, _elapsed_ms(started), None, "invalid_json_root")
+    if location is not None:
+        summary = dict(_mapping(decoded.get("summary")))
+        summary["database_workspace"] = ProjectDatabaseProbeLocation(location)
+        decoded["summary"] = summary
     return DiagnosticResult(command.name, completed.returncode, _elapsed_ms(started), decoded, None)
 
 
@@ -1636,6 +1709,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "research_source_compare": _research_source_compare_details,
     "history_write_benchmark": _history_sqlite_performance_details,
     "download_performance": _history_sqlite_performance_details,
+    "database_baseline": _history_sqlite_performance_details,
     "company_resume": _company_resume_details,
     "history_space": _history_sqlite_performance_details,
     "history_industry": _history_sqlite_performance_details,

@@ -286,6 +286,34 @@ writer time. This is an offline synthetic workload; it does not modify active da
 or establish full-market download speed. Run comparisons sequentially to avoid
 competing for the same disk.
 
+数据库下载与启动基线使用显式、尚不存在的仓库外目录：
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile database-baseline \
+  --database-probe-directory /absolute/external/database-probe \
+  --download-sizes 8 --history-days 2000 --database-rounds 5 \
+  --command-timeout-seconds 900 --output /absolute/external/database-baseline.json
+```
+
+每轮使用新进程和空数据库，顺序运行历史首建、次日、隔周、同日重跑与首次续传，
+以及联合下载、三个独立下载、启动预读和重启。联合准备只调用一次；独立任务不得生成
+其它任务的数据，联合/独立及同日重跑的发布身份必须一致。四档历史预读共用一次主扫描，
+加载完成后的重复取数验证为零连接、零SQL；仅有market或company时不报告history已就绪。
+测量复用现有SQLite封装，记录连接、提交的语句/批量行数、成功BEGIN/COMMIT、调用与提交耗时、
+进程物理读写、50ms采样WAL峰值和进程峰值RSS，保留每轮值及中位数。SQL时间包含取行和提交，
+不包含打开连接时的内部PRAGMA；采样WAL可能漏掉短峰值，操作系统缓存未清空。
+
+这是合成价格、单页公司公告和真实持久化/启动投影的fixture，不包含供应商HTTP、PDF、模型或
+完整服务启动，不能据此声称生产全市场提速。`--download-sizes`在本profile限一个1–32的数量，
+默认8；日期数5–2000，轮数1–5，默认5。显式目录模式当前限POSIX，超时清理整个子进程组。
+报告同时给出文件系统、介质与识别来源；同文件系统的唯一手动配置标记为
+`configuration_same_filesystem`，不冒充自动检测。tmpfs/ramfs始终标记为内存文件系统，
+不能作为SSD/HDD性能证据。介质未知时保留unknown。
+
+`--database-probe-directory`也适用于`history-write`、`history-sqlite`和`download-performance`，
+将子进程及其对照进程的临时数据库放在指定文件系统上；不提供该参数时沿用系统临时目录，
+其结果不能仅凭目录名认定为磁盘性能。活动数据目录和已存在的目标目录均被拒绝。
+
 Compare the annual layout with an isolated checkout of the pre-migration monthly
 layout (for example, commit `c235ffa3` extracted outside this repository):
 
