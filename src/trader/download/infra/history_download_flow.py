@@ -194,6 +194,27 @@ class HistoryDownloadFlow:
         self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
         self._emit(HistorySyncProgress("tencent_history", "started", completed, len(tasks)))
         _TencentPipeline(self, jobs, completed, len(tasks)).run()
+        self._report_tencent_summary(len(tasks))
+        all_gaps = resources.index.gaps_by_code()
+        retryable_gaps = resources.index.gaps_by_code(resources.context.calendar.open_dates)
+        retry_jobs: deque[HistoryDownloadTask] = deque()
+        for task in resources.index.tasks():
+            if task.failure is None:
+                continue
+            allowed = frozenset(retryable_gaps.get(task.code, ()))
+            if not any(day in allowed for day in task.dates):
+                continue
+            deferred = frozenset(all_gaps.get(task.code, ())) - allowed
+            retry_jobs.append(replace(task, dates=tuple(day for day in task.dates if day not in deferred)))
+        if retry_jobs:
+            self._check()
+            resources.prices.prepare_retry_pass()
+            self._emit(HistorySyncProgress("tencent_history", "retrying", len(tasks) - len(retry_jobs), len(tasks)))
+            _TencentPipeline(self, retry_jobs, len(tasks) - len(retry_jobs), len(tasks)).run()
+            self._report_tencent_summary(len(tasks))
+
+    def _report_tencent_summary(self, total: int) -> None:
+        resources = self._resources
         finished = resources.index.tasks()
         gap_codes = resources.index.gap_codes()
         failed = sum(task.failure is not None for task in finished)
@@ -208,11 +229,11 @@ class HistoryDownloadFlow:
             HistorySyncProgress(
                 "tencent_history",
                 "completed",
-                len(tasks),
-                len(tasks),
+                total,
+                total,
                 tencent_summary=HistoryTencentSummary(
-                    len(tasks),
-                    len(tasks) - failed - partial,
+                    total,
+                    total - failed - partial,
                     failed,
                     conflicts,
                     partial,

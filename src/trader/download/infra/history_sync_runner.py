@@ -282,8 +282,8 @@ class _HistorySync:
             raise KeyboardInterrupt
         partitions = prices.publishable_partitions(
             inputs.calendar.open_dates,
-            lambda done, total, month: _publish_progress(
-                self.progress, "sealing_partitions", "waiting", (done, total), month
+            lambda state, done, total, month: _publish_progress(
+                self.progress, "sealing_partitions", state, (done, total), month
             ),
         )
         calendar, batch = inputs.calendar, inputs.batch

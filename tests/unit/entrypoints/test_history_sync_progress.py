@@ -200,14 +200,15 @@ def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
     )
 
 
-def test_partition_sealing_prints_the_first_month_before_long_local_work(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0))
+def test_partition_sealing_prints_only_completed_month_with_elapsed_time(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0, 106.0))
 
     progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 100, current_item="2018-07"))
+    progress.publish(HistorySyncProgress("sealing_partitions", "completed", 1, 100, current_item="2018-07"))
 
     assert (
         _compact_log(capsys.readouterr().err)
-        == "00:00:01 | 发布内容校验 | 开始 | 0/100 (0.00%) | 月份 2018-07 | 本月耗时 00:00:00\n"
+        == "00:00:06 | 发布内容校验 | 完成 | 1/100 (1.00%) | 月份 2018-07 | 本月耗时 00:00:05\n"
     )
 
 

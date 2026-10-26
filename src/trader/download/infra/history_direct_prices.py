@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from threading import get_ident
+from typing import Literal
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
@@ -88,10 +89,19 @@ class HistoryDirectPrices:
         return tuple(sorted(cells, key=lambda cell: cell.trade_date))
 
     def read_for_download(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
-        # Each code is dispatched once. A fresh batch has no previous observations;
-        # recovery reads only after all Tencent writes have been acknowledged.
+        # A retry reads its first durable observation, including explicit missing cells.
+        if code in self._written_codes:
+            return self.read(code, dates)
+        # A fresh batch has no previous observations; recovery reads only after
+        # all Tencent writes have been acknowledged.
         readable = tuple(day for day in dates if (day.year, day.month) in self._download_months)
         return () if self._fresh else self.read(code, readable)
+
+    def prepare_retry_pass(self) -> None:
+        """Allow an unpublished first-pass observation to gain verified facts."""
+        if self._write_sessions or self._write_thread is not None:
+            raise RuntimeError("history_month_writer_still_open")
+        self._fresh = False
 
     def cancel_pending(self) -> None:
         self._activity.cancel()
@@ -239,13 +249,13 @@ class HistoryDirectPrices:
     def publishable_partitions(
         self,
         dates: tuple[date, ...],
-        progress: Callable[[int, int, str], None],
+        progress: Callable[[Literal["started", "completed"], int, int, str], None],
     ) -> tuple[HistorySnapshotPartition, ...]:
         months = set(self._previous) | {(day.year, day.month) for day in dates}
         references = []
         for index, (year, month) in enumerate(sorted(months), 1):
             self._activity.tick()
-            progress(index - 1, len(months), f"{year:04d}-{month:02d}")
+            progress("started", index - 1, len(months), f"{year:04d}-{month:02d}")
             target = self._month(year, month)
             # Resume detects changes from persisted observation sequences, not an in-memory flag.
             if not (self._root / f"prices_{year:04d}.sqlite3").exists():
@@ -256,7 +266,7 @@ class HistoryDirectPrices:
                 references.append(self._previous[(year, month)])
             else:
                 references.append(target.seal(self._sequence))
-            progress(index, len(months), f"{year:04d}-{month:02d}")
+            progress("completed", index, len(months), f"{year:04d}-{month:02d}")
         return tuple(references)
 
 

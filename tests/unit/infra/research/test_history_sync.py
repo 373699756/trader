@@ -316,7 +316,7 @@ def test_partial_tencent_pairs_are_committed_without_baostock(tmp_path):
     result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 2
-    assert supplier.events == ["tencent", "tencent"]
+    assert supplier.events == ["tencent"] * 4
     rows = HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))
     assert len(rows) == 2 and all(row.cell.status == "qfq_missing" and row.cell.qfq is None for row in rows)
 

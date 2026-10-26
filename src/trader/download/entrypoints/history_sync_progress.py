@@ -211,7 +211,10 @@ class StderrHistorySyncProgress:
         now = self._monotonic()
         monthly = progress.stage in {"persisting_partitions", "sealing_partitions", "history_active_gaps"}
         phase_key = (progress.stage, progress.current_item if monthly else None)
-        self._phase_started.setdefault(phase_key, now)
+        if progress.stage == "sealing_partitions" and progress.state == "started":
+            self._phase_started[phase_key] = now
+        else:
+            self._phase_started.setdefault(phase_key, now)
         if progress.stage == "supplier_routing":
             self._route = progress
         if progress.stage in {"downloading_codes", "tencent_history"}:
@@ -325,6 +328,8 @@ class StderrHistorySyncProgress:
             self._specific_failure = self._last_progress
 
     def _should_suppress(self, progress: HistorySyncProgress, now: float) -> bool:
+        if progress.stage == "sealing_partitions" and progress.state == "started":
+            return True
         if progress.stage == "supplier_routing":
             return True
         if progress.stage == "persisting_partitions" and progress.state == "waiting":

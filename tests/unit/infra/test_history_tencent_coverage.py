@@ -1,5 +1,7 @@
 """Published history and short-window feedback must reflect actual supplier coverage."""
 
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime
 
@@ -11,6 +13,7 @@ from tests.unit.infra.research.test_history_sync import NOW, ProgressRecorder
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _at, _current_universe, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import history_sync_runner
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -18,6 +21,112 @@ from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import RunHistorySync
+
+
+@pytest.mark.parametrize("recovers", (False, True))
+def test_history_retries_failed_stock_once_after_first_summary(tmp_path, capsys, recovers):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class FailedOnce(Prices):
+        def __init__(self):
+            super().__init__()
+            self.attempted_codes = []
+
+        def fetch_window(self, security, dates, **kwargs):
+            self.attempted_codes.append(security.code)
+            if security.code == "600001" and (not recovers or self.attempted_codes.count(security.code) == 1):
+                raise HistorySupplierPendingError(PublishedHistoryWindow(security.code, ()))
+            return super().fetch_window(security, dates, **kwargs)
+
+    prices = FailedOnce()
+    config = HistorySyncConfiguration(
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
+    )
+    with ThreadPoolExecutor(max_workers=2) as workers, ThreadPoolExecutor(max_workers=1) as writer:
+        result = RunHistorySync(
+            config,
+            _router(Baseline(days), prices, _current_universe("600001", "600002")),
+            clock=lambda: _at(days[-1]),
+            progress=StderrHistorySyncProgress(),
+            worker_pool=workers,
+            writer_pool=writer,
+        )
+
+    assert result.state == "completed"
+    assert Counter(prices.attempted_codes) == {"600001": 2, "600002": 1}
+    logs = _compact_log(capsys.readouterr().err)
+    lines = logs.splitlines()
+    summary_positions = [index for index, line in enumerate(lines) if "Tencent下载 | 完成 |" in line]
+    summaries = [lines[index] for index in summary_positions]
+    assert len(summaries) == 2
+    assert "失败 1 股 | 其中待重试 1 股" in summaries[0]
+    retry_position = next(index for index, line in enumerate(lines) if "Tencent下载 | 重试 |" in line)
+    assert summary_positions[0] < retry_position < summary_positions[1]
+    assert f"失败 {0 if recovers else 1} 股" in summaries[-1]
+    assert sum("发布内容校验" in line for line in logs.splitlines()) == 1
+    assert result.unresolved_price_cells == (0 if recovers else 3)
+    assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3").gaps_by_code() == ({} if recovers else {"600001": days})
+
+
+def test_history_retry_upgrades_a_partial_price_pair_before_publication(tmp_path):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class PartialOnce(Prices):
+        def fetch_window(self, security, dates, **kwargs):
+            window = super().fetch_window(security, dates, **kwargs)
+            if len(self.calls) == 1:
+                cells = (replace(window.cells[0], qfq=None, status="qfq_missing"), *window.cells[1:])
+                raise HistorySupplierPendingError(replace(window, cells=cells))
+            return window
+
+    prices = PartialOnce()
+    config = HistorySyncConfiguration(
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
+    )
+    result = RunHistorySync(
+        config,
+        _router(Baseline(days), prices, _current_universe("600001")),
+        clock=lambda: _at(days[-1]),
+    )
+
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert len(prices.calls) == 2
+    active = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
+    assert active is not None
+    first_day = HistorySnapshotReader(tmp_path).read_day(days[0], active)
+    assert len(first_day) == 1 and first_day[0].cell.status == "complete"
+
+
+def test_history_retry_excludes_deferred_qfq_dates(tmp_path):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class MixedGaps(Prices):
+        def fetch_window(self, security, dates, **kwargs):
+            window = super().fetch_window(security, dates, **kwargs)
+            if len(self.calls) == 1:
+                cells = (
+                    replace(window.cells[0], qfq=None, status="qfq_missing"),
+                    replace(window.cells[1], qfq=None, status="qfq_missing"),
+                    window.cells[2],
+                )
+                raise HistorySupplierPendingError(replace(window, cells=cells), "tencent_qfq_invalid_price", days[:1])
+            return window
+
+    prices = MixedGaps()
+    config = HistorySyncConfiguration(
+        tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
+    )
+    result = RunHistorySync(
+        config,
+        _router(Baseline(days), prices, _current_universe("600001")),
+        clock=lambda: _at(days[-1]),
+    )
+
+    assert result.state == "completed" and result.unresolved_price_cells == 1
+    assert prices.calls == [days, days[1:]]
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    assert index.gaps_by_code() == {"600001": days[:1]}
+    assert index.gaps_by_code(days) == {}
 
 
 def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reloading_full_prices(tmp_path, monkeypatch):
