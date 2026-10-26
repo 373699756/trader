@@ -71,7 +71,7 @@ from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadSt
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.storage_probe import StorageProbe
-from trader.infra.storage_runtime import InspectDataStorage, ReportStorageProfiles
+from trader.infra.storage_runtime import ConfigureStorage
 from trader.infra.storage_types import StorageOverride
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
@@ -218,9 +218,8 @@ def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
     return BoundedExecutor(worker_count=workers, queue_capacity=workers, thread_name_prefix="performance-models")
 
 
-def PrepareRuntimeStorage(settings: RuntimeSettings, *, additional_paths: tuple[Path, ...] = ()) -> None:
-    probe = StorageProbe(settings.storage_overrides)
-    ReportStorageProfiles(settings, InspectDataStorage(settings, probe, additional_paths=additional_paths))
+def PrepareRuntimeStorage(settings: RuntimeSettings, *, choose: bool = False, report: bool = True) -> RuntimeSettings:
+    return ConfigureStorage(settings, choose=choose, report=report)
 
 
 def ExecuteSync(
@@ -379,7 +378,7 @@ def ExecuteSelectedTraining(
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
     if history_root is not None or training_root is not None:
-        PrepareRuntimeStorage(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
+        ConfigureStorage(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
     paths = TrainingLocations(
         history_root or runtime.data_paths.history,
         training_root / "models" if training_root else runtime.data_paths.models,

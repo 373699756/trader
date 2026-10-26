@@ -81,14 +81,14 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     try:
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
+        if args.command != "validate-config":
+            from trader.bootstrap import PrepareRuntimeStorage
+
+            runtime = PrepareRuntimeStorage(runtime, choose=args.command in ("sync", "train"))
     except (OSError, RuntimeError, ValueError) as exc:
         print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}))
         return 2
     profile_override = cast(ScoringProfileId | None, args.profile)
-    if args.command != "validate-config":
-        from trader.bootstrap import PrepareRuntimeStorage
-
-        PrepareRuntimeStorage(runtime)
     if args.command in ("sync", "train"):
         if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")

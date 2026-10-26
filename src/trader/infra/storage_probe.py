@@ -11,6 +11,7 @@ from trader.infra.storage_platform import ProbeMacStorage, ProbeWindowsStorage
 from trader.infra.storage_types import StorageKind, StorageOverride, StorageProfile
 
 _SYSFS_BLOCK_ROOT = Path("/sys/dev/block")
+_VIRTUAL_DISK_IDENTIFIERS = ("VMWARE", "QEMU", "VBOX", "VIRTUAL", "XEN")
 
 
 class StorageProbe:
@@ -88,8 +89,20 @@ def _linux_kind(node: Path, visited: frozenset[Path]) -> tuple[StorageKind, froz
         devices = frozenset(device for _, values in results for device in values)
         kind: StorageKind = "unknown" if "unknown" in kinds else "hdd" if "hdd" in kinds else "ssd"
         return kind, devices
-    # loop, RAM and other virtual queues are not evidence of an SSD.
-    if "virtual" in node.parts:
+    # Hypervisors may expose a virtual SCSI disk as a physical sysfs device.
+    # Its rotational flag describes the guest queue, not the host medium.
+    if "virtual" in node.parts or _is_virtual_disk(node):
         return "unknown", frozenset({node.name})
     value = (node / "queue/rotational").read_text(encoding="ascii").strip()
     return ("hdd" if value == "1" else "ssd" if value == "0" else "unknown"), frozenset({node.name})
+
+
+def _is_virtual_disk(node: Path) -> bool:
+    for name in ("vendor", "model"):
+        identity = node / "device" / name
+        if not identity.is_file():
+            continue
+        value = identity.read_text(encoding="ascii", errors="replace").upper()
+        if any(marker in value for marker in _VIRTUAL_DISK_IDENTIFIERS):
+            return True
+    return False

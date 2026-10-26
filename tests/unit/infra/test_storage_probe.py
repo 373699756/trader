@@ -63,6 +63,19 @@ def test_linux_mixed_devices_and_virtual_queue(tmp_path, monkeypatch):
     assert storage_probe.StorageProbe().inspect(tmp_path).kind == "unknown"
 
 
+@pytest.mark.parametrize("rotational", ["0", "1"])
+def test_linux_virtual_scsi_does_not_claim_host_medium(tmp_path, monkeypatch, rotational):
+    disk = _disk(tmp_path / "sda", rotational)
+    (disk / "device").mkdir()
+    (disk / "device/vendor").write_text("VMware, ")
+    (disk / "device/model").write_text("VMware Virtual S")
+    _sysfs(tmp_path, disk, monkeypatch)
+
+    profile = storage_probe.StorageProbe().inspect(tmp_path / "data/history")
+    assert profile.kind == "unknown"
+    assert profile.reason == "device_metadata_unavailable"
+
+
 def test_manual_override_longest_scope_and_resolved_symlink(tmp_path):
     target = tmp_path / "mounted"
     target.mkdir()
