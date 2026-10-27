@@ -94,7 +94,7 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
     limits = RequireMapping(company, "document_limits")
     RequireExactKeys(limits, {"max_bytes", "max_pages", "max_text_characters"}, "download.company.document_limits")
     return CompanySyncConfiguration(
-        budget_seconds=Number(company, "budget_seconds", minimum=60.0, maximum=21600.0),
+        budget_seconds=Number(company, "budget_seconds", minimum=60.0, maximum=28800.0),
         structured_component_seconds=Number(company, "structured_component_seconds", minimum=1.0),
         announcements_deadline_fraction=announcements_fraction,
         documents_deadline_fraction=documents_fraction,

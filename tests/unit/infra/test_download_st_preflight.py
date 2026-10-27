@@ -120,7 +120,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
 
     def download(root, progress, request, *, cancel_requested):
         codes, observed_at = request.codes, request.observed_at
-        assert request.configuration.budget_seconds == 18000.0
+        assert request.configuration.budget_seconds == 28800.0
         assert set(calls) == expected_queries
         assert all(session.closed for session in sessions)
         assert codes == ("600001", "600005", "600007")
