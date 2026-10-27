@@ -112,7 +112,7 @@ class CompanyEvidenceProgress:
             + other_stock
             + (self._summary(progress.completed) if progress.component == "complete" else "")
             + (" | 补查历史发行人（保留已完成页）" if progress.activity == "repair" else "")
-            + f" | 成功页 {progress.fetched_pages} | 变更行 {progress.changed_rows} | "
+            + f" | 成功页 {progress.fetched_pages} | 原始资料变更 {progress.changed_rows} 条（非每股发布行） | "
             f"累计复用 {progress.reused_partitions} | 本阶段 {ProgressDuration(now - self._component_started)} | "
             f"命令累计 {ProgressDuration(now - self._started)} | "
             f"状态 {statuses[status]}" + (f" | 原因 {failure}" if failure else ""),
