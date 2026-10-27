@@ -5,7 +5,7 @@ Its profile implementations live under `scripts/runtime_diagnostics/` and
 must return bounded, sanitized summaries. A new runtime probe is added as a
 module and profile there; it is not added as another top-level script.
 
-`--profile runtime --scoring-profile v1`只读采样指定档位的status与全部current端点；`--scoring-profile both`分别采样V2/V3，省略时保留服务默认档位。报告保留十一层输入/输出、淘汰/待补/失败、原因、耗时及已发布审计的分项耗时，缺失值保持null；全局异常保留累计次数、阶段、时间及active/recovered状态。运行中的新输入与已发布快照分别输出，不跨轮拼接；上游没有交给模型输入时，不将模型层0泛化为模型损坏。该模式不抓供应商、不改配置、不重启服务。
+`--profile runtime --scoring-profile v1`只读采样指定档位的status与全部current端点；单档可选v1/v2/v3/v5，省略时保留服务默认档位，比较多个档位时分别执行。报告保留十一层输入/输出、淘汰/待补/失败、原因、耗时及已发布审计的分项耗时，缺失值保持null；全局异常保留累计次数、阶段、时间及active/recovered状态。运行中的新输入与已发布快照分别输出，不跨轮拼接；上游没有交给模型输入时，不将模型层0泛化为模型损坏。该模式不抓供应商、不改配置、不重启服务。
 
 `--profile storage`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
 可重复使用`--storage-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
@@ -204,7 +204,8 @@ performance share the existing implementations:
 
 ```bash
 .venv/bin/python3 scripts/diagnose_runtime.py --profile local --output -
-.venv/bin/python3 scripts/diagnose_runtime.py --profile local --scoring-profile both --output -
+.venv/bin/python3 scripts/diagnose_runtime.py --profile local --scoring-profile v2 --output -
+.venv/bin/python3 scripts/diagnose_runtime.py --profile local --scoring-profile v3 --output -
 ```
 
 No service or supplier is required. Invalid configuration marks dependent checks
@@ -220,10 +221,10 @@ all eight Tomorrow/D25 heads. Select one profile when measuring an isolated prof
 ```
 
 The explicit selection `--scoring-profile v1,v2,v3,v5` is equivalent to that default;
-`both` keeps its existing separate V2/V3 probes, and `local` keeps its configured
-single-profile default. Models are loaded through the production contract, never
-trained or substituted. Missing/dependency/contract failures retain per-profile
-reasons and empty measurements. V1 remains Shadow and no DeepSeek HTTP is issued.
+`local` keeps its configured single-profile default. Models are loaded through the
+production contract, never trained or substituted. Missing/dependency/contract failures
+retain per-profile reasons and empty measurements. V5 remains Shadow and no DeepSeek
+HTTP is issued.
 
 Fixture history and input preparation occur outside model latency samples. The
 report separates first computation, exact reuse, one-stock fact changes and cold

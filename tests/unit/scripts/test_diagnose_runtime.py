@@ -62,16 +62,14 @@ def test_removed_index_experiment_is_rejected_before_execution(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-def test_local_dual_profile_selects_only_offline_business_checks():
-    commands = build_commands(_options(profile="local", scoring_profile="both"), python_executable="/python")
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+def test_local_selected_profile_selects_only_offline_business_checks(profile):
+    commands = build_commands(_options(profile="local", scoring_profile=profile), python_executable="/python")
     assert tuple(command.name for command in commands) == (
-        "configuration:v2",
-        "configuration:v3",
+        f"configuration:{profile}",
         "history_maintenance",
-        "research_readiness:v2",
-        "research_readiness:v3",
-        "production_performance:v2",
-        "production_performance:v3",
+        f"research_readiness:{profile}",
+        f"production_performance:{profile}",
     )
     assert all("--profile" in command.argv for command in commands if command.name != "history_maintenance")
     assert all(
@@ -80,11 +78,12 @@ def test_local_dual_profile_selects_only_offline_business_checks():
     )
 
 
-@pytest.mark.parametrize(("selection", "expected"), (("v1", ("v1",)), ("both", ("v2", "v3"))))
-def test_runtime_profile_selection_reaches_each_read_only_web_probe(selection, expected):
-    commands = build_commands(_options(profile="runtime", scoring_profile=selection), python_executable="/python")
-    assert tuple(command.name for command in commands) == tuple(f"web_health:{profile}" for profile in expected)
-    assert tuple(command.argv[-2:] for command in commands) == tuple(("--profile", profile) for profile in expected)
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+def test_runtime_profile_selection_reaches_each_read_only_web_probe(profile):
+    options, _ = _validate(_parser().parse_args(["--profile", "runtime", "--scoring-profile", profile]))
+    commands = build_commands(options, python_executable="/python")
+    assert tuple(command.name for command in commands) == (f"web_health:{profile}",)
+    assert commands[0].argv[-2:] == ("--profile", profile)
 
 
 @pytest.mark.parametrize("selection", ("v1,v2,v3,v5", "v5,v3,v1,v2"))
@@ -159,11 +158,13 @@ def test_continuous_performance_option_rejects_wrong_profile_and_unbounded_runs(
         _validate(_parser().parse_args(arguments))
 
 
-def test_performance_both_keeps_two_separate_v2_v3_commands() -> None:
-    commands = build_commands(_options(profile="performance", scoring_profile="both"), python_executable="/python")
-
-    assert tuple(command.name for command in commands) == ("production_performance:v2", "production_performance:v3")
-    assert tuple(command.argv[-2:] for command in commands) == (("--profile", "v2"), ("--profile", "v3"))
+@pytest.mark.parametrize("profile", ("local", "research", "web", "runtime", "performance", "full"))
+def test_removed_both_alias_is_rejected_before_execution(profile) -> None:
+    parser = _parser()
+    assert "both" not in parser.format_help()
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["--profile", profile, "--scoring-profile", "both"])
+    assert error.value.code == 2
 
 
 def test_only_the_performance_diagnostic_defaults_to_four_profiles() -> None:
@@ -211,8 +212,8 @@ def test_history_resume_probe_routes_sample_bound_without_starting_downloads():
         _validate(args)
 
 
-def test_local_invalid_configuration_skips_dependents_and_runs_other_configuration():
-    commands = build_commands(_options(profile="local", scoring_profile="both"), python_executable="/python")
+def test_local_invalid_configuration_skips_dependents():
+    commands = build_commands(_options(profile="local", scoring_profile="v2"), python_executable="/python")
     called = []
 
     def runner(command):
@@ -220,9 +221,9 @@ def test_local_invalid_configuration_skips_dependents_and_runs_other_configurati
         return DiagnosticResult(command.name, 2, 0.0, {"status": "failed"}, None)
 
     report = run_diagnostics("local", commands, runner=runner)
-    assert called == ["configuration:v2", "configuration:v3"]
+    assert called == ["configuration:v2"]
     skipped = [item for item in report["checks"] if not item["name"].startswith("configuration")]
-    assert len(skipped) == 5
+    assert len(skipped) == 3
     assert all(item["executed"] is False and item["reason"] == "configuration_invalid" for item in skipped)
 
 

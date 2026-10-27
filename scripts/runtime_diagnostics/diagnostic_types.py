@@ -56,7 +56,7 @@ Profile = Literal[
 CheckStatus = Literal["passed", "degraded", "failed"]
 HistorySource = Literal["composite", "tencent", "eastmoney"]
 TencentHistoryHost = Literal["proxy", "direct"]
-ScoringProfileSelection = Literal["v1", "v2", "v3", "v5", "both", "v1,v2,v3,v5"]
+ScoringProfileSelection = Literal["v1", "v2", "v3", "v5", "v1,v2,v3,v5"]
 
 
 @dataclass(frozen=True)

@@ -164,7 +164,7 @@ def _parser() -> argparse.ArgumentParser:
         "--scoring-profile",
         type=_scoring_profile_selection,
         default=None,
-        help="one scoring profile, legacy V2/V3 'both', or all four comma-separated profiles for performance",
+        help="one of v1/v2/v3/v5, or all four comma-separated profiles for performance",
     )
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument(
@@ -306,8 +306,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _scoring_profile_selection(value: str) -> ScoringProfileSelection:
-    if value == "both":
-        return "both"
     try:
         profiles = ParseProfileSelection(value)
     except ValueError as exc:
@@ -1080,23 +1078,23 @@ def build_commands(
     selection = options.scoring_profile
     if options.profile == "performance" and selection is None:
         selection = "v1,v2,v3,v5"
-    profiles = ("v2", "v3") if selection == "both" else (selection,)
     for name in _PROFILE_CHECKS[options.profile]:
         command = commands[name]
-        if name not in {"configuration", "research_readiness", "production_performance", "web_health"}:
+        if selection is None or name not in {
+            "configuration",
+            "research_readiness",
+            "production_performance",
+            "web_health",
+        }:
             selected.append(command)
             continue
-        for scoring_profile in profiles:
-            if scoring_profile is None:
-                selected.append(command)
-                continue
-            arguments = ("--profile", scoring_profile)
-            argv = (
-                command.argv + arguments
-                if name in {"production_performance", "web_health"}
-                else command.argv[:-1] + arguments + command.argv[-1:]
-            )
-            selected.append(replace(command, name=f"{name}:{scoring_profile}", argv=argv))
+        arguments = ("--profile", selection)
+        argv = (
+            command.argv + arguments
+            if name in {"production_performance", "web_health"}
+            else command.argv[:-1] + arguments + command.argv[-1:]
+        )
+        selected.append(replace(command, name=f"{name}:{selection}", argv=argv))
     if options.database_probe_directory is not None:
         selected = [
             replace(
