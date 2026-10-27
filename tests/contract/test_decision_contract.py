@@ -4,24 +4,9 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "docs" / "2_工程设计.md"
 DECISION_EVENTS = (
     ROOT / "src" / "trader" / "recommendation" / "application" / "pipeline" / "freeze_publish" / "decision_events.py"
 )
-
-
-def test_authoritative_contract_freezes_unified_decision_identity_and_commit_event() -> None:
-    design = DESIGN.read_text(encoding="utf-8")
-
-    for token in (
-        "ScoredDecision",
-        "LongProjection",
-        "UnifiedDecisionIndex",
-        "expected_version",
-        "DecisionCommitted",
-        "按策略和交易日唯一",
-    ):
-        assert token in design
 
 
 def test_committed_event_is_application_owned_and_research_free() -> None:

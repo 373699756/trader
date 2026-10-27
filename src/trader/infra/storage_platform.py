@@ -61,8 +61,8 @@ def ProbeMacStorage(path: Path, *, timeout: float) -> StorageKind:
         if not isinstance(stores, list) or not 1 <= len(stores) <= 16:
             return "unknown"
         kinds: list[StorageKind] = []
-        for store in stores:
-            device = store.get("DeviceIdentifier") if isinstance(store, dict) else None
+        for physical_disk in stores:
+            device = physical_disk.get("DeviceIdentifier") if isinstance(physical_disk, dict) else None
             if not isinstance(device, str) or not device.startswith("disk") or "/" in device:
                 return "unknown"
             kinds.append(_mac_kind(_diskutil(("info", "-plist", device), deadline)))

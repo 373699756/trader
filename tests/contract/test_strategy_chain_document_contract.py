@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STRATEGY = ROOT / "docs/1_评分逻辑.md"
-ACTIVE_CODE_ROOTS = (ROOT / "src" / "trader", ROOT / "scripts")
+PRODUCT_CODE_ROOT = ROOT / "src" / "trader"
 
 
 def test_strategy_document_follows_the_end_to_end_stock_selection_chain() -> None:
@@ -14,8 +14,8 @@ def test_strategy_document_follows_the_end_to_end_stock_selection_chain() -> Non
         "## 2. 端到端荐股链路",
         "## 3. 数据采集、点时归一化与数据就绪",
         "## 4. 两级硬过滤",
-        "## 5. 板内总体、候选预选与评分资格",
-        "## 6. 本地与模型评分",
+        "## 5. 板内总体、评分资格与全局排名",
+        "## 6. 本地评分与模型过滤",
         "## 7. 本地风险与 DeepSeek 结构化复核",
         "## 8. 最终分、动作、稳定排名与 TopK",
         "## 9. 冻结、恢复与不可变历史",
@@ -29,29 +29,24 @@ def test_strategy_document_follows_the_end_to_end_stock_selection_chain() -> Non
     assert positions == tuple(sorted(positions))
 
 
-def test_every_chain_stage_has_realtime_stability_and_return_review() -> None:
+def test_research_review_separates_measurements_from_return_claims() -> None:
     content = STRATEGY.read_text(encoding="utf-8")
-    review = content[content.index("## 11. 逐环节优化空间与优先级") :]
+    review = content[content.index("## 11. 逐环节优化空间与优先级") : content.index("## 12. 收益验证与变更门禁")]
 
-    for column in ("实时性", "稳定性", "提高荐股收益"):
+    for column in ("问题", "比较方法", "判定依据"):
         assert column in review
-    for stage in (
-        "数据采集与合并",
-        "一级资格过滤",
-        "二级动态过滤",
-        "板内总体",
-        "候选预选",
-        "评分资格",
-        "本地/模型评分",
-        "本地风险",
-        "DeepSeek 复核",
-        "最终分与动作",
-        "TopK 与集中度",
-        "冻结与恢复",
-        "展示与反馈",
+    for topic in (
+        "旧候选分提前截断",
+        "模型过滤",
+        "风险扣分",
+        "动作分数",
+        "同轮到Web",
+        "复核是否有增量价值",
+        "历史人口和事实时点",
+        "P50/P95",
     ):
-        assert stage in review
-    assert "所有优化项当前均为研究建议" in review
+        assert topic in review
+    assert "所有收益优化均为研究建议" in review
     assert "不能宣称提高收益" in review
 
 
@@ -79,12 +74,11 @@ def test_strategy_document_removes_delivery_history_and_implementation_noise() -
         assert removed not in content
 
 
-def test_active_code_uses_business_responsibilities_instead_of_agent_lane_names() -> None:
+def test_product_code_uses_business_responsibilities_instead_of_agent_lane_names() -> None:
     executor_label = ("co" + "dex").casefold()
     offending = tuple(
         path.relative_to(ROOT).as_posix()
-        for root in ACTIVE_CODE_ROOTS
-        for path in root.rglob("*.py")
+        for path in PRODUCT_CODE_ROOT.rglob("*.py")
         if executor_label in path.as_posix().casefold() or executor_label in path.read_text(encoding="utf-8").casefold()
     )
 

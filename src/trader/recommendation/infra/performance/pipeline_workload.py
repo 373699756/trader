@@ -37,7 +37,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.loaded_profile import ModelComputationStatus
-from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
+from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
@@ -314,12 +314,13 @@ class _ProfileReplay:
         for strategy, input_type in ((Strategy.TOMORROW, TomorrowNativeInput), (Strategy.D25, D25NativeInput)):
             requested = plans.strategy_codes(strategy)
             codes = frozenset(requested)
+
+            def build_candidates(codes: frozenset[str] = codes) -> tuple[FeatureSnapshot, ...]:
+                return self._build(tuple(quote for quote in quotes if quote.code in codes), candidates=True)
+
             candidates = timings.run(
                 f"{strategy.value}.features",
-                lambda: self._build(
-                    tuple(quote for quote in quotes if quote.code in codes),
-                    candidates=True,
-                ),
+                build_candidates,
             )
             native = input_type(
                 self.clock.now().date(),
@@ -334,14 +335,18 @@ class _ProfileReplay:
                 30.0,
             )
             before = self._status(strategy)
-            projection = timings.run(
-                f"{strategy.value}.score_to_draft",
-                lambda: BuildScoredLocal(
+
+            def build_projection(native: ScoredNativeInput = native) -> ScoredLocalProjection:
+                return BuildScoredLocal(
                     native,
                     self.workload.policy,
                     sequence=self.sequence,
                     runtime=ScoredProjectionInputs(model_scoring=self.scoring),
-                ),
+                )
+
+            projection = timings.run(
+                f"{strategy.value}.score_to_draft",
+                build_projection,
             )
             projections.append(projection)
             observations.append((strategy, len(candidates), before, self._status(strategy)))
@@ -510,7 +515,8 @@ def MeasureContinuousPipeline(
                 if trace is not None:
                     trace.record(f"{scenario}.{tick + 1}", rows[-1].project())
         # Profiling is a separate additional unchanged request on the already warm services.
-        probes = tuple(executor.map(_profile, states))
+        # Count each profile separately without concurrent cProfile activation on Python 3.14.
+        probes = tuple(_profile(state) for state in states)
         return _project(rows, preparation_ms, probes, cache_policy, ticks)
     finally:
         cache.stop()

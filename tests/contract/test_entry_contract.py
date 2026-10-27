@@ -119,11 +119,13 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed
 
 
-def test_server_entrypoint_accepts_new_v1_and_the_two_production_profiles() -> None:
+def test_server_entrypoint_accepts_production_and_shadow_profile_selections() -> None:
     parser = build_server_parser()
 
     assert parser.parse_args(["--config", "/tmp/runtime.json", "v1"]).profiles == ("v1",)
     assert parser.parse_args(["--config", "/tmp/runtime.json", "v2"]).profiles == ("v2",)
+    assert parser.parse_args(["--config", "/tmp/runtime.json", "v5"]).profiles == ("v5",)
+    assert parser.parse_args(["--config", "/tmp/runtime.json"]).profiles == ("v1", "v2", "v3", "v5")
     assert parser.parse_args(["--config", "/tmp/runtime.json", "v1,v2,v3"]).profiles == ("v1", "v2", "v3")
     with pytest.raises(SystemExit) as error:
         parser.parse_args(["--config", "/tmp/runtime.json", "latest"])

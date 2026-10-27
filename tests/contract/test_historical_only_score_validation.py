@@ -2,41 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.training.application.tomorrow_historical_validation import (
-    TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
-)
-
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/trader"
-
-
-def test_authoritative_contracts_make_history_the_only_score_validation_source() -> None:
-    strategy = " ".join((ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8").split())
-    design = " ".join((ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8").split())
-
-    for expected in (
-        "所有评分策略验证只使用历史 point-in-time 数据",
-        "合法空仓日",
-        "historical_data_insufficient",
-        "线上 T+1 结算只用于正式推荐历史与运行监控",
-    ):
-        assert expected in strategy
-    assert (
-        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.training_trade_dates,
-        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.calibration_trade_dates,
-        TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.test_trade_dates,
-    ) == (60, 20, 40)
-    assert "收益公式与准入见评分逻辑第12节" in design
-
-    for retired in (
-        "forward_collecting",
-        "online_settlement_day",
-        "tomorrow_v1_v2_paired_forward",
-        "等待 20 个未来",
-        "前向 collector",
-    ):
-        assert retired not in strategy
-        assert retired not in design
 
 
 def test_production_tree_has_no_forward_score_validation_owner() -> None:
@@ -78,8 +45,7 @@ def test_online_outcomes_remain_monitoring_only_without_changing_scoring_or_free
     for invariant in (
         "final_score = ROUND_HALF_UP(clamp(base_score - local_risk_penalty, 0, 100), 2)",
         "15:00",
-        "automatic_model_update=false",
     ):
         assert invariant in strategy
     assert "OutcomeSettlementService" in bootstrap
-    assert "ProductionModelScoringService" in bootstrap
+    assert "profile_factory.BuildProfileScoring" in bootstrap

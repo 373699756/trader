@@ -18,6 +18,7 @@ from trader.download.domain.history_maintenance import (
 )
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.entrypoints.cli import BuildParser, Main
+from trader.infra.settings import LoadRuntimeSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -221,9 +222,10 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(tmp_
 
     config = _empty_config(tmp_path)
     previous = signal.getsignal(signal.SIGTERM)
+    configured_overrides = LoadRuntimeSettings(config).storage_overrides
 
     def download(configuration, *, progress, cancel_requested, storage_overrides):
-        assert storage_overrides == ()
+        assert storage_overrides == configured_overrides
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)
@@ -244,9 +246,10 @@ def test_train_cancellation_during_reference_preparation_returns_130(tmp_path, m
 
     config = _empty_config(tmp_path)
     previous = signal.getsignal(signal.SIGTERM)
+    configured_overrides = LoadRuntimeSettings(config).storage_overrides
 
     def prepare(configuration, *, progress, cancel_requested, storage_overrides):
-        assert storage_overrides == ()
+        assert storage_overrides == configured_overrides
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)

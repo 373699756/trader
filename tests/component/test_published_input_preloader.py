@@ -65,10 +65,10 @@ def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_active_io
     entered, release = threading.Event(), threading.Event()
     windows = source.iter_windows
 
-    def blocked(manifest, *, sessions):
+    def blocked(manifest, *, sessions, check=None):
         entered.set()
         assert release.wait(5)
-        yield from windows(manifest, sessions=sessions)
+        yield from windows(manifest, sessions=sessions, check=check)
 
     monkeypatch.setattr(source, "iter_windows", blocked)
     preloader = PublishedInputPreloader(history, initialize=lambda cancelled: history.initialize(cancelled=cancelled))
@@ -91,9 +91,9 @@ def test_preload_retries_changed_identity_and_restart_adopts_new_publication(mon
     windows = source.iter_windows
     reads = []
 
-    def changed(manifest, *, sessions):
+    def changed(manifest, *, sessions, check=None):
         reads.append(manifest.snapshot_hash)
-        yield from windows(manifest, sessions=sessions)
+        yield from windows(manifest, sessions=sessions, check=check)
         source.current = replace(source.current, snapshot_hash="b" * 64)
 
     monkeypatch.setattr(source, "iter_windows", changed)

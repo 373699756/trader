@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -243,10 +244,18 @@ def test_timeout_terminates_nested_probe_workers(tmp_path: Path) -> None:
             (sys.executable, "-c", script, str(child_file)), timeout=1, environment=DatabaseWorkerEnvironment(tmp_path)
         )
     pid = int(child_file.read_text())
-    # A killed grandchild may await reaping by init, but cannot keep writing.
+    # SIGKILL delivery and reaping of the grandchild can lag the parent's wait().
     stat = Path(f"/proc/{pid}/stat")
-    if stat.exists():
-        assert stat.read_text().split(") ", 1)[1].split()[0] == "Z"
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            state = stat.read_text().split(") ", 1)[1].split()[0]
+        except FileNotFoundError:
+            break
+        if state == "Z":
+            break
+        assert time.monotonic() < deadline, f"probe grandchild still active: {state}"
+        time.sleep(0.01)
 
 
 def test_real_sync_adapters_preserve_joint_single_restart_and_memory_reads(tmp_path: Path) -> None:

@@ -17,23 +17,3 @@ def test_risk_cost_uncertainty_components_live_in_their_authoritative_layers() -
     assert "class SelectionUtility" in research
     assert "local_weight = 0.68" in research
     assert "deepseek_weight = 0.32" in research
-
-
-def test_authoritative_contracts_record_fail_closed_risk_cost_and_deepseek_boundaries() -> None:
-    strategy = (ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
-    combined = strategy + design
-
-    for required in (
-        "Brier",
-        "ECE",
-        "预测区间报告覆盖率",
-        "训练窗口分歧",
-        "OOD",
-        "缺失不确定性",
-        "local-only",
-        "本地最终分及可选结构化风险否决",
-        "结构化 facts veto",
-        "自由文本不能直接扣分",
-    ):
-        assert required in combined

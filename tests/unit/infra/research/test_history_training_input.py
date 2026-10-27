@@ -256,8 +256,8 @@ def test_online_alignment_refuses_a_wholly_missing_source_day(tmp_path, prepared
     source = SQLitePublishedHistorySnapshot(root)
     read = source._reader.iter_published_range_by_code
 
-    def missing_day(*args):
-        yield from (row for row in read(*args) if row.trade_date != days[1])
+    def missing_day(*args, **kwargs):
+        yield from (row for row in read(*args, **kwargs) if row.trade_date != days[1])
 
     monkeypatch.setattr(source._reader, "iter_published_range_by_code", missing_day)
     with pytest.raises(PublishedHistoryReadError, match="source_day_missing"):
@@ -374,10 +374,10 @@ def test_history_consumers_do_not_wait_for_background_projection(
     original_windows = short.iter_windows
     entered, release = threading.Event(), threading.Event()
 
-    def blocked_windows(manifest, *, sessions):
+    def blocked_windows(manifest, *, sessions, check=None):
         entered.set()
         assert release.wait(5)
-        yield from original_windows(manifest, sessions=sessions)
+        yield from original_windows(manifest, sessions=sessions, check=check)
 
     monkeypatch.setattr(short, "iter_windows", blocked_windows)
     with ThreadPoolExecutor(max_workers=2) as pool:

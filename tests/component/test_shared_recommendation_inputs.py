@@ -31,30 +31,35 @@ from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 
 
-def test_both_shares_sources_and_budget_but_isolates_models_and_publication(tmp_path):
-    system = BuildProfiledSystem(_empty_config(tmp_path), profiles=("v2", "v3"))
-    v2, v3 = system.systems
-    assert v2.market_cache is v3.market_cache
-    assert v2.source_lanes is v3.source_lanes
-    assert v2.minute_pool is v3.minute_pool
-    assert v2.budget is v3.budget
-    assert v2.market_data.quotes.gateway is v3.market_data.quotes.gateway
-    assert v2.market_data.research is v3.market_data.research
-    assert v2.market_data.static_cache is v3.market_data.static_cache
-    assert v2.market_data.references is v3.market_data.references
-    assert v2.market_data.intraday is v3.market_data.intraday
-    assert v2.market_data.history is not v3.market_data.history
-    assert v2.tomorrow_index is not v3.tomorrow_index
-    assert v2.records is not v3.records
-    assert v2.workers.control_pool is not v3.workers.control_pool
-    assert v2.workers.persistence_pool is not v3.workers.persistence_pool
-    assert v2.owns_shared_resources and not v3.owns_shared_resources
-    for profile in ("v2", "v3"):
+@pytest.mark.parametrize("profiles", (("v2", "v3"), ("v1", "v5"), SCORING_PROFILE_IDS))
+def test_selected_profiles_share_sources_and_budget_but_isolate_models_and_publication(tmp_path, profiles):
+    system = BuildProfiledSystem(_empty_config(tmp_path), profiles=profiles)
+    owner, *others = system.systems
+    assert owner.profile_id == ("v2" if "v2" in profiles else profiles[0])
+    assert owner.owns_shared_resources
+    for other in others:
+        assert owner.market_cache is other.market_cache
+        assert owner.source_lanes is other.source_lanes
+        assert owner.minute_pool is other.minute_pool
+        assert owner.budget is other.budget
+        assert owner.market_data.quotes.gateway is other.market_data.quotes.gateway
+        assert owner.market_data.research is other.market_data.research
+        assert owner.market_data.static_cache is other.market_data.static_cache
+        assert owner.market_data.references is other.market_data.references
+        assert owner.market_data.intraday is other.market_data.intraday
+        assert owner.market_data.history is not other.market_data.history
+        assert owner.tomorrow_index is not other.tomorrow_index
+        assert owner.records is not other.records
+        assert owner.workers.control_pool is not other.workers.control_pool
+        assert owner.workers.persistence_pool is not other.workers.persistence_pool
+        assert not other.owns_shared_resources
+    for profile in profiles:
         single = BuildSystem(tmp_path / "config/runtime.json", scoring_profile=profile)
         assert single.settings.market_data.cache_policy.total_bytes == 512 * 1024 * 1024
         assert single.settings.performance_budgets.memory.process_peak_rss_bytes == 2 * 1024**3

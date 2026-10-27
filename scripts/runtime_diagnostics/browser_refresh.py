@@ -26,7 +26,6 @@ from .reporting import emit_report
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.bootstrap import OpenExternalHttp  # noqa: E402
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
 from trader.infra.http_contracts import HttpRequest, HttpStatusError  # noqa: E402
 from trader.infra.settings import LoadRuntimeSettings  # noqa: E402
@@ -410,6 +409,8 @@ def _request_json(
     payload: dict[str, object] | None = None,
     timeout: float = 45.0,
 ) -> dict[str, Any]:
+    from trader.bootstrap import OpenExternalHttp
+
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = HttpRequest(
         method, url, timeout, (("Content-Type", "application/json"),), body, max_response_bytes=32 * 1024 * 1024

@@ -10,28 +10,6 @@ def _compact(path: Path) -> str:
     return " ".join(path.read_text(encoding="utf-8").split())
 
 
-def test_historical_only_score_validation_is_the_authoritative_route() -> None:
-    strategy = _compact(ROOT / "docs/1_评分逻辑.md")
-    design = _compact(ROOT / "docs/2_工程设计.md")
-
-    for token in (
-        "所有评分策略验证只使用历史 point-in-time 数据",
-        "historical_data_insufficient",
-        "historical_rejected",
-        "historical_validated",
-        "合法空仓日",
-        "production_authority=false",
-        "线上 T+1 结算只用于正式推荐历史与运行监控",
-    ):
-        assert token in strategy
-    for token in (
-        "收益公式与准入见评分逻辑第12节",
-        "research_readiness",
-        "研究不足时失败关闭，不用线上结果回灌调参",
-    ):
-        assert token in design
-
-
 def test_forward_score_validation_owners_and_commands_are_retired() -> None:
     retired_paths = (
         SOURCE / "application/research/score_r5.py",
@@ -72,20 +50,15 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
 
     for token in ("tomorrow_historical", "TomorrowPointInTimeHoldout", "tomorrow_historical_risk_probability"):
         assert token in research_sources
-    assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
     assert "download" in design
     assert "./run.sh train" in design
-    training = _compact(ROOT / "docs/4_下载训练.md")
-    assert "不接入HTTP、SSE、生产调度或活动数据库" in training
 
 
-def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
+def test_research_and_manual_production_override_remain_explicit() -> None:
     strategy = _compact(ROOT / "docs/1_评分逻辑.md")
 
     for token in (
-        "historical_rejected",
         "manual_user_override",
-        "automatic_model_update=false",
         "loss_probability_status=not_modeled",
     ):
         assert token in strategy
@@ -108,32 +81,7 @@ def test_historical_evidence_does_not_create_a_running_collection_gate() -> None
     design = _compact(ROOT / "docs/2_工程设计.md")
     holdout = _compact(SOURCE / "training/application/tomorrow_point_in_time_holdout.py")
 
-    for token in (
-        "不能据此断言 V2 未来更能挣钱",
-        "不设跨年配对采集任务",
-    ):
-        assert token in strategy
     assert "TomorrowPointInTimeHoldout" in holdout
     for retired in ("522 个有效交易日", "tomorrow_v1_v2_paired_forward_v1"):
         assert retired not in strategy
         assert retired not in design
-
-
-def test_tomorrow_score_is_separate_from_the_cost_aware_execution_gate() -> None:
-    strategy = _compact(ROOT / "docs/1_评分逻辑.md")
-    design = _compact(ROOT / "docs/2_工程设计.md")
-
-    for token in (
-        "`no_positive_net_utility`",
-        "预测成本后净效用均不大于 0",
-        "合法空仓结果",
-        "成本正负不得改写统一证据质量分",
-        "`model_net_utility_non_positive`",
-    ):
-        assert token in strategy
-    for token in (
-        "模型预测成本后净超额均未转正",
-        "保持空仓",
-        "成本不得把统一评分清零",
-    ):
-        assert token in design

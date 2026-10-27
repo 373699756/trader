@@ -4,26 +4,33 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
+from tests.helpers.scoring_profiles import IsScoringProfilePath
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "trader"
 
 _NUMBERED_STAGE = re.compile(r"(?:^|[_-])(?:p|r)\d+(?=[_.\-/]|$)", re.IGNORECASE)
 _NUMBERED_VERSION = re.compile(r"(?:^|[_-])v\d+(?=[_.\-/]|$)", re.IGNORECASE)
-_SCORING_PROFILE_ROOT = SOURCE / "infra" / "scoring" / "profiles"
-_SCORING_PROFILE_TEST_ROOT = ROOT / "tests" / "unit" / "infra" / "scoring"
 _PERCENTILE_METRIC = re.compile(r"(?:^|_)p\d+_(?:ms|seconds)(?:$|_)", re.IGNORECASE)
 
 
-def _is_scoring_profile_path(path: Path) -> bool:
-    try:
-        relative = path.relative_to(_SCORING_PROFILE_ROOT)
-    except ValueError:
-        scoring_unit_test = path.parent == _SCORING_PROFILE_TEST_ROOT and re.fullmatch(
-            r"test_v[23]_[a-z0-9_]+\.py", path.name
-        )
-        scoring_document_test = path == ROOT / "tests" / "contract" / "test_tomorrow_v3_document_contract.py"
-        return scoring_unit_test or scoring_document_test
-    return bool(relative.parts) and relative.parts[0] in {"v2", "v3"}
+@pytest.mark.parametrize(
+    ("relative", "allowed"),
+    (
+        ("src/trader/training/infra/profile/v1/training.py", True),
+        ("src/trader/recommendation/domain/market/v5/features.py", True),
+        ("tests/contract/test_v5_web_contract.py", True),
+        ("scripts/runtime_diagnostics/v5_training.py", True),
+        ("src/trader/recommendation/application/runtime/v5/worker.py", False),
+        ("src/trader/training/infra/profile/v4/training.py", False),
+        ("scripts/runtime_diagnostics/runtime_" + "v5.py", False),
+    ),
+)
+def test_profile_names_are_allowed_only_under_scoring_owners(relative, allowed) -> None:
+    assert IsScoringProfilePath(Path(relative)) is allowed
 
 
 def test_numbered_names_are_owned_only_by_scoring_profile_directories() -> None:
@@ -37,7 +44,7 @@ def test_numbered_names_are_owned_only_by_scoring_profile_directories() -> None:
             rendered = relative.as_posix()
             if _NUMBERED_STAGE.search(rendered):
                 violations.append(rendered)
-            elif _NUMBERED_VERSION.search(rendered) and not _is_scoring_profile_path(path):
+            elif _NUMBERED_VERSION.search(rendered) and not IsScoringProfilePath(relative):
                 violations.append(rendered)
 
     assert violations == []
@@ -61,7 +68,7 @@ def test_active_configuration_has_no_numbered_version_controllers() -> None:
             for index, item in enumerate(value):
                 inspect(item, f"{location}[{index}]")
         elif isinstance(value, str):
-            if value in {"v2", "v3"}:
+            if value in SCORING_PROFILE_IDS:
                 return
             if value.startswith("deepseek-v"):
                 return

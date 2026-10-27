@@ -28,10 +28,15 @@ an action but cannot rewrite a score. DeepSeek free text cannot directly change 
 
 ## Preserve production invariants
 
-The invariants below describe V2/V3 production scoring. The authorized new V1 engineering Shadow uses
-`learned_rank_percentile_0_100` for ranking and retains `local_score` for action gates; it cannot execute, checkpoint,
-freeze formally, or enter official outcome history. Trace its model/contract/population identity through GET/SSE/Web,
-prove zero DeepSeek requests, and keep historical, qualified Shadow and production authorization gates separate.
+The invariants below describe V2/V3 production scoring. The new V1 has explicit user authorization for production;
+it uses `learned_rank_percentile_0_100` for ranking and retains `local_score` for action gates. Its new production
+decisions may execute, checkpoint, freeze first-wins, and enter official outcome history; its close fallback still
+requires its own model and cost gate. DeepSeek uses the configured shared physical-request budget and only provides
+verified risk vetoes. Keep `manual_user_override` separate from historical return validation and qualified Shadow
+evidence. Old V1 Shadow decisions retain their original authority and cannot be upgraded by profile name.
+V5 remains an independent TCN engineering Shadow profile using `local_score` for selection, without DeepSeek,
+formal freezing, checkpoints, or official outcome history. Trace every profile's model/contract/population identity
+through GET/SSE/Web; a preview run never acquires production persistence authority.
 
 - New Tomorrow and D25 decisions identify the shared 0–100 evidence-quality scale with
   `score_scale=weighted_evidence_quality_0_100`. The 0/50/100 anchors keep the same adverse/neutral/favorable meaning even
@@ -48,8 +53,9 @@ prove zero DeepSeek requests, and keep historical, qualified Shadow and producti
   records without `score_scale` keep their original relative-score meaning and are never relabeled, backfilled, or
   migrated in place.
 - Long remains outside the score, DeepSeek, TopK, and freeze chain.
-- Only V2/V3 and the authorized new V1 may name user-selected scoring profiles. Do not create another project version identity for a score-scale,
-  API, event, report, cache, dataset, or runtime change.
+- User-selected scoring profiles are V1/V2/V3/V5; use explicit nonempty comma-separated selections without the retired
+  `both` alias. Do not create another project version identity for a score-scale, API, event, report, cache, dataset,
+  or runtime change.
 
 ## Choose proof by the changed meaning
 

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
+
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "2_工程设计.md"
@@ -11,25 +15,25 @@ def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
-    assert "14:59:20（含）至 15:00（不含）" in design
+    assert "只保留15:00作为荐股封口控制节点" in design
+    assert "15:00冻结独立唤醒和执行" in design
     assert "有效 14:49:50 检查点" not in design
     assert "Tomorrow/D25 15:00 后" in strategy
     assert "Long：不冻结、不写推荐历史" in strategy
 
 
-def test_strategy_uses_current_decision_types_and_risk_aware_upper_bound() -> None:
+def test_decision_types_and_budget_belong_to_engineering_while_risk_belongs_to_scoring() -> None:
+    design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
-    assert "local `ScoredDecision`" in strategy
-    assert "hybrid `ScoredDecision`" in _compact(strategy)
-    assert "`UnifiedDecisionIndex`" in strategy
-    assert "`LongProjection`" in strategy
+    for name in ("local ScoredDecision", "hybrid ScoredDecision", "UnifiedDecisionIndex", "LongProjection"):
+        assert name in design
     assert "long 永远只发布 local" not in strategy
     assert "local/hybrid DecisionEpoch" not in strategy
     assert "mandatory_known_local_risk_penalty" in strategy
     assert "不得假定已确认风险消失" in strategy
-    assert "tomorrow 独占正常目标 36、硬上限 66" not in strategy
-    assert "tomorrow 独占目标 21、硬上限 38" in strategy
+    assert "tomorrow 独占正常目标 36、硬上限 66" not in design
+    assert "tomorrow 独占目标 21、硬上限 38" in design
 
 
 def test_authoritative_docs_keep_algorithm_and_product_ownership_separate() -> None:
@@ -53,6 +57,21 @@ def test_scoring_contract_preserves_strict_qfq_equivalence_boundary() -> None:
 
     assert contract in strategy
     assert "不得把一般未复权 `day` 标记为 qfq" in strategy
+
+
+def test_documented_profiles_and_action_thresholds_match_current_contracts() -> None:
+    strategy = STRATEGY.read_text(encoding="utf-8")
+    review = (ROOT / "docs/5_人工审查.md").read_text(encoding="utf-8")
+    selection = json.loads((ROOT / "config/selection.json").read_text(encoding="utf-8"))["selection"]
+    profiles = {profile.lower() for profile in re.findall(r"^\| (?:全新)?(V\d+) \|", strategy, re.MULTILINE)}
+    assert profiles == set(SCORING_PROFILE_IDS)
+    action_rows = re.findall(r"^\| (Tomorrow|D25) \| (\d+) \| (\d+) \| 回避 \|", strategy, re.MULTILINE)
+    assert len(action_rows) == 2
+    for name, execute, observe in action_rows:
+        threshold = selection["thresholds"][name.lower()]
+        assert float(execute) == threshold
+        assert float(observe) == threshold - selection["observation_margin"]
+        assert f"{name}{execute}/{observe}" in review.replace(" ", "")
 
 
 def _compact(content: str) -> str:

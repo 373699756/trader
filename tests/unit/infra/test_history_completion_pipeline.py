@@ -216,16 +216,21 @@ def test_short_tencent_response_reports_actual_price_rows():
         HistoryPriceCoverage(2000, 1435, 1435, 1435, 566)
 
 
+class _SampleSink:
+    def record_day(self, day, candidates, missing):
+        assert isinstance(day, date)
+        assert len(missing) == 5 and all(0 <= count <= candidates for count in missing)
+
+    def add_final(self, samples):
+        assert not samples
+
+
 @pytest.mark.parametrize("profile", [V2_TRAINING_PROFILE, V3_TRAINING_PROFILE])
 @pytest.mark.parametrize("explicit_suspension", [True, False])
-def test_training_calendar_gap_resets_features_and_never_shifts_tomorrow(profile, explicit_suspension):
-    class Sink:
-        def add_final(self, samples):
-            assert not samples
-
+def test_unaligned_price_gap_resets_features_and_never_shifts_tomorrow(profile, explicit_suspension):
     days = tuple(date(2025, 1, 1) + timedelta(days=i) for i in range(profile.history_sessions + 2))
     state = _SampleBuildState(
-        Sink(),
+        _SampleSink(),
         profile,
         None,
         len(days),
@@ -242,19 +247,17 @@ def test_training_calendar_gap_resets_features_and_never_shifts_tomorrow(profile
         HistoryTrainingRow("600001", days[-1], "main", "industry", HistoryTrainingPoint(days[-1], 11.0, 1000.0))
     )
     assert len(state.rolling_codes["600001"].points) == 1
-    assert candidate.future_returns == [None] * 5
+    assert candidate.future_returns[0] is None
+    assert candidate.future_returns[1] == pytest.approx(0.1)
+    assert candidate.future_returns[2:] == [None] * 3
     assert not state.pending_days[-1].samples
 
 
 @pytest.mark.parametrize("profile", [V2_TRAINING_PROFILE, V3_TRAINING_PROFILE])
 def test_inferred_suspension_preserves_trade_bar_features_but_not_tomorrow_label(profile):
-    class Sink:
-        def add_final(self, samples):
-            assert not samples
-
     days = tuple(date(2025, 1, 1) + timedelta(days=i) for i in range(profile.history_sessions + 2))
     state = _SampleBuildState(
-        Sink(),
+        _SampleSink(),
         profile,
         None,
         len(days),
@@ -265,7 +268,16 @@ def test_inferred_suspension_preserves_trade_bar_features_but_not_tomorrow_label
     for day in days[:-2]:
         state.accept(HistoryTrainingRow("600001", day, "main", "industry", HistoryTrainingPoint(day, 10.0, 1000.0)))
     candidate = state.pending_days[-1].samples["600001"]
-    state.accept(HistoryTrainingRow("600001", days[-2], "main", "industry", None, "tencent_inferred_suspended"))
+    state.accept(
+        HistoryTrainingRow(
+            "600001",
+            days[-2],
+            "main",
+            "industry",
+            HistoryTrainingPoint(days[-2], 10.0, 0.0),
+            "tencent_inferred_suspended",
+        )
+    )
     state.accept(
         HistoryTrainingRow("600001", days[-1], "main", "industry", HistoryTrainingPoint(days[-1], 11.0, 1000.0))
     )

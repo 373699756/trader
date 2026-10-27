@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime
-from types import SimpleNamespace
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.entrypoints import cli
+from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
@@ -26,15 +28,15 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
             ),
         )
     )
-    monkeypatch.setattr(
-        cli,
-        "LoadRuntimeSettings",
-        lambda _path: SimpleNamespace(
-            runtime_dir=tmp_path,
-            project_root=tmp_path,
-            data_paths=DataPaths(tmp_path / "data"),
-        ),
+    settings = replace(
+        LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"),
+        config_path=tmp_path / "runtime.json",
+        runtime_dir=tmp_path,
+        project_root=tmp_path,
+        data_paths=DataPaths(tmp_path / "data"),
+        storage_overrides=(),
     )
+    monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: settings)
 
     exit_code = cli.Main(
         [

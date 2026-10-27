@@ -197,7 +197,9 @@ def test_reminder_cli_reads_training_records_without_calculation_or_writes(
 
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda _path: settings)
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: NOW)
-    monkeypatch.setattr("trader.bootstrap.EvaluateAllHistoryTrainingDue", forbid_mutation)
+    monkeypatch.setattr(
+        "trader.training.infra.history.history_training_due.EvaluateHistoryTrainingDue", forbid_mutation
+    )
     monkeypatch.setattr(HistoryControlIndex, "initialize", forbid_mutation)
     for method in ("save_due_state", "claim_reminder", "save_reminder"):
         monkeypatch.setattr(TrainingMaintenanceIndex, method, forbid_mutation)

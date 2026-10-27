@@ -175,7 +175,9 @@ def MeasureModelWorkload(
             heads = _prepare_heads(workloads, changed=scenario == "single_stock_change")
             if scenario in {"exact_reuse", "single_stock_change"}:
                 tuple(executor.map(_score_head, _prepare_original(heads, workloads)))
-            profiled = tuple(executor.map(_profile_head, heads))
+            # Python 3.14 cProfile cannot activate these probes concurrently in one interpreter.
+            # Only counters are serial; the latency samples above still execute all heads concurrently.
+            profiled = tuple(_profile_head(head) for head in heads)
             if tuple(item.result_hash for item in profiled) != tuple(item.result_hash for item in observations):
                 raise ValueError("performance profiling changed model outputs")
             observations = profiled

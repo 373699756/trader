@@ -31,12 +31,15 @@ from trader.training.domain.training_reminder import (
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
-def test_training_date_move_preserves_the_existing_split_content_identity() -> None:
+def test_training_date_split_binds_current_label_and_partition_identity() -> None:
     from trader.training.domain.training_dates import BuildTrainingDateSplit
 
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
-    assert split.content_hash == "9c7c805bcdab66468686da327ad5539f21b8b3ccaf3896c9ea0be54a8afde327"
+    assert split.schema_version == "training_date_split"
+    assert len(split.early_stopping_dates) == len(split.calibration_dates) == 20
+    assert not split.terminal_holdout_opened and not split.production_authority
+    assert split.content_hash == "d81b2e56f29f2f021f720bf8d3aadaf641a389f66d1d639940e7d180ece55e4a"
 
 
 def test_download_history_hashes_keep_the_published_identity() -> None:

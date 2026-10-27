@@ -4,6 +4,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.helpers.scoring_profiles import IsScoringProfilePath
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCANNED_ROOTS = (
     PROJECT_ROOT / "src" / "trader",
@@ -14,15 +16,9 @@ SCANNED_ROOTS = (
 )
 TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".ps1", ".py", ".sh"}
 
-# V1/V2/V3 are reserved for user-selected scoring profiles and their
+# V1/V2/V3/V5 are reserved for user-selected scoring profiles and their
 # model/training identities. External supplier names and URLs are not
 # project version controls. Everything else must use a stable semantic name.
-ALLOWED_SCORING_PATH = re.compile(
-    r"(?:recommendation/infra/scoring/profiles/v[123](?:/|$)|training/infra/profile/v[123](?:/|$)|"
-    r"recommendation/(?:application/pipeline/local_score|domain/market)/v1/|"
-    r"training/(?:domain|entrypoints)/v1/|tests/(?:contract|unit/application|unit/infra)/v1/|"
-    r"tests/unit/recommendation/infra/scoring/test_v[123]_[a-z0-9_]+\.py$)"
-)
 PROHIBITED_PATH = re.compile(
     r"(?:^|/)(?:v\d+)(?:/|$)|"
     r"(?:^|/)(?:test_)?v\d+[_-]|"
@@ -56,7 +52,7 @@ def test_non_scoring_code_and_contracts_use_stable_semantic_names() -> None:
     for path in _tracked_paths():
         relative = path.relative_to(PROJECT_ROOT).as_posix()
         if any(path.is_relative_to(root) for root in SCANNED_ROOTS):
-            if PROHIBITED_PATH.search(relative) and not ALLOWED_SCORING_PATH.search(relative):
+            if PROHIBITED_PATH.search(relative) and not IsScoringProfilePath(path.relative_to(PROJECT_ROOT)):
                 path_violations.append(relative)
         if path.suffix not in TEXT_SUFFIXES or not any(path.is_relative_to(root) for root in SCANNED_ROOTS):
             continue

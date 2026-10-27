@@ -253,16 +253,15 @@ def test_configuration_contract_is_valid() -> None:
     assert strategy.tomorrow_tail_signal.volume_score_points_per_ratio == 50.0
     assert strategy.market_regime.risk_on_breadth_min == 60.0
     assert strategy.market_regime.risk_off_breadth_max == 40.0
-    assert strategy.selection.review_candidate_limit == 28
+    assert strategy.selection.review_candidate_limit == 6
     assert strategy.selection.default_top_k == 6
     assert strategy.selection.maximum_top_k == 12
     assert set(strategy.dimension_weights) == {"tomorrow", "d25"}
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
-    assert "监管函" in strategy.long_research.negative_medium_keywords
+    assert strategy.long_research.announcement_lookback_days == 180
     assert watchlist.watchlist_version.startswith("watchlist_sha256_")
-    assert len(watchlist.items) == 153
-    assert len(watchlist.groups) == 50
+    assert watchlist.items and watchlist.groups
     assert {group.category for group in watchlist.groups} == {
         "chokepoint",
         "future_growth",

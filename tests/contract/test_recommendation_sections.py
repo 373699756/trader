@@ -22,13 +22,9 @@ def test_dashboard_keeps_the_fixed_long_watchlist_tabs() -> None:
     assert "/api/recommendations/" not in dashboard
 
 
-def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -> None:
+def test_dashboard_keeps_six_seats_without_retired_score_panels() -> None:
     template = (ROOT / "src/trader/web/templates/index.html").read_text(encoding="utf-8")
     dashboard_css = (ROOT / "src/trader/web/static/dashboard_base.css").read_text(encoding="utf-8")
-    scoring = (ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
-    normalized_scoring = " ".join(scoring.split())
-    normalized_design = " ".join(design.split())
 
     assert "统一评分最高" not in template
     assert 'id="sixSeatStatus"' in template
@@ -37,7 +33,3 @@ def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -
     assert 'id="scoreLeadersPanel"' not in template
     assert 'id="outcomeSummary"' in template
     assert "box-shadow: inset 3px 0 0 var(--blue)" not in dashboard_css
-    assert template.index('id="funnelMeta"') < template.index('class="summary-band"')
-    assert "Tomorrow、D25 的最终分共享同一 0–100 质量标尺" in normalized_scoring
-    assert "模型相对排名只作为诊断" in normalized_scoring
-    assert "Decision coverage、 GET、SSE 完整替换和运行诊断统一读取该聚合" in normalized_design

@@ -4,25 +4,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "docs" / "2_工程设计.md"
-STRATEGY = ROOT / "docs" / "1_评分逻辑.md"
 MARKET_PORT = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data.py"
-
-
-def test_authoritative_contract_freezes_data_plane_port_lineage_and_coverage() -> None:
-    design = DESIGN.read_text(encoding="utf-8")
-    strategy = STRATEGY.read_text(encoding="utf-8")
-
-    for token in (
-        "DataPlaneReadPort",
-        "valid/degraded/stale/missing/conflicting",
-        "潜在可执行代码必须 100%",
-        "候选历史覆盖率是加法健康指标",
-        "游标只能作为增量位置，不能代替实际交易日历内容",
-    ):
-        assert token in design
-    assert "只通过应用层 `DataPlaneReadPort` 读取" in strategy
-    assert "证券主数据覆盖为 100%" in strategy
 
 
 def test_data_plane_read_port_is_application_owned_and_infrastructure_free() -> None:

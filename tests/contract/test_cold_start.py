@@ -14,6 +14,7 @@ from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -25,30 +26,31 @@ def _empty_config(tmp_path: Path) -> Path:
     return tmp_path / "config/runtime.json"
 
 
-@pytest.mark.parametrize("profile", ("v2", "v3", "both"))
+@pytest.mark.parametrize(
+    "profiles",
+    (*((profile,) for profile in SCORING_PROFILE_IDS), ("v1", "v5"), SCORING_PROFILE_IDS),
+    ids=lambda profiles: ",".join(profiles),
+)
 @pytest.mark.parametrize("hour,minute", ((8, 0), (10, 0), (12, 0), (14, 59), (15, 10), (20, 30)))
-def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatch, caplog, profile, hour, minute):
+def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatch, caplog, profiles, hour, minute):
     config = _empty_config(tmp_path)
     now = datetime(2026, 10, 9, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
     started = []
     monkeypatch.setattr(threading.Thread, "start", lambda thread: started.append(thread.name))
 
-    system = (
-        BuildProfiledSystem(config, profiles=("v2", "v3"))
-        if profile == "both"
-        else BuildSystem(config, scoring_profile=profile)
-    )
+    system = BuildProfiledSystem(config, profiles=profiles)
 
     client = system.app.test_client()
     assert client.get("/").status_code == 200
-    for selected in ("v2", "v3") if profile == "both" else (profile,):
+    for selected in profiles:
         payload = client.get(f"/api/status?profile={selected}").get_json()
         scoring = payload["scoring_profile"]
         assert scoring["profile_id"] == selected
         assert set(scoring["heads"]) == {"tomorrow", "d25"}
         for head in scoring["heads"].values():
             assert head["active"] is False
+            assert head["production_authority"] is (selected != "v5")
             assert head["model_hash"] == ""
             assert head["historical_failure_reasons"] == ["production_model_missing"]
         assert "./run.sh train" in caplog.text

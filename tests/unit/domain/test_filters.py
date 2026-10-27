@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -108,6 +109,7 @@ def test_liquidity_history_is_required_with_exact_boundary(
 
 
 def test_quote_age_boundary_and_future_quote_are_auditable(feature_factory, observed_at) -> None:
+    observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai")).replace(hour=14, minute=0, second=0, microsecond=0)
     exact = feature_factory()
     exact = replace(exact, quote=replace(exact.quote, source_time=observed_at - timedelta(seconds=20)))
     stale = replace(exact, quote=replace(exact.quote, source_time=observed_at - timedelta(seconds=20.001)))
@@ -182,6 +184,7 @@ def test_filter_registry_separates_permanent_issuer_and_dynamic_runtime_rules() 
 
 
 def test_missing_and_stale_inputs_are_deferred_not_business_rejections(feature_factory, observed_at) -> None:
+    observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai")).replace(hour=14, minute=0, second=0, microsecond=0)
     stale = replace(
         feature_factory(values={"amount_median_20d": None}),
         quote=replace(feature_factory().quote, source_time=observed_at - timedelta(seconds=21)),

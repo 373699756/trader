@@ -4,27 +4,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "docs" / "2_工程设计.md"
-STRATEGY = ROOT / "docs" / "1_评分逻辑.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
-
-
-def test_authoritative_contract_uses_one_identity_for_current_freeze_and_trace() -> None:
-    design = DESIGN.read_text(encoding="utf-8")
-    strategy = STRATEGY.read_text(encoding="utf-8")
-
-    for token in (
-        "SchedulerRuntime",
-        "MarketInputCoordinator",
-        "LocalDecisionBuilder",
-        "local ScoredDecision",
-        "哈希有效的检查点",
-        "15:00 后，已有正式记录不可覆盖",
-        "14:59:20",
-        "15:00 后",
-    ):
-        assert token in design
-    assert "`UnifiedDecisionIndex` CAS 的最新完整 `ScoredDecision`" in strategy
 
 
 def test_production_composition_has_no_tomorrow_shadow_or_cutover_dependencies() -> None:

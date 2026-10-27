@@ -88,7 +88,7 @@ def test_http_api_type_resource_and_business_entrypoints_are_packaged() -> None:
 
     assert package_data["trader.http_api"] == ["py.typed"]
     assert (repository / "src/trader/http_api/py.typed").is_file()
-    assert (repository / "src/trader/download/entrypoints/history_automation_projection.py").is_file()
+    assert (repository / "src/trader/download/entrypoints/history_maintenance_projection.py").is_file()
     assert (repository / "src/trader/training/entrypoints/tomorrow_training_progress.py").is_file()
     assert not (repository / "src/trader/entrypoints/history_automation_projection.py").exists()
     assert not (repository / "src/trader/entrypoints/tomorrow_training_progress.py").exists()

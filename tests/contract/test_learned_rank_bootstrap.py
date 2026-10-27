@@ -29,13 +29,15 @@ def test_explicit_v1_build_is_lazy_authorized_and_binds_complete_published_histo
     assert system.market_data.history._history.publication._root == tmp_path / "data/market/history"
     assert not (tmp_path / "data/recommendation").exists()
     assert not (tmp_path / "runtime").exists()
-    both = BuildProfiledSystem(path, profiles=("v2", "v3"))
-    assert tuple(item.profile_id for item in both.systems) == ("v2", "v3")
-    assert both.systems[0].workers.market_cache is both.systems[1].workers.market_cache
-    assert both.systems[0].budget is both.systems[1].budget
-    assert both.systems[0].review_cache is both.systems[1].review_cache
-    assert both.systems[0].input_preloader is both.systems[1].input_preloader
-    assert both.systems[0].market_data.history.projection_owner is both.systems[1].market_data.history.projection_owner
+    group = BuildProfiledSystem(path, profiles=("v1", "v5"))
+    assert tuple(item.profile_id for item in group.systems) == ("v1", "v5")
+    assert group.systems[0].workers.market_cache is group.systems[1].workers.market_cache
+    assert group.systems[0].budget is group.systems[1].budget
+    assert group.systems[0].review_cache is group.systems[1].review_cache
+    assert group.systems[0].input_preloader is group.systems[1].input_preloader
+    assert (
+        group.systems[0].market_data.history.projection_owner is group.systems[1].market_data.history.projection_owner
+    )
 
 
 def test_v1_cli_and_diagnostics_require_its_own_model_artifacts(tmp_path: Path) -> None:

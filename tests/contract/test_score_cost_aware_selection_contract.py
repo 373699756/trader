@@ -8,8 +8,7 @@ from trader.training.domain.evaluation.cost_aware_selection import COST_AWARE_UT
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_cost_aware_selection_is_documented_and_exploratory_only() -> None:
-    strategy = (ROOT / "docs" / "1_评分逻辑.md").read_text(encoding="utf-8")
+def test_cost_aware_selection_keeps_utility_fields_and_research_isolation() -> None:
     source_paths = (
         ROOT / "src" / "trader" / "training" / "domain" / "evaluation" / "cost_aware_selection.py",
         ROOT / "src" / "trader" / "training" / "application" / "cost_aware_selection.py",
@@ -17,9 +16,7 @@ def test_cost_aware_selection_is_documented_and_exploratory_only() -> None:
     )
 
     assert COST_AWARE_UTILITY_FIELDS == ("gross_expected_excess", "estimated_cost")
-    assert "`SelectionUtility` 只在隔离研究中计算" in strategy
     assert "score_tomorrow_cost_aware_selection_report" in source_paths[2].read_text(encoding="utf-8")
-    assert "成本不得把评分统一清零" in strategy
     for path in source_paths:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imports = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names} | {

@@ -8,8 +8,8 @@ from trader.recommendation.domain.scoring.profile_identity import (
 )
 
 
-def test_profile_identity_includes_new_v1_alongside_two_production_profiles() -> None:
-    assert SCORING_PROFILE_IDS == ("v1", "v2", "v3")
+def test_profile_identity_includes_production_profiles_and_v5_shadow() -> None:
+    assert SCORING_PROFILE_IDS == ("v1", "v2", "v3", "v5")
     assert tuple(ParseScoringProfile(value) for value in SCORING_PROFILE_IDS) == SCORING_PROFILE_IDS
 
 

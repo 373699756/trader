@@ -96,12 +96,10 @@ _RECOMMENDATION_CONTRACT_PATHS = frozenset(
         "contract/test_decision_contract.py",
         "contract/test_feature_contract_unification.py",
         "contract/test_long_contract.py",
-        "contract/test_realtime_pipeline_contract.py",
         "contract/test_recommendation_sections.py",
         "contract/test_runtime_contract.py",
         "contract/test_source_capability.py",
         "contract/test_tomorrow_contract.py",
-        "contract/test_two_level_hard_filter_contract.py",
         "contract/test_web_contract.py",
     }
 )
