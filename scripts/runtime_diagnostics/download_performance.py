@@ -16,8 +16,9 @@ from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_codec import DecodeCompanyPublication
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, PriceAdjustment

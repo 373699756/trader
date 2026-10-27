@@ -21,7 +21,7 @@ from .reporting import emit_report
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceReader  # noqa: E402
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader  # noqa: E402
 from trader.download.infra.reference_publication import ReferencePublication  # noqa: E402
 from trader.infra.settings.loading import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings  # noqa: E402
 from trader.infra.sqlite_connection import SqliteConnectionOptions  # noqa: E402

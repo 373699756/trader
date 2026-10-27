@@ -25,7 +25,8 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpResponse, HttpTimeout
 from trader.infra.sqlite_connection import (
@@ -36,7 +37,9 @@ from trader.infra.sqlite_connection import (
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
-_TEST_COMPANY_CONFIGURATION = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
+_TEST_COMPANY_CONFIGURATION = replace(
+    LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2]), document_workers=1
+)
 
 
 def _sync_company_evidence(
@@ -171,9 +174,9 @@ def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp
     publications = []
     publish = index.publish
 
-    def tracked_publish(codes, observed_at):
+    def tracked_publish(codes, observed_at, **kwargs):
         publications.append(tuple(codes))
-        return publish(codes, observed_at)
+        return publish(codes, observed_at, **kwargs)
 
     def progress(event):
         nonlocal cancelled

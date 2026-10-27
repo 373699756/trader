@@ -93,6 +93,8 @@ class DiagnosticOptions:
     company_replay_directory: Path | None = None
     company_query_audit: bool = False
     company_storage_audit: bool = False
+    company_pagination_audit: bool = False
+    company_pipeline_audit: bool = False
     v5_probe_directory: Path | None = None
     v5_kernel_probe: bool = False
     training_probe_directory: Path | None = None

@@ -1,0 +1,132 @@
+"""Durable work indexes for bounded company batches; facts and checkpoints keep their owners."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import datetime, timedelta
+
+from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
+from trader.download.domain.company_evidence import Disclosure, DisclosurePartition, EvidenceMarket, Market
+from trader.download.infra.company_facts_codec import COMPANY_EXTRACTION_IDENTITY
+from trader.infra.sqlite_connection import SqliteConnection
+
+
+def EnsureCompanyPipelineQueries(connection: SqliteConnection) -> None:
+    connection.run("CREATE TABLE IF NOT EXISTS company_dirty_codes(code TEXT PRIMARY KEY) WITHOUT ROWID")
+    connection.run(
+        "CREATE TABLE IF NOT EXISTS company_document_requirements(disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE)"
+    )
+    connection.run(
+        "CREATE TABLE IF NOT EXISTS company_work_policy(singleton INTEGER PRIMARY KEY CHECK(singleton=1),identity TEXT NOT NULL)"
+    )
+    connection.run(
+        "CREATE TABLE IF NOT EXISTS disclosure_query_contracts(market TEXT NOT NULL,start TEXT NOT NULL,end TEXT NOT NULL,scope TEXT NOT NULL,page_size INTEGER NOT NULL CHECK(page_size=30),filter_identity TEXT NOT NULL CHECK(filter_identity='all_announcements'),PRIMARY KEY(market,start,end,scope)) WITHOUT ROWID"
+    )
+    connection.run(
+        "INSERT OR IGNORE INTO disclosure_query_contracts SELECT market,start,end,'',30,'all_announcements' FROM partitions"
+    )
+    connection.run(
+        "INSERT OR IGNORE INTO disclosure_query_contracts SELECT market,start,end,scope,30,'all_announcements' FROM disclosure_queries"
+    )
+    saved = connection.run("SELECT identity FROM company_work_policy WHERE singleton=1").fetchone()
+    if saved is not None and saved[0] == COMPANY_EXTRACTION_IDENTITY:
+        return
+    connection.run("DELETE FROM company_document_requirements")
+    rows = connection.run("SELECT id,title FROM disclosures WHERE kind='announcement'")
+    while batch := rows.fetchmany(512):
+        connection.run_many(
+            "INSERT INTO company_document_requirements VALUES(?)",
+            ((row[0],) for row in batch if CompanyDocumentNeedsReview(row[1])),
+        )
+    connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM published")
+    connection.run("INSERT OR REPLACE INTO company_work_policy VALUES(1,?)", (COMPANY_EXTRACTION_IDENTITY,))
+
+
+def CheckDisclosureQueryContract(connection: SqliteConnection, partition: DisclosurePartition) -> None:
+    key = (partition.market, str(partition.start), str(partition.end), partition.query.key if partition.query else "")
+    if partition.page_size != 30 or partition.filter_identity != "all_announcements":
+        raise ValueError("company_query_contract_unverified")
+    row = connection.run(
+        "SELECT page_size,filter_identity FROM disclosure_query_contracts WHERE market=? AND start=? AND end=? AND scope=?",
+        key,
+    ).fetchone()
+    if row is not None and tuple(row) != (partition.page_size, partition.filter_identity):
+        raise ValueError("company_query_contract_mismatch")
+    connection.run(
+        "INSERT OR IGNORE INTO disclosure_query_contracts VALUES(?,?,?,?,?,?)",
+        (*key, partition.page_size, partition.filter_identity),
+    )
+
+
+def MarkCompanyDirty(connection: SqliteConnection, codes: Sequence[str]) -> None:
+    connection.run_many("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", ((code,) for code in codes))
+
+
+def MarkCompanyMarketDirty(connection: SqliteConnection, market: Market) -> None:
+    MarkCompanyDirty(
+        connection,
+        tuple(str(row[0]) for row in connection.run("SELECT code FROM published") if EvidenceMarket(row[0]) == market),
+    )
+
+
+def IndexCompanyDocument(connection: SqliteConnection, rows: Sequence[Disclosure]) -> None:
+    connection.run_many(
+        "INSERT OR IGNORE INTO company_document_requirements SELECT id FROM disclosures WHERE source=? AND source_id=?",
+        (
+            (item.source, item.identity)
+            for item in rows
+            if item.kind == "announcement" and CompanyDocumentNeedsReview(item.title)
+        ),
+    )
+    connection.run_many(
+        "DELETE FROM company_document_requirements WHERE disclosure_id IN (SELECT id FROM disclosures WHERE source=? AND source_id=?)",
+        (
+            (item.source, item.identity)
+            for item in rows
+            if item.kind != "announcement" or not CompanyDocumentNeedsReview(item.title)
+        ),
+    )
+
+
+def PrepareCompanyPublication(connection: SqliteConnection, codes: tuple[str, ...], at: datetime) -> None:
+    publication = connection.run("SELECT published_at FROM publication WHERE singleton=1").fetchone()
+    if publication is None or datetime.fromisoformat(publication[0]).date() != at.date():
+        MarkCompanyDirty(connection, codes)
+    else:
+        existing = {str(row[0]) for row in connection.run("SELECT code FROM published")}
+        MarkCompanyDirty(connection, tuple(code for code in codes if code not in existing))
+
+
+def SelectCompanyDocuments(
+    connection: SqliteConnection,
+    codes: Sequence[str],
+    at: datetime,
+    policy: str,
+    excluded: Sequence[tuple[str, str, str]],
+) -> None:
+    connection.run("CREATE TEMP TABLE requested_codes(code TEXT PRIMARY KEY) WITHOUT ROWID")
+    connection.run_many("INSERT OR IGNORE INTO temp.requested_codes VALUES(?)", ((code,) for code in codes))
+    connection.run(
+        "CREATE TEMP TABLE attempted_documents(source TEXT,source_id TEXT,digest TEXT,PRIMARY KEY(source,source_id,digest)) WITHOUT ROWID"
+    )
+    connection.run_many("INSERT INTO temp.attempted_documents VALUES(?,?,?)", excluded)
+    connection.run(
+        "CREATE TEMP TABLE pending_documents AS SELECT d.id, CASE WHEN r.retry_after>? OR EXISTS(SELECT 1 FROM temp.attempted_documents a "
+        "WHERE a.source=d.source AND a.source_id=d.source_id AND a.digest=d.digest) THEN 0 ELSE 1 END AS due "
+        "FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
+        "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.digest=d.digest AND r.policy=? "
+        "WHERE d.body_checked=0 AND d.published_at>=? AND d.published_at<=? "
+        "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN temp.requested_codes p ON p.code=c.code WHERE c.disclosure_id=d.id)",
+        (at.isoformat(), policy, (at.date() - timedelta(days=365)).isoformat(), at.isoformat()),
+    )
+
+
+__all__ = [
+    "EnsureCompanyPipelineQueries",
+    "CheckDisclosureQueryContract",
+    "MarkCompanyDirty",
+    "MarkCompanyMarketDirty",
+    "IndexCompanyDocument",
+    "PrepareCompanyPublication",
+    "SelectCompanyDocuments",
+]

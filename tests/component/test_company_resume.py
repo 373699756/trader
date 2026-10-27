@@ -10,7 +10,8 @@ from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 NOW = fixtures.NOW
@@ -21,13 +22,13 @@ def test_document_inventory_switches_progress_before_reading_after_announcement_
     inventories = []
 
     class Index(SQLiteCompanyEvidenceIndex):
-        def pending_documents(self, codes, observed_at):
+        def pending_documents(self, codes, observed_at, **kwargs):
             if not inventories:
                 assert events[-2].component == "announcements" and events[-2].status == "deferred"
                 assert events[-1].component == "risk_documents" and events[-1].status == "running"
                 assert events[-1].pending is None and events[-1].completed == 0
             inventories.append(True)
-            return super().pending_documents(codes, observed_at)
+            return super().pending_documents(codes, observed_at, **kwargs)
 
     class Source(fixtures.Sources):
         def fetch(self, query, *args, **kwargs):

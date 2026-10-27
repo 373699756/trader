@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 from collections import deque
 from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import Literal, Protocol
 
 from trader.download.domain.company_evidence import (
     CompanyDateProgress,
+    CompanyDocumentWorkload,
     CompanyEvidenceSyncResult,
     CompanySourceFailure,
     CompanyStockProgress,
@@ -21,7 +23,6 @@ from trader.download.domain.company_evidence import (
     DisclosurePartition,
     DisclosureQuery,
     DisclosureSecurity,
-    DocumentRetry,
     EvidenceMarket,
     EvidenceProgressState,
     EvidenceSyncProgress,
@@ -29,6 +30,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
+from trader.infra.workers import SubmitOrReject, WorkerExecutor, WorkerResourceRejectedError
 
 
 class CompanyEvidenceIndex(Protocol):
@@ -50,9 +52,19 @@ class CompanyEvidenceIndex(Protocol):
     ) -> None: ...
     def partition_retry_after(self, partition: DisclosurePartition) -> datetime | None: ...
     def defer_partition(self, partition: DisclosurePartition, retry_after: datetime) -> None: ...
-    def pending_documents(self, codes: Sequence[str], observed_at: datetime) -> tuple[Disclosure, ...]: ...
-    def commit_document(self, item: Disclosure, text: str) -> None: ...
-    def document_retry(self, item: Disclosure, policy: str) -> DocumentRetry | None: ...
+    def pending_documents(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        limit: int | None = None,
+        policy: str = "",
+        excluded: Sequence[tuple[str, str, str]] = (),
+    ) -> tuple[Disclosure, ...]: ...
+    def document_workload(
+        self, codes: Sequence[str], observed_at: datetime, policy: str, *, excluded: Sequence[tuple[str, str, str]] = ()
+    ) -> CompanyDocumentWorkload: ...
+    def commit_document(self, item: Disclosure, text: str) -> bool: ...
     def document_failure(
         self, item: Disclosure, policy: str, failure: str, attempted_at: datetime, retry_after: datetime
     ) -> None: ...
@@ -64,7 +76,10 @@ class CompanyEvidenceIndex(Protocol):
     ) -> int: ...
     def component_failure(self, component: str, scope: str, failure: str) -> None: ...
     def commit_news(self, code: str, rows: Sequence[Disclosure], observed_at: datetime) -> int: ...
-    def publish(self, codes: Sequence[str], observed_at: datetime) -> int: ...
+    def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> None: ...
+    def published_count(self, codes: Sequence[str]) -> int: ...
+    def publish(self, codes: Sequence[str], observed_at: datetime, *, changed_only: bool = False) -> int: ...
+    def finish(self, observed_at: datetime) -> None: ...
 
 
 class CompanyDisclosureSource(Protocol):
@@ -96,6 +111,8 @@ class CompanyEvidenceDependencies:
     progress: Callable[[EvidenceSyncProgress], None] | None = None
     cancel_requested: Callable[[], bool] | None = None
     stock_names: tuple[tuple[str, str], ...] = ()
+    document_sources: tuple[CompanyDisclosureSource, ...] = ()
+    document_executor: WorkerExecutor | None = None
 
 
 @dataclass
@@ -107,6 +124,7 @@ class _SyncState:
     current_stock: CompanyStockProgress | None = None
     failures: tuple[str, ...] = ()
     failed_documents: int = 0
+    batch: int = 0
 
 
 @dataclass
@@ -145,8 +163,11 @@ def SyncCompanyEvidence(
     index = dependencies.index
     state = _SyncState()
     population = _validated_population(codes)
+    context = _CompanyRunContext(observed_at, started, configuration)
+    documents = _DocumentRun(dependencies, population, state, context)
     if not _cancelled(dependencies):
         index.initialize()
+        index.prepare_publication(population, observed_at)
     news_population = tuple(sorted(set(news_codes).intersection(population)))
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
@@ -156,43 +177,17 @@ def SyncCompanyEvidence(
             _report(dependencies, component, state, None, completed=0, status="deferred")
             continue
         _structured(dependencies, component, observed_at, state)
-    pending = published = 0
-    if not _cancelled(dependencies):
-        pending = _announcements(
-            dependencies,
-            population,
-            state,
-            _AnnouncementContext(observed_at, started, configuration),
-        )
-    if not _cancelled(dependencies):
-        _documents(
-            dependencies,
-            population,
-            observed_at,
-            state,
-            configuration,
-            started,
-        )
-    if not _cancelled(dependencies):
-        _report(dependencies, "facts", state, len(population), completed=0)
-        if not _cancelled(dependencies):
-            published = index.publish(
-                population, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
-            )
-            _report(dependencies, "publish", state, len(population) - published, completed=published, status="complete")
+    pending, published = (
+        (0, 0) if _cancelled(dependencies) else _run_batches(dependencies, population, state, context, documents)
+    )
     news_updates = () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
     if news_updates and not _cancelled(dependencies):
-        _report(dependencies, "facts", state, len(news_updates), completed=0)
-        if not _cancelled(dependencies):
-            updated = index.publish(
-                news_updates, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
-            )
-            _report(dependencies, "publish", state, len(news_updates) - updated, completed=updated, status="complete")
+        _publish_batch(dependencies, population, observed_at, started, state)
     if _cancelled(dependencies):
         state.failures += ("task:cancelled",)
-    pending_documents = (
-        0 if _cancelled(dependencies) else len(_unique_documents(index.pending_documents(population, observed_at)))
-    )
+    pending_documents = 0 if _cancelled(dependencies) else documents.workload().pending
+    if not _cancelled(dependencies):
+        index.finish(observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started)))
     if pending_documents:
         state.failures += ("risk_documents:pending",)
     _report(
@@ -220,6 +215,50 @@ def SyncCompanyEvidence(
     )
 
 
+def _run_batches(
+    dependencies: CompanyEvidenceDependencies,
+    population: tuple[str, ...],
+    state: _SyncState,
+    context: _CompanyRunContext,
+    documents: _DocumentRun,
+) -> tuple[int, int]:
+    pending = published = 0
+    announcements = _AnnouncementRun(dependencies, state, context)
+    announcements.prepare(population)
+    while not _cancelled(dependencies):
+        state.batch += 1
+        pending = announcements.run_batch(context.configuration.directory_batch_pages)
+        if not _cancelled(dependencies):
+            documents.run_batch()
+        if not _cancelled(dependencies):
+            count = _publish_batch(dependencies, population, context.observed_at, context.started, state)
+            if count is not None:
+                published = count
+        if not announcements.can_continue and (documents.stopped or not documents.has_due()):
+            break
+    if not _cancelled(dependencies):
+        published = dependencies.index.published_count(population)
+    return pending, published
+
+
+def _publish_batch(
+    dependencies: CompanyEvidenceDependencies,
+    population: tuple[str, ...],
+    observed_at: datetime,
+    started: float,
+    state: _SyncState,
+) -> int | None:
+    _report(dependencies, "facts", state, len(population), completed=0)
+    if not _cancelled(dependencies):
+        updated = dependencies.index.publish(
+            population, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started)), changed_only=True
+        )
+        published = dependencies.index.published_count(population)
+        _report(dependencies, "publish", state, 0, completed=updated, status="complete")
+        return published
+    return None
+
+
 def _validated_population(codes: Sequence[str]) -> tuple[str, ...]:
     population = tuple(sorted(set(codes)))
     if not population:
@@ -230,7 +269,7 @@ def _validated_population(codes: Sequence[str]) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class _AnnouncementContext:
+class _CompanyRunContext:
     observed_at: datetime
     started: float
     configuration: CompanySyncConfiguration
@@ -240,24 +279,33 @@ class _AnnouncementRun:
     """Own the dispatch queue and failure circuit for one announcement stage."""
 
     def __init__(
-        self, dependencies: CompanyEvidenceDependencies, state: _SyncState, context: _AnnouncementContext
+        self, dependencies: CompanyEvidenceDependencies, state: _SyncState, context: _CompanyRunContext
     ) -> None:
         self._dependencies, self._state, self._context = dependencies, state, context
         self._index = dependencies.index
         self._queue: deque[DisclosurePartition] = deque()
         self._deferred: set[tuple[Market, date, date, str]] = set()
         self._circuit = _SourceCircuit()
+        self._stopped = False
 
-    def run(self, population: tuple[str, ...]) -> int:
+    def prepare(self, population: tuple[str, ...]) -> None:
         dependencies, state = self._dependencies, self._state
         _report(dependencies, "announcements", state, None)
         if _cancelled(dependencies):
-            return 0
+            return
         markets = tuple(sorted({EvidenceMarket(code) for code in population}))
         self._queue = deque(self._index.partitions(markets, self._context.observed_at))
         state.reused += self._index.reusable_partitions(markets, self._context.observed_at)
         self._report()
-        while self._queue and not _cancelled(dependencies):
+
+    @property
+    def can_continue(self) -> bool:
+        return bool(self._queue) and not self._stopped
+
+    def run_batch(self, max_pages: int) -> int:
+        dependencies, state = self._dependencies, self._state
+        initial_pages = state.pages
+        while self.can_continue and not _cancelled(dependencies) and state.pages - initial_pages < max_pages:
             partition = self._queue.popleft()
             self._report(partition, include_current=True)
             if _cancelled(dependencies):
@@ -267,9 +315,10 @@ class _AnnouncementRun:
                 self._consume(partition)
             except (OSError, RuntimeError, ValueError) as exc:
                 if self._failed(partition, exc):
+                    self._stopped = True
                     break
         pending = _pending_count(self._queue, self._deferred)
-        self._report(status="deferred" if pending else "complete")
+        self._report(status=("deferred" if not self.can_continue else "running") if pending else "complete")
         return pending
 
     def _now(self) -> datetime:
@@ -286,6 +335,7 @@ class _AnnouncementRun:
         activity: Literal["download", "repair"] = "download",
     ) -> None:
         current = partition if include_current else None
+        queued = (*self._queue, *((current,) if current else ()))
         _report(
             self._dependencies,
             "announcements",
@@ -295,6 +345,12 @@ class _AnnouncementRun:
             dates=_date_progress(self._context.observed_at.date(), self._queue, self._deferred, current),
             status=status,
             activity=activity,
+            known_pages=sum(
+                max(0, (item.expected_rows + item.page_size - 1) // item.page_size - item.page + 1)
+                for item in queued
+                if item.expected_rows is not None
+            ),
+            unknown_queries=sum(item.expected_rows is None for item in queued),
         )
 
     def _consume(self, partition: DisclosurePartition) -> None:
@@ -407,15 +463,6 @@ class _AnnouncementRun:
         return stopped
 
 
-def _announcements(
-    dependencies: CompanyEvidenceDependencies,
-    population: tuple[str, ...],
-    state: _SyncState,
-    context: _AnnouncementContext,
-) -> int:
-    return _AnnouncementRun(dependencies, state, context).run(population)
-
-
 def _replace_split_queue(
     queue: deque[DisclosurePartition],
     parent: DisclosurePartition,
@@ -486,115 +533,169 @@ def _replace_query_queue(
     )
 
 
-def _documents(
-    dependencies: CompanyEvidenceDependencies,
-    population: tuple[str, ...],
-    observed_at: datetime,
-    state: _SyncState,
-    configuration: CompanySyncConfiguration,
-    started: float,
-) -> None:
-    index = dependencies.index
-    state.current_stock = None
-    _report(dependencies, "risk_documents", state, None, completed=0)
-    pending_documents = deque(_unique_documents(index.pending_documents(population, observed_at)))
-    total = len(pending_documents)
-    completed = attempted = deferred = 0
-    limits = configuration.document_limits
-    policy = f"text_diagnostics_2:{configuration.document_parse_timeout_seconds}:{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
-    circuit = _SourceCircuit()
-    _report(dependencies, "risk_documents", state, total, completed=0)
-    while pending_documents and not _cancelled(dependencies):
-        item = pending_documents.popleft()
-        _prepare_stock_progress(dependencies, state, item.codes[0])
-        now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
-        retry = index.document_retry(item, policy)
-        if retry is not None and retry.retry_after > now:
-            deferred += 1
-            state.failures += (f"risk_documents:{retry.failure}",)
-            _report(
-                dependencies,
-                "risk_documents",
-                state,
-                total - completed,
-                completed=completed,
-                attempted_documents=attempted,
-                deferred_documents=deferred,
-            )
-            continue
-        attempted += 1
-        _report(
-            dependencies,
-            "risk_documents",
-            state,
-            total - completed,
-            completed=completed,
-            attempted_documents=attempted,
-            deferred_documents=deferred,
+class _DocumentRun:
+    """Bounded network/parse work; only this caller commits results and retry state."""
+
+    def __init__(
+        self,
+        dependencies: CompanyEvidenceDependencies,
+        population: tuple[str, ...],
+        state: _SyncState,
+        context: _CompanyRunContext,
+    ) -> None:
+        configuration = context.configuration
+        self.dependencies, self.population, self.observed_at = dependencies, population, context.observed_at
+        self.state, self.configuration, self.started = state, configuration, context.started
+        self.sources = dependencies.document_sources
+        if configuration.document_workers == 1 and not self.sources:
+            self.sources = (dependencies.disclosures,)
+        if len(self.sources) != configuration.document_workers or len({id(source) for source in self.sources}) != len(
+            self.sources
+        ):
+            raise ValueError("company_document_sources_invalid")
+        if configuration.document_workers > 1 and dependencies.document_executor is None:
+            raise ValueError("company_document_executor_required")
+        self.executor = dependencies.document_executor
+        self.failed_identities: set[tuple[str, str, str]] = set()
+        limits = configuration.document_limits
+        self.policy = f"text_diagnostics_2:{configuration.document_parse_timeout_seconds}:{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
+        self.circuit = _SourceCircuit()
+        self.stopped = False
+        self.completed = self.attempted = 0
+        self.elapsed = 0.0
+        self.batch_started: float | None = None
+
+    def now(self) -> datetime:
+        return self.observed_at + timedelta(seconds=max(0, self.dependencies.monotonic() - self.started))
+
+    def workload(self) -> CompanyDocumentWorkload:
+        return self.dependencies.index.document_workload(
+            self.population, self.now(), self.policy, excluded=tuple(self.failed_identities)
         )
+
+    def has_due(self) -> bool:
+        return not _cancelled(self.dependencies) and self.workload().due > 0
+
+    def run_batch(self) -> None:
+        dependencies, index = self.dependencies, self.dependencies.index
+        if self.stopped or _cancelled(dependencies):
+            return
+        self.state.current_stock = None
+        _report(dependencies, "risk_documents", self.state, None, completed=self.completed)
         if _cancelled(dependencies):
-            break
-        try:
-            text = dependencies.disclosures.document(item)
-            circuit.success()
-            index.commit_document(item, text)
-            completed += 1
-            state.changes += 1
-        except (OSError, RuntimeError, ValueError) as exc:
-            if _cancelled(dependencies):
-                break
-            if str(exc) == "company_evidence_persistence_unavailable":
-                raise
-            failure = _failure(exc)
-            state.failed_documents += 1
-            state.failures += (f"risk_documents:{failure}",)
-            if not _cancelled(dependencies):
-                delay = _document_retry_seconds(configuration, exc)
-                now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
-                index.document_failure(item, policy, failure, now, now + timedelta(seconds=delay))
-            if not _cancelled(dependencies) and not circuit.failed(exc):
-                _report(
-                    dependencies,
-                    "risk_documents",
-                    state,
-                    total - completed,
-                    completed=completed,
-                    attempted_documents=attempted,
-                    deferred_documents=deferred,
-                )
-                continue  # One unreadable or slow PDF must not starve the other documents.
-            if not _cancelled(dependencies):
-                state.failures += ("risk_documents:source_stopped",)
-            break
-        _report(
-            dependencies,
-            "risk_documents",
-            state,
-            total - completed,
-            completed=completed,
-            attempted_documents=attempted,
-            deferred_documents=deferred,
+            return
+        workload = self.workload()
+        queue = deque(
+            index.pending_documents(
+                self.population,
+                self.now(),
+                limit=self.configuration.document_batch_size,
+                policy=self.policy,
+                excluded=tuple(self.failed_identities),
+            )
         )
-    _report(
-        dependencies,
-        "risk_documents",
-        state,
-        total - completed,
-        completed=completed,
-        status="complete" if completed == total else "deferred",
-        attempted_documents=attempted,
-        deferred_documents=deferred,
-    )
+        active: dict[Future[str], tuple[int, Disclosure]] = {}
+        available = deque(range(len(self.sources)))
+        completed_before = self.completed
+        self.batch_started = dependencies.monotonic()
+        self.report(workload, completed_before)
+        while queue or active:
+            while queue and available and not self.stopped and not _cancelled(dependencies):
+                slot = available.popleft()
+                item = queue.popleft()
+                _prepare_stock_progress(dependencies, self.state, item.codes[0])
+                self.report(workload, completed_before)
+                if _cancelled(dependencies):
+                    break
+                active[self._submit(self.sources[slot], item)] = (slot, item)
+                self.attempted += 1
+            if self.stopped or _cancelled(dependencies):
+                queue.clear()
+                for future in active:
+                    future.cancel()
+            if not active:
+                break
+            done, _ = wait(active, timeout=0.1, return_when=FIRST_COMPLETED)
+            for future in done:
+                slot, item = active.pop(future)
+                available.append(slot)
+                self._accept(future, item)
+                self.report(workload, completed_before)
+        self.elapsed += max(0.0, dependencies.monotonic() - self.batch_started)
+        self.batch_started = None
+        self.report(
+            workload,
+            completed_before,
+            status="deferred" if self.stopped or workload.pending > self.completed - completed_before else "complete",
+        )
+
+    def _accept(self, future: Future[str], item: Disclosure) -> None:
+        if future.cancelled():
+            return
+        _prepare_stock_progress(self.dependencies, self.state, item.codes[0])
+        try:
+            text = future.result()
+        except WorkerResourceRejectedError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            if not _cancelled(self.dependencies):
+                self.failed(item, exc)
+        else:
+            self.circuit.success()
+            if self.dependencies.index.commit_document(item, text):
+                self.completed += 1
+                self.state.changes += 1
+
+    def _submit(self, source: CompanyDisclosureSource, item: Disclosure) -> Future[str]:
+        if self.executor is not None:
+            return SubmitOrReject(self.executor, source.document, item)
+        # Explicit single-worker configuration also supports caller-thread execution.
+        completed: Future[str] = Future()
+        try:
+            completed.set_result(source.document(item))
+        except (OSError, RuntimeError, ValueError) as exc:
+            completed.set_exception(exc)
+        return completed
+
+    def failed(self, item: Disclosure, exc: BaseException) -> None:
+        self.failed_identities.add((item.source, item.identity, item.digest))
+        failure = _failure(exc)
+        self.state.failed_documents += 1
+        self.state.failures = tuple(dict.fromkeys((*self.state.failures, f"risk_documents:{failure}")))
+        now = self.now()
+        self.dependencies.index.document_failure(
+            item, self.policy, failure, now, now + timedelta(seconds=_document_retry_seconds(self.configuration, exc))
+        )
+        if self.circuit.failed(exc):
+            self.stopped = True
+            self.state.failures += ("risk_documents:source_stopped",)
+
+    def report(
+        self, workload: CompanyDocumentWorkload, completed_before: int, *, status: EvidenceProgressState = "running"
+    ) -> None:
+        elapsed = self.elapsed + (
+            max(0.0, self.dependencies.monotonic() - self.batch_started) if self.batch_started is not None else 0.0
+        )
+        rate = self.completed / elapsed if self.completed >= 5 and elapsed >= 1 else None
+        due = max(0, workload.due - self.completed + completed_before)
+        _report(
+            self.dependencies,
+            "risk_documents",
+            self.state,
+            max(0, workload.pending - self.completed + completed_before),
+            completed=self.completed,
+            attempted_documents=self.attempted,
+            deferred_documents=workload.cooling,
+            status=status,
+            document_rate=rate,
+            document_eta_seconds=due / rate if rate else None,
+        )
 
 
 def _prepare_stock_progress(dependencies: CompanyEvidenceDependencies, state: _SyncState, code: str) -> None:
     state.current_stock = CompanyStockProgress(
         code, next((name for candidate, name in dependencies.stock_names if candidate == code), "")
     )
-
-
-def _unique_documents(items: Sequence[Disclosure]) -> tuple[Disclosure, ...]:
-    return tuple({(item.source, item.identity): item for item in items}.values())
 
 
 def _document_retry_seconds(configuration: CompanySyncConfiguration, exc: BaseException) -> float:
@@ -767,6 +868,10 @@ def _report(
     deferred_documents: int = 0,
     activity: Literal["download", "repair"] = "download",
     dates: CompanyDateProgress | None = None,
+    known_pages: int = 0,
+    unknown_queries: int = 0,
+    document_rate: float | None = None,
+    document_eta_seconds: float | None = None,
 ) -> None:
     if dependencies.progress is not None:
         failures = tuple(
@@ -792,6 +897,11 @@ def _report(
                 state.current_stock if component in {"risk_documents", "news"} else None,
                 dates=dates,
                 failed_documents=state.failed_documents if component == "risk_documents" else 0,
+                batch=state.batch,
+                known_pages=known_pages,
+                unknown_queries=unknown_queries,
+                document_rate=document_rate,
+                document_eta_seconds=document_eta_seconds,
             )
         )
 

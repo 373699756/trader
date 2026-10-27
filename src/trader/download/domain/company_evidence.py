@@ -37,6 +37,9 @@ class CompanySyncConfiguration:
     document_failure_retry_seconds: float = 86400.0
     document_transient_retry_seconds: float = 900.0
     document_limits: CompanyDocumentLimits = CompanyDocumentLimits()
+    directory_batch_pages: int = 20
+    document_batch_size: int = 50
+    document_workers: int = 1
 
     def __post_init__(self) -> None:
         values = (
@@ -46,6 +49,12 @@ class CompanySyncConfiguration:
             self.document_failure_retry_seconds,
             self.document_transient_retry_seconds,
         )
+        if (
+            not 1 <= self.directory_batch_pages <= 100
+            or not 1 <= self.document_batch_size <= 200
+            or self.document_workers not in {1, 2}
+        ):
+            raise ValueError("company_batch_configuration_invalid")
         if (
             any(not math.isfinite(value) for value in values)
             or not 0 < self.source_timeout_seconds <= 8
@@ -182,10 +191,14 @@ class DisclosurePartition:
     expected_rows: int | None = None
     received_rows: int = 0
     query: DisclosureQuery | None = None
+    page_size: int = 30
+    filter_identity: str = "all_announcements"
 
     def __post_init__(self) -> None:
         if self.start > self.end or self.page < 1 or self.received_rows < 0:
             raise ValueError("invalid disclosure partition")
+        if self.page_size not in {30, 50, 100} or self.filter_identity != "all_announcements":
+            raise ValueError("company_query_contract_invalid")
 
 
 @dataclass(frozen=True)
@@ -250,6 +263,16 @@ class CompanyDocument:
 class DocumentRetry:
     failure: str
     retry_after: datetime
+
+
+@dataclass(frozen=True)
+class CompanyDocumentWorkload:
+    pending: int
+    due: int
+
+    @property
+    def cooling(self) -> int:
+        return self.pending - self.due
 
 
 @dataclass(frozen=True)
@@ -359,6 +382,11 @@ class EvidenceSyncProgress:
     stock: CompanyStockProgress | None = None
     dates: CompanyDateProgress | None = None
     failed_documents: int = 0
+    batch: int = 0
+    known_pages: int = 0
+    unknown_queries: int = 0
+    document_rate: float | None = None
+    document_eta_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -403,6 +431,7 @@ __all__ = [
     "DisclosureQuery",
     "CompanySyncConfiguration",
     "CompanyDocumentLimits",
+    "CompanyDocumentWorkload",
     "CompanyDateProgress",
     "CompanyEvidenceRequest",
     "CompanyListing",

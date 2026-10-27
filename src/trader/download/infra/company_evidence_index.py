@@ -6,19 +6,15 @@ import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
-from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentRiskRelevant
-from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, CompanyEvidenceLink
+from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
-    CompanyDocument,
-    CompanyEvidenceInput,
-    CompanyFinancial,
+    CompanyDocumentWorkload,
     CompanyListing,
-    CompanyRatio,
     CompanyStockProgress,
     Disclosure,
     DisclosureCoverageMismatch,
@@ -33,7 +29,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
-from trader.download.domain.company_facts import CompanyFacts, CompileCompanyFacts
+from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.download.infra.company_disclosure_queries import (
     ActivateDisclosureQueryPolicy,
     CommitDisclosureQueryPage,
@@ -46,12 +42,27 @@ from trader.download.infra.company_disclosure_queries import (
     ValidateDisclosureQueryPage,
 )
 from trader.download.infra.company_evidence_sql import DISCLOSURE_QUERY_SCHEMA, DOCUMENT_RETRY_SCHEMA, SCHEMA
+from trader.download.infra.company_fact_inputs import (
+    BuildCompanySnapshot,
+    DecodeCompanyDisclosure,
+    ReadCompanySnapshotRows,
+    ReadCompanySnapshotShared,
+)
 from trader.download.infra.company_facts_codec import (
     COMPANY_FACTS_SCHEMA,
     PUBLICATION_COLUMNS,
     CompanyExtractionIdentity,
     DecodeCompanyPublication,
     EncodeCompanyPublication,
+)
+from trader.download.infra.company_pipeline_queries import (
+    CheckDisclosureQueryContract,
+    EnsureCompanyPipelineQueries,
+    IndexCompanyDocument,
+    MarkCompanyDirty,
+    MarkCompanyMarketDirty,
+    PrepareCompanyPublication,
+    SelectCompanyDocuments,
 )
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
@@ -89,13 +100,14 @@ class SQLiteCompanyEvidenceIndex:
             raise InterruptedError("company_sync_cancelled")
 
     @contextmanager
-    def _connect(self) -> Iterator[SqliteConnection]:
-        self._check_cancelled()
+    def _connect(self, *, accepted_document: bool = False) -> Iterator[SqliteConnection]:
+        if not accepted_document:
+            self._check_cancelled()
         try:
             with SqliteSession(
                 self.path,
                 SqliteConnectionOptions(timeout_seconds=8, foreign_keys=True),
-                cancel_requested=self._cancel_requested,
+                cancel_requested=None if accepted_document else self._cancel_requested,
             ) as connection:
                 yield connection
         except sqlite3.Error as exc:
@@ -130,6 +142,7 @@ class SQLiteCompanyEvidenceIndex:
                     for statement in DISCLOSURE_QUERY_SCHEMA:
                         connection.run(statement)
                     ActivateDisclosureQueryPolicy(connection)
+                    EnsureCompanyPipelineQueries(connection)
         except sqlite3.Error as exc:
             if str(exc) == "interrupted" and self._cancel_requested is not None and self._cancel_requested():
                 raise InterruptedError("company_sync_cancelled") from exc
@@ -153,6 +166,7 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             pending_before: set[tuple[str, str, str]] = set()
             for market in markets:
+                before_planning = connection.total_changes
                 pending_before.update(
                     (row["market"], row["start"], row["end"])
                     for row in connection.run(
@@ -226,6 +240,8 @@ class SQLiteCompanyEvidenceIndex:
                     "WHERE market=? AND complete=1 AND end=? AND checked_at<?",
                     (market, today.isoformat(), (observed_at - timedelta(minutes=15)).isoformat()),
                 )
+                if connection.total_changes != before_planning:
+                    MarkCompanyMarketDirty(connection, market)
             rows = connection.run(
                 "SELECT * FROM partitions WHERE complete=0 AND end>=? "
                 "ORDER BY CASE WHEN next_page>1 THEN 0 ELSE 1 END,end DESC,market,start",
@@ -320,9 +336,12 @@ class SQLiteCompanyEvidenceIndex:
         )
 
     def commit_page(self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime) -> int:
+        if partition.page_size != 30 or partition.filter_identity != "all_announcements":
+            raise ValueError("company_query_contract_unverified")
         if partition.query is not None:
             try:
                 with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                    CheckDisclosureQueryContract(connection, partition)
                     ValidateDisclosureQueryPage(connection, partition, page)
                     changes = self._write_disclosures(connection, page.rows)
                     CommitDisclosureQueryPage(connection, partition, page)
@@ -333,6 +352,7 @@ class SQLiteCompanyEvidenceIndex:
         self._validate_page(partition, page)
         received = partition.received_rows + len(page.rows)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            CheckDisclosureQueryContract(connection, partition)
             if partition.page == 1:
                 connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
             changes = self._write_disclosures(connection, page.rows)
@@ -377,6 +397,9 @@ class SQLiteCompanyEvidenceIndex:
         for row in stale:
             if EvidenceMarket(row["code"]) == partition.market:
                 connection.run("DELETE FROM disclosure_codes WHERE disclosure_id=? AND code=?", tuple(row))
+                MarkCompanyDirty(connection, (row["code"],))
+        # A completed range changes coverage even for issuers with no announcements.
+        MarkCompanyMarketDirty(connection, partition.market)
 
     def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None:
         with self._connect() as connection:
@@ -493,8 +516,29 @@ class SQLiteCompanyEvidenceIndex:
             connection.run(
                 "UPDATE partitions SET failure=? WHERE market=? AND start=? AND end=?", (failure, *_key(partition))
             )
+            MarkCompanyMarketDirty(connection, partition.market)
 
     def _write_disclosures(self, connection: SqliteConnection, rows: Sequence[Disclosure]) -> int:
+        affected = tuple(
+            item
+            for item in rows
+            if connection.run(
+                "SELECT 1 FROM disclosures WHERE source=? AND source_id=? AND digest=?",
+                (item.source, item.identity, item.digest),
+            ).fetchone()
+            is None
+        )
+        for item in affected:
+            MarkCompanyDirty(
+                connection,
+                tuple(
+                    row[0]
+                    for row in connection.run(
+                        "SELECT c.code FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id WHERE d.source=? AND d.source_id=?",
+                        (item.source, item.identity),
+                    )
+                ),
+            )
         changes = connection.run_many(
             "INSERT INTO disclosures(source,source_id,kind,title,published_at,url,digest) VALUES(?,?,?,?,?,?,?) "
             "ON CONFLICT(source,source_id) DO UPDATE SET title=excluded.title,published_at=excluded.published_at,"
@@ -512,37 +556,76 @@ class SQLiteCompanyEvidenceIndex:
                 for item in rows
             ),
         ).rowcount
-        connection.run_many(
+        links = connection.run_many(
             "INSERT OR IGNORE INTO disclosure_codes(code,disclosure_id) "
             "SELECT ?,id FROM disclosures WHERE source=? AND source_id=?",
             ((code, item.source, item.identity) for item in rows for code in item.codes),
-        )
+        ).rowcount
+        IndexCompanyDocument(connection, affected)
+        MarkCompanyDirty(connection, tuple({code for item in (rows if links else affected) for code in item.codes}))
         return changes
 
-    def pending_documents(self, codes: Sequence[str], observed_at: datetime) -> tuple[Disclosure, ...]:
+    def pending_documents(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        limit: int | None = None,
+        policy: str = "",
+        excluded: Sequence[tuple[str, str, str]] = (),
+    ) -> tuple[Disclosure, ...]:
+        if limit is not None and not 1 <= limit <= 200:
+            raise ValueError("company_document_batch_invalid")
         with self._connect() as connection:
+            SelectCompanyDocuments(connection, codes, observed_at, policy, excluded)
             rows = connection.run(
-                "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                "WHERE kind='announcement' AND body_checked=0 AND published_at>=? AND published_at<=? "
-                "ORDER BY published_at DESC",
-                ((observed_at.date() - timedelta(days=365)).isoformat(), observed_at.isoformat()),
+                "SELECT d.source,d.source_id,d.kind,d.title,d.published_at,d.url,d.digest,c.code FROM disclosures d "
+                "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.id IN ("
+                "SELECT p.id FROM temp.pending_documents p JOIN disclosures s ON s.id=p.id "
+                "WHERE (?=0 OR p.due=1) ORDER BY s.published_at DESC,s.id LIMIT ?) ORDER BY d.published_at DESC,d.id,c.code",
+                (bool(policy) or bool(excluded), -1 if limit is None else limit),
             ).fetchall()
-        allowed = frozenset(codes)
-        return tuple(
-            _disclosure(row) for row in rows if row["code"] in allowed and CompanyDocumentNeedsReview(row["title"])
-        )
+        items: dict[tuple[str, str], Disclosure] = {}
+        for row in rows:
+            item = DecodeCompanyDisclosure(row)
+            key = item.source, item.identity
+            previous = items.get(key)
+            items[key] = item if previous is None else replace(previous, codes=(*previous.codes, *item.codes))
+        return tuple(items.values())
 
-    def commit_document(self, item: Disclosure, text: str) -> None:
-        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-            connection.run(
-                "UPDATE disclosures SET body=?,body_checked=1 WHERE source=? AND source_id=? AND digest=?",
+    def document_workload(
+        self, codes: Sequence[str], observed_at: datetime, policy: str, *, excluded: Sequence[tuple[str, str, str]] = ()
+    ) -> CompanyDocumentWorkload:
+        with self._connect() as connection:
+            SelectCompanyDocuments(connection, codes, observed_at, policy, excluded)
+            row = connection.run("SELECT COUNT(*),COALESCE(SUM(due),0) FROM temp.pending_documents").require_one()
+        return CompanyDocumentWorkload(row[0], row[1])
+
+    def commit_document(self, item: Disclosure, text: str) -> bool:
+        # A result already accepted by the main thread is drained on cancellation.
+        with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
+            changed = connection.run(
+                "UPDATE disclosures SET body=?,body_checked=1 WHERE source=? AND source_id=? AND digest=? AND body_checked=0",
                 (text, item.source, item.identity, item.digest),
-            )
+            ).rowcount
+            if not changed:
+                return False
             connection.run(
                 "DELETE FROM document_retries WHERE disclosure_id IN "
                 "(SELECT id FROM disclosures WHERE source=? AND source_id=? AND digest=?)",
                 (item.source, item.identity, item.digest),
             )
+            MarkCompanyDirty(
+                connection,
+                tuple(
+                    row[0]
+                    for row in connection.run(
+                        "SELECT c.code FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id WHERE d.source=? AND d.source_id=?",
+                        (item.source, item.identity),
+                    )
+                ),
+            )
+        return True
 
     def document_retry(self, item: Disclosure, policy: str) -> DocumentRetry | None:
         with self._connect() as connection:
@@ -682,7 +765,9 @@ class SQLiteCompanyEvidenceIndex:
                 financial_values,
             )
             changes = connection.total_changes - before
+            MarkCompanyDirty(connection, tuple(item.code for item in page.financials))
             if page.page == page.pages:
+                connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM published")
                 if page.component != "financial":
                     before = connection.total_changes
                     connection.run(
@@ -753,6 +838,10 @@ class SQLiteCompanyEvidenceIndex:
                 "ON CONFLICT(component,scope) DO UPDATE SET failure=excluded.failure",
                 (component, scope, failure),
             )
+            if scope == "market":
+                connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM published")
+            else:
+                MarkCompanyDirty(connection, (scope,))
 
     def commit_news(self, code: str, rows: Sequence[Disclosure], observed_at: datetime) -> int:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
@@ -760,9 +849,40 @@ class SQLiteCompanyEvidenceIndex:
             connection.run(
                 "INSERT OR REPLACE INTO component_checks VALUES('news',?,?,'')", (code, observed_at.isoformat())
             )
+            MarkCompanyDirty(connection, (code,))
         return changes
 
-    def publish(self, codes: Sequence[str], observed_at: datetime) -> int:
+    def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> None:
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            PrepareCompanyPublication(connection, tuple(codes), observed_at)
+
+    def published_count(self, codes: Sequence[str]) -> int:
+        with self._connect() as connection:
+            existing = {row[0] for row in connection.run("SELECT code FROM published")}
+        return len(existing.intersection(codes))
+
+    @staticmethod
+    def _publication_codes(
+        source: SqliteConnection,
+        requested: tuple[str, ...],
+        observed_at: datetime,
+        changed_only: bool,
+        extraction_identity: str,
+    ) -> tuple[tuple[str, ...], bool]:
+        identity = source.run("SELECT extraction_identity,published_at FROM publication WHERE singleton=1").fetchone()
+        rebuild = identity is not None and identity[0] != extraction_identity
+        if rebuild:
+            # Extraction identity belongs to the whole published view, never a subset.
+            requested = tuple(sorted(set(requested) | {row[0] for row in source.run("SELECT code FROM published")}))
+        elif changed_only and identity is not None and datetime.fromisoformat(identity[1]).date() == observed_at.date():
+            dirty = {row[0] for row in source.run("SELECT code FROM company_dirty_codes")}
+            existing = {row[0] for row in source.run("SELECT code FROM published")}
+            requested = tuple(code for code in requested if code in dirty or code not in existing)
+        if len(requested) > 12_000:
+            raise ValueError("company_publication_population_exceeded")
+        return requested, rebuild
+
+    def publish(self, codes: Sequence[str], observed_at: datetime, *, changed_only: bool = False) -> int:
         requested = tuple(sorted(set(codes)))
         if len(requested) > 12_000:
             raise ValueError("company_publication_population_exceeded")
@@ -785,12 +905,15 @@ class SQLiteCompanyEvidenceIndex:
             placeholders = ",".join("?" for _ in PUBLICATION_COLUMNS)
             listing_dates = {item.code: item.listed_on for item in self._listings}
             with SqliteTransaction(source):
-                identity = source.run("SELECT extraction_identity FROM publication WHERE singleton=1").fetchone()
-                rebuild = identity is not None and identity[0] != extraction_identity
-                shared = _snapshot_shared(source, observed_at)
+                requested, rebuild = self._publication_codes(
+                    source, requested, observed_at, changed_only, extraction_identity
+                )
+                if not requested:
+                    return 0
+                shared = ReadCompanySnapshotShared(source, observed_at)
                 for offset in range(0, len(requested), 128):
                     batch = requested[offset : offset + 128]
-                    inputs = _snapshot_rows(source, batch, observed_at)
+                    inputs = ReadCompanySnapshotRows(source, batch, observed_at)
                     previous = {
                         str(row["code"]): DecodeCompanyPublication(dict(row))
                         for row in source.run(
@@ -800,7 +923,7 @@ class SQLiteCompanyEvidenceIndex:
                     values = []
                     for code in batch:
                         self._check_cancelled()
-                        snapshot = _build_snapshot(
+                        snapshot = BuildCompanySnapshot(
                             code, observed_at, inputs[code], shared, listed_on=listing_dates.get(code)
                         )
                         facts = CompileCompanyFacts(
@@ -842,10 +965,6 @@ class SQLiteCompanyEvidenceIndex:
                 # This same read handle observes every concurrent commit, including other publications.
                 if source.run("PRAGMA data_version").require_one()[0] != source_version:
                     raise RuntimeError("company_publication_source_changed")
-                if rebuild:
-                    connection.run(
-                        "DELETE FROM published WHERE code NOT IN (SELECT code FROM temp.prepared_publication)"
-                    )
                 assignments = ",".join(
                     f"{column}=excluded.{column}" for column in PUBLICATION_COLUMNS if column != "code"
                 )
@@ -861,10 +980,14 @@ class SQLiteCompanyEvidenceIndex:
                     "INSERT OR REPLACE INTO publication VALUES(1,?,?,?,?)",
                     (digest.hexdigest(), observed_at.isoformat(), COMPANY_FACTS_SCHEMA, extraction_identity),
                 )
-        self._prune(observed_at)
+                connection.run(
+                    "DELETE FROM company_dirty_codes WHERE code IN (SELECT code FROM temp.prepared_publication)"
+                )
+        if not changed_only:
+            self.finish(observed_at)
         return len(requested)
 
-    def _prune(self, observed_at: datetime) -> None:
+    def finish(self, observed_at: datetime) -> None:
         # Cleanup is independent of the short publication transaction; failure cannot roll back its pointer.
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             cutoff = (observed_at.date() - timedelta(days=365)).isoformat()
@@ -878,6 +1001,7 @@ class SQLiteCompanyEvidenceIndex:
                 (cutoff, (observed_at - timedelta(days=7)).isoformat()),
             )
             connection.run("DELETE FROM partitions WHERE end<?", (cutoff,))
+            connection.run("DELETE FROM disclosure_query_contracts WHERE end<?", (cutoff,))
             # Coverage is provenance for the issuer's initial risk state; a rolling window cannot replace it.
             connection.run("DELETE FROM partition_rows WHERE end<?", (cutoff,))
             connection.run(
@@ -889,281 +1013,4 @@ def _key(partition: DisclosurePartition) -> tuple[str, str, str]:
     return partition.market, partition.start.isoformat(), partition.end.isoformat()
 
 
-def _disclosure(row: sqlite3.Row) -> Disclosure:
-    return Disclosure(
-        row["source"],
-        row["source_id"],
-        (row["code"],),
-        row["title"],
-        datetime.fromisoformat(row["published_at"]),
-        row["url"],
-        row["digest"],
-        cast(Literal["announcement", "news"], row["kind"]),
-    )
-
-
-@dataclass(frozen=True)
-class _SnapshotRows:
-    disclosures: tuple[sqlite3.Row, ...]
-    financials: tuple[sqlite3.Row, ...]
-    ratios: tuple[sqlite3.Row, ...]
-    checks: tuple[sqlite3.Row, ...]
-
-
-@dataclass(frozen=True)
-class _SnapshotShared:
-    coverage: tuple[sqlite3.Row, ...]
-    checks: tuple[sqlite3.Row, ...]
-    errors: tuple[sqlite3.Row, ...]
-    pledge_day: str | None
-    unlock_snapshot: sqlite3.Row | None
-
-
-def _snapshot_shared(connection: SqliteConnection, now: datetime) -> _SnapshotShared:
-    cutoff = (now.date() - timedelta(days=365)).isoformat()
-    pledge = connection.run("SELECT start FROM ratio_snapshots WHERE component='pledge'").fetchone()
-    return _SnapshotShared(
-        tuple(connection.run("SELECT start,end,market,checked_at FROM coverage ORDER BY start")),
-        tuple(connection.run("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
-        tuple(
-            connection.run(
-                "SELECT DISTINCT CASE WHEN failure='' THEN 'pending' ELSE failure END AS failure,market "
-                "FROM partitions WHERE end>=? AND (failure<>'' OR complete=0)",
-                (cutoff,),
-            )
-        ),
-        pledge[0] if pledge else None,
-        connection.run("SELECT checked_at,end FROM ratio_snapshots WHERE component='unlock'").fetchone(),
-    )
-
-
-def _snapshot_rows(connection: SqliteConnection, codes: tuple[str, ...], now: datetime) -> dict[str, _SnapshotRows]:
-    placeholders = ",".join("?" for _ in codes)
-    disclosures = connection.run(
-        "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-        f"WHERE c.code IN ({placeholders}) AND (d.published_at>=? OR d.kind='announcement') "
-        "AND d.published_at<=? ORDER BY d.published_at,d.id",
-        (*codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
-    )
-    documents: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in disclosures:
-        documents[row["code"]].append(row)
-    financials: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.run(
-        f"SELECT * FROM financials WHERE code IN ({placeholders}) AND report_date>=? AND published_at<=? ORDER BY report_date",
-        (*codes, (now.date() - timedelta(days=550)).isoformat(), now.isoformat()),
-    ):
-        financials[row["code"]].append(row)
-    ratios: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.run(
-        f"SELECT code,day,ratio_pct,component FROM ratios WHERE code IN ({placeholders}) ORDER BY day", codes
-    ):
-        ratios[row["code"]].append(row)
-    checks: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.run(
-        f"SELECT component,checked_at,failure,scope FROM component_checks WHERE scope IN ({placeholders})", codes
-    ):
-        checks[row["scope"]].append(row)
-    return {
-        code: _SnapshotRows(tuple(documents[code]), tuple(financials[code]), tuple(ratios[code]), tuple(checks[code]))
-        for code in codes
-    }
-
-
-def _build_snapshot(
-    code: str, now: datetime, inputs: _SnapshotRows, shared: _SnapshotShared, *, listed_on: date | None
-) -> CompanyEvidenceInput:
-    start, end = now.date() - timedelta(days=365), now.date()
-    rows = inputs.disclosures
-    documents = tuple(
-        CompanyDocument(_disclosure(row), row["body"], bool(row["body_checked"]))
-        for row in rows
-        if row["kind"] == "announcement"
-    )
-    ranges = tuple(row for row in shared.coverage if row["market"] == EvidenceMarket(code))
-    complete = _coverage_complete(ranges, start, end) and all(
-        item.checked or not CompanyDocumentRiskRelevant(item.disclosure.title) for item in documents
-    )
-    financials = tuple(
-        CompanyFinancial(row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *tuple(row)[3:])
-        for row in inputs.financials
-    )
-    pledge_rows = tuple(row for row in inputs.ratios if row["component"] == "pledge" and row["day"] <= end.isoformat())
-    pledge_row = pledge_rows[-1] if pledge_rows else None
-    pledge = CompanyRatio(pledge_row[0], date.fromisoformat(pledge_row[1]), pledge_row[2]) if pledge_row else None
-    if pledge is None and shared.pledge_day:
-        pledge = CompanyRatio(code, date.fromisoformat(shared.pledge_day), 0.0)
-    unlocks = tuple(
-        CompanyRatio(row[0], date.fromisoformat(row[1]), row[2])
-        for row in inputs.ratios
-        if row["component"] == "unlock" and end.isoformat() <= row["day"] <= (end + timedelta(days=180)).isoformat()
-    )
-    checks = (*shared.checks, *inputs.checks)
-    failures = tuple(f"{row[0]}:{row[2]}" for row in checks if row[2])
-    for component in ("financial", "pledge", "unlock"):
-        if not any(
-            row[0] == component and row[1] and datetime.fromisoformat(row[1]) >= now - timedelta(days=1) and not row[2]
-            for row in checks
-        ):
-            failures += (f"{component}:not_current",)
-    if pledge is not None and pledge.day < end - timedelta(days=10):
-        failures += ("pledge:source_stale",)
-    partition_errors = tuple(row for row in shared.errors if row["market"] == EvidenceMarket(code))
-    failures += tuple(f"announcements:{row[0]}" for row in partition_errors)
-    if listed_on is None or listed_on > end or not _coverage_complete(ranges, listed_on, end):
-        failures += ("announcements:initial_risk_state_unverified",)
-    complete = complete and not partition_errors
-    if not complete:
-        failures += ("announcements:window_incomplete",)
-    news = tuple(
-        _disclosure(row)
-        for row in rows
-        if row["kind"] == "news" and datetime.fromisoformat(row["published_at"]) >= now - timedelta(days=7)
-    )
-    snapshot = CompanyEvidenceInput(
-        code,
-        now,
-        start,
-        end,
-        "",
-        documents,
-        complete,
-        financials,
-        pledge,
-        unlocks,
-        not any(item.startswith("unlock:") for item in failures),
-        news,
-        any(
-            row[0] == "news" and row[1] and datetime.fromisoformat(row[1]) >= now - timedelta(days=1) and not row[2]
-            for row in checks
-        ),
-        failures,
-        source_checked_at=max(
-            (
-                datetime.fromisoformat(value)
-                for value in (*(row["checked_at"] for row in ranges), *(row[1] for row in checks))
-                if value
-            ),
-            default=None,
-        ),
-        unlock_checked_at=datetime.fromisoformat(shared.unlock_snapshot[0]) if shared.unlock_snapshot else None,
-        unlock_coverage_end=date.fromisoformat(shared.unlock_snapshot[1]) if shared.unlock_snapshot else None,
-    )
-    return snapshot
-
-
-def _coverage_complete(ranges: Sequence[sqlite3.Row], start: date, end: date) -> bool:
-    frontier = start
-    for row in ranges:
-        if date.fromisoformat(row[0]) <= frontier:
-            frontier = max(frontier, date.fromisoformat(row[1]) + timedelta(days=1))
-    return frontier > end
-
-
-class SQLiteCompanyEvidenceReader:
-    """Only the published, indexed projection is visible to recommendation."""
-
-    def __init__(self, path: Path, *, event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY) -> None:
-        self.path = path
-        self._extraction_identity = CompanyExtractionIdentity(event_policy)
-
-    def _publication_version(self, connection: SqliteConnection) -> str:
-        row = connection.run(
-            "SELECT version,schema_identity,extraction_identity FROM publication WHERE singleton=1"
-        ).fetchone()
-        if row is None:
-            return ""
-        if row[1] != COMPANY_FACTS_SCHEMA or row[2] != self._extraction_identity:
-            raise ValueError("company_publication_identity_mismatch")
-        return str(row[0])
-
-    def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyEvidenceLink, ...]:
-        if not evidence_ids or not self.path.exists():
-            return ()
-        if len(evidence_ids) > 32 or len(code) != 6 or not code.isascii() or not code.isdigit():
-            raise ValueError("company_document_query_invalid")
-        try:
-            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2)) as connection:
-                rows = connection.run(
-                    "SELECT d.source_id,d.title,d.url,d.published_at,d.body_checked FROM disclosures d "
-                    "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE c.code=? AND d.kind='announcement' "
-                    f"AND d.source_id IN ({','.join('?' for _ in evidence_ids)}) ORDER BY d.published_at DESC LIMIT 32",
-                    (code, *evidence_ids),
-                ).fetchall()
-                return tuple(
-                    CompanyEvidenceLink(row[0], row[1], row[2], datetime.fromisoformat(row[3]), bool(row[4]))
-                    for row in rows
-                )
-        except (sqlite3.Error, ValueError) as exc:
-            raise RuntimeError("company_evidence_links_unavailable") from exc
-
-    def read(self, codes: Sequence[str]) -> tuple[CompanyFacts, ...]:
-        snapshots: list[CompanyFacts] = []
-        self.visit(codes, snapshots.append)
-        return tuple(snapshots)
-
-    def publication_version(self) -> str:
-        if not self.path.exists():
-            return ""
-        try:
-            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2)) as connection:
-                return self._publication_version(connection)
-        except sqlite3.Error as exc:
-            raise RuntimeError("company_snapshot_unreadable") from exc
-
-    def visit(
-        self,
-        codes: Sequence[str],
-        consume: Callable[[CompanyFacts], None],
-        *,
-        cancel_requested: Callable[[], bool] | None = None,
-    ) -> None:
-        if not self.path.exists():
-            return
-        captured: list[CompanyFacts] = []
-        try:
-            with SqliteSession(
-                self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2), cancel_requested=cancel_requested
-            ) as connection:
-                with SqliteTransaction(connection):
-                    contract = connection.run("SELECT identity FROM contract").fetchall()
-                    if [tuple(row) for row in contract] != [("company_facts",)]:
-                        raise ValueError("company_snapshot_contract_mismatch")
-                    if not self._publication_version(connection):
-                        return
-                    for offset in range(0, len(codes), 512):
-                        if cancel_requested is not None and cancel_requested():
-                            raise InterruptedError("company_preload_cancelled")
-                        batch = tuple(codes[offset : offset + 512])
-                        placeholders = ",".join("?" for _ in batch)
-                        captured.extend(
-                            DecodeCompanyPublication(dict(row))
-                            for row in connection.run(
-                                f"SELECT {','.join(PUBLICATION_COLUMNS)} FROM published WHERE code IN ({placeholders})",
-                                batch,
-                            ).fetchall()
-                        )
-        except sqlite3.Error as exc:
-            if cancel_requested is not None and cancel_requested():
-                raise InterruptedError("company_preload_cancelled") from exc
-            raise RuntimeError("company_snapshot_unreadable") from exc
-        self._consume_publication(codes, captured, consume, cancel_requested)
-
-    @staticmethod
-    def _consume_publication(
-        codes: Sequence[str],
-        captured: list[CompanyFacts],
-        consume: Callable[[CompanyFacts], None],
-        cancel_requested: Callable[[], bool] | None,
-    ) -> None:
-        # Invoke consumers only after releasing the pinned SQLite snapshot.
-        by_code = {row.code: row for row in captured}
-        for code in codes:
-            if cancel_requested is not None and cancel_requested():
-                raise InterruptedError("company_preload_cancelled")
-            if code not in by_code:
-                continue
-            consume(by_code[code])
-
-
-__all__ = ["SQLiteCompanyEvidenceIndex", "SQLiteCompanyEvidenceReader"]
+__all__ = ["SQLiteCompanyEvidenceIndex"]

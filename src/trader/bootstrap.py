@@ -34,7 +34,8 @@ from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadHistorySyncConfiguration
@@ -76,24 +77,17 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_se
 from trader.recommendation.application.pipeline.data_source import source_router
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
-from trader.recommendation.application.pipeline.freeze_publish import freeze_coordinator
+from trader.recommendation.application.pipeline.freeze_publish import freeze_coordinator, read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
-    DecisionQuerySources,
-    UnifiedDecisionQueries,
-)
 from trader.recommendation.application.pipeline.freeze_publish.recent_news_codes import RecentPublishedNewsCodes
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.local_score import local_decision_builder
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
-from trader.recommendation.application.pipeline.local_score.local_decision_builder import (
-    DecisionBuildDependencies,
-    LocalDecisionBuilder,
-)
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
@@ -255,50 +249,58 @@ def _sync_company_evidence(
     *,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> company_evidence.CompanyEvidenceSyncResult:
-    with (
-        ProcessLock(database_path.parent / "evidence.lock", label="sync company"),
-        ProgressHeartbeat(progress) as heartbeat,
-    ):
-        with OpenExternalHttp() as disclosure_session, OpenExternalHttp() as structured_session:
-            source_timeout = request.configuration.source_timeout_seconds
-            dependencies = CompanyEvidenceDependencies(
-                SQLiteCompanyEvidenceIndex(
-                    database_path,
-                    cancel_requested=cancel_requested,
-                    event_policy=request.event_policy,
-                    listings=request.listings,
-                    stock_progress=partial(
-                        company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names
-                    ),
-                ),
-                CninfoMarketDisclosureSource(
-                    disclosure_session,
-                    monotonic=time.monotonic,
-                    sleeper=time.sleep,
-                    timeout_seconds=source_timeout,
-                    document_parse_timeout_seconds=request.configuration.document_parse_timeout_seconds,
-                    document_limits=request.configuration.document_limits,
-                    request_interval_seconds=request.configuration.request_interval_seconds,
-                    cancel_requested=cancel_requested,
-                ),
-                EastmoneyCompanySource(
-                    structured_session,
-                    monotonic=time.monotonic,
-                    timeout_seconds=source_timeout,
-                    cancel_requested=cancel_requested,
-                ),
-                time.monotonic,
-                heartbeat,
-                cancel_requested,
-                request.stock_names,
-            )
-            return SyncCompanyEvidence(
-                dependencies,
-                request.codes,
-                request.observed_at,
-                configuration=request.configuration,
-                news_codes=request.news_codes,
-            )
+    with ExitStack() as resources:
+        resources.enter_context(ProcessLock(database_path.parent / "evidence.lock", label="sync company"))
+        heartbeat = resources.enter_context(ProgressHeartbeat(progress))
+        configuration = request.configuration
+        source_factory = partial(
+            CninfoMarketDisclosureSource,
+            monotonic=time.monotonic,
+            sleeper=time.sleep,
+            timeout_seconds=configuration.source_timeout_seconds,
+            document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
+            document_limits=configuration.document_limits,
+            request_interval_seconds=configuration.request_interval_seconds,
+            cancel_requested=cancel_requested,
+        )
+        documents = tuple(
+            source_factory(resources.enter_context(OpenExternalHttp())) for _ in range(configuration.document_workers)
+        )
+        structured = EastmoneyCompanySource(
+            resources.enter_context(OpenExternalHttp()),
+            monotonic=time.monotonic,
+            timeout_seconds=configuration.source_timeout_seconds,
+            cancel_requested=cancel_requested,
+        )
+        workers = BoundedExecutor(
+            worker_count=configuration.document_workers, queue_capacity=2, thread_name_prefix="company-document"
+        )
+        workers.start()
+        resources.callback(workers.stop, wait=True, cancel_futures=True)
+        dependencies = CompanyEvidenceDependencies(
+            SQLiteCompanyEvidenceIndex(
+                database_path,
+                cancel_requested=cancel_requested,
+                event_policy=request.event_policy,
+                listings=request.listings,
+                stock_progress=partial(company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names),
+            ),
+            documents[0],
+            structured,
+            time.monotonic,
+            heartbeat,
+            cancel_requested,
+            request.stock_names,
+            document_sources=documents,
+            document_executor=workers,
+        )
+        return SyncCompanyEvidence(
+            dependencies,
+            request.codes,
+            request.observed_at,
+            configuration=configuration,
+            news_codes=request.news_codes,
+        )
 
 
 def _prepare_reference(
@@ -399,18 +401,13 @@ def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
     import os
     import sys
 
-    from trader.download.infra.history_automation_uninstall import (
-        HistoryAutomationPlatform,
-        PlanHistoryAutomationRemoval,
-        RemoveHistoryAutomation,
-        RunHistoryRemovalCommand,
-    )
+    from trader.download.infra import history_automation_uninstall as automation
 
-    platform: HistoryAutomationPlatform = (
+    platform: automation.HistoryAutomationPlatform = (
         "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
     )
-    plan = PlanHistoryAutomationRemoval(platform, Path.home(), os.getuid() if os.name != "nt" else 0)
-    return RemoveHistoryAutomation(plan, run=RunHistoryRemovalCommand)
+    plan = automation.PlanHistoryAutomationRemoval(platform, Path.home(), os.getuid() if os.name != "nt" else 0)
+    return automation.RemoveHistoryAutomation(plan, run=automation.RunHistoryRemovalCommand)
 
 
 def ExecuteHistoryDownload(
@@ -715,10 +712,10 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             monotonic=time.monotonic,
         ),
     )
-    decision_builder = LocalDecisionBuilder(
+    decision_builder = local_decision_builder.LocalDecisionBuilder(
         native_data,
         config_version=effective_config_version,
-        dependencies=DecisionBuildDependencies(
+        dependencies=local_decision_builder.DecisionBuildDependencies(
             policy,
             publication.decision_drafts,
             ShanghaiClock(now).now,
@@ -1148,10 +1145,12 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    query_sources = DecisionQuerySources(
+    query_sources = read_only_queries.DecisionQuerySources(
         market_data, dependencies.outcomes, market_data.references, market_data.research
     )
-    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, query_sources)
+    decision_queries = read_only_queries.UnifiedDecisionQueries(
+        tomorrow_decisions, decision_drafts, records, clock, query_sources
+    )
     research_trace = SQLiteResearchTraceIndex(
         settings.data_paths.research(context.strategy.scoring_profile),
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),

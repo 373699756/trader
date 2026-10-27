@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 from tests.reference_fixtures import PreparedFixture
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 

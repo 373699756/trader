@@ -8,11 +8,14 @@ import json
 import tempfile
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from scripts.runtime_diagnostics.company_pagination_audit import AuditCompanyPagination
+from scripts.runtime_diagnostics.company_pipeline_audit import AuditCompanyPipeline
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries, AuditCompanyStorage
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
@@ -49,8 +52,18 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         # This diagnostic measures announcement recovery, not another full structured-source download.
         return False
 
-    def pending_documents(self, codes: Sequence[str], observed_at: datetime) -> tuple[Disclosure, ...]:
-        return super().pending_documents(codes, observed_at)[:32]
+    def pending_documents(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        limit: int | None = None,
+        policy: str = "",
+        excluded: Sequence[tuple[str, str, str]] = (),
+    ) -> tuple[Disclosure, ...]:
+        return super().pending_documents(
+            codes, observed_at, limit=min(limit or 32, 32), policy=policy, excluded=excluded
+        )
 
 
 class _ObservedSource(CninfoMarketDisclosureSource):
@@ -129,6 +142,8 @@ def Main() -> int:
     audit = parser.add_mutually_exclusive_group()
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--storage-only", action="store_true")
+    audit.add_argument("--pagination-only", action="store_true")
+    audit.add_argument("--pipeline-only", action="store_true")
     args = parser.parse_args()
     implementation = hashlib.sha256()
     for relative in (
@@ -149,6 +164,13 @@ def Main() -> int:
         )
         print(json.dumps(report, ensure_ascii=False))
         return 0
+    if args.pagination_only:
+        print(
+            json.dumps(
+                AuditCompanyPagination(source_path, budget_seconds=min(300.0, args.budget_seconds)), ensure_ascii=False
+            )
+        )
+        return 0
     if args.audit_only:
         report = AuditCompanyQueries(source_path, budget_seconds=min(300.0, args.budget_seconds))
         print(json.dumps(report, ensure_ascii=False))
@@ -159,6 +181,13 @@ def Main() -> int:
     if not args.directory.is_absolute() or directory == _ROOT or _ROOT in directory.parents:
         parser.error("external absolute directory required")
     directory.mkdir(parents=True, exist_ok=True)
+    if args.pipeline_only:
+        print(
+            json.dumps(
+                AuditCompanyPipeline(source_path, directory, budget_seconds=args.budget_seconds), ensure_ascii=False
+            )
+        )
+        return 0
     destination = directory / "evidence.sqlite3"
     if destination.resolve() == source_path or (destination.exists() and destination.samefile(source_path)):
         parser.error("source and replay database must differ")
@@ -182,7 +211,7 @@ def Main() -> int:
         parser.error("backup needs failed slices and a published population")
     index = _ReplayIndex(destination, selection)
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
-    configuration = LoadCompanySyncConfiguration(_ROOT)
+    configuration = replace(LoadCompanySyncConfiguration(_ROOT), document_workers=1)
     runs = []
     saved: set[tuple[str, str, str, str, int]] = set()
     replayed = 0

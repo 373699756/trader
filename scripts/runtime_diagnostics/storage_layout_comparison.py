@@ -340,7 +340,8 @@ def _sqlite_adapter_cases(
     from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
     from trader.download.domain.company_evidence import Disclosure, DisclosurePage
     from trader.download.domain.history_revision import HistoryRevision
-    from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+    from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+    from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
     from trader.download.infra.history_prices import HistoryPricePartition
     from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
     from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample

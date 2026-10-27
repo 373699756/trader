@@ -72,7 +72,7 @@ class CninfoMarketDisclosureSource:
             "https://www.cninfo.com.cn/new/hisAnnouncement/query",
             data={
                 "pageNum": str(partition.page),
-                "pageSize": "30",
+                "pageSize": str(partition.page_size),
                 "column": partition.market,
                 "plate": partition.query.plate
                 if partition.query

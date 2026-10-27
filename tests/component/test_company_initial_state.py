@@ -7,7 +7,8 @@ import pytest
 
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, Disclosure, DisclosurePage, DisclosurePartition
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 _AT = datetime(2026, 10, 27, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -117,6 +118,7 @@ def test_extraction_upgrade_rebuilds_case_status_and_does_not_stamp_unprocessed_
         connection.run("UPDATE publication SET extraction_identity='official_company_events:previous-rules'")
     index.publish(("600001",), _AT + timedelta(minutes=1))
     facts = SQLiteCompanyEvidenceReader(index.path).read(("600001", "600002"))
-    assert len(facts) == 1 and facts[0].code == "600001"
+    assert tuple(item.code for item in facts) == ("600001", "600002")
+    assert facts[1].published_at == _AT + timedelta(minutes=1)
     assert facts[0].risk_events[0].status.value == "active"
     assert facts[0].risk_events[0].resolved_at is None

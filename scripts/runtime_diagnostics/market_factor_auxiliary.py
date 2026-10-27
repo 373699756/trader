@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from trader.bootstrap import OpenExternalHttp
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceReader
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.http_contracts import HttpError
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.research import LongResearchPolicy, ResearchObservation

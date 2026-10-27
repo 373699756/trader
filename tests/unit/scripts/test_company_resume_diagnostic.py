@@ -8,6 +8,7 @@ from datetime import timedelta
 import pytest
 
 from scripts.diagnose_runtime import DiagnosticResult, _parser, _validate, build_commands, build_report
+from scripts.runtime_diagnostics import company_pagination_audit, company_pipeline_audit
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
 from scripts.runtime_diagnostics.company_resume import Main, _copy, _saved_pages
 from tests.component import test_company_evidence as fixtures
@@ -15,6 +16,63 @@ from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import DisclosurePage, DisclosureQuery
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+
+
+def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    partition = index.partitions(("sse",), fixtures.NOW)[0]
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run(
+            "UPDATE partitions SET start=end,expected_rows=31,complete=1 WHERE market=? AND start=? AND end=?",
+            (partition.market, str(partition.start), str(partition.end)),
+        )
+    items = tuple(fixtures._disclosure(str(i)) for i in range(31))
+
+    class Source:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def fetch(self, query):
+            return DisclosurePage(items[:30] if query.page == 1 else items[30:], 31, query.page == 1)
+
+    monkeypatch.setattr(company_pagination_audit, "CninfoMarketDisclosureSource", Source)
+    before = index.path.read_bytes()
+    result = company_pagination_audit.AuditCompanyPagination(index.path, budget_seconds=5)
+    rows = result["summary"]["query_audit"]["pagination"]
+    assert [row["equivalent"] for row in rows] == [True, False, False]
+    assert all(row["failure"] == "cninfo_requested_page_size_ignored" for row in rows[1:])
+    assert index.path.read_bytes() == before
+
+
+def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_path):
+    with pytest.raises(ValueError, match="company-replay-directory"):
+        _validate(_parser().parse_args(["--profile", "company-resume", "--company-pipeline-audit"]))
+    options, _ = _validate(
+        _parser().parse_args(
+            ["--profile", "company-resume", "--company-pipeline-audit", "--company-replay-directory", str(tmp_path)]
+        )
+    )
+    assert "--pipeline-only" in build_commands(options)[0].argv
+
+
+def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, monkeypatch):
+    now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
+    items = tuple(fixtures._disclosure(str(i), "本公司收到立案告知书", when=now) for i in range(2))
+    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _: items)
+
+    class Source:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def document(self, item):
+            return "本公司收到中国证监会立案告知书。"
+
+    monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
+    result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
+    assert result["status"] == "passed"
+    assert result["summary"]["pipeline_audit"]["equivalent_facts"]
+    for run in result["summary"]["pipeline_audit"]["runs"]:
+        assert run["attempts"] == 2 and run["resume_attempts"] == run["resume_changed_rows"] == 0
 
 
 def test_company_profile_requires_explicit_external_directory(tmp_path):

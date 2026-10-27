@@ -114,6 +114,10 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--company-pagination-audit", action="store_true", help="read-only CNInfo page-size comparison")
+    parser.add_argument(
+        "--company-pipeline-audit", action="store_true", help="isolated same-PDF serial/parallel comparison"
+    )
     parser.add_argument(
         "--company-query-audit", action="store_true", help="read-only bounded CNInfo query coverage audit"
     )
@@ -395,12 +399,22 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         _external_path(args.long_evidence_output, "--long-evidence-output") if args.long_evidence_output else None
     )
     company_replay_directory = _external_path(args.company_replay_directory, "--company-replay-directory")
-    if args.company_query_audit and args.company_storage_audit:
-        raise ValueError("company query and storage audits are mutually exclusive")
+    if (
+        sum(
+            (
+                args.company_query_audit,
+                args.company_storage_audit,
+                args.company_pagination_audit,
+                args.company_pipeline_audit,
+            )
+        )
+        > 1
+    ):
+        raise ValueError("company audit modes are mutually exclusive")
     if (
         args.profile == "company-resume"
         and company_replay_directory is None
-        and not (args.company_query_audit or args.company_storage_audit)
+        and not (args.company_query_audit or args.company_storage_audit or args.company_pagination_audit)
     ):
         raise ValueError("company-resume requires --company-replay-directory")
     output = args.output
@@ -491,6 +505,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_replay_directory=company_replay_directory,
             company_query_audit=args.company_query_audit,
             company_storage_audit=args.company_storage_audit,
+            company_pagination_audit=args.company_pagination_audit,
+            company_pipeline_audit=args.company_pipeline_audit,
             v5_kernel_probe=args.v5_kernel_probe,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
@@ -972,6 +988,8 @@ def build_commands(
                 str(max(30.0, common_timeout - 30)),
                 *(("--audit-only",) if options.company_query_audit else ()),
                 *(("--storage-only",) if options.company_storage_audit else ()),
+                *(("--pagination-only",) if options.company_pagination_audit else ()),
+                *(("--pipeline-only",) if options.company_pipeline_audit else ()),
             ),
             common_timeout,
         ),
@@ -1633,6 +1651,34 @@ def _company_resume_details(
         )
     }
     runs = summary.get("runs")
+    pipeline = _mapping(summary.get("pipeline_audit"))
+    if pipeline:
+        pipeline_runs = pipeline.get("runs")
+        selected["pipeline_audit"] = {
+            "isolated_sample": pipeline.get("isolated_sample"),
+            "equivalent_facts": pipeline.get("equivalent_facts"),
+            "runs": [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "workers",
+                        "sample_documents",
+                        "attempts",
+                        "pending_documents",
+                        "published_codes",
+                        "seconds",
+                        "first_publication_seconds",
+                        "resume_changed_rows",
+                        "resume_pending_documents",
+                        "resume_attempts",
+                        "failures",
+                        "facts_digest",
+                    )
+                }
+                for row in (pipeline_runs[:2] if isinstance(pipeline_runs, list) else [])
+                if isinstance(row, dict)
+            ],
+        }
     storage = _mapping(summary.get("local_storage"))
     if storage:
         projected_storage = {
@@ -1684,7 +1730,17 @@ def _company_resume_details(
     if audit:
         audit_pages = audit.get("pages")
         audit_totals = audit.get("totals")
+        pagination = audit.get("pagination")
         selected["query_audit"] = {
+            "pagination": [
+                {
+                    key: row.get(key)
+                    for key in ("market", "date", "page_size", "total", "page_rows", "equivalent", "failure", "seconds")
+                }
+                for row in (pagination[:9] if isinstance(pagination, list) else [])
+                if isinstance(row, dict)
+            ],
+            "category_filter": audit.get("category_filter"),
             "read_only": audit.get("read_only"),
             "pages": [
                 {

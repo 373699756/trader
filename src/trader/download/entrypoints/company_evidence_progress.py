@@ -58,10 +58,12 @@ class CompanyEvidenceProgress:
         self._last = 0.0
         self._previous: EvidenceSyncProgress | None = None
         self._stocks: dict[str, CompanyStockProgress] = {}
+        self._batch = 0
 
     def __call__(self, progress: EvidenceSyncProgress) -> None:
         now = self._monotonic()
         previous = self._previous
+        self._batch = progress.batch or self._batch
         if progress.component == "facts" and progress.stock is not None:
             self._stocks[progress.stock.code] = progress.stock
         if previous is None or progress.component != previous.component:
@@ -114,6 +116,7 @@ class CompanyEvidenceProgress:
             failure = ",".join(item for item in failure.split(",") if item and item not in reported)
         print(
             f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
+            + (f" | 批次 {self._batch}" if self._batch and progress.component != "complete" else "")
             + _scope(progress)
             + _stock(progress)
             + (self._summary(progress.completed) if progress.component == "complete" else "")
@@ -160,13 +163,18 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
         return (
             f"已核对日期 {dates.completed_days}/{dates.total_days} 天（全部目标市场）"
             f" | 窗口 {dates.window_start} 至 {dates.window_end} | 待补 {progress.pending} 个范围"
+            + (
+                f" | 已知剩余 {progress.known_pages} 页 | 页数待确认 {progress.unknown_queries} 个查询"
+                if progress.batch
+                else ""
+            )
         )
     if progress.component == "news" and progress.completed == progress.pending == 0:
         return "无候选名单，本轮未抓取新闻"
     if progress.pending is None:
         return f"进度 {progress.completed}/? {unit}（总数待确认）"
     if progress.component == "facts" and progress.stock is not None:
-        return f"已核验股票 {progress.stock.processed}/{progress.stock.total} 股（等待原子发布）"
+        return f"本批已核验股票 {progress.stock.processed}/{progress.stock.total} 股（等待原子发布）"
     if progress.component == "publish":
         total = progress.completed + progress.pending
         return (
@@ -183,6 +191,11 @@ def _page_counts(progress: EvidenceSyncProgress, unit: str, pending: int) -> str
         return (
             f"已尝试 {progress.attempted_documents}/{total} 篇 | 已提取正文 {progress.completed} 篇 | "
             f"本轮失败 {progress.failed_documents} 篇 | 冷却暂缓 {progress.deferred_documents} 篇 | 待补 {progress.pending} 篇"
+            + (
+                f" | 提取速度 {progress.document_rate * 60:.1f} 篇/分 | 已知待核验预计 {ProgressDuration(progress.document_eta_seconds or 0)}（不含未发现正文及冷却）"
+                if progress.document_rate is not None
+                else ""
+            )
         )
     percent = f"{100 * progress.completed / total:.2f}%" if total else "无待处理"
     return f"进度 {progress.completed}/{total} {unit}（{percent}） | 待处理 {progress.pending} {unit}"
@@ -217,7 +230,7 @@ def _scope(progress: EvidenceSyncProgress) -> str:
         market = {"sse": "上交所", "szse": "深交所", "bse": "北交所"}[scope.market]
         dates = str(scope.start) if scope.start == scope.end else f"{scope.start} 至 {scope.end}"
         pages = (
-            f"/{ceil(scope.expected_rows / 30) or 1}"
+            f"/{ceil(scope.expected_rows / scope.page_size) or 1}"
             if scope.expected_rows is not None and scope.expected_rows <= 3000
             else ""
         )
