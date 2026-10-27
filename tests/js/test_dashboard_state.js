@@ -1527,7 +1527,7 @@ sandbox.window.TraderStatusView.renderBudgetSummary(
 );
 assert.strictEqual(budgetVisibility.budgetPanel.hidden, true);
 assert.strictEqual(budgetVisibility.threeColumns, true);
-assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /本地 \/ 风险复核 \/ 最终/);
+assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /最终评分 \/ 加减分 \/ 复核/);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head,
   /今日涨跌<\/th><th>换手率<\/th><th>成交额<\/th>/);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head,
