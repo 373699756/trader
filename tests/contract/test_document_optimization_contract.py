@@ -9,7 +9,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
 AUTHORITIES = ("1_评分逻辑.md", "2_工程设计.md", "3_工程实施.md", "4_下载训练.md")
-HISTORICAL_PLANS = ("2.md",)
 
 
 @pytest.mark.parametrize("name", AUTHORITIES)
@@ -21,7 +20,7 @@ def test_each_document_has_one_explicit_responsibility(name: str) -> None:
 
 
 def test_retired_blueprints_are_removed_without_forwarding_stubs() -> None:
-    for name in ("项目重构大纲.md", "项目重构详细.md", "04_策略回溯.md", "1.md", "todo.md", "company.md"):
+    for name in ("项目重构大纲.md", "项目重构详细.md", "04_策略回溯.md", "1.md", "2.md", "todo.md", "company.md"):
         assert not (DOCS / name).exists()
 
 
@@ -30,7 +29,7 @@ def test_active_document_links_resolve() -> None:
         ROOT / "AGENTS.md",
         ROOT / "README.md",
         ROOT / "scripts/README.md",
-        *(path for path in sorted(DOCS.glob("*.md")) if path.name not in HISTORICAL_PLANS),
+        *sorted(DOCS.glob("*.md")),
         *(ROOT / ".agents/skills/trader-delivery").rglob("*.md"),
         *(ROOT / ".agents/skills/python-engineering-guide").rglob("*.md"),
     ]
@@ -55,14 +54,6 @@ def test_active_document_links_resolve() -> None:
                 if anchor not in anchors:
                     failures.append(f"{path.relative_to(ROOT)} -> missing anchor {target}")
     assert failures == []
-
-
-@pytest.mark.parametrize("name", HISTORICAL_PLANS)
-def test_retired_plans_are_explicitly_historical_and_not_current_guidance(name: str) -> None:
-    content = (DOCS / name).read_text(encoding="utf-8")
-    introduction = content.split("\n## ", 1)[0]
-    assert "历史方案，仅供回溯" in introduction
-    assert "工程实施" in introduction
 
 
 def test_normative_tables_and_latest_wins_have_one_definition() -> None:
