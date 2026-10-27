@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -69,26 +68,23 @@ class CompanyEvidenceIndex(Protocol):
 
 
 class CompanyDisclosureSource(Protocol):
-    def fetch(self, partition: DisclosurePartition, *, deadline: float) -> DisclosurePage: ...
-    def document(self, item: Disclosure, *, deadline: float) -> str: ...
-    def split_queries(self, partition: DisclosurePartition, *, deadline: float) -> tuple[DisclosureQuery, ...]: ...
+    def fetch(self, partition: DisclosurePartition) -> DisclosurePage: ...
+    def document(self, item: Disclosure) -> str: ...
+    def split_queries(self, partition: DisclosurePartition) -> tuple[DisclosureQuery, ...]: ...
     def repair_queries(
         self,
         partition: DisclosurePartition,
         members: tuple[DisclosureSecurity, ...],
         *,
         missing_rows: int,
-        deadline: float,
         report: Callable[[DisclosurePartition], None] | None = None,
     ) -> tuple[DisclosureQuery, ...]: ...
 
 
 class CompanyStructuredSource(Protocol):
-    def pledge_day(self, observed_at: datetime, *, deadline: float) -> date: ...
-    def fetch(
-        self, query: StructuredCompanyQuery, *, observed_at: datetime, deadline: float
-    ) -> StructuredCompanyPage: ...
-    def news(self, code: str, *, observed_at: datetime, deadline: float) -> tuple[Disclosure, ...]: ...
+    def pledge_day(self, observed_at: datetime) -> date: ...
+    def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage: ...
+    def news(self, code: str, *, observed_at: datetime) -> tuple[Disclosure, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -143,11 +139,9 @@ def SyncCompanyEvidence(
     configuration: CompanySyncConfiguration,
     news_codes: Sequence[str] = (),
 ) -> CompanyEvidenceSyncResult:
-    budget_seconds = configuration.budget_seconds
-    if observed_at.utcoffset() is None or not math.isfinite(budget_seconds) or budget_seconds <= 0:
-        raise ValueError("company evidence requires an aware time and positive budget")
+    if observed_at.utcoffset() is None:
+        raise ValueError("company evidence requires an aware time")
     started = dependencies.monotonic()
-    deadline = started + budget_seconds
     index = dependencies.index
     state = _SyncState()
     population = _validated_population(codes)
@@ -161,32 +155,20 @@ def SyncCompanyEvidence(
         if any(item.endswith((":access_denied", ":rate_limited")) for item in state.failures):
             _report(dependencies, component, state, None, completed=0, status="deferred")
             continue
-        _structured(
-            dependencies,
-            component,
-            observed_at,
-            min(deadline, dependencies.monotonic() + configuration.structured_component_seconds),
-            state,
-        )
+        _structured(dependencies, component, observed_at, state)
     pending = published = 0
     if not _cancelled(dependencies):
         pending = _announcements(
             dependencies,
             population,
             state,
-            _AnnouncementSchedule(
-                observed_at,
-                started,
-                started + budget_seconds * configuration.announcements_deadline_fraction,
-                configuration,
-            ),
+            _AnnouncementContext(observed_at, started, configuration),
         )
     if not _cancelled(dependencies):
         _documents(
             dependencies,
             population,
             observed_at,
-            started + budget_seconds * configuration.documents_deadline_fraction,
             state,
             configuration,
             started,
@@ -198,9 +180,7 @@ def SyncCompanyEvidence(
                 population, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
             )
             _report(dependencies, "publish", state, len(population) - published, completed=published, status="complete")
-    news_updates = (
-        () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, deadline, state)
-    )
+    news_updates = () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
     if news_updates and not _cancelled(dependencies):
         _report(dependencies, "facts", state, len(news_updates), completed=0)
         if not _cancelled(dependencies):
@@ -208,8 +188,6 @@ def SyncCompanyEvidence(
                 news_updates, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
             )
             _report(dependencies, "publish", state, len(news_updates) - updated, completed=updated, status="complete")
-    if dependencies.monotonic() >= deadline:
-        state.failures += ("task:deadline",)
     if _cancelled(dependencies):
         state.failures += ("task:cancelled",)
     pending_documents = (
@@ -252,10 +230,9 @@ def _validated_population(codes: Sequence[str]) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class _AnnouncementSchedule:
+class _AnnouncementContext:
     observed_at: datetime
     started: float
-    deadline: float
     configuration: CompanySyncConfiguration
 
 
@@ -263,9 +240,9 @@ class _AnnouncementRun:
     """Own the dispatch queue and failure circuit for one announcement stage."""
 
     def __init__(
-        self, dependencies: CompanyEvidenceDependencies, state: _SyncState, schedule: _AnnouncementSchedule
+        self, dependencies: CompanyEvidenceDependencies, state: _SyncState, context: _AnnouncementContext
     ) -> None:
-        self._dependencies, self._state, self._schedule = dependencies, state, schedule
+        self._dependencies, self._state, self._context = dependencies, state, context
         self._index = dependencies.index
         self._queue: deque[DisclosurePartition] = deque()
         self._deferred: set[tuple[Market, date, date, str]] = set()
@@ -277,10 +254,10 @@ class _AnnouncementRun:
         if _cancelled(dependencies):
             return 0
         markets = tuple(sorted({EvidenceMarket(code) for code in population}))
-        self._queue = deque(self._index.partitions(markets, self._schedule.observed_at))
-        state.reused += self._index.reusable_partitions(markets, self._schedule.observed_at)
+        self._queue = deque(self._index.partitions(markets, self._context.observed_at))
+        state.reused += self._index.reusable_partitions(markets, self._context.observed_at)
         self._report()
-        while self._queue and _running(dependencies, self._schedule.deadline):
+        while self._queue and not _cancelled(dependencies):
             partition = self._queue.popleft()
             self._report(partition, include_current=True)
             if _cancelled(dependencies):
@@ -292,13 +269,12 @@ class _AnnouncementRun:
                 if self._failed(partition, exc):
                     break
         pending = _pending_count(self._queue, self._deferred)
-        _record_deadline(dependencies, state, "announcements", pending, self._schedule.deadline)
         self._report(status="deferred" if pending else "complete")
         return pending
 
     def _now(self) -> datetime:
-        return self._schedule.observed_at + timedelta(
-            seconds=max(0, self._dependencies.monotonic() - self._schedule.started)
+        return self._context.observed_at + timedelta(
+            seconds=max(0, self._dependencies.monotonic() - self._context.started)
         )
 
     def _report(
@@ -316,7 +292,7 @@ class _AnnouncementRun:
             self._state,
             _pending_count(self._queue, self._deferred, current),
             scope=partition,
-            dates=_date_progress(self._schedule.observed_at.date(), self._queue, self._deferred, current),
+            dates=_date_progress(self._context.observed_at.date(), self._queue, self._deferred, current),
             status=status,
             activity=activity,
         )
@@ -333,18 +309,17 @@ class _AnnouncementRun:
         verifying = children == ()
         if verifying:
             partition = replace(partition, page=1, expected_rows=None, received_rows=0)
-        page = self._dependencies.disclosures.fetch(partition, deadline=self._schedule.deadline)
+        page = self._dependencies.disclosures.fetch(partition)
         self._state.pages += 1
         if verifying:
             try:
-                self._index.commit_query_coverage(partition, page, self._schedule.observed_at)
+                self._index.commit_query_coverage(partition, page, self._context.observed_at)
             except DisclosureCoverageMismatch as exc:
                 repairs = (
                     self._dependencies.disclosures.repair_queries(
                         partition,
                         self._index.disclosure_members(partition),
                         missing_rows=exc.missing_rows,
-                        deadline=self._schedule.deadline,
                         report=self._repair_progress,
                     )
                     if exc.missing_rows
@@ -389,10 +364,10 @@ class _AnnouncementRun:
 
     def _split(self, partition: DisclosurePartition) -> None:
         if partition.start < partition.end:
-            children = self._index.split_partition(partition, self._schedule.observed_at)
+            children = self._index.split_partition(partition, self._context.observed_at)
             self._queue = _replace_split_queue(self._queue, partition, children, self._deferred)
         else:
-            queries = self._dependencies.disclosures.split_queries(partition, deadline=self._schedule.deadline)
+            queries = self._dependencies.disclosures.split_queries(partition)
             children = self._index.split_query(partition, queries)
             self._queue = _replace_query_queue(self._queue, partition, children, self._deferred)
 
@@ -402,32 +377,27 @@ class _AnnouncementRun:
             return True
         if str(exc) == "company_evidence_persistence_unavailable":
             raise exc
-        if _failure(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"} and _running(
-            self._dependencies, self._schedule.deadline
-        ):
+        if _failure(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"}:
             try:
                 self._split(partition)
                 return False
             except (OSError, RuntimeError, ValueError) as split_exc:
                 exc = split_exc
-        if _stage_deadline(exc) or (
-            isinstance(exc, TimeoutError) and _deadline_reached(self._dependencies, self._schedule.deadline)
-        ):
+        if _cancelled(self._dependencies):
             self._queue.appendleft(partition)
-            self._state.failures += ("announcements:deadline",)
             return True
         failure = _failure(exc)
         self._index.partition_failure(partition, failure)
         self._state.failures += (f"announcements:{failure}",)
         self._deferred.add(_query_key(partition))
-        configuration = self._schedule.configuration
+        configuration = self._context.configuration
         delay = (
             configuration.document_transient_retry_seconds
             if _transient(exc)
             else configuration.document_failure_retry_seconds
         )
         self._index.defer_partition(partition, self._now() + timedelta(seconds=delay))
-        if not _running(self._dependencies, self._schedule.deadline):
+        if _cancelled(self._dependencies):
             return True
         stopped = self._circuit.failed(
             exc, validation=failure not in {"cninfo_query_unsplittable", "cninfo_single_day_page_limit"}
@@ -441,9 +411,9 @@ def _announcements(
     dependencies: CompanyEvidenceDependencies,
     population: tuple[str, ...],
     state: _SyncState,
-    schedule: _AnnouncementSchedule,
+    context: _AnnouncementContext,
 ) -> int:
-    return _AnnouncementRun(dependencies, state, schedule).run(population)
+    return _AnnouncementRun(dependencies, state, context).run(population)
 
 
 def _replace_split_queue(
@@ -520,7 +490,6 @@ def _documents(
     dependencies: CompanyEvidenceDependencies,
     population: tuple[str, ...],
     observed_at: datetime,
-    deadline: float,
     state: _SyncState,
     configuration: CompanySyncConfiguration,
     started: float,
@@ -535,7 +504,7 @@ def _documents(
     policy = f"text_diagnostics_2:{configuration.document_parse_timeout_seconds}:{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
     circuit = _SourceCircuit()
     _report(dependencies, "risk_documents", state, total, completed=0)
-    while pending_documents and _running(dependencies, deadline):
+    while pending_documents and not _cancelled(dependencies):
         item = pending_documents.popleft()
         _prepare_stock_progress(dependencies, state, item.codes[0])
         now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
@@ -563,10 +532,10 @@ def _documents(
             attempted_documents=attempted,
             deferred_documents=deferred,
         )
-        if not _running(dependencies, deadline):
+        if _cancelled(dependencies):
             break
         try:
-            text = dependencies.disclosures.document(item, deadline=deadline)
+            text = dependencies.disclosures.document(item)
             circuit.success()
             index.commit_document(item, text)
             completed += 1
@@ -576,9 +545,6 @@ def _documents(
                 break
             if str(exc) == "company_evidence_persistence_unavailable":
                 raise
-            if _stage_deadline(exc) or (isinstance(exc, TimeoutError) and _deadline_reached(dependencies, deadline)):
-                state.failures += ("risk_documents:deadline",)
-                break
             failure = _failure(exc)
             state.failed_documents += 1
             state.failures += (f"risk_documents:{failure}",)
@@ -586,7 +552,7 @@ def _documents(
                 delay = _document_retry_seconds(configuration, exc)
                 now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
                 index.document_failure(item, policy, failure, now, now + timedelta(seconds=delay))
-            if _running(dependencies, deadline) and not circuit.failed(exc):
+            if not _cancelled(dependencies) and not circuit.failed(exc):
                 _report(
                     dependencies,
                     "risk_documents",
@@ -597,7 +563,7 @@ def _documents(
                     deferred_documents=deferred,
                 )
                 continue  # One unreadable or slow PDF must not starve the other documents.
-            if _running(dependencies, deadline):
+            if not _cancelled(dependencies):
                 state.failures += ("risk_documents:source_stopped",)
             break
         _report(
@@ -609,7 +575,6 @@ def _documents(
             attempted_documents=attempted,
             deferred_documents=deferred,
         )
-    _record_deadline(dependencies, state, "risk_documents", total - completed, deadline)
     _report(
         dependencies,
         "risk_documents",
@@ -642,7 +607,6 @@ def _news(
     dependencies: CompanyEvidenceDependencies,
     population: tuple[str, ...],
     observed_at: datetime,
-    deadline: float,
     state: _SyncState,
 ) -> tuple[str, ...]:
     index = dependencies.index
@@ -660,7 +624,7 @@ def _news(
         return ()
     _report(dependencies, "news", state, total, completed=0)
     for code in () if structured_blocked else candidates:
-        if not _running(dependencies, deadline):
+        if _cancelled(dependencies):
             break
         _prepare_stock_progress(dependencies, state, code)
         if not index.component_due("news", code, observed_at):
@@ -670,10 +634,12 @@ def _news(
         attempted.append(code)
         _report(dependencies, "news", state, total - completed, completed=completed)
         try:
-            rows = dependencies.structured.news(code, observed_at=observed_at, deadline=deadline)
+            rows = dependencies.structured.news(code, observed_at=observed_at)
             state.changes += index.commit_news(code, rows, observed_at)
             completed += 1
         except (OSError, RuntimeError, ValueError) as exc:
+            if _cancelled(dependencies):
+                break
             failure = _failure(exc)
             index.component_failure("news", code, failure)
             state.failures += (f"news:{failure}",)
@@ -693,7 +659,6 @@ def _structured(
     dependencies: CompanyEvidenceDependencies,
     component: Literal["financial", "pledge", "unlock"],
     now: datetime,
-    deadline: float,
     state: _SyncState,
 ) -> None:
     index = dependencies.index
@@ -701,7 +666,7 @@ def _structured(
         state.reused += 1
         _report(dependencies, component, state, 0, completed=0, status="reused")
         return
-    if not _running(dependencies, deadline):
+    if _cancelled(dependencies):
         _report(dependencies, component, state, None, completed=0, status="deferred")
         return
     _report(dependencies, component, state, None, completed=0)
@@ -714,17 +679,17 @@ def _structured(
         if component == "financial":
             start, end = index.component_since(component, "market", now), now.date()
         elif component == "pledge":
-            start = end = dependencies.structured.pledge_day(now, deadline=deadline)
+            start = end = dependencies.structured.pledge_day(now)
         else:
             start, end = now.date(), now.date() + timedelta(days=180)
         requested = StructuredCompanyQuery(component, start, end)
         query = index.structured_cursor(requested)
-        while _running(dependencies, deadline):
+        while not _cancelled(dependencies):
             completed = query.page - 1
             _report(dependencies, component, state, pending, completed=completed, scope=query)
             if _cancelled(dependencies):
                 break
-            page = dependencies.structured.fetch(query, observed_at=now, deadline=deadline)
+            page = dependencies.structured.fetch(query, observed_at=now)
             state.pages += 1
             state.changes += index.commit_structured(query, page, now)
             completed, pending = page.page, page.pages - page.page
@@ -740,11 +705,11 @@ def _structured(
             query = replace(
                 query, received_rows=query.received_rows + page.row_count, expected_rows=page.total, page=page.page + 1
             )
+        _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
+    except (OSError, RuntimeError, ValueError) as exc:
         if _cancelled(dependencies):
             _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
             return
-        raise TimeoutError("company_source_deadline")
-    except (OSError, RuntimeError, ValueError) as exc:
         failure = _failure(exc)
         index.component_failure(component, "market", failure)
         state.failures += (f"{component}:{failure}",)
@@ -782,29 +747,6 @@ def _transient(exc: BaseException) -> bool:
         or _failure(exc) == "HttpConnectionError"
         or (isinstance(exc, CompanySourceFailure) and exc.status_code in {408, 500, 502, 503, 504})
     )
-
-
-def _stage_deadline(exc: BaseException) -> bool:
-    return isinstance(exc, TimeoutError) and str(exc) in {"disclosure_deadline", "company_source_deadline"}
-
-
-def _running(dependencies: CompanyEvidenceDependencies, deadline: float) -> bool:
-    return dependencies.monotonic() < deadline and not _cancelled(dependencies)
-
-
-def _deadline_reached(dependencies: CompanyEvidenceDependencies, deadline: float) -> bool:
-    return dependencies.monotonic() >= deadline and not _cancelled(dependencies)
-
-
-def _record_deadline(
-    dependencies: CompanyEvidenceDependencies,
-    state: _SyncState,
-    component: Literal["announcements", "risk_documents"],
-    pending: int,
-    deadline: float,
-) -> None:
-    if pending and _deadline_reached(dependencies, deadline):
-        state.failures += (f"{component}:deadline",)
 
 
 def _cancelled(dependencies: CompanyEvidenceDependencies) -> bool:

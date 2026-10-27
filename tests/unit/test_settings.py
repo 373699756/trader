@@ -710,11 +710,8 @@ def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_pa
         LoadStrategySettings(strategy_path)
 
 
-def test_company_sync_budget_and_deadline_configuration(tmp_path) -> None:
+def test_company_sync_request_and_document_limits(tmp_path) -> None:
     settings = LoadCompanySyncConfiguration(PROJECT_ROOT)
-    assert settings.budget_seconds == 8 * 60 * 60
-    assert settings.announcements_deadline_fraction == 0.7
-    assert settings.documents_deadline_fraction == 0.95
     assert settings.source_timeout_seconds == 8.0
     assert settings.document_limits.max_bytes == 16 * 1024 * 1024
     assert settings.document_limits.max_pages == 200
@@ -724,18 +721,6 @@ def test_company_sync_budget_and_deadline_configuration(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     document = json.loads((PROJECT_ROOT / "config/download.json").read_text(encoding="utf-8"))
-    document["company"]["budget_seconds"] = 28800.01
-    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(ConfigurationError, match="budget_seconds must be at most 28800.0"):
-        LoadCompanySyncConfiguration(tmp_path)
-
-    document["company"]["budget_seconds"] = 28800.0
-    document["company"]["announcements_deadline_fraction"] = 0.96
-    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(ConfigurationError, match="announcements before documents"):
-        LoadCompanySyncConfiguration(tmp_path)
-
-    document["company"]["announcements_deadline_fraction"] = 0.7
     document["company"]["source_timeout_seconds"] = 8.01
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="source_timeout_seconds must be at most 8.0"):
@@ -745,6 +730,25 @@ def test_company_sync_budget_and_deadline_configuration(tmp_path) -> None:
     document["company"]["document_limits"]["max_bytes"] = 64 * 1024 * 1024 + 1
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="max_bytes must be at most"):
+        LoadCompanySyncConfiguration(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        "budget_seconds",
+        "structured_component_seconds",
+        "announcements_deadline_fraction",
+        "documents_deadline_fraction",
+    ],
+)
+def test_removed_company_task_budgets_are_rejected(tmp_path, removed) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text(encoding="utf-8"))
+    document["company"][removed] = 1
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="download.company"):
         LoadCompanySyncConfiguration(tmp_path)
 
 

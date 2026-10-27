@@ -51,7 +51,7 @@ def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
         }
     )
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda value: None)
-    page = source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()), deadline=8)
+    page = source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()))
     assert page.has_more and page.total == 31
     assert page.rows[0].codes == ("600001",)
     query = session.requests[0]["data"]
@@ -64,7 +64,7 @@ def test_cninfo_refuses_page_beyond_official_hundred_page_window_without_request
     session = Session({})
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
     with pytest.raises(ValueError, match="cninfo_page_limit"):
-        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), page=101), deadline=8)
+        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), page=101))
     assert not session.requests
 
 
@@ -73,14 +73,14 @@ def test_cninfo_board_and_group_queries_use_official_filter_shape():
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
     securities = (DisclosureSecurity("600001", "one"), DisclosureSecurity("600002", "two"))
     query = DisclosureQuery("shmb", securities)
-    source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query), deadline=20)
+    source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query))
     request = session.requests[0]["data"]
     assert request["plate"] == "shmb" and request["stock"] == "600001,one;600002,two"
-    assert source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date()), deadline=20) == (
+    assert source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date())) == (
         DisclosureQuery("shmb"),
         DisclosureQuery("shkcp"),
     )
-    children = source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query), deadline=20)
+    children = source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query))
     assert tuple(q.securities for q in children) == ((securities[0],), (securities[1],))
 
 
@@ -95,11 +95,11 @@ def test_board_split_uses_frozen_official_members_and_rejects_an_unsplittable_se
     session = Lists({})
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
     day = DisclosurePartition("sse", NOW.date(), NOW.date(), query=DisclosureQuery("shmb"))
-    groups = source.split_queries(day, deadline=20)
+    groups = source.split_queries(day)
     assert [len(q.securities) for q in groups] == [32, 32, 1]
-    assert source.split_queries(day, deadline=20) == groups and len(session.requests) == 1
+    assert source.split_queries(day) == groups and len(session.requests) == 1
     with pytest.raises(ValueError, match="cninfo_query_unsplittable"):
-        source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date(), query=groups[-1]), deadline=20)
+        source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date(), query=groups[-1]))
 
 
 @pytest.mark.parametrize(
@@ -123,7 +123,7 @@ def test_cninfo_ignored_query_filter_never_returns_a_trusted_page(query):
     )
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
     with pytest.raises(ValueError, match="cninfo_query_filter_ignored"):
-        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query), deadline=20)
+        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date(), query=query))
 
 
 def test_cninfo_historical_code_alias_requires_matching_official_issuer():
@@ -139,10 +139,10 @@ def test_cninfo_historical_code_alias_requires_matching_official_issuer():
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
     query = DisclosureQuery("shmb", (DisclosureSecurity("600001", "issuer"),))
     partition = DisclosurePartition("sse", NOW.date(), NOW.date(), query=query)
-    assert source.fetch(partition, deadline=20).rows[0].codes == ("600002",)
+    assert source.fetch(partition).rows[0].codes == ("600002",)
     row["orgId"] = "unrelated"
     with pytest.raises(ValueError, match="cninfo_query_filter_ignored"):
-        source.fetch(partition, deadline=20)
+        source.fetch(partition)
 
 
 def test_historical_issuer_discovery_keeps_known_members_and_stops_when_gap_is_found():
@@ -157,7 +157,7 @@ def test_historical_issuer_discovery_keeps_known_members_and_stops_when_gap_is_f
     session = Session({"totalRecordNum": 4000, "hasMore": True, "announcements": [row]})
     source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
     target = DisclosurePartition("sse", NOW.date(), NOW.date())
-    queries = source.repair_queries(target, (DisclosureSecurity("600001", "current"),), missing_rows=1, deadline=20)
+    queries = source.repair_queries(target, (DisclosureSecurity("600001", "current"),), missing_rows=1)
     assert queries == (DisclosureQuery("shmb", (DisclosureSecurity("600009", "historical"),)),)
     assert len(session.requests) == 1
     assert session.requests[0]["data"]["sortName"] == "code" and session.requests[0]["data"]["sortType"] == "asc"
@@ -186,7 +186,6 @@ def test_issuer_discovery_alternates_sort_edges_and_keeps_shanghai_b_share_cover
         DisclosurePartition("sse", NOW.date(), NOW.date()),
         (DisclosureSecurity("600001", "current"),),
         missing_rows=1,
-        deadline=20,
     )
     assert queries == (DisclosureQuery("shmb", (DisclosureSecurity("900901", "historical"),)),)
     assert [(request["data"]["pageNum"], request["data"]["sortType"]) for request in session.requests] == [
@@ -199,7 +198,7 @@ def test_issuer_discovery_alternates_sort_edges_and_keeps_shanghai_b_share_cover
 def test_rejections_have_distinct_safe_categories(status, category):
     source = CninfoMarketDisclosureSource(Session({}, status), monotonic=lambda: 0, sleeper=lambda value: None)
     with pytest.raises(CompanySourceFailure) as caught:
-        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()), deadline=8)
+        source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()))
     assert caught.value.category == category
     assert caught.value.status_code == status
 
@@ -214,7 +213,7 @@ def test_oversized_pdf_remains_a_document_failure_instead_of_stopping_the_source
         "cninfo", "fixture", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
     )
     with pytest.raises(ValueError, match="disclosure_document_oversized"):
-        source.document(item, deadline=8)
+        source.document(item)
 
 
 def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count():
@@ -230,9 +229,7 @@ def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count()
     ]
     session = Session({"result": {"count": 3, "pages": 1, "data": rows}})
     source = EastmoneyCompanySource(session, monotonic=lambda: 0)
-    page = source.fetch(
-        StructuredCompanyQuery("financial", date(2026, 10, 11), NOW.date()), observed_at=NOW, deadline=8
-    )
+    page = source.fetch(StructuredCompanyQuery("financial", date(2026, 10, 11), NOW.date()), observed_at=NOW)
     assert page.row_count == 3
     assert len(page.financials) == 1
     assert page.financials[0].parent_net_profit == -2
@@ -256,11 +253,11 @@ def test_unlock_source_converts_fraction_to_percentage():
         }
     )
     source = EastmoneyCompanySource(session, monotonic=lambda: 0)
-    page = source.fetch(StructuredCompanyQuery("unlock", NOW.date(), date(2027, 1, 16)), observed_at=NOW, deadline=8)
+    page = source.fetch(StructuredCompanyQuery("unlock", NOW.date(), date(2027, 1, 16)), observed_at=NOW)
     assert page.ratios[0].ratio_pct == pytest.approx(3.1)
 
 
 def test_broken_empty_payload_is_not_a_successful_zero_snapshot():
     source = EastmoneyCompanySource(Session({"result": None}), monotonic=lambda: 0)
     with pytest.raises(ValueError, match="result_missing"):
-        source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW, deadline=8)
+        source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)

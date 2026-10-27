@@ -8,11 +8,11 @@ import time
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.bootstrap import OpenExternalHttp
-from trader.download.domain.company_evidence import DisclosurePartition, Market, StructuredCompanyQuery
+from trader.download.domain.company_evidence import DisclosurePartition, StructuredCompanyQuery
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 
@@ -28,11 +28,16 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
     failures: list[str] = []
     with OpenExternalHttp() as session:
         transport = session
+        announcement_deadline = min(deadline, started + args.source_loop_seconds)
         source = CninfoMarketDisclosureSource(
-            transport, monotonic=time.monotonic, sleeper=time.sleep, timeout_seconds=args.timeout_seconds
+            transport,
+            monotonic=time.monotonic,
+            sleeper=time.sleep,
+            timeout_seconds=args.timeout_seconds,
+            cancel_requested=lambda: time.monotonic() >= announcement_deadline,
         )
         for market in ("sse", "szse", "bse"):
-            query = DisclosurePartition(cast(Market, market), day, day)
+            query = DisclosurePartition(market, day, day)
             received, pages = 0, 0
             codes: set[str] = set()
             seen: set[tuple[str, str]] = set()
@@ -41,7 +46,7 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
             total = 0
             try:
                 while more and pages < 64:
-                    page = source.fetch(query, deadline=min(deadline, started + args.source_loop_seconds))
+                    page = source.fetch(query)
                     received += len(page.rows)
                     pages += 1
                     total, more = page.total, page.has_more
@@ -69,40 +74,52 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
                 failures.append(f"cninfo:{type(exc).__name__}")
                 samples.append({"market": market, "pages": pages, "error": type(exc).__name__})
                 break
-        structured = EastmoneyCompanySource(transport, monotonic=time.monotonic, timeout_seconds=args.timeout_seconds)
-        component_samples: list[dict[str, object]] = []
         structured_deadline = min(deadline, time.monotonic() + args.source_loop_seconds)
-        for label in ("financial", "pledge", "unlock", "financial_baseline"):
-            component = "financial" if label == "financial_baseline" else label
+        structured = EastmoneyCompanySource(
+            transport,
+            monotonic=time.monotonic,
+            timeout_seconds=args.timeout_seconds,
+            cancel_requested=lambda: time.monotonic() >= structured_deadline,
+        )
+        component_samples: list[dict[str, object]] = []
+        labels: tuple[Literal["financial", "pledge", "unlock", "financial_baseline"], ...] = (
+            "financial",
+            "pledge",
+            "unlock",
+            "financial_baseline",
+        )
+        for label in labels:
+            component: Literal["financial", "pledge", "unlock"] = (
+                "financial" if label == "financial_baseline" else label
+            )
             try:
                 if component == "financial":
                     begin, end = now.date() - timedelta(days=550 if label == "financial_baseline" else 7), now.date()
                 elif component == "pledge":
-                    begin = end = structured.pledge_day(now, deadline=structured_deadline)
+                    begin = end = structured.pledge_day(now)
                 else:
                     begin, end = now.date(), now.date() + timedelta(days=90)
                 received = usable = duplicate = pages = 0
                 expected: int | None = None
                 seen_structured: set[tuple[str, str]] = set()
                 while True:
-                    page = structured.fetch(
+                    structured_page = structured.fetch(
                         StructuredCompanyQuery(component, begin, end, pages + 1),
                         observed_at=now,
-                        deadline=structured_deadline,
                     )
-                    if expected is not None and page.total != expected:
+                    if expected is not None and structured_page.total != expected:
                         raise ValueError("structured_count_changed")
-                    expected = page.total
+                    expected = structured_page.total
                     pages += 1
-                    received += page.row_count
-                    keys = tuple((item.code, item.report_date.isoformat()) for item in page.financials) + tuple(
-                        (item.code, item.day.isoformat()) for item in page.ratios
-                    )
+                    received += structured_page.row_count
+                    keys = tuple(
+                        (item.code, item.report_date.isoformat()) for item in structured_page.financials
+                    ) + tuple((item.code, item.day.isoformat()) for item in structured_page.ratios)
                     usable += len(keys)
                     for key in keys:
                         duplicate += int(key in seen_structured)
                         seen_structured.add(key)
-                    if pages == page.pages:
+                    if pages == structured_page.pages:
                         break
                 status = "complete" if received == expected and not duplicate else "partial"
                 if status != "complete":

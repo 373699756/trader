@@ -39,24 +39,19 @@ class EastmoneyCompanySource:
         self._timeout = timeout_seconds
         self._cancel_requested = cancel_requested
 
-    def _json(self, url: str, params: Mapping[str, str], deadline: float) -> Mapping[str, object]:
+    def _json(self, url: str, params: Mapping[str, str]) -> Mapping[str, object]:
         self._check_cancelled()
-        remaining = deadline - self._monotonic()
-        if remaining <= 0:
-            raise TimeoutError("company_source_deadline")
         response = self._session.get(
             url,
             params=params,
-            timeout=min(self._timeout, remaining),
-            deadline=deadline,
+            timeout=self._timeout,
+            deadline=self._monotonic() + self._timeout,
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"},
             cancel_requested=self._cancel_requested,
         )
         self._check_cancelled()
         CheckCompanyResponse(response)
         payload = response.json()
-        if self._monotonic() >= deadline:
-            raise TimeoutError("company_source_deadline")
         if not isinstance(payload, Mapping):
             raise ValueError("company_source_schema_invalid")
         return payload
@@ -65,7 +60,7 @@ class EastmoneyCompanySource:
         if self._cancel_requested is not None and self._cancel_requested():
             raise HttpCancelled("http_cancelled")
 
-    def pledge_day(self, observed_at: datetime, *, deadline: float) -> date:
+    def pledge_day(self, observed_at: datetime) -> date:
         payload = self._json(
             _DATA_URL,
             {
@@ -79,7 +74,6 @@ class EastmoneyCompanySource:
                 "client": "WEB",
                 "filter": f"(TRADE_DATE<='{observed_at.date().isoformat()}')",
             },
-            deadline,
         )
         rows, _, _ = _result(payload)
         if not rows:
@@ -89,7 +83,7 @@ class EastmoneyCompanySource:
             raise ValueError("pledge_snapshot_future")
         return day
 
-    def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime, deadline: float) -> StructuredCompanyPage:
+    def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage:
         component, start, end, page = query.component, query.start, query.end, query.page
         if component == "financial":
             payload = self._json(
@@ -107,7 +101,6 @@ class EastmoneyCompanySource:
                     "source": "HSF10",
                     "client": "PC",
                 },
-                deadline,
             )
         else:
             field = "TRADE_DATE" if component == "pledge" else "FREE_DATE"
@@ -126,7 +119,6 @@ class EastmoneyCompanySource:
                     "client": "WEB",
                     "filter": f"({field}>='{start.isoformat()}')({field}<='{end.isoformat()}')",
                 },
-                deadline,
             )
         rows, pages, total = _result(payload)
         if pages > 256 or page > pages:
@@ -150,7 +142,7 @@ class EastmoneyCompanySource:
             ratios.append(CompanyRatio(code, day, ratio))
         return StructuredCompanyPage(component, page, pages, total, ratios=tuple(ratios))
 
-    def news(self, code: str, *, observed_at: datetime, deadline: float) -> tuple[Disclosure, ...]:
+    def news(self, code: str, *, observed_at: datetime) -> tuple[Disclosure, ...]:
         # Ordinary news is bounded candidate context, not an exhaustive regulatory feed.
         parameter = {
             "uid": "",
@@ -170,20 +162,18 @@ class EastmoneyCompanySource:
                 }
             },
         }
-        remaining = deadline - self._monotonic()
-        if remaining <= 0:
-            raise TimeoutError("company_source_deadline")
+        self._check_cancelled()
         response = self._session.get(
             "https://search-api-web.eastmoney.com/search/jsonp",
             params={"cb": "company", "param": json.dumps(parameter, ensure_ascii=False)},
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://so.eastmoney.com/"},
-            timeout=min(self._timeout, remaining),
-            deadline=deadline,
+            timeout=self._timeout,
+            deadline=self._monotonic() + self._timeout,
+            cancel_requested=self._cancel_requested,
         )
+        self._check_cancelled()
         CheckCompanyResponse(response)
         text = response.text.strip()
-        if self._monotonic() >= deadline:
-            raise TimeoutError("company_source_deadline")
         if not text.startswith("company("):
             raise ValueError("news_schema_invalid")
         raw = json.loads(text[len("company(") :].rstrip(";)").strip())

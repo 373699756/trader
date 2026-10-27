@@ -31,10 +31,6 @@ class CompanyDocumentLimits:
 
 @dataclass(frozen=True)
 class CompanySyncConfiguration:
-    budget_seconds: float
-    structured_component_seconds: float
-    announcements_deadline_fraction: float
-    documents_deadline_fraction: float
     source_timeout_seconds: float
     document_parse_timeout_seconds: float
     request_interval_seconds: float
@@ -44,10 +40,6 @@ class CompanySyncConfiguration:
 
     def __post_init__(self) -> None:
         values = (
-            self.budget_seconds,
-            self.structured_component_seconds,
-            self.announcements_deadline_fraction,
-            self.documents_deadline_fraction,
             self.source_timeout_seconds,
             self.document_parse_timeout_seconds,
             self.request_interval_seconds,
@@ -56,9 +48,6 @@ class CompanySyncConfiguration:
         )
         if (
             any(not math.isfinite(value) for value in values)
-            or self.budget_seconds <= 0
-            or self.structured_component_seconds <= 0
-            or not 0 < self.announcements_deadline_fraction < self.documents_deadline_fraction < 1
             or not 0 < self.source_timeout_seconds <= 8
             or self.document_parse_timeout_seconds <= 0
             or self.request_interval_seconds < 1

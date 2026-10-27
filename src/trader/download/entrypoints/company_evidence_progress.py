@@ -237,8 +237,6 @@ def _failure_text(failure: str) -> str:
         "news": "新闻",
     }
     reasons = {
-        "deadline": "阶段预算用尽，保留断点",
-        "disclosure_deadline": "阶段预算用尽，保留断点",
         "source_stopped": "来源暂缓（连续失败或限流）",
         "disclosure_document_no_text": "PDF未提取到文字",
         "disclosure_document_short_text": "PDF文字不足80字",

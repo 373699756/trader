@@ -6,6 +6,7 @@ import pytest
 
 from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import Session
+from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
@@ -74,7 +75,8 @@ def test_cancelled_publication_keeps_previous_projection(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("during_request", (False, True))
-def test_structured_request_receives_cancellation_and_discards_late_response(during_request):
+@pytest.mark.parametrize("component", ("pledge", "news"))
+def test_structured_request_receives_cancellation_and_discards_late_response(during_request, component):
     cancelled = Event()
 
     class Transport(Session):
@@ -88,5 +90,36 @@ def test_structured_request_receives_cancellation_and_discards_late_response(dur
     if not during_request:
         cancelled.set()
     with pytest.raises(HttpCancelled):
-        source.pledge_day(fixtures.NOW, deadline=8)
+        if component == "pledge":
+            source.pledge_day(fixtures.NOW)
+        else:
+            source.news("600001", observed_at=fixtures.NOW)
     assert len(session.requests) == int(during_request)
+
+
+@pytest.mark.parametrize("component", ("financial", "news"))
+def test_cancelled_component_does_not_persist_source_failure(tmp_path, monkeypatch, component):
+    index = fixtures._index(tmp_path)
+    cancelled = Event()
+    failures = []
+    monkeypatch.setattr(index, "component_failure", lambda *args: failures.append(args))
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if component == "financial":
+                cancelled.set()
+                raise HttpCancelled("http_cancelled")
+            return super().fetch(query, **kwargs)
+
+        def news(self, code, **kwargs):
+            cancelled.set()
+            raise HttpCancelled("http_cancelled")
+
+    source = Source()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, cancel_requested=cancelled.is_set),
+        ("600001",),
+        fixtures.NOW,
+        news_codes=("600001",),
+    )
+    assert result.failures == ("task:cancelled",) and not failures

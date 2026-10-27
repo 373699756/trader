@@ -74,10 +74,6 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
     RequireExactKeys(
         company,
         {
-            "budget_seconds",
-            "structured_component_seconds",
-            "announcements_deadline_fraction",
-            "documents_deadline_fraction",
             "source_timeout_seconds",
             "document_parse_timeout_seconds",
             "request_interval_seconds",
@@ -87,17 +83,9 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
         },
         "download.company",
     )
-    announcements_fraction = Number(company, "announcements_deadline_fraction", minimum=0.01, maximum=0.98)
-    documents_fraction = Number(company, "documents_deadline_fraction", minimum=0.02, maximum=0.99)
-    if announcements_fraction >= documents_fraction:
-        raise ConfigurationError("download.company deadlines must keep announcements before documents")
     limits = RequireMapping(company, "document_limits")
     RequireExactKeys(limits, {"max_bytes", "max_pages", "max_text_characters"}, "download.company.document_limits")
     return CompanySyncConfiguration(
-        budget_seconds=Number(company, "budget_seconds", minimum=60.0, maximum=28800.0),
-        structured_component_seconds=Number(company, "structured_component_seconds", minimum=1.0),
-        announcements_deadline_fraction=announcements_fraction,
-        documents_deadline_fraction=documents_fraction,
         source_timeout_seconds=Number(company, "source_timeout_seconds", minimum=0.1, maximum=8.0),
         document_parse_timeout_seconds=Number(company, "document_parse_timeout_seconds", minimum=0.1, maximum=30.0),
         request_interval_seconds=Number(company, "request_interval_seconds", minimum=1.0),

@@ -69,13 +69,13 @@ class Sources:
             return DisclosurePage((), 0, False)
         return StructuredCompanyPage(first.component, first.page, 1, 0)
 
-    def document(self, item, *, deadline):
+    def document(self, item):
         raise AssertionError("ordinary announcements must not fetch a document")
 
-    def split_queries(self, partition, *, deadline):
+    def split_queries(self, partition):
         raise ValueError("cninfo_query_unsplittable")
 
-    def pledge_day(self, observed_at, *, deadline):
+    def pledge_day(self, observed_at):
         return observed_at.date()
 
     def news(self, code, **kwargs):
@@ -760,7 +760,7 @@ def test_announcement_access_denied_preserves_cursor_but_does_not_stop_pdf_host(
                 raise CompanySourceFailure("access_denied")
             return super().fetch(first, **kwargs)
 
-        def document(self, item, *, deadline):
+        def document(self, item):
             return "官方完整正文"
 
     source = DeniedSources()
@@ -899,7 +899,7 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
             super().__init__()
             self.document_calls = []
 
-        def document(self, item, *, deadline):
+        def document(self, item):
             self.document_calls.append(item.identity)
             if item.identity == "slow" and self.blocked:
                 raise TimeoutError("disclosure_document_parse_timeout")
@@ -931,7 +931,7 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
     assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
 
 
-def test_document_parse_timeout_at_stage_deadline_stops_later_bodies(tmp_path):
+def test_document_parse_timeout_keeps_later_bodies_running_after_long_elapsed_time(tmp_path):
     index = _index(tmp_path)
     source = Sources()
     clock = [0.0]
@@ -941,65 +941,65 @@ def test_document_parse_timeout_at_stage_deadline_stops_later_bodies(tmp_path):
     healthy = _disclosure("healthy", title="关于本公司被立案调查的公告", when=NOW - timedelta(minutes=1))
     index.commit_page(partition, DisclosurePage((slow, healthy), 2, False), NOW)
 
-    class DeadlineDocuments(Sources):
+    class SlowDocuments(Sources):
         def __init__(self):
             super().__init__()
             self.document_calls = []
 
-        def document(self, item, *, deadline):
+        def document(self, item):
             self.document_calls.append(item.identity)
-            clock[0] = deadline
-            raise TimeoutError("disclosure_document_parse_timeout")
+            clock[0] += 24 * 3600
+            if item.identity == "slow":
+                raise TimeoutError("disclosure_document_parse_timeout")
+            return "本公司收到证监会立案告知书，已被立案调查。"
 
-    source = DeadlineDocuments()
+    source = SlowDocuments()
     result = _sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: clock[0]), ("600001",), NOW
     )
-    assert source.document_calls == ["slow"]
-    assert result.pending_documents == 2
-    assert result.failures == (
-        "risk_documents:deadline",
-        "risk_documents:pending",
-    )
+    assert source.document_calls == ["slow", "healthy"]
+    assert result.pending_documents == 1
+    assert result.failures == ("risk_documents:disclosure_document_parse_timeout", "risk_documents:pending")
     with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 0
+        assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 1
 
 
-def test_company_sync_configuration_controls_component_deadlines(tmp_path, monkeypatch):
+def test_company_sync_runs_all_components_without_elapsed_time_cutoff(tmp_path, monkeypatch):
     index = _index(tmp_path)
     monkeypatch.setattr(index, "partitions", lambda *_args: (DisclosurePartition("sse", NOW.date(), NOW.date()),))
     document = _disclosure(title="关于本公司被立案调查的公告")
-    deadlines = {}
+    completed = []
+    clock = [1000.0]
 
-    class TimedSources(Sources):
-        def fetch(self, first, *args, **kwargs):
-            deadlines["announcements" if isinstance(first, DisclosurePartition) else first.component] = kwargs[
-                "deadline"
-            ]
-            if isinstance(first, DisclosurePartition):
+    class LongRunningSources(Sources):
+        def fetch(self, query, **kwargs):
+            clock[0] += 9 * 3600
+            if isinstance(query, DisclosurePartition):
+                completed.append("announcements")
                 return DisclosurePage((document,), 1, False)
-            return StructuredCompanyPage(first.component, first.page, 1, 0)
+            completed.append(query.component)
+            return StructuredCompanyPage(query.component, query.page, 1, 0)
 
-        def document(self, item, *, deadline):
-            deadlines["documents"] = deadline
+        def document(self, item):
+            clock[0] += 9 * 3600
+            completed.append("documents")
             return "本公司收到证监会立案告知书，已被立案调查。"
 
-    source = TimedSources()
-    configuration = replace(
-        _TEST_COMPANY_CONFIGURATION,
-        budget_seconds=100.0,
-        structured_component_seconds=7.0,
-        announcements_deadline_fraction=0.4,
-        documents_deadline_fraction=0.8,
-    )
+        def news(self, code, *, observed_at):
+            clock[0] += 9 * 3600
+            completed.append("news")
+            return ()
+
+    source = LongRunningSources()
     result = _sync_company_evidence(
-        CompanyEvidenceDependencies(index, source, source, lambda: 0.0),
+        CompanyEvidenceDependencies(index, source, source, lambda: clock[0]),
         ("600001",),
         NOW,
-        configuration=configuration,
+        news_codes=("600001",),
     )
-    assert deadlines == {"financial": 7.0, "pledge": 7.0, "unlock": 7.0, "announcements": 40.0, "documents": 80.0}
-    assert result.pending_documents == 0 and not result.needs_retry
+    assert completed == ["financial", "pledge", "unlock", "announcements", "documents", "news"]
+    assert result.elapsed_seconds == 54 * 3600
+    assert result.pending_documents == 0 and result.published_codes == 1 and not result.needs_retry
 
 
 @pytest.mark.parametrize("failures_before_success", [1, 3])

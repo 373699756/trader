@@ -79,7 +79,12 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
     pages: list[dict[str, object]] = []
     totals: list[dict[str, object]] = []
     with OpenExternalHttp(inspect_response=capture.inspect) as session:
-        source = CninfoMarketDisclosureSource(session, monotonic=time.monotonic, sleeper=time.sleep)
+        source = CninfoMarketDisclosureSource(
+            session,
+            monotonic=time.monotonic,
+            sleeper=time.sleep,
+            cancel_requested=lambda: time.monotonic() >= deadline,
+        )
 
         def fetch(partition: DisclosurePartition, *, order: Literal["", "asc", "desc"] = "") -> int | None:
             if time.monotonic() >= deadline or len(pages) >= 192:
@@ -88,7 +93,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
             capture.rows = capture.outside_codes = capture.same_issuer = capture.b_shares = 0
             failure = ""
             try:
-                source.fetch(partition, deadline=deadline, order=order)
+                source.fetch(partition, order=order)
             except (OSError, ValueError, RuntimeError) as exc:
                 failure = (
                     str(exc) if isinstance(exc, ValueError) and str(exc).startswith("cninfo_") else type(exc).__name__
@@ -117,7 +122,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
         # Boundary samples expose board filters that include historical/B-share
         # codes, before the bounded aggregate count audit uses its page budget.
         for partition in targets:
-            for query in source.split_queries(partition, deadline=deadline):
+            for query in source.split_queries(partition):
                 for order in ("asc", "desc"):
                     fetch(replace(partition, query=query), order=order)
         for partition in targets:
@@ -127,7 +132,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
             board_total = 0
             group_total = 0
             complete = True
-            for query in source.split_queries(partition, deadline=deadline):
+            for query in source.split_queries(partition):
                 board = replace(partition, query=query)
                 total = fetch(board)
                 if total is None:
@@ -137,7 +142,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
                 if total <= 3000:
                     group_total += total
                     continue
-                for group in source.split_queries(board, deadline=deadline):
+                for group in source.split_queries(board):
                     count = fetch(replace(partition, query=group))
                     if count is None:
                         complete = False

@@ -61,15 +61,13 @@ class CninfoMarketDisclosureSource:
         self._next_request = 0.0
         self._securities: tuple[DisclosureSecurity, ...] | None = None
 
-    def fetch(
-        self, partition: DisclosurePartition, *, deadline: float, order: Literal["", "asc", "desc"] = ""
-    ) -> DisclosurePage:
+    def fetch(self, partition: DisclosurePartition, *, order: Literal["", "asc", "desc"] = "") -> DisclosurePage:
         if partition.page > 100:
             raise ValueError("cninfo_page_limit")
-        response = self._request(lambda: self._fetch_page(partition, deadline, order=order), deadline)
+        response = self._request(partial(self._fetch_page, partition, order=order))
         return _parse_page(response.json(), partition)
 
-    def _fetch_page(self, partition: DisclosurePartition, deadline: float, *, order: str = "") -> HttpResponse:
+    def _fetch_page(self, partition: DisclosurePartition, *, order: str = "") -> HttpResponse:
         return self._session.post(
             "https://www.cninfo.com.cn/new/hisAnnouncement/query",
             data={
@@ -93,12 +91,12 @@ class CninfoMarketDisclosureSource:
                 "isHLtitle": "false",
             },
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
-            timeout=min(self._timeout, deadline - self._monotonic()),
-            deadline=deadline,
+            timeout=self._timeout,
+            deadline=self._monotonic() + self._timeout,
             cancel_requested=self._cancel_requested,
         )
 
-    def split_queries(self, partition: DisclosurePartition, *, deadline: float) -> tuple[DisclosureQuery, ...]:
+    def split_queries(self, partition: DisclosurePartition) -> tuple[DisclosureQuery, ...]:
         query = partition.query
         if query is None:
             return tuple(
@@ -117,11 +115,10 @@ class CninfoMarketDisclosureSource:
             response = self._request(
                 lambda: self._session.get(
                     "https://www.cninfo.com.cn/new/data/szse_stock.json",
-                    timeout=min(self._timeout, deadline - self._monotonic()),
-                    deadline=deadline,
+                    timeout=self._timeout,
+                    deadline=self._monotonic() + self._timeout,
                     cancel_requested=self._cancel_requested,
                 ),
-                deadline,
             )
             payload = response.json()
             rows = payload.get("stockList") if isinstance(payload, Mapping) else None
@@ -150,7 +147,6 @@ class CninfoMarketDisclosureSource:
         members: tuple[DisclosureSecurity, ...],
         *,
         missing_rows: int,
-        deadline: float,
         report: Callable[[DisclosurePartition], None] | None = None,
     ) -> tuple[DisclosureQuery, ...]:
         """Discover omitted historical issuers without discarding completed queries.
@@ -167,7 +163,7 @@ class CninfoMarketDisclosureSource:
             for number in range(1, 101):
                 for order in tuple(orders):
                     sample = replace(partition, query=DisclosureQuery(plate), page=number)
-                    response = self._request(partial(self._fetch_page, sample, deadline, order=order), deadline)
+                    response = self._request(partial(self._fetch_page, sample, order=order))
                     payload = response.json()
                     page = _parse_page(payload, sample)
                     if report is not None:
@@ -189,63 +185,58 @@ class CninfoMarketDisclosureSource:
                     break
         return _repair_groups(found)
 
-    def _request(self, send: Callable[[], HttpResponse], deadline: float) -> HttpResponse:
+    def _request(self, send: Callable[[], HttpResponse]) -> HttpResponse:
         # Only the read-only CNInfo protocol owns retries; the shared transport remains single-attempt.
         for attempt in range(3):
-            self._pace(deadline)
+            self._pace()
             try:
                 response = send()
                 CheckCompanyResponse(response)
-                self._check(deadline)
+                self._check_cancelled()
                 return response
             except (HttpTimeout, HttpConnectionError, CompanySourceFailure) as exc:
                 if isinstance(exc, CompanySourceFailure) and exc.status_code not in {408, 500, 502, 503, 504}:
                     raise
-                self._check(deadline)
+                self._check_cancelled()
                 if attempt == 2:
                     raise
                 self._next_request = max(self._next_request, self._monotonic() + 2 ** (attempt + 1))
         raise AssertionError("bounded CNInfo attempts must return or raise")
 
-    def _check(self, deadline: float) -> None:
+    def _check_cancelled(self) -> None:
         if self._cancel_requested is not None and self._cancel_requested():
             raise HttpCancelled("http_cancelled")
-        if self._monotonic() >= deadline:
-            raise TimeoutError("disclosure_deadline")
 
-    def _pace(self, deadline: float) -> None:
-        self._check(deadline)
+    def _pace(self) -> None:
+        self._check_cancelled()
         delay = max(0.0, self._next_request - self._monotonic())
-        if self._monotonic() + delay >= deadline:
-            raise TimeoutError("disclosure_deadline")
         while delay > 0:
             interval = min(0.25, delay)
             self._sleep(interval)
-            self._check(deadline)
+            self._check_cancelled()
             delay -= interval
         self._next_request = self._monotonic() + self._request_interval
 
-    def document(self, item: Disclosure, *, deadline: float) -> str:
+    def document(self, item: Disclosure) -> str:
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
             raise ValueError("disclosure_document_unavailable")
         try:
             response = self._request(
                 lambda: self._session.get(
                     item.url,
-                    timeout=min(self._timeout, deadline - self._monotonic()),
-                    deadline=deadline,
+                    timeout=self._timeout,
+                    deadline=self._monotonic() + self._timeout,
                     max_response_bytes=self._document_limits.max_bytes,
                     cancel_requested=self._cancel_requested,
                 ),
-                deadline,
             )
         except HttpResponseTooLarge as exc:
             raise ValueError("disclosure_document_oversized") from exc
-        return self._parse_document(response.content, deadline)
+        return self._parse_document(response.content)
 
-    def _parse_document(self, payload: bytes, deadline: float) -> str:
-        self._check(deadline)
-        parse_deadline = min(deadline, self._monotonic() + self._document_parse_timeout)
+    def _parse_document(self, payload: bytes) -> str:
+        self._check_cancelled()
+        parse_deadline = self._monotonic() + self._document_parse_timeout
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -265,7 +256,7 @@ class CninfoMarketDisclosureSource:
         pending_input: bytes | None = payload
         try:
             while True:
-                self._check(deadline)
+                self._check_cancelled()
                 remaining = parse_deadline - self._monotonic()
                 if remaining <= 0:
                     raise TimeoutError("disclosure_document_parse_timeout")
@@ -275,7 +266,7 @@ class CninfoMarketDisclosureSource:
                 except subprocess.TimeoutExpired:
                     # communicate retains partial writes and reads after a timeout.
                     pending_input = None
-            self._check(deadline)
+            self._check_cancelled()
         finally:
             _close_parser(process)
         if process.returncode:

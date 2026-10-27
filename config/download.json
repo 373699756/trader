@@ -12,10 +12,6 @@
     "progress_heartbeat_seconds": 5.0
   },
   "company": {
-    "budget_seconds": 28800.0,
-    "structured_component_seconds": 600.0,
-    "announcements_deadline_fraction": 0.7,
-    "documents_deadline_fraction": 0.95,
     "source_timeout_seconds": 8.0,
     "document_parse_timeout_seconds": 10.0,
     "request_interval_seconds": 1.0,

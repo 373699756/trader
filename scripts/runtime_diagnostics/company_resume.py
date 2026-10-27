@@ -7,8 +7,7 @@ import hashlib
 import json
 import tempfile
 import time
-from collections.abc import Sequence
-from dataclasses import replace
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -55,7 +54,9 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
 
 
 class _ObservedSource(CninfoMarketDisclosureSource):
-    def __init__(self, session: HttpTransport, configuration: CompanySyncConfiguration) -> None:
+    def __init__(
+        self, session: HttpTransport, configuration: CompanySyncConfiguration, *, cancel_requested: Callable[[], bool]
+    ) -> None:
         super().__init__(
             session,
             monotonic=time.monotonic,
@@ -64,14 +65,13 @@ class _ObservedSource(CninfoMarketDisclosureSource):
             document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
             document_limits=configuration.document_limits,
             request_interval_seconds=configuration.request_interval_seconds,
+            cancel_requested=cancel_requested,
         )
         self.pages: list[tuple[str, str, str, str, int]] = []
         self.documents = 0
 
-    def fetch(
-        self, partition: DisclosurePartition, *, deadline: float, order: Literal["", "asc", "desc"] = ""
-    ) -> DisclosurePage:
-        page = super().fetch(partition, deadline=deadline, order=order)
+    def fetch(self, partition: DisclosurePartition, *, order: Literal["", "asc", "desc"] = "") -> DisclosurePage:
+        page = super().fetch(partition, order=order)
         self.pages.append(
             (
                 partition.market,
@@ -83,9 +83,9 @@ class _ObservedSource(CninfoMarketDisclosureSource):
         )
         return page
 
-    def document(self, item: Disclosure, *, deadline: float) -> str:
+    def document(self, item: Disclosure) -> str:
         self.documents += 1
-        return super().document(item, deadline=deadline)
+        return super().document(item)
 
 
 def _copy(source: Path, destination: Path, *, deadline: float) -> None:
@@ -183,7 +183,6 @@ def Main() -> int:
     index = _ReplayIndex(destination, selection)
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     configuration = LoadCompanySyncConfiguration(_ROOT)
-    configuration = replace(configuration, budget_seconds=args.budget_seconds)
     runs = []
     saved: set[tuple[str, str, str, str, int]] = set()
     replayed = 0
@@ -192,22 +191,24 @@ def Main() -> int:
         if remaining < 15:
             break
         with OpenExternalHttp() as session:
-            source = _ObservedSource(session, configuration)
+            source = _ObservedSource(
+                session, configuration, cancel_requested=lambda: time.monotonic() >= started + args.budget_seconds
+            )
 
             def interrupt(number: int = number, source: _ObservedSource = source) -> bool:
-                return number == 0 and len(source.pages) >= 2
+                return time.monotonic() >= started + args.budget_seconds or (number == 0 and len(source.pages) >= 2)
 
             result = SyncCompanyEvidence(
                 CompanyEvidenceDependencies(
                     index,
                     source,
-                    EastmoneyCompanySource(session, monotonic=time.monotonic),
+                    EastmoneyCompanySource(session, monotonic=time.monotonic, cancel_requested=interrupt),
                     time.monotonic,
                     cancel_requested=interrupt,
                 ),
                 codes,
                 now,
-                configuration=replace(configuration, budget_seconds=remaining),
+                configuration=configuration,
             )
             if number == 0:
                 saved = _saved_pages(destination, source.pages)

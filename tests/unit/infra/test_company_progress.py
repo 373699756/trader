@@ -215,7 +215,7 @@ def test_last_stock_starts_atomic_publication_and_news_without_candidates_is_exp
     assert "无候选名单，本轮未抓取新闻" in news and "状态 未覆盖" in news
 
 
-def test_source_deadline_and_unreadable_documents_have_separate_recovery_messages():
+def test_source_failure_and_unreadable_documents_have_separate_recovery_messages():
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
     report(EvidenceSyncProgress("risk_documents", 2, 5, 0, 0, 0, failed_documents=1, deferred_documents=2))
@@ -227,12 +227,12 @@ def test_source_deadline_and_unreadable_documents_have_separate_recovery_message
             3,
             4,
             0,
-            "announcements:deadline,risk_documents:disclosure_document_no_text",
+            "announcements:source_stopped,risk_documents:disclosure_document_no_text",
             status="deferred",
             pending_documents=5,
         )
     )
     text = stream.getvalue()
     assert "本轮失败 1 篇 | 冷却暂缓 2 篇" in text
-    assert "公告目录：阶段预算用尽，保留断点" in text
+    assert "公告目录：来源暂缓（连续失败或限流）" in text
     assert "公告正文：PDF未提取到文字" in text and "无文本或短文本公告保持待核实" in text

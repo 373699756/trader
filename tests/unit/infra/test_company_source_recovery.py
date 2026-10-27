@@ -1,4 +1,4 @@
-"""CNInfo retries only transient read failures within the original resource budget."""
+"""CNInfo bounds individual requests and retries without a task duration limit."""
 
 import json
 from datetime import date, datetime
@@ -52,16 +52,17 @@ class _Transport:
         *[HttpResponse(code, b"") for code in (408, 500, 502, 503, 504)],
     ],
 )
-def test_transient_failure_recovers_same_page_without_changing_query_or_deadline(transient):
+def test_transient_failure_recovers_same_page_with_independent_request_timeout(transient):
     clock = _Clock()
     transport = _Transport(clock, [(transient, 8), (_EMPTY, 0.1)])
     source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
-    result = source.fetch(DisclosurePartition("sse", _DAY, _DAY, page=7), deadline=120)
+    result = source.fetch(DisclosurePartition("sse", _DAY, _DAY, page=7))
     assert not result.has_more
     assert [stamp for stamp, _ in transport.calls] == [0, 10]
     first, second = [request for _, request in transport.calls]
-    assert first == second and first["data"]["pageNum"] == "7"
-    assert first["deadline"] == 120 and first["timeout"] == 8
+    assert first["data"] == second["data"] and first["data"]["pageNum"] == "7"
+    assert (first["deadline"], second["deadline"]) == (8, 18)
+    assert first["timeout"] == second["timeout"] == 8
     assert sum(clock.waits) == 2
 
 
@@ -72,10 +73,10 @@ def test_three_attempt_limit_and_increasing_backoff(recover):
     transport = _Transport(clock, [(failure, 8), (failure, 8), (_EMPTY if recover else failure, 0.1)])
     source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
     if recover:
-        assert not source.fetch(DisclosurePartition("sse", _DAY, _DAY), deadline=120).has_more
+        assert not source.fetch(DisclosurePartition("sse", _DAY, _DAY)).has_more
     else:
         with pytest.raises(HttpTimeout):
-            source.fetch(DisclosurePartition("sse", _DAY, _DAY), deadline=120)
+            source.fetch(DisclosurePartition("sse", _DAY, _DAY))
     assert [stamp for stamp, _ in transport.calls] == [0, 10, 22]
     assert sum(clock.waits) == 6
 
@@ -86,7 +87,7 @@ def test_rejection_is_not_retried(status, category):
     transport = _Transport(clock, [(HttpResponse(status, b""), 0.1)])
     source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
     with pytest.raises(CompanySourceFailure) as caught:
-        source.fetch(DisclosurePartition("sse", _DAY, _DAY), deadline=120)
+        source.fetch(DisclosurePartition("sse", _DAY, _DAY))
     assert caught.value.category == category
     assert len(transport.calls) == 1 and not clock.waits
 
@@ -96,27 +97,8 @@ def test_invalid_payload_is_not_retried():
     transport = _Transport(clock, [(HttpResponse(200, b"{}"), 0.1)])
     source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
     with pytest.raises(ValueError, match="cninfo_pagination_invalid"):
-        source.fetch(DisclosurePartition("sse", _DAY, _DAY), deadline=120)
+        source.fetch(DisclosurePartition("sse", _DAY, _DAY))
     assert len(transport.calls) == 1
-
-
-def test_backoff_cannot_fit_deadline_does_not_send_or_wait_again():
-    clock = _Clock()
-    transport = _Transport(clock, [(HttpTimeout("fixture"), 8)])
-    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
-    with pytest.raises(TimeoutError, match="disclosure_deadline"):
-        source.fetch(DisclosurePartition("sse", _DAY, _DAY), deadline=9)
-    assert len(transport.calls) == 1 and clock.now == 8 and not clock.waits
-
-
-def test_retry_timeout_is_clamped_to_remaining_budget():
-    clock = _Clock()
-    transport = _Transport(clock, [(HttpTimeout("fixture"), 8), (HttpTimeout("fixture"), 2)])
-    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
-    with pytest.raises(TimeoutError, match="disclosure_deadline"):
-        source.fetch(DisclosurePartition("sse", _DAY, _DAY), deadline=12)
-    assert [request["timeout"] for _, request in transport.calls] == [8, 2]
-    assert clock.now == 12
 
 
 @pytest.mark.parametrize("cancel_at,requests", [(0, 0), (8.25, 1)])
@@ -129,7 +111,7 @@ def test_cancellation_before_request_or_during_backoff_stops_new_attempts(cancel
 
     source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep, cancel_requested=cancel)
     with pytest.raises(HttpCancelled):
-        source.fetch(DisclosurePartition("sse", _DAY, _DAY), deadline=120)
+        source.fetch(DisclosurePartition("sse", _DAY, _DAY))
     assert len(transport.calls) == requests and clock.now == cancel_at
     if requests:
         assert transport.calls[0][1]["cancel_requested"] is cancel
@@ -140,9 +122,9 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
     transport = _Transport(clock, [(HttpTimeout("fixture"), 8), (HttpResponse(200, b"PDF fixture"), 0.1)])
     parsed = []
 
-    def parse(self, payload, deadline):
+    def parse(self, payload):
         parsed.append(payload)
-        assert self._document_parse_timeout == 4.0 and deadline == 120
+        assert self._document_parse_timeout == 4.0
         return "verified body"
 
     monkeypatch.setattr(CninfoMarketDisclosureSource, "_parse_document", parse)
@@ -162,7 +144,7 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
         "https://static.cninfo.com.cn/finalpage/a.PDF",
         "a",
     )
-    assert source.document(item, deadline=120) == "verified body"
+    assert source.document(item) == "verified body"
     assert len(transport.calls) == 2 and parsed == [b"PDF fixture"]
     assert transport.calls[-1][1]["max_response_bytes"] == 16 * 1024 * 1024
     assert clock.now >= 2.0

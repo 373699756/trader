@@ -107,7 +107,7 @@ def test_real_parser_reason_and_config_limits_reach_the_source():
         "cninfo", "fixture", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
     )
     with pytest.raises(ValueError, match="disclosure_document_page_limit"):
-        source.document(item, deadline=30)
+        source.document(item)
     assert session.requests[0]["max_response_bytes"] == 65536
 
 
@@ -146,7 +146,7 @@ def test_blocked_parser_is_cancelled_or_times_out_and_is_reaped(monkeypatch, can
     started = time.monotonic()
     try:
         with pytest.raises(HttpCancelled if cancel else TimeoutError):
-            source._parse_document(b"fixture", deadline=started + 10)
+            source._parse_document(b"fixture")
         assert time.monotonic() - started < 5
         assert len(children) == 1 and children[0].poll() is not None
         assert children[0].stdin.closed and children[0].stdout.closed

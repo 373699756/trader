@@ -15,7 +15,7 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
 )
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.infra.http_contracts import HttpConnectionError, HttpTimeout
+from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpTimeout
 from trader.infra.sqlite_connection import SqliteSession
 
 NOW = fixtures.NOW
@@ -57,8 +57,9 @@ def test_date_completes_only_after_both_markets_finish(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("during_split", (False, True))
-def test_stage_deadline_preserves_cursor_without_source_circuit_or_retry_cooldown(tmp_path, monkeypatch, during_split):
+def test_cancellation_preserves_cursor_without_source_circuit_or_retry_cooldown(tmp_path, monkeypatch, during_split):
     index, target = _scope(tmp_path, monkeypatch)
+    documents = []
     monkeypatch.setattr(
         index,
         "partitions",
@@ -71,33 +72,48 @@ def test_stage_deadline_preserves_cursor_without_source_circuit_or_retry_cooldow
 
     class Source(fixtures.Sources):
         blocked = True
+        cancelled = False
 
         def fetch(self, query, **kwargs):
             if not isinstance(query, DisclosurePartition):
                 return super().fetch(query, **kwargs)
             self.calls.append(query)
             if query.page == 1:
-                return DisclosurePage((fixtures._disclosure("prefix"),), 2, True)
+                return DisclosurePage((fixtures._disclosure("prefix", title="收到立案告知书"),), 2, True)
             if self.blocked:
                 if during_split:
                     raise ValueError("cninfo_duplicate_page_links")
-                raise TimeoutError("disclosure_deadline")
+                self.cancelled = True
+                raise HttpCancelled("http_cancelled")
             return DisclosurePage((fixtures._disclosure("tail"),), 2, False)
 
         def split_queries(self, partition, **kwargs):
-            raise TimeoutError("disclosure_deadline")
+            self.cancelled = True
+            raise HttpCancelled("http_cancelled")
+
+        def document(self, item):
+            documents.append(item.identity)
+            return "本公司收到证监会立案告知书，已被立案调查。"
 
     source = Source()
-    first = _run(index, source)
-    assert first.failures == ("announcements:deadline",) and first.pending_partitions == 1
+    dependencies = CompanyEvidenceDependencies(
+        index, source, source, lambda: 0, cancel_requested=lambda: source.cancelled
+    )
+    first = fixtures._sync_company_evidence(dependencies, ("600001",), NOW)
+    assert first.failures == ("task:cancelled",) and first.pending_partitions == 1
+    assert not documents
     assert index.partition_retry_after(target) is None
     source.blocked = False
-    assert not _run(index, source).needs_retry
+    source.cancelled = False
+    assert not fixtures._sync_company_evidence(dependencies, ("600001",), NOW).needs_retry
+    assert documents == ["prefix"]
     assert [part.page for part in source.calls if isinstance(part, DisclosurePartition)] == [1, 2, 2]
 
 
-@pytest.mark.parametrize("real_pdf_failure", (False, True))
-def test_document_stage_deadline_is_distinct_from_a_real_pdf_failure(tmp_path, monkeypatch, real_pdf_failure):
+@pytest.mark.parametrize(
+    "failure", (ValueError("disclosure_document_no_text"), TimeoutError("disclosure_document_parse_timeout"))
+)
+def test_document_failure_retains_retry_and_reason(tmp_path, monkeypatch, failure):
     index, _ = _scope(tmp_path, monkeypatch)
     events = []
     clock = [0.0]
@@ -108,22 +124,18 @@ def test_document_stage_deadline_is_distinct_from_a_real_pdf_failure(tmp_path, m
                 return DisclosurePage((fixtures._disclosure(title="收到立案告知书"),), 1, False)
             return super().fetch(query, **kwargs)
 
-        def document(self, item, **kwargs):
-            if real_pdf_failure:
-                clock[0] = kwargs["deadline"]
-                raise ValueError("disclosure_document_no_text")
-            raise TimeoutError("disclosure_deadline")
+        def document(self, item):
+            raise failure
 
     source = Source()
     result = fixtures._sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: clock[0], events.append), ("600001",), NOW
     )
     assert result.pending_documents == 1
-    assert "risk_documents:deadline" in result.failures and "risk_documents:pending" in result.failures
-    assert ("risk_documents:disclosure_document_no_text" in result.failures) is real_pdf_failure
-    assert max(event.failed_documents for event in events) == int(real_pdf_failure)
+    assert result.failures == (f"risk_documents:{failure}", "risk_documents:pending")
+    assert max(event.failed_documents for event in events) == 1
     with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == int(real_pdf_failure)
+        assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 1
 
 
 def test_oversized_day_completes_only_after_all_board_queries_and_parent_reconcile(tmp_path, monkeypatch):
