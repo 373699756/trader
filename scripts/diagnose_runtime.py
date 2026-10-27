@@ -1083,7 +1083,7 @@ def build_commands(
     profiles = ("v2", "v3") if selection == "both" else (selection,)
     for name in _PROFILE_CHECKS[options.profile]:
         command = commands[name]
-        if name not in {"configuration", "research_readiness", "production_performance"}:
+        if name not in {"configuration", "research_readiness", "production_performance", "web_health"}:
             selected.append(command)
             continue
         for scoring_profile in profiles:
@@ -1093,7 +1093,7 @@ def build_commands(
             arguments = ("--profile", scoring_profile)
             argv = (
                 command.argv + arguments
-                if name == "production_performance"
+                if name in {"production_performance", "web_health"}
                 else command.argv[:-1] + arguments + command.argv[-1:]
             )
             selected.append(replace(command, name=f"{name}:{scoring_profile}", argv=argv))
@@ -1286,6 +1286,26 @@ def _web_health_details(_result: DiagnosticResult, source: Mapping[str, object],
             "runtime_version": latest.get("runtime_version"),
             "phase": latest.get("phase"),
             "degraded_reasons": _safe_string_list(latest.get("degraded_reasons"), limit=32),
+            "recent_errors": [
+                {
+                    key: issue.get(key)
+                    for key in (
+                        "code",
+                        "strategy",
+                        "stage",
+                        "severity",
+                        "count",
+                        "recovery_status",
+                        "occurred_at",
+                        "last_occurred_at",
+                        "resolved_at",
+                    )
+                }
+                for issue in latest.get("recent_errors", [])[:32]
+                if isinstance(issue, dict)
+            ]
+            if isinstance(latest.get("recent_errors"), list)
+            else [],
             "scoring_profile": _scoring_profile_summary(latest.get("scoring_profile")),
             "candidate_quote_age": _mapping(_mapping(latest.get("market")).get("candidate_quote_age")),
             "history_archive": _mapping(_mapping(latest.get("market")).get("history_archive")),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
@@ -33,6 +33,13 @@ class WebPipelineStageSnapshot:
     output_count: int | None
     facets: tuple[PipelineFacetSnapshot, ...]
     invalid_fields: tuple[str, ...] = ()
+    rejected_count: int | None = None
+    pending_count: int | None = None
+    failed_count: int | None = None
+    not_selected_count: int | None = None
+    duration_ms: float | None = None
+    reasons: tuple[tuple[str, int], ...] = ()
+    operation_durations: tuple[tuple[str, float | None], ...] = ()
 
     def facet_count(self, key: str) -> int | None:
         return next((facet.count for facet in self.facets if facet.key == key), None)
@@ -266,6 +273,12 @@ class WebRuntimeIssue:
     code: str | None
     strategy: str | None
     count: int | None
+    stage: str | None = None
+    severity: str | None = None
+    recovery_status: str | None = None
+    occurred_at: str | None = None
+    last_occurred_at: str | None = None
+    resolved_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -632,7 +645,11 @@ def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
             if previous.get("output_count") != stage.get("input_count"):
                 invalid.append(f"{prefix}.count_continuity")
         previous = stage
-        stages.append(WebPipelineStageSnapshot(order[index], state, inputs, counts["output_count"], ()))
+        stages.append(
+            _stage_details(
+                WebPipelineStageSnapshot(order[index], state, inputs, counts["output_count"], ()), stage, audit=True
+            )
+        )
     return CommittedPipelineAudit(True, len(value), tuple(invalid), tuple(stages))
 
 
@@ -672,7 +689,40 @@ def _parse_pipeline_stage(payload: Mapping[str, object], index: int) -> WebPipel
     facet_keys = tuple(facet.key for facet in facets)
     if len(facet_keys) != len(set(facet_keys)):
         invalid.append(f"stages[{index}].facets")
-    return WebPipelineStageSnapshot(key, state, input_count, output_count, tuple(facets), tuple(invalid))
+    return _stage_details(
+        WebPipelineStageSnapshot(key, state, input_count, output_count, tuple(facets), tuple(invalid)),
+        payload,
+        audit=False,
+    )
+
+
+def _stage_details(
+    stage: WebPipelineStageSnapshot, payload: Mapping[str, object], *, audit: bool
+) -> WebPipelineStageSnapshot:
+    raw_reasons = payload.get("reasons" if audit else "reason_counts")
+    reason_key = "code" if audit else "reason"
+    reasons = tuple(
+        (code, count)
+        for row in (raw_reasons[:_MAX_REASON_COUNTS] if isinstance(raw_reasons, (list, tuple)) else ())
+        if (code := _text(_mapping(row).get(reason_key))) is not None
+        and (count := _nonnegative_int(_mapping(row).get("count"))) is not None
+    )
+    raw_operations = payload.get("operation_durations")
+    operations = tuple(
+        (name, _nonnegative_number(_mapping(row).get("duration_ms")))
+        for row in (raw_operations[:16] if isinstance(raw_operations, (list, tuple)) else ())
+        if (name := _text(_mapping(row).get("operation"))) is not None
+    )
+    return replace(
+        stage,
+        rejected_count=_nonnegative_int(payload.get("rejected_count")),
+        pending_count=_nonnegative_int(payload.get("pending_count")),
+        failed_count=_nonnegative_int(payload.get("failed_count")),
+        not_selected_count=_nonnegative_int(payload.get("not_selected_count")),
+        duration_ms=_nonnegative_number(payload.get("latency_ms" if audit else "duration_ms")),
+        reasons=reasons,
+        operation_durations=operations,
+    )
 
 
 def _optional_count(
@@ -713,6 +763,12 @@ def _parse_runtime_issues(value: object) -> tuple[WebRuntimeIssue, ...]:
                 code=_text(payload.get("code")),
                 strategy=_text(payload.get("strategy")),
                 count=_nonnegative_int(payload.get("count")),
+                stage=_text(payload.get("stage")),
+                severity=_text(payload.get("severity")),
+                recovery_status=_text(payload.get("recovery_status")),
+                occurred_at=_text(payload.get("occurred_at")),
+                last_occurred_at=_text(payload.get("last_occurred_at")),
+                resolved_at=_text(payload.get("resolved_at")),
             )
         )
     return tuple(issues)

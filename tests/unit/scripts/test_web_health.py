@@ -137,6 +137,68 @@ def test_model_readiness_uses_model_stage_even_with_an_unrelated_primary_blocker
     assert any(finding.code == "model_input_unavailable" for finding in findings)
 
 
+def test_upstream_pending_quotes_do_not_invent_a_model_input_failure():
+    funnel = _funnel(model_input_eligible=0, candidate_features=0, full_scored=0)
+    funnel["stages"][4].update(
+        pending_count=360,
+        rejected_count=0,
+        failed_count=0,
+        not_selected_count=0,
+        duration_ms=26350,
+        reason_counts=[{"reason": "stale_quote", "count": 360}],
+    )
+    sample = _sample(1, funnel=funnel, primary_blocker="stale_quote")
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,))
+    assert not any(finding.code == "model_input_unavailable" for finding in findings)
+    report = build_report(
+        "http://127.0.0.1:5000", (sample,), findings, strategies=(_STRATEGY,), consecutive_zero_threshold=1
+    )
+    stage = report["samples"][0]["strategies"][_STRATEGY]["pipeline"]["stages"][4]
+    assert stage["pending_count"] == 360 and stage["rejected_count"] == 0 and stage["duration_ms"] == 26350
+    assert stage["reasons"] == [{"code": "stale_quote", "count": 360}]
+
+
+def test_selected_profile_is_applied_to_status_and_every_current_endpoint(monkeypatch):
+    requests = []
+
+    def fetch(url, timeout):
+        requests.append(url)
+        return (
+            {
+                "recent_errors": [
+                    {
+                        "code": "refresh:timeout",
+                        "stage": "refresh",
+                        "count": 3,
+                        "severity": "degraded",
+                        "recovery_status": "recovered",
+                        "occurred_at": "first",
+                        "last_occurred_at": "last",
+                        "resolved_at": "resolved",
+                        "private_payload": "must-not-project",
+                    }
+                ]
+            }
+            if "/api/status" in url
+            else {}
+        )
+
+    monkeypatch.setattr("scripts.runtime_diagnostics.web_health._fetch_mapping", fetch)
+    samples = collect_samples(
+        "http://127.0.0.1:5000",
+        strategies=(_STRATEGY,),
+        sample_count=1,
+        interval_seconds=0,
+        timeout_seconds=1,
+        scoring_profile="v1",
+    )
+    assert len(requests) == 3 and all(url.endswith("?profile=v1") for url in requests)
+    report = build_report("http://127.0.0.1:5000", samples, (), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+    issue = report["samples"][0]["recent_errors"][0]
+    assert issue["recovery_status"] == "recovered" and issue["count"] == 3 and issue["stage"] == "refresh"
+    assert "must-not-project" not in str(report)
+
+
 def _sample(
     number: int,
     *,
@@ -1079,6 +1141,11 @@ def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(faul
         }
         for index, stage in enumerate(PIPELINE_STAGES)
     ]
+    stages[4].update(
+        latency_ms=26350,
+        operation_durations=[{"operation": "quote_refresh", "duration_ms": 26350}],
+        reasons=[{"code": "stale_quote", "count": 0, "private_label": "must-not-project"}],
+    )
     if fault == "batch":
         stages[9]["input_batch_id"] = "other-private-batch"
     elif fault == "count":
@@ -1102,9 +1169,13 @@ def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(faul
     audit = summary["committed_pipeline"]["stage_audit"]
     assert audit["observed"] and audit["continuous"] == (fault is None)
     assert audit["stage_count"] == len(stages)
+    assert audit["stages"][4]["duration_ms"] == 26350
+    assert audit["stages"][4]["operation_durations"] == [{"operation": "quote_refresh", "duration_ms": 26350}]
+    assert audit["stages"][0]["duration_ms"] is None
     assert summary["current_projection"]["frozen"] is True
     assert summary["pipeline"]["stage_audit"]["observed"] is False
     assert "private-batch" not in str(report)
+    assert "must-not-project" not in str(report)
 
 
 def test_missing_committed_audit_is_not_reconstructed_from_live_input() -> None:

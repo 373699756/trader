@@ -5,6 +5,8 @@ Its profile implementations live under `scripts/runtime_diagnostics/` and
 must return bounded, sanitized summaries. A new runtime probe is added as a
 module and profile there; it is not added as another top-level script.
 
+`--profile runtime --scoring-profile v1`只读采样指定档位的status与全部current端点；`--scoring-profile both`分别采样V2/V3，省略时保留服务默认档位。报告保留十一层输入/输出、淘汰/待补/失败、原因、耗时及已发布审计的分项耗时，缺失值保持null；全局异常保留累计次数、阶段、时间及active/recovered状态。运行中的新输入与已发布快照分别输出，不跨轮拼接；上游没有交给模型输入时，不将模型层0泛化为模型损坏。该模式不抓供应商、不改配置、不重启服务。
+
 `--profile storage`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
 可重复使用`--storage-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
 unknown结果附带实际runtime配置文件、`storage.overrides`字段和修改示例。机械硬盘填写`hdd`，固态填写`ssd`，重启后生效。

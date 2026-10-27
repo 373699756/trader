@@ -80,6 +80,13 @@ def test_local_dual_profile_selects_only_offline_business_checks():
     )
 
 
+@pytest.mark.parametrize(("selection", "expected"), (("v1", ("v1",)), ("both", ("v2", "v3"))))
+def test_runtime_profile_selection_reaches_each_read_only_web_probe(selection, expected):
+    commands = build_commands(_options(profile="runtime", scoring_profile=selection), python_executable="/python")
+    assert tuple(command.name for command in commands) == tuple(f"web_health:{profile}" for profile in expected)
+    assert tuple(command.argv[-2:] for command in commands) == tuple(("--profile", profile) for profile in expected)
+
+
 @pytest.mark.parametrize("selection", ("v1,v2,v3,v5", "v5,v3,v1,v2"))
 def test_performance_four_profiles_share_one_child_command(selection: str) -> None:
     options, _ = _validate(_parser().parse_args(["--profile", "performance", "--scoring-profile", selection]))
@@ -870,6 +877,16 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
                             "completed_batches": 2,
                             "tracked_output_codes": 12,
                         },
+                        "recent_errors": [
+                            {
+                                "code": "refresh:timeout",
+                                "stage": "refresh",
+                                "severity": "degraded",
+                                "count": 7,
+                                "recovery_status": "recovered",
+                                "private": "must-not-escape",
+                            }
+                        ],
                     }
                 ],
             },
@@ -911,6 +928,8 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
     assert "secret vendor payload" not in rendered
     assert "must-not-escape" not in rendered
     assert report["checks"][0]["latest_runtime"]["candidate_quote_age"]["p95_seconds"] == 2.0
+    issue = report["checks"][0]["latest_runtime"]["recent_errors"][0]
+    assert issue["count"] == 7 and issue["recovery_status"] == "recovered"
     assert report["checks"][0]["latest_runtime"]["history_archive"]["maintenance_completed_units"] == 20
     assert report["checks"][0]["latest_runtime"]["company_research"] == {
         "state": "idle",

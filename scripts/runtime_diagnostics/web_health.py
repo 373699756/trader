@@ -14,9 +14,9 @@ from types import MappingProxyType
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.bootstrap import OpenExternalHttp
 from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VERSION
 from trader.infra.http_contracts import HttpConnectionError, HttpResponseTooLarge, HttpStatusError
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 from .reporting import emit_report
 from .web_health_contract import (
@@ -25,6 +25,7 @@ from .web_health_contract import (
     PipelineSnapshot,
     ProjectionSnapshot,
     ScoringProfileSnapshot,
+    WebPipelineStageSnapshot,
     WebSample,
     parse_web_sample,
 )
@@ -71,6 +72,7 @@ class Finding:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
+    parser.add_argument("--profile", choices=SCORING_PROFILE_IDS, help="read the selected running scoring profile")
     parser.add_argument("--samples", type=int, default=6, help="number of API sample rounds (default: 6)")
     parser.add_argument(
         "--interval-seconds",
@@ -322,6 +324,17 @@ def _model_input_findings(
     model_eligible = quality.pipeline.count("model_input_eligible")
     if history_eligible <= 0 or model_eligible != 0:
         return []
+    model_stage = quality.pipeline.stage("model_filter")
+    if (
+        model_stage is not None
+        and model_stage.input_count == 0
+        and quality.primary_blocker
+        not in {
+            "model_input_unavailable",
+            "production_model_features_missing",
+        }
+    ):
+        return []  # Upstream quote/history preparation did not hand any rows to the model.
     return [
         _finding(
             "error",
@@ -973,10 +986,11 @@ def collect_samples(
     sample_count: int,
     interval_seconds: float,
     timeout_seconds: float,
+    scoring_profile: str | None = None,
 ) -> tuple[WebSample, ...]:
     samples: list[WebSample] = []
     for sample_number in range(1, sample_count + 1):
-        samples.append(_collect_sample(base_url, strategies, sample_number, timeout_seconds))
+        samples.append(_collect_sample(base_url, strategies, sample_number, timeout_seconds, scoring_profile))
         if sample_number < sample_count:
             time.sleep(interval_seconds)
     return tuple(samples)
@@ -987,19 +1001,21 @@ def _collect_sample(
     strategies: tuple[str, ...],
     sample_number: int,
     timeout_seconds: float,
+    scoring_profile: str | None = None,
 ) -> WebSample:
     status_payload: Mapping[str, object] | None = None
     decision_payloads: dict[str, Mapping[str, object]] = {}
     issues: list[FetchIssue] = []
+    suffix = "?" + urllib.parse.urlencode({"profile": scoring_profile}) if scoring_profile else ""
     try:
-        status_payload = _fetch_mapping(f"{base_url}/api/status", timeout_seconds)
+        status_payload = _fetch_mapping(f"{base_url}/api/status{suffix}", timeout_seconds)
     except FetchError as exc:
         issues.append(FetchIssue("status", exc.error_code))
     for strategy in (*strategies, "long"):
         endpoint = f"decision:{strategy}"
         try:
             decision_payloads[strategy] = _fetch_mapping(
-                f"{base_url}/api/decisions/{strategy}/current",
+                f"{base_url}/api/decisions/{strategy}/current{suffix}",
                 timeout_seconds,
             )
         except FetchError as exc:
@@ -1020,6 +1036,8 @@ class FetchError(RuntimeError):
 
 
 def _fetch_mapping(url: str, timeout_seconds: float) -> Mapping[str, object]:
+    from trader.bootstrap import OpenExternalHttp
+
     try:
         with OpenExternalHttp() as transport:
             response = transport.get(
@@ -1144,6 +1162,22 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
         "runtime_version": status.runtime_version if status is not None else None,
         "phase": status.phase if status is not None else None,
         "degraded_reasons": list(status.degraded_reasons) if status is not None else [],
+        "recent_errors": [
+            {
+                "code": issue.code,
+                "strategy": issue.strategy,
+                "stage": issue.stage,
+                "severity": issue.severity,
+                "count": issue.count,
+                "recovery_status": issue.recovery_status,
+                "occurred_at": issue.occurred_at,
+                "last_occurred_at": issue.last_occurred_at,
+                "resolved_at": issue.resolved_at,
+            }
+            for issue in status.recent_errors
+        ]
+        if status is not None
+        else [],
         "event_sequence": status.event_sequence if status is not None else None,
         "scoring_profile": _scoring_profile_payload(status.scoring_profile if status is not None else None),
         "market": {
@@ -1268,26 +1302,28 @@ def _pipeline_payload(payload: PipelineSnapshot | None) -> dict[str, object] | N
             "stage_count": payload.committed_audit.stage_count,
             "continuous": not payload.committed_audit.invalid_fields if payload.committed_audit.observed else None,
             "invalid_fields": list(payload.committed_audit.invalid_fields),
-            "stages": [
-                {
-                    "key": stage.key,
-                    "state": stage.state,
-                    "input_count": stage.input_count,
-                    "output_count": stage.output_count,
-                }
-                for stage in payload.committed_audit.stages
-            ],
+            "stages": [_stage_payload(stage) for stage in payload.committed_audit.stages],
         },
-        "stages": [
-            {
-                "key": stage.key,
-                "state": stage.state,
-                "input_count": stage.input_count,
-                "output_count": stage.output_count,
-                "facets": [{"key": facet.key, "count": facet.count, "total": facet.total} for facet in stage.facets],
-            }
-            for stage in payload.stages
+        "stages": [_stage_payload(stage) for stage in payload.stages],
+    }
+
+
+def _stage_payload(stage: WebPipelineStageSnapshot) -> dict[str, object]:
+    return {
+        "key": stage.key,
+        "state": stage.state,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "rejected_count": stage.rejected_count,
+        "pending_count": stage.pending_count,
+        "failed_count": stage.failed_count,
+        "not_selected_count": stage.not_selected_count,
+        "duration_ms": stage.duration_ms,
+        "reasons": [{"code": code, "count": count} for code, count in stage.reasons],
+        "operation_durations": [
+            {"operation": name, "duration_ms": duration} for name, duration in stage.operation_durations
         ],
+        "facets": [{"key": facet.key, "count": facet.count, "total": facet.total} for facet in stage.facets],
     }
 
 
@@ -1335,6 +1371,7 @@ def main() -> int:
             sample_count=args.samples,
             interval_seconds=args.interval_seconds,
             timeout_seconds=args.timeout_seconds,
+            scoring_profile=args.profile,
         )
         findings = analyze_samples(
             samples,
