@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal, Protocol
 
 from trader.download.domain.company_evidence import (
+    CompanyDateProgress,
     CompanyEvidenceSyncResult,
     CompanySourceFailure,
     CompanyStockProgress,
@@ -109,6 +110,7 @@ class _SyncState:
     completed: int = 0
     current_stock: CompanyStockProgress | None = None
     failures: tuple[str, ...] = ()
+    failed_documents: int = 0
 
 
 @dataclass
@@ -190,7 +192,7 @@ def SyncCompanyEvidence(
             started,
         )
     if not _cancelled(dependencies):
-        _report(dependencies, "publish", state, len(population), completed=0)
+        _report(dependencies, "facts", state, len(population), completed=0)
         if not _cancelled(dependencies):
             published = index.publish(
                 population, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
@@ -200,7 +202,7 @@ def SyncCompanyEvidence(
         () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, deadline, state)
     )
     if news_updates and not _cancelled(dependencies):
-        _report(dependencies, "publish", state, len(news_updates), completed=0)
+        _report(dependencies, "facts", state, len(news_updates), completed=0)
         if not _cancelled(dependencies):
             updated = index.publish(
                 news_updates, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
@@ -277,6 +279,7 @@ class _AnnouncementRun:
         markets = tuple(sorted({EvidenceMarket(code) for code in population}))
         self._queue = deque(self._index.partitions(markets, self._schedule.observed_at))
         state.reused += self._index.reusable_partitions(markets, self._schedule.observed_at)
+        self._report()
         while self._queue and _running(dependencies, self._schedule.deadline):
             partition = self._queue.popleft()
             self._report(partition, include_current=True)
@@ -290,7 +293,7 @@ class _AnnouncementRun:
                     break
         pending = _pending_count(self._queue, self._deferred)
         _record_deadline(dependencies, state, "announcements", pending, self._schedule.deadline)
-        _report(dependencies, "announcements", state, pending, status="deferred" if pending else "complete")
+        self._report(status="deferred" if pending else "complete")
         return pending
 
     def _now(self) -> datetime:
@@ -298,13 +301,24 @@ class _AnnouncementRun:
             seconds=max(0, self._dependencies.monotonic() - self._schedule.started)
         )
 
-    def _report(self, partition: DisclosurePartition, *, include_current: bool = False) -> None:
+    def _report(
+        self,
+        partition: DisclosurePartition | None = None,
+        *,
+        include_current: bool = False,
+        status: EvidenceProgressState = "running",
+        activity: Literal["download", "repair"] = "download",
+    ) -> None:
+        current = partition if include_current else None
         _report(
             self._dependencies,
             "announcements",
             self._state,
-            _pending_count(self._queue, self._deferred, partition if include_current else None),
+            _pending_count(self._queue, self._deferred, current),
             scope=partition,
+            dates=_date_progress(self._schedule.observed_at.date(), self._queue, self._deferred, current),
+            status=status,
+            activity=activity,
         )
 
     def _consume(self, partition: DisclosurePartition) -> None:
@@ -356,14 +370,7 @@ class _AnnouncementRun:
 
     def _repair_progress(self, partition: DisclosurePartition) -> None:
         self._state.pages += 1
-        _report(
-            self._dependencies,
-            "announcements",
-            self._state,
-            _pending_count(self._queue, self._deferred, partition),
-            scope=partition,
-            activity="repair",
-        )
+        self._report(partition, include_current=True, activity="repair")
 
     def _advance(self, partition: DisclosurePartition, page: DisclosurePage) -> None:
         if page.has_more:
@@ -395,12 +402,20 @@ class _AnnouncementRun:
             return True
         if str(exc) == "company_evidence_persistence_unavailable":
             raise exc
-        if _failure(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"}:
+        if _failure(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"} and _running(
+            self._dependencies, self._schedule.deadline
+        ):
             try:
                 self._split(partition)
                 return False
             except (OSError, RuntimeError, ValueError) as split_exc:
                 exc = split_exc
+        if _stage_deadline(exc) or (
+            isinstance(exc, TimeoutError) and _deadline_reached(self._dependencies, self._schedule.deadline)
+        ):
+            self._queue.appendleft(partition)
+            self._state.failures += ("announcements:deadline",)
+            return True
         failure = _failure(exc)
         self._index.partition_failure(partition, failure)
         self._state.failures += (f"announcements:{failure}",)
@@ -467,6 +482,23 @@ def _pending_count(
     return len(keys)
 
 
+def _date_progress(
+    end: date,
+    queue: deque[DisclosurePartition],
+    deferred: set[tuple[Market, date, date, str]],
+    current: DisclosurePartition | None,
+) -> CompanyDateProgress:
+    start = end - timedelta(days=365)
+    ranges = {(item.start, item.end) for item in queue} | {(first, last) for _, first, last, _ in deferred}
+    if current is not None:
+        ranges.add((current.start, current.end))
+    pending_days: set[date] = set()
+    for first, last in ranges:
+        first, last = max(start, first), min(end, last)
+        pending_days.update(first + timedelta(days=offset) for offset in range(max(0, (last - first).days + 1)))
+    return CompanyDateProgress(start, end, (end - start).days + 1 - len(pending_days))
+
+
 def _replace_query_queue(
     queue: deque[DisclosurePartition],
     parent: DisclosurePartition,
@@ -505,7 +537,7 @@ def _documents(
     _report(dependencies, "risk_documents", state, total, completed=0)
     while pending_documents and _running(dependencies, deadline):
         item = pending_documents.popleft()
-        _prepare_document_progress(dependencies, state, item.codes[0])
+        _prepare_stock_progress(dependencies, state, item.codes[0])
         now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
         retry = index.document_retry(item, policy)
         if retry is not None and retry.retry_after > now:
@@ -542,9 +574,13 @@ def _documents(
         except (OSError, RuntimeError, ValueError) as exc:
             if _cancelled(dependencies):
                 break
-            failure = _failure(exc)
             if str(exc) == "company_evidence_persistence_unavailable":
                 raise
+            if _stage_deadline(exc) or (isinstance(exc, TimeoutError) and _deadline_reached(dependencies, deadline)):
+                state.failures += ("risk_documents:deadline",)
+                break
+            failure = _failure(exc)
+            state.failed_documents += 1
             state.failures += (f"risk_documents:{failure}",)
             if not _cancelled(dependencies):
                 delay = _document_retry_seconds(configuration, exc)
@@ -586,7 +622,7 @@ def _documents(
     )
 
 
-def _prepare_document_progress(dependencies: CompanyEvidenceDependencies, state: _SyncState, code: str) -> None:
+def _prepare_stock_progress(dependencies: CompanyEvidenceDependencies, state: _SyncState, code: str) -> None:
     state.current_stock = CompanyStockProgress(
         code, next((name for candidate, name in dependencies.stock_names if candidate == code), "")
     )
@@ -618,6 +654,7 @@ def _news(
     )
     candidates = population
     total = len(candidates)
+    state.current_stock = None
     if not candidates:
         _report(dependencies, "news", state, 0, completed=0, status="complete")
         return ()
@@ -625,6 +662,7 @@ def _news(
     for code in () if structured_blocked else candidates:
         if not _running(dependencies, deadline):
             break
+        _prepare_stock_progress(dependencies, state, code)
         if not index.component_due("news", code, observed_at):
             state.reused += 1
             completed += 1
@@ -746,6 +784,10 @@ def _transient(exc: BaseException) -> bool:
     )
 
 
+def _stage_deadline(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) and str(exc) in {"disclosure_deadline", "company_source_deadline"}
+
+
 def _running(dependencies: CompanyEvidenceDependencies, deadline: float) -> bool:
     return dependencies.monotonic() < deadline and not _cancelled(dependencies)
 
@@ -782,6 +824,7 @@ def _report(
     attempted_documents: int = 0,
     deferred_documents: int = 0,
     activity: Literal["download", "repair"] = "download",
+    dates: CompanyDateProgress | None = None,
 ) -> None:
     if dependencies.progress is not None:
         failures = tuple(
@@ -804,7 +847,9 @@ def _report(
                 attempted_documents,
                 deferred_documents,
                 activity,
-                state.current_stock if component == "risk_documents" else None,
+                state.current_stock if component in {"risk_documents", "news"} else None,
+                dates=dates,
+                failed_documents=state.failed_documents if component == "risk_documents" else 0,
             )
         )
 

@@ -37,6 +37,8 @@ and does not mean the whole year or all pending PDFs are complete.
 Adding `--company-query-audit` to that profile performs a read-only count/filter audit instead of a backup or replay.
 It samples up to three failed dates and three failed child cursors, at most 192 logical page queries and 300 seconds (transport retries remain bounded). Reports contain counts and issuer-match diagnostics, never stock identities or source payloads. Matching sampled totals alone does not prove full date coverage.
 
+`--profile company-resume --company-storage-audit --output -` counts local announcement metadata, extracted text and persisted retry reasons without network access or a replay directory. It reads the configured company database; `--company-evidence-database` can select an explicit read-only source. Original PDFs are not archived by the current downloader; successful extracted text is stored in `disclosures.body`. Publication row counts do not establish complete risk coverage.
+
 `--profile training-coverage` audits cached training dates read-only, including older caches without statistics tables. Current caches use their narrow date statistics instead of scanning wide sample rows. `observed_label_projection` reports the per-horizon observed-return rule's T+1 coverage and a conservative D25 lower bound from missing-return counts; it does not refit, rewrite the cache, or certify a trained model.
 Add `--training-signal-date YYYY-MM-DD` to inspect the five future price horizons of a V5 signal with observed T+1 samples.
 The report contains population counts, missing dates and source status counts; it does not repair data or generate labels.

@@ -34,6 +34,98 @@ def _run(index, source, now=NOW, **kwargs):
     )
 
 
+def test_date_completes_only_after_both_markets_finish(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    targets = (DisclosurePartition("sse", NOW.date(), NOW.date()), DisclosurePartition("szse", NOW.date(), NOW.date()))
+    index.partitions(("sse", "szse"), NOW)
+    monkeypatch.setattr(index, "partitions", lambda *_: targets)
+    events = []
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if isinstance(query, DisclosurePartition):
+                dates = [event.dates for event in events if event.component == "announcements" and event.dates]
+                assert dates[-1].completed_days == 365
+            return super().fetch(query, **kwargs)
+
+    source = Source()
+    fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append), ("600001", "000001"), NOW
+    )
+    final = [event for event in events if event.component == "announcements"][-1]
+    assert final.dates.completed_days == final.dates.total_days == 366
+
+
+@pytest.mark.parametrize("during_split", (False, True))
+def test_stage_deadline_preserves_cursor_without_source_circuit_or_retry_cooldown(tmp_path, monkeypatch, during_split):
+    index, target = _scope(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        index,
+        "partitions",
+        lambda markets, now: tuple(
+            part
+            for part in SQLiteCompanyEvidenceIndex.partitions(index, markets, now)
+            if (part.market, part.start, part.end) == (target.market, target.start, target.end)
+        ),
+    )
+
+    class Source(fixtures.Sources):
+        blocked = True
+
+        def fetch(self, query, **kwargs):
+            if not isinstance(query, DisclosurePartition):
+                return super().fetch(query, **kwargs)
+            self.calls.append(query)
+            if query.page == 1:
+                return DisclosurePage((fixtures._disclosure("prefix"),), 2, True)
+            if self.blocked:
+                if during_split:
+                    raise ValueError("cninfo_duplicate_page_links")
+                raise TimeoutError("disclosure_deadline")
+            return DisclosurePage((fixtures._disclosure("tail"),), 2, False)
+
+        def split_queries(self, partition, **kwargs):
+            raise TimeoutError("disclosure_deadline")
+
+    source = Source()
+    first = _run(index, source)
+    assert first.failures == ("announcements:deadline",) and first.pending_partitions == 1
+    assert index.partition_retry_after(target) is None
+    source.blocked = False
+    assert not _run(index, source).needs_retry
+    assert [part.page for part in source.calls if isinstance(part, DisclosurePartition)] == [1, 2, 2]
+
+
+@pytest.mark.parametrize("real_pdf_failure", (False, True))
+def test_document_stage_deadline_is_distinct_from_a_real_pdf_failure(tmp_path, monkeypatch, real_pdf_failure):
+    index, _ = _scope(tmp_path, monkeypatch)
+    events = []
+    clock = [0.0]
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if isinstance(query, DisclosurePartition):
+                return DisclosurePage((fixtures._disclosure(title="收到立案告知书"),), 1, False)
+            return super().fetch(query, **kwargs)
+
+        def document(self, item, **kwargs):
+            if real_pdf_failure:
+                clock[0] = kwargs["deadline"]
+                raise ValueError("disclosure_document_no_text")
+            raise TimeoutError("disclosure_deadline")
+
+    source = Source()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: clock[0], events.append), ("600001",), NOW
+    )
+    assert result.pending_documents == 1
+    assert "risk_documents:deadline" in result.failures and "risk_documents:pending" in result.failures
+    assert ("risk_documents:disclosure_document_no_text" in result.failures) is real_pdf_failure
+    assert max(event.failed_documents for event in events) == int(real_pdf_failure)
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == int(real_pdf_failure)
+
+
 def test_oversized_day_completes_only_after_all_board_queries_and_parent_reconcile(tmp_path, monkeypatch):
     index, target = _scope(tmp_path, monkeypatch)
     main = tuple(fixtures._disclosure(str(i)) for i in range(1501))
@@ -63,6 +155,9 @@ def test_oversized_day_completes_only_after_all_board_queries_and_parent_reconci
     assert set(queries[1:-1]) == {DisclosureQuery("shmb"), DisclosureQuery("shkcp")}
     announcement_events = [event for event in events if event.component == "announcements"]
     assert announcement_events[-1].completed == 1 and announcement_events[-1].pending == 0
+    days = [event.dates.completed_days for event in announcement_events if event.dates]
+    assert days == sorted(days) and days[-2:] == [366, 366]
+    assert all(value == 365 for value in days[:-2])
     with SqliteSession(index.path) as c:
         assert (
             c.run(

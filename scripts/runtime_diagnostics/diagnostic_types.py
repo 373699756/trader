@@ -92,6 +92,7 @@ class DiagnosticOptions:
     company_evidence_database: Path | None = None
     company_replay_directory: Path | None = None
     company_query_audit: bool = False
+    company_storage_audit: bool = False
     v5_probe_directory: Path | None = None
     v5_kernel_probe: bool = False
     training_probe_directory: Path | None = None

@@ -338,6 +338,21 @@ class CompanyStockProgress:
 
 
 @dataclass(frozen=True)
+class CompanyDateProgress:
+    window_start: date
+    window_end: date
+    completed_days: int
+
+    def __post_init__(self) -> None:
+        if self.window_start > self.window_end or not 0 <= self.completed_days <= self.total_days:
+            raise ValueError("company_date_progress_invalid")
+
+    @property
+    def total_days(self) -> int:
+        return (self.window_end - self.window_start).days + 1
+
+
+@dataclass(frozen=True)
 class EvidenceSyncProgress:
     component: str
     completed: int
@@ -353,6 +368,8 @@ class EvidenceSyncProgress:
     deferred_documents: int = 0
     activity: Literal["download", "repair"] = "download"
     stock: CompanyStockProgress | None = None
+    dates: CompanyDateProgress | None = None
+    failed_documents: int = 0
 
 
 @dataclass(frozen=True)
@@ -397,6 +414,7 @@ __all__ = [
     "DisclosureQuery",
     "CompanySyncConfiguration",
     "CompanyDocumentLimits",
+    "CompanyDateProgress",
     "CompanyEvidenceRequest",
     "CompanyListing",
     "StructuredCompanyQuery",

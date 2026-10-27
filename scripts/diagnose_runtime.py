@@ -118,6 +118,9 @@ def _parser() -> argparse.ArgumentParser:
         "--company-query-audit", action="store_true", help="read-only bounded CNInfo query coverage audit"
     )
     parser.add_argument(
+        "--company-storage-audit", action="store_true", help="read-only local company text and retry counts; no network"
+    )
+    parser.add_argument(
         "--company-replay-directory",
         type=Path,
         help="explicit repository-external directory for an isolated company backup and resumable evidence",
@@ -394,7 +397,13 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         _external_path(args.long_evidence_output, "--long-evidence-output") if args.long_evidence_output else None
     )
     company_replay_directory = _external_path(args.company_replay_directory, "--company-replay-directory")
-    if args.profile == "company-resume" and company_replay_directory is None:
+    if args.company_query_audit and args.company_storage_audit:
+        raise ValueError("company query and storage audits are mutually exclusive")
+    if (
+        args.profile == "company-resume"
+        and company_replay_directory is None
+        and not (args.company_query_audit or args.company_storage_audit)
+    ):
         raise ValueError("company-resume requires --company-replay-directory")
     output = args.output
     if output != "-":
@@ -483,6 +492,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_evidence_database=args.company_evidence_database,
             company_replay_directory=company_replay_directory,
             company_query_audit=args.company_query_audit,
+            company_storage_audit=args.company_storage_audit,
             v5_kernel_probe=args.v5_kernel_probe,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
@@ -959,11 +969,11 @@ def build_commands(
                 "scripts.runtime_diagnostics.company_resume",
                 "--database",
                 str(options.company_evidence_database),
-                "--directory",
-                str(options.company_replay_directory),
+                *(("--directory", str(options.company_replay_directory)) if options.company_replay_directory else ()),
                 "--budget-seconds",
                 str(max(30.0, common_timeout - 30)),
                 *(("--audit-only",) if options.company_query_audit else ()),
+                *(("--storage-only",) if options.company_storage_audit else ()),
             ),
             common_timeout,
         ),
@@ -1605,6 +1615,33 @@ def _company_resume_details(
         )
     }
     runs = summary.get("runs")
+    storage = _mapping(summary.get("local_storage"))
+    if storage:
+        projected_storage = {
+            key: storage.get(key)
+            for key in (
+                "read_only",
+                "pdf_archived",
+                "database_bytes",
+                "announcement_records",
+                "extracted_bodies",
+                "body_characters",
+                "published_stocks",
+                "published_at",
+                "pending_ranges",
+                "pending_documents",
+                "stored_retry_cooling",
+                "stored_retry_ready",
+            )
+        }
+        for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
+            rows = storage.get(name)
+            projected_storage[name] = [
+                {"failure": row.get("failure"), count_key: row.get(count_key)}
+                for row in (rows[:64] if isinstance(rows, list) else [])
+                if isinstance(row, dict)
+            ]
+        selected["local_storage"] = projected_storage
     selected["runs"] = (
         [
             {

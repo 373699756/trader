@@ -157,7 +157,7 @@ def test_compact_reader_cancels_before_decoding_and_delivers_no_partial_rows(tmp
         "announcements",
         "announcement_page",
         "risk_documents",
-        "publish",
+        "facts",
         "news",
     ),
 )
@@ -959,9 +959,10 @@ def test_document_parse_timeout_at_stage_deadline_stops_later_bodies(tmp_path):
     assert result.pending_documents == 2
     assert result.failures == (
         "risk_documents:deadline",
-        "risk_documents:disclosure_document_parse_timeout",
         "risk_documents:pending",
     )
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 0
 
 
 def test_company_sync_configuration_controls_component_deadlines(tmp_path, monkeypatch):

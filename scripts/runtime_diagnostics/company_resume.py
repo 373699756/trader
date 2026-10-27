@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries
+from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries, AuditCompanyStorage
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import (
@@ -124,9 +124,11 @@ def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]]) -> set
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", required=True, type=Path)
-    parser.add_argument("--directory", required=True, type=Path)
+    parser.add_argument("--directory", type=Path)
     parser.add_argument("--budget-seconds", required=True, type=float)
-    parser.add_argument("--audit-only", action="store_true")
+    audit = parser.add_mutually_exclusive_group()
+    audit.add_argument("--audit-only", action="store_true")
+    audit.add_argument("--storage-only", action="store_true")
     args = parser.parse_args()
     implementation = hashlib.sha256()
     for relative in (
@@ -139,18 +141,23 @@ def Main() -> int:
     ):
         implementation.update((_ROOT / relative).read_bytes())
     source_path = args.database.resolve(strict=True)
-    directory = args.directory.resolve()
-    if (
-        not args.directory.is_absolute()
-        or directory == _ROOT
-        or _ROOT in directory.parents
-        or not 30 <= args.budget_seconds <= 10800
-    ):
-        parser.error("external absolute directory and budget within 30..10800 seconds required")
+    if not 30 <= args.budget_seconds <= 10800:
+        parser.error("budget within 30..10800 seconds required")
+    if args.storage_only:
+        report = AuditCompanyStorage(
+            source_path, now=datetime.now(ZoneInfo("Asia/Shanghai")), budget_seconds=min(30.0, args.budget_seconds)
+        )
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
     if args.audit_only:
         report = AuditCompanyQueries(source_path, budget_seconds=min(300.0, args.budget_seconds))
         print(json.dumps(report, ensure_ascii=False))
         return 0
+    if args.directory is None:
+        parser.error("replay requires an external absolute directory")
+    directory = args.directory.resolve()
+    if not args.directory.is_absolute() or directory == _ROOT or _ROOT in directory.parents:
+        parser.error("external absolute directory required")
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / "evidence.sqlite3"
     if destination.resolve() == source_path or (destination.exists() and destination.samefile(source_path)):

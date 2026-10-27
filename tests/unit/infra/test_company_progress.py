@@ -11,6 +11,7 @@ import pytest
 from trader import bootstrap
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.domain.company_evidence import (
+    CompanyDateProgress,
     CompanyEvidenceSyncResult,
     CompanyStockProgress,
     DisclosurePartition,
@@ -18,7 +19,7 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
     EvidenceSyncProgress,
 )
-from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
+from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock
 from trader.entrypoints.cli import Main
 
 
@@ -76,7 +77,7 @@ def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
     assert "状态 本地复用" in reused and "100.00%" not in reused
 
 
-def test_batch_announcement_progress_uses_queries_and_publication_uses_stocks():
+def test_batch_announcement_progress_uses_dates_and_fact_verification_uses_stocks():
     clock = [0.0]
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: clock[0])
@@ -104,18 +105,20 @@ def test_batch_announcement_progress_uses_queries_and_publication_uses_stocks():
             stock=CompanyStockProgress(
                 "600001", "示例", processed=2, total=4401, announcements=12, analyzed=4, pending=8
             ),
+            dates=CompanyDateProgress(day, day, 0),
         )
     )
     output = stream.getvalue().splitlines()[-1]
-    assert "已核对查询范围 0 个 | 待补范围 36 个" in output
-    assert "4401" not in output and "600001" not in output and "当前" not in output
-    assert "原始资料变更 1000 条（非每股发布行）" in output and "变更行" not in output
+    assert "已核对日期 0/1 天（全部目标市场）" in output
+    assert "当前日期 2026-10-24 | 上交所 | 本查询第 3/4 页" in output
+    assert "4401" not in output and "600001" not in output
+    assert "原始资料变更" not in output and "变更行" not in output
     assert "已分析" not in output and "待分析" not in output and "事件待核验" not in output
-    assert "第3/4页" not in output and "证券组" not in output and "分片" not in output
+    assert "证券组" not in output and "分片" not in output
     assert "本阶段 00:00:00" in output and "命令累计 00:35:10" in output
     report(
         EvidenceSyncProgress(
-            "publish",
+            "facts",
             2,
             4399,
             100,
@@ -127,7 +130,7 @@ def test_batch_announcement_progress_uses_queries_and_publication_uses_stocks():
         )
     )
     published = stream.getvalue().splitlines()[-1]
-    assert "已分析股票 2/4401 股（等待原子发布）" in published
+    assert "已核验股票 2/4401 股（等待原子发布）" in published
     assert "当前 600001 示例 | 公告 12 篇 | 已提取正文 4 篇 | 待提取正文 8 篇" in published
     assert "| 已发布" not in published
 
@@ -154,11 +157,12 @@ def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end()
     )
 
     first, second, third, fourth, final = stream.getvalue().splitlines()
-    assert f"原因 {unreadable}" in first
+    assert "原因 公告正文：PDF无法解析" in first
     assert "已提取正文 153 篇" in second and "原因" not in second
-    assert f"原因 {oversized}" in third and unreadable not in third
+    assert "原因 公告正文：PDF超过大小上限" in third and "PDF无法解析" not in third
     assert "已提取正文 156 篇" in fourth and "原因" not in fourth
-    assert f"原因 {unreadable},{oversized}" in final and "状态 待续传" in final
+    assert "PDF无法解析；公告正文：PDF超过大小上限" in final
+    assert "状态 待续传" in final
 
 
 def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(monkeypatch, capsys):
@@ -170,7 +174,9 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
         )
     )
     output = stream.getvalue()
-    assert "已发布 4402 股（含待核实） | 公告覆盖待补 | 待补正文 3 篇" in output
+    assert "已发布 4402 股（含待核实） | 公告待补 26 个范围 | 待补正文 3 篇" in output
+    assert "原始资料变更 2589 条（非每股发布行）" in output
+    assert "下次 sync company 从已提交断点续传" in output
     assert "100.00%" not in output and "状态 待续传" in output
     result = CompanyEvidenceSyncResult(
         datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
@@ -194,3 +200,39 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
     payload = json.loads(capsys.readouterr().out)["tasks"][0]
     assert payload["pending_documents"] == 3 and payload["pending_partitions"] == 26
     assert payload["elapsed_seconds"] == 314.09
+
+
+def test_last_stock_starts_atomic_publication_and_news_without_candidates_is_explicit():
+    stream = StringIO()
+    report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
+    ReportCompanyStock(report, (("600001", "示例"),), CompanyStockProgress("600001", processed=1, total=1))
+    report(EvidenceSyncProgress("publish", 1, 0, 2, 3, 0, status="complete"))
+    report(EvidenceSyncProgress("news", 0, 0, 2, 3, 0, status="complete"))
+    facts, pending, published, news = stream.getvalue().splitlines()
+    assert "逐股事件核验" in facts and "当前 600001 示例" in facts
+    assert "正在原子提交（尚未发布）" in pending
+    assert "已发布 1/1 股" in published and "状态 完成" in published
+    assert "无候选名单，本轮未抓取新闻" in news and "状态 未覆盖" in news
+
+
+def test_source_deadline_and_unreadable_documents_have_separate_recovery_messages():
+    stream = StringIO()
+    report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
+    report(EvidenceSyncProgress("risk_documents", 2, 5, 0, 0, 0, failed_documents=1, deferred_documents=2))
+    report(
+        EvidenceSyncProgress(
+            "complete",
+            1,
+            2,
+            3,
+            4,
+            0,
+            "announcements:deadline,risk_documents:disclosure_document_no_text",
+            status="deferred",
+            pending_documents=5,
+        )
+    )
+    text = stream.getvalue()
+    assert "本轮失败 1 篇 | 冷却暂缓 2 篇" in text
+    assert "公告目录：阶段预算用尽，保留断点" in text
+    assert "公告正文：PDF未提取到文字" in text and "无文本或短文本公告保持待核实" in text

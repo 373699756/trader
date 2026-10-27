@@ -3,11 +3,14 @@
 import json
 import sys
 import time
+from datetime import timedelta
 
 import pytest
 
 from scripts.diagnose_runtime import DiagnosticResult, _parser, _validate, build_commands, build_report
+from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
 from scripts.runtime_diagnostics.company_resume import Main, _copy, _saved_pages
+from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import DisclosurePage, DisclosureQuery
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
@@ -37,6 +40,32 @@ def test_company_profile_requires_explicit_external_directory(tmp_path):
         )
     )
     assert "--audit-only" in build_commands(audit)[0].argv
+
+
+def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_unchanged(tmp_path, monkeypatch, capsys):
+    index = fixtures._index(tmp_path)
+    partition = index.partitions(("sse",), fixtures.NOW)[0]
+    item = fixtures._disclosure(title="收到立案告知书")
+    index.commit_page(partition, DisclosurePage((item,), 1, False), fixtures.NOW)
+    index.document_failure(
+        item, "fixture", "disclosure_document_no_text", fixtures.NOW, fixtures.NOW + timedelta(days=1)
+    )
+    index.publish(("600001",), fixtures.NOW)
+    before = index.path.read_bytes()
+    report = AuditCompanyStorage(index.path, now=fixtures.NOW, budget_seconds=5)
+    storage = report["summary"]["local_storage"]
+    assert storage["announcement_records"] == storage["pending_documents"] == storage["stored_retry_cooling"] == 1
+    assert storage["extracted_bodies"] == 0 and not storage["pdf_archived"]
+    assert storage["document_failures"] == [{"failure": "disclosure_document_no_text", "documents": 1}]
+    options, _ = _validate(_parser().parse_args(["--profile", "company-resume", "--company-storage-audit"]))
+    command = build_commands(options)[0]
+    assert "--storage-only" in command.argv and "--directory" not in command.argv
+    monkeypatch.setattr(
+        sys, "argv", ["company-resume", "--database", str(index.path), "--storage-only", "--budget-seconds", "30"]
+    )
+    assert Main() == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["summary"]["local_storage"]["read_only"] and index.path.read_bytes() == before
 
 
 def test_backup_preserves_source_and_is_independently_writable(tmp_path):
@@ -128,6 +157,12 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
                 "saved_pages_replayed": 0,
                 "private_database": "must-not-project",
                 "runs": [{"pages": 100, "document_attempts": 32, "raw_document": "must-not-project"}],
+                "local_storage": {
+                    "read_only": True,
+                    "extracted_bodies": 2,
+                    "body": "must-not-project",
+                    "document_failures": [{"failure": "no_text", "documents": 1, "private": "must-not-project"}],
+                },
                 "query_audit": {
                     "read_only": True,
                     "pages": [{"total": 93, "outside_codes": 2, "same_issuer": 2, "raw_response": "must-not-project"}],
@@ -145,6 +180,8 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
     assert summary["selected_slices"] == summary["completed_slices"] == 6
     assert summary["runs"][0]["pages"] == 100 and summary["saved_pages_replayed"] == 0
     assert summary["query_audit"]["pages"][0]["same_issuer"] == 2
+    assert summary["local_storage"]["extracted_bodies"] == 2
+    assert summary["local_storage"]["document_failures"] == [{"failure": "no_text", "documents": 1}]
 
 
 def test_query_capture_distinguishes_an_issuer_alias_from_an_unrelated_response():

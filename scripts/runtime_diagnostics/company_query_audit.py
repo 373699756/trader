@@ -6,16 +6,17 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import parse_qs
 
 from trader.bootstrap import OpenExternalHttp
+from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import DisclosurePartition, DisclosureQuery, DisclosureSecurity, Market
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.infra.http_contracts import HttpRequest, HttpResponse
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
 class _Capture:
@@ -168,4 +169,76 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
     }
 
 
-__all__ = ["AuditCompanyQueries"]
+def AuditCompanyStorage(path: Path, *, now: datetime, budget_seconds: float) -> dict[str, object]:
+    """Count local records and persisted retry reasons without reading bodies into the report."""
+    deadline = time.monotonic() + budget_seconds
+    cutoff = (now.date() - timedelta(days=365)).isoformat()
+    pending = cooling = ready = 0
+    failures: dict[str, int] = {}
+    with (
+        SqliteSession(
+            path,
+            SqliteConnectionOptions(read_only=True, timeout_seconds=5),
+            cancel_requested=lambda: time.monotonic() >= deadline,
+        ) as connection,
+        SqliteTransaction(connection),
+    ):
+        totals = connection.run(
+            "SELECT COUNT(*),SUM(body_checked=1),COALESCE(SUM(length(body)),0) FROM disclosures WHERE kind='announcement'"
+        ).require_one()
+        publication = connection.run("SELECT published_at FROM publication WHERE singleton=1").fetchone()
+        stocks = connection.run("SELECT COUNT(*) FROM published").require_one()[0]
+        partitions = connection.run(
+            "SELECT COUNT(*) FROM partitions WHERE complete=0 AND end>=?", (cutoff,)
+        ).require_one()[0]
+        partition_failures = [
+            {"failure": row[0], "ranges": row[1]}
+            for row in connection.run(
+                "SELECT failure,COUNT(*) FROM partitions WHERE complete=0 AND end>=? AND failure<>'' GROUP BY failure",
+                (cutoff,),
+            )
+        ]
+        for row in connection.run(
+            "SELECT d.title,r.failure,r.retry_after FROM disclosures d LEFT JOIN document_retries r "
+            "ON r.disclosure_id=d.id AND r.digest=d.digest WHERE d.kind='announcement' AND d.body_checked=0 "
+            "AND d.published_at>=? AND d.published_at<=? AND EXISTS(SELECT 1 FROM disclosure_codes c "
+            "JOIN published p ON p.code=c.code WHERE c.disclosure_id=d.id)",
+            (cutoff, now.isoformat()),
+        ):
+            if not CompanyDocumentNeedsReview(row[0]):
+                continue
+            pending += 1
+            if row[1]:
+                failures[row[1]] = failures.get(row[1], 0) + 1
+            if row[2] and datetime.fromisoformat(row[2]) > now:
+                cooling += 1
+            else:
+                ready += 1
+    return {
+        "schema_version": "company-resume",
+        "status": "degraded" if partitions or pending else "passed",
+        "summary": {
+            "local_storage": {
+                "read_only": True,
+                "pdf_archived": False,
+                "database_bytes": path.stat().st_size,
+                "announcement_records": totals[0],
+                "extracted_bodies": totals[1] or 0,
+                "body_characters": totals[2],
+                "published_stocks": stocks,
+                "published_at": publication[0] if publication else None,
+                "pending_ranges": partitions,
+                "pending_documents": pending,
+                "stored_retry_cooling": cooling,
+                "stored_retry_ready": ready,
+                "partition_failures": partition_failures,
+                "document_failures": [
+                    {"failure": failure, "documents": count} for failure, count in sorted(failures.items())
+                ],
+            }
+        },
+        "findings": ["company_download_pending"] if partitions or pending else [],
+    }
+
+
+__all__ = ["AuditCompanyQueries", "AuditCompanyStorage"]
