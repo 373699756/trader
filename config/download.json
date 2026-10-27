@@ -12,7 +12,7 @@
     "progress_heartbeat_seconds": 5.0
   },
   "company": {
-    "budget_seconds": 5400.0,
+    "budget_seconds": 18000.0,
     "structured_component_seconds": 600.0,
     "announcements_deadline_fraction": 0.7,
     "documents_deadline_fraction": 0.95,

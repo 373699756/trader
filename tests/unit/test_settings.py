@@ -712,7 +712,7 @@ def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_pa
 
 def test_company_sync_budget_and_deadline_configuration(tmp_path) -> None:
     settings = LoadCompanySyncConfiguration(PROJECT_ROOT)
-    assert settings.budget_seconds == 90 * 60
+    assert settings.budget_seconds == 5 * 60 * 60
     assert settings.announcements_deadline_fraction == 0.7
     assert settings.documents_deadline_fraction == 0.95
     assert settings.source_timeout_seconds == 8.0
