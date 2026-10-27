@@ -816,6 +816,8 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
     assert source.pages == [1, 2] and source.documents == ["first"]
     body_events = [event for event in events if event.component == "risk_documents"]
     assert body_events[0].stock is None
+    assert all(event.stock is None for event in events if event.component == "announcements")
+    assert any(event.stock is not None and event.stock.code == "600001" for event in body_events)
     assert all(not event.failure for event in body_events)
     assert (body_events[-1].completed, body_events[-1].pending, body_events[-1].status) == (1, 0, "complete")
     assert any(event.component == "announcements" and event.scope and event.scope.page == 2 for event in events)

@@ -6,7 +6,7 @@ import math
 import re
 from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import Literal, Protocol
 
@@ -107,9 +107,7 @@ class _SyncState:
     changes: int = 0
     reused: int = 0
     completed: int = 0
-    stocks: dict[str, CompanyStockProgress] = field(default_factory=dict)
     current_stock: CompanyStockProgress | None = None
-    population_size: int = 0
     failures: tuple[str, ...] = ()
 
 
@@ -151,7 +149,6 @@ def SyncCompanyEvidence(
     index = dependencies.index
     state = _SyncState()
     population = _validated_population(codes)
-    state.population_size = len(population)
     if not _cancelled(dependencies):
         index.initialize()
     news_population = tuple(sorted(set(news_codes).intersection(population)))
@@ -273,7 +270,6 @@ class _AnnouncementRun:
         self._circuit = _SourceCircuit()
 
     def run(self, population: tuple[str, ...]) -> int:
-        self._population = frozenset(population)
         dependencies, state = self._dependencies, self._state
         _report(dependencies, "announcements", state, None)
         if _cancelled(dependencies):
@@ -354,28 +350,9 @@ class _AnnouncementRun:
             self._split(partition)
         else:
             self._state.changes += self._index.commit_page(partition, page, self._now())
-            self._record_stock_announcements(page)
             self._circuit.success()
             self._advance(partition, page)
         self._report(replace(partition, expected_rows=page.total))
-
-    def _record_stock_announcements(self, page: DisclosurePage) -> None:
-        for disclosure in page.rows:
-            for code in disclosure.codes:
-                if code not in self._population:
-                    continue
-                previous = self._state.stocks.get(
-                    code,
-                    CompanyStockProgress(
-                        code,
-                        next((name for candidate, name in self._dependencies.stock_names if candidate == code), ""),
-                    ),
-                )
-                current = replace(previous, announcements=previous.announcements + 1)
-                self._state.stocks[code] = current
-                self._state.current_stock = replace(
-                    current, processed=len(self._state.stocks), total=self._state.population_size
-                )
 
     def _repair_progress(self, partition: DisclosurePartition) -> None:
         self._state.pages += 1
@@ -528,7 +505,7 @@ def _documents(
     _report(dependencies, "risk_documents", state, total, completed=0)
     while pending_documents and _running(dependencies, deadline):
         item = pending_documents.popleft()
-        _prepare_document_progress(dependencies, state, item.codes[0], pending_documents)
+        _prepare_document_progress(dependencies, state, item.codes[0])
         now = observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started))
         retry = index.document_retry(item, policy)
         if retry is not None and retry.retry_after > now:
@@ -561,7 +538,6 @@ def _documents(
             circuit.success()
             index.commit_document(item, text)
             completed += 1
-            _complete_document_progress(state)
             state.changes += 1
         except (OSError, RuntimeError, ValueError) as exc:
             if _cancelled(dependencies):
@@ -610,31 +586,10 @@ def _documents(
     )
 
 
-def _prepare_document_progress(
-    dependencies: CompanyEvidenceDependencies, state: _SyncState, code: str, pending: deque[Disclosure]
-) -> None:
-    current = state.stocks.get(
-        code,
-        CompanyStockProgress(
-            code, next((name for candidate, name in dependencies.stock_names if candidate == code), "")
-        ),
+def _prepare_document_progress(dependencies: CompanyEvidenceDependencies, state: _SyncState, code: str) -> None:
+    state.current_stock = CompanyStockProgress(
+        code, next((name for candidate, name in dependencies.stock_names if candidate == code), "")
     )
-    state.current_stock = replace(
-        current,
-        processed=len(state.stocks),
-        total=state.population_size,
-        pending=sum(code in document.codes for document in pending) + 1,
-    )
-
-
-def _complete_document_progress(state: _SyncState) -> None:
-    if state.current_stock is not None:
-        state.current_stock = replace(
-            state.current_stock,
-            analyzed=state.current_stock.analyzed + 1,
-            pending=max(0, state.current_stock.pending - 1),
-        )
-        state.stocks[state.current_stock.code] = state.current_stock
 
 
 def _unique_documents(items: Sequence[Disclosure]) -> tuple[Disclosure, ...]:
@@ -849,7 +804,7 @@ def _report(
                 attempted_documents,
                 deferred_documents,
                 activity,
-                state.current_stock if component in {"announcements", "risk_documents"} else None,
+                state.current_stock if component == "risk_documents" else None,
             )
         )
 

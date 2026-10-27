@@ -44,13 +44,25 @@ def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window(
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: clock[0])
     clock[0] = 591.1
-    report(EvidenceSyncProgress("risk_documents", 1, 146, 425, 40179, 0, attempted_documents=2))
+    report(
+        EvidenceSyncProgress(
+            "risk_documents",
+            1,
+            146,
+            425,
+            40179,
+            0,
+            attempted_documents=2,
+            stock=CompanyStockProgress("600001", "示例"),
+        )
+    )
     clock[0] += 0.1
     report(EvidenceSyncProgress("risk_documents", 147, 0, 425, 40325, 0, status="complete", attempted_documents=147))
     first, final = stream.getvalue().splitlines()
-    assert "已尝试 2/147 篇 | 已核验 1 篇" in first
+    assert "已尝试 2/147 篇 | 已提取正文 1 篇" in first
+    assert "当前正文股票 600001 示例" in first and "已分析 0" not in first and "待分析 0" not in first
     assert "累计 00:09:51" in first and "591.1秒" not in first
-    assert "已尝试 147/147 篇 | 已核验 147 篇" in final and "状态 完成" in final
+    assert "已尝试 147/147 篇 | 已提取正文 147 篇" in final and "状态 完成" in final
 
 
 def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
@@ -64,7 +76,7 @@ def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
     assert "状态 本地复用" in reused and "100.00%" not in reused
 
 
-def test_announcement_progress_separates_complete_dates_current_pages_and_stage_time():
+def test_batch_announcement_progress_uses_queries_and_publication_uses_stocks():
     clock = [0.0]
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: clock[0])
@@ -95,14 +107,29 @@ def test_announcement_progress_separates_complete_dates_current_pages_and_stage_
         )
     )
     output = stream.getvalue().splitlines()[-1]
-    assert "本轮涉及公告 2/4401 股" in output
-    assert "最近处理公告目录 600001 示例" in output
-    assert output.index("公告增量下载") < output.index("最近处理公告目录 600001 示例") < output.index("本轮涉及公告")
-    assert "本轮该股页记录 12 篇 | 正文分析未开始" in output
+    assert "已核对查询范围 0 个 | 待补范围 36 个" in output
+    assert "4401" not in output and "600001" not in output and "当前" not in output
     assert "原始资料变更 1000 条（非每股发布行）" in output and "变更行" not in output
     assert "已分析" not in output and "待分析" not in output and "事件待核验" not in output
     assert "第3/4页" not in output and "证券组" not in output and "分片" not in output
     assert "本阶段 00:00:00" in output and "命令累计 00:35:10" in output
+    report(
+        EvidenceSyncProgress(
+            "publish",
+            2,
+            4399,
+            100,
+            1000,
+            124,
+            stock=CompanyStockProgress(
+                "600001", "示例", processed=2, total=4401, announcements=12, analyzed=4, pending=8
+            ),
+        )
+    )
+    published = stream.getvalue().splitlines()[-1]
+    assert "已分析股票 2/4401 股（等待原子发布）" in published
+    assert "当前 600001 示例 | 公告 12 篇 | 已提取正文 4 篇 | 待提取正文 8 篇" in published
+    assert "| 已发布" not in published
 
 
 def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end():
@@ -128,9 +155,9 @@ def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end()
 
     first, second, third, fourth, final = stream.getvalue().splitlines()
     assert f"原因 {unreadable}" in first
-    assert "已核验 153 篇" in second and "原因" not in second
+    assert "已提取正文 153 篇" in second and "原因" not in second
     assert f"原因 {oversized}" in third and unreadable not in third
-    assert "已核验 156 篇" in fourth and "原因" not in fourth
+    assert "已提取正文 156 篇" in fourth and "原因" not in fourth
     assert f"原因 {unreadable},{oversized}" in final and "状态 待续传" in final
 
 

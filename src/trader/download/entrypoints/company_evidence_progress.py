@@ -92,7 +92,7 @@ class CompanyEvidenceProgress:
             "financial": "页",
             "pledge": "页",
             "unlock": "页",
-            "announcements": "分片",
+            "announcements": "范围",
             "risk_documents": "篇",
             "news": "股",
             "publish": "股",
@@ -104,12 +104,9 @@ class CompanyEvidenceProgress:
         if progress.status == "running" and previous is not None and progress.component == previous.component:
             reported = set(previous.failure.split(","))
             failure = ",".join(item for item in failure.split(",") if item and item not in reported)
-        stock = _stock(progress)
-        announcement_stock = stock if progress.component == "announcements" else ""
-        other_stock = "" if progress.component == "announcements" else stock
         print(
-            f"sync company | {labels[progress.component]}{announcement_stock} | {_counts(progress, units[progress.component])}"
-            + other_stock
+            f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
+            + _stock(progress)
             + (self._summary(progress.completed) if progress.component == "complete" else "")
             + (" | 补查历史发行人（保留已完成页）" if progress.activity == "repair" else "")
             + f" | 成功页 {progress.fetched_pages} | 原始资料变更 {progress.changed_rows} 条（非每股发布行） | "
@@ -142,14 +139,14 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
         )
     if progress.status == "reused":
         return "无需请求，复用有效缓存"
-    if progress.pending is None:
-        return f"进度 {progress.completed}/? {unit}（总数待确认）"
     if progress.component == "announcements":
         return (
-            f"本轮涉及公告 {progress.stock.processed}/{progress.stock.total} 股（覆盖核验中）"
-            if progress.stock is not None
-            else "正在定位待补公告，股票总进度待核验"
+            "正在定位公告查询范围"
+            if progress.pending is None
+            else f"已核对查询范围 {progress.completed} 个 | 待补范围 {progress.pending} 个"
         )
+    if progress.pending is None:
+        return f"进度 {progress.completed}/? {unit}（总数待确认）"
     if progress.component == "publish" and progress.stock is not None:
         return f"已分析股票 {progress.stock.processed}/{progress.stock.total} 股（等待原子发布）"
     return _page_counts(progress, unit, progress.pending)
@@ -159,7 +156,7 @@ def _page_counts(progress: EvidenceSyncProgress, unit: str, pending: int) -> str
     total = progress.completed + pending
     if progress.component == "risk_documents":
         return (
-            f"已尝试 {progress.attempted_documents}/{total} 篇 | 已核验 {progress.completed} 篇 | "
+            f"已尝试 {progress.attempted_documents}/{total} 篇 | 已提取正文 {progress.completed} 篇 | "
             f"暂缓重试 {progress.deferred_documents} 篇 | 待补 {progress.pending} 篇"
         )
     percent = f"{100 * progress.completed / total:.2f}%" if total else "无待处理"
@@ -168,15 +165,13 @@ def _page_counts(progress: EvidenceSyncProgress, unit: str, pending: int) -> str
 
 def _stock(progress: EvidenceSyncProgress) -> str:
     stock = progress.stock
-    if stock is None:
+    if stock is None or progress.component == "announcements":
         return ""
-    if progress.component == "announcements":
-        return (
-            f" | 最近处理公告目录 {stock.code} {stock.name} | 本轮该股页记录 {stock.announcements} 篇 | 正文分析未开始"
-        )
+    if progress.component == "risk_documents":
+        return f" | 当前正文股票 {stock.code} {stock.name}"
     return (
         f" | 当前 {stock.code} {stock.name} | 公告 {stock.announcements} 篇"
-        f" | 已分析 {stock.analyzed} 篇 | 待分析 {stock.pending} 篇"
+        f" | 已提取正文 {stock.analyzed} 篇 | 待提取正文 {stock.pending} 篇"
         + (
             f" | 风险 {stock.risks} 条 | 利好 {stock.positives} 条 | 待核实 {stock.review_count} 项"
             + (" | 资料完整" if stock.coverage_complete else " | 资料部分覆盖")
