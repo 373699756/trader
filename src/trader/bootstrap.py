@@ -29,6 +29,7 @@ from trader.download.domain.history_sync import HistorySyncConfiguration, Histor
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.entrypoints import company_evidence_progress
+from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
@@ -201,8 +202,6 @@ def PrepareRuntimeStorage(settings: RuntimeSettings, *, choose: bool = False, re
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False
 ) -> SyncResult:
-    from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-
     settings = LoadRuntimeSettings(config_path)
     clock = ShanghaiClock(_utc_now)
     progress = company_evidence_progress.CompanyEvidenceProgress()
@@ -239,6 +238,9 @@ def ExecuteSync(
                 configuration=company_configuration,
                 stock_names=tuple((item.code, item.name) for item in reference.eligible_universe),
                 event_policy=LoadStrategySettings(settings.strategy_config_path).company_scoring.events,
+                listings=tuple(
+                    company_evidence.CompanyListing(item.code, item.listed_on) for item in reference.eligible_universe
+                ),
             ),
             cancel_requested=cancel_requested,
         ),
@@ -264,6 +266,7 @@ def _sync_company_evidence(
                     database_path,
                     cancel_requested=cancel_requested,
                     event_policy=request.event_policy,
+                    listings=request.listings,
                     stock_progress=partial(
                         company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names
                     ),
@@ -1146,10 +1149,7 @@ def _build_publication(
     )
     clock = ShanghaiClock(context.now)
     query_sources = DecisionQuerySources(
-        market_data,
-        dependencies.outcomes,
-        market_data.references,
-        market_data.research,
+        market_data, dependencies.outcomes, market_data.references, market_data.research
     )
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, query_sources)
     research_trace = SQLiteResearchTraceIndex(

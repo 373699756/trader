@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
-from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
+from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, CompanySubject
 from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, CompanyRatio, Disclosure
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra.company_facts_codec import (
@@ -277,7 +277,8 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
             _document(
                 "contract",
                 "关于签订合同的公告",
-                "本公司已签订正式合同，合同已生效。合同金额人民币2亿元（不含税）；2025年度经审计的营业收入人民币10亿元。",
+                "本公司已签订正式合同，合同已生效。合同金额人民币2亿元（不含税）；"
+                "2025年度经审计的营业收入人民币10亿元（不含税）。2025年年度报告于2026年4月20日披露。",
             ),
         )
     )
@@ -295,3 +296,123 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
     risk[0]["risk_level"] = 4
     with pytest.raises(ValueError, match="severity_mismatch"):
         DecodeCompanyPublication({**row, "risk_events_json": json.dumps(risk)})
+
+
+def test_other_subject_negation_does_not_erase_controlling_shareholder_investigation():
+    document = _document(
+        "holder",
+        "关于控股股东收到立案告知书的公告",
+        "控股股东收到中国证券监督管理委员会立案告知书〔2026〕调查1号，决定立案。本公司未被立案。",
+    )
+    facts = _facts((document,))
+    assert len(facts.risk_events) == 1
+    event = facts.risk_events[0]
+    assert event.risk_level == 4 and event.subject_type is CompanySubject.CONTROLLING_SHAREHOLDER
+    assert event.case_id == "〔2026〕调查1号" and CompanyRiskActive(event, AT)
+    assert _assess(facts, enabled=False).risk_level == 4
+
+
+def test_generic_title_with_mixed_subjects_cannot_turn_issuer_denial_into_clear_coverage():
+    document = _document(
+        "mixed",
+        "关于收到立案告知书的公告",
+        "控股股东收到证监会立案告知书〔2026〕调查1号。本公司未被立案。",
+    )
+    facts = _facts((document,))
+    assert not facts.risk_events
+    assert any(item.reason_code == "subject_unverified" for item in facts.review_reasons)
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "本公司收到证监会立案告知书〔2026〕调查1号。关于〔2026〕调查2号，本公司未被立案。",
+        "本公司收到证监会立案告知书〔2026〕调查1号及〔2026〕调查2号。",
+    ),
+)
+def test_conflicting_cases_of_same_subject_stay_unknown_and_cannot_clear_previous_risk(body):
+    original = _document("case", "收到立案告知书", "本公司收到证监会立案告知书〔2026〕调查1号。")
+    previous = ExtractCompanyEvents((original,), AT, CompanyEventPolicy())
+    ambiguous = _document("ambiguous", "收到立案告知书", body)
+    result = ExtractCompanyEvents((ambiguous,), AT, CompanyEventPolicy(), previous_risks=previous.risks)
+    assert result.risks == previous.risks
+    assert any(item.reason_code == "case_conclusion_ambiguous" for item in result.reviews)
+    negative = _document("negative", "关于立案事项的说明", "本公司未被立案，不涉及立案。")
+    assert not ExtractCompanyEvents((negative,), AT, CompanyEventPolicy()).risks
+
+
+def test_another_subject_cannot_resolve_an_issuer_case_even_when_case_number_matches():
+    initial = _document("case", "收到立案告知书", "本公司收到证监会立案告知书〔2026〕调查1号。")
+    previous = ExtractCompanyEvents((initial,), AT, CompanyEventPolicy())
+    closure = _document("closure", "关于控股股东调查终结的公告", "控股股东收到证监会〔2026〕调查1号通知，调查终结。")
+    result = ExtractCompanyEvents((closure,), AT, CompanyEventPolicy(), previous_risks=previous.risks)
+    assert result.risks == previous.risks and result.reviews[0].reason_code == "resolution_unlinked"
+
+
+def test_same_case_number_cannot_merge_events_of_different_subjects():
+    issuer = _document("issuer", "收到立案告知书", "本公司收到证监会立案告知书〔2026〕调查1号。")
+    holder = _document("holder", "控股股东收到立案告知书", "控股股东收到证监会立案告知书〔2026〕调查1号。")
+    result = ExtractCompanyEvents((issuer, holder), AT, CompanyEventPolicy())
+    assert len(result.risks) == 2
+    assert {event.subject_type for event in result.risks} == {
+        CompanySubject.ISSUER,
+        CompanySubject.CONTROLLING_SHAREHOLDER,
+    }
+
+
+def test_case_reference_does_not_resolve_a_different_or_ambiguous_case():
+    initial = _document("case", "收到立案告知书", "本公司收到证监会立案告知书〔2026〕调查1号。")
+    previous = ExtractCompanyEvents((initial,), AT, CompanyEventPolicy())
+    for body in (
+        "本公司关于公告case作出说明，证监会〔2026〕调查2号调查终结。",
+        "本公司收到证监会〔2026〕调查1号及〔2026〕调查2号通知，调查终结。",
+    ):
+        result = ExtractCompanyEvents(
+            (_document("closure", "关于调查终结的公告", body),), AT, CompanyEventPolicy(), previous_risks=previous.risks
+        )
+        assert result.risks == previous.risks and result.reviews[0].reason_code == "resolution_unlinked"
+
+
+@pytest.mark.parametrize(
+    ("body", "level", "ratio"),
+    (
+        ("本公司已回购股份10000股，拟回购股份占公司总股本的比例为0.5%，用于注销。", 0, None),
+        ("本公司已回购股份10000股，计划回购股份占公司总股本的比例为0.5%，用于注销。", 0, None),
+        ("本公司未累计回购股份占公司总股本的比例为0.5%，用于注销。", 0, None),
+        ("本公司已实际回购股份，占公司总股本的比例为0.3%，用于注销。拟回购比例为0.5%。", 2, 0.3),
+    ),
+)
+def test_repurchase_ratio_is_bound_to_actual_action_and_not_a_later_plan(body, level, ratio):
+    result = ExtractCompanyEvents((_document("buy", "关于回购股份的公告", body),), AT, CompanyEventPolicy())
+    assert result.positives[0].positive_level == level
+    assert result.positives[0].measurements.actual_ratio_pct == ratio
+    if level == 0:
+        assert result.reviews and not result.positives[0].level_milestones
+
+
+@pytest.mark.parametrize(
+    ("contract_basis", "revenue_basis", "disclosure", "level"),
+    (
+        ("不含税", "不含税", "2025年年度报告于2026年4月20日披露。", 3),
+        ("含税", "不含税", "2025年年度报告于2026年4月20日披露。", 0),
+        ("不含税", "含税", "2025年年度报告于2026年4月20日披露。", 0),
+        ("不含税", "", "2025年年度报告于2026年4月20日披露。", 0),
+        ("不含税", "不含税", "", 0),
+        ("不含税", "不含税", "2025年年度报告于2026年12月20日披露。", 0),
+    ),
+)
+def test_contract_requires_separate_net_amounts_and_prior_annual_report_disclosure(
+    contract_basis, revenue_basis, disclosure, level
+):
+    body = (
+        f"本公司已签订正式合同。合同总金额为人民币2000万元（{contract_basis}）。"
+        f"2025年度经审计的营业收入为人民币10000万元（{revenue_basis}）。{disclosure}"
+    )
+    result = ExtractCompanyEvents((_document("contract", "关于签订重大合同的公告", body),), AT, CompanyEventPolicy())
+    event = result.positives[0]
+    assert event.positive_level == level
+    if level:
+        assert event.measurements.amount_to_revenue_pct == 20
+        assert event.measurements.reference_disclosed_at.date().isoformat() == "2026-04-20"
+    else:
+        assert result.reviews and event.measurements.amount_basis == "unknown"

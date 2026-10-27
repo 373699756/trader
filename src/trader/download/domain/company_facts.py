@@ -100,7 +100,11 @@ def CompileCompanyFacts(
         if scope in {"financial", "pledge", "unlock", "announcements"}:
             reviews.append(
                 CompanyReviewReason(
-                    "risk" if scope == "announcements" else scope, reason or "unavailable", None, now, failure
+                    "risk" if scope == "announcements" else scope,
+                    reason or "unavailable",
+                    None,
+                    now,
+                    "持续事项的上市初始状态尚未核实" if reason == "initial_risk_state_unverified" else failure,
                 )
             )
     pledge_complete = source.pledge is not None and not any(item.startswith("pledge:") for item in source.failures)

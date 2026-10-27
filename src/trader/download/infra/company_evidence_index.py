@@ -17,6 +17,7 @@ from trader.download.domain.company_evidence import (
     CompanyDocument,
     CompanyEvidenceInput,
     CompanyFinancial,
+    CompanyListing,
     CompanyRatio,
     CompanyStockProgress,
     Disclosure,
@@ -73,11 +74,15 @@ class SQLiteCompanyEvidenceIndex:
         cancel_requested: Callable[[], bool] | None = None,
         event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY,
         stock_progress: Callable[[CompanyStockProgress], None] | None = None,
+        listings: tuple[CompanyListing, ...] = (),
     ) -> None:
         self.path = path
         self._cancel_requested = cancel_requested
         self._event_policy = event_policy
         self._stock_progress = stock_progress
+        if len({item.code for item in listings}) != len(listings):
+            raise ValueError("company_listing_identity_invalid")
+        self._listings = listings
 
     def _check_cancelled(self) -> None:
         if self._cancel_requested is not None and self._cancel_requested():
@@ -778,7 +783,10 @@ class SQLiteCompanyEvidenceIndex:
             digest.update(extraction_identity.encode())
             columns = ",".join(PUBLICATION_COLUMNS)
             placeholders = ",".join("?" for _ in PUBLICATION_COLUMNS)
+            listing_dates = {item.code: item.listed_on for item in self._listings}
             with SqliteTransaction(source):
+                identity = source.run("SELECT extraction_identity FROM publication WHERE singleton=1").fetchone()
+                rebuild = identity is not None and identity[0] != extraction_identity
                 shared = _snapshot_shared(source, observed_at)
                 for offset in range(0, len(requested), 128):
                     batch = requested[offset : offset + 128]
@@ -792,8 +800,12 @@ class SQLiteCompanyEvidenceIndex:
                     values = []
                     for code in batch:
                         self._check_cancelled()
-                        snapshot = _build_snapshot(code, observed_at, inputs[code], shared)
-                        facts = CompileCompanyFacts(snapshot, self._event_policy, previous=previous.get(code))
+                        snapshot = _build_snapshot(
+                            code, observed_at, inputs[code], shared, listed_on=listing_dates.get(code)
+                        )
+                        facts = CompileCompanyFacts(
+                            snapshot, self._event_policy, previous=None if rebuild else previous.get(code)
+                        )
                         prior = previous.get(code)
                         if prior is not None and replace(facts, published_at=prior.published_at) == prior:
                             facts = prior
@@ -830,6 +842,10 @@ class SQLiteCompanyEvidenceIndex:
                 # This same read handle observes every concurrent commit, including other publications.
                 if source.run("PRAGMA data_version").require_one()[0] != source_version:
                     raise RuntimeError("company_publication_source_changed")
+                if rebuild:
+                    connection.run(
+                        "DELETE FROM published WHERE code NOT IN (SELECT code FROM temp.prepared_publication)"
+                    )
                 assignments = ",".join(
                     f"{column}=excluded.{column}" for column in PUBLICATION_COLUMNS if column != "code"
                 )
@@ -856,11 +872,13 @@ class SQLiteCompanyEvidenceIndex:
                 "DELETE FROM disclosures WHERE ((kind='announcement' AND published_at<?) OR (kind='news' AND published_at<?)) "
                 "AND source_id NOT IN (SELECT ref.value FROM published p, json_each(p.risk_events_json) e, "
                 "json_each(e.value,'$.evidence_ids') ref UNION SELECT ref.value FROM published p, "
-                "json_each(p.positive_events_json) e, json_each(e.value,'$.evidence_ids') ref)",
+                "json_each(p.positive_events_json) e, json_each(e.value,'$.evidence_ids') ref UNION "
+                "SELECT json_extract(e.value,'$.evidence_id') FROM published p, json_each(p.review_reasons_json) e "
+                "WHERE json_extract(e.value,'$.evidence_id') IS NOT NULL)",
                 (cutoff, (observed_at - timedelta(days=7)).isoformat()),
             )
             connection.run("DELETE FROM partitions WHERE end<?", (cutoff,))
-            connection.run("DELETE FROM coverage WHERE end<?", (cutoff,))
+            # Coverage is provenance for the issuer's initial risk state; a rolling window cannot replace it.
             connection.run("DELETE FROM partition_rows WHERE end<?", (cutoff,))
             connection.run(
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
@@ -905,9 +923,7 @@ def _snapshot_shared(connection: SqliteConnection, now: datetime) -> _SnapshotSh
     cutoff = (now.date() - timedelta(days=365)).isoformat()
     pledge = connection.run("SELECT start FROM ratio_snapshots WHERE component='pledge'").fetchone()
     return _SnapshotShared(
-        tuple(
-            connection.run("SELECT start,end,market,checked_at FROM coverage WHERE end>=? ORDER BY start", (cutoff,))
-        ),
+        tuple(connection.run("SELECT start,end,market,checked_at FROM coverage ORDER BY start")),
         tuple(connection.run("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
         tuple(
             connection.run(
@@ -925,7 +941,8 @@ def _snapshot_rows(connection: SqliteConnection, codes: tuple[str, ...], now: da
     placeholders = ",".join("?" for _ in codes)
     disclosures = connection.run(
         "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-        f"WHERE c.code IN ({placeholders}) AND d.published_at>=? AND d.published_at<=? ORDER BY d.published_at,d.id",
+        f"WHERE c.code IN ({placeholders}) AND (d.published_at>=? OR d.kind='announcement') "
+        "AND d.published_at<=? ORDER BY d.published_at,d.id",
         (*codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
     )
     documents: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
@@ -953,7 +970,9 @@ def _snapshot_rows(connection: SqliteConnection, codes: tuple[str, ...], now: da
     }
 
 
-def _build_snapshot(code: str, now: datetime, inputs: _SnapshotRows, shared: _SnapshotShared) -> CompanyEvidenceInput:
+def _build_snapshot(
+    code: str, now: datetime, inputs: _SnapshotRows, shared: _SnapshotShared, *, listed_on: date | None
+) -> CompanyEvidenceInput:
     start, end = now.date() - timedelta(days=365), now.date()
     rows = inputs.disclosures
     documents = tuple(
@@ -962,11 +981,7 @@ def _build_snapshot(code: str, now: datetime, inputs: _SnapshotRows, shared: _Sn
         if row["kind"] == "announcement"
     )
     ranges = tuple(row for row in shared.coverage if row["market"] == EvidenceMarket(code))
-    frontier = start
-    for row in ranges:
-        if date.fromisoformat(row[0]) <= frontier:
-            frontier = max(frontier, date.fromisoformat(row[1]) + timedelta(days=1))
-    complete = frontier > end and all(
+    complete = _coverage_complete(ranges, start, end) and all(
         item.checked or not CompanyDocumentRiskRelevant(item.disclosure.title) for item in documents
     )
     financials = tuple(
@@ -995,6 +1010,8 @@ def _build_snapshot(code: str, now: datetime, inputs: _SnapshotRows, shared: _Sn
         failures += ("pledge:source_stale",)
     partition_errors = tuple(row for row in shared.errors if row["market"] == EvidenceMarket(code))
     failures += tuple(f"announcements:{row[0]}" for row in partition_errors)
+    if listed_on is None or listed_on > end or not _coverage_complete(ranges, listed_on, end):
+        failures += ("announcements:initial_risk_state_unverified",)
     complete = complete and not partition_errors
     if not complete:
         failures += ("announcements:window_incomplete",)
@@ -1033,6 +1050,14 @@ def _build_snapshot(code: str, now: datetime, inputs: _SnapshotRows, shared: _Sn
         unlock_coverage_end=date.fromisoformat(shared.unlock_snapshot[1]) if shared.unlock_snapshot else None,
     )
     return snapshot
+
+
+def _coverage_complete(ranges: Sequence[sqlite3.Row], start: date, end: date) -> bool:
+    frontier = start
+    for row in ranges:
+        if date.fromisoformat(row[0]) <= frontier:
+            frontier = max(frontier, date.fromisoformat(row[1]) + timedelta(days=1))
+    return frontier > end
 
 
 class SQLiteCompanyEvidenceReader:

@@ -64,7 +64,7 @@ PUBLICATION_COLUMNS = (
     "published_at",
 )
 COMPANY_FACTS_SCHEMA = "company_facts"
-COMPANY_EXTRACTION_IDENTITY = "official_company_events"
+COMPANY_EXTRACTION_IDENTITY = "subject_bound_company_evidence"
 
 SqlValue = str | float | int | None
 

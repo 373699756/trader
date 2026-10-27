@@ -9,7 +9,7 @@ import pytest
 from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_events import CompanyDataState
-from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
+from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -242,7 +242,9 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     configuration = replace(fixtures._TEST_COMPANY_CONFIGURATION, document_failure_retry_seconds=10)
     deps = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
     first = fixtures._sync_company_evidence(deps, ("600001",), NOW, configuration=configuration)
-    index = SQLiteCompanyEvidenceIndex(index.path)
+    index = SQLiteCompanyEvidenceIndex(
+        index.path, listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),)
+    )
     deps = replace(deps, index=index)
     second = fixtures._sync_company_evidence(deps, ("600001",), NOW, configuration=configuration)
     assert source.attempts == 1 and first.pending_documents == second.pending_documents == 1

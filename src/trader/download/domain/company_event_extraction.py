@@ -57,6 +57,13 @@ _OFFICIAL_SOURCES = frozenset(
     }
 )
 _CASE = re.compile(r"(?:证监立案字|[〔（(【]\d{4}[〕）)】])[\w—\-]{1,30}号")
+_SUBJECT_MARKERS = (
+    ("控股股东", CompanySubject.CONTROLLING_SHAREHOLDER),
+    ("实际控制人", CompanySubject.ACTUAL_CONTROLLER),
+    ("持股5%以上", CompanySubject.MAJOR_SHAREHOLDER),
+    ("5%以上股东", CompanySubject.MAJOR_SHAREHOLDER),
+    ("大股东", CompanySubject.MAJOR_SHAREHOLDER),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +115,7 @@ def ExtractCompanyEvents(
         if verified is None:
             continue
         checked += 1
-        resolved = _resolve_risks(risks, document, verified.title, verified.body, policy)
+        resolved = _resolve_risks(risks, verified, policy)
         if _risk_closure(verified.title):
             if not resolved:
                 reviews.append(_review(document, observed_at, "risk", "resolution_unlinked", "解除公告未关联原事件"))
@@ -160,21 +167,32 @@ def _confirm_risks(
 ) -> list[CompanyReviewReason]:
     document = verified.document
     categories = _risk_categories(verified.title)
-    body_categories = _risk_categories(verified.body)
+    body = _subject_body(verified)
     reviews: list[CompanyReviewReason] = []
     for category in categories:
-        if _negated(verified.body, category):
+        clauses = re.split(r"[。；;！？!?，,]", body)
+        positive = "；".join(clause for clause in clauses if not _negated(clause, category))
+        negated = any(_negated(clause, category) for clause in clauses)
+        confirmed = category in _risk_categories(positive) and _risk_authority(positive, category)
+        if len(set(_CASE.findall(body))) > 1 or negated and confirmed:
+            reviews.append(
+                _review(
+                    document, observed_at, "risk", "case_conclusion_ambiguous", "同一主体的案件或肯否结论无法唯一绑定"
+                )
+            )
+            continue
+        if negated:
             if any(document.disclosure.identity in event.evidence_ids for event in risks):
                 reviews.append(
                     _review(document, observed_at, "risk", "revision_pending", "更正结论待核实，保留已确认风险")
                 )
             continue
-        if category not in body_categories or not _risk_authority(verified.body, category):
+        if not confirmed:
             reviews.append(
                 _review(document, observed_at, "risk", "conclusion_unverified", "标题与正式正文结论未形成一致证据")
             )
             continue
-        _append_risk(risks, verified, category, policy)
+        _append_risk(risks, replace(verified, body=body), category, policy)
     # Ordinary reduction progress and general reminders do not invent new hard facts.
     if not categories and any(
         marker in verified.title
@@ -235,6 +253,7 @@ def _append_risk(
             x
             for x in risks
             if x.risk_type is category
+            and x.subject_type is verified.subject
             and (
                 item.identity in x.evidence_ids
                 or case_id is not None
@@ -333,12 +352,20 @@ def _reduction_plan(body: str) -> ReductionPlan | None:
     return ReductionPlan(start, end) if start <= end else None
 
 
-def _resolve_risks(
-    risks: list[CompanyRiskEvent], document: CompanyDocument, title: str, body: str, policy: CompanyEventPolicy
-) -> bool:
+def _resolve_risks(risks: list[CompanyRiskEvent], verified: _VerifiedDocument, policy: CompanyEventPolicy) -> bool:
+    document, title, body = verified.document, verified.title, _subject_body(verified)
+    if any(marker in body for marker in ("尚未", "未解除", "未终止", "未结案", "未完成")):
+        return False
+    case_ids = set(_CASE.findall(body))
+    if len(case_ids) > 1:
+        return False
     matched = False
     for index, event in enumerate(risks):
+        if event.subject_type is not verified.subject:
+            continue
         if event.risk_type not in _risk_closure(title) or event.risk_type not in _risk_closure(body):
+            continue
+        if event.case_id and case_ids and event.case_id not in case_ids:
             continue
         if not (_references(body, event.evidence_ids) or event.case_id and event.case_id in _CASE.findall(body)):
             continue
@@ -381,7 +408,7 @@ def _append_positive(
     policy: CompanyEventPolicy,
 ) -> str | None:
     item = verified.document.disclosure
-    body = verified.body
+    body = _subject_body(verified)
     previous = next(
         (
             x
@@ -446,7 +473,7 @@ def _append_positive(
 def _positive_measurements(
     verified: _VerifiedDocument, kind: CompanyPositiveType
 ) -> tuple[CompanyMeasurements, float | None, bool]:
-    body = verified.body
+    body = _subject_body(verified)
     measurements: CompanyMeasurements
     if kind is CompanyPositiveType.OPERATING_CONTRACT:
         measurements = _contract(body, verified.document.disclosure.published_at)
@@ -477,17 +504,35 @@ def _positive_measurements(
 
 def _actual_ratio(body: str, verb: str) -> float | None:
     pattern = rf"(?:累计|已)(?:实际|通过[^。；]{{0,30}})?{verb}[^。；]{{0,140}}?占(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的比例)?(?:为|约为|为约)?[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
-    values = {float(x) for x in re.findall(pattern, body)}
+    # The measurement must describe the same actual action, without crossing a plan or negation.
+    values = {
+        float(match[1])
+        for match in re.finditer(pattern, body)
+        if not any(marker in match[0] for marker in ("拟", "计划", "预计", "将", "尚未", "未实施"))
+        and not re.search(r"(?:未|不|尚未)$", body[max(0, match.start() - 3) : match.start()])
+    }
     return next(iter(values)) if len(values) == 1 and all(0 <= x <= 100 for x in values) else None
 
 
 def _contract(body: str, published: datetime) -> ContractMeasurements:
     binding = any(
         x in body for x in ("合同已生效", "合同自签署之日起生效", "已签订正式合同", "已签署正式合同")
-    ) and not any(x in body for x in ("框架协议", "意向协议", "中标候选"))
-    amount = re.search(r"合同(?:总)?金额(?:为|约为)?人民币([0-9]+(?:\.[0-9]+)?)(亿|万)?元", body)
-    revenue = re.search(r"(20[0-9]{2})年度(?:经审计的)?营业收入(?:为|合计)?人民币([0-9]+(?:\.[0-9]+)?)(亿|万)?元", body)
-    comparable = "不含税" in body and amount is not None and revenue is not None and int(revenue[1]) < published.year
+    ) and not any(x in body for x in ("框架协议", "意向协议", "中标候选", "尚未生效"))
+    binding = binding and re.search(r"(?:尚需|须经|需经)[^。；]{0,40}生效", body) is None
+    amount = _single_measurement(
+        r"合同(?:总)?金额(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?人民币([0-9]+(?:\.[0-9]+)?)(亿|万)?元", body
+    )
+    revenue = _single_measurement(
+        r"(20[0-9]{2})年度(?:经审计的)?营业收入(?:为|合计)?人民币([0-9]+(?:\.[0-9]+)?)(亿|万)?元", body
+    )
+    disclosed = _annual_report_disclosure(body, int(revenue[1]), published) if revenue else None
+    comparable = (
+        amount is not None
+        and revenue is not None
+        and _net_measurement(body, amount)
+        and _net_measurement(body, revenue)
+        and disclosed is not None
+    )
     contract_amount = float(amount[1]) * _amount_unit(amount[2]) if amount else None
     annual_revenue = float(revenue[2]) * _amount_unit(revenue[3]) if revenue else None
     ratio = (
@@ -499,11 +544,38 @@ def _contract(body: str, published: datetime) -> ContractMeasurements:
         contract_amount,
         annual_revenue,
         date(int(revenue[1]), 12, 31) if revenue else None,
-        published if revenue else None,
+        disclosed,
         ratio,
         binding,
         "comparable" if comparable else "unknown",
     )
+
+
+def _single_measurement(pattern: str, body: str) -> re.Match[str] | None:
+    matches = tuple(re.finditer(pattern, body))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _net_measurement(body: str, match: re.Match[str]) -> bool:
+    start = max(body.rfind(separator, 0, match.start()) for separator in ("；", "。", "，", ",")) + 1
+    ends = tuple(body.find(separator, match.end()) for separator in ("；", "。", "，", ","))
+    end = min((position for position in ends if position >= 0), default=len(body))
+    clause = body[start:end]
+    return "不含税" in clause and "含税" not in clause.replace("不含税", "")
+
+
+def _annual_report_disclosure(body: str, year: int, published: datetime) -> datetime | None:
+    match = _single_measurement(
+        rf"(?:{year}年?年度报告|该年度报告|上述年度报告)于(20\d{{2}})[年/-](\d{{1,2}})[月/-](\d{{1,2}})日?(?:披露|公告)",
+        body,
+    )
+    if match is None:
+        return None
+    try:
+        disclosed = datetime(int(match[1]), int(match[2]), int(match[3]), tzinfo=published.tzinfo)
+    except ValueError:
+        return None
+    return disclosed if date(year, 12, 31) < disclosed.date() and disclosed.date() < published.date() else None
 
 
 def _amount_unit(unit: str | None) -> int:
@@ -511,16 +583,31 @@ def _amount_unit(unit: str | None) -> int:
 
 
 def _subject(title: str, body: str) -> CompanySubject | None:
-    for marker, subject in (
-        ("控股股东", CompanySubject.CONTROLLING_SHAREHOLDER),
-        ("实际控制人", CompanySubject.ACTUAL_CONTROLLER),
-        ("持股5%以上", CompanySubject.MAJOR_SHAREHOLDER),
-        ("5%以上股东", CompanySubject.MAJOR_SHAREHOLDER),
-        ("大股东", CompanySubject.MAJOR_SHAREHOLDER),
-    ):
-        if marker in title and marker in body:
-            return subject
+    subjects = {subject for marker, subject in _SUBJECT_MARKERS if marker in title and marker in body}
+    if subjects:
+        return next(iter(subjects)) if len(subjects) == 1 else None
+    if any(marker in body for marker, _ in _SUBJECT_MARKERS):
+        return None
     return CompanySubject.ISSUER if any(x in body for x in ("本公司", "公司收到", "公司已", "公司于")) else None
+
+
+def _subject_body(verified: _VerifiedDocument) -> str:
+    current: CompanySubject | None = None
+    selected: list[str] = []
+    parts = re.split(r"([。；;！？!?，,\n])", verified.body)
+    for offset in range(0, len(parts), 2):
+        clause = parts[offset]
+        text = re.sub(r"(?:本公司|上市公司|公司)的?(?=控股股东|实际控制人|持股5%以上|5%以上股东|大股东)", "", clause)
+        subjects = {subject for marker, subject in _SUBJECT_MARKERS if marker in text}
+        if any(marker in text for marker in ("本公司", "上市公司", "公司收到", "公司已", "公司于", "公司未", "公司不")):
+            subjects.add(CompanySubject.ISSUER)
+        if subjects:
+            current = next(iter(subjects)) if len(subjects) == 1 else None
+        if current is verified.subject and clause:
+            selected.append(clause)
+            if offset + 1 < len(parts):
+                selected.append(parts[offset + 1])
+    return "".join(selected)
 
 
 def _unrelated_subject(title: str) -> bool:
@@ -536,7 +623,14 @@ def _risk_authority(body: str, category: CompanyRiskType) -> bool:
 def _negated(body: str, category: CompanyRiskType) -> bool:
     terms = {
         CompanyRiskType.FINANCIAL_FRAUD: ("不存在财务造假", "不存在虚假记载"),
-        CompanyRiskType.OFFICIAL_INVESTIGATION: ("未被立案", "不涉及立案"),
+        CompanyRiskType.OFFICIAL_INVESTIGATION: (
+            "未被立案",
+            "未收到立案",
+            "不涉及立案",
+            "未立案",
+            "不予立案",
+            "不存在立案",
+        ),
         CompanyRiskType.FUND_OCCUPATION: ("不存在资金占用",),
         CompanyRiskType.ILLEGAL_GUARANTEE: ("不存在违规担保", "不存在违法担保"),
         CompanyRiskType.MAJOR_ILLEGAL: ("不存在重大违法",),

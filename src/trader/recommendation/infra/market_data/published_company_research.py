@@ -207,7 +207,11 @@ class PublishedCompanyResearch:
                 original = self._epoch.observations.get(code) if self._epoch is not None else None
                 if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
                     original = None
-                item = _qualified(original, now, required) if original is not None else None
+                item = (
+                    _qualified(original, now, required, self._company_policy.events.unlock_days)
+                    if original is not None
+                    else None
+                )
                 if item is None or not _action_ready(item):
                     if action_restrictions is not None:
                         action_restrictions.setdefault(code, set()).add("research_data_degraded")
@@ -232,7 +236,7 @@ class PublishedCompanyResearch:
         required = self._required_coverage(now)
         with self._lock:
             rows = tuple(
-                _qualified(item, now, required)
+                _qualified(item, now, required, self._company_policy.events.unlock_days)
                 for item in (self._epoch.observations.values() if self._epoch is not None else ())
             )
             coverages = tuple(ResearchComponentCoverage(item) for item in rows)
@@ -331,7 +335,10 @@ def _action_ready(item: ResearchObservation) -> bool:
     )
 
 
-def _qualified(item: ResearchObservation, now: datetime, required: date | None) -> ResearchObservation:
+def _qualified(
+    item: ResearchObservation, now: datetime, required: date | None, unlock_days: int
+) -> ResearchObservation:
+    item = _qualified_unlock(item, now, unlock_days)
     fresh = (
         required is not None
         and item.risk_window_end is not None
@@ -350,6 +357,41 @@ def _qualified(item: ResearchObservation, now: datetime, required: date | None) 
         unlock_ratio_pct=None,
         news_queried=False,
         source_errors=tuple(sorted(set((*item.source_errors, "risk_coverage:stale")))),
+    )
+
+
+def _qualified_unlock(item: ResearchObservation, now: datetime, days: int) -> ResearchObservation:
+    context = item.company_context
+    complete = (
+        context is not None
+        and context.facts.unlock_state is CompanyDataState.COMPLETE
+        and context.facts.unlock_checked_at is not None
+        and context.facts.unlock_checked_at <= now
+        and item.unlock_window_start is not None
+        and item.unlock_window_start <= now.date()
+        and item.unlock_window_end is not None
+        and item.unlock_window_end >= now.date() + timedelta(days=days)
+    )
+    errors = tuple(error for error in item.source_errors if error != "unlock:coverage_incomplete")
+    if not complete:
+        errors = (*errors, "unlock:coverage_incomplete")
+    ratio = (
+        min(
+            100.0,
+            sum(
+                entry.ratio_pct
+                for entry in context.facts.unlock_schedule
+                if now.date() <= entry.day <= now.date() + timedelta(days=days)
+            ),
+        )
+        if complete and context is not None
+        else None
+    )
+    return replace(
+        item,
+        unlock_ratio_pct=ratio,
+        company_context=replace(context, coverage_current=context.coverage_current and complete) if context else None,
+        source_errors=errors,
     )
 
 
@@ -413,7 +455,7 @@ def _observation(
     errors = tuple(
         sorted({f"{item.scope}:{item.reason_code}" for item in snapshot.review_reasons if item.scope != "positive"})
     )
-    return ResearchObservation(
+    observation = ResearchObservation(
         company_context=BuildCompanyScoringContext(snapshot, open_dates, policy),
         data_version=publication,
         snapshot_at=ShanghaiNow(snapshot.published_at),
@@ -429,16 +471,6 @@ def _observation(
         and snapshot.pledge.day <= now.date()
         and snapshot.pledge_state is CompanyDataState.COMPLETE
         else None,
-        unlock_ratio_pct=min(
-            100.0,
-            sum(
-                item.ratio_pct
-                for item in snapshot.unlock_schedule
-                if now.date() <= item.day <= now.date() + timedelta(days=180)
-            ),
-        )
-        if snapshot.unlock_state is CompanyDataState.COMPLETE
-        else None,
         unlock_window_start=snapshot.checked_at.date(),
         unlock_window_end=snapshot.unlock_coverage_end,
         corporate_risk_facts=facts,
@@ -449,6 +481,7 @@ def _observation(
         evidence=evidence,
         source_errors=errors,
     )
+    return _qualified_unlock(observation, now, policy.events.unlock_days)
 
 
 __all__ = ["CompanyEvidenceReadPort", "PublishedCompanyResearch"]

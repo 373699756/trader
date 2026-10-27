@@ -85,6 +85,15 @@ class DisclosureCoverageMismatch(ValueError):
 
 
 @dataclass(frozen=True)
+class CompanyListing:
+    code: str
+    listed_on: date
+
+    def __post_init__(self) -> None:
+        EvidenceMarket(self.code)
+
+
+@dataclass(frozen=True)
 class CompanyEvidenceRequest:
     codes: tuple[str, ...]
     observed_at: datetime
@@ -92,10 +101,15 @@ class CompanyEvidenceRequest:
     news_codes: tuple[str, ...] = ()
     stock_names: tuple[tuple[str, str], ...] = ()
     event_policy: CompanyEventPolicy = CompanyEventPolicy()
+    listings: tuple[CompanyListing, ...] = ()
 
     def __post_init__(self) -> None:
         if self.observed_at.utcoffset() is None:
             raise ValueError("company_evidence_request_invalid")
+        if len({item.code for item in self.listings}) != len(self.listings) or any(
+            item.code not in self.codes or item.listed_on > self.observed_at.date() for item in self.listings
+        ):
+            raise ValueError("company_listing_identity_invalid")
 
 
 @dataclass(frozen=True)
@@ -384,6 +398,7 @@ __all__ = [
     "CompanySyncConfiguration",
     "CompanyDocumentLimits",
     "CompanyEvidenceRequest",
+    "CompanyListing",
     "StructuredCompanyQuery",
     "CompanyDocument",
     "DocumentRetry",

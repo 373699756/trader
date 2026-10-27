@@ -14,6 +14,7 @@ from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
+    CompanyListing,
     CompanyRatio,
     CompanySourceFailure,
     CompanySyncConfiguration,
@@ -83,7 +84,10 @@ class Sources:
 
 
 def _index(tmp_path):
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "company_evidence.sqlite3")
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "company_evidence.sqlite3",
+        listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),),
+    )
     index.initialize()
     return index
 
