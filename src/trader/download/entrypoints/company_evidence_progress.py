@@ -104,9 +104,12 @@ class CompanyEvidenceProgress:
         if progress.status == "running" and previous is not None and progress.component == previous.component:
             reported = set(previous.failure.split(","))
             failure = ",".join(item for item in failure.split(",") if item and item not in reported)
+        stock = _stock(progress)
+        announcement_stock = stock if progress.component == "announcements" else ""
+        other_stock = "" if progress.component == "announcements" else stock
         print(
-            f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
-            + _stock(progress)
+            f"sync company | {labels[progress.component]}{announcement_stock} | {_counts(progress, units[progress.component])}"
+            + other_stock
             + (self._summary(progress.completed) if progress.component == "complete" else "")
             + (" | 补查历史发行人（保留已完成页）" if progress.activity == "repair" else "")
             + f" | 成功页 {progress.fetched_pages} | 变更行 {progress.changed_rows} | "

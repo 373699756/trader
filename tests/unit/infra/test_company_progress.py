@@ -97,6 +97,7 @@ def test_announcement_progress_separates_complete_dates_current_pages_and_stage_
     output = stream.getvalue().splitlines()[-1]
     assert "本轮涉及公告 2/4401 股" in output
     assert "最近处理公告目录 600001 示例" in output
+    assert output.index("公告增量下载") < output.index("最近处理公告目录 600001 示例") < output.index("本轮涉及公告")
     assert "本轮该股页记录 12 篇 | 正文分析未开始" in output
     assert "已分析" not in output and "待分析" not in output and "事件待核验" not in output
     assert "第3/4页" not in output and "证券组" not in output and "分片" not in output
