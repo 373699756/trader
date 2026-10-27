@@ -517,6 +517,7 @@ def _documents(
     started: float,
 ) -> None:
     index = dependencies.index
+    state.current_stock = None
     _report(dependencies, "risk_documents", state, None, completed=0)
     pending_documents = deque(_unique_documents(index.pending_documents(population, observed_at)))
     total = len(pending_documents)

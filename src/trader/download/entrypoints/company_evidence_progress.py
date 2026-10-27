@@ -143,7 +143,7 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
         return f"进度 {progress.completed}/? {unit}（总数待确认）"
     if progress.component == "announcements":
         return (
-            f"已获取公告 {progress.stock.processed}/{progress.stock.total} 股（覆盖核验中）"
+            f"本轮涉及公告 {progress.stock.processed}/{progress.stock.total} 股（覆盖核验中）"
             if progress.stock is not None
             else "正在定位待补公告，股票总进度待核验"
         )
@@ -167,6 +167,10 @@ def _stock(progress: EvidenceSyncProgress) -> str:
     stock = progress.stock
     if stock is None:
         return ""
+    if progress.component == "announcements":
+        return (
+            f" | 最近处理公告目录 {stock.code} {stock.name} | 本轮该股页记录 {stock.announcements} 篇 | 正文分析未开始"
+        )
     return (
         f" | 当前 {stock.code} {stock.name} | 公告 {stock.announcements} 篇"
         f" | 已分析 {stock.analyzed} 篇 | 待分析 {stock.pending} 篇"
