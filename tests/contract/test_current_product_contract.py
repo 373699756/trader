@@ -50,7 +50,8 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     assert "GET /api/status" in operations
     assert "chokepoint/future_growth/low_price_potential" in operations
     storage = (ROOT / "docs/4_下载训练.md").read_text(encoding="utf-8")
-    assert "deepseek_budget.sqlite3" in storage
+    assert "runtime_dir/deepseek/state.json" in storage
+    assert "deepseek_budget.sqlite3" not in storage
     for public_command in (
         "./run.sh sync",
         "./run.sh train",

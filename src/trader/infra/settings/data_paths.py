@@ -44,10 +44,6 @@ class DataPaths:
     def samples(self) -> Path:
         return self.root / "training/samples"
 
-    @property
-    def budget(self) -> Path:
-        return self.root / "recommendation/shared/deepseek_budget.sqlite3"
-
     def recommendation(self, profile: str) -> Path:
         _validate_profile(profile)
         return self.root / "recommendation" / profile

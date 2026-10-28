@@ -60,6 +60,7 @@ class _ReviewerRequiredOptions(TypedDict):
 
 
 class _ReviewerOptionalOptions(TypedDict, total=False):
+    profile: str
     now: Callable[[], datetime]
     monotonic: Callable[[], float]
 
@@ -149,6 +150,7 @@ class DeepSeekReviewer:
             confidence_coverage_min=strategy.fusion.confidence_coverage_min,
             minimum_known_dimensions=strategy.fusion.minimum_known_dimensions,
             now=context.now,
+            profile=strategy.scoring_profile,
         )
 
     def __init__(
@@ -174,6 +176,7 @@ class DeepSeekReviewer:
         self._confidence_coverage_min = confidence_coverage_min
         self._minimum_known_dimensions = minimum_known_dimensions
         self._now = now
+        self._profile = options.get("profile", "v2")
         context = ReviewerContext(
             settings=settings,
             budget=budget,
@@ -258,6 +261,7 @@ class DeepSeekReviewer:
         self._status.start(strategy, phase, len(unique_candidates))
         batch_id = self._budget.begin_batch(
             BudgetBatchRequest(
+                profile=self._profile,
                 strategy=strategy,
                 phase=phase,
                 bucket=planned_bucket,

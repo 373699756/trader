@@ -14,7 +14,6 @@ from tests.unit.infra.test_issuer_eligibility_index import _fact
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFactHash, ManualBlacklistFact
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 
@@ -92,7 +91,7 @@ def test_uncheckpointed_source_never_publishes_or_changes_source(tmp_path):
     assert _fingerprint(source) == before
 
 
-def test_budget_rows_survive_merge_and_sequences_require_fresh_generation(tmp_path):
+def test_old_budget_and_sequences_are_not_imported(tmp_path):
     source = _source(tmp_path)
     runtime = source / ".runtime/trader"
     for index, root in enumerate((runtime, runtime / "profiles/v2")):
@@ -105,8 +104,7 @@ def test_budget_rows_survive_merge_and_sequences_require_fresh_generation(tmp_pa
         sequence.allocate(minimum=100 * (index + 1))
     target = tmp_path / "candidate"
     migrate(source, target, default_profile="v2")
-    with SqliteSession(target / "recommendation/shared/deepseek_budget.sqlite3") as connection:
-        assert connection.run("SELECT SUM(used) FROM calls").require_one()[0] == 168
+    assert not (target / "recommendation/shared/deepseek_budget.sqlite3").exists()
     assert not (target / "recommendation/v2").exists()
 
 
@@ -121,31 +119,6 @@ def test_conflicting_budget_identity_stops_instead_of_resetting(tmp_path):
     with pytest.raises(ValueError, match="identity_conflict"):
         MergeDatabase(second, target)
     assert target.read_bytes() == before
-
-
-def test_real_budget_reservations_keep_the_global_168_limit_after_merge(tmp_path):
-    source = _source(tmp_path)
-    runtime = source / ".runtime/trader"
-
-    def ledger(path):
-        result = DeepSeekBudgetLedger(
-            path,
-            daily_hard_limit=168,
-            strategy_limits={"tomorrow": 168, "d25": 0, "shared_preheat": 0, "emergency": 0},
-            stage_targets={"tomorrow_morning": 0},
-            stage_limits={"tomorrow_morning": 168},
-        )
-        result.initialize()
-        return result
-
-    for root in (runtime, runtime / "profiles/v3"):
-        budget = ledger(root / "deepseek-budget.sqlite3")
-        for _ in range(84):
-            assert budget.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW).allowed
-    target = tmp_path / "candidate"
-    migrate(source, target, default_profile="v2")
-    merged = ledger(target / "recommendation/shared/deepseek_budget.sqlite3")
-    assert not merged.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW).allowed
 
 
 def test_existing_target_and_repository_paths_are_rejected(tmp_path):

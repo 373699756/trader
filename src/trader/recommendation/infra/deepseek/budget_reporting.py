@@ -1,17 +1,12 @@
-"""Read-only DeepSeek budget and outcome aggregation."""
+"""Read-only projection from the one immutable budget state."""
 
-from __future__ import annotations
-
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager
+from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
-from trader.infra.sqlite_connection import SqliteConnection
-from trader.recommendation.domain.publication.models import Strategy
-
-_BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
-_CALL_TERMINALS = frozenset({"success", "failed", "abandoned"})
-_CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
+from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
+from trader.recommendation.infra.deepseek.budget_state import BudgetBatch, BudgetHealth, BudgetState
 
 
 @dataclass(frozen=True)
@@ -22,154 +17,67 @@ class BudgetReportingConfig:
     stage_limits: Mapping[str, int]
 
 
-class BudgetSummaryReader:
-    def __init__(
-        self,
-        connect: Callable[[], AbstractContextManager[SqliteConnection]],
-        initialized: Callable[[], bool],
-        config: BudgetReportingConfig,
-    ) -> None:
-        self._connect = connect
-        self._initialized = initialized
-        self._daily_hard_limit = config.daily_hard_limit
-        self._daily_target = config.daily_target
-        self._stage_targets = dict(config.stage_targets)
-        self._stage_limits = dict(config.stage_limits)
-        self._normal_limit = sum(limit for stage, limit in self._stage_limits.items() if stage != "emergency")
-        self._planned_limit = sum(self._stage_limits.values())
-
-    def summary(self, day: str) -> dict[str, object]:
-        if not self._initialized():
-            return self.empty_summary()
-        with self._connect() as connection:
-            rows = connection.run(
-                """
-                SELECT bucket, strategy, stage_key, status, COUNT(*)
-                FROM deepseek_call_reservations
-                WHERE trade_date = ?
-                GROUP BY bucket, strategy, stage_key, status
-                """,
-                (day,),
-            ).fetchall()
-            batch_rows = connection.run(
-                """
-                SELECT status, COUNT(*) FROM deepseek_review_batches
-                WHERE trade_date = ? GROUP BY status
-                """,
-                (day,),
-            ).fetchall()
-            candidate_rows = connection.run(
-                """
-                SELECT r.outcome, COUNT(*)
-                FROM deepseek_candidate_results AS r
-                JOIN deepseek_review_batches AS b ON b.batch_id = r.batch_id
-                WHERE b.trade_date = ? GROUP BY r.outcome
-                """,
-                (day,),
-            ).fetchall()
-            acceptance_row = connection.run(
-                """
-                SELECT
-                    SUM(CASE WHEN http_status = 429 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN timed_out = 1 THEN 1 ELSE 0 END),
-                    SUM(token_count)
-                FROM deepseek_call_reservations WHERE trade_date = ?
-                """,
-                (day,),
-            ).require_one()
-            role_rows = connection.run(
-                "SELECT model_role, COUNT(*) FROM deepseek_call_reservations WHERE trade_date = ? GROUP BY model_role",
-                (day,),
-            ).fetchall()
-        by_bucket: dict[str, int] = {}
-        by_strategy: dict[str, int] = {}
-        by_stage_count: dict[str, int] = {}
-        by_status: dict[str, int] = {}
-        for bucket, strategy, stage, status, count in rows:
-            amount = int(count)
-            by_bucket[str(bucket)] = by_bucket.get(str(bucket), 0) + amount
-            by_stage_count[str(stage)] = by_stage_count.get(str(stage), 0) + amount
-            by_status[str(status)] = by_status.get(str(status), 0) + amount
-            if str(bucket) in {item.value for item in Strategy} or str(bucket) == "emergency":
-                by_strategy[str(strategy)] = by_strategy.get(str(strategy), 0) + amount
-        used = sum(by_bucket.values())
-        normal_used = used - by_bucket.get("emergency", 0)
-        by_stage = {
-            stage: {
-                "used": by_stage_count.get(stage, 0),
-                "target": self._stage_targets[stage],
-                "limit": self._stage_limits[stage],
-                "remaining": max(0, self._stage_limits[stage] - by_stage_count.get(stage, 0)),
-                "target_met": by_stage_count.get(stage, 0) >= self._stage_targets[stage],
+def ProjectBudgetSummary(
+    state: BudgetState | None,
+    transient: tuple[BudgetBatch, ...],
+    day: str,
+    config: BudgetReportingConfig,
+    error: str,
+) -> JsonObject:
+    requests = tuple(item for item in state.requests if item.budget_date.isoformat() == day) if state else ()
+    batches = tuple(item for item in (*state.review_batches, *transient) if item.budget_date.isoformat() == day) if state else tuple(
+        item for item in transient if item.budget_date.isoformat() == day
+    )
+    by_bucket = Counter(item.bucket for item in requests)
+    by_stage = Counter(item.stage for item in requests)
+    by_status = Counter(item.status for item in requests)
+    batch_status = Counter(item.status for item in batches)
+    used = len(requests)
+    normal_limit = sum(limit for stage, limit in config.stage_limits.items() if stage != "emergency")
+    normal_used = used - by_bucket.get("emergency", 0)
+    planned_limit = sum(config.stage_limits.values())
+    health = state.health_state if state and state.budget_date.isoformat() == day else BudgetHealth()
+    return FreezeJsonObject(cast(dict[str, JsonInput], {
+        "available": not error,
+        "error": error,
+        "budget_date": state.budget_date.isoformat() if state else None,
+        "revision": state.revision if state else 0,
+        "budget_policy_hash": state.budget_policy_hash if state else "",
+        "used": used,
+        "remaining": max(0, config.daily_hard_limit - used) if not error else 0,
+        "target": config.daily_target,
+        "target_met": all(by_stage[name] >= target for name, target in config.stage_targets.items() if name != "emergency"),
+        "normal_limit": normal_limit,
+        "normal_used": normal_used,
+        "normal_remaining": max(0, normal_limit - normal_used) if not error else 0,
+        "planned_limit": planned_limit,
+        "planned_remaining": max(0, planned_limit - used) if not error else 0,
+        "by_bucket": dict(by_bucket),
+        "by_strategy": dict(Counter(item.strategy for item in requests if item.bucket != "shared_preheat")),
+        "by_stage": {
+            name: {
+                "used": by_stage[name], "target": config.stage_targets[name], "limit": limit,
+                "remaining": max(0, limit - by_stage[name]) if not error else 0,
+                "target_met": by_stage[name] >= config.stage_targets[name],
             }
-            for stage in self._stage_limits
-        }
-        target_met = all(
-            by_stage_count.get(stage, 0) >= target
-            for stage, target in self._stage_targets.items()
-            if stage != "emergency"
-        )
-        return {
-            "used": used,
-            "remaining": max(0, self._daily_hard_limit - used),
-            "target": self._daily_target,
-            "target_met": target_met,
-            "normal_limit": self._normal_limit,
-            "normal_used": normal_used,
-            "normal_remaining": max(0, self._normal_limit - normal_used),
-            "planned_limit": self._planned_limit,
-            "planned_remaining": max(0, self._planned_limit - used),
-            "by_bucket": by_bucket,
-            "by_strategy": by_strategy,
-            "by_stage": by_stage,
-            "by_status": by_status,
-            "call_status": {name: by_status.get(name, 0) for name in ("reserved", *sorted(_CALL_TERMINALS))},
-            "batch_status": {
-                name: dict((str(status), int(count)) for status, count in batch_rows).get(name, 0)
-                for name in sorted(_BATCH_TERMINALS)
-            },
-            "candidate_outcomes": {
-                name: dict((str(outcome), int(count)) for outcome, count in candidate_rows).get(name, 0)
-                for name in sorted(_CANDIDATE_TERMINALS)
-            },
-            "by_model_role": {
-                role: dict((str(name), int(count)) for name, count in role_rows).get(role, 0)
-                for role in ("primary", "challenger")
-            },
-            "http_429_count": int(acceptance_row[0] or 0),
-            "timeout_count": int(acceptance_row[1] or 0),
-            "token_count": int(acceptance_row[2] or 0),
-        }
+            for name, limit in config.stage_limits.items()
+        },
+        "by_status": dict(by_status),
+        "call_status": {name: by_status[name] for name in ("reserved", "success", "failed", "abandoned")},
+        "batch_status": {name: batch_status[name] for name in ("running", "success", "partial", "failed", "skipped", "abandoned")},
+        "candidate_outcomes": {
+            "applied": sum(item.applied for item in batches), "abstain": sum(item.abstain for item in batches),
+            "rejected": sum(item.rejected for item in batches), "late": sum(item.late for item in batches),
+        },
+        "by_model_role": {"primary": used, "challenger": 0},
+        "http_429_count": sum(item.http_status == 429 for item in requests),
+        "timeout_count": sum(item.timed_out for item in requests),
+        "token_count": sum(item.token_count for item in requests),
+        "health": {
+            "mode": health.mode, "open_until": health.open_until.isoformat() if health.open_until else None,
+            "recovery_successes": health.recovery_successes, "reason": health.reason,
+        },
+    }))
 
-    def empty_summary(self) -> dict[str, object]:
-        return {
-            "used": 0,
-            "remaining": self._daily_hard_limit,
-            "target": self._daily_target,
-            "target_met": all(target <= 0 for stage, target in self._stage_targets.items() if stage != "emergency"),
-            "normal_limit": self._normal_limit,
-            "normal_used": 0,
-            "normal_remaining": self._normal_limit,
-            "planned_limit": self._planned_limit,
-            "planned_remaining": self._planned_limit,
-            "by_bucket": {},
-            "by_strategy": {},
-            "by_stage": {
-                stage: {
-                    "used": 0,
-                    "target": self._stage_targets[stage],
-                    "limit": self._stage_limits[stage],
-                    "remaining": self._stage_limits[stage],
-                    "target_met": self._stage_targets[stage] <= 0,
-                }
-                for stage in self._stage_limits
-            },
-            "by_status": {},
-            "call_status": {name: 0 for name in ("reserved", *sorted(_CALL_TERMINALS))},
-            "batch_status": {name: 0 for name in sorted(_BATCH_TERMINALS)},
-            "candidate_outcomes": {name: 0 for name in sorted(_CANDIDATE_TERMINALS)},
-            "by_model_role": {"primary": 0, "challenger": 0},
-            "http_429_count": 0,
-            "timeout_count": 0,
-            "token_count": 0,
-        }
+
+__all__ = ["BudgetReportingConfig", "ProjectBudgetSummary"]

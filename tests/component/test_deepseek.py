@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -13,11 +12,7 @@ from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.failures import AdapterFailureCode
 from trader.infra.http_contracts import HttpStatusError, HttpTimeout
 from trader.infra.settings import DeepSeekSettings
-from trader.infra.sqlite_connection import (
-    SqliteConnectionOptions,
-    SqliteSession,
-    SqliteTransaction,
-)
+from trader.infra.process_lock import ProcessLock
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
@@ -31,8 +26,8 @@ from trader.recommendation.domain.market.models import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.rules import Rating
-from trader.recommendation.infra.deepseek.budget import SCHEMA_VERSION as BUDGET_SCHEMA_VERSION
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.budget_file import BudgetStateFile
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
 from trader.recommendation.infra.deepseek.cache import ReviewCache, ReviewCacheStatus
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
@@ -59,14 +54,14 @@ def test_reviewer_translates_internal_failure_to_controlled_unavailable(
 ) -> None:
     reviewer = DeepSeekReviewer(
         _settings(),
-        _budget(tmp_path / "runtime.sqlite3"),
+        _budget(tmp_path / "state.json"),
         DeepSeekHttpClient(post=lambda *_args, **_kwargs: None, sleep=lambda _seconds: None),
         ReviewCache(),
         **_reviewer_policy(),
     )
 
     def fail(*_args, **_kwargs):
-        raise sqlite3.OperationalError("database unavailable")
+        raise OSError("state unavailable")
 
     monkeypatch.setattr(reviewer, "_review", fail)
 
@@ -78,7 +73,7 @@ def test_reviewer_translates_internal_failure_to_controlled_unavailable(
             deadline=NOW + timedelta(minutes=1),
         )
 
-    assert isinstance(captured.value.__cause__, sqlite3.OperationalError)
+    assert isinstance(captured.value.__cause__, OSError)
 
 
 def test_schema_accepts_only_current_v4_facts_and_maps_verified_risk() -> None:
@@ -278,89 +273,8 @@ def test_http_result_preserves_provider_identity_cache_usage_and_finish_reason()
     assert result.prompt_cache_miss_tokens == 8
 
 
-def test_budget_initialize_rejects_invalid_schema_without_rewriting(tmp_path) -> None:
-    database_path = tmp_path / "runtime.sqlite3"
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        connection.run("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        connection.run("INSERT INTO schema_meta(key, value) VALUES ('schema_version', 'N/A')")
-
-    ledger = DeepSeekBudgetLedger(
-        database_path,
-        daily_hard_limit=2,
-        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"tomorrow_morning": 0},
-        stage_limits={"tomorrow_morning": 2},
-    )
-    with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
-        ledger.initialize()
-
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        version = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
-
-    assert version is not None
-    assert version[0] == "N/A"
-
-
-def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
-    database_path = tmp_path / "fresh.sqlite3"
-
-    ledger = DeepSeekBudgetLedger(
-        database_path,
-        daily_hard_limit=2,
-        strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
-        stage_targets={"tomorrow_morning": 0},
-        stage_limits={"tomorrow_morning": 2},
-    )
-    ledger.initialize()
-
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        version = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
-
-    assert version is not None
-    assert int(str(version[0])) == BUDGET_SCHEMA_VERSION
-
-
-def test_budget_connection_context_closes_after_success_and_failure(tmp_path) -> None:
-    ledger = _budget(tmp_path / "runtime.sqlite3")
-
-    with ledger._connect() as successful_connection:
-        assert tuple(successful_connection.run("SELECT 1").fetchone()) == (1,)
-
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        successful_connection.run("SELECT 1")
-
-    with pytest.raises(RuntimeError, match="forced failure"):
-        with ledger._connect() as failed_connection:
-            raise RuntimeError("forced failure")
-
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        failed_connection.run("SELECT 1")
-
-
-def test_budget_summary_remains_memory_only_while_sqlite_is_exclusively_locked(tmp_path) -> None:
-    database_path = tmp_path / "runtime.sqlite3"
-    ledger = _budget(database_path)
-    expected = ledger.summary("2026-08-25")
-
-    with (
-        SqliteSession(database_path, SqliteConnectionOptions(timeout_seconds=0.0)) as blocker,
-        SqliteTransaction(blocker, immediate=True),
-    ):
-        assert ledger.summary("2026-08-25") == expected
-
-    assert expected["by_stage"] == {
-        "tomorrow_morning": {
-            "used": 0,
-            "target": 0,
-            "limit": 2,
-            "remaining": 2,
-            "target_met": True,
-        }
-    }
-
-
-def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked(tmp_path) -> None:
-    database_path = tmp_path / "runtime.sqlite3"
+def test_http_status_remains_available_without_state_file_io(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "state.json"
     budget = _budget(database_path)
     reviewer = DeepSeekReviewer(
         _settings(),
@@ -386,18 +300,16 @@ def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked
         )
     )
 
-    with (
-        SqliteSession(database_path, SqliteConnectionOptions(timeout_seconds=0.0)) as blocker,
-        SqliteTransaction(blocker, immediate=True),
-    ):
-        response = app.test_client().get("/api/status")
+    client = app.test_client()
+    monkeypatch.setattr(type(database_path), "open", Mock(side_effect=AssertionError("status must not read files")))
+    response = client.get("/api/status")
 
     assert response.status_code == 200
     assert response.get_json()["deepseek_budget"]["remaining"] == 2
 
 
 def test_budget_reservation_and_batch_roll_over_on_shanghai_midnight(tmp_path) -> None:
-    ledger = _budget(tmp_path / "runtime.sqlite3")
+    ledger = _budget(tmp_path / "state.json")
     after_midnight = datetime(2026, 8, 25, 16, 30, tzinfo=timezone.utc)
     reservation = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=after_midnight)
     batch_id = ledger.begin_batch(
@@ -415,17 +327,15 @@ def test_budget_reservation_and_batch_roll_over_on_shanghai_midnight(tmp_path) -
     assert reservation.allowed is True
     assert ledger.summary("2026-08-25")["used"] == 0
     assert ledger.summary("2026-08-26")["used"] == 1
-    with SqliteSession(tmp_path / "runtime.sqlite3") as connection, SqliteTransaction(connection):
-        assert tuple(
-            connection.run(
-                "SELECT trade_date FROM deepseek_review_batches WHERE batch_id = ?",
-                (batch_id,),
-            ).fetchone()
-        ) == ("2026-08-26",)
+    assert ledger.reserve(
+        Strategy.TOMORROW, phase="morning_main", requested_at=after_midnight, batch_id=batch_id
+    ).allowed
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["review_batches"][0]["budget_date"] == "2026-08-26"
 
 
-def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, monkeypatch) -> None:
-    budget = _budget(tmp_path / "runtime.sqlite3")
+def test_status_remains_read_only_when_budget_file_is_unavailable(tmp_path, monkeypatch) -> None:
+    budget = _budget(tmp_path / "state.json")
     reviewer = DeepSeekReviewer(
         _settings(),
         budget,
@@ -435,10 +345,8 @@ def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, 
         now=lambda: NOW,
     )
 
-    def fail_summary(_day: str) -> dict[str, object]:
-        raise sqlite3.OperationalError("unable to open database file")
-
-    monkeypatch.setattr(budget, "summary", fail_summary)
+    (tmp_path / "state.json").unlink()
+    assert not budget.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW).allowed
     history = Mock()
     history.load.return_value = None
     history.list_dates.return_value = ()
@@ -459,10 +367,8 @@ def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, 
 
     assert response.status_code == 200
     budget_status = response.get_json()["deepseek_budget"]
-    assert budget_status == {
-        "available": False,
-        "error": "budget_ledger_unavailable",
-    }
+    assert budget_status["available"] is False
+    assert budget_status["error"] == "budget_state_unwritable"
 
 
 def test_http_timeout_is_bounded_to_one_retry() -> None:
@@ -496,13 +402,14 @@ def test_http_timeout_is_bounded_to_one_retry() -> None:
 
 def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
-        tmp_path / "deepseek.sqlite3",
+        _state_file(tmp_path / "state.json"),
         daily_hard_limit=3,
         strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"tomorrow_morning": 0},
         stage_limits={"tomorrow_morning": 2},
     )
-    ledger.initialize()
+    ledger.initialize(NOW - timedelta(days=1))
+    ledger.initialize(NOW)
     barrier = threading.Barrier(5)
     allowed: list[bool] = []
 
@@ -522,7 +429,7 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
     assert summary["used"] == 2
     assert summary["by_status"] == {"reserved": 2}
     assert summary["call_status"] == {"reserved": 2, "abandoned": 0, "failed": 0, "success": 0}
-    assert ledger.abandon_reserved() == 2
+    assert ledger.recover_incomplete(NOW) == 2
     abandoned = ledger.summary(NOW.date().isoformat())
     assert abandoned["by_status"] == {"abandoned": 2}
     assert abandoned["call_status"] == {"reserved": 0, "abandoned": 2, "failed": 0, "success": 0}
@@ -530,13 +437,14 @@ def test_budget_is_atomic_under_concurrency(tmp_path) -> None:
 
 def test_budget_audits_shared_and_explicit_emergency_buckets(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
-        tmp_path / "deepseek.sqlite3",
+        _state_file(tmp_path / "state.json"),
         daily_hard_limit=3,
         strategy_limits={"tomorrow": 1, "d25": 0, "shared_preheat": 1, "emergency": 1},
         stage_targets={"shared_preheat": 0, "tomorrow_morning": 0, "emergency": 0},
         stage_limits={"shared_preheat": 1, "tomorrow_morning": 1, "emergency": 1},
     )
-    ledger.initialize()
+    ledger.initialize(NOW - timedelta(days=1))
+    ledger.initialize(NOW)
 
     shared = ledger.reserve(Strategy.TOMORROW, phase="warmup", requested_at=NOW, bucket="shared_preheat")
     normal = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW)
@@ -559,7 +467,7 @@ def test_budget_audits_shared_and_explicit_emergency_buckets(tmp_path) -> None:
 
 
 def test_call_audit_replaces_raw_failure_text_with_bounded_category(tmp_path) -> None:
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     ledger = _budget(database_path)
     reservation = ledger.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW)
 
@@ -570,9 +478,9 @@ def test_call_audit_replaces_raw_failure_text_with_bounded_category(tmp_path) ->
         completed_at=NOW + timedelta(seconds=1),
     )
 
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        audit = connection.run("SELECT outcome, error_code FROM deepseek_calls").fetchone()
-    assert tuple(audit) == ("failed", "request_failed")
+    text = database_path.read_text()
+    assert "sensitive upstream" not in text
+    assert json.loads(text)["requests"][0]["status"] == "failed"
 
 
 def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
@@ -626,15 +534,16 @@ def test_long_review_is_empty_and_does_not_reuse_deepseek_raw_cache(tmp_path) ->
             {"choices": [{"message": {"content": content}}], "usage": {"total_tokens": 12}},
         )
 
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     budget = DeepSeekBudgetLedger(
-        database_path,
+        _state_file(database_path),
         daily_hard_limit=1,
         strategy_limits={"tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
         stage_targets={"d25_afternoon": 0},
         stage_limits={"d25_afternoon": 1},
     )
-    budget.initialize()
+    budget.initialize(NOW - timedelta(days=1))
+    budget.initialize(NOW)
     settings = replace(
         _settings(),
         strategy_limits={"tomorrow": 0, "d25": 1, "shared_preheat": 0, "emergency": 0},
@@ -661,7 +570,7 @@ def test_long_review_is_empty_and_does_not_reuse_deepseek_raw_cache(tmp_path) ->
 @pytest.mark.parametrize("entrypoint", ("review", "preheat", "emergency"))
 def test_reviewer_injects_audit_metadata_when_disabled(tmp_path, entrypoint) -> None:
     candidate = _candidate_with_evidence()
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     budget = _budget(database_path)
     post = Mock(side_effect=AssertionError("should not call deepseek when disabled"))
     sleep = Mock(side_effect=AssertionError("should not retry deepseek when disabled"))
@@ -713,15 +622,13 @@ def test_reviewer_injects_audit_metadata_when_disabled(tmp_path, entrypoint) -> 
     assert review.actual_model is None
     assert review.thinking_mode == "standard"
     assert review.rating == Rating.NEUTRAL.value
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        assert tuple(
-            connection.run("SELECT status, physical_attempts, error FROM deepseek_review_batches").fetchone()
-        ) == ("skipped", 0, "disabled")
+    assert budget.summary(NOW.date().isoformat())["batch_status"]["skipped"] == 1
+    assert json.loads(database_path.read_text())["review_batches"] == []
 
 
 def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> None:
     candidate = _candidate_with_evidence()
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     budget = _budget(database_path)
     calls = 0
 
@@ -755,10 +662,8 @@ def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> Non
     assert status["configured"] is False
     assert status["last_physical_attempts"] == 0
     assert status["physical_call_acceptance"]["zero_call_reason"] == "api_key_missing"
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        assert tuple(
-            connection.run("SELECT status, physical_attempts, error FROM deepseek_review_batches").fetchone()
-        ) == ("skipped", 0, "api_key_missing")
+    assert budget.summary(NOW.date().isoformat())["batch_status"]["skipped"] == 1
+    assert json.loads(database_path.read_text())["review_batches"] == []
 
 
 def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
@@ -773,7 +678,7 @@ def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
             ),
         ]
     )
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     budget = _budget(database_path)
     reviewer = DeepSeekReviewer(
         _settings(),
@@ -792,15 +697,8 @@ def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
     )
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.REJECTED
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        attempts = connection.run(
-            "SELECT status, http_status, token_count FROM deepseek_call_reservations ORDER BY rowid"
-        ).fetchall()
-        audit = connection.run(
-            "SELECT outcome, http_status, total_tokens, error_code FROM deepseek_calls ORDER BY requested_at"
-        ).fetchall()
-    assert [tuple(row) for row in attempts] == [("failed", 429, 0)]
-    assert [tuple(row) for row in audit] == [("failed", 429, 0, "http_429")]
+    attempts = json.loads(database_path.read_text())["requests"]
+    assert [(item["status"], item["http_status"], item["token_count"]) for item in attempts] == [("failed", 429, 0)]
     summary = budget.summary(NOW.date().isoformat())
     assert summary["http_429_count"] == 1
     assert summary["token_count"] == 0
@@ -810,7 +708,7 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
     candidate = _candidate_with_evidence()
     deadline = NOW + timedelta(seconds=1)
     clock = MutableClock(NOW)
-    budget = _budget(tmp_path / "runtime.sqlite3")
+    budget = _budget(tmp_path / "state.json")
 
     def timeout(*_args, **_kwargs):
         raise HttpTimeout("slow")
@@ -836,9 +734,7 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
     assert budget.summary(NOW.date().isoformat())["used"] == 1
     assert budget.summary(NOW.date().isoformat())["timeout_count"] == 1
     assert reviewer.status()["last_batch_status"] == "failed"
-    with SqliteSession(tmp_path / "runtime.sqlite3") as connection, SqliteTransaction(connection):
-        call = connection.run("SELECT outcome, error_code FROM deepseek_calls").fetchone()
-    assert tuple(call) == ("failed", "timeout")
+    assert budget.summary(NOW.date().isoformat())["call_status"]["failed"] == 1
 
 
 def test_confidence_coverage_and_known_dimension_minimum_produce_candidate_abstain() -> None:
@@ -907,7 +803,7 @@ def test_candidate_without_news_or_announcement_remains_callable_and_abstains(tm
         calls += 1
         return FakeHttpResponse(200, {"choices": [{"message": {"content": json.dumps(payload)}}]})
 
-    budget = _budget(tmp_path / "runtime.sqlite3")
+    budget = _budget(tmp_path / "state.json")
     reviewer = DeepSeekReviewer(
         _settings(),
         budget,
@@ -935,7 +831,7 @@ def test_schema_repair_uses_second_and_final_physical_attempt(tmp_path) -> None:
             ),
         ]
     )
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     budget = _budget(database_path)
     reviewer = DeepSeekReviewer(
         _settings(),
@@ -950,18 +846,15 @@ def test_schema_repair_uses_second_and_final_physical_attempt(tmp_path) -> None:
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert budget.summary(NOW.date().isoformat())["used"] == 2
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        assert tuple(connection.run("SELECT status, physical_attempts FROM deepseek_review_batches").fetchone()) == (
-            "success",
-            2,
-        )
-        assert tuple(connection.run("SELECT outcome FROM deepseek_candidate_results").fetchone()) == ("applied",)
+    summary = budget.summary(NOW.date().isoformat())
+    assert summary["batch_status"]["success"] == 1
+    assert summary["candidate_outcomes"]["applied"] == 1
 
 
 def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path) -> None:
     first = _candidate_with_evidence()
     second = _candidate("600002", "e-2")
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     budget = _budget(database_path)
     reviewer = DeepSeekReviewer(
         _settings(),
@@ -988,25 +881,22 @@ def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path
     assert result[first.quote.code].outcome is ReviewOutcome.APPLIED
     assert result[second.quote.code].outcome is ReviewOutcome.REJECTED
     assert reviewer.status()["last_batch_status"] == "partial"
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        assert tuple(connection.run("SELECT status FROM deepseek_review_batches").fetchone()) == ("partial",)
-        assert [
-            tuple(row)
-            for row in connection.run(
-                "SELECT stock_code, outcome FROM deepseek_candidate_results ORDER BY stock_code"
-            ).fetchall()
-        ] == [("600001", "applied"), ("600002", "rejected")]
+    summary = budget.summary(NOW.date().isoformat())
+    assert summary["batch_status"]["partial"] == 1
+    assert summary["candidate_outcomes"]["applied"] == 1
+    assert summary["candidate_outcomes"]["rejected"] == 1
 
 
 def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
-        tmp_path / "runtime.sqlite3",
+        _state_file(tmp_path / "state.json"),
         daily_hard_limit=2,
         strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"tomorrow_morning": 0, "tomorrow_afternoon": 0},
         stage_limits={"tomorrow_morning": 1, "tomorrow_afternoon": 1},
     )
-    ledger.initialize()
+    ledger.initialize(NOW - timedelta(days=1))
+    ledger.initialize(NOW)
 
     observe = ledger.reserve(Strategy.TOMORROW, phase="morning_observe", requested_at=NOW)
     observe_exhausted = ledger.reserve(Strategy.TOMORROW, phase="morning_observe", requested_at=NOW)
@@ -1019,13 +909,14 @@ def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path)
 
 def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_path) -> None:
     ledger = DeepSeekBudgetLedger(
-        tmp_path / "runtime.sqlite3",
+        _state_file(tmp_path / "state.json"),
         daily_hard_limit=2,
         strategy_limits={"tomorrow": 1, "d25": 0, "shared_preheat": 0, "emergency": 1},
         stage_targets={"tomorrow_morning": 0, "emergency": 0},
         stage_limits={"tomorrow_morning": 1, "emergency": 1},
     )
-    ledger.initialize()
+    ledger.initialize(NOW - timedelta(days=1))
+    ledger.initialize(NOW)
 
     too_early = ledger.reserve(
         Strategy.TOMORROW,
@@ -1060,7 +951,7 @@ def test_emergency_requires_exhausted_normal_bucket_and_registered_trigger(tmp_p
 
 
 def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
-    database_path = tmp_path / "runtime.sqlite3"
+    database_path = tmp_path / "state.json"
     ledger = _budget(database_path)
     batch_id = ledger.begin_batch(
         BudgetBatchRequest(
@@ -1082,10 +973,10 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
 
     assert reservation.allowed is True
     assert ledger.recover_incomplete(NOW + timedelta(minutes=2)) == 2
-    with SqliteSession(database_path) as connection, SqliteTransaction(connection):
-        assert tuple(connection.run("SELECT status FROM deepseek_call_reservations").fetchone()) == ("abandoned",)
-        assert tuple(connection.run("SELECT status FROM deepseek_review_batches").fetchone()) == ("abandoned",)
-        assert tuple(connection.run("SELECT outcome FROM deepseek_candidate_results").fetchone()) == ("rejected",)
+    summary = ledger.summary(NOW.date().isoformat())
+    assert summary["call_status"]["abandoned"] == 1
+    assert summary["batch_status"]["abandoned"] == 1
+    assert summary["candidate_outcomes"]["rejected"] == 1
 
 
 def test_non_retryable_http_error_is_attempted_once() -> None:
@@ -1254,15 +1145,20 @@ class MutableClock:
         self._value = value
 
 
+def _state_file(path):
+    return BudgetStateFile(path, ProcessLock(path.parent / ".deepseek.lock", label="DeepSeek"))
+
+
 def _budget(database_path) -> DeepSeekBudgetLedger:
     ledger = DeepSeekBudgetLedger(
-        database_path,
+        _state_file(database_path),
         daily_hard_limit=2,
         strategy_limits={"tomorrow": 2, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"tomorrow_morning": 0},
         stage_limits={"tomorrow_morning": 2},
     )
-    ledger.initialize()
+    ledger.initialize(NOW - timedelta(days=1))
+    ledger.initialize(NOW)
     return ledger
 
 

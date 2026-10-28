@@ -18,11 +18,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.runtime_migration import (  # noqa: E402
     FileDigest,
-    MergeDatabase,
     ValidateDatabase,
 )
 from trader.infra.process_lock import ProcessLock  # noqa: E402
-from trader.infra.settings.data_paths import DataPaths  # noqa: E402
 
 MANIFEST_NAME = "migration-manifest.json"
 
@@ -106,13 +104,10 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
             raise MigrationError("migration_target_or_staging_exists")
         before, _count, _size = _fingerprint(source, validate=True)
         staging.mkdir(parents=True)
-        paths = DataPaths(staging)
         runtime = source / ".runtime/trader"
         # Company facts require a fresh extraction; legacy evidence is never copied into the new contract.
-        # All existing budget histories contribute. Duplicate request identities must agree.
-        runtime_roots = (runtime, runtime / "profiles/v2", runtime / "profiles/v3")
-        for root in (runtime / "shared", *runtime_roots):
-            MergeDatabase(root / "deepseek-budget.sqlite3", paths.budget)
+        # DeepSeek has no database import. A new state file quarantines its
+        # initialization day, preserving the next-Shanghai-day safety boundary.
         # Freeze records, outcomes, traces and research schemas start empty.
         # Old evidence stays in the source release; no import can grant new formal authority.
         after, _count, _size = _fingerprint(source, validate=True)

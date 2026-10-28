@@ -51,6 +51,7 @@ def test_selected_profiles_share_resources_and_web_shows_only_selected_buttons(t
     group = bootstrap.BuildProfiledSystem(config, profiles=profiles)
     default = "v2" if "v2" in profiles else profiles[0]
     primary = group.systems[0]
+    assert primary.budget._file._path == tmp_path / ".runtime/trader/deepseek/state.json"
     assert primary.profile_id == default
     assert {system.profile_id for system in group.systems} == set(profiles)
     assert sum(system.owns_shared_resources for system in group.systems) == 1

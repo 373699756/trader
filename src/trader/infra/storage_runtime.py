@@ -37,7 +37,6 @@ def InspectDataStorage(
         ("reference", paths.reference),
         ("company", paths.company),
         ("company_collection", paths.company_collection),
-        ("budget", paths.budget),
     ]
     for profile in ("v1", "v2", "v3", "v5"):
         locations.extend(

@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import BinaryIO, Protocol, cast
 
+from trader.infra.atomic_files.json import SyncDirectory
+
 
 class ProcessLockError(RuntimeError):
     pass
@@ -29,20 +31,25 @@ class ProcessLock:
         if self._handle is not None:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self._path.open("a+b")
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
-            os.fsync(handle.fileno())
-        handle.seek(0)
+        descriptor = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        handle = os.fdopen(descriptor, "r+b")
         try:
-            _lock_handle(handle)
-        except OSError as exc:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+                os.fsync(handle.fileno())
+            handle.seek(0)
+            try:
+                _lock_handle(handle)
+            except OSError as exc:
+                message = f"{self._label} is already running"
+                if self._label == "trader-server":
+                    message += f" for {self._path.parent}"
+                raise ProcessLockError(message) from exc
+        except BaseException:
             handle.close()
-            message = f"{self._label} is already running"
-            if self._label == "trader-server":
-                message += f" for {self._path.parent}"
-            raise ProcessLockError(message) from exc
+            raise
         self._handle = handle
 
     def release(self) -> None:
@@ -54,6 +61,30 @@ class ProcessLock:
             _unlock_handle(handle)
         finally:
             handle.close()
+
+    def read_identity(self) -> str:
+        """Read a bounded owner identity while retaining the locked inode."""
+        if self._handle is None:
+            raise RuntimeError("process lock is not held")
+        self._handle.seek(1)
+        value = self._handle.read(4097)
+        if len(value) > 4096:
+            raise ValueError("process lock identity too large")
+        return value.decode("utf-8")
+
+    def write_identity(self, identity: str) -> None:
+        """Bind an owner location, without replacing the lock or storing counters."""
+        if self._handle is None:
+            raise RuntimeError("process lock is not held")
+        value = identity.encode("utf-8")
+        if len(value) > 4096:
+            raise ValueError("process lock identity too large")
+        self._handle.seek(1)
+        self._handle.write(value)
+        self._handle.truncate()
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+        SyncDirectory(self._path.parent)
 
     def __enter__(self) -> ProcessLock:
         self.acquire()

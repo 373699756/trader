@@ -302,6 +302,12 @@ class StatusSnapshot:
     recent_errors: tuple[WebRuntimeIssue, ...]
     strategies: Mapping[str, ProjectionSnapshot]
     input_quality: Mapping[str, InputQualitySnapshot]
+    deepseek_enabled: bool = False
+    deepseek_available: bool = False
+    deepseek_budget_date: str | None = None
+    deepseek_used: int | None = None
+    deepseek_remaining: int | None = None
+    deepseek_error: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "strategies", MappingProxyType(dict(self.strategies)))
@@ -346,6 +352,8 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
     market = _mapping(payload.get("market_data"))
     events = _mapping(payload.get("events"))
     scheduler = _mapping(payload.get("scheduler"))
+    deepseek = _mapping(payload.get("deepseek"))
+    budget = _mapping(payload.get("deepseek_budget"))
     company_research = _mapping(payload.get("company_research"))
     scoring_profile = _mapping(payload.get("scoring_profile"))
     candidate_quote_age = _mapping(market.get("candidate_quote_age"))
@@ -361,6 +369,12 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
         if (value := _mapping_or_none(raw)) is not None
     }
     return StatusSnapshot(
+        deepseek_enabled=deepseek.get("enabled") is True,
+        deepseek_available=budget.get("available") is True,
+        deepseek_budget_date=_text(budget.get("budget_date")),
+        deepseek_used=_nonnegative_int(budget.get("used")),
+        deepseek_remaining=_nonnegative_int(budget.get("remaining")),
+        deepseek_error=_text(budget.get("error")),
         schema_version=_text(payload.get("schema_version")),
         release_freeze_schema=_text(release.get("freeze_view_schema")),
         runtime_status=_text(payload.get("status")),

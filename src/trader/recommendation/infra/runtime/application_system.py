@@ -100,13 +100,22 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
         )
 
     def start(self) -> bool:
-        return StartApplicationResources(
-            self._application_resources(), timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds
-        )
+        try:
+            return StartApplicationResources(
+                self._application_resources(), timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds
+            )
+        except BaseException:
+            if self.owns_shared_resources:
+                self.budget.close()
+            raise
 
     def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
         shared = deadline or ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
-        return StopApplicationResources(self._application_resources(), deadline=shared)
+        try:
+            return StopApplicationResources(self._application_resources(), deadline=shared)
+        finally:
+            if self.owns_shared_resources:
+                self.budget.close()
 
 
 __all__ = ["ApplicationSystem", "RuntimeWorkerResources"]

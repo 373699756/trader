@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack, suppress
@@ -108,6 +107,7 @@ from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFIL
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra import policy_settings
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.budget_file import BudgetStateFile
 from trader.recommendation.infra.deepseek.cache import BuildSharedReviewCacheIdentity, ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
@@ -588,6 +588,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     shared_inputs: composition_inputs.SharedRecommendationInputs | None = None,
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
+    budget_path = settings.runtime_dir / "deepseek/state.json"
     if runtime_scope is not None:
         settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
     if owns_shared_runtime:
@@ -636,7 +637,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             True, references.initialize, calendar.open_dates, ShanghaiClock(now).now, lambda: uuid4().hex
         )
     )
-    persistence = _build_persistence(context, shared_inputs.budget if shared_inputs else None)
+    persistence = _build_persistence(context, shared_inputs.budget if shared_inputs else None, budget_path=budget_path)
     profile_id = strategy.scoring_profile
     model_failure = "production_model_missing"
     try:
@@ -793,8 +794,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                         lambda: publication.d25_freezer.restore(now().date()),
                     )
                 ),
-                *((persistence.budget.initialize,) if shared_inputs is None else ()),
-                *((lambda: persistence.budget.recover_incomplete(now()),) if shared_inputs is None else ()),
+                *((lambda: persistence.budget.initialize(now()),) if shared_inputs is None else ()),
             ),
             interval_seconds=runtime_supervisor.SchedulerIntervalSeconds,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -1106,20 +1106,23 @@ def _build_market_data(
 
 
 def _build_persistence(
-    context: composition_inputs.RuntimeBuildContext, shared_budget: DeepSeekBudgetLedger | None = None
+    context: composition_inputs.RuntimeBuildContext,
+    shared_budget: DeepSeekBudgetLedger | None = None,
+    *,
+    budget_path: Path,
 ) -> composition_inputs.RuntimePersistenceContext:
     settings = context.settings
     profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
     records = SQLiteFreezeRecords(profile_root / "freeze.sqlite3")
     outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records)
     budget = shared_budget or DeepSeekBudgetLedger(
-        settings.data_paths.budget,
+        BudgetStateFile(budget_path, ProcessLock(settings.data_paths.root / ".deepseek.lock", label="DeepSeek")),
         daily_hard_limit=settings.deepseek.daily_hard_limit,
         strategy_limits=settings.deepseek.strategy_limits,
         stage_targets=settings.deepseek.stage_targets,
         stage_limits=settings.deepseek.stage_limits,
         health_policy=DeepSeekHealthPolicy.from_settings(settings.deepseek.adaptive),
-        write_lock=threading.Lock(),
+        enabled=settings.deepseek.enabled,
     )
     sequence = PublicationSequence(profile_root / "publication_state.sqlite3")
     return composition_inputs.RuntimePersistenceContext(sequence, records, budget, outcomes)

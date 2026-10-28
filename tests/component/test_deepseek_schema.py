@@ -16,6 +16,8 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.budget_file import BudgetStateFile
+from trader.infra.process_lock import ProcessLock
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
@@ -59,7 +61,7 @@ def test_finish_reason_length_uses_the_single_schema_repair_attempt(tmp_path) ->
             ),
         )
     )
-    budget = _budget(tmp_path / "runtime.sqlite3", hard_limit=2)
+    budget = _budget(tmp_path / "state.json", hard_limit=2)
     reviewer = _reviewer(
         budget,
         post=lambda *_args, **_kwargs: next(responses),
@@ -118,7 +120,7 @@ def _reviewer(
 
 def _budget(path, *, hard_limit: int) -> DeepSeekBudgetLedger:
     ledger = DeepSeekBudgetLedger(
-        path,
+        BudgetStateFile(path, ProcessLock(path.parent / ".deepseek.lock", label="DeepSeek")),
         daily_hard_limit=hard_limit,
         strategy_limits={
             "tomorrow": hard_limit,
@@ -129,7 +131,8 @@ def _budget(path, *, hard_limit: int) -> DeepSeekBudgetLedger:
         stage_targets={"tomorrow_morning": 0},
         stage_limits={"tomorrow_morning": hard_limit},
     )
-    ledger.initialize()
+    ledger.initialize(NOW - timedelta(days=1))
+    ledger.initialize(NOW)
     return ledger
 
 

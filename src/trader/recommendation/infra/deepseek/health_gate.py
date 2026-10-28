@@ -1,18 +1,13 @@
-"""Persisted DeepSeek transport/schema/application health gate."""
+"""Pure transitions of the bounded DeepSeek recovery circuit."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema, SqliteTransaction
-from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
-
-_SHANGHAI = ZoneInfo("Asia/Shanghai")
+from trader.recommendation.infra.deepseek.budget_state import BudgetBatch, BudgetHealth, BudgetState
 
 if TYPE_CHECKING:
     from trader.infra.settings.models import DeepSeekAdaptiveSettings
@@ -30,345 +25,87 @@ class DeepSeekHealthPolicy:
     @classmethod
     def from_settings(cls, settings: DeepSeekAdaptiveSettings) -> DeepSeekHealthPolicy:
         return cls(
-            settings.consecutive_failure_limit,
-            settings.rolling_window,
-            settings.minimum_application_ratio,
-            settings.healthy_application_ratio,
-            settings.healthy_batch_count,
-            settings.cooldown_seconds,
+            settings.consecutive_failure_limit, settings.rolling_window,
+            settings.minimum_application_ratio, settings.healthy_application_ratio,
+            settings.healthy_batch_count, settings.cooldown_seconds,
         )
 
 
-@dataclass(frozen=True)
-class _HealthOutcome:
-    completion: BudgetBatchCompletion
-    trade_date: str
-    transport_failed: bool
-    schema_failed: bool
-    accepted_count: int
+def ReserveHealth(
+    state: BudgetHealth, requested_at: datetime, batch_id: str, candidate_count: int
+) -> tuple[BudgetHealth, str]:
+    if state.mode in {"closed", "recovering"}:
+        return state, ""
+    if state.mode == "half_open":
+        return state, "" if state.probe_batch_id == batch_id else "circuit_open"
+    if state.open_until is None or requested_at < state.open_until:
+        return state, "circuit_open"
+    if not _half_open_allowed(requested_at) or not 1 <= candidate_count <= 2 or not batch_id:
+        return state, "circuit_open"
+    return replace(state, mode="half_open", probe_batch_id=batch_id), ""
 
 
-@dataclass(frozen=True)
-class _HealthStateUpdate:
-    mode: str
-    completed_at: datetime
-    recovery_successes: int
-    reason: str
-    open_until: datetime | None = None
-
-
-class DeepSeekHealthGate:
-    def __init__(
-        self,
-        connect: Callable[[], AbstractContextManager[SqliteConnection]],
-        policy: DeepSeekHealthPolicy,
-    ) -> None:
-        self._connect = connect
-        self._policy = policy
-
-    def reservation_rejection(
-        self,
-        connection: SqliteConnection,
-        *,
-        trade_date: str,
-        requested_at: datetime,
-        batch_id: str,
-        candidate_count: int,
-    ) -> str:
-        row = connection.run(
-            """
-            SELECT mode, open_until, probe_batch_id
-            FROM deepseek_health_state WHERE trade_date = ?
-            """,
-            (trade_date,),
-        ).fetchone()
-        if row is None or str(row[0]) in {"closed", "recovering"}:
-            return ""
-        mode = str(row[0])
-        open_until = datetime.fromisoformat(str(row[1])) if row[1] else None
-        probe_batch_id = str(row[2] or "")
-        if mode == "half_open":
-            return "" if probe_batch_id == batch_id else "circuit_open"
-        if mode != "open" or open_until is None or requested_at < open_until:
-            return "circuit_open"
-        if not _half_open_allowed(requested_at) or not 1 <= candidate_count <= 2 or not batch_id:
-            return "circuit_open"
-        connection.run(
-            """
-            UPDATE deepseek_health_state
-            SET mode = 'half_open', probe_batch_id = ?, updated_at = ?
-            WHERE trade_date = ? AND mode = 'open'
-            """,
-            (batch_id, requested_at.isoformat(), trade_date),
+def CompleteHealth(state: BudgetState, batch: BudgetBatch, policy: DeepSeekHealthPolicy) -> BudgetHealth:
+    health = state.health_state
+    if batch.budget_date != state.budget_date or batch.completed_at is None:
+        return health
+    calls = tuple(item for item in state.requests if item.batch_id == batch.batch_id)
+    if not calls:
+        return health
+    valid = batch.applied + batch.abstain > 0 and any(item.status == "success" for item in calls)
+    if health.mode == "half_open" and health.probe_batch_id == batch.batch_id:
+        return BudgetHealth("recovering", recovery_successes=1) if valid else _open(
+            batch.completed_at, "half_open_failed", policy
         )
-        return ""
+    batches = sorted(
+        (item for item in state.review_batches if item.budget_date == state.budget_date and item.completed_at),
+        key=lambda item: item.completed_at or item.requested_at,
+        reverse=True,
+    )
+    failures = batches[:policy.consecutive_failure_limit]
+    reason = ""
+    if len(failures) == policy.consecutive_failure_limit:
+        if all(_transport_failed(state, item) for item in failures):
+            reason = "consecutive_transport_failures"
+        elif all(_schema_failed(state, item) for item in failures):
+            reason = "consecutive_schema_failures"
+    window = batches[:policy.rolling_window]
+    candidates = sum(item.candidate_count for item in window)
+    accepted = sum(item.applied + item.abstain for item in window)
+    ratio = accepted / candidates if candidates else None
+    if not reason and len(window) == policy.rolling_window and ratio is not None:
+        if ratio < policy.minimum_application_ratio:
+            reason = "low_application_ratio"
+    if reason:
+        return _open(batch.completed_at, reason, policy)
+    if health.mode == "recovering":
+        successes = health.recovery_successes + 1 if valid else 0
+        if successes >= policy.healthy_batch_count and ratio is not None and ratio >= policy.healthy_application_ratio:
+            return BudgetHealth()
+        return replace(health, recovery_successes=successes)
+    return health
 
-    def record_completion(self, completion: BudgetBatchCompletion) -> None:
-        if completion.physical_attempts <= 0:
-            return
-        trade_date = completion.completed_at.date().isoformat()
-        with self._connect() as connection, SqliteTransaction(connection, immediate=True) as transaction:
-            success_calls, failed_calls = connection.run(
-                """
-                SELECT
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
-                FROM deepseek_call_reservations WHERE batch_id = ?
-                """,
-                (completion.batch_id,),
-            ).require_one()
-            candidate_count = int(
-                connection.run(
-                    "SELECT candidate_count FROM deepseek_review_batches WHERE batch_id = ?",
-                    (completion.batch_id,),
-                ).require_one()[0]
-            )
-            accepted_count = sum(
-                review.outcome.value in {"applied", "abstain"} for review in completion.reviews.values()
-            )
-            successful = int(success_calls or 0)
-            failed = int(failed_calls or 0)
-            transport_failed = failed > 0 and successful == 0
-            schema_failed = completion.status == "failed" and successful > 0 and accepted_count == 0
-            connection.run(
-                """
-                INSERT OR REPLACE INTO deepseek_health_events(
-                    batch_id, trade_date, completed_at, transport_failed, schema_failed,
-                    candidate_count, accepted_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    completion.batch_id,
-                    trade_date,
-                    completion.completed_at.isoformat(),
-                    int(transport_failed),
-                    int(schema_failed),
-                    candidate_count,
-                    accepted_count,
-                ),
-            )
-            self._advance_state(
-                connection,
-                _HealthOutcome(
-                    completion=completion,
-                    trade_date=trade_date,
-                    transport_failed=transport_failed,
-                    schema_failed=schema_failed,
-                    accepted_count=accepted_count,
-                ),
-            )
-            transaction.commit()
 
-    def summary(self, trade_date: str) -> dict[str, object]:
-        with self._connect() as connection:
-            row = connection.run(
-                """
-                SELECT mode, open_until, recovery_successes, reason
-                FROM deepseek_health_state WHERE trade_date = ?
-                """,
-                (trade_date,),
-            ).fetchone()
-        if row is None:
-            return {"mode": "closed", "open_until": None, "recovery_successes": 0, "reason": ""}
-        return {
-            "mode": str(row[0]),
-            "open_until": str(row[1]) if row[1] else None,
-            "recovery_successes": int(row[2]),
-            "reason": str(row[3]),
-        }
+def _transport_failed(state: BudgetState, batch: BudgetBatch) -> bool:
+    calls = tuple(item for item in state.requests if item.batch_id == batch.batch_id)
+    return any(item.status in {"failed", "abandoned"} for item in calls) and not any(
+        item.status == "success" for item in calls
+    )
 
-    def _advance_state(
-        self,
-        connection: SqliteConnection,
-        outcome: _HealthOutcome,
-    ) -> None:
-        completion = outcome.completion
-        trade_date = outcome.trade_date
-        state = connection.run(
-            """
-            SELECT mode, probe_batch_id, recovery_successes
-            FROM deepseek_health_state WHERE trade_date = ?
-            """,
-            (trade_date,),
-        ).fetchone()
-        mode = str(state[0]) if state is not None else "closed"
-        probe_batch_id = str(state[1]) if state is not None else ""
-        recovery_successes = int(state[2]) if state is not None else 0
-        valid = not outcome.transport_failed and not outcome.schema_failed and outcome.accepted_count > 0
-        if mode == "half_open" and probe_batch_id == completion.batch_id:
-            if valid:
-                self._write_state(
-                    connection,
-                    trade_date,
-                    _HealthStateUpdate(
-                        mode="recovering",
-                        completed_at=completion.completed_at,
-                        recovery_successes=1,
-                        reason="",
-                    ),
-                )
-            else:
-                self._open(connection, trade_date, completion.completed_at, "half_open_failed")
-            return
 
-        reason = self._trip_reason(connection, trade_date)
-        if reason:
-            self._open(connection, trade_date, completion.completed_at, reason)
-            return
-        if mode != "recovering":
-            return
-        recovery_successes = recovery_successes + 1 if valid else 0
-        ratio = self._rolling_application_ratio(connection, trade_date)
-        healthy = (
-            recovery_successes >= self._policy.healthy_batch_count
-            and ratio is not None
-            and ratio >= self._policy.healthy_application_ratio
-        )
-        self._write_state(
-            connection,
-            trade_date,
-            _HealthStateUpdate(
-                mode="closed" if healthy else "recovering",
-                completed_at=completion.completed_at,
-                recovery_successes=0 if healthy else recovery_successes,
-                reason="",
-            ),
-        )
+def _schema_failed(state: BudgetState, batch: BudgetBatch) -> bool:
+    return batch.status == "failed" and batch.applied + batch.abstain == 0 and any(
+        item.batch_id == batch.batch_id and item.status == "success" for item in state.requests
+    )
 
-    def _trip_reason(self, connection: SqliteConnection, trade_date: str) -> str:
-        rows = connection.run(
-            """
-            SELECT transport_failed, schema_failed
-            FROM deepseek_health_events
-            WHERE trade_date = ?
-            ORDER BY completed_at DESC
-            LIMIT ?
-            """,
-            (trade_date, self._policy.consecutive_failure_limit),
-        ).fetchall()
-        if len(rows) == self._policy.consecutive_failure_limit:
-            if all(bool(row[0]) for row in rows):
-                return "consecutive_transport_failures"
-            if all(bool(row[1]) for row in rows):
-                return "consecutive_schema_failures"
-        ratio = self._rolling_application_ratio(connection, trade_date)
-        count = int(
-            connection.run(
-                "SELECT COUNT(*) FROM deepseek_health_events WHERE trade_date = ?",
-                (trade_date,),
-            ).require_one()[0]
-        )
-        if (
-            count >= self._policy.rolling_window
-            and ratio is not None
-            and ratio < self._policy.minimum_application_ratio
-        ):
-            return "low_application_ratio"
-        return ""
 
-    def _rolling_application_ratio(
-        self,
-        connection: SqliteConnection,
-        trade_date: str,
-    ) -> float | None:
-        rows = connection.run(
-            """
-            SELECT candidate_count, accepted_count
-            FROM deepseek_health_events
-            WHERE trade_date = ?
-            ORDER BY completed_at DESC
-            LIMIT ?
-            """,
-            (trade_date, self._policy.rolling_window),
-        ).fetchall()
-        candidates = sum(int(row[0]) for row in rows)
-        return None if candidates <= 0 else sum(int(row[1]) for row in rows) / candidates
-
-    def _open(
-        self,
-        connection: SqliteConnection,
-        trade_date: str,
-        completed_at: datetime,
-        reason: str,
-    ) -> None:
-        self._write_state(
-            connection,
-            trade_date,
-            _HealthStateUpdate(
-                mode="open",
-                completed_at=completed_at,
-                open_until=completed_at + timedelta(seconds=self._policy.cooldown_seconds),
-                recovery_successes=0,
-                reason=reason,
-            ),
-        )
-
-    @staticmethod
-    def _write_state(
-        connection: SqliteConnection,
-        trade_date: str,
-        update: _HealthStateUpdate,
-    ) -> None:
-        connection.run(
-            """
-            INSERT INTO deepseek_health_state(
-                trade_date, mode, open_until, probe_batch_id, recovery_successes, reason, updated_at
-            ) VALUES (?, ?, ?, '', ?, ?, ?)
-            ON CONFLICT(trade_date) DO UPDATE SET
-                mode = excluded.mode,
-                open_until = excluded.open_until,
-                probe_batch_id = '',
-                recovery_successes = excluded.recovery_successes,
-                reason = excluded.reason,
-                updated_at = excluded.updated_at
-            """,
-            (
-                trade_date,
-                update.mode,
-                update.open_until.isoformat() if update.open_until is not None else None,
-                update.recovery_successes,
-                update.reason,
-                update.completed_at.isoformat(),
-            ),
-        )
+def _open(at: datetime, reason: str, policy: DeepSeekHealthPolicy) -> BudgetHealth:
+    return BudgetHealth("open", at + timedelta(seconds=policy.cooldown_seconds), reason=reason)
 
 
 def _half_open_allowed(value: datetime) -> bool:
-    local = value.astimezone(_SHANGHAI).time().replace(tzinfo=None)
+    local = value.astimezone(ZoneInfo("Asia/Shanghai")).time().replace(tzinfo=None)
     return time(9, 15) <= local < time(15, 0)
 
 
-__all__ = ["HEALTH_SCHEMA", "DeepSeekHealthGate", "DeepSeekHealthPolicy"]
-
-
-HEALTH_SCHEMA = SqliteSchema(
-    None,
-    (
-        """
-        CREATE TABLE IF NOT EXISTS deepseek_health_events(
-            batch_id TEXT PRIMARY KEY,
-            trade_date TEXT NOT NULL,
-            completed_at TEXT NOT NULL,
-            transport_failed INTEGER NOT NULL,
-            schema_failed INTEGER NOT NULL,
-            candidate_count INTEGER NOT NULL,
-            accepted_count INTEGER NOT NULL
-        )
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_deepseek_health_events_day
-        ON deepseek_health_events(trade_date, completed_at)
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS deepseek_health_state(
-            trade_date TEXT PRIMARY KEY,
-            mode TEXT NOT NULL,
-            open_until TEXT,
-            probe_batch_id TEXT NOT NULL DEFAULT '',
-            recovery_successes INTEGER NOT NULL DEFAULT 0,
-            reason TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
-        )
-        """,
-    ),
-)
+__all__ = ["DeepSeekHealthPolicy", "ReserveHealth", "CompleteHealth"]

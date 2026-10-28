@@ -18,6 +18,27 @@ _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"
 
 
+def test_runtime_report_includes_only_deepseek_recovery_summary():
+    sample = parse_web_sample(
+        1, "2026-10-29T10:00:00+08:00",
+        status_payload={
+            "deepseek": {"enabled": True},
+            "deepseek_budget": {
+                "available": False, "budget_date": "2026-10-29", "used": 12, "remaining": 0,
+                "error": "budget_state_unverified", "requests": ["private-request"],
+            },
+        },
+        freeze_payloads={},
+    )
+    report = build_report("http://localhost", (sample,), (), strategies=(), consecutive_zero_threshold=1)
+    summary = report["samples"][0]["deepseek_budget"]
+    assert summary == {
+        "enabled": True, "available": False, "budget_date": "2026-10-29", "used": 12, "remaining": 0,
+        "error": "budget_state_unverified",
+    }
+    assert "private-request" not in str(report)
+
+
 @pytest.mark.parametrize("ready", (False, True))
 def test_runtime_collects_long_without_applying_short_strategy_scoring_rules(monkeypatch, ready):
     requests = []

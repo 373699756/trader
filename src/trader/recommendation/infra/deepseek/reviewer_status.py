@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from collections import Counter
 from collections.abc import Mapping
@@ -76,13 +75,7 @@ class ReviewerStatusTracker:
 
     def status(self) -> JsonObject:
         local_day = self._now().astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
-        try:
-            budget = self._budget.summary(local_day)
-        except (OSError, sqlite3.Error):
-            budget = {
-                "available": False,
-                "error": "budget_ledger_unavailable",
-            }
+        budget = self._budget.summary(local_day)
         with self._status_lock:
             batch_status = self._last_batch_status
             candidate_count = self._last_candidate_count

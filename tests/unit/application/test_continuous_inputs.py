@@ -7,6 +7,8 @@ from tests.unit.test_market_data_cache import _identity, _policy
 from trader.infra.cache import BoundedLruCache
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.budget_file import BudgetStateFile
+from trader.infra.process_lock import ProcessLock
 from trader.recommendation.infra.deepseek.health_gate import _half_open_allowed
 from trader.recommendation.infra.deepseek.reviewer_selection import _ReservationTracker
 
@@ -20,13 +22,14 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 def test_continuous_review_keeps_existing_budget_buckets_until_close(tmp_path, hour, minute, stage):
     at = datetime(2026, 7, 16, hour, minute, tzinfo=_SHANGHAI)
     ledger = DeepSeekBudgetLedger(
-        tmp_path / "budget.sqlite3",
+        BudgetStateFile(tmp_path / "state.json", ProcessLock(tmp_path / ".deepseek.lock", label="DeepSeek")),
         daily_hard_limit=168,
         strategy_limits={"tomorrow": 6, "d25": 0, "shared_preheat": 0, "emergency": 0},
         stage_targets={"tomorrow_" + name: 0 for name in ("morning", "afternoon", "final")},
         stage_limits={"tomorrow_" + name: 2 for name in ("morning", "afternoon", "final")},
     )
-    ledger.initialize()
+    ledger.initialize(at - timedelta(days=1))
+    ledger.initialize(at)
     reserved = ledger.reserve(Strategy.TOMORROW, phase="before_close", requested_at=at)
     assert reserved.allowed and reserved.stage == "tomorrow_" + stage
     assert _half_open_allowed(at)

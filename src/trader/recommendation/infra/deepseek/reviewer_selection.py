@@ -305,6 +305,12 @@ def _physical_call_acceptance(
         "stage_limit",
         "daily_hard_limit",
         "circuit_open",
+        "budget_state_unverified",
+        "budget_state_unwritable",
+        "budget_owner_unavailable",
+        "budget_uninitialized",
+        "budget_clock_reversed",
+        "budget_closed",
     }:
         reason = last_error
     elif last_error == "deadline_reached":
