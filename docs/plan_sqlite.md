@@ -16,12 +16,13 @@
 | 运行资源 | 按当前4个逻辑CPU、内存可增加至10 GiB规划；执行前核验实际分配，不能把计划容量当成已分配 |
 | 磁盘容量 | 不作为方案取舍或性能通过条件；仍记录物理I/O，不取消写入失败处理 |
 | SQLite | 保留本地事务事实、断点和冻结存储，优化访问模式，不强行合成一个大库 |
+| 公共参考合并 | inputs.json与historical_st.sqlite3的职责合并到market/reference/st_company.sqlite3；证券、ST、日历及参考发布同库管理 |
 | 列式处理 | 使用已有Polars对照具名列Parquet；按第6节的固定门槛决定是否接入，不新增DuckDB或PyArrow |
 | 公司风险 | 沿用com.md的采集库、结构化事实和临时正文设计，不重新设计下载业务 |
 | 冻结库 | 原decisions.sqlite3统一改为freeze.sqlite3，活动代码不保留旧文件名别名或双读 |
 | DeepSeek固定参数 | 继续使用config/deepseek.json，不建立DeepSeek数据库 |
 | DeepSeek运行状态 | 内存维护，使用runtime_dir/deepseek/state.json临时文件保存预算和必要恢复状态；默认.runtime/trader/deepseek/state.json |
-| 本次文档交付 | 只新增本文；不执行删库、下载、训练、服务切换或发布 |
+| 本次文档交付 | 只维护本文方案；不执行删库、下载、训练、服务切换或发布 |
 
 全面改名用于可读性和可维护性；批量读取、减少重复扫描、减少对象转换和短事务用于提速。两类验收分开，不能把改名或SQL条数减少直接写成性能收益。
 
@@ -54,9 +55,8 @@ data/
   .deepseek.lock                       # 同一data_dir的DeepSeek运行锁，不保存预算
   market/
     reference/
-      security_st.sqlite3              # ST事实唯一来源
+      st_company.sqlite3               # 证券、ST、日历及不可变参考发布
       industry_reference.sqlite3       # 历史锚点与当前行业，分别存表
-      inputs.json                      # 已发布公共参考，保留原唯一发布职责
     history/
       history_catalog.sqlite3          # 任务、缺口、修订序号、绑定参考、发布指针
       daily_prices_YYYY.sqlite3         # 年度raw/qfq价格修订及观察记录
@@ -88,14 +88,15 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 
 | 数据组 | 当前路径或结构 | 目标与处理 |
 | --- | --- | --- |
-| ST | market/reference/historical_st.sqlite3 | 改为security_st.sqlite3，ST事实仍由download唯一维护 |
+| ST | market/reference/historical_st.sqlite3 | 职责并入st_company.sqlite3，版本化证据和当前采集指针分表；取消独立ST库 |
+| 公共参考 | market/reference/inputs.json | 职责并入同一st_company.sqlite3，以不可变发布、版本成员及当前发布指针替代整包JSON |
 | 行业 | market/reference/industry.sqlite3 | 改为industry_reference.sqlite3；当前行业与历史锚点不互相替代 |
 | 历史控制 | market/history/catalog.sqlite3 | 改为history_catalog.sqlite3；结构化控制表，不引入通用键值事实表 |
 | 年度价格 | market/history/prices_YYYY.sqlite3 | 改为daily_prices_YYYY.sqlite3；保留年度分区和月逻辑身份 |
 | 短窗 | market/daily_window.sqlite3 | 改为daily_price_windows.sqlite3；raw/qfq配对及双档发布原子性保持 |
 | 公司正式库 | company/company_facts.sqlite3 | 保留com.md路径和业务结构；衔接统一字段命名 |
 | 公司采集 | 旧事实库内的公告、分页、正文、重试 | 按com.md进入raw采集库和临时文件；本轮不重做采集实现 |
-| 公司资格 | company/eligibility.sqlite3 | 删除独立活动owner；ST归market/reference，非ST排除按com.md归正式公司事实 |
+| 公司资格 | company/eligibility.sqlite3 | 删除独立活动owner；ST归market/reference/st_company.sqlite3，非ST排除按com.md归正式公司事实 |
 | 旧公司证据 | company/evidence.sqlite3 | 清理清单明确列出；不作为失败回退或旧数据导入来源 |
 | 正式决策 | recommendation/*/decisions.sqlite3 | 统一为freeze.sqlite3；新库不导入旧记录 |
 | 推荐快照 | recommendation/*/snapshots.sqlite3 | 删除没有活动读写消费者的参考表体系；发布序号进入publication_state.sqlite3 |
@@ -109,7 +110,8 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 
 | 数据 | 唯一事实/写入owner | 消费者与读法 |
 | --- | --- | --- |
-| 公共参考、ST、行业 | download | 下载共用准备；训练和推荐读取发布身份，不在线补查 |
+| 证券、ST、日历、参考发布 | download，统一st_company adapter | 下载共用准备；训练和推荐按不可变发布读取，不读取采集中的当前指针 |
+| 行业 | download，既有行业owner | 独立行业库；公共参考固定其发布身份，历史锚点与当前行业分开读取 |
 | 控制库、历史修订、短窗 | download | 推荐按快照取有界窗口；训练与研究按固定身份扫描 |
 | Parquet价格投影 | download的历史发布adapter | 由SQLite发布快照派生，可重建；不能独立修订事实 |
 | 公司raw及正式事实 | download，沿用com.md | 推荐只预读正式轻量事实；证据详情由只读用例显式查询 |
@@ -118,6 +120,51 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 | DeepSeek配置 | 现有配置owner | 启动解析为类型对象，不由预算adapter回写 |
 | DeepSeek临时状态 | recommendation，组合根注入共享实例 | 跨档原子预留；状态接口读取内存，不每次读文件 |
 | 在线收益和追踪 | recommendation | training只读；存储实现若仍位于training/infra，切换全部消费者到正确owner后删除旧活动实现 |
+
+### 2.4 st_company.sqlite3合并方案
+
+合并范围是`inputs.json`中的证券总体、日历、ST引用及发布身份，加上`historical_st.sqlite3`的持续核验与永久ever-ST事实。目标固定为`data/market/reference/st_company.sqlite3`。名称中的company表示证券主体参考，不接收公告、财务、质押、解禁、正文或非ST排除；这些仍按com.md归公司正式库及采集库。行业库也不在此次合并范围内。
+
+原设计会把代码、ST状态和日期信息同时写入ST库和整包JSON。新设计只保存版本化事实，发布成员通过ID引用事实版本，取消整包JSON副本。需要保留的是采集断点与完整发布两个生命周期，不是保留两个可独立修改的当前ST来源。
+
+#### 表划分与字段责任
+
+下表确定实体、关键字段和关系；所有日期、时刻、摘要、空值和类型遵守第3节。完整逐字段字典随对应实现切片交付，不把本表作为运行数据或第二份进度记录。
+
+| 表 | 关键字段及关系 | 职责 |
+| --- | --- | --- |
+| store_contract | schema_version、schema_identity | 库格式校验；拒绝旧格式，不现场改表 |
+| security | security_version_id主键，security_code、security_name、board、listed_date、delisted_date、source_version、content_sha256 | 保存不可变证券资料版本；名称或上市区间改变生成新版本，不改旧发布引用的资料 |
+| security_st_evidence | st_evidence_id主键，security_code、evidence_checked_date、st_status、content_sha256 | 保存不可变ST证据版本，状态为ever_st、clear、unknown；相同内容复用，实际核验日期不被本轮准备日覆盖 |
+| security_st_current | security_code主键，st_evidence_id外键 | 仅供ST采集续传和合并查找最新可用证据；已确认ever_st不能被clear/unknown替换 |
+| calendar_version | calendar_version_id主键，content_sha256、first_trade_date、last_trade_date、session_count | 保存可靠开市日集合的版本和完整性信息；同内容日历复用版本 |
+| trading_calendar | calendar_version_id外键、trade_date，联合主键 | 仅保存来源已确认的开市日，不把未出现日期自行标为休市；顺序和覆盖按原日历合同校验 |
+| reference_publication | publication_id主键，content_sha256唯一，checked_at、calendar_version_id外键、industry_version、security_count | 保存完整发布的不可变身份；industry_version允许按原降级合同为空，不能因此伪造行业合格 |
+| reference_member | publication_id外键、security_code，联合主键；security_version_id、st_evidence_id外键 | 将一次发布绑定到具体证券版本及ST证据版本；两项引用必须属于同一security_code，禁止串股 |
+| reference_current | singleton主键固定为1，publication_id外键 | 唯一当前发布指针；仅在整组校验通过的同库事务中推进 |
+
+`security_version_id`、`st_evidence_id`和`calendar_version_id`使用明确的内部版本键，不能只用security_code关联可变当前行。证据内容身份包含实际核验日期；当天clear证据可以复用，跨日需依原规则重新核验，永久ever_st可复用既有确认。本轮资格准备日期由reference_publication.checked_at表达，不伪造新的供应商核验日期。转换到现有PreparedReference端口时，ST条目的checked_on按原合同表示本轮准备日，原始核验日期继续保留在不可变证据中，不能回写覆盖。
+
+主键和外键保证发布、证券、ST与日历关系；证券和ST版本的内容摘要去重，成员和采集指针通过包含security_code及版本键的组合外键防止串股。security_st_current按证券主键批量读取，reference_member按发布及证券主键批量读取，日历按版本及日期主键范围查询；按版本键关联不可变事实，不每股单独开连接。已发布版本及其成员禁止UPDATE覆盖，本轮不回收已发布参考版本，避免删除历史、训练和研究仍绑定的事实。
+
+#### 采集、发布和恢复顺序
+
+1. 公共准备读取security_st_current恢复ST核验，网络期间不持写事务。已确认ever_st永久排除；当天clear复用；缺失、过期或unknown按现有来源规则核验。每批插入不可变证据并更新采集指针，中断后保留合法进度。
+2. 获取并校验证券总体及可靠日历；当前行业沿原owner准备，失败仍遵守原价格降级和训练待补规则。证券、日历内容复用已有版本，不重复写同一事实。
+3. 公共准备完成后固定本次准确的证券、ST、日历及行业身份，检查每个总体成员有明确ST证据、证券区间正确、日历有序唯一且覆盖合格。该条件是参考完整，不意味着unknown证券获得下载或荐股资格。
+4. 在同一个短事务写入reference_publication及全部reference_member，并推进reference_current；任一步失败全部回滚，消费者继续读取上一完整发布。事务前不提前更新当前发布指针，事务中不执行HTTP。
+5. 推荐启动在同一个只读事务捕获publication_id，批量读取该版本的证券、证据及日历，转换为原应用端口的不可变类型对象；不得将新security_st_current与旧reference_member混用。按绑定行业身份校验外部行业投影，冲突时保留原合法视图并标记待补，不假称跨库原子。
+6. 训练、研究和历史按准确publication_id及content_sha256读取，不能每次跟随reference_current。当前资料更新不会改变旧发布成员或旧资格结论；正常重启才加载新慢资料，不新增服务轮询。
+7. 历史catalog的绑定参考改为引用不可变publication_id及摘要，不再复制完整ST数组、证券总体或日历JSON。原历史行业区间证据继续按既有点时绑定合同保存，不能用当前行业替代。先持久化参考发布，再提交catalog绑定及历史active指针；两库之间不宣称原子事务，中断可以留下未被使用的参考版本，不能留下已发布但缺失的引用。
+8. 同一上海日期、同逻辑内容的重复发布必须幂等，复用publication_id并保留首次发布时间；内容身份沿用现有参考合同的逻辑值，不因重复准备的墙钟变化制造新版本。同publication_id异内容拒绝。损坏、缺失版本、外键不匹配、摘要错误或覆盖不足时明确不可用，不退回inputs.json或独立ST库。
+
+#### 消费者切换和合并验收
+
+工作包B内一次性切换ST采集/合并、公共PrepareReference发布、同日日历复用、history/market/company共用准备、训练及研究绑定、推荐PublishedReferences、资格过滤、公司同步的参考输入、CLI、状态、存储探测和全部诊断fixture。DataPaths及bootstrap显式注入新库和端口；application/domain不因合并直接导入SQLite。原ReferencePublication和ST codec/merge的职责转入新adapter，旧活动实现删除，不留转发模块。
+
+旧inputs.json、historical_st.sqlite3及其锁/WAL/SHM路径进入活动重建清单；撤销之前拟议的security_st.sqlite3目标，不创建该中间库，不执行导入旧事实。com.md在公司切片中描述的既有参考路径只在本轮参考合并实际切换时同步，不能借修改本计划接管原公司阶段。
+
+定向回归必须覆盖：批次核验取消后续传、ever_st不降级、clear跨日失效、unknown保持未知、同日重复准备、发布中途失败、当前指针原子性、证券名称变化、新旧发布隔离、跨证券错误引用、日历版本不完整、行业身份冲突、catalog引用缺失及发布后采集指针变化。比较原PreparedReference逻辑值及资格结果一致，单独记录新库批量读取和发布事务耗时；合并是去重与一致性改造，不预先宣称大幅提速。
 
 ## 3. 全库命名和存储类型
 
@@ -153,7 +200,8 @@ NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串
 
 | 表族 | 结构调整与命名要求 |
 | --- | --- |
-| ST及行业 | ST事实、历史行业查询、当前行业查询分别具名；来源、检查日、锚点日和结果身份不能混列 |
+| 证券/ST/公共参考 | 按第2.4节归st_company.sqlite3，事实版本、采集指针、发布成员与发布指针分表；不再维护inputs.json副本 |
+| 行业 | 独立industry_reference.sqlite3；历史行业查询、当前行业查询分别具名，来源、检查日、锚点日和结果身份不能混列 |
 | 历史控制 | 下载批次、任务、缺口、不可用qfq、绑定参考、不可变快照、当前指针及store_contract各有职责 |
 | 年度价格 | daily_price_revision保存完整raw/qfq修订；daily_price_observation关联日期、证券、同步序号和修订 |
 | 独立短窗 | 价格单元、档位绑定、日历、完成状态及发布记录分表；不按V2/V3复制同一价格事实 |
@@ -326,6 +374,7 @@ Polars已在pyproject.toml依赖中；本轮无需新增分析引擎。技术能
 | 类别 | 必须覆盖 |
 | --- | --- |
 | 历史 | 首建、次日、隔周、同日重跑、首次未发布续传、参考变化、上市/退市及日历边界 |
+| 参考合并 | 第2.4节的ST续传、永久排除、版本去重、原子发布、新旧版本隔离及catalog绑定；旧参考文件不再被访问 |
 | 价格 | raw/qfq单侧缺失、非正qfq、停牌推定、有效修订、冲突、未发布行隔离 |
 | 恢复 | 取消、提交失败、年库已写但catalog未确认、资源退出、重启和旧格式拒绝 |
 | 字段 | 日期/微秒时刻往返、pct/ratio换算、浮点精度、枚举固定编号、NULL与0区分、摘要编码 |
@@ -363,7 +412,7 @@ Polars已在pyproject.toml依赖中；本轮无需新增分析引擎。技术能
 | 包 | 范围及消费者切换 | 出口 |
 | --- | --- | --- |
 | A 基线与映射 | 固定基线、只读盘点全部实际库/代码定义库；逐字段映射；扩展既有诊断并适配公司新owner | 映射覆盖无遗漏；五类历史负载、启动、训练和连续评分有可比较基线；不改活动数据 |
-| B 历史与短窗 | 控制、年库、参考路径和短窗命名/类型；对应download、训练读取、推荐历史、结算、诊断全部切换 | 新格式fixture及修订/配对/断点通过，旧活动SQL和路径删除，性能对照通过 |
+| B 参考合并、历史与短窗 | 按第2.4节完成st_company.sqlite3及catalog版本引用；控制、年库和短窗命名/类型；全部下载、训练、推荐、结算及诊断消费者切换 | 参考原子发布与版本隔离、新格式fixture、修订/配对/断点通过；旧JSON、独立ST库和旧活动SQL路径删除，性能对照通过 |
 | C 冻结与研究 | freeze.sqlite3、publication_state、V1目录、收益/追踪及研究表命名；全部消费者和公开只读投影接线 | 冻结/SSE/结算/序号回归通过；空置data-plane和退役检查点活动代码删除 |
 | D DeepSeek文件 | 共享预算/批次/熔断服务改为类型对象和临时JSON；配置、组合根、状态及诊断原子切换 | 第5节矩阵通过；旧DeepSeek数据库创建/访问/路径全部删除；本地降级保持 |
 | E 公司衔接及启动 | 以原负责人完成的com.md切片为输入，只做尚未完成的命名收口与共享预读优化 | 无第二公司owner、不重做采集；各档一次公共加载，历史300秒门及完整覆盖通过 |
@@ -383,10 +432,10 @@ B、C、D各包内必须同时切换新owner、全部消费者并删除旧活动
 
 1. 固定旧版源码、配置合同、最后正式交易日和DeepSeek最后物理调用的上海日期，用于新日边界核验。实验输出只放显式仓库外目录，物理I/O测量不得落在本机tmpfs的/tmp。
 2. 在新仓库外工作区验证全部新schema、字段映射、原子文件及完整流程；真实供应商与合成fixture报告分开，先闭合G包。
-3. 形成精确删除清单：旧SQLite及WAL/SHM/journal、离线参考快照、样本、模型、推荐/研究数据和DeepSeek临时状态；新目标不存在、软链接和路径归属须核实。配置、凭据、代码、无关用户文件不进入清单。配置来源的人工黑名单等业务输入不能因清库丢失。
+3. 形成精确删除清单：旧SQLite及WAL/SHM/journal、inputs.json、historical_st.sqlite3及旧ST锁、其他离线参考快照、样本、模型、推荐/研究数据和DeepSeek临时状态；新目标不存在、软链接和路径归属须核实。配置、凭据、代码、无关用户文件不进入清单。配置来源的人工黑名单等业务输入不能因清库丢失。
 4. 选定维护窗口，停止sync、train、服务及所有writer，等待退出并确认句柄释放。保留符合回退要求的完整旧release及匹配数据副本，副本不被新程序读取；不在活动库现场改表。旧活动数据随后按清单删除，不做历史导入。
 5. 使用新代码的唯一组合根初始化新格式。DeepSeek固定配置保留，运行状态从临时文件重新建立；切换当日保持无外部复核，至少到旧进程最后一次物理调用的下一上海自然日才能建立合法空预算并启用，不能通过清库补回当天额度。
-6. 执行`./run.sh sync`。参考、history、market、company分别核对覆盖、缺口、绑定及发布。按明确失败项运行`./run.sh sync history`、`./run.sh sync market`或`./run.sh sync company`续传；不因一项成功将整轮标成功。
+6. 执行`./run.sh sync`。公共准备从空st_company.sqlite3重新采集并发布，核验ST指针、不可变版本、成员及当前发布指针，不创建旧参考文件。参考、history、market、company分别核对覆盖、缺口、绑定及发布。按明确失败项运行`./run.sh sync history`、`./run.sh sync market`或`./run.sh sync company`续传；不因一项成功将整轮标成功。
 7. 执行`./run.sh train v1,v2,v3,v5`。先维护一次历史，再四档独立训练；每档Tomorrow/D25整组工件完整校验。失败档明确不可用，不能复制其他档模型、制造零预测或以旧模型替代本次重训。
 8. 正常启动并核验实际导入的新代码、数据及双头模型身份；慢资料在重启加载，不新增轮询或热更新模型机制。
 9. 新正式推荐的首个交易日必须晚于被删除记录的最后正式交易日，并不早于活动切换后的下一可靠市场交易日。实施时在运行身份中保存显式启用日并在所有正式commit/close_fallback入口统一校验；启用日前只允许合法预览，不向新freeze库写正式记录。此日期只用于一次性重建保护，不改变常规15:00规则。
@@ -435,7 +484,7 @@ make package
 
 | 文档 | 行为实际切换时的更新 |
 | --- | --- |
-| 4_下载训练.md | 新路径、唯一owner、raw/qfq、快照、短窗、样本、列式采用结论及完整字段字典 |
+| 4_下载训练.md | st_company.sqlite3合并、版本引用和原子发布、新路径、唯一owner、raw/qfq、快照、短窗、样本、列式采用结论及完整字段字典 |
 | 2_工程设计.md | freeze.sqlite3、发布序号、DeepSeek配置/临时状态、故障降级、资源及启动/重建验收 |
 | com.md | 仅同步公司既定结构的统一命名及消费者接线，不复制公告采集方案或进度 |
 | 1_评分逻辑.md | 仅在说明存储映射时补必要引用；模型特征ID、评分字段及业务规则不随数据库改名 |
@@ -449,8 +498,8 @@ make package
 
 示例行只说明格式，正式字典必须按各表真实用途写清楚。链条层号对应评分文档现行十一层；下载控制、训练准备、收盘冻结、收益结算等不属于十一层的字段应写真实阶段，不能硬编层号。不可将多个字段、通配符或整组JSON中的业务事实合成一行。
 
-DeepSeek已无SQLite字段表，工程设计中改列静态参数、临时状态字段及恢复语义；下载训练只保留路径和引用。旧decisions.sqlite3和DeepSeek数据库名称只允许作为明确的迁移/历史说明，不得留在活动配置、建库、消费或启动探测路径。
+DeepSeek已无SQLite字段表，工程设计中改列静态参数、临时状态字段及恢复语义；下载训练只保留路径和引用。旧decisions.sqlite3、inputs.json、historical_st.sqlite3及DeepSeek数据库名称只允许作为明确的迁移/历史说明，不得留在活动配置、建库、消费或启动探测路径；此前拟议的security_st.sqlite3也不再是目标库。
 
 ### 10.4 最终可检查结果
 
-交付包含全部活动库字段映射、唯一读写owner及消费者切换、旧路径删除、freeze库接线、DeepSeek无数据库实现、性能对照、正确性回归、空库重建证据及权威文档。仅命名改造不冒充提速，清库重训不冒充收益通过，计划文件不冒充已经实施。
+交付包含全部活动库字段映射、st_company参考合并及不可变版本、唯一读写owner及消费者切换、旧路径删除、freeze库接线、DeepSeek无数据库实现、性能对照、正确性回归、空库重建证据及权威文档。仅命名改造不冒充提速，清库重训不冒充收益通过，计划文件不冒充已经实施。
