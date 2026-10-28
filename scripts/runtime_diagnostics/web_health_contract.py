@@ -182,7 +182,7 @@ class InputQualitySnapshot:
 
 
 @dataclass(frozen=True)
-class HistorySnapshot:
+class HistoryHealthSnapshot:
     state: str | None
     snapshot_hash: str | None
     data_cutoff: str | None
@@ -296,7 +296,7 @@ class StatusSnapshot:
     candidate_quote_source: str | None
     candidate_quote_age: CandidateQuoteAgeSnapshot
     model_industry_source: ModelIndustrySourceSnapshot
-    history_archive: HistorySnapshot
+    history_archive: HistoryHealthSnapshot
     company_research: CompanyResearchSnapshot
     scoring_profile: ScoringProfileSnapshot
     recent_errors: tuple[WebRuntimeIssue, ...]
@@ -384,7 +384,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
             timeout_count=_nonnegative_int(model_industry_source.get("timeout_count")),
             last_error_code=_text(model_industry_source.get("last_error_code")),
         ),
-        history_archive=HistorySnapshot(
+        history_archive=HistoryHealthSnapshot(
             state=_text(market.get("published_history_state")),
             snapshot_hash=_text(market.get("published_history_snapshot_hash")),
             data_cutoff=_text(market.get("published_history_data_cutoff")),

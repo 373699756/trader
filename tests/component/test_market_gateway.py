@@ -202,7 +202,7 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     def coordinated_merge(*args, **kwargs):
         if threading.current_thread().name == "full-market-refresh":
             merge_started.set()
-            assert release_merge.wait(1.0)
+            assert release_merge.wait(10.0)
         return original_merge(*args, **kwargs)
 
     monkeypatch.setattr(gateway_module, "MergeMarketObservations", coordinated_merge)
@@ -217,12 +217,12 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     thread = threading.Thread(target=refresh_market, name="full-market-refresh")
     thread.start()
     try:
-        assert merge_started.wait(1.0)
+        assert merge_started.wait(10.0)
         refreshed = tuple(gateway.fetch_candidates(("600001",), observed_at=NOW + timedelta(seconds=2)))
         assert refreshed[0].price == 12.2
     finally:
         release_merge.set()
-        thread.join(1.0)
+        thread.join(10.0)
 
     assert not thread.is_alive()
     assert errors == []

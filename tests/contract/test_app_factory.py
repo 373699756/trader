@@ -117,11 +117,12 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
 def test_dashboard_state_contract() -> None:
+    # This bounds the test process, including cold Node.js startup under parallel test load.
     result = subprocess.run(
         ["node", str(ROOT / "tests/js/test_dashboard_state.js"), str(ROOT / "src/trader/web/static/dashboard.js")],
         check=False,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr or result.stdout

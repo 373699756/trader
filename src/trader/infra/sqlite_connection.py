@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+from time import monotonic, sleep
 from types import TracebackType
 from typing import Literal, TypeAlias, cast
 
@@ -145,6 +146,28 @@ class SqliteConnectionOptions:
 _DEFAULT_OPTIONS = SqliteConnectionOptions()
 
 
+def _set_journal_mode(connection: sqlite3.Connection, options: SqliteConnectionOptions) -> None:
+    deadline = monotonic() + options.timeout_seconds
+    try:
+        while True:
+            remaining = max(0.0, deadline - monotonic())
+            connection.execute(f"PRAGMA busy_timeout={int(remaining * 1000)}")
+            try:
+                actual = connection.execute(f"PRAGMA journal_mode={options.journal_mode}").fetchone()[0]
+            except sqlite3.OperationalError as exc:
+                remaining = deadline - monotonic()
+                # SQLite can reject a concurrent journal-mode change without waiting for busy_timeout.
+                if str(exc) != "database is locked" or remaining <= 0:
+                    raise
+                sleep(min(0.01, remaining))
+                continue
+            if actual.upper() != options.journal_mode:
+                raise sqlite3.OperationalError("sqlite_journal_mode_unavailable")
+            return
+    finally:
+        connection.execute(f"PRAGMA busy_timeout={int(options.timeout_seconds * 1000)}")
+
+
 def _configure_database(connection: sqlite3.Connection, options: SqliteConnectionOptions) -> None:
     query_only = options.query_only if options.query_only is not None else options.read_only
     if query_only:
@@ -153,9 +176,7 @@ def _configure_database(connection: sqlite3.Connection, options: SqliteConnectio
         if options.page_size is not None:
             connection.execute(f"PRAGMA page_size={options.page_size}")
         if options.journal_mode is not None:
-            actual = connection.execute(f"PRAGMA journal_mode={options.journal_mode}").fetchone()[0]
-            if actual.upper() != options.journal_mode:
-                raise sqlite3.OperationalError("sqlite_journal_mode_unavailable")
+            _set_journal_mode(connection, options)
         connection.execute("PRAGMA synchronous=FULL" if options.durability == "durable" else "PRAGMA synchronous=OFF")
     if options.foreign_keys:
         connection.execute("PRAGMA foreign_keys=ON")

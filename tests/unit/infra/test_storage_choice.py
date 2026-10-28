@@ -10,7 +10,7 @@ import pytest
 
 from trader import bootstrap
 from trader.entrypoints import cli, server
-from trader.infra import storage_runtime
+from trader.infra import storage_probe, storage_runtime
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.storage_types import StorageLocation, StorageProfile
 
@@ -39,6 +39,13 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         )
 
     monkeypatch.setattr(storage_runtime, "InspectDataStorage", inspect)
+    monkeypatch.setattr(
+        storage_probe,
+        "_probe_device",
+        lambda _path, device: StorageProfile(
+            "unknown", f"fixture:{device}", "automatic", "device_metadata_unavailable"
+        ),
+    )
     return path
 
 

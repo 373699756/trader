@@ -44,7 +44,7 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
     codes = primary.long_runtime.codes
     primary.market_data.eligibility.record(
         tuple(
-            IssuerEligibilityFact(code, reason, STARTED_AT, f"fixture:{code}", "fixture", "a" * 64)
+            IssuerEligibilityFact(code, reason, STARTED_AT, f"fixture:{code}", "exchange_security_master", "a" * 64)
             for code, reason in zip(
                 codes[:2],
                 (IssuerEligibilityReason.HISTORICAL_ST, IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING),

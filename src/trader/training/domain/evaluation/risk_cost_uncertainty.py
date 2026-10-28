@@ -39,10 +39,12 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FACT_ID = re.compile(r"^[a-z0-9_]{1,96}$")
 _REASON_ID = re.compile(r"^[a-z0-9_]{1,96}$")
 _ARMS: tuple[DeepSeekAblationArm, ...] = ("local_only", "structured_facts_veto", "fixed_68_32")
-_SELECTION_POLICY = ConstrainedOraclePolicy(top_k=6, max_per_board=3, max_per_industry=2)
-_TOP_K = _SELECTION_POLICY.top_k
-_MAX_PER_INDUSTRY = _SELECTION_POLICY.max_per_industry
-_MAX_PER_BOARD = _SELECTION_POLICY.max_per_board
+_TOP_K = 6
+_MAX_PER_INDUSTRY = 2
+_MAX_PER_BOARD = 3
+_SELECTION_POLICY = ConstrainedOraclePolicy(
+    top_k=_TOP_K, max_per_board=_MAX_PER_BOARD, max_per_industry=_MAX_PER_INDUSTRY
+)
 _COST_BPS = (20, 50, 100)
 
 

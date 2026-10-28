@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -9,6 +10,40 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
 AUTHORITIES = ("1_评分逻辑.md", "2_工程设计.md", "3_工程实施.md", "4_下载训练.md")
+
+
+class _HtmlAnchors(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchors: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if value and (name == "id" or (tag == "a" and name == "name")):
+                self.anchors.add(value)
+
+
+def _document_anchors(content: str) -> set[str]:
+    headings = re.findall(r"^#{1,6} +(.+)$", content, re.MULTILINE)
+    parser = _HtmlAnchors()
+    parser.feed(content)
+    parser.close()
+    return parser.anchors | {
+        re.sub(r"[^\w\- ]", "", heading.replace("`", "")).lower().replace(" ", "-") for heading in headings
+    }
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("## 工程 `Schema`", {"工程-schema"}),
+        ('<a class="section" id="company-schema"></a>', {"company-schema"}),
+        ("<a name='company-raw'></a>\n<section id=details></section>", {"company-raw", "details"}),
+        ('<!-- <a id="missing"></a> --><a href="#missing" data-id="missing">link</a>', set()),
+    ],
+)
+def test_document_anchor_extraction(content: str, expected: set[str]) -> None:
+    assert _document_anchors(content) == expected
 
 
 @pytest.mark.parametrize("name", AUTHORITIES)
@@ -47,10 +82,7 @@ def test_active_document_links_resolve() -> None:
             if not destination.is_file():
                 failures.append(f"{path.relative_to(ROOT)} -> {target}")
             elif anchor and destination.suffix == ".md":
-                headings = re.findall(r"^#{1,6} +(.+)$", destination.read_text(encoding="utf-8"), re.MULTILINE)
-                anchors = {
-                    re.sub(r"[^\w\- ]", "", heading.replace("`", "")).lower().replace(" ", "-") for heading in headings
-                }
+                anchors = _document_anchors(destination.read_text(encoding="utf-8"))
                 if anchor not in anchors:
                     failures.append(f"{path.relative_to(ROOT)} -> missing anchor {target}")
     assert failures == []

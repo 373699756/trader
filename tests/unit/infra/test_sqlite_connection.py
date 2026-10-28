@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from trader.infra import sqlite_connection
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
@@ -124,6 +125,46 @@ def test_zero_timeout_preserves_immediate_lock_rejection(tmp_path):
                     SqliteTransaction(competitor, immediate=True),
                 ):
                     competitor.run("INSERT INTO evidence VALUES(2)")
+
+
+def test_journal_mode_retries_a_busy_transition_within_the_remaining_budget(tmp_path, monkeypatch):
+    path = tmp_path / "journal.sqlite3"
+    ticks = iter((0.0, 0.0, 0.005, 0.005))
+    monkeypatch.setattr(sqlite_connection, "monotonic", lambda: next(ticks))
+    with SqliteSession(path) as reader:
+        reader.run("CREATE TABLE facts(value INTEGER)")
+        with SqliteTransaction(reader) as transaction:
+            reader.run("SELECT * FROM facts").fetchall()
+            waits = []
+
+            def release_reader(delay):
+                waits.append(delay)
+                transaction.rollback()
+
+            monkeypatch.setattr(sqlite_connection, "sleep", release_reader)
+            with SqliteSession(path, SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=0.01)) as writer:
+                assert writer.run("PRAGMA journal_mode").require_one()[0] == "wal"
+                assert writer.run("PRAGMA busy_timeout").require_one()[0] == 10
+                assert writer.run("PRAGMA synchronous").require_one()[0] == 2
+                writer.run("INSERT INTO facts VALUES(7)")
+            assert waits == [0.005]
+        assert reader.run("SELECT value FROM facts").require_one()[0] == 7
+
+
+@pytest.mark.parametrize("timeout", (0.0, 0.01))
+def test_journal_mode_rejects_busy_transition_when_the_budget_is_exhausted(tmp_path, monkeypatch, timeout):
+    path = tmp_path / "journal.sqlite3"
+    ticks = iter((0.0, 0.0, 1.0))
+    monkeypatch.setattr(sqlite_connection, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(sqlite_connection, "sleep", lambda _: pytest.fail("lock retry exceeded its budget"))
+    with SqliteSession(path) as reader:
+        reader.run("CREATE TABLE facts(value INTEGER)")
+        with SqliteTransaction(reader):
+            reader.run("SELECT * FROM facts").fetchall()
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                OpenSqliteConnection(path, SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=timeout))
+        assert reader.run("PRAGMA journal_mode").require_one()[0] == "delete"
+        reader.run("INSERT INTO facts VALUES(7)")
 
 
 def test_maintenance_copy_can_write_destination_but_cannot_write_source(tmp_path):

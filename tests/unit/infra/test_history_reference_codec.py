@@ -478,7 +478,7 @@ def test_sync_recovers_missing_reference_binding_without_redownloading_prices(tm
         return
     assert result.state == "already_current"
     assert supplier.calls == []
-    assert InspectHistorySnapshot(root, verify_partitions=True).state == "active"
+    assert InspectHistorySnapshot(root, verify_partitions=True).state == "published"
 
 
 def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
