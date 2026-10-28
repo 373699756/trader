@@ -124,12 +124,12 @@ def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]]) -> set
         for market, start, end, scope, page in pages:
             if scope:
                 row = c.run(
-                    "SELECT next_page FROM disclosure_queries WHERE market=? AND start=? AND end=? AND scope=?",
+                    "SELECT next_page FROM disclosure_queries WHERE market=? AND start_date=? AND end_date=? AND scope=?",
                     (market, start, end, scope),
                 ).fetchone()
             else:
                 row = c.run(
-                    "SELECT next_page FROM partitions p WHERE market=? AND start=? AND end=? AND NOT EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=p.market AND q.start=p.start AND q.end=p.end)",
+                    "SELECT next_page FROM partitions p WHERE market=? AND start_date=? AND end_date=? AND NOT EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=p.market AND q.start_date=p.start_date AND q.end_date=p.end_date)",
                     (market, start, end),
                 ).fetchone()
             if row is not None and row[0] > page:
@@ -275,7 +275,7 @@ def Main() -> int:
             selection = frozenset(
                 tuple(row)
                 for row in c.run(
-                    "SELECT market,start,end FROM partitions WHERE complete=0 AND (failure<>'' OR next_page>1)"
+                    "SELECT market,start_date,end_date FROM partitions WHERE is_complete=0 AND (failure<>'' OR next_page>1)"
                 )
             )
             selection_path.write_text(json.dumps(sorted(selection)), encoding="utf-8")
@@ -332,11 +332,11 @@ def Main() -> int:
         time.sleep(configuration.request_interval_seconds)
     with SqliteSession(destination, SqliteConnectionOptions(read_only=True)) as c:
         completed = sum(
-            bool(c.run("SELECT complete FROM partitions WHERE market=? AND start=? AND end=?", key).require_one()[0])
+            bool(c.run("SELECT is_complete FROM partitions WHERE market=? AND start_date=? AND end_date=?", key).require_one()[0])
             for key in selection
         )
         covered = sum(
-            c.run("SELECT 1 FROM coverage WHERE market=? AND start=? AND end=?", key).fetchone() is not None
+            c.run("SELECT 1 FROM coverage WHERE market=? AND start_date=? AND end_date=?", key).fetchone() is not None
             for key in selection
         )
     passed = completed == covered == len(selection) and replayed == 0

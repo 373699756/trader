@@ -57,14 +57,14 @@ def ReadCompanyPublicationIdentity(connection: SqliteConnection) -> CompanyPubli
 
 _CONTENT_QUERIES = (
     "SELECT * FROM company_facts ORDER BY code",
-    "SELECT code,event_key,risk_type,subject_type,risk_level,case_number,first_disclosed_at,last_disclosed_at,effective_at,status,resolved_at,expires_at FROM company_risk_event ORDER BY code,event_key",
-    "SELECT e.code,e.event_key,p.planned_start_date,p.planned_end_date,p.planned_ratio_pct,p.completion_disclosed_at FROM company_reduction_plan p JOIN company_risk_event e ON e.id=p.risk_event_id ORDER BY e.code,e.event_key",
-    "SELECT code,event_key,event_type,subject_type,status,first_disclosed_at,last_disclosed_at,cancelled_at,positive_level,ineligible_reason,actual_ratio_pct,repurchase_purpose,contract_amount_cny,reference_annual_revenue_cny,reference_report_date,reference_disclosed_at,amount_to_revenue_pct,binding_confirmed,amount_basis FROM company_positive_event ORDER BY code,event_key",
-    "SELECT e.code,e.event_key,m.level,m.qualified_at,m.measurement_value_pct,r.source,r.source_key FROM company_positive_milestone m JOIN company_positive_event e ON e.id=m.positive_event_id JOIN company_evidence_ref r ON r.id=m.evidence_id ORDER BY e.code,e.event_key,m.level",
+    "SELECT code,event_key,risk_type,subject_type,level,case_number,first_disclosed_at,last_disclosed_at,effective_at,status,resolved_at,expires_at FROM company_risk_event ORDER BY code,event_key",
+    "SELECT e.code,e.event_key,p.start_date,p.end_date,p.planned_pct,p.completion_disclosed_at FROM company_reduction_plan p JOIN company_risk_event e ON e.id=p.risk_id ORDER BY e.code,e.event_key",
+    "SELECT code,event_key,event_type,subject_type,status,first_disclosed_at,last_disclosed_at,cancelled_at,level,ineligible_reason,actual_pct,repurchase_purpose,contract_amount,annual_revenue,revenue_report_date,revenue_disclosed_at,contract_revenue_pct,binding_confirmed,amount_basis FROM company_positive_event ORDER BY code,event_key",
+    "SELECT e.code,e.event_key,m.level,m.qualified_at,m.measured_pct,r.source,r.source_key FROM company_positive_milestone m JOIN company_positive_event e ON e.id=m.positive_id JOIN company_evidence_ref r ON r.id=m.evidence_id ORDER BY e.code,e.event_key,m.level",
     "SELECT * FROM company_unlock ORDER BY code,unlock_date",
     "SELECT v.code,v.scope,v.reason,r.source,r.source_key,v.detected_at FROM company_review v LEFT JOIN company_evidence_ref r ON r.id=v.evidence_id ORDER BY v.code,v.scope,v.reason,r.source,r.source_key",
-    "SELECT e.code,e.event_key,l.position,r.source,r.source_key FROM company_risk_evidence l JOIN company_risk_event e ON e.id=l.risk_event_id JOIN company_evidence_ref r ON r.id=l.evidence_id ORDER BY e.code,e.event_key,l.position",
-    "SELECT e.code,e.event_key,l.position,r.source,r.source_key FROM company_positive_evidence l JOIN company_positive_event e ON e.id=l.positive_event_id JOIN company_evidence_ref r ON r.id=l.evidence_id ORDER BY e.code,e.event_key,l.position",
+    "SELECT e.code,e.event_key,l.position,r.source,r.source_key FROM company_risk_evidence l JOIN company_risk_event e ON e.id=l.risk_id JOIN company_evidence_ref r ON r.id=l.evidence_id ORDER BY e.code,e.event_key,l.position",
+    "SELECT e.code,e.event_key,l.position,r.source,r.source_key FROM company_positive_evidence l JOIN company_positive_event e ON e.id=l.positive_id JOIN company_evidence_ref r ON r.id=l.evidence_id ORDER BY e.code,e.event_key,l.position",
     "SELECT code,reason,effective_at,source,source_key,evidence_hash FROM company_exclusion ORDER BY code,reason,source,source_key",
 )
 

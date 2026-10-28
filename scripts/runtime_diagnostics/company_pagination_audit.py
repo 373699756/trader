@@ -22,8 +22,8 @@ def AuditCompanyPagination(path: Path, *, budget_seconds: float) -> dict[str, ob
         targets = tuple(
             DisclosurePartition(cast(Market, row[0]), date.fromisoformat(row[1]), date.fromisoformat(row[2]))
             for row in connection.run(
-                "SELECT market,start,end FROM partitions WHERE complete=1 AND start=end AND end<=? "
-                "AND expected_rows BETWEEN 31 AND 600 ORDER BY end DESC,market LIMIT 3",
+                "SELECT market,start_date,end_date FROM partitions WHERE is_complete=1 AND start_date=end_date AND end_date<=? "
+                "AND expected_rows BETWEEN 31 AND 600 ORDER BY end_date DESC,market LIMIT 3",
                 (yesterday.isoformat(),),
             )
         )

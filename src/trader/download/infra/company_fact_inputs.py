@@ -24,12 +24,12 @@ from trader.infra.sqlite_connection import SqliteConnection
 def DecodeCompanyDisclosure(row: sqlite3.Row) -> Disclosure:
     return Disclosure(
         row["source"],
-        row["source_id"],
+        row["source_key"],
         (row["code"],),
         row["title"],
         datetime.fromisoformat(row["published_at"]),
         row["url"],
-        row["digest"],
+        row["record_hash"],
         cast(Literal["announcement", "news"], row["kind"]),
     )
 
@@ -53,19 +53,19 @@ class CompanySnapshotShared:
 
 def ReadCompanySnapshotShared(connection: SqliteConnection, now: datetime) -> CompanySnapshotShared:
     cutoff = (now.date() - timedelta(days=365)).isoformat()
-    pledge = connection.run("SELECT start FROM ratio_snapshots WHERE component='pledge'").fetchone()
+    pledge = connection.run("SELECT start_date FROM ratio_snapshots WHERE component='pledge'").fetchone()
     return CompanySnapshotShared(
-        tuple(connection.run("SELECT start,end,market,checked_at FROM coverage ORDER BY start")),
+        tuple(connection.run("SELECT start_date,end_date,market,checked_at FROM coverage ORDER BY start_date")),
         tuple(connection.run("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
         tuple(
             connection.run(
                 "SELECT DISTINCT CASE WHEN failure='' THEN 'pending' ELSE failure END AS failure,market "
-                "FROM partitions WHERE end>=? AND (failure<>'' OR complete=0)",
+                "FROM partitions WHERE end_date>=? AND (failure<>'' OR is_complete=0)",
                 (cutoff,),
             )
         ),
         pledge[0] if pledge else None,
-        connection.run("SELECT checked_at,end FROM ratio_snapshots WHERE component='unlock'").fetchone(),
+        connection.run("SELECT checked_at,end_date FROM ratio_snapshots WHERE component='unlock'").fetchone(),
     )
 
 
@@ -75,7 +75,7 @@ def ReadCompanySnapshotRows(
     placeholders = ",".join("?" for _ in codes)
     disclosures = connection.run(
         "SELECT d.*,c.code,EXISTS(SELECT 1 FROM document_publications p WHERE p.disclosure_id=d.id "
-        "AND p.code=c.code AND p.digest=d.digest AND p.extraction_hash=?) AS published_for_code "
+        "AND p.code=c.code AND p.record_hash=d.record_hash AND p.extraction_hash=?) AS published_for_code "
         "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
         f"WHERE c.code IN ({placeholders}) AND (d.published_at>=? OR d.kind='announcement') "
         "AND d.published_at<=? ORDER BY d.published_at,d.id",
@@ -92,7 +92,7 @@ def ReadCompanySnapshotRows(
         financials[row["code"]].append(row)
     ratios: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
     for row in connection.run(
-        f"SELECT code,day,ratio_pct,component FROM ratios WHERE code IN ({placeholders}) ORDER BY day", codes
+        f"SELECT code,as_of_date,ratio_pct,component FROM ratios WHERE code IN ({placeholders}) ORDER BY as_of_date", codes
     ):
         ratios[row["code"]].append(row)
     checks: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
@@ -136,7 +136,7 @@ def BuildCompanySnapshot(
         CompanyFinancial(row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *tuple(row)[3:])
         for row in inputs.financials
     )
-    pledge_rows = tuple(row for row in inputs.ratios if row["component"] == "pledge" and row["day"] <= end.isoformat())
+    pledge_rows = tuple(row for row in inputs.ratios if row["component"] == "pledge" and row["as_of_date"] <= end.isoformat())
     pledge_row = pledge_rows[-1] if pledge_rows else None
     pledge = CompanyRatio(pledge_row[0], date.fromisoformat(pledge_row[1]), pledge_row[2]) if pledge_row else None
     if pledge is None and shared.pledge_day:
@@ -144,7 +144,7 @@ def BuildCompanySnapshot(
     unlocks = tuple(
         CompanyRatio(row[0], date.fromisoformat(row[1]), row[2])
         for row in inputs.ratios
-        if row["component"] == "unlock" and end.isoformat() <= row["day"] <= (end + timedelta(days=180)).isoformat()
+        if row["component"] == "unlock" and end.isoformat() <= row["as_of_date"] <= (end + timedelta(days=180)).isoformat()
     )
     checks = (*shared.checks, *inputs.checks)
     failures = tuple(f"{row[0]}:{row[2]}" for row in checks if row[2])

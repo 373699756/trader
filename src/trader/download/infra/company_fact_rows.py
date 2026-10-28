@@ -52,26 +52,26 @@ from trader.infra.sqlite_connection import SqliteConnection
 
 COMPANY_FACT_COLUMNS = (
     "code",
-    "financial_report_date",
-    "financial_disclosed_at",
-    "financial_state",
-    "basic_eps",
-    "book_value_per_share",
+    "report_date",
+    "disclosed_at",
+    "finance_state",
+    "eps",
+    "bps",
     "revenue_growth_pct",
-    "net_profit_growth_pct",
+    "profit_growth_pct",
     "core_profit_growth_pct",
     "roe_pct",
-    "parent_net_profit",
-    "core_net_profit",
-    "pledge_ratio_pct",
-    "pledge_as_of",
+    "parent_profit",
+    "core_profit",
+    "pledge_pct",
+    "pledge_date",
     "pledge_state",
     "unlock_checked_at",
-    "unlock_coverage_end",
+    "unlock_end_date",
     "unlock_state",
-    "pending_document_count",
-    "announcement_coverage_start",
-    "announcement_coverage_end",
+    "pending_docs",
+    "announcement_start_date",
+    "announcement_end_date",
     "announcement_state",
     "checked_at",
     "published_at",
@@ -249,7 +249,7 @@ def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> t
     for kind in ("risk", "positive"):
         for row in connection.run(
             f"SELECT e.id,r.source_key FROM company_{kind}_event e JOIN company_{kind}_evidence l "
-            f"ON l.{kind}_event_id=e.id JOIN company_evidence_ref r ON r.id=l.evidence_id "
+            f"ON l.{kind}_id=e.id JOIN company_evidence_ref r ON r.id=l.evidence_id "
             f"WHERE e.code IN ({slots}) ORDER BY e.id,l.position",
             codes,
         ):
@@ -257,14 +257,14 @@ def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> t
     milestones: dict[int, list[CompanyLevelMilestone]] = defaultdict(list)
     for row in connection.run(
         "SELECT m.*,r.source_key FROM company_positive_milestone m JOIN company_positive_event e "
-        "ON e.id=m.positive_event_id JOIN company_evidence_ref r ON r.id=m.evidence_id "
+        "ON e.id=m.positive_id JOIN company_evidence_ref r ON r.id=m.evidence_id "
         f"WHERE e.code IN ({slots}) ORDER BY e.id,m.level",
         codes,
     ):
-        value = CompanyNumber(row["measurement_value_pct"])
+        value = CompanyNumber(row["measured_pct"])
         if value is None:
             raise ValueError("company_milestone_value_missing")
-        milestones[row["positive_event_id"]].append(
+        milestones[row["positive_id"]].append(
             CompanyLevelMilestone(
                 CompanyInteger(row["level"]),
                 RequireCompanyTime(row["qualified_at"]),
@@ -273,13 +273,13 @@ def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> t
             )
         )
     for row in connection.run(
-        "SELECT e.*,p.risk_event_id,p.planned_start_date,p.planned_end_date,p.planned_ratio_pct,p.completion_disclosed_at "
-        "FROM company_risk_event e LEFT JOIN company_reduction_plan p ON p.risk_event_id=e.id "
+        "SELECT e.*,p.risk_id,p.start_date,p.end_date,p.planned_pct,p.completion_disclosed_at "
+        "FROM company_risk_event e LEFT JOIN company_reduction_plan p ON p.risk_id=e.id "
         f"WHERE e.code IN ({slots}) ORDER BY e.risk_type,e.event_key",
         codes,
     ):
         kind = DecodeCompanyEnum(RISK_TYPES, row["risk_type"])
-        level = CompanyInteger(row["risk_level"])
+        level = CompanyInteger(row["level"])
         if not 1 <= level <= 4:
             raise ValueError("company_risk_level_invalid")
         risks[row["code"]].append(
@@ -304,12 +304,12 @@ def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> t
                 CompanyRiskDescription(kind),
                 tuple(links["risk", row["id"]]),
                 ReductionPlan(
-                    DecodeCompanyDate(row["planned_start_date"]),
-                    DecodeCompanyDate(row["planned_end_date"]),
-                    CompanyNumber(row["planned_ratio_pct"]),
+                    DecodeCompanyDate(row["start_date"]),
+                    DecodeCompanyDate(row["end_date"]),
+                    CompanyNumber(row["planned_pct"]),
                     DecodeCompanyTime(row["completion_disclosed_at"]),
                 )
-                if row["risk_event_id"] is not None
+                if row["risk_id"] is not None
                 else None,
             )
         )
@@ -358,20 +358,20 @@ def _positive(
     measurements: RepurchaseMeasurements | IncreaseMeasurements | ContractMeasurements
     if kind is CompanyPositiveType.SHARE_REPURCHASE:
         measurements = RepurchaseMeasurements(
-            CompanyNumber(row["actual_ratio_pct"]), DecodeCompanyEnum(REPURCHASE_PURPOSES, row["repurchase_purpose"])
+            CompanyNumber(row["actual_pct"]), DecodeCompanyEnum(REPURCHASE_PURPOSES, row["repurchase_purpose"])
         )
     elif kind is CompanyPositiveType.SHAREHOLDER_INCREASE:
-        measurements = IncreaseMeasurements(CompanyNumber(row["actual_ratio_pct"]))
+        measurements = IncreaseMeasurements(CompanyNumber(row["actual_pct"]))
     else:
         binding = CompanyInteger(row["binding_confirmed"])
         if binding not in (0, 1):
             raise ValueError("company_contract_boolean_invalid")
         measurements = ContractMeasurements(
-            CompanyNumber(row["contract_amount_cny"]),
-            CompanyNumber(row["reference_annual_revenue_cny"]),
-            DecodeCompanyDate(row["reference_report_date"]),
-            DecodeCompanyTime(row["reference_disclosed_at"]),
-            CompanyNumber(row["amount_to_revenue_pct"]),
+            CompanyNumber(row["contract_amount"]),
+            CompanyNumber(row["annual_revenue"]),
+            DecodeCompanyDate(row["revenue_report_date"]),
+            DecodeCompanyTime(row["revenue_disclosed_at"]),
+            CompanyNumber(row["contract_revenue_pct"]),
             bool(binding),
             DecodeCompanyLabel({"unknown": 0, "comparable": 1}, row["amount_basis"]),
         )
@@ -383,7 +383,7 @@ def _positive(
         RequireCompanyTime(row["first_disclosed_at"]),
         RequireCompanyTime(row["last_disclosed_at"]),
         DecodeCompanyTime(row["cancelled_at"]),
-        CompanyInteger(row["positive_level"]),
+        CompanyInteger(row["level"]),
         CompanyPositiveDescription(kind),
         evidence,
         measurements,
@@ -401,8 +401,8 @@ def _facts(
 ) -> CompanyFacts:
     code = CompanyIdentifier(row["code"])
     report, disclosed = (
-        DecodeCompanyDate(row["financial_report_date"]),
-        DecodeCompanyTime(row["financial_disclosed_at"]),
+        DecodeCompanyDate(row["report_date"]),
+        DecodeCompanyTime(row["disclosed_at"]),
     )
     if (report is None) != (disclosed is None):
         raise ValueError("company_financial_identity_incomplete")
@@ -411,26 +411,26 @@ def _facts(
         if report is not None and disclosed is not None
         else None
     )
-    day, ratio = DecodeCompanyDate(row["pledge_as_of"]), CompanyNumber(row["pledge_ratio_pct"])
+    day, ratio = DecodeCompanyDate(row["pledge_date"]), CompanyNumber(row["pledge_pct"])
     if (day is None) != (ratio is None):
         raise ValueError("company_pledge_identity_incomplete")
     pledge = CompanyRatio(code, day, ratio) if day is not None and ratio is not None else None
     return CompanyFacts(
         code,
         financial,
-        DecodeCompanyEnum(DATA_STATES, row["financial_state"]),
+        DecodeCompanyEnum(DATA_STATES, row["finance_state"]),
         pledge,
         DecodeCompanyEnum(DATA_STATES, row["pledge_state"]),
         unlocks,
         DecodeCompanyTime(row["unlock_checked_at"]),
-        DecodeCompanyDate(row["unlock_coverage_end"]),
+        DecodeCompanyDate(row["unlock_end_date"]),
         DecodeCompanyEnum(DATA_STATES, row["unlock_state"]),
         risks,
         positives,
         reviews,
-        CompanyInteger(row["pending_document_count"]),
-        DecodeCompanyDate(row["announcement_coverage_start"]),
-        DecodeCompanyDate(row["announcement_coverage_end"]),
+        CompanyInteger(row["pending_docs"]),
+        DecodeCompanyDate(row["announcement_start_date"]),
+        DecodeCompanyDate(row["announcement_end_date"]),
         DecodeCompanyEnum(DATA_STATES, row["announcement_state"]),
         RequireCompanyTime(row["checked_at"]),
         RequireCompanyTime(row["published_at"]),

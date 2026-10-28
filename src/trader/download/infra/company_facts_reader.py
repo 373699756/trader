@@ -9,10 +9,17 @@ from pathlib import Path
 
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyEvidenceLink
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.infra.company_evidence_sql import SCHEMA
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash
-from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSession,
+    SqliteTransaction,
+)
 
 _DEFAULT_EVENT_POLICY = CompanyEventPolicy()
 
@@ -46,10 +53,11 @@ class SQLiteCompanyEvidenceReader:
             with SqliteSession(
                 self._raw_path, SqliteConnectionOptions(read_only=True, timeout_seconds=2)
             ) as connection:
+                EnsureSqliteSchema(connection, SCHEMA)
                 rows = connection.run(
-                    "SELECT d.source_id,d.title,d.url,d.published_at,d.body_checked FROM disclosures d "
+                    "SELECT d.source_key,d.title,d.url,d.published_at,d.body_checked FROM disclosures d "
                     "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE c.code=? AND d.kind='announcement' "
-                    f"AND d.source_id IN ({','.join('?' for _ in evidence_ids)}) ORDER BY d.published_at DESC LIMIT 32",
+                    f"AND d.source_key IN ({','.join('?' for _ in evidence_ids)}) ORDER BY d.published_at DESC LIMIT 32",
                     (code, *evidence_ids),
                 ).fetchall()
                 return tuple(

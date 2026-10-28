@@ -164,7 +164,9 @@ class SQLiteCompanyEvidenceIndex:
     def _validate_contract(connection: SqliteConnection) -> None:
         if connection.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='contract'").fetchone() is None:
             raise ValueError("company_evidence_database_contract_mismatch")
-        contract = connection.run("SELECT identity FROM contract").fetchall()
+        if connection.run("PRAGMA user_version").require_one()[0] != SCHEMA.version:
+            raise ValueError("company_evidence_database_contract_mismatch")
+        contract = connection.run("SELECT schema_id FROM contract").fetchall()
         if [row[0] for row in contract] != ["company_collection"]:
             raise ValueError("company_evidence_database_contract_mismatch")
 
@@ -196,14 +198,14 @@ class SQLiteCompanyEvidenceIndex:
             for market in markets:
                 before_planning = connection.total_changes
                 pending_before.update(
-                    (row["market"], row["start"], row["end"])
+                    (row["market"], row["start_date"], row["end_date"])
                     for row in connection.run(
-                        "SELECT market,start,end FROM partitions WHERE market=? AND complete=0 AND end>=?",
+                        "SELECT market,start_date,end_date FROM partitions WHERE market=? AND is_complete=0 AND end_date>=?",
                         (market, cutoff.isoformat()),
                     ).fetchall()
                 )
                 latest = connection.run(
-                    "SELECT MAX(end) FROM partitions WHERE market=? AND complete=1", (market,)
+                    "SELECT MAX(end_date) FROM partitions WHERE market=? AND is_complete=1", (market,)
                 ).require_one()[0]
                 baseline_start = max(cutoff, date.fromisoformat(latest) + timedelta(days=1)) if latest else cutoff
                 for start, end in DisclosureMonths(baseline_start, today - timedelta(days=7)):
@@ -221,9 +223,9 @@ class SQLiteCompanyEvidenceIndex:
                     # Reopened audits must fetch fresh children rather than reconcile yesterday's set.
                     connection.run(
                         "DELETE FROM disclosure_queries WHERE market=? AND EXISTS(SELECT 1 FROM partitions p "
-                        "WHERE p.market=disclosure_queries.market AND p.start=disclosure_queries.start "
-                        "AND p.end=disclosure_queries.end AND p.complete=1 AND ((p.end>=? AND p.checked_at<?) "
-                        "OR (p.start>=? AND p.end<=? AND p.checked_at<?)))",
+                        "WHERE p.market=disclosure_queries.market AND p.start_date=disclosure_queries.start_date "
+                        "AND p.end_date=disclosure_queries.end_date AND p.is_complete=1 AND ((p.end_date>=? AND p.checked_at<?) "
+                        "OR (p.start_date>=? AND p.end_date<=? AND p.checked_at<?)))",
                         (
                             market,
                             (today - timedelta(days=6)).isoformat(),
@@ -234,9 +236,9 @@ class SQLiteCompanyEvidenceIndex:
                         ),
                     )
                     connection.run(
-                        "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                        "WHERE market=? AND complete=1 AND ((end>=? AND checked_at<?) "
-                        "OR (start>=? AND end<=? AND checked_at<?))",
+                        "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,is_complete=0 "
+                        "WHERE market=? AND is_complete=1 AND ((end_date>=? AND checked_at<?) "
+                        "OR (start_date>=? AND end_date<=? AND checked_at<?))",
                         (
                             market,
                             (today - timedelta(days=6)).isoformat(),
@@ -248,45 +250,45 @@ class SQLiteCompanyEvidenceIndex:
                     )
                 connection.run(
                     "DELETE FROM disclosure_queries WHERE market=? AND EXISTS(SELECT 1 FROM partitions p "
-                    "WHERE p.market=disclosure_queries.market AND p.start=disclosure_queries.start AND p.end=disclosure_queries.end "
-                    "AND p.complete=1 AND p.end>=? AND p.checked_at<?)",
+                    "WHERE p.market=disclosure_queries.market AND p.start_date=disclosure_queries.start_date AND p.end_date=disclosure_queries.end_date "
+                    "AND p.is_complete=1 AND p.end_date>=? AND p.checked_at<?)",
                     (market, (today - timedelta(days=6)).isoformat(), today.isoformat()),
                 )
                 connection.run(
-                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                    "WHERE market=? AND complete=1 AND end>=? AND checked_at<?",
+                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,is_complete=0 "
+                    "WHERE market=? AND is_complete=1 AND end_date>=? AND checked_at<?",
                     (market, (today - timedelta(days=6)).isoformat(), today.isoformat()),
                 )
                 connection.run(
                     "DELETE FROM disclosure_queries WHERE market=? AND EXISTS(SELECT 1 FROM partitions p "
-                    "WHERE p.market=disclosure_queries.market AND p.start=disclosure_queries.start AND p.end=disclosure_queries.end "
-                    "AND p.complete=1 AND p.end=? AND p.checked_at<?)",
+                    "WHERE p.market=disclosure_queries.market AND p.start_date=disclosure_queries.start_date AND p.end_date=disclosure_queries.end_date "
+                    "AND p.is_complete=1 AND p.end_date=? AND p.checked_at<?)",
                     (market, today.isoformat(), (observed_at - timedelta(minutes=15)).isoformat()),
                 )
                 connection.run(
-                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                    "WHERE market=? AND complete=1 AND end=? AND checked_at<?",
+                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,is_complete=0 "
+                    "WHERE market=? AND is_complete=1 AND end_date=? AND checked_at<?",
                     (market, today.isoformat(), (observed_at - timedelta(minutes=15)).isoformat()),
                 )
                 if connection.total_changes != before_planning:
                     MarkCompanyMarketDirty(connection, market)
             rows = connection.run(
-                "SELECT * FROM partitions WHERE complete=0 AND end>=? "
-                "ORDER BY CASE WHEN next_page>1 THEN 0 ELSE 1 END,end DESC,market,start",
+                "SELECT * FROM partitions WHERE is_complete=0 AND end_date>=? "
+                "ORDER BY CASE WHEN next_page>1 THEN 0 ELSE 1 END,end_date DESC,market,start_date",
                 (cutoff.isoformat(),),
             ).fetchall()
             rows = sorted(
                 rows,
                 key=lambda row: (
-                    row["end"] < (today - timedelta(days=6)).isoformat(),
-                    (row["market"], row["start"], row["end"]) not in pending_before,
+                    row["end_date"] < (today - timedelta(days=6)).isoformat(),
+                    (row["market"], row["start_date"], row["end_date"]) not in pending_before,
                 ),
             )
         return tuple(
             DisclosurePartition(
                 cast(Market, row["market"]),
-                date.fromisoformat(row["start"]),
-                date.fromisoformat(row["end"]),
+                date.fromisoformat(row["start_date"]),
+                date.fromisoformat(row["end_date"]),
                 row["next_page"],
                 row["expected_rows"],
                 row["received_rows"],
@@ -300,17 +302,17 @@ class SQLiteCompanyEvidenceIndex:
             return sum(
                 row[1]
                 for row in connection.run(
-                    "SELECT market,count(*) FROM partitions WHERE complete=1 AND end>=? GROUP BY market",
+                    "SELECT market,count(*) FROM partitions WHERE is_complete=1 AND end_date>=? GROUP BY market",
                     ((observed_at.date() - timedelta(days=365)).isoformat(),),
                 )
                 if row[0] in markets
             )
 
     def _add_partition(self, connection: SqliteConnection, market: str, start: date, end: date) -> None:
-        # Seed only dates with no durable owner. Existing children (including old-schema
-        # children) cover their parent's range, so restart/audit cannot resurrect it.
+        # Seed only dates with no durable owner. Existing child ranges prevent
+        # restart/audit from recreating their already covered parent range.
         ranges = connection.run(
-            "SELECT start,end FROM partitions WHERE market=? AND start<=? AND end>=? ORDER BY start,end",
+            "SELECT start_date,end_date FROM partitions WHERE market=? AND start_date<=? AND end_date>=? ORDER BY start_date,end_date",
             (market, end.isoformat(), start.isoformat()),
         ).fetchall()
         cursor = start
@@ -318,13 +320,13 @@ class SQLiteCompanyEvidenceIndex:
             left, right = date.fromisoformat(row[0]), date.fromisoformat(row[1])
             if left > cursor:
                 connection.run(
-                    "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
+                    "INSERT OR IGNORE INTO partitions(market,start_date,end_date) VALUES(?,?,?)",
                     (market, cursor.isoformat(), (left - timedelta(days=1)).isoformat()),
                 )
             cursor = max(cursor, right + timedelta(days=1))
         if cursor <= end:
             connection.run(
-                "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
+                "INSERT OR IGNORE INTO partitions(market,start_date,end_date) VALUES(?,?,?)",
                 (market, cursor.isoformat(), end.isoformat()),
             )
 
@@ -337,25 +339,25 @@ class SQLiteCompanyEvidenceIndex:
             replace(partition, start=middle + timedelta(days=1), page=1, expected_rows=None, received_rows=0),
         )
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-            connection.run("DELETE FROM partitions WHERE market=? AND start=? AND end=?", _key(partition))
+            connection.run("DELETE FROM partitions WHERE market=? AND start_date=? AND end_date=?", _key(partition))
             for item in children:
                 self._add_partition(connection, item.market, item.start, item.end)
                 connection.run(
-                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                    "WHERE market=? AND start>=? AND end<=? AND complete=1 AND checked_at<?",
+                    "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,is_complete=0 "
+                    "WHERE market=? AND start_date>=? AND end_date<=? AND is_complete=1 AND checked_at<?",
                     (*_key(item), observed_at.date().isoformat()),
                 )
-            connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
-            connection.run("DELETE FROM coverage WHERE market=? AND start=? AND end=?", _key(partition))
+            connection.run("DELETE FROM partition_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
+            connection.run("DELETE FROM coverage WHERE market=? AND start_date=? AND end_date=?", _key(partition))
             rows = connection.run(
-                "SELECT * FROM partitions WHERE market=? AND start>=? AND end<=? AND complete=0 ORDER BY start",
+                "SELECT * FROM partitions WHERE market=? AND start_date>=? AND end_date<=? AND is_complete=0 ORDER BY start_date",
                 _key(partition),
             ).fetchall()
         return tuple(
             DisclosurePartition(
                 partition.market,
-                date.fromisoformat(row["start"]),
-                date.fromisoformat(row["end"]),
+                date.fromisoformat(row["start_date"]),
+                date.fromisoformat(row["end_date"]),
                 row["next_page"],
                 row["expected_rows"],
                 row["received_rows"],
@@ -382,7 +384,7 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             CheckDisclosureQueryContract(connection, partition)
             if partition.page == 1:
-                connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
+                connection.run("DELETE FROM partition_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
             changes = self._write_disclosures(connection, page.rows)
             for item in page.rows:
                 for code in item.codes:
@@ -391,8 +393,8 @@ class SQLiteCompanyEvidenceIndex:
                         (*_key(partition), item.identity, code),
                     )
             connection.run(
-                "UPDATE partitions SET next_page=?,expected_rows=?,received_rows=?,complete=?,checked_at=?,failure='' "
-                "WHERE market=? AND start=? AND end=?",
+                "UPDATE partitions SET next_page=?,expected_rows=?,received_rows=?,is_complete=?,checked_at=?,failure='' "
+                "WHERE market=? AND start_date=? AND end_date=?",
                 (
                     partition.page + 1,
                     page.total,
@@ -403,7 +405,7 @@ class SQLiteCompanyEvidenceIndex:
                 ),
             )
             connection.run(
-                "DELETE FROM partition_retries WHERE market=? AND start=? AND end=? AND scope=?",
+                "DELETE FROM partition_retries WHERE market=? AND start_date=? AND end_date=? AND scope=?",
                 DisclosureQueryKey(partition),
             )
             # Removed/corrected listings are recognized only after a complete date slice, never after a failed page.
@@ -418,8 +420,8 @@ class SQLiteCompanyEvidenceIndex:
         stale = connection.run(
             "SELECT d.id,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
             "WHERE d.source='cninfo' AND d.kind='announcement' AND d.published_at>=? AND d.published_at<? "
-            "AND NOT EXISTS(SELECT 1 FROM partition_rows p WHERE p.market=? AND p.start=? AND p.end=? "
-            "AND p.source_id=d.source_id AND p.code=c.code)",
+            "AND NOT EXISTS(SELECT 1 FROM partition_rows p WHERE p.market=? AND p.start_date=? AND p.end_date=? "
+            "AND p.source_key=d.source_key AND p.code=c.code)",
             (partition.start.isoformat(), (partition.end + timedelta(days=1)).isoformat(), *_key(partition)),
         ).fetchall()
         for row in stale:
@@ -429,8 +431,8 @@ class SQLiteCompanyEvidenceIndex:
         # A completed range changes coverage even for issuers with no announcements.
         MarkCompanyMarketDirty(connection, partition.market)
         # Rechecks start a fresh generation; completed page membership has no remaining consumer.
-        connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
-        connection.run("DELETE FROM disclosure_query_rows WHERE market=? AND start=? AND end=?", _key(partition))
+        connection.run("DELETE FROM partition_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
+        connection.run("DELETE FROM disclosure_query_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
 
     def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None:
         with self._connect() as connection:
@@ -466,31 +468,31 @@ class SQLiteCompanyEvidenceIndex:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 ReconcileDisclosureQueries(connection, partition, page)
                 connection.run(
-                    "UPDATE partitions SET complete=1,next_page=1,expected_rows=?,received_rows=?,checked_at=?,failure='' "
-                    "WHERE market=? AND start=? AND end=?",
+                    "UPDATE partitions SET is_complete=1,next_page=1,expected_rows=?,received_rows=?,checked_at=?,failure='' "
+                    "WHERE market=? AND start_date=? AND end_date=?",
                     (page.total, page.total, observed_at.isoformat(), *_key(partition)),
                 )
                 self._finish_partition(connection, partition, observed_at)
-                connection.run("DELETE FROM partition_retries WHERE market=? AND start=? AND end=?", _key(partition))
+                connection.run("DELETE FROM partition_retries WHERE market=? AND start_date=? AND end_date=?", _key(partition))
         except DisclosureCoverageMismatch as exc:
             if exc.refresh_required:
                 # A smaller source set or changed sample really invalidates the
                 # saved generation. Preserve its historical issuer membership.
                 with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                     connection.run(
-                        "UPDATE disclosure_queries SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                        "WHERE market=? AND start=? AND end=?",
+                        "UPDATE disclosure_queries SET next_page=1,expected_rows=NULL,received_rows=0,is_complete=0 "
+                        "WHERE market=? AND start_date=? AND end_date=?",
                         _key(partition),
                     )
                     connection.run(
-                        "DELETE FROM disclosure_query_rows WHERE market=? AND start=? AND end=?", _key(partition)
+                        "DELETE FROM disclosure_query_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition)
                     )
             raise
 
     def partition_retry_after(self, partition: DisclosurePartition) -> datetime | None:
         with self._connect() as connection:
             row = connection.run(
-                "SELECT retry_after FROM partition_retries WHERE market=? AND start=? AND end=? AND scope=?",
+                "SELECT retry_at FROM partition_retries WHERE market=? AND start_date=? AND end_date=? AND scope=?",
                 DisclosureQueryKey(partition),
             ).fetchone()
         return datetime.fromisoformat(row[0]) if row else None
@@ -516,7 +518,7 @@ class SQLiteCompanyEvidenceIndex:
             with self._connect() as connection:
                 duplicate = duplicate or any(
                     connection.run(
-                        "SELECT 1 FROM partition_rows WHERE market=? AND start=? AND end=? AND source_id=? AND code=?",
+                        "SELECT 1 FROM partition_rows WHERE market=? AND start_date=? AND end_date=? AND source_key=? AND code=?",
                         (*_key(partition), identity, code),
                     ).fetchone()
                     is not None
@@ -532,8 +534,8 @@ class SQLiteCompanyEvidenceIndex:
                 RestartDisclosureQuery(connection, partition)
                 return
             connection.run(
-                "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
-                "WHERE market=? AND start=? AND end=?",
+                "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,is_complete=0 "
+                "WHERE market=? AND start_date=? AND end_date=?",
                 _key(partition),
             )
 
@@ -541,11 +543,11 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             if partition.query is not None:
                 connection.run(
-                    "UPDATE disclosure_queries SET failure=? WHERE market=? AND start=? AND end=? AND scope=?",
+                    "UPDATE disclosure_queries SET failure=? WHERE market=? AND start_date=? AND end_date=? AND scope=?",
                     (failure, *DisclosureQueryKey(partition)),
                 )
             connection.run(
-                "UPDATE partitions SET failure=? WHERE market=? AND start=? AND end=?", (failure, *_key(partition))
+                "UPDATE partitions SET failure=? WHERE market=? AND start_date=? AND end_date=?", (failure, *_key(partition))
             )
             MarkCompanyMarketDirty(connection, partition.market)
 
@@ -554,7 +556,7 @@ class SQLiteCompanyEvidenceIndex:
             item
             for item in rows
             if connection.run(
-                "SELECT 1 FROM disclosures WHERE source=? AND source_id=? AND digest=?",
+                "SELECT 1 FROM disclosures WHERE source=? AND source_key=? AND record_hash=?",
                 (item.source, item.identity, item.digest),
             ).fetchone()
             is None
@@ -565,15 +567,15 @@ class SQLiteCompanyEvidenceIndex:
                 tuple(
                     row[0]
                     for row in connection.run(
-                        "SELECT c.code FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id WHERE d.source=? AND d.source_id=?",
+                        "SELECT c.code FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id WHERE d.source=? AND d.source_key=?",
                         (item.source, item.identity),
                     )
                 ),
             )
         changes = connection.run_many(
-            "INSERT INTO disclosures(source,source_id,kind,title,published_at,url,digest) VALUES(?,?,?,?,?,?,?) "
-            "ON CONFLICT(source,source_id) DO UPDATE SET title=excluded.title,published_at=excluded.published_at,"
-            "url=excluded.url,digest=excluded.digest,body_hash=NULL,body_retained=0,body_checked=0 WHERE digest<>excluded.digest",
+            "INSERT INTO disclosures(source,source_key,kind,title,published_at,url,record_hash) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(source,source_key) DO UPDATE SET title=excluded.title,published_at=excluded.published_at,"
+            "url=excluded.url,record_hash=excluded.record_hash,body_hash=NULL,body_retained=0,body_checked=0 WHERE record_hash<>excluded.record_hash",
             (
                 (
                     item.source,
@@ -589,7 +591,7 @@ class SQLiteCompanyEvidenceIndex:
         ).rowcount
         links = connection.run_many(
             "INSERT OR IGNORE INTO disclosure_codes(code,disclosure_id) "
-            "SELECT ?,id FROM disclosures WHERE source=? AND source_id=?",
+            "SELECT ?,id FROM disclosures WHERE source=? AND source_key=?",
             ((code, item.source, item.identity) for item in rows for code in item.codes),
         ).rowcount
         IndexCompanyDocument(connection, affected)
@@ -610,7 +612,7 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection:
             SelectCompanyDocuments(connection, codes, observed_at, policy, excluded)
             rows = connection.run(
-                "SELECT d.source,d.source_id,d.kind,d.title,d.published_at,d.url,d.digest,c.code FROM disclosures d "
+                "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code FROM disclosures d "
                 "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.id IN ("
                 "SELECT p.id FROM temp.pending_documents p JOIN disclosures s ON s.id=p.id "
                 "WHERE (?=0 OR p.due=1) ORDER BY s.published_at DESC,s.id LIMIT ?) ORDER BY d.published_at DESC,d.id,c.code",
@@ -638,14 +640,14 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
             digest = self._documents.write(text)
             changed = connection.run(
-                "UPDATE disclosures SET body_hash=?,body_checked=1,body_retained=1 WHERE source=? AND source_id=? AND digest=? AND body_checked=0",
+                "UPDATE disclosures SET body_hash=?,body_checked=1,body_retained=1 WHERE source=? AND source_key=? AND record_hash=? AND body_checked=0",
                 (digest, item.source, item.identity, item.digest),
             ).rowcount
             if not changed:
                 return False
             connection.run(
                 "DELETE FROM document_retries WHERE disclosure_id IN "
-                "(SELECT id FROM disclosures WHERE source=? AND source_id=? AND digest=?)",
+                "(SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=?)",
                 (item.source, item.identity, item.digest),
             )
             MarkCompanyDirty(
@@ -653,7 +655,7 @@ class SQLiteCompanyEvidenceIndex:
                 tuple(
                     row[0]
                     for row in connection.run(
-                        "SELECT c.code FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id WHERE d.source=? AND d.source_id=?",
+                        "SELECT c.code FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id WHERE d.source=? AND d.source_key=?",
                         (item.source, item.identity),
                     )
                 ),
@@ -663,8 +665,8 @@ class SQLiteCompanyEvidenceIndex:
     def document_retry(self, item: Disclosure, policy: str) -> DocumentRetry | None:
         with self._connect() as connection:
             row = connection.run(
-                "SELECT r.failure,r.retry_after FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
-                "WHERE d.source=? AND d.source_id=? AND d.digest=? AND r.digest=d.digest AND r.policy=?",
+                "SELECT r.failure,r.retry_at FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
+                "WHERE d.source=? AND d.source_key=? AND d.record_hash=? AND r.record_hash=d.record_hash AND r.retry_policy_id=?",
                 (item.source, item.identity, item.digest, policy),
             ).fetchone()
         return DocumentRetry(row[0], datetime.fromisoformat(row[1])) if row else None
@@ -674,11 +676,11 @@ class SQLiteCompanyEvidenceIndex:
     ) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             connection.run(
-                "INSERT INTO document_retries(disclosure_id,digest,policy,failure,attempted_at,retry_after,attempts) "
-                "SELECT id,digest,?,?,?,?,1 FROM disclosures WHERE source=? AND source_id=? AND digest=? "
-                "ON CONFLICT(disclosure_id) DO UPDATE SET digest=excluded.digest,policy=excluded.policy,failure=excluded.failure,"
-                "attempted_at=excluded.attempted_at,retry_after=excluded.retry_after,"
-                "attempts=CASE WHEN document_retries.digest=excluded.digest THEN document_retries.attempts+1 ELSE 1 END",
+                "INSERT INTO document_retries(disclosure_id,record_hash,retry_policy_id,failure,attempted_at,retry_at,attempts) "
+                "SELECT id,record_hash,?,?,?,?,1 FROM disclosures WHERE source=? AND source_key=? AND record_hash=? "
+                "ON CONFLICT(disclosure_id) DO UPDATE SET record_hash=excluded.record_hash,retry_policy_id=excluded.retry_policy_id,failure=excluded.failure,"
+                "attempted_at=excluded.attempted_at,retry_at=excluded.retry_at,"
+                "attempts=CASE WHEN document_retries.record_hash=excluded.record_hash THEN document_retries.attempts+1 ELSE 1 END",
                 (
                     policy,
                     failure,
@@ -712,7 +714,7 @@ class SQLiteCompanyEvidenceIndex:
     def structured_cursor(self, query: StructuredCompanyQuery) -> StructuredCompanyQuery:
         with self._connect() as connection:
             row = connection.run(
-                "SELECT start,end,next_page,expected_rows,received_rows FROM structured_progress WHERE component=? AND scope='market'",
+                "SELECT start_date,end_date,next_page,expected_rows,received_rows FROM structured_progress WHERE component=? AND scope='market'",
                 (query.component,),
             ).fetchone()
         return (
@@ -752,7 +754,7 @@ class SQLiteCompanyEvidenceIndex:
                 existing = {
                     (row[0], date.fromisoformat(row[1]))
                     for row in connection.run(
-                        f"SELECT code,day FROM structured_members WHERE component=? AND code IN ({placeholders})",
+                        f"SELECT code,as_of_date FROM structured_members WHERE component=? AND code IN ({placeholders})",
                         (page.component, *codes),
                     )
                 }
@@ -786,15 +788,15 @@ class SQLiteCompanyEvidenceIndex:
             )
             connection.run_many(
                 "INSERT INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code,report_date) DO UPDATE SET "
-                "published_at=excluded.published_at,basic_eps=excluded.basic_eps,book_value_per_share=excluded.book_value_per_share,"
-                "revenue_growth_pct=excluded.revenue_growth_pct,net_profit_growth_pct=excluded.net_profit_growth_pct,"
+                "published_at=excluded.published_at,eps=excluded.eps,bps=excluded.bps,"
+                "revenue_growth_pct=excluded.revenue_growth_pct,profit_growth_pct=excluded.profit_growth_pct,"
                 "core_profit_growth_pct=excluded.core_profit_growth_pct,roe_pct=excluded.roe_pct,"
-                "parent_net_profit=excluded.parent_net_profit,core_net_profit=excluded.core_net_profit "
-                "WHERE (published_at,basic_eps,book_value_per_share,revenue_growth_pct,net_profit_growth_pct,"
-                "core_profit_growth_pct,roe_pct,parent_net_profit,core_net_profit) IS NOT "
-                "(excluded.published_at,excluded.basic_eps,excluded.book_value_per_share,excluded.revenue_growth_pct,"
-                "excluded.net_profit_growth_pct,excluded.core_profit_growth_pct,excluded.roe_pct,"
-                "excluded.parent_net_profit,excluded.core_net_profit)",
+                "parent_profit=excluded.parent_profit,core_profit=excluded.core_profit "
+                "WHERE (published_at,eps,bps,revenue_growth_pct,profit_growth_pct,"
+                "core_profit_growth_pct,roe_pct,parent_profit,core_profit) IS NOT "
+                "(excluded.published_at,excluded.eps,excluded.bps,excluded.revenue_growth_pct,"
+                "excluded.profit_growth_pct,excluded.core_profit_growth_pct,excluded.roe_pct,"
+                "excluded.parent_profit,excluded.core_profit)",
                 financial_values,
             )
             changes = connection.total_changes - before
@@ -805,12 +807,12 @@ class SQLiteCompanyEvidenceIndex:
                     before = connection.total_changes
                     connection.run(
                         "DELETE FROM ratios WHERE component=? AND NOT EXISTS(SELECT 1 FROM structured_members m "
-                        "WHERE m.component=ratios.component AND m.code=ratios.code AND m.day=ratios.day)",
+                        "WHERE m.component=ratios.component AND m.code=ratios.code AND m.as_of_date=ratios.as_of_date)",
                         (page.component,),
                     )
                     connection.run(
-                        "INSERT INTO ratios SELECT component,code,day,ratio_pct FROM structured_members WHERE component=? "
-                        "ON CONFLICT(component,code,day) DO UPDATE SET ratio_pct=excluded.ratio_pct WHERE ratio_pct<>excluded.ratio_pct",
+                        "INSERT INTO ratios SELECT component,code,as_of_date,ratio_pct FROM structured_members WHERE component=? "
+                        "ON CONFLICT(component,code,as_of_date) DO UPDATE SET ratio_pct=excluded.ratio_pct WHERE ratio_pct<>excluded.ratio_pct",
                         (page.component,),
                     )
                     changes += connection.total_changes - before
@@ -892,7 +894,7 @@ class SQLiteCompanyEvidenceIndex:
                 "UPDATE disclosures SET body_checked=0 WHERE body_checked=1 AND body_retained=0 AND EXISTS("
                 "SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
                 "WHERE c.disclosure_id=disclosures.id AND NOT EXISTS(SELECT 1 FROM document_publications p "
-                "WHERE p.disclosure_id=disclosures.id AND p.code=c.code AND p.digest=disclosures.digest AND p.extraction_hash=?))",
+                "WHERE p.disclosure_id=disclosures.id AND p.code=c.code AND p.record_hash=disclosures.record_hash AND p.extraction_hash=?))",
                 (self._facts.extraction_hash,),
             )
         # A new extraction identity requires fresh source verification, not old receipts.
@@ -965,7 +967,7 @@ class SQLiteCompanyEvidenceIndex:
                         rows = inputs[code].disclosures
                         for row in rows:
                             if row["kind"] == "announcement":
-                                self._bind_evidence(sources, row["source_id"], row["source"])
+                                self._bind_evidence(sources, row["source_key"], row["source"])
                         snapshot = BuildCompanySnapshot(
                             code,
                             observed_at,
@@ -982,7 +984,7 @@ class SQLiteCompanyEvidenceIndex:
                             facts = prior
                         prepared.append(facts)
                         receipts.extend(
-                            (row["id"], code, row["digest"], self._facts.extraction_hash, observed_at.isoformat())
+                            (row["id"], code, row["record_hash"], self._facts.extraction_hash, observed_at.isoformat())
                             for row in rows
                             if row["kind"] == "announcement"
                             and row["body_checked"]
@@ -1064,7 +1066,7 @@ class SQLiteCompanyEvidenceIndex:
                     continue
                 for row in connection.run(
                     "SELECT d.id FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                    "WHERE c.code=? AND d.source_id=?",
+                    "WHERE c.code=? AND d.source_key=?",
                     (item.code, review.evidence_id),
                 ).fetchall():
                     connection.run(
@@ -1079,7 +1081,7 @@ class SQLiteCompanyEvidenceIndex:
             "SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
             "WHERE c.disclosure_id=disclosures.id AND NOT EXISTS("
             "SELECT 1 FROM document_publications p WHERE p.disclosure_id=disclosures.id "
-            "AND p.code=c.code AND p.digest=disclosures.digest AND p.extraction_hash=?))",
+            "AND p.code=c.code AND p.record_hash=disclosures.record_hash AND p.extraction_hash=?))",
             (self._facts.extraction_hash,),
         )
         # Commit the receipt before physical deletion; recovery can repeat this idempotently.
@@ -1104,9 +1106,9 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             cutoff = (observed_at.date() - timedelta(days=365)).isoformat()
             ReleaseCompletedCompanyQueryRows(connection)
-            connection.run("DELETE FROM partitions WHERE end<?", (cutoff,))
-            connection.run("DELETE FROM disclosure_query_contracts WHERE end<?", (cutoff,))
-            connection.run("DELETE FROM partition_rows WHERE end<?", (cutoff,))
+            connection.run("DELETE FROM partitions WHERE end_date<?", (cutoff,))
+            connection.run("DELETE FROM disclosure_query_contracts WHERE end_date<?", (cutoff,))
+            connection.run("DELETE FROM partition_rows WHERE end_date<?", (cutoff,))
             connection.run(
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
             )

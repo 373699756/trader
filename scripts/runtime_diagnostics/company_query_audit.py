@@ -59,7 +59,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
         targets = tuple(
             DisclosurePartition(cast(Market, row[0]), date.fromisoformat(row[1]), date.fromisoformat(row[2]))
             for row in connection.run(
-                "SELECT market,start,end FROM partitions WHERE complete=0 AND failure<>'' ORDER BY start DESC LIMIT 3"
+                "SELECT market,start_date,end_date FROM partitions WHERE is_complete=0 AND failure<>'' ORDER BY start_date DESC LIMIT 3"
             )
         )
         failed = tuple(
@@ -71,8 +71,8 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
                 query=DisclosureQuery(row[4], tuple(DisclosureSecurity(*item) for item in json.loads(row[5]))),
             )
             for row in connection.run(
-                "SELECT market,start,end,next_page,plate,securities FROM disclosure_queries "
-                "WHERE complete=0 AND failure<>'' ORDER BY start DESC LIMIT 3"
+                "SELECT market,start_date,end_date,next_page,plate,securities FROM disclosure_queries "
+                "WHERE is_complete=0 AND failure<>'' ORDER BY start_date DESC LIMIT 3"
             )
         )
     capture = _Capture()
@@ -200,18 +200,18 @@ def AuditCompanyStorage(
             "SELECT COUNT(*),SUM(body_checked=1),COALESCE(SUM(body_retained=1),0) FROM disclosures WHERE kind='announcement'"
         ).require_one()
         partitions = connection.run(
-            "SELECT COUNT(*) FROM partitions WHERE complete=0 AND end>=?", (cutoff,)
+            "SELECT COUNT(*) FROM partitions WHERE is_complete=0 AND end_date>=?", (cutoff,)
         ).require_one()[0]
         partition_failures = [
             {"failure": row[0], "ranges": row[1]}
             for row in connection.run(
-                "SELECT failure,COUNT(*) FROM partitions WHERE complete=0 AND end>=? AND failure<>'' GROUP BY failure",
+                "SELECT failure,COUNT(*) FROM partitions WHERE is_complete=0 AND end_date>=? AND failure<>'' GROUP BY failure",
                 (cutoff,),
             )
         ]
         for row in connection.run(
-            "SELECT d.title,r.failure,r.retry_after FROM disclosures d LEFT JOIN document_retries r "
-            "ON r.disclosure_id=d.id AND r.digest=d.digest WHERE d.kind='announcement' AND d.body_checked=0 "
+            "SELECT d.title,r.failure,r.retry_at FROM disclosures d LEFT JOIN document_retries r "
+            "ON r.disclosure_id=d.id AND r.record_hash=d.record_hash WHERE d.kind='announcement' AND d.body_checked=0 "
             "AND d.published_at>=? AND d.published_at<=? AND EXISTS(SELECT 1 FROM disclosure_codes c "
             "JOIN company_population p ON p.code=c.code WHERE c.disclosure_id=d.id)",
             (cutoff, now.isoformat()),

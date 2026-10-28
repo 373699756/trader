@@ -36,7 +36,7 @@
 | SQLite | 保留本地事务事实、断点和冻结存储，优化访问模式，不强行合成一个大库 |
 | 公共参考合并 | inputs.json与historical_st.sqlite3的职责合并到market/reference/company_st.sqlite3；证券、ST、日历及参考发布同库管理 |
 | 列式处理 | 使用已有Polars对照具名列Parquet；按第6节的固定门槛决定是否接入，不新增DuckDB或PyArrow |
-| 公司风险 | 保留阶段281已实现的采集、正式关系表和临时正文设计；先补完原任务，再实施新增命名调整 |
+| 公司风险 | 沿用阶段281已实现的采集、正式关系表和临时正文设计；E包按用户指定独立切换字段，原阶段的真实验收保持原归属 |
 | 冻结库 | 正式冻结统一使用freeze.sqlite3，活动代码不保留旧文件名别名或双读 |
 | DeepSeek固定参数 | 继续使用config/deepseek.json，不建立DeepSeek数据库 |
 | DeepSeek运行状态 | 内存维护，使用runtime_dir/deepseek/state.json临时文件保存预算和必要恢复状态；默认.runtime/trader/deepseek/state.json |
@@ -179,7 +179,7 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 
 工作包B内一次性切换ST采集/合并、公共PrepareReference发布、同日日历复用、history/market/company共用准备、训练及研究绑定、推荐PublishedReferences、资格过滤、公司同步的参考输入、CLI、状态、存储探测和全部诊断fixture。DataPaths及bootstrap显式注入新库和端口；application/domain不因合并直接导入SQLite。原ReferencePublication和ST codec/merge的职责转入新adapter，旧活动实现删除，不留转发模块。
 
-旧inputs.json、historical_st.sqlite3及其锁/WAL/SHM路径进入活动重建清单；撤销之前拟议的security_st.sqlite3目标，不创建该中间库，不执行导入旧事实。第14节区分阶段281使用的既有参考路径和B包目标；只有参考合并实际切换时才改变公司参考接线，不能借修改本计划接管原公司阶段。
+旧inputs.json、historical_st.sqlite3及其锁/WAL/SHM路径进入活动重建清单；撤销之前拟议的security_st.sqlite3目标，不创建该中间库，不执行导入旧事实。第14节按已切换的company_st.sqlite3参考接线说明消费者，不接管原公司阶段的真实验收。
 
 定向回归必须覆盖：批次核验取消后续传、ever_st不降级、clear跨日失效、unknown保持未知、同日重复准备、发布中途失败、当前指针原子性、证券名称变化、新旧发布隔离、跨证券错误引用、日历版本不完整、行业身份冲突、catalog引用缺失及发布后采集指针变化。比较原PreparedReference逻辑值及资格结果一致，单独记录新库批量读取和发布事务耗时；合并是去重与一致性改造，不预先宣称大幅提速。
 
@@ -227,7 +227,7 @@ NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串
 | 历史控制 | 下载批次、任务、缺口、不可用qfq、绑定参考、不可变快照、当前指针及schema_contract各有职责 |
 | 年度价格 | daily_price_revision保存完整raw/qfq修订；daily_price_observation关联日期、证券、同步序号和修订 |
 | 独立短窗 | 价格单元、档位绑定、日历、完成状态及发布记录分表；不按V2/V3复制同一价格事实 |
-| 公司正式/采集 | 保留第12、13节已实现的关系和code；按“当前字段→目标字段”映射调整冗长及含糊字段，不另建同义事实表 |
+| 公司正式/采集 | 保留第12、13节已实现的关系和code；按“原字段→现字段”映射调整冗长及含糊字段，不另建同义事实表 |
 | 训练 | 样本、日期分区、统计、诊断和序列块分别具名；f0/f1替换为真实特征语义列，禁止通用EAV特征表 |
 | 冻结 | freeze_record保存正式记录；新库不创建已经退役的定时检查点表，旧检查点读取代码随无迁移切换删除 |
 | 发布序号 | publication_sequence记录预留高水位；schema_contract说明库合同，不承载证券/日历副本 |
@@ -505,7 +505,7 @@ Polars已在pyproject.toml依赖中；本轮无需新增分析引擎。技术能
 | B 参考合并、历史与短窗 | 按第2.4节完成company_st.sqlite3及catalog版本引用；保留清楚的现有文件名，按第3节调整表、字段和类型；全部下载、训练、推荐、结算及诊断消费者切换 | 参考原子发布与版本隔离、新格式fixture、修订/配对/断点通过；旧JSON、独立ST库和旧活动SQL路径删除，性能对照通过 |
 | C 冻结与研究 | freeze.sqlite3、publication_state、V1目录、收益/追踪及研究表命名；全部消费者和公开只读投影接线 | 冻结/SSE/结算/序号回归通过；空置data-plane和退役检查点活动代码删除 |
 | D DeepSeek文件 | 共享预算/批次/熔断服务改为类型对象和临时JSON；配置、组合根、状态及诊断原子切换 | 第5节矩阵通过；旧DeepSeek数据库创建/访问/路径全部删除；本地降级保持 |
-| E 公司字段命名 | 以原负责人完成并验收的281为输入，应用第12、13节目标字段，切换全部SQL、codec、证据、CLI、诊断和测试；按B包实际状态接参考 | 无第二公司owner、不重做采集、不转移281债务；新schema及全部消费者同批切换，字段语义、覆盖和共享预读无回归 |
+| E 公司字段命名 | 沿用281已有关系表实现，应用第12、13节字段，切换SQL、codec、证据查询及诊断，核对CLI、共享预读和测试消费者；参考沿用B包company_st.sqlite3 | 无第二公司owner、不重做采集、不转移281债务；新schema及全部消费者同批切换，字段语义、覆盖和共享预读无回归 |
 | F 样本与列式 | 样本具名列、批量数组和资源释放；按第6.4节做列式对照及唯一接线 | 四档双头固定输入一致；满足门才接入Parquet，失败则删除候选活动分支 |
 | G 全链演练 | 在仓库外新目录做空库下载、训练、重跑、中断恢复、启动和真实专项准备 | 完整门禁、性能证据、清理清单和切换命令形成可检查候选；不自动切换活动数据 |
 | H 活动重建 | 依据第9节执行已确认范围内的清空、全量下载、四档训练和新日起运行 | 数据、模型、推荐分别验收；失败保留明确待补，不伪造通过或回填旧记录 |
@@ -516,7 +516,7 @@ B、C、D各包内必须同时切换新owner、全部消费者并删除旧活动
 
 续作先检查company_facts_schema/protocol、company_fact_rows、company_facts_index与reader，确认旧JSON发布codec和独立eligibility活动实现已经删除。检查company_evidence_index、company_pipeline_queries及正文文件生命周期只读取采集工作状态，正式发布身份不从raw获取；组合根显式注入正式库、采集库及正文路径。消费者范围包括同步与新闻采集人口、发布版本、风险/利好编译、PublishedCompanyResearch、详情证据、永久排除、CLI/健康状态、统一诊断、数据布局/离线工具和相关回归。
 
-A先完成当前基线及命名清单，B/C/D/F各自依赖A；E依赖281完整交付及A的映射，涉及新参考接线时再依赖B。G依赖B/C/D/E/F，H依赖G及对应数据切换授权。A/B/C/D/F的独立工作不因281未完成而混改其记录；共享文件先明确各自改动范围。
+A先完成当前基线及命名清单，B/C/D/F各自依赖A；E依赖281已有关系表代码及A的映射，按用户指定独立完成字段切换；参考接线沿用B，281真实重建及性能验收仍由原阶段完成。G依赖B/C/D/E/F，H依赖G及对应数据切换授权。A/B/C/D/F的独立工作不因281未完成而混改其记录；共享文件先明确各自改动范围。
 
 用户已自行删除data内历史数据及模型，无法再获取原活动库、真实模型启动、训练和连续评分的原样基线。A保留可复现的固定fixture和源码身份，明确测量范围；后续每个性能实现包仍须使用同输入的新旧源码交替对照。G使用同一份新下载的隔离输入补全真实训练、模型与评分测量，H另验活动重建；缺少旧真实数据的比较明确记为不可获得，不能拿合成结果补签真实验收。阶段281的全市场公司/启动未完成项继续保留原归属。
 
@@ -583,17 +583,9 @@ A先完成当前基线及命名清单，B/C/D/F各自依赖A；E依赖281完整�
 
 每个实现切片运行受影响Ruff、复杂类型边界的mypy和必要的定向回归，集中Review完整diff及新增/删除路径，检查旧引用、重复owner、TODO、生成物和越界修改。文档批次只做完整Review、链接和git diff --check，不新增业务测试。
 
-完整候选与发布门禁使用仓库现有命令：
+完整候选与发布门禁遵守AGENTS.md第6节：格式检查、格式化及无关脚本不能自动运行，即使被Make、测试、hook或skill间接依赖也不执行。先检查入口实际调用范围，拆出与本批直接相关的正确性、类型及功能检查；不可拆分的入口跳过并记录，不能宣称完整发布门禁通过。
 
-```bash
-make format-check
-make lint
-make type-check
-make test-full
-make package
-```
-
-按工程设计补仓库外wheel安装、只读API/SSE、真实浏览器、五时段、取消/恢复及资源验收。未运行、fixture、真实供应商、真实全市场和收益验证各自明确标记；make test不替代make test-full。
+发布另按工程设计及用户授权核验打包、仓库外wheel安装、只读API/SSE、真实浏览器、五时段、取消/恢复及资源；不因普通“继续”自动启动这些任务。未运行、fixture、真实供应商、真实全市场和收益验证各自明确标记；快速或定向测试不冒充完整回归。
 
 ### 10.3 文档收口
 
@@ -601,7 +593,7 @@ make package
 | --- | --- |
 | 4_下载训练.md | company_st.sqlite3合并、版本引用和原子发布、新路径、唯一owner、raw/qfq、快照、短窗、样本、列式采用结论及完整字段字典 |
 | 2_工程设计.md | freeze.sqlite3、发布序号、DeepSeek配置/临时状态、故障降级、资源及启动/重建验收 |
-| plan_sqlite.md | 合并后的唯一方案入口；第0节保留本次固定基线摘要，第12、13节保留当前字段与目标映射，不另建活动台账 |
+| plan_sqlite.md | 合并后的唯一方案入口；第0节保留本次固定基线摘要，第12、13节保留原字段与现字段映射，不另建活动台账 |
 | 1_评分逻辑.md | 仅在说明存储映射时补必要引用；模型特征ID、评分字段及业务规则不随数据库改名 |
 | 3_工程实施.md | 唯一活动状态、实际改动、验证和未完成项；本文只引用固定基线，不维护滚动勾选台账 |
 
@@ -633,7 +625,7 @@ DeepSeek文件化切换后不再维护其SQLite字段表，工程设计中改列
 
 另一个已观测问题是 history_preload_deadline，边界 require_projection:362，历史预加载预算为300秒。它需要独立定位和实测，不能承诺拆公司库就自动修复，也不能通过放大deadline掩盖瓶颈。
 
-以下协议已在阶段281代码中实现，仍需原阶段的真实验收；目标改名见第12、13节，不能把当前列名当作已完成的目标名。
+以下关系与codec沿用阶段281实现，字段按第12、13节切换为schema 2；原阶段的真实验收继续在工程台账登记。存储列改名不改变领域对象、评分特征或HTTP/CLI字段。
 
 ### 11.2 类型、空值与时间
 
@@ -711,9 +703,9 @@ company_review.reason和company_positive_event.ineligible_reason共用下列编�
 
 <a id="company-schema"></a>
 
-## 12. 公司正式库：当前字段与目标命名
+## 12. 公司正式库：原字段与现字段映射
 
-12张正式表及各列类型已实现；本节逐字段保留当前合同，并列出E包的目标名。当前字段与目标字段相同即保留，不新增兼容列；只有E包实现、全部消费者切换及新库验收后，目标名才成为实际schema。下文主外键和约束中的名称描述当前结构，目标结构应用同一映射，不改变约束和业务身份。
+正式库12张表使用schema 2（PRAGMA user_version和company_publication.schema_version均为2）。本节保留原列名供核对，现字段对应建表及全部SQL/codec；两列相同即保留，不新增兼容列。原schema 1及旧混合库拒绝读取，不现场改表或导入旧事实；新库初始化、隔离验证和真实重建的证据分别记入工程台账。约束、类型、单位、NULL、枚举、稳定事件键及确定性内容身份保持，列名由持久化边界映射到原领域属性。
 
 下列每行对应一个字段。“否”表示NOT NULL；“是”表示允许NULL。表内不保存自由文本、JSON数组或原始公告列表。事件子表保留确有用途的多条事实，因此4401只股票对应4401条主记录，不意味着整个数据库只能有4401行。
 
@@ -721,7 +713,7 @@ company_review.reason和company_positive_event.ineligible_reason共用下列编�
 
 主键code。共24列。它提供启动加载和组件完整性判断，不承担公告归档或历史评分快照。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | code | code | TEXT | 否 | 六位股票代码；主键及各事实子表的归属键 |
 | financial_report_date | report_date | INTEGER | 是 | 最新可用财报报告期；判断报告期和有效性 |
@@ -752,7 +744,7 @@ company_review.reason和company_positive_event.ineligible_reason共用下列编�
 
 id为内部主键，UNIQUE(code,event_key)，code外键引用company_facts。风险是否在某个决策日有效仍由领域规则结合状态和时间判断，存储层不另存计算结论。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | id | id | INTEGER | 否 | 内部事件主键；供减持计划和证据关联引用 |
 | code | code | TEXT | 否 | 股票代码；外键及按股读取索引 |
@@ -770,9 +762,9 @@ id为内部主键，UNIQUE(code,event_key)，code外键引用company_facts。风
 
 ### 12.3 company_reduction_plan：减持事件的额外字段
 
-一条减持事件至多一条，risk_event_id为主键及外键。不能把任意减持公告都解释为已实施减持。
+一条减持事件至多一条，risk_id为主键及外键。不能把任意减持公告都解释为已实施减持。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | risk_event_id | risk_id | INTEGER | 否 | 引用company_risk_event.id，且类型必须为大股东减持 |
 | planned_start_date | start_date | INTEGER | 是 | 计划减持开始日期；用于计划有效范围 |
@@ -784,7 +776,7 @@ id为内部主键，UNIQUE(code,event_key)，code外键引用company_facts。风
 
 id主键，UNIQUE(code,event_key)，code外键引用company_facts。只存实际测量和证据状态，不持久化最终加分。不同事件不适用的测量列必须为NULL。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | id | id | INTEGER | 否 | 内部利好事件主键 |
 | code | code | TEXT | 否 | 股票代码，外键及按股读取索引 |
@@ -809,9 +801,9 @@ id主键，UNIQUE(code,event_key)，code外键引用company_facts。只存实际
 
 ### 12.5 company_positive_milestone：首次达到利好级别的证据
 
-复合主键(positive_event_id,level)。达到不同级别的首次时间分别保存，不能每次进展公告都重启奖励窗口。
+复合主键(positive_id,level)。达到不同级别的首次时间分别保存，不能每次进展公告都重启奖励窗口。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | positive_event_id | positive_id | INTEGER | 否 | 外键引用company_positive_event.id |
 | level | level | INTEGER | 否 | 1—3首次达到的级别 |
@@ -823,7 +815,7 @@ id主键，UNIQUE(code,event_key)，code外键引用company_facts。只存实际
 
 复合主键(code,unlock_date)。完整前视范围存在主表；没有明细行不能单独证明无解禁。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | code | code | TEXT | 否 | 外键引用company_facts.code |
 | unlock_date | unlock_date | INTEGER | 否 | 解禁日期；计算相对决策日的前视风险 |
@@ -833,7 +825,7 @@ id主键，UNIQUE(code,event_key)，code外键引用company_facts。只存实际
 
 id主键；(code,scope,reason,evidence_id)去重，NULL证据也去重。只保留当前有作用的原因，历史采集失败详情属于raw。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | id | id | INTEGER | 否 | 内部待核实记录主键 |
 | code | code | TEXT | 否 | 外键引用company_facts.code |
@@ -846,7 +838,7 @@ id主键；(code,scope,reason,evidence_id)去重，NULL证据也去重。只保�
 
 id主键，UNIQUE(source,source_key)。只保存被风险、利好、达标节点或待核实事项引用的证据，不保存全量公告索引。发布后清理没有任何引用的键。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | id | id | INTEGER | 否 | 紧凑内部证据主键，供关系表使用 |
 | source | source | INTEGER | 否 | evidence_source编号；与source_key共同定位原始资料 |
@@ -854,9 +846,9 @@ id主键，UNIQUE(source,source_key)。只保存被风险、利好、达标节�
 
 ### 12.9 company_risk_evidence：风险事件与证据的关系
 
-复合主键(risk_event_id,evidence_id)，UNIQUE(risk_event_id,position)。保留现有证据顺序，避免“最近证据”语义改变。
+复合主键(risk_id,evidence_id)，UNIQUE(risk_id,position)。保留现有证据顺序，避免“最近证据”语义改变。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | risk_event_id | risk_id | INTEGER | 否 | 外键引用company_risk_event.id |
 | evidence_id | evidence_id | INTEGER | 否 | 外键引用company_evidence_ref.id |
@@ -864,9 +856,9 @@ id主键，UNIQUE(source,source_key)。只保存被风险、利好、达标节�
 
 ### 12.10 company_positive_evidence：利好事件与证据的关系
 
-复合主键(positive_event_id,evidence_id)，UNIQUE(positive_event_id,position)。
+复合主键(positive_id,evidence_id)，UNIQUE(positive_id,position)。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | positive_event_id | positive_id | INTEGER | 否 | 外键引用company_positive_event.id |
 | evidence_id | evidence_id | INTEGER | 否 | 外键引用company_evidence_ref.id |
@@ -876,7 +868,7 @@ id主键，UNIQUE(source,source_key)。只保存被风险、利好、达标节�
 
 id主键，UNIQUE(code,reason,source,source_key)。该表无需依赖company_facts存在相同股票：已退市或不在当前采集人口中的股票仍可能需要保留排除事实。不保存ST历史，不保存一般公司风险的第二份结论。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | id | id | INTEGER | 否 | 内部排除事实主键 |
 | code | code | TEXT | 否 | 六位股票代码；判断永久排除 |
@@ -892,10 +884,10 @@ download应用层提供明确的非ST排除写入用例，组合根将其注入�
 
 只允许singleton=1的一行，与事实变更在同一个正式库事务中提交。
 
-| 当前字段 | 目标字段 | SQLite类型 | 可空 | 含义及作用 |
+| 原字段 | 现字段 | SQLite类型 | 可空 | 含义及作用 |
 | --- | --- | --- | --- | --- |
 | singleton | singleton | INTEGER | 否 | 主键，CHECK=1；保证唯一活动发布身份 |
-| schema_version | schema_version | INTEGER | 否 | 明确的结构协议版本，初始为1；旧混合库不作为该版本读取 |
+| schema_version | schema_version | INTEGER | 否 | 结构协议版本固定2；原schema 1及旧混合库不读取 |
 | extraction_hash | extraction_hash | BLOB | 否 | 32字节提取身份摘要；包含codec/提取协议及相关规则参数 |
 | content_hash | content_hash | BLOB | 否 | 32字节确定性内容摘要；绑定本次正式事实及排除事实 |
 | published_at | published_at | INTEGER | 否 | 本次完整事务的发布时刻；与各股票资料年龄分开 |
@@ -904,9 +896,9 @@ download应用层提供明确的非ST排除写入用例，组合根将其注入�
 
 <a id="company-raw"></a>
 
-## 13. 公司采集库：当前字段与目标命名
+## 13. 公司采集库：原字段与现字段映射
 
-文件为data/company/raw/company_collection.sqlite3。采用“临时压缩正文＋SQLite采集索引”：PDF由适配器有界下载到内存，解析结束即释放，不落盘归档；压缩正文暂存在raw/text。SQLite负责按股票、日期、来源定位、去重、分页续传、失败重试和受影响股票队列，不保存正文，不参与推荐启动的常规扫描。
+文件为data/company/raw/company_collection.sqlite3，23张表使用schema 2（PRAGMA user_version=2，contract.schema_id固定为company_collection）。旧未版本化采集库拒绝读取，不现场迁移或保留旧列。采集日期/时刻继续使用ISO TEXT；record_hash仍是原来源记录摘要TEXT，不强转为32字节SHA-256。采用“临时压缩正文＋SQLite采集索引”：PDF由适配器有界下载到内存，解析结束即释放，不落盘归档；压缩正文暂存在raw/text。SQLite负责按股票、日期、来源定位、去重、分页续传、失败重试和受影响股票队列，不保存正文，不参与推荐启动的常规扫描。
 
 **硬盘占用采用滚动批次限制：下载一部分、提取一部分、正式提交一部分、清理一部分，再进入下一批。raw不是长期保存全部公告附件和正文的归档。** 正常路径默认每批最多50篇，沿用有界并发；正文临时目录上限256 MiB，另留64 MiB文件系统余量。派发前按正文字符上限的UTF-8最坏字节量计算本批容量，剩余空间不足时缩小批次；崩溃恢复时先处理已保存正文，仍不足则明确停止新下载。该额度不包括正式事实、采集索引和其它业务数据，不能理解为整个data目录上限。
 
@@ -916,9 +908,9 @@ download应用层提供明确的非ST排除写入用例，组合根将其注入�
 
 以下结构已在阶段281代码中落地，真实全市场验收尚未完成；E包目标字段与当前字段并列，同名即保留。表名沿用已明确职责的现名，不为单复数重做采集实现。record_hash只更名、不把未核实算法的现有digest强制转为SHA-256或BLOB；body_hash和extraction_hash仍按已验证的32字节SHA-256保存。as_of_date在ratios及structured_members中表示component所限定的统计日或解禁日，不改成交易日。日期TEXT沿用ISO日期，时刻TEXT沿用带时区ISO格式，避免为采集资料增加与正式库无关的格式迁移。除标注“可空”外均非空；组合键、外键及幂等规则在表说明中列出。
 
-| 当前表.字段 | 目标字段 | SQLite类型 | 含义及作用 |
+| 原表.字段 | 现字段 | SQLite类型 | 含义及作用 |
 | --- | --- | --- | --- |
-| contract.identity | schema_id | TEXT | 主键，固定company_collection；拒绝把旧混合库当作新采集库打开 |
+| contract.identity | schema_id | TEXT，可空 | 普通rowid表的TEXT主键允许SQL NULL；初始化与合同校验只接受唯一company_collection，拒绝旧混合库或其它身份 |
 | disclosures.id | id | INTEGER | 公告/新闻内部主键；供关联、正文要求和重试引用 |
 | disclosures.source | source | TEXT | 原始来源标识；与source_id组成唯一键 |
 | disclosures.source_id | source_key | TEXT | 来源内稳定记录ID；与正式证据键关联 |
@@ -937,7 +929,7 @@ download应用层提供明确的非ST排除写入用例，组合根将其注入�
 | document_publications.published_at | published_at | TEXT | 确认正式库提交后的回执时刻；供恢复与清理核验 |
 | disclosure_codes.code | code | TEXT | 股票代码；复合主键(code,disclosure_id) |
 | disclosure_codes.disclosure_id | disclosure_id | INTEGER | disclosures外键，删除公告时级联；支持一篇公告关联多股 |
-| partitions.market | market | TEXT | 市场范围；与start,end组成分区主键 |
+| partitions.market | market | TEXT | 市场范围；与start_date,end_date组成分区主键 |
 | partitions.start | start_date | TEXT | 分区查询起日 |
 | partitions.end | end_date | TEXT | 分区查询止日 |
 | partitions.next_page | next_page | INTEGER | 下次应请求页码，初始1；用于续传 |
@@ -951,7 +943,7 @@ download应用层提供明确的非ST排除写入用例，组合根将其注入�
 | partition_rows.end | end_date | TEXT | 所属分区止日 |
 | partition_rows.source_id | source_key | TEXT | 本轮已接收来源ID；参与幂等核对 |
 | partition_rows.code | code | TEXT | 本轮来源ID关联的股票；与前四列组成主键 |
-| coverage.market | market | TEXT | 完整覆盖市场；与start,end组成主键 |
+| coverage.market | market | TEXT | 完整覆盖市场；与start_date,end_date组成主键 |
 | coverage.start | start_date | TEXT | 已证明完整的范围起日；不能仅保留滚动窗口而丢失初始覆盖证据 |
 | coverage.end | end_date | TEXT | 已证明完整的范围止日 |
 | coverage.checked_at | checked_at | TEXT | 覆盖证明核查时刻 |
@@ -966,7 +958,7 @@ download应用层提供明确的非ST排除写入用例，组合根将其注入�
 | financials.roe_pct | roe_pct | REAL，可空 | 来源净资产收益率百分比 |
 | financials.parent_net_profit | parent_profit | REAL，可空 | 来源归母净利润，人民币元 |
 | financials.core_net_profit | core_profit | REAL，可空 | 来源扣非净利润，人民币元 |
-| ratios.component | component | TEXT | pledge或unlock；与code,day组成主键 |
+| ratios.component | component | TEXT | pledge或unlock；与code,as_of_date组成主键 |
 | ratios.code | code | TEXT | 来源股票代码 |
 | ratios.day | as_of_date | TEXT | 质押统计日或解禁日，由component区分 |
 | ratios.ratio_pct | ratio_pct | REAL | 来源比例百分比，0—100 |
@@ -981,7 +973,7 @@ download应用层提供明确的非ST排除写入用例，组合根将其注入�
 | structured_progress.next_page | next_page | INTEGER | 下一待请求页码 |
 | structured_progress.expected_rows | expected_rows | INTEGER，可空 | 来源声明总数 |
 | structured_progress.received_rows | received_rows | INTEGER | 本轮已确认数量 |
-| structured_members.component | component | TEXT | 当前结构化任务组件；与code,day组成主键 |
+| structured_members.component | component | TEXT | 当前结构化任务组件；与code,as_of_date组成主键 |
 | structured_members.code | code | TEXT | 本轮已确认股票 |
 | structured_members.day | as_of_date | TEXT | 本轮记录对应日期 |
 | structured_members.ratio_pct | ratio_pct | REAL，可空 | 当前批次比例；完整核验后进入ratios |
@@ -1045,7 +1037,7 @@ raw中不再有published、publication或company_facts的第二份正式表。�
 
 ### 14.1 ST与永久排除的单一来源
 
-1. 阶段281继续由data/market/reference/historical_st.sqlite3及既有参考发布流程负责ST，启动读取inputs.json中的已发布资格事实和身份；B包完成后统一读取第2.4节的company_st.sqlite3不可变发布。两种路径分别描述切换前后，不允许活动双读。
+1. ST及参考人口统一读取第2.4节data/market/reference/company_st.sqlite3的不可变发布；旧historical_st.sqlite3及inputs.json已退出活动路径，不双读或回退。
 2. company_facts不增加is_st、ever_st或ST历史表；company_exclusion也不保存ST记录。
 3. 当前报价或证券名称新出现ST时，运行内存立即限制该股票；已有参考维护流程负责后续持久化核查，不能为此在company建一份ST历史。
 4. 退市和人工永久黑名单保留现有有效排除语义，移入company_exclusion；普通处罚、造假等公司风险继续由公司事件和评分规则负责，不能意外恢复旧的永久排除规则。

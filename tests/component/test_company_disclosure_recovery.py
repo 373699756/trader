@@ -174,7 +174,7 @@ def test_oversized_day_completes_only_after_all_board_queries_and_parent_reconci
     with SqliteSession(index.path) as c:
         assert (
             c.run(
-                "SELECT complete FROM partitions WHERE market=? AND start=? AND end=?",
+                "SELECT is_complete FROM partitions WHERE market=? AND start_date=? AND end_date=?",
                 (target.market, str(target.start), str(target.end)),
             ).require_one()[0]
             == 1
@@ -281,7 +281,7 @@ def test_missing_historical_issuer_is_added_without_redownloading_completed_quer
     assert result.pending_partitions == 0 and not result.failures
     with SqliteSession(index.path) as c:
         assert c.run("SELECT count(*) FROM coverage").require_one()[0] == 1
-        assert c.run("SELECT sum(complete) FROM disclosure_queries").require_one()[0] == 2
+        assert c.run("SELECT sum(is_complete) FROM disclosure_queries").require_one()[0] == 2
 
 
 def test_query_policy_releases_only_corrected_failures_once(tmp_path, monkeypatch):
@@ -316,7 +316,7 @@ def test_date_completion_removes_only_withdrawn_links_in_its_market_and_day(tmp_
         linked = {
             row[0]
             for row in connection.run(
-                "SELECT d.source_id FROM disclosures d JOIN disclosure_codes c ON d.id=c.disclosure_id"
+                "SELECT d.source_key FROM disclosures d JOIN disclosure_codes c ON d.id=c.disclosure_id"
             )
         }
     assert linked == {"000001", "920001", "yesterday"}

@@ -24,7 +24,7 @@ def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_p
     partition = index.partitions(("sse",), fixtures.NOW)[0]
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run(
-            "UPDATE partitions SET start=end,expected_rows=31,complete=1 WHERE market=? AND start=? AND end=?",
+            "UPDATE partitions SET start_date=end_date,expected_rows=31,is_complete=1 WHERE market=? AND start_date=? AND end_date=?",
             (partition.market, str(partition.start), str(partition.end)),
         )
     items = tuple(fixtures._disclosure(str(i)) for i in range(31))
@@ -160,7 +160,7 @@ def test_company_compaction_retains_failed_range_members_facts_bodies_and_retry_
     report = _compact_storage(index.path, tmp_path / "isolated", budget_seconds=10)
     assert report["removed_completed_members"] == 1 and report["retained_data_equal"]
     with SqliteSession(tmp_path / "isolated/company_compacted.sqlite3") as connection:
-        assert connection.run("SELECT source_id FROM partition_rows").require_one()[0] == "pending"
+        assert connection.run("SELECT source_key FROM partition_rows").require_one()[0] == "pending"
     assert index.path.read_bytes() == before
 
 

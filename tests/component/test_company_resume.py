@@ -61,15 +61,15 @@ def test_recent_day_planning_never_duplicates_a_completed_wider_owner(tmp_path):
     index.partitions(("sse",), NOW)
     start, end = NOW.date() - timedelta(days=8), NOW.date() - timedelta(days=1)
     with SqliteSession(index.path) as c, SqliteTransaction(c):
-        c.run("DELETE FROM partitions WHERE start>=? AND end<=?", (str(start), str(end)))
+        c.run("DELETE FROM partitions WHERE start_date>=? AND end_date<=?", (str(start), str(end)))
         c.run(
-            "INSERT INTO partitions(market,start,end,complete,checked_at) VALUES('sse',?,?,1,?)",
+            "INSERT INTO partitions(market,start_date,end_date,is_complete,checked_at) VALUES('sse',?,?,1,?)",
             (str(start), str(end), NOW.isoformat()),
         )
     index.partitions(("sse",), NOW)
     with SqliteSession(index.path) as c:
         assert (
-            c.run("SELECT count(*) FROM partitions WHERE start>=? AND end<=?", (str(start), str(end))).require_one()[0]
+            c.run("SELECT count(*) FROM partitions WHERE start_date>=? AND end_date<=?", (str(start), str(end))).require_one()[0]
             == 1
         )
     assert not any(p.start == start and p.end == end for p in index.partitions(("sse",), NOW + timedelta(minutes=16)))
@@ -84,7 +84,7 @@ def test_old_overlapping_parent_and_child_cursors_are_consumed_once(tmp_path):
     child = DisclosurePartition("sse", NOW.date(), NOW.date())
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run(
-            "INSERT INTO partitions(market,start,end) VALUES(?,?,?)",
+            "INSERT INTO partitions(market,start_date,end_date) VALUES(?,?,?)",
             (parent.market, parent.start.isoformat(), parent.end.isoformat()),
         )
     index.commit_page(parent, DisclosurePage((fixtures._disclosure("parent"),), 2, True), NOW)
@@ -137,9 +137,9 @@ def test_existing_page_one_precedes_new_calendar_day_and_rechecks(tmp_path):
     planned = index.partitions(("sse",), NOW)
     old = min(planned, key=lambda item: item.start)
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE partitions SET complete=1,checked_at=?", (NOW.isoformat(),))
+        connection.run("UPDATE partitions SET is_complete=1,checked_at=?", (NOW.isoformat(),))
         connection.run(
-            "UPDATE partitions SET complete=0 WHERE start=? AND end=?", (old.start.isoformat(), old.end.isoformat())
+            "UPDATE partitions SET is_complete=0 WHERE start_date=? AND end_date=?", (old.start.isoformat(), old.end.isoformat())
         )
     pending = index.partitions(("sse",), NOW + timedelta(days=1))
     assert pending[0].end == NOW.date() + timedelta(days=1)
@@ -154,7 +154,7 @@ def test_already_deferred_child_is_not_retried_when_parent_splits(tmp_path):
     child = DisclosurePartition("sse", NOW.date(), NOW.date())
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run(
-            "INSERT INTO partitions(market,start,end) VALUES(?,?,?)",
+            "INSERT INTO partitions(market,start_date,end_date) VALUES(?,?,?)",
             (parent.market, parent.start.isoformat(), parent.end.isoformat()),
         )
     index.commit_page(child, DisclosurePage((fixtures._disclosure("head"),), 2, True), NOW)

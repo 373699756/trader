@@ -28,7 +28,7 @@ def _old_document(index, body):
     partition = DisclosurePartition("sse", old.date(), old.date())
     document = Disclosure("cninfo", "old-case", ("600001",), "收到立案告知书", old, "https://example.test/old", "old")
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("INSERT INTO partitions(market,start,end) VALUES('sse',?,?)", (str(old.date()), str(old.date())))
+        connection.run("INSERT INTO partitions(market,start_date,end_date) VALUES('sse',?,?)", (str(old.date()), str(old.date())))
     index.commit_page(partition, DisclosurePage((document,), 1, False), _AT)
     if body is not None:
         index.commit_document(document, body)

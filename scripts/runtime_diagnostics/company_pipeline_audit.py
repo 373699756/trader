@@ -46,7 +46,7 @@ def _sample(path: Path) -> tuple[Disclosure, ...]:
     selected: dict[tuple[str, str], Disclosure] = {}
     with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3)) as connection:
         rows = connection.run(
-            "SELECT d.source,d.source_id,d.kind,d.title,d.published_at,d.url,d.digest,c.code "
+            "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code "
             "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
             "WHERE d.id IN (SELECT id FROM disclosures WHERE kind='announcement' ORDER BY published_at DESC LIMIT 3000) "
             "ORDER BY d.published_at DESC,d.id,c.code"

@@ -28,6 +28,7 @@ from trader.download.domain.company_evidence import (
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpResponse, HttpTimeout
@@ -284,10 +285,10 @@ def test_unfinished_announcement_precedes_due_recent_recheck(tmp_path):
     recent = next(item for item in planned if item.start == NOW.date())
     stale_check = (NOW - timedelta(hours=1)).isoformat()
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE partitions SET complete=1,checked_at=?,next_page=2", (stale_check,))
+        connection.run("UPDATE partitions SET is_complete=1,checked_at=?,next_page=2", (stale_check,))
         connection.run(
-            "UPDATE partitions SET complete=0,next_page=3,expected_rows=2,received_rows=1 "
-            "WHERE market=? AND start=? AND end=?",
+            "UPDATE partitions SET is_complete=0,next_page=3,expected_rows=2,received_rows=1 "
+            "WHERE market=? AND start_date=? AND end_date=?",
             (unfinished.market, unfinished.start.isoformat(), unfinished.end.isoformat()),
         )
     resumed = index.partitions(("sse",), NOW)
@@ -361,7 +362,7 @@ def test_page_batch_rolls_back_partial_links_and_preserves_change_counts(tmp_pat
         assert [
             tuple(row)
             for row in connection.run(
-                "SELECT d.source_id,c.code FROM disclosures d JOIN disclosure_codes c "
+                "SELECT d.source_key,c.code FROM disclosures d JOIN disclosure_codes c "
                 "ON c.disclosure_id=d.id ORDER BY c.code"
             )
         ] == [("first", "600001"), ("second", "600002"), ("first", "600003")]
@@ -563,6 +564,41 @@ def test_old_database_is_rejected_without_mutation(tmp_path):
             facts_path=(path).parent / "company_facts.sqlite3",
             documents=CompanyDocumentFiles((path).parent / "text"),
         ).initialize()
+    assert path.read_bytes() == before
+
+
+def test_unversioned_collection_rejects_writer_and_evidence_lookup_without_mutation(tmp_path):
+    path = tmp_path / "company_collection.sqlite3"
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("CREATE TABLE contract(identity TEXT PRIMARY KEY)")
+        connection.run("INSERT INTO contract VALUES('company_collection')")
+        connection.run("CREATE TABLE disclosures(source_id TEXT, digest TEXT)")
+        connection.run("INSERT INTO disclosures VALUES('first','a')")
+    before = path.read_bytes()
+    facts_path = tmp_path / "company_facts.sqlite3"
+    with pytest.raises(ValueError, match="contract_mismatch"):
+        SQLiteCompanyEvidenceIndex(
+            path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text")
+        ).initialize()
+    with pytest.raises(RuntimeError, match="links_unavailable") as error:
+        SQLiteCompanyEvidenceReader(facts_path, raw_path=path).document_links("600001", ("first",))
+    assert str(error.value.__cause__) == "sqlite_schema_unsupported"
+    assert path.read_bytes() == before
+
+
+def test_previous_formal_version_is_rejected_without_reinterpreting_facts(tmp_path):
+    path = tmp_path / "company_facts.sqlite3"
+    with SqliteSession(path, SqliteConnectionOptions(journal_mode="WAL")) as connection:
+        connection.run("PRAGMA user_version=1")
+        connection.run("CREATE TABLE company_facts(code TEXT PRIMARY KEY,financial_report_date INTEGER)")
+        connection.run("INSERT INTO company_facts VALUES('600001',20741)")
+    before = path.read_bytes()
+    reader = SQLiteCompanyEvidenceReader(path)
+    with pytest.raises(RuntimeError, match="snapshot_unreadable") as error:
+        reader.read(("600001",))
+    assert str(error.value.__cause__) == "sqlite_schema_unsupported"
+    with pytest.raises(sqlite3.DatabaseError, match="sqlite_schema_unsupported"):
+        SQLiteCompanyFactsIndex(path).initialize()
     assert path.read_bytes() == before
 
 
@@ -948,7 +984,7 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
         is not CompanyDataState.COMPLETE
     )
     with SqliteSession(index.path) as connection:
-        checked = connection.run("SELECT source_id,body_checked FROM disclosures ORDER BY source_id").fetchall()
+        checked = connection.run("SELECT source_key,body_checked FROM disclosures ORDER BY source_key").fetchall()
     assert [(row[0], row[1]) for row in checked] == [("healthy", 1), ("slow", 0)]
 
     source.blocked = False

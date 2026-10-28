@@ -95,7 +95,7 @@ def _child_main():
             index.initialize()
             with index._connect() as connection, SqliteTransaction(connection):
                 connection.run(
-                    "INSERT INTO partitions(market,start,end,next_page,received_rows) "
+                    "INSERT INTO partitions(market,start_date,end_date,next_page,received_rows) "
                     "VALUES('sse','2026-10-26','2026-10-26',2,1)"
                 )
             if scenario == "sql":

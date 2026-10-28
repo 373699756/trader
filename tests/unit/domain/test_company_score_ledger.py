@@ -303,7 +303,7 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
         columns = {row[1] for row in connection.run("PRAGMA table_info(company_facts)")}
         assert not columns.intersection({"payload", "body", "risk_events_json", "positive_events_json"})
         connection.run("PRAGMA ignore_check_constraints=ON")
-        connection.run("UPDATE company_risk_event SET risk_level=4 WHERE risk_type<=3")
+        connection.run("UPDATE company_risk_event SET level=4 WHERE risk_type<=3")
     with pytest.raises(ValueError, match="type_level_mismatch"):
         reader.read((facts.code,))
 

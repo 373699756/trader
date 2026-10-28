@@ -39,7 +39,7 @@ def test_long_query_cancellation_rolls_back_only_uncommitted_changes(tmp_path):
     day = fixtures.NOW.date()
     partition = DisclosurePartition("sse", day, day)
     with index._connect() as connection:
-        connection.run("INSERT INTO partitions(market,start,end) VALUES('sse',?,?)", (str(day), str(day)))
+        connection.run("INSERT INTO partitions(market,start_date,end_date) VALUES('sse',?,?)", (str(day), str(day)))
     index.commit_page(partition, DisclosurePage((fixtures._disclosure(),), 2, True), fixtures.NOW)
     with pytest.raises(InterruptedError, match="company_sync_cancelled"):
         with index._connect() as connection, SqliteTransaction(connection):
