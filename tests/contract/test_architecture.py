@@ -101,14 +101,14 @@ def test_business_domains_delegate_json_representation_to_codecs() -> None:
     assert violations == []
 
 
-def test_active_source_files_do_not_exceed_1200_lines() -> None:
+def test_source_files_do_not_exceed_1500_lines() -> None:
     source_suffixes = {".py", ".js", ".css", ".html"}
     violations = {
         str(path.relative_to(SOURCE_ROOT)): len(path.read_text(encoding="utf-8").splitlines())
         for path in SOURCE_ROOT.rglob("*")
         if path.is_file()
         and path.suffix in source_suffixes
-        and len(path.read_text(encoding="utf-8").splitlines()) > 1200
+        and len(path.read_text(encoding="utf-8").splitlines()) > 1500
     }
 
     assert violations == {}

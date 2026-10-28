@@ -249,4 +249,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        from code_quality.cli import Main
+
+        raise SystemExit(Main())
     raise SystemExit(main())

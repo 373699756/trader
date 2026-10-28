@@ -62,7 +62,7 @@ behavior; they do not grant permission to write active data.
 
 | Tool | Owner | Network | Writes | Output | Resource boundary |
 | --- | --- | --- | --- | --- | --- |
-| `check_refactor_quality.py` | Repository quality gate | None | None; Ruff runs with `--no-cache` | stdout success; stderr violations/failure | Two sequential Ruff subprocesses, 60 s timeout each; finite repository scan, no hard RSS/total I/O limit |
+| `check_refactor_quality.py` | Repository quality gate and opt-in source tools | None | Default gate/audit/format check are read-only; rename analysis writes an external temporary copy; only explicit write mode replaces selected sources | stdout findings/diff/summary; stderr failures | Ruff 60 s per invocation, Rope worker 300 s; source input 4 MiB/file and 128 MiB/job; no whole-format-job or hard RSS limit |
 | `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models and samples under required `--train-root` and `--sample-root`; explicit external `--output` | Result JSON to stdout and result file; progress to stderr | Two sequential full rebuilds; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; stage durations are recorded, with no artificial total deadline |
 | `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; history revision benchmarks and qfq integrity checks write only disposable system-temporary targets, while active qfq data remains read-only; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output and stock identities are not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq audits one shared bounded database and emits aggregate counts; child capture has no fixed byte/RSS cap |
 | `generate_long_watchlist_asset.py` | Packaged Long build asset | None | Without `--check`, writes only `src/trader/web/static/long_watchlist_data.js` from `config/long_watchlist.json`; `--check` is read-only | Stale-asset message to stdout; silent success | One JSON document and one asset; no hard byte/RSS/deadline cap; does not fetch quotes |
@@ -81,6 +81,52 @@ be described as a hard whole-job resource bound. Migration requires a
 repository-external destination; for repack acceptance, pass explicit isolated
 external paths. For training evidence, also explicitly
 set external `--history-root`, `--train-root` and `--output`.
+
+## Source formatting and naming (opt-in)
+
+现有无参数门禁和`make format-check`保持原行为。以下新模式不自动运行，不触发模型调用；格式与重命名分别执行，批量改名不顺带格式化。Ruff及Rope版本由`pyproject.toml`的dev依赖固定，先用项目虚拟环境安装`.[dev]`。Linux/macOS使用`.venv/bin/python3`，Windows使用`.venv\Scripts\python.exe`执行同一脚本。
+
+```bash
+# 只检查／预览指定文件；这些是使用示例，不表示已对仓库执行转换。
+.venv/bin/python3 scripts/check_refactor_quality.py --format check scripts/example.py
+.venv/bin/python3 scripts/check_refactor_quality.py --format preview scripts/example.py
+# 全范围必须显式指定 --all；命名审计可输出带源码身份的清单模板。
+.venv/bin/python3 scripts/check_refactor_quality.py --naming-audit --all --json
+# 唯有 write 写入目标；改名清单默认放在仓库外，不提交运行清单。
+.venv/bin/python3 scripts/check_refactor_quality.py --rename preview --manifest /external/rename.json
+.venv/bin/python3 scripts/check_refactor_quality.py --rename write --manifest /external/rename.json
+.venv/bin/python3 scripts/check_refactor_quality.py --format write scripts/example.py
+```
+
+格式规则：函数定义/调用5项及以上逐行（含self/cls，展开项各算一项，分隔符不算）；0–4项允许收拢，长行和注释仍可多行。静态`__all__`两项及以上逐行；动态导出拒绝猜测。Ruff统一120字符目标行宽、四空格、双引号与LF。实际新规则只在显式工具入口生效，存量代码尚未转换。完整命名规则见[Python工程规范](../.agents/skills/python-engineering-guide/references/coding-standard.md#3-命名格式与可读性)。
+
+审计输出NAME001–NAME011：合法标识符、禁词、内置遮蔽、易混淆字符、单字母语义、含糊职责、双下划线、命名形态、丢弃值用途、私有导出、未授权档位目录。error与review分开；review不会自动变成改名指令。`active`按词段禁用，不误报`inactive`；字符串及第三方原始导入不按项目定义检查，第三方别名属于项目定义。没有引用不等于私有；第三方覆盖或动态边界需要人工确认，工具不能证明所有可见性关系。
+
+`--naming-audit --all --json`输出`findings`和`manifest_template`，将后者保存到仓库外，填写确认后的`renames`；模板的`files`必须保留全部Python消费者的路径和SHA-256。局部审计模板不能直接用于全项目改名。规范性示例（摘要、提交号和坐标必须取真实扫描结果）：
+
+```json
+{
+  "version": 1,
+  "base_commit": "<完整HEAD提交号>",
+  "files": [{"path": "src/trader/example.py", "sha256": "<内容SHA-256>"}],
+  "renames": [{
+    "path": "src/trader/example.py", "scope": "", "kind": "function",
+    "old": "OldPrice", "new": "LoadPrice", "line": 1, "column": 0,
+    "visibility": "public", "reason": "已核对跨模块消费者和公开合同"
+  }],
+  "references": []
+}
+```
+
+`scope`为点分隔的父作用域；`kind`使用审计分类：function/class/method/attribute/parameter/variable/global/constant/type。`line`为1起始行，`column`为AST的0起始UTF-8字节列，指声明节点（函数/类从声明起点，参数从名称，实例成员从self属性表达式）。`visibility`为public/internal，新名称与之吻合；普通局部变量用public表示不加前导下划线，不代表对外API。批处理按清单顺序重新定位，不能重复目标或使用已存在的新名。
+
+字符串入口、mock和外部固定字面量通过`references`精确登记：`path`、`line`、`old`（完整字符串值）、`new`、`reason`。外部合同保留可用相同old/new并说明原因；未使用、重复或未登记的疑似字符串引用阻断写入。定义模块中的静态`__all__`自动同步，跨模块重新导出的字符串须显式登记。字符串拼接、反射、继承/外部覆盖等不能完整由静态分析证明，继承类的方法默认拒绝，不能把预览成功当作业务验证通过。
+
+Rope在仓库外副本计算变更，不创建`.ropeproject`、不执行项目代码；其不确定引用阻断，不采用全局文本替换。仅允许清单中的标识符token变更和精确字符串变更，不自动移动文件/模块。重名策略保守：新名称只要已在扫描范围定义就拒绝，交换名称需另行迁移。改名清单基线和全部源码哈希必须一致，重复使用旧清单会失败。
+
+批量改名范围为Python消费者；命中`pyproject.toml`中完整限定的入口引用会拒绝，须另行完成元数据与消费者的原子迁移。工具不解析所有非Python配置或运行时生成的引用，调用方仍须核对外部合同；动态`__all__`同样拒绝。禁用词审计不授予公开接口迁移权限。
+
+模式退出码：0成功，1有格式差异或命名error，2输入/环境/分析失败；review单独报告。预览有diff时返回1。源码范围限`src/trader`、`scripts`、`tests`中的Python，拒绝符号链接；manifest最多4 MiB。格式检查不写目标，rename检查/预览仅写外部临时副本并清理。write先验证全部候选与消费者身份，再逐文件临时替换；并行修改或I/O失败立即停止并报告已完成路径，不承诺跨文件原子事务。普通外部编辑器不参与锁，写入前校验不能消除最后一次检查后的竞态，应在工作区停止其他写入后执行。没有自动Git提交、全仓转换、模块拆分或全局编辑器设置。
 
 ## Skill evaluation (opt-in internal module)
 

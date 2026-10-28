@@ -31,6 +31,7 @@ dev = [
     "pytest>=7,<9",
     "pytest-xdist>=3,<4",
     "ruff==0.15.21",
+    "rope==1.15.0",
     "websocket-client>=1.8,<2",
 ]
 
@@ -53,6 +54,8 @@ include = ["trader*"]
 ]
 
 [tool.ruff]
+required-version = "==0.15.21"
+indent-width = 4
 line-length = 120
 target-version = "py310"
 extend-exclude = [".runtime", ".venv", "docs/archive"]
@@ -65,6 +68,8 @@ select = ["E9", "F63", "F7", "F82"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
 
 [tool.mypy]
 python_version = "3.10"
