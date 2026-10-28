@@ -22,8 +22,8 @@ from trader.recommendation.domain.scoring.company import (
     BuildScoreLedger,
     CompanyAdjustments,
     CompanyFinancialScores,
-    CompanyRiskActive,
     CompanyScoringPolicy,
+    IsCompanyRiskEffective,
     ScoreLedgerInput,
 )
 from trader.recommendation.infra.persistence.score_ledger_codec import DecodeScoreLedger
@@ -86,10 +86,10 @@ def test_verified_soft_risk_and_persistent_case_have_distinct_expiry():
     result = ExtractCompanyEvents((warning, case), AT, CompanyEventPolicy())
     assert {event.risk_level for event in result.risks} == {1, 4}
     later = AT + timedelta(days=366)
-    assert [event.risk_level for event in result.risks if CompanyRiskActive(event, later)] == [4]
+    assert [event.risk_level for event in result.risks if IsCompanyRiskEffective(event, later)] == [4]
     closure = _document("closure", "关于调查终结的公告", "本公司收到证监会〔2026〕调查1号通知，调查终结。", later)
     resolved = ExtractCompanyEvents((closure,), later, CompanyEventPolicy(), previous_risks=result.risks)
-    assert not any(CompanyRiskActive(event, later) for event in resolved.risks)
+    assert not any(IsCompanyRiskEffective(event, later) for event in resolved.risks)
 
 
 def test_positive_progress_does_not_extend_existing_level_and_revision_suspends():
@@ -181,7 +181,7 @@ def test_financial_bonus_and_positive_groups_obey_strategy_caps_without_d25_doub
 
 
 @pytest.mark.parametrize("mode", ("unknown", "soft_risk", "disabled"))
-def test_unknown_coverage_and_active_risk_and_disabled_candidate_never_grant_rewards(mode):
+def test_unknown_coverage_and_effective_risk_and_disabled_candidate_never_grant_rewards(mode):
     facts = (
         _facts((_document("warning", "关于收到警示函的公告", "本公司收到证监会出具警示函的决定。"),))
         if mode == "soft_risk"
@@ -255,8 +255,8 @@ def test_reduction_deadline_and_completion_tail_do_not_extend_on_repeated_closur
     close_at = AT + timedelta(days=5)
     closure = _document("end", "控股股东提前终止减持公告", "本公司控股股东根据公告reduce，提前终止减持。", close_at)
     resolved = ExtractCompanyEvents((closure,), close_at, CompanyEventPolicy(), previous_risks=events.risks)
-    assert CompanyRiskActive(resolved.risks[0], close_at + timedelta(days=89))
-    assert not CompanyRiskActive(resolved.risks[0], close_at + timedelta(days=90))
+    assert IsCompanyRiskEffective(resolved.risks[0], close_at + timedelta(days=89))
+    assert not IsCompanyRiskEffective(resolved.risks[0], close_at + timedelta(days=90))
     repeated = ExtractCompanyEvents(
         (replace(closure, disclosure=replace(closure.disclosure, published_at=close_at + timedelta(days=10))),),
         close_at + timedelta(days=10),
@@ -318,7 +318,7 @@ def test_other_subject_negation_does_not_erase_controlling_shareholder_investiga
     assert len(facts.risk_events) == 1
     event = facts.risk_events[0]
     assert event.risk_level == 4 and event.subject_type is CompanySubject.CONTROLLING_SHAREHOLDER
-    assert event.case_id == "〔2026〕调查1号" and CompanyRiskActive(event, AT)
+    assert event.case_id == "〔2026〕调查1号" and IsCompanyRiskEffective(event, AT)
     assert _assess(facts, enabled=False).risk_level == 4
 
 

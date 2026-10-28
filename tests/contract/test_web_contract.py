@@ -396,7 +396,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     }
     assert status["deepseek_budget"]["limit"] == 168
     assert status["market_data"] == {
-        "active_source": "sina",
+        "latest_source": "sina",
         "market_epoch": "market:merge-22",
         "reference_epoch": "reference:fixture",
         "candidate_quote_age": {
@@ -460,7 +460,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         },
         "measured_at": NOW.isoformat(),
         "latency_waterfall": {
-            "active_trace_count": 1,
+            "pending_trace_count": 1,
             "completed_count": 40,
             "dropped_count": 0,
             "dropped_stage_count": 0,
@@ -698,7 +698,7 @@ def _app():
             },
             "deepseek_budget": {"used": 12, "remaining": 156, "planned_limit": 71},
             "market_data": {
-                "active_source": "sina",
+                "latest_source": "sina",
                 "market_epoch": "market:merge-22",
                 "reference_epoch": "reference:fixture",
                 "market_feature_rows": 5567,
@@ -776,7 +776,7 @@ def _app():
                     "sample_capacity": 512,
                     "trace_capacity": 512,
                     "stage_capacity": 64,
-                    "active_trace_count": 1,
+                    "pending_trace_count": 1,
                     "planned_count": 44,
                     "completed_count": 40,
                     "failed_count": 2,

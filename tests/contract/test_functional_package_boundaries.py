@@ -55,7 +55,7 @@ def _imports(path: Path) -> set[str]:
     return set(SourceImportTargets(path, SOURCE_ROOT))
 
 
-def test_active_packages_exist_under_their_business_owners() -> None:
+def test_product_packages_exist_under_their_business_owners() -> None:
     missing_targets = [target for target in TARGET_PACKAGES if not (SOURCE_ROOT / target).is_dir()]
     assert missing_targets == []
     assert not (PROJECT_ROOT / "docs" / "plan.md").exists()
@@ -106,7 +106,7 @@ def test_currently_retired_paths_remain_absent() -> None:
     assert [path for path in retired if (SOURCE_ROOT / path).exists()] == []
 
 
-def test_retired_source_directories_have_no_active_python() -> None:
+def test_retired_source_directories_have_no_python_modules() -> None:
     retired_roots = (
         SOURCE_ROOT / "application",
         SOURCE_ROOT / "domain",
@@ -120,14 +120,14 @@ def test_retired_source_directories_have_no_active_python() -> None:
         SOURCE_ROOT / "infra" / "scoring",
         SOURCE_ROOT / "recommendation" / "infra" / "scoring" / "profiles",
     )
-    active_files = [
+    source_files = [
         str(file.relative_to(SOURCE_ROOT))
         for path in retired_roots
         if path.exists()
         for file in path.rglob("*.py")
         if "__pycache__" not in file.parts
     ]
-    assert active_files == []
+    assert source_files == []
 
 
 def test_shared_infrastructure_target_owners_exist() -> None:
@@ -135,7 +135,7 @@ def test_shared_infrastructure_target_owners_exist() -> None:
     assert (SOURCE_ROOT / "training/infra/profile/composition.py").is_file()
 
 
-def test_active_import_time_graph_has_no_cycles() -> None:
+def test_product_import_time_graph_has_no_cycles() -> None:
     assert ImportCycles(SourceImportGraph(SOURCE_ROOT, import_time_only=True)) == ()
 
 

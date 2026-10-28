@@ -189,7 +189,7 @@ class _PreviewBrowserFixtures:
             "preview_state": self._state,
             "preview_error": self._error,
             "scheduler": {"lanes": [], "input_quality": {}},
-            "market_data": {"active_source": "fixture"},
+            "market_data": {"latest_source": "fixture"},
             "deepseek": {"enabled": False},
             "health": {"level": "normal", "issue_count": 0},
         }
@@ -864,7 +864,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             "deepseek": {"enabled": False},
             "deepseek_budget": {"used": 0, "remaining": 168, "planned_limit": 71},
             "market_data": {
-                "active_source": "eastmoney",
+                "latest_source": "eastmoney",
                 "candidate_quote_latest_source": "tencent",
                 "candidate_quote_cache_entries": 360,
                 "security_master": {

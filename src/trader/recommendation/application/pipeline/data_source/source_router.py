@@ -247,7 +247,7 @@ class MarketInputCoordinator(DataRefreshPort):
         if status is None:
             raise DataRefreshUnavailableError("model_scoring_unavailable")
         for head in status.heads.values():
-            if not head.active:
+            if not head.is_enabled:
                 reason = next(iter(head.historical_failure_reasons), "production_model_unavailable")
                 raise DataRefreshUnavailableError(reason)
         try:

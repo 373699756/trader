@@ -47,7 +47,7 @@ class MarketSourceHealthStatus:
 
 @dataclass(frozen=True)
 class MarketGatewayHealthStatus:
-    active_source: str
+    latest_source: str
     cached_rows: int
     merge_count: int
     conflict_count: int

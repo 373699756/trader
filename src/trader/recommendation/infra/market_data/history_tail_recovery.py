@@ -311,8 +311,8 @@ class CandidateHistoryTailRecovery:
         while len(self._recent) > 480:
             del self._recent[next(iter(self._recent))]
         if len(self._attempt_order) > 6000:
-            active = {key.code for key in self._recent}
-            self._attempt_order = {code: order for code, order in self._attempt_order.items() if code in active}
+            retained_codes = {key.code for key in self._recent}
+            self._attempt_order = {code: order for code, order in self._attempt_order.items() if code in retained_codes}
 
     def status(self) -> HistoryTailStatus:
         with self._lock:

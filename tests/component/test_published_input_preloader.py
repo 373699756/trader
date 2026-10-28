@@ -59,7 +59,7 @@ def test_preloader_finishes_after_one_read_and_new_process_adopts_changed_identi
         assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
 
 
-def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_active_io(monkeypatch):
+def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_pending_io(monkeypatch):
     source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     entered, release = threading.Event(), threading.Event()

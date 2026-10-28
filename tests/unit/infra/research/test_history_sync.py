@@ -290,11 +290,11 @@ def test_incremental_updates_only_new_days_and_keeps_cumulative_history(tmp_path
     assert result.state == "completed", result.reason
     assert len(supplier.calls) == 2
     assert all(len(requested) == gap + 5 for _, requested in supplier.calls)
-    active = _snapshot(tmp_path)
+    published_snapshot = _snapshot(tmp_path)
     reader = HistorySnapshotReader(tmp_path)
     assert reader.read_day(days[0], old_snapshot) == old_rows
-    assert reader.read_day(days[0], active) == old_rows
-    assert len(reader.read_day(new_now.date(), active)) == 2
+    assert reader.read_day(days[0], published_snapshot) == old_rows
+    assert len(reader.read_day(new_now.date(), published_snapshot)) == 2
     assert not tuple(tmp_path.rglob("*.pending.sqlite3"))
     assert not (tmp_path / ".tencent-stage").exists()
 
@@ -457,11 +457,11 @@ def test_pending_batch_replaces_incomplete_day_before_first_publication(tmp_path
     resumed = RunHistoryFixture(configuration(root), supplier, clock=lambda: NOW)
     assert resumed.state == "completed" and resumed.unresolved_price_cells == 0
     assert supplier.calls == [("600001", (days[0], *days[-5:]))]
-    active = _snapshot(root)
-    assert len(HistorySnapshotReader(root).read_day(days[0], active)) == 2
+    published_snapshot = _snapshot(root)
+    assert len(HistorySnapshotReader(root).read_day(days[0], published_snapshot)) == 2
     clean = tmp_path / "clean"
     assert RunHistoryFixture(configuration(clean), FakeSupplier(days), clock=lambda: NOW).state == "completed"
-    assert active.content_hash == _snapshot(clean).content_hash
+    assert published_snapshot.content_hash == _snapshot(clean).content_hash
 
 
 def test_new_process_reuses_committed_months_before_progress_update(tmp_path, monkeypatch):

@@ -40,7 +40,7 @@ _AUXILIARY_ACTION_RESTRICTIONS = frozenset(
 @dataclass(frozen=True)
 class QuoteCacheStatus:
     market_features: tuple[FeatureSnapshot, ...]
-    active_candidate_quotes: tuple[MarketQuote, ...]
+    selected_candidate_quotes: tuple[MarketQuote, ...]
     market_feature_rows: int
     candidate_quote_entries: int
     out_of_order_count: int
@@ -94,7 +94,7 @@ class QuoteCache:
         self._market_reference_epoch = ""
         self._candidate_quotes: dict[str, MarketQuote] = {}
         self._candidate_cycle: datetime | None = None
-        self._active_candidate_codes: set[str] = set()
+        self._selected_candidate_codes: set[str] = set()
         self._out_of_order_count = 0
         self._preview_context: PreviewContext | None = None
 
@@ -106,7 +106,7 @@ class QuoteCache:
                 self._cross_section_reference = MappingProxyType({})
                 self._cross_section_normalization_reference = MappingProxyType({})
                 self._candidate_quotes.clear()
-                self._active_candidate_codes.clear()
+                self._selected_candidate_codes.clear()
                 self._candidate_cycle = None
                 self._preview_context = context
         self.gateway.prepare_preview(context)
@@ -270,7 +270,7 @@ class QuoteCache:
                 self._candidate_cycle is None or candidate_cycle > self._candidate_cycle
             ):
                 self._candidate_cycle = candidate_cycle
-                self._active_candidate_codes.clear()
+                self._selected_candidate_codes.clear()
             for quote in quotes:
                 available = tuple(
                     item
@@ -283,7 +283,7 @@ class QuoteCache:
                     continue
                 self._candidate_quotes[quote.code] = quote
                 if candidate_cycle is not None and candidate_cycle == self._candidate_cycle:
-                    self._active_candidate_codes.add(quote.code)
+                    self._selected_candidate_codes.add(quote.code)
             excess = len(self._candidate_quotes) - self._candidate_capacity
             if excess > 0:
                 for code in sorted(
@@ -318,9 +318,9 @@ class QuoteCache:
         with self._lock:
             return QuoteCacheStatus(
                 market_features=self._market_features,
-                active_candidate_quotes=tuple(
+                selected_candidate_quotes=tuple(
                     self._candidate_quotes[code]
-                    for code in sorted(self._active_candidate_codes)
+                    for code in sorted(self._selected_candidate_codes)
                     if code in self._candidate_quotes
                 ),
                 market_feature_rows=len(self._market_features),

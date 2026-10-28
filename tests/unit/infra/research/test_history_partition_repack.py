@@ -40,7 +40,7 @@ from trader.training.infra.history.repack_training_evidence import (
     ReadTomorrowTrainingMemoryEvidence,
     VerifyHistoryRepackTraining,
 )
-from trader.training.infra.model_bundles.bundle_snapshot import ActiveHeadBundle
+from trader.training.infra.model_bundles.bundle_snapshot import PublishedHeadBundle
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training import RunRepackTomorrowTraining, RunRepackV3Training
 from trader.training.infra.profile.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
@@ -328,7 +328,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     built = coordinator.build()
     coordinator.activate()
     contract_hash = "9" * 64
-    bundle = ActiveHeadBundle(
+    bundle = PublishedHeadBundle(
         tmp_path / "data/training/models/tomorrow-v3/model.json",
         Strategy.TOMORROW,
         original.content_hash,
@@ -374,7 +374,7 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         training_evidence_module,
-        "InspectActiveProfileBundles",
+        "InspectPublishedProfileBundles",
         lambda _path, _profile: (
             type(
                 "Bundle",
@@ -443,7 +443,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         training_evidence_module,
-        "InspectActiveProfileBundles",
+        "InspectPublishedProfileBundles",
         lambda _path, _profile: (
             type(
                 "Bundle",
@@ -492,7 +492,7 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         training_evidence_module,
-        "InspectActiveProfileBundles",
+        "InspectPublishedProfileBundles",
         lambda _path, _profile: (
             type(
                 "Bundle",

@@ -325,7 +325,7 @@ class ProductionModelScoringService:
     def status(self) -> ScoringHeadRuntimeStatus:
         evidence = self._evidence
         return ScoringHeadRuntimeStatus(
-            active=True,
+            is_enabled=True,
             profile_id=self._predictor.profile_id,
             model_id=self._predictor.model_id,
             model_hash=self._predictor.model_hash,

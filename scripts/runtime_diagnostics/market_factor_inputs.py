@@ -50,7 +50,7 @@ class FixedReferences:
 
 
 @dataclass(frozen=True)
-class ActiveModelHead:
+class ModelFeatureRequirements:
     strategy: Strategy
     feature_ids: tuple[str, ...]
     requires_industry: bool
@@ -66,7 +66,7 @@ class FactorInputs:
     policy: RecommendationPolicy
     builder: FeatureBuilder
     models: ModelScoringRouter
-    model_heads: tuple[ActiveModelHead, ...]
+    model_heads: tuple[ModelFeatureRequirements, ...]
     histories: Mapping[str, tuple[DailyBar, ...]]
     contexts: Mapping[str, HistoryContext]
     snapshot_hash: str
@@ -119,7 +119,7 @@ def LoadFactorInputs(
     started = time.monotonic()
     loaded = LoadScoringProfile(profile, training_root=settings.data_paths.models)
     model_heads = tuple(
-        ActiveModelHead(
+        ModelFeatureRequirements(
             strategy=target,
             feature_ids=cast(ModelPredictorPort, loaded.heads[target].predictor).feature_ids,
             requires_industry=cast(
@@ -190,7 +190,7 @@ def HistoryAtCut(bars: tuple[DailyBar, ...], at: datetime) -> tuple[DailyBar, ..
 
 
 __all__ = [
-    "ActiveModelHead",
+    "ModelFeatureRequirements",
     "FixedReferences",
     "FactorInputs",
     "ReadReferences",

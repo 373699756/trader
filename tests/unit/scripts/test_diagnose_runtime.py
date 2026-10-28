@@ -650,7 +650,7 @@ def test_invalid_paired_dates_do_not_pass_rate_experiment(monkeypatch: pytest.Mo
     assert baostock_concurrency._one(object(), "600519", days=400).ok is False
 
 
-def test_baostock_qfq_shadow_profile_is_read_only_and_uses_active_history_root() -> None:
+def test_baostock_qfq_shadow_profile_is_read_only_and_uses_configured_history_root() -> None:
     commands = build_commands(_options(profile="baostock-qfq-shadow"), python_executable="/python")
 
     assert tuple(command.name for command in commands) == ("baostock_qfq_shadow",)
@@ -851,7 +851,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
                             "heads": {
                                 "tomorrow": {
                                     "profile_id": "v2",
-                                    "active": True,
+                                    "is_enable": True,
                                     "model_id": "industry_ridge_lightgbm",
                                     "model_hash": "a" * 64,
                                     "request_count": 3,
@@ -945,7 +945,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
         "heads": {
             "tomorrow": {
                 "profile_id": "v2",
-                "active": True,
+                "is_enable": True,
                 "model_id": "industry_ridge_lightgbm",
                 "model_hash": "a" * 64,
                 "request_count": 3,
@@ -1050,7 +1050,7 @@ def test_child_launch_failure_becomes_a_result_instead_of_aborting_scan(
     assert result.payload is None
 
 
-def test_qfq_sqlite_profile_audits_the_active_root_read_only():
+def test_qfq_sqlite_profile_audits_the_configured_root_read_only():
     options, _ = _validate(_parser().parse_args(["--profile", "qfq-sqlite"]))
     command = build_commands(options, python_executable="python3")[0]
     assert command.name == "qfq_sqlite_audit"

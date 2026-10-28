@@ -22,9 +22,9 @@ from scripts.runtime_diagnostics.market_factor_audit import FactorAudit, Missing
 from scripts.runtime_diagnostics.market_factor_baostock import BaostockCapability, BaoStockSourceResults
 from scripts.runtime_diagnostics.market_factor_budget import DiagnosticBudget
 from scripts.runtime_diagnostics.market_factor_inputs import (
-    ActiveModelHead,
     FixedReferences,
     HistoryAtCut,
+    ModelFeatureRequirements,
     ReadReferences,
 )
 from scripts.runtime_diagnostics.market_factor_text import RenderMarketFactorText
@@ -140,8 +140,8 @@ def test_factor_audit_counts_only_requested_histories_and_derived_local_factors(
             history_required_sessions=lambda strategy: 61, is_input_eligible=lambda strategy, item: False
         ),
         model_heads=(
-            ActiveModelHead(Strategy.TOMORROW, ("qfq_return_1d",), True),
-            ActiveModelHead(Strategy.D25, ("qfq_return_3d",), True),
+            ModelFeatureRequirements(Strategy.TOMORROW, ("qfq_return_1d",), True),
+            ModelFeatureRequirements(Strategy.D25, ("qfq_return_3d",), True),
         ),
     )
     feature = FeatureSnapshot(_quote(), {"amount_median_20d": 100_000_000, "turnover_median_20d": 1}, AT)
@@ -376,7 +376,9 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     )
     assert len(acquired) == 2
     assert len(replayed) == 4
-    assert all(received is batch and active_references is references for received, active_references in replayed)
+    assert all(
+        received is batch and comparison_references is references for received, comparison_references in replayed
+    )
 
 
 def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> None:

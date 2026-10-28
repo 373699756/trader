@@ -59,7 +59,7 @@ def test_retired_blueprints_are_removed_without_forwarding_stubs() -> None:
         assert not (DOCS / name).exists()
 
 
-def test_active_document_links_resolve() -> None:
+def test_current_document_links_resolve() -> None:
     paths = [
         ROOT / "AGENTS.md",
         ROOT / "README.md",

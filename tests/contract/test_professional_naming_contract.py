@@ -10,7 +10,7 @@ from tests.helpers.python_source import source_text, source_tree
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "trader"
 
-FORBIDDEN_ACTIVE_PATHS = (
+FORBIDDEN_SOURCE_PATHS = (
     "application/ports/types.py",
     "application/research/challenger_models.py",
     "application/research/cost_aware_selection_models.py",
@@ -150,17 +150,17 @@ MIGRATED_DATA_PLANE_PATHS = (
 
 
 @cache
-def _active_python_paths() -> tuple[Path, ...]:
+def _source_python_paths() -> tuple[Path, ...]:
     return tuple(sorted((*SOURCE.rglob("*.py"), *(ROOT / "scripts").rglob("*.py"))))
 
 
 @cache
 def _project_python_paths() -> tuple[Path, ...]:
-    return tuple(sorted((*_active_python_paths(), *(ROOT / "tests").rglob("*.py"))))
+    return tuple(sorted((*_source_python_paths(), *(ROOT / "tests").rglob("*.py"))))
 
 
-def test_active_paths_use_stable_business_responsibilities() -> None:
-    assert [relative for relative in FORBIDDEN_ACTIVE_PATHS if (SOURCE / relative).exists()] == []
+def test_source_paths_use_stable_business_responsibilities() -> None:
+    assert [relative for relative in FORBIDDEN_SOURCE_PATHS if (SOURCE / relative).exists()] == []
     assert [relative for relative in FORBIDDEN_REPOSITORY_PATHS if (ROOT / relative).exists()] == []
     assert [relative for relative in FORBIDDEN_NAMING_PATHS if (ROOT / relative).exists()] == []
 
@@ -176,10 +176,10 @@ def test_storage_responsibility_naming_rule_is_authoritative() -> None:
     assert "兼容别名" in coding_rules
 
 
-def test_active_python_has_no_c3_or_relative_holdout_identity_names() -> None:
+def test_source_python_has_no_c3_or_relative_holdout_identity_names() -> None:
     violations: list[str] = []
     token = re.compile(r"(?<![a-z0-9])c3(?![a-z0-9])", re.IGNORECASE)
-    for path in _active_python_paths():
+    for path in _source_python_paths():
         content = source_text(path)
         if token.search(content) or "new_holdout_" in content or "legacy_holdout_" in content:
             violations.append(path.relative_to(ROOT).as_posix())
@@ -188,7 +188,7 @@ def test_active_python_has_no_c3_or_relative_holdout_identity_names() -> None:
 
 def test_public_python_names_describe_business_roles() -> None:
     violations: list[str] = []
-    for path in _active_python_paths():
+    for path in _source_python_paths():
         tree = source_tree(path)
         for node in tree.body:
             names: tuple[str, ...] = ()
@@ -209,7 +209,7 @@ def test_public_python_names_describe_business_roles() -> None:
 
 def test_module_constants_describe_business_roles() -> None:
     violations: list[str] = []
-    for path in _active_python_paths():
+    for path in _source_python_paths():
         tree = source_tree(path)
         for node in tree.body:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -245,10 +245,10 @@ def test_tomorrow_training_sample_boundary_uses_repository_responsibility_names(
     assert violations == []
 
 
-def test_active_python_text_has_no_accidental_duplicate_words_or_e1_phase_relic() -> None:
+def test_source_python_text_has_no_accidental_duplicate_words_or_e1_phase_relic() -> None:
     violations: list[str] = []
     repeated_word = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]*)\s+\1\b", re.IGNORECASE)
-    for path in _active_python_paths():
+    for path in _source_python_paths():
         for line_number, line in enumerate(source_text(path).splitlines(), 1):
             repeated = repeated_word.search(line)
             if (repeated is not None and repeated.group(1).lower() != "end") or re.search(r"\bE1\b", line):
@@ -313,9 +313,9 @@ def test_migrated_data_plane_names_describe_persistence_roles() -> None:
     assert violations == []
 
 
-def test_active_public_class_names_are_unique() -> None:
+def test_public_class_names_are_unique() -> None:
     occurrences: dict[str, list[str]] = {}
-    for path in _active_python_paths():
+    for path in _source_python_paths():
         tree = source_tree(path)
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):

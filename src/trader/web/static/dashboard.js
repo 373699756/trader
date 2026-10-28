@@ -201,9 +201,9 @@
     const strategy = state.strategy;
     state.profile = profile;
     document.querySelectorAll(".profile-tab").forEach((button) => {
-      const active = button.dataset.profile === profile;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-selected", active ? "true" : "false");
+      const isSelected = button.dataset.profile === profile;
+      button.classList.toggle("is-active", isSelected);
+      button.setAttribute("aria-selected", isSelected ? "true" : "false");
     });
     state.payload = null;
     state.payloads.clear();
@@ -241,9 +241,9 @@
     els.strategyDescription.textContent = selection.descriptions[nextStrategy];
     stateRenderer.setLongControls(nextStrategy === "long");
     document.querySelectorAll(".strategy-tab").forEach((button) => {
-      const active = button.dataset.strategy === state.strategy;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-selected", active ? "true" : "false");
+      const isSelected = button.dataset.strategy === state.strategy;
+      button.classList.toggle("is-active", isSelected);
+      button.setAttribute("aria-selected", isSelected ? "true" : "false");
     });
     stateRenderer.renderLoadingState();
     const provisionalDate = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, null);

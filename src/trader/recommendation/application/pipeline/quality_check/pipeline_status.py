@@ -46,16 +46,16 @@ def BuildSupplyStatus(
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
     evaluations = tuple(item for item in projection.selection.evaluations if item.code in requested)
-    active_decision = decision or projection.local
-    diagnostics = active_decision.selection_diagnostics
+    published_freeze = decision or projection.local
+    diagnostics = published_freeze.selection_diagnostics
     if diagnostics is None:
         raise ValueError("scored input status requires selection diagnostics")
-    decision_items = active_decision.items
+    decision_items = published_freeze.items
     scored_chain = scored_stages or projection.stages
     snapshots = JoinStageSnapshots(input_stages, scored_chain.snapshots) if input_stages else ()
     pipeline = ProjectPipelineFacts(
         snapshots or scored_chain.snapshots,
-        decision=active_decision,
+        decision=published_freeze,
         quality=quality,
         stage_counts=candidate_stage_counts or projection.selection.stage_counts,
     )
@@ -73,7 +73,7 @@ def BuildSupplyStatus(
         strategy=projection.local.strategy,
         status=quality.status,
         publishable=quality.publishable,
-        summary=_supply_summary(projection, decision=active_decision),
+        summary=_supply_summary(projection, decision=published_freeze),
         pipeline=pipeline,
         stage_snapshots=snapshots,
         population_count=quality.population_count,

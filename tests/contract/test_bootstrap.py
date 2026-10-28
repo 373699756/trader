@@ -154,7 +154,8 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert scoring["profile_id"] == "v2"
     assert set(scoring["heads"]) == {"tomorrow", "d25"}
     tomorrow = scoring["heads"]["tomorrow"]
-    assert tomorrow["active"] is True
+    assert tomorrow["is_enable"] is True
+    assert "active" not in tomorrow
     assert tomorrow["profile_id"] == "v2"
     assert tomorrow["model_id"] == "v2_industry_lightgbm"
     assert tomorrow["activation_basis"] == "manual_user_override"
@@ -298,7 +299,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
 
     assert status["profile_id"] == "v2"
     assert set(status["heads"]) == {"tomorrow", "d25"}
-    assert all(head["active"] is True for head in status["heads"].values())
+    assert all(head["is_enable"] is True for head in status["heads"].values())
     assert status["heads"]["tomorrow"]["model_id"] == "v2_industry_lightgbm"
     assert status["heads"]["tomorrow"]["activation_basis"] == "manual_user_override"
     assert strategy_path.read_bytes() == original
@@ -450,7 +451,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
     }
     market_health = Mock(
         return_value={
-            "active_source": "sina",
+            "latest_source": "sina",
             "market_feature_rows": 5567,
             "market_quote_age": {"sample_count": 5567, "latest_source_time": "2026-08-24T09:40:00+08:00"},
         }
@@ -502,7 +503,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
         }
     ]
     assert payload["scheduler"]["input_quality"] == {}
-    assert payload["market_data"]["active_source"] == "sina"
+    assert payload["market_data"]["latest_source"] == "sina"
     assert payload["market_data"]["market_feature_rows"] == 5567
     market_health.assert_called_once_with()
 

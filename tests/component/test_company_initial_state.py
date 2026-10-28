@@ -35,7 +35,7 @@ def _old_document(index, body):
     return old
 
 
-def test_first_publication_retains_old_active_case_and_exposes_unverified_initial_state(tmp_path):
+def test_first_publication_retains_old_unresolved_case_and_exposes_unverified_initial_state(tmp_path):
     listed = _AT.date() - timedelta(days=1000)
     index = SQLiteCompanyEvidenceIndex(
         tmp_path / "facts.sqlite3",

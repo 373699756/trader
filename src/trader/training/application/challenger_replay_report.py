@@ -26,7 +26,7 @@ class ChallengerCandidateOverride:
     continuous_entry_score: float | None
     continuous_entry_status: Literal["not_enabled", "scored", "critical_missing"]
     coverage_shrunk_score: float | None
-    active_set_expanded: bool
+    candidate_set_expanded: bool
     selection_eligible: bool
     force_observe_only: bool
     observe_reasons: tuple[str, ...]
@@ -40,7 +40,7 @@ class ChallengerCandidateOverride:
             raise ValueError("scored continuous-entry override requires a score")
         if self.continuous_entry_status != "scored" and self.continuous_entry_score is not None:
             raise ValueError("disabled or missing continuous-entry override cannot carry a score")
-        if self.active_set_expanded and not self.selection_eligible:
+        if self.candidate_set_expanded and not self.selection_eligible:
             raise ValueError("active-set expansion must make the candidate selection eligible")
         reasons = tuple(sorted(set(self.observe_reasons)))
         if self.force_observe_only != bool(reasons):

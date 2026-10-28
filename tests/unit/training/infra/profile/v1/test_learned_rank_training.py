@@ -219,28 +219,28 @@ def test_v1_releases_each_head_memory_before_publishing(tmp_path, monkeypatch):
     import trader.training.infra.profile.v1.training as training
 
     leases = []
-    active = []
+    reserved_leases = []
 
     class Budget:
         @contextmanager
         def reserve(self, required_bytes, heartbeat):
             heartbeat()
-            assert not active
-            active.append(required_bytes)
+            assert not reserved_leases
+            reserved_leases.append(required_bytes)
             leases.append(required_bytes)
             try:
                 yield
             finally:
-                active.clear()
+                reserved_leases.clear()
 
     original_fit, original_publish = training.FitLearnedRankHead, training.PublishLearnedRankPair
 
     def fit(*args, **kwargs):
-        assert len(active) == 1
+        assert len(reserved_leases) == 1
         return original_fit(*args, **kwargs)
 
     def publish(*args, **kwargs):
-        assert not active
+        assert not reserved_leases
         return original_publish(*args, **kwargs)
 
     monkeypatch.setattr(training, "FitLearnedRankHead", fit)
@@ -253,7 +253,7 @@ def test_v1_releases_each_head_memory_before_publishing(tmp_path, monkeypatch):
         settings=_settings(),
         memory_admission=Budget(),
     )
-    assert result.status == "engineering_ready" and len(leases) == 2 and not active
+    assert result.status == "engineering_ready" and len(leases) == 2 and not reserved_leases
 
 
 def test_recent_split_matures_labels_and_never_overlaps_partitions() -> None:

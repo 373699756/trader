@@ -258,7 +258,7 @@ def test_tencent_receipt_time_is_captured_after_the_response() -> None:
 
 
 def test_tencent_targeted_quotes_use_three_bounded_shards() -> None:
-    state = {"active": 0, "maximum": 0, "urls": []}
+    state = {"running_count": 0, "maximum": 0, "urls": []}
     lock = threading.Lock()
 
     class ConcurrentSession:
@@ -270,8 +270,8 @@ def test_tencent_targeted_quotes_use_three_bounded_shards() -> None:
 
         def get(self, url, **_kwargs):
             with lock:
-                state["active"] += 1
-                state["maximum"] = max(state["maximum"], state["active"])
+                state["running_count"] += 1
+                state["maximum"] = max(state["maximum"], state["running_count"])
                 state["urls"].append(url)
             try:
                 time.sleep(0.02)
@@ -287,7 +287,7 @@ def test_tencent_targeted_quotes_use_three_bounded_shards() -> None:
                 return FakeResponse("".join(records).encode("gb18030"))
             finally:
                 with lock:
-                    state["active"] -= 1
+                    state["running_count"] -= 1
 
     pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="tencent-test")
     pool.start()
@@ -580,11 +580,11 @@ def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
                 return FakeResponse(b"201")
             page = int(kwargs["params"]["page"])
             with self._state["lock"]:
-                self._state["active"] += 1
-                self._state["maximum"] = max(self._state["maximum"], self._state["active"])
+                self._state["running_count"] += 1
+                self._state["maximum"] = max(self._state["maximum"], self._state["running_count"])
             time.sleep(0.02)
             with self._state["lock"]:
-                self._state["active"] -= 1
+                self._state["running_count"] -= 1
             return FakeResponse(
                 [
                     {
@@ -596,7 +596,7 @@ def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
                 ]
             )
 
-    state = {"active": 0, "maximum": 0, "factory_calls": 0, "lock": threading.Lock()}
+    state = {"running_count": 0, "maximum": 0, "factory_calls": 0, "lock": threading.Lock()}
 
     def session_factory():
         state["factory_calls"] += 1

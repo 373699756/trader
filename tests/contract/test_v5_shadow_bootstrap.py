@@ -38,7 +38,7 @@ def test_missing_v5_build_closes_both_freezers_and_preserves_read_only_status(tm
     assert scoring["profile_id"] == "v5"
     assert set(scoring["heads"]) == {"tomorrow", "d25"}
     for head in scoring["heads"].values():
-        assert head["active"] is False
+        assert head["is_enable"] is False
         assert head["production_authority"] is False
         assert head["activation_basis"] == "trained_artifact"
 

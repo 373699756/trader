@@ -33,11 +33,11 @@ from trader.training.domain.training_due import (
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceError, TrainingMaintenanceIndex
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.bundle_snapshot import (
-    ActiveHeadBundle,
+    PublishedHeadBundle,
 )
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.model_bundles.profile_publication import (
-    InspectActiveProfileBundles,
+    InspectPublishedProfileBundles,
     ProfilePublicationBusyError,
 )
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -50,7 +50,7 @@ class HistoryTrainingDueEvaluation:
     history_root: Path
     published_snapshot: HistorySnapshot
     state: TrainingDueState
-    bundle: ActiveHeadBundle | None
+    bundle: PublishedHeadBundle | None
     revised_dates: tuple[date, ...]
     invalidated_cache_dates: tuple[date, ...]
 
@@ -64,7 +64,7 @@ class HistoryTrainingDueQuery:
     strategy: Strategy = Strategy.TOMORROW
     expected_training_contract_hash: str | None = None
     persist: bool = True
-    inspected: tuple[ActiveHeadBundle, ...] | None = None
+    inspected: tuple[PublishedHeadBundle, ...] | None = None
     inspected_invalid: bool = False
 
 
@@ -241,10 +241,10 @@ def _current_bundle(
     training_root: Path,
     profile: TrainedProfileContract,
     strategy: Strategy,
-) -> tuple[ActiveHeadBundle | None, bool]:
+) -> tuple[PublishedHeadBundle | None, bool]:
     try:
         return next(
-            item for item in InspectActiveProfileBundles(training_root, profile) if item.strategy is strategy
+            item for item in InspectPublishedProfileBundles(training_root, profile) if item.strategy is strategy
         ), False
     except FileNotFoundError:
         return None, False
@@ -399,7 +399,7 @@ class PublishedTrainingState:
             return self._status
 
 
-def _publication_identity(profile: TrainedProfileContract, bundle: ActiveHeadBundle) -> ModelPublicationIdentity:
+def _publication_identity(profile: TrainedProfileContract, bundle: PublishedHeadBundle) -> ModelPublicationIdentity:
     return ModelPublicationIdentity(
         profile.profile_id,
         bundle.strategy,
@@ -413,9 +413,9 @@ def _publication_identity(profile: TrainedProfileContract, bundle: ActiveHeadBun
 
 def _inspect_profile(
     training_root: Path, profile: TrainedProfileContract
-) -> tuple[tuple[ActiveHeadBundle, ...], str | None]:
+) -> tuple[tuple[PublishedHeadBundle, ...], str | None]:
     try:
-        return InspectActiveProfileBundles(training_root / profile.output_directory, profile), None
+        return InspectPublishedProfileBundles(training_root / profile.output_directory, profile), None
     except FileNotFoundError:
         return (), "missing"
     except ProfilePublicationBusyError:

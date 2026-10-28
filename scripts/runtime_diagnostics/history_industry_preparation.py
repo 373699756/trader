@@ -28,12 +28,12 @@ class _Progress:
 
 
 def _measure(root: Path, timeout: float) -> dict[str, object]:
-    active = HistoryControlIndex(root / "catalog.sqlite3").load_published_state()
-    if active is None:
+    published_snapshot = HistoryControlIndex(root / "catalog.sqlite3").load_published_state()
+    if published_snapshot is None:
         raise ValueError("industry_probe_requires_published_context")
     universe = tuple(
         BaoStockSecurity(item.code, item.name, item.board, item.listed_on, item.delisted_on, "industry-probe")
-        for item in active.universe.securities[:3]
+        for item in published_snapshot.universe.securities[:3]
     )
     progress = _Progress()
     measurements = []
@@ -53,7 +53,7 @@ def _measure(root: Path, timeout: float) -> dict[str, object]:
             # A fresh supplier object must not log in for the warm-cache run.
             with BaoStockHistorySupplier(settings, progress=progress) as supplier:
                 context = supplier.load_industry_context(
-                    BaoStockCalendar(active.calendar.open_dates[-2:]), universe, industry_cache=cache
+                    BaoStockCalendar(published_snapshot.calendar.open_dates[-2:]), universe, industry_cache=cache
                 )
             completed = [value for value in progress.values if value.cache_hit is not None]
             intervals.append(context.industry_intervals)
@@ -84,7 +84,7 @@ def _measure(root: Path, timeout: float) -> dict[str, object]:
                 "sessions": 2,
                 "measurements": measurements,
                 "identical_intervals": intervals[0] == intervals[1],
-                "active_data_modified": False,
+                "source_data_modified": False,
             },
         }
 

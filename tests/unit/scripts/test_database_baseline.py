@@ -84,13 +84,13 @@ def test_workspace_distinguishes_memory_and_manual_same_filesystem_evidence(
     assert evidence["disk_performance_evidence"] is (filesystem == "ext4" and expected == "ssd")
 
 
-def test_workspace_rejects_active_existing_relative_and_symlink_targets(tmp_path: Path) -> None:
+def test_workspace_rejects_source_existing_relative_and_symlink_targets(tmp_path: Path) -> None:
     for target in (PROJECT_ROOT / "probe", tmp_path, Path("relative-probe"), PROJECT_ROOT.parent):
         with pytest.raises(ValueError):
             PrepareDatabaseProbeDirectory(target, _CONFIG)
-    active = LoadRuntimeSettings(_CONFIG).data_paths.root
+    source_root = LoadRuntimeSettings(_CONFIG).data_paths.root
     alias = tmp_path / "active-link"
-    alias.symlink_to(active, target_is_directory=True)
+    alias.symlink_to(source_root, target_is_directory=True)
     with pytest.raises(ValueError):
         PrepareDatabaseProbeDirectory(alias / "probe", _CONFIG)
     assert not (PROJECT_ROOT / "probe").exists()

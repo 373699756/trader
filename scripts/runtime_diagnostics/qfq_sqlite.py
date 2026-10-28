@@ -17,7 +17,7 @@ from trader.infra.sqlite_connection import (
 from .reporting import emit_report
 
 
-def AuditActiveQfq(path: Path) -> dict[str, object]:
+def AuditQfqDatabase(path: Path) -> dict[str, object]:
     """Report aggregate evidence only; no initialization or recovery writes."""
     if path.is_symlink() or not path.is_file():
         raise FileNotFoundError("qfq database missing or unsafe")
@@ -68,7 +68,7 @@ def AuditActiveQfq(path: Path) -> dict[str, object]:
         "status": status,
         "summary": {
             "mode": "shared_daily_window",
-            "active_data_writes": 0,
+            "source_data_writes": 0,
             "databases": 1,
             "profiles": profiles,
             "journal_mode": mode,
@@ -95,7 +95,7 @@ def main() -> int:
     parser.add_argument("--database", type=Path, required=True)
     args = parser.parse_args()
     try:
-        report = AuditActiveQfq(args.database.expanduser().resolve())
+        report = AuditQfqDatabase(args.database.expanduser().resolve())
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         report = {
             "schema_version": "qfq-sqlite-diagnostic",
@@ -106,7 +106,7 @@ def main() -> int:
     return 1 if report["status"] == "failed" else 0
 
 
-__all__ = ["AuditActiveQfq", "ClassifyQfqDiagnosticError"]
+__all__ = ["AuditQfqDatabase", "ClassifyQfqDiagnosticError"]
 
 if __name__ == "__main__":
     raise SystemExit(main())

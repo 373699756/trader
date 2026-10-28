@@ -1350,7 +1350,7 @@ def _scoring_profile_summary(value: object) -> dict[str, object]:
             continue
         projected_heads[strategy] = {
             "profile_id": _safe_text(head.get("profile_id")),
-            "active": head.get("active") if isinstance(head.get("active"), bool) else None,
+            "is_enable": head.get("is_enable") if isinstance(head.get("is_enable"), bool) else None,
             "model_id": _safe_text(head.get("model_id")),
             "model_hash": _safe_text(head.get("model_hash")),
             "score_scale": _safe_text(head.get("score_scale")),

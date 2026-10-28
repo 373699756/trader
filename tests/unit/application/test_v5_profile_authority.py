@@ -134,7 +134,7 @@ def test_missing_dual_head_status_preserves_profile_authority(profile_id, author
     assert status is not None
     assert set(status.heads) == {Strategy.TOMORROW, Strategy.D25}
     for strategy, head in status.heads.items():
-        assert head.active is False
+        assert head.is_enabled is False
         assert head.production_authority is authority
         assert head.activation_basis == ("manual_user_override" if profile_id == "v1" else "trained_artifact")
         with pytest.raises(RuntimeError, match="production_model_missing"):

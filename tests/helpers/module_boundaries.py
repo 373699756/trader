@@ -140,10 +140,10 @@ def BusinessSourceFiles(root: Path, layer: str) -> tuple[Path, ...]:
     files: list[Path] = []
     for business in sorted(_BUSINESSES):
         boundary = root / business / layer
-        active = sorted(path for path in boundary.rglob("*.py") if path.name != "__init__.py")
-        if not active:
+        boundary_files = sorted(path for path in boundary.rglob("*.py") if path.name != "__init__.py")
+        if not boundary_files:
             raise AssertionError(f"missing or empty active boundary: {business}/{layer}")
-        files.extend(active)
+        files.extend(boundary_files)
     return tuple(files)
 
 
@@ -286,19 +286,19 @@ def SourceImportGraph(root: Path, *, import_time_only: bool = False) -> dict[str
 
 def ImportCycles(graph: Mapping[str, frozenset[str]]) -> tuple[tuple[str, ...], ...]:
     completed: set[str] = set()
-    active: list[str] = []
+    visiting: list[str] = []
     cycles: set[tuple[str, ...]] = set()
 
     def visit(module: str) -> None:
-        if module in active:
-            cycles.add((*active[active.index(module) :], module))
+        if module in visiting:
+            cycles.add((*visiting[visiting.index(module) :], module))
             return
         if module in completed:
             return
-        active.append(module)
+        visiting.append(module)
         for dependency in sorted(graph[module]):
             visit(dependency)
-        active.pop()
+        visiting.pop()
         completed.add(module)
 
     for module in sorted(graph):

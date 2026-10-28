@@ -44,19 +44,19 @@ def _business_sources(root: Path) -> None:
         "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from ..infra import Adapter",
     ),
 )
-def test_active_dependency_gate_rejects_implementation_imports(tmp_path, monkeypatch, business, layer, source) -> None:
+def test_dependency_gate_rejects_implementation_imports(tmp_path, monkeypatch, business, layer, source) -> None:
     root = tmp_path / "trader"
     _business_sources(root)
     _write_source(root, f"{business}/{layer}/poison.py", source.replace("BUSINESS", business))
     monkeypatch.setattr(test_architecture, "SOURCE_ROOT", root)
 
     with pytest.raises(AssertionError, match="poison.py"):
-        test_architecture.test_active_dependency_direction()
+        test_architecture.test_product_dependency_direction()
 
 
 @pytest.mark.parametrize("business", ("download", "training", "recommendation"))
 @pytest.mark.parametrize("layer", ("domain", "application"))
-def test_active_dependency_gate_rejects_other_business_implementations(business, layer) -> None:
+def test_dependency_gate_rejects_other_business_implementations(business, layer) -> None:
     module = f"trader.{business}.{layer}.example"
     other = "training" if business != "training" else "download"
     source = f"from trader.{other}.infra.adapter import Adapter"
@@ -99,7 +99,7 @@ def test_core_cannot_hide_imports_behind_a_wildcard() -> None:
     assert LayerImportViolations(module, ParseSourceImports(source, module))
 
 
-def test_active_dependency_gate_accepts_pure_business_values(tmp_path, monkeypatch) -> None:
+def test_dependency_gate_accepts_pure_business_values(tmp_path, monkeypatch) -> None:
     root = tmp_path / "trader"
     _business_sources(root)
     _write_source(
@@ -110,7 +110,7 @@ def test_active_dependency_gate_accepts_pure_business_values(tmp_path, monkeypat
     )
     monkeypatch.setattr(test_architecture, "SOURCE_ROOT", root)
 
-    test_architecture.test_active_dependency_direction()
+    test_architecture.test_product_dependency_direction()
 
 
 @pytest.mark.parametrize("layer", ("domain", "application"))
@@ -135,7 +135,7 @@ def test_business_scan_rejects_missing_or_empty_boundaries(tmp_path, layer, empt
         "from pathlib import Path\nVALUE = Path('local-file').read_text()\n",
     ),
 )
-def test_domain_io_gate_reads_each_active_domain(tmp_path, monkeypatch, business, source) -> None:
+def test_domain_io_gate_reads_each_business_domain(tmp_path, monkeypatch, business, source) -> None:
     root = tmp_path / "trader"
     _business_sources(root)
     _write_source(root, f"{business}/domain/poison.py", source)
@@ -155,7 +155,7 @@ def test_domain_io_gate_reads_each_active_domain(tmp_path, monkeypatch, business
         "from json import loads as Decode\nVALUE = Decode('{}')\n",
     ),
 )
-def test_json_decoder_gate_reads_each_active_core(tmp_path, monkeypatch, business, layer, source) -> None:
+def test_json_decoder_gate_reads_each_business_core(tmp_path, monkeypatch, business, layer, source) -> None:
     root = tmp_path / "trader"
     _business_sources(root)
     _write_source(root, f"{business}/{layer}/poison.py", source)

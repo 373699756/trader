@@ -47,7 +47,7 @@ SUBJECTS = {
     CompanySubject.ACTUAL_CONTROLLER: 3,
     CompanySubject.MAJOR_SHAREHOLDER: 4,
 }
-RISK_STATUSES = {CompanyEventStatus.ACTIVE: 1, CompanyEventStatus.RESOLVED: 2, CompanyEventStatus.CANCELLED: 3}
+RISK_STATUSES = {CompanyEventStatus.ONGOING: 1, CompanyEventStatus.RESOLVED: 2, CompanyEventStatus.CANCELLED: 3}
 POSITIVE_TYPES = {
     CompanyPositiveType.SHARE_REPURCHASE: 1,
     CompanyPositiveType.SHAREHOLDER_INCREASE: 2,

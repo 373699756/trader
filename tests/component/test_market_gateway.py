@@ -55,7 +55,7 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert [(item.code, item.price, item.source) for item in fetched] == [(quote.code, quote.price, "sina")]
     health = gateway.health()
 
-    assert health.active_source == "sina"
+    assert health.latest_source == "sina"
     assert health.sources["tencent_market"].circuit_open is True
     assert health.sources["tencent_market"].planned_count == 1
     assert health.sources["tencent_market"].error_count == 1
@@ -351,7 +351,7 @@ def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
     assert [(item.code, item.price, item.source) for item in fetched] == [(quote.code, quote.price, "sina")]
     health = gateway.health()
 
-    assert health.active_source == "sina"
+    assert health.latest_source == "sina"
     assert health.route is not None
     assert health.route.status == "success"
     assert health.route.degraded is True
@@ -479,7 +479,7 @@ def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> N
         gateway.fetch_market()
 
     health = gateway.health()
-    assert health.active_source == "unavailable"
+    assert health.latest_source == "unavailable"
     assert health.sources["tencent_market"].circuit_open is True
     assert health.sources["sina"].circuit_open is True
     assert health.sources["tencent_market"].physical_failure_count == 1

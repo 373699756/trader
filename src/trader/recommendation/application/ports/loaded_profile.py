@@ -284,7 +284,7 @@ class LoadedScoringProfile:
 
 @dataclass(frozen=True)
 class ScoringHeadRuntimeStatus:
-    active: bool
+    is_enabled: bool
     profile_id: ScoringProfileId
     model_id: str
     model_hash: str

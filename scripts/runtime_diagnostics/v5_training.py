@@ -176,7 +176,7 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
         "status": "passed" if reloaded and after and after.snapshot == state.snapshot else "degraded",
         "summary": {
             "input_scope": "bounded_real_industry_engineering_probe",
-            "source_active_writes": 0,
+            "source_data_writes": 0,
             "source_verification": "published_identity_and_selected_revision_hashes",
             "network_calls": 0,
             "code_count": len(selected),

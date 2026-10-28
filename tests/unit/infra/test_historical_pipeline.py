@@ -17,7 +17,7 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, StageOutput
 from trader.recommendation.application.ports.decision_records import DecisionRecordUnavailableError
-from trader.recommendation.domain.evidence import pipeline as active_pipeline
+from trader.recommendation.domain.evidence import pipeline as production_pipeline
 from trader.recommendation.domain.publication import decision_identity
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, FormalScoredDecision
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
@@ -135,15 +135,15 @@ def _historical_bytes(strategy=Strategy.TOMORROW, *, audit="full", legacy_identi
     return _resign(raw, legacy_identity=legacy_identity)
 
 
-def _disable_active_audit(monkeypatch):
+def _disable_production_audit(monkeypatch):
     def rejected(*args, **kwargs):
         raise AssertionError("historical audit reached an active pipeline implementation")
 
-    monkeypatch.setattr(active_pipeline, "PIPELINE_STAGES", active_pipeline.PIPELINE_STAGES[:11])
-    monkeypatch.setattr(active_pipeline, "PIPELINE_STAGE_ORDER", ("different_active_diagnostic",))
-    monkeypatch.setattr(active_pipeline.PipelineStageSnapshot, "__post_init__", rejected)
-    monkeypatch.setattr(active_pipeline.RecommendationPipelineStatus, "__post_init__", rejected)
-    monkeypatch.setattr(active_pipeline.SourceHealth, "__post_init__", rejected)
+    monkeypatch.setattr(production_pipeline, "PIPELINE_STAGES", production_pipeline.PIPELINE_STAGES[:11])
+    monkeypatch.setattr(production_pipeline, "PIPELINE_STAGE_ORDER", ("different_active_diagnostic",))
+    monkeypatch.setattr(production_pipeline.PipelineStageSnapshot, "__post_init__", rejected)
+    monkeypatch.setattr(production_pipeline.RecommendationPipelineStatus, "__post_init__", rejected)
+    monkeypatch.setattr(production_pipeline.SourceHealth, "__post_init__", rejected)
     monkeypatch.setattr(decision_identity, "_pipeline_payload", rejected)
     monkeypatch.setattr(decision_identity, "PipelineSnapshotIdentityPayload", rejected)
 
@@ -151,10 +151,12 @@ def _disable_active_audit(monkeypatch):
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 @pytest.mark.parametrize("audit", ("full", "diagnostics", "none"))
 @pytest.mark.parametrize("legacy_identity", (True, False))
-def test_historical_bytes_and_identity_survive_active_pipeline_changes(monkeypatch, strategy, audit, legacy_identity):
+def test_historical_bytes_and_identity_survive_production_pipeline_changes(
+    monkeypatch, strategy, audit, legacy_identity
+):
     encoded = _historical_bytes(strategy, audit=audit, legacy_identity=legacy_identity)
     before = json.loads(encoded)
-    _disable_active_audit(monkeypatch)
+    _disable_production_audit(monkeypatch)
     restored = CommittedRecordFromBytes(encoded)
 
     assert CommittedRecordBytes(restored) == encoded
@@ -181,7 +183,7 @@ def test_historical_recovery_preserves_database_bytes_and_get_sse_projection(tmp
     records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
     records.initialize()
     records.import_record_bytes(encoded)
-    _disable_active_audit(monkeypatch)
+    _disable_production_audit(monkeypatch)
     restarted = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
     assert restarted.recover().quarantined == 0
     restored = restarted.load(strategy, NOW.date())
@@ -206,7 +208,7 @@ def test_historical_recovery_preserves_database_bytes_and_get_sse_projection(tmp
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
-def test_historical_checkpoint_can_freeze_once_after_active_pipeline_changes(tmp_path, monkeypatch, strategy):
+def test_historical_checkpoint_can_freeze_once_after_production_pipeline_changes(tmp_path, monkeypatch, strategy):
     boundary = NOW.replace(hour=15, minute=0)
     raw = json.loads(_historical_bytes(strategy))
     raw["commit_kind"] = "checkpoint_recovery"
@@ -216,7 +218,7 @@ def test_historical_checkpoint_can_freeze_once_after_active_pipeline_changes(tmp
     records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
     records.initialize()
     records.import_checkpoint_bytes(encoded)
-    _disable_active_audit(monkeypatch)
+    _disable_production_audit(monkeypatch)
     restarted = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
     assert restarted.recover().quarantined == 0
     checkpoint = restarted.load_checkpoint(strategy, NOW.date())
@@ -289,13 +291,13 @@ def test_historical_audit_validates_frozen_protocol_even_with_consistent_hashes(
         CommittedRecordFromBytes(_resign(raw))
 
 
-def test_historical_audit_cannot_enter_active_pipeline_builders():
+def test_historical_audit_cannot_enter_production_pipeline_builders():
     historical = CommittedRecordFromBytes(_historical_bytes()).decision.pipeline
-    active = pipeline()
+    production_audit = pipeline()
     with pytest.raises(ValueError, match="active diagnostic types"):
-        active_pipeline.RecommendationPipelineStatus(active.current_stage, historical.stages)
+        production_pipeline.RecommendationPipelineStatus(production_audit.current_stage, historical.stages)
     with pytest.raises(ValueError, match="active stage snapshots"):
-        replace(active, stage_snapshots=historical.stage_snapshots)
+        replace(production_audit, stage_snapshots=historical.stage_snapshots)
     with pytest.raises(ValueError, match="active snapshot"):
         PipelineStageOutput((object(),), historical.stage_snapshots[0])
     published_snapshot = stage_snapshots()[0]
@@ -304,11 +306,11 @@ def test_historical_audit_cannot_enter_active_pipeline_builders():
             replace(published_snapshot, **{field: getattr(historical.stage_snapshots[0], field)})
     for field in ("metric_ranges", "facets", "reason_counts"):
         with pytest.raises(ValueError, match="active evidence types"):
-            replace(active.stages[0], **{field: getattr(historical.stages[0], field)})
+            replace(production_audit.stages[0], **{field: getattr(historical.stages[0], field)})
     with pytest.raises(ValueError, match="active state type"):
         replace(published_snapshot.source_health, state=historical.stage_snapshots[0].source_health.state)
     with pytest.raises(ValueError, match="active severity type"):
-        active_pipeline.StageReasonAggregate(
+        production_pipeline.StageReasonAggregate(
             "source_partial", "来源不足", 1, historical.stage_snapshots[0].reasons[0].severity
         )
     with pytest.raises(ValueError, match="active stage type"):
@@ -318,12 +320,12 @@ def test_historical_audit_cannot_enter_active_pipeline_builders():
             input_batch_id="input",
             as_of=NOW,
             input_count=0,
-            source_health=active_pipeline.SourceHealth(active_pipeline.SourceHealthState.READY, 1, 1),
+            source_health=production_pipeline.SourceHealth(production_pipeline.SourceHealthState.READY, 1, 1),
             latency_ms=0,
         )
 
 
-def test_recovery_idempotency_uses_verified_identity_across_active_and_historical_audits():
+def test_recovery_idempotency_uses_verified_identity_across_production_and_historical_audits():
     original = CommittedDecisionRecord(
         FormalScoredDecision(replace(decision(), pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()))),
         NOW.replace(hour=15, minute=0),
@@ -342,7 +344,7 @@ def test_recovery_idempotency_uses_verified_identity_across_active_and_historica
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
-def test_active_formal_publication_still_persists_only_six_rows(tmp_path, strategy):
+def test_production_formal_publication_still_persists_only_six_rows(tmp_path, strategy):
     current = decision(strategy)
     current = replace(
         current,

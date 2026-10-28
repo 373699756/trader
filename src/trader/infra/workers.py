@@ -111,7 +111,7 @@ class BoundedExecutor:
         self._urgent_completed_count = 0
         self._urgent_rejected_count = 0
         self._urgent_inflight = 0
-        self._normal_active_count = 0
+        self._normal_running_count = 0
         self._worker_idents: set[int] = set()
         self._futures: set[Future[object]] = set()
 
@@ -196,13 +196,13 @@ class BoundedExecutor:
             def run_tracked() -> _T:
                 with self._lock:
                     if not use_urgent_lane:
-                        self._normal_active_count += 1
+                        self._normal_running_count += 1
                 try:
                     return function(*args, **kwargs)
                 finally:
                     with self._lock:
                         if not use_urgent_lane:
-                            self._normal_active_count -= 1
+                            self._normal_running_count -= 1
 
             try:
                 future = executor.submit(run_tracked)
@@ -300,7 +300,7 @@ class BoundedExecutor:
 
     def has_spare_worker(self) -> bool:
         with self._lock:
-            return self._running and self._normal_active_count < self._normal_worker_count
+            return self._running and self._normal_running_count < self._normal_worker_count
 
     @property
     def worker_count(self) -> int:

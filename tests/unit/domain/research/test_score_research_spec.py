@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.training.domain.evaluation.specification import (
-    ACTIVE_SCORE_RESEARCH_SPEC,
+    CURRENT_SCORE_RESEARCH_SPEC,
     HISTORICAL_RESEARCH_SPEC,
     PREREGISTERED_RESEARCH_SPEC,
     AssessScoreResearchCoverage,
@@ -24,7 +24,7 @@ def _at(value: str) -> datetime:
 def test_preregistered_research_is_preregistered_before_its_complete_future_window() -> None:
     spec = PREREGISTERED_RESEARCH_SPEC
 
-    assert spec is ACTIVE_SCORE_RESEARCH_SPEC
+    assert spec is CURRENT_SCORE_RESEARCH_SPEC
     assert spec.research_identity == "preregistered_research"
     assert spec.preregistered_on == date(2026, 8, 20)
     assert len(spec.historical_dates) == 40

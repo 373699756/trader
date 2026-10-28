@@ -587,7 +587,7 @@ def _operations(
             runtime=ScoredProjectionInputs(model_scoring=model_scoring),
         )
 
-    def active_score(strategy: Strategy, item: FeatureSnapshot) -> LocalScoreResult:
+    def _score_production_board(strategy: Strategy, item: FeatureSnapshot) -> LocalScoreResult:
         board_policy = policy.board_policy(strategy, item.quote.board)
         if board_policy is None:
             raise ValueError(f"missing board policy for {strategy.value}/{item.quote.board.value}")
@@ -633,16 +633,17 @@ def _operations(
         ),
         "board_preselection": candidate_preselection,
         "candidate_union_projection": candidate_union_projection,
-        "board_local_scoring": lambda: tuple(active_score(Strategy.TOMORROW, item) for item in candidates),
+        "board_local_scoring": lambda: tuple(_score_production_board(Strategy.TOMORROW, item) for item in candidates),
         "two_strategy_board_scoring": lambda: tuple(
-            tuple(active_score(strategy, item) for strategy in (Strategy.TOMORROW, Strategy.D25)) for item in candidates
+            tuple(_score_production_board(strategy, item) for strategy in (Strategy.TOMORROW, Strategy.D25))
+            for item in candidates
         ),
         "three_board_wall_clock": lambda: tuple(
-            tuple(active_score(Strategy.TOMORROW, item) for item in candidates if item.quote.board is board)
+            tuple(_score_production_board(Strategy.TOMORROW, item) for item in candidates if item.quote.board is board)
             for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
         ),
         "global_selection": lambda: sorted(
-            (active_score(Strategy.TOMORROW, item).base_score for item in candidates),
+            (_score_production_board(Strategy.TOMORROW, item).base_score for item in candidates),
             reverse=True,
         )[:6],
         "board_ready_to_draft": candidate_projection,

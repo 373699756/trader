@@ -16,7 +16,7 @@ from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfi
 from trader.training.infra.history.history_training_due import PublishedTrainingState
 from trader.training.infra.model_bundles import profile_publication
 from trader.training.infra.model_bundles.profile_publication import (
-    InspectActiveProfileBundles,
+    InspectPublishedProfileBundles,
     ProfilePublicationBusyError,
     PublishProfileBundles,
 )
@@ -47,7 +47,7 @@ def test_unexpected_runtime_error_is_not_reclassified_as_missing_models(tmp_path
     def unexpected(*args, **kwargs):
         raise RuntimeError("programming defect")
 
-    monkeypatch.setattr(profile_factory, "InspectActiveProfileBundles", unexpected)
+    monkeypatch.setattr(profile_factory, "InspectPublishedProfileBundles", unexpected)
     with pytest.raises(RuntimeError, match="programming defect"):
         LoadScoringProfile("v3", training_root=tmp_path)
 
@@ -73,13 +73,13 @@ def test_reader_wait_is_bounded_during_the_directory_switch(tmp_path, monkeypatc
             assert moved.wait(5)
             started = time.monotonic()
             with pytest.raises(ProfilePublicationBusyError):
-                InspectActiveProfileBundles(root, V3_TRAINING_PROFILE, timeout_seconds=0.03)
+                InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE, timeout_seconds=0.03)
             assert time.monotonic() - started < 1
             assert loaded.publications == original
         finally:
             release.set()
         publication.result(timeout=5)
-    heads = InspectActiveProfileBundles(root, V3_TRAINING_PROFILE)
+    heads = InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE)
     assert len(heads) == 2
     assert len({head.training_run_hash for head in heads}) == 1
     assert LoadScoringProfile("v3", training_root=tmp_path).publications == original

@@ -38,7 +38,7 @@ class IssuerEligibilityState(str, Enum):
     PERMANENTLY_EXCLUDED = "permanently_excluded"
 
 
-_ACTIVE_PERMANENT_REASONS = frozenset(
+_PERMANENT_EXCLUSION_REASONS = frozenset(
     {
         IssuerEligibilityReason.HISTORICAL_ST,
         IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
@@ -47,8 +47,8 @@ _ACTIVE_PERMANENT_REASONS = frozenset(
 )
 
 
-def IsActivePermanentEligibilityReason(reason: IssuerEligibilityReason) -> bool:
-    return reason in _ACTIVE_PERMANENT_REASONS
+def IsPermanentExclusionReason(reason: IssuerEligibilityReason) -> bool:
+    return reason in _PERMANENT_EXCLUSION_REASONS
 
 
 @dataclass(frozen=True)
@@ -216,18 +216,16 @@ def ResolveIssuerEligibility(
 ) -> IssuerEligibilityDecision:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("issuer eligibility observation time must be timezone-aware")
-    active = tuple(
+    effective_exclusions = tuple(
         sorted(
             fact
             for fact in facts
-            if fact.code == code
-            and fact.effective_at <= observed_at
-            and IsActivePermanentEligibilityReason(fact.reason)
+            if fact.code == code and fact.effective_at <= observed_at and IsPermanentExclusionReason(fact.reason)
         )
     )
-    if not active:
+    if not effective_exclusions:
         return IssuerEligibilityDecision(code, IssuerEligibilityState.ELIGIBLE_UNVERIFIED, observed_at)
-    fact = active[0]
+    fact = effective_exclusions[0]
     return IssuerEligibilityDecision(
         code,
         IssuerEligibilityState.PERMANENTLY_EXCLUDED,
@@ -378,7 +376,7 @@ __all__ = [
     "IssuerEligibilityReasonCount",
     "IssuerEligibilitySnapshot",
     "IssuerEligibilityState",
-    "IsActivePermanentEligibilityReason",
+    "IsPermanentExclusionReason",
     "EligibilityFactsFromQuote",
     "EligibilityFactsFromStaticIssuer",
     "IssuerEligibilityFactHash",

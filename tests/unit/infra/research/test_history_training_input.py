@@ -52,7 +52,7 @@ from trader.training.infra.history.history_training_due import (
 )
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceIndex
-from trader.training.infra.model_bundles.bundle_snapshot import ActiveHeadBundle
+from trader.training.infra.model_bundles.bundle_snapshot import PublishedHeadBundle
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -233,7 +233,7 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     assert history.summaries(loaded, NOW)["600001"].profile.median_amount_20d == 1000.0
 
 
-def test_old_published_manifest_remains_readable_after_active_history_advances(tmp_path, prepared_history):
+def test_old_published_manifest_remains_readable_after_published_history_advances(tmp_path, prepared_history):
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
@@ -508,7 +508,7 @@ def test_recommendation_retains_the_last_valid_projection_when_the_history_becom
     assert history.status().error_count == 0
 
 
-def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_active_history(
+def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_source_history(
     tmp_path: Path, prepared_history
 ) -> None:
     history_root = tmp_path / "history"
@@ -604,7 +604,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     baseline = HistoryControlIndex(history_root / "catalog.sqlite3").load_state().published_snapshot
     assert baseline is not None
     contract_hash = "9" * 64
-    bundle = ActiveHeadBundle(
+    bundle = PublishedHeadBundle(
         tmp_path / "train/tomorrow-v3/model.json",
         Strategy.TOMORROW,
         baseline.content_hash,

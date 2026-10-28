@@ -770,7 +770,7 @@ class MarketDataGateway:
                 for observation in reference_rows
             )
             return MarketGatewayHealthStatus(
-                active_source=self._latest_source,
+                latest_source=self._latest_source,
                 cached_rows=len(self._latest_by_code),
                 merge_count=self._merge_count,
                 conflict_count=self._conflict_count,

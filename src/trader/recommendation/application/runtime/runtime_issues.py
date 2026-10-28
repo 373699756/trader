@@ -91,11 +91,11 @@ class RuntimeIssueIndex:
                 continue
             self._recent_errors[key] = replace(issue, recovery_status="recovered", resolved_at=resolved_at)
         if strategy is None and stages is not None:
-            self._system_error_code = self._latest_active_code(None)
+            self._system_error_code = self._latest_unresolved_code(None)
         elif strategy is not None:
-            active_code = self._latest_active_code(strategy)
-            if active_code:
-                self._strategy_error_codes[strategy] = active_code
+            unresolved_code = self._latest_unresolved_code(strategy)
+            if unresolved_code:
+                self._strategy_error_codes[strategy] = unresolved_code
             else:
                 self._strategy_error_codes.pop(strategy, None)
 
@@ -120,7 +120,7 @@ class RuntimeIssueIndex:
             ),
         )
 
-    def _latest_active_code(self, strategy: Strategy | None) -> str:
+    def _latest_unresolved_code(self, strategy: Strategy | None) -> str:
         for issue in reversed(self._recent_errors.values()):
             if issue.strategy is strategy and issue.recovery_status == "active":
                 return issue.code

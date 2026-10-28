@@ -451,7 +451,7 @@ def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement
     assert skipped.selection_skip_reason == "strategy_history_insufficient"
 
 
-def test_tomorrow_model_history_coverage_requires_the_active_profile_fields(
+def test_tomorrow_model_history_coverage_requires_the_loaded_profile_fields(
     application_feature_factory,
 ) -> None:
     policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))

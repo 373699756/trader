@@ -88,7 +88,7 @@ def test_infrastructure_technical_capabilities_have_single_owners() -> None:
     }
 
 
-def test_recommendation_pipeline_capabilities_have_active_owners() -> None:
+def test_recommendation_pipeline_capabilities_have_implementation_owners() -> None:
     pipeline = SOURCE / "recommendation/application/pipeline"
     for name in (
         "static_filter",

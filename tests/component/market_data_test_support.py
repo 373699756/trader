@@ -548,7 +548,7 @@ class FailFirstTencentClient(StaticTencentClient):
 
 def _empty_gateway_health() -> MarketGatewayHealthStatus:
     return MarketGatewayHealthStatus(
-        active_source="unavailable",
+        latest_source="unavailable",
         cached_rows=0,
         merge_count=0,
         conflict_count=0,

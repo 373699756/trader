@@ -16,7 +16,10 @@ from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfi
 from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, LoadHeadBundle, ModelBundleContractError
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
-from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles, PublishProfileBundles
+from trader.training.infra.model_bundles.profile_publication import (
+    InspectPublishedProfileBundles,
+    PublishProfileBundles,
+)
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT, V3_TRAINING_PROFILE
@@ -228,7 +231,7 @@ def test_two_file_pair_loads_both_heads(profile: TrainedProfileContract, tmp_pat
     assert {path.name for path in root.iterdir()} == {"tomorrow", "d25"}
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         assert {path.name for path in (root / strategy.value).iterdir()} == {"model.json", "metadata.json"}
-    located = InspectActiveProfileBundles(root, profile)
+    located = InspectPublishedProfileBundles(root, profile)
     scoring = LoadScoringProfile(profile.profile_id, training_root=tmp_path)
     assert tuple(item.strategy for item in located) == (Strategy.TOMORROW, Strategy.D25)
     assert tuple(scoring.heads) == (Strategy.TOMORROW, Strategy.D25)
@@ -278,7 +281,7 @@ def test_pair_with_conflicting_training_run_is_rejected(tmp_path: Path) -> None:
 def test_publication_failure_preserves_previous_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)
     root = tmp_path / "v3"
-    before = tuple(item.model_hash for item in InspectActiveProfileBundles(root, V3_TRAINING_PROFILE))
+    before = tuple(item.model_hash for item in InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE))
     staged = []
     for contract in V3_TRAINING_PROFILE.heads:
         path = tmp_path / f"next-{contract.strategy.value}"
@@ -287,7 +290,7 @@ def test_publication_failure_preserves_previous_pair(tmp_path: Path, monkeypatch
     (staged[1][1] / "metadata.json").write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError):
         PublishProfileBundles(root, V3_TRAINING_PROFILE, tuple(staged))
-    assert tuple(item.model_hash for item in InspectActiveProfileBundles(root, V3_TRAINING_PROFILE)) == before
+    assert tuple(item.model_hash for item in InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE)) == before
 
     _write_bundle(staged[1][1], V3_TRAINING_PROFILE.heads[1])
     from trader.training.infra.model_bundles import profile_publication
@@ -302,7 +305,7 @@ def test_publication_failure_preserves_previous_pair(tmp_path: Path, monkeypatch
     monkeypatch.setattr(profile_publication.os, "replace", fail_switch)
     with pytest.raises(OSError, match="fixture_switch_failed"):
         PublishProfileBundles(root, V3_TRAINING_PROFILE, tuple(staged))
-    assert tuple(item.model_hash for item in InspectActiveProfileBundles(root, V3_TRAINING_PROFILE)) == before
+    assert tuple(item.model_hash for item in InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE)) == before
 
 
 def test_predictor_and_codec_use_model_parameters_only() -> None:

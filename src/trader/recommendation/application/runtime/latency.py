@@ -31,7 +31,7 @@ class LatencyWaterfallStatus:
     sample_capacity: int
     trace_capacity: int
     stage_capacity: int
-    active_trace_count: int
+    pending_trace_count: int
     planned_count: int
     completed_count: int
     failed_count: int
@@ -142,7 +142,7 @@ class LatencyWaterfall:
                 sample_capacity=self._sample_capacity,
                 trace_capacity=self._trace_capacity,
                 stage_capacity=self._stage_capacity,
-                active_trace_count=len(self._traces),
+                pending_trace_count=len(self._traces),
                 planned_count=self._planned_count,
                 completed_count=self._completed_count,
                 failed_count=self._failed_count,

@@ -96,7 +96,7 @@ def test_missing_history_is_read_only_and_reports_the_current_snapshot_boundary(
     assert not root.exists()
 
 
-def test_active_monthly_snapshot_projects_typed_counts_and_optional_full_verification(tmp_path: Path) -> None:
+def test_published_monthly_snapshot_projects_typed_counts_and_optional_full_verification(tmp_path: Path) -> None:
     root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(

@@ -69,7 +69,7 @@ class _RecallEvaluator(_ReplayEvaluator):
         )
 
 
-def test_r3_candidate_recall_uses_the_active_set_oracle_micro_denominator() -> None:
+def test_r3_candidate_recall_uses_the_candidate_set_oracle_micro_denominator() -> None:
     summary = _summary()
     candidates = tuple(replace(item, production_top120=item.code != "688001") for item in summary.candidates)
     extraction = HistoricalExtractor(_Port(replace(summary, candidates=candidates)), _Evaluator()).extract()

@@ -101,7 +101,7 @@ def test_old_confirmed_company_risk_does_not_create_permanent_exclusion() -> Non
     assert ResolveIssuerEligibility((fact,), "600001", OBSERVED_AT).state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
 
 
-def test_retired_historical_loss_fact_is_auditable_but_not_an_active_exclusion() -> None:
+def test_retired_historical_loss_fact_is_auditable_but_not_a_permanent_exclusion() -> None:
     legacy = IssuerEligibilityFact(
         code="600001",
         reason=IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS,

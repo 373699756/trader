@@ -534,21 +534,21 @@
 
   function renderHealth(els, statusPayload, snapshotReasons, strategy, rememberDiagnostic) {
     const health = healthView(statusPayload, snapshotReasons, strategy);
-    const activeIssues = health.issues.filter((issue) => issue.recoveryStatus !== "recovered");
+    const unresolvedIssues = health.issues.filter((issue) => issue.recoveryStatus !== "recovered");
     const alwaysVisible = Boolean(els.errorDetailsButton.classList && els.errorDetailsButton.classList.contains("observation-trigger"));
     const observationAvailable = setObservationTriggerAvailability(els, strategy);
-    els.errorDetailsButton.hidden = !alwaysVisible && activeIssues.length === 0;
+    els.errorDetailsButton.hidden = !alwaysVisible && unresolvedIssues.length === 0;
     els.errorDetailsButton.dataset.level = health.level;
     els.healthBadge.textContent = !observationAvailable
       ? "观察不适用"
       : alwaysVisible
-      ? (activeIssues.length ? `观察 · ${activeIssues.length}项异常` : "观察")
-      : `${health.level === "error" ? "错误" : "异常"} ${activeIssues.length}`;
-    if (els.observationErrorCount) els.observationErrorCount.textContent = String(activeIssues.length);
+      ? (unresolvedIssues.length ? `观察 · ${unresolvedIssues.length}项异常` : "观察")
+      : `${health.level === "error" ? "错误" : "异常"} ${unresolvedIssues.length}`;
+    if (els.observationErrorCount) els.observationErrorCount.textContent = String(unresolvedIssues.length);
     if (typeof rememberDiagnostic === "function") {
       health.issues.forEach((issue) => rememberDiagnostic(issue.code));
     }
-    return { ...health, visibleIssues: activeIssues };
+    return { ...health, visibleIssues: unresolvedIssues };
   }
 
   function setObservationTriggerAvailability(els, strategy) {
@@ -654,7 +654,7 @@
     const age = market && market.candidate_quote_age;
     if (payload && payload.view !== "history" && age && age.latest_source_time) {
       return {
-        source: visibleText(market.candidate_quote_latest_source) || visibleText(market.active_source),
+        source: visibleText(market.candidate_quote_latest_source) || visibleText(market.latest_source),
         sourceTime: age.latest_source_time,
       };
     }
@@ -818,7 +818,7 @@
         security_identity_missing_count: null,
         security_identity_pending: true,
         latest_quote_source: visibleText(market.candidate_quote_latest_source)
-          || visibleText(market.active_source),
+          || visibleText(market.latest_source),
         latest_quote_source_time: market.candidate_quote_age
           && market.candidate_quote_age.latest_source_time,
       },

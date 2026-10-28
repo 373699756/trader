@@ -129,7 +129,7 @@ class MarketDataHealth:
             }
         gateway_health["sources"] = sources
         market_quotes = quote_status.market_features
-        candidate_quotes = quote_status.active_candidate_quotes
+        candidate_quotes = quote_status.selected_candidate_quotes
         latest_candidate_quote = (
             max(candidate_quotes, key=lambda quote: (quote.source_time, quote.received_time, quote.data_version))
             if candidate_quotes
@@ -307,7 +307,7 @@ def _gateway_health_payload(
     cache = status.cache
     latency = status.latency_waterfall
     return {
-        "active_source": status.active_source,
+        "latest_source": status.latest_source,
         "cached_rows": status.cached_rows,
         "merge_count": status.merge_count,
         "conflict_count": status.conflict_count,
@@ -390,7 +390,7 @@ def _gateway_health_payload(
             "sample_capacity": latency.sample_capacity,
             "trace_capacity": latency.trace_capacity,
             "stage_capacity": latency.stage_capacity,
-            "active_trace_count": latency.active_trace_count,
+            "pending_trace_count": latency.pending_trace_count,
             "planned_count": latency.planned_count,
             "completed_count": latency.completed_count,
             "failed_count": latency.failed_count,

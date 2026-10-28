@@ -69,7 +69,7 @@ def Main(argv: list[str] | None = None) -> int:
         lock = ProcessLock(settings.runtime_dir / "server.lock")
         lock.acquire()
     except ProcessLockError as exc:
-        raise SystemExit(_active_service_message(exc, settings)) from None
+        raise SystemExit(_running_service_message(exc, settings)) from None
     with lock:
         from trader.bootstrap import PrepareRuntimeStorage
 
@@ -316,7 +316,7 @@ def _browser_url(host: str, port: int) -> str:
     return f"http://{url_host}:{port}"
 
 
-def _active_service_message(exc: ProcessLockError, settings: RuntimeSettings) -> str:
+def _running_service_message(exc: ProcessLockError, settings: RuntimeSettings) -> str:
     return "\n".join(
         (
             str(exc),

@@ -58,7 +58,10 @@ from trader.training.infra.model_bundles.documents import (
     BuildPredictionMetricsDocument,
     BuildTargetMetricDocument,
 )
-from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles, PublishProfileBundles
+from trader.training.infra.model_bundles.profile_publication import (
+    InspectPublishedProfileBundles,
+    PublishProfileBundles,
+)
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 from trader.training.infra.model_fitting import FitIndustryModels, FittingParameterDocument, LightGBMFittingParameters
 from trader.training.infra.model_fitting_results import IndustryFitResult
@@ -860,7 +863,7 @@ def _common_document(context: _TrainingRunContext) -> dict[str, object]:
 
 def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrainingRequest) -> TrainingRunResult | None:
     try:
-        bundles = InspectActiveProfileBundles(request.train_root, request.profile)
+        bundles = InspectPublishedProfileBundles(request.train_root, request.profile)
     except (OSError, ValueError, RuntimeError):
         return None
     heads: list[HeadTrainingResult] = []

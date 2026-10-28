@@ -576,7 +576,7 @@ def _run(
             "phase": PhaseAt(clock.now(), is_trading_day=True).value,
             "health": {"level": "normal", "issue_count": 0},
             "deepseek_budget": {"used": 0, "remaining": 168, "planned_limit": 168},
-            "market_data": {"active_source": "fixture", "candidate_quote_latest_source": "fixture"},
+            "market_data": {"latest_source": "fixture", "candidate_quote_latest_source": "fixture"},
         }
 
     app_port = _free_port()

@@ -216,7 +216,7 @@ class ModelIndustrySourceSnapshot:
 @dataclass(frozen=True)
 class ScoringHeadSnapshot:
     profile_id: str | None
-    active: bool | None
+    is_enabled: bool | None
     model_id: str | None
     model_hash: str | None
     request_count: int | None
@@ -499,11 +499,11 @@ def _parse_scoring_profile(payload: Mapping[str, object]) -> ScoringProfileSnaps
 
 def _parse_scoring_head(payload: Mapping[str, object]) -> ScoringHeadSnapshot:
     computation = _mapping(payload.get("computation"))
-    active = payload.get("active")
+    is_enabled = payload.get("is_enable")
     authority = payload.get("production_authority")
     return ScoringHeadSnapshot(
         profile_id=_text(payload.get("profile_id")),
-        active=active if isinstance(active, bool) else None,
+        is_enabled=is_enabled if isinstance(is_enabled, bool) else None,
         model_id=_text(payload.get("model_id")),
         model_hash=_text(payload.get("model_hash")),
         request_count=_nonnegative_int(computation.get("request_count")),

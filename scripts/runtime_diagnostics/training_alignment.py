@@ -63,7 +63,7 @@ def _inputs(history: Path) -> dict[str, object]:
             "seconds": round(time.monotonic() - started, 3),
             "source_identity": manifest.snapshot_hash,
             "signal_date": manifest.data_cutoff.isoformat(),
-            "source_active_writes": 0,
+            "source_data_writes": 0,
             "network_calls": 0,
             "model_predictions": 0,
         },

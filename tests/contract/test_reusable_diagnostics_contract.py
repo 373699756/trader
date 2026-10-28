@@ -76,7 +76,7 @@ def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() ->
 
 
 def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() -> None:
-    active_text = "\n".join(
+    source_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
             ROOT / "Makefile",
@@ -89,7 +89,7 @@ def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() ->
     )
     for wrapper in REMOVED_DIAGNOSTIC_WRAPPERS:
         assert not wrapper.exists()
-        assert wrapper.name not in active_text
+        assert wrapper.name not in source_text
 
     for module in INTERNAL_DIAGNOSTIC_MODULES:
         source = module.read_text(encoding="utf-8")
@@ -118,7 +118,7 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
         SKILL_ROOT.parent / "python-engineering-guide" / "SKILL.md",
         *(SKILL_ROOT.parent / "python-engineering-guide" / "references").glob("*.md"),
     )
-    active_text = "\n".join(path.read_text(encoding="utf-8") for path in skill_files)
+    source_text = "\n".join(path.read_text(encoding="utf-8") for path in skill_files)
 
     for source in skill_files:
         content = source.read_text(encoding="utf-8")
@@ -132,15 +132,15 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
                 anchors = {re.sub(r"[^\w\s-]", "", heading.lower()).replace(" ", "-") for heading in headings}
                 assert anchor in anchors, f"missing skill anchor: {source.name} -> {target}#{anchor}"
 
-    assert "docs/1_评分逻辑.md" in active_text
-    assert "docs/2_工程设计.md" in active_text
-    assert "docs/3_工程实施.md" in active_text
-    assert "docs/4_下载训练.md" in active_text
-    assert "src/trader/recommendation/application/runtime/" in active_text
-    assert "tests/integration/test_scheduler_runtime.py" in active_text
-    assert "/api/status" in active_text
-    assert "config/runtime.json" in active_text
-    assert "trader-runtime-diagnostics" in active_text
+    assert "docs/1_评分逻辑.md" in source_text
+    assert "docs/2_工程设计.md" in source_text
+    assert "docs/3_工程实施.md" in source_text
+    assert "docs/4_下载训练.md" in source_text
+    assert "src/trader/recommendation/application/runtime/" in source_text
+    assert "tests/integration/test_scheduler_runtime.py" in source_text
+    assert "/api/status" in source_text
+    assert "config/runtime.json" in source_text
+    assert "trader-runtime-diagnostics" in source_text
 
     for current_target in (
         ROOT / "docs" / "1_评分逻辑.md",
@@ -163,7 +163,7 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
         "trader-runtime-diagnostics-" + "v1",
         "V2" + "RefreshOutcome",
     ):
-        assert retired_reference not in active_text
+        assert retired_reference not in source_text
 
 
 def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -> None:

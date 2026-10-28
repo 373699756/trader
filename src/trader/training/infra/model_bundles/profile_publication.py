@@ -17,7 +17,7 @@ from pathlib import Path
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle, ModelBundleContractError
-from trader.training.infra.model_bundles.bundle_snapshot import InspectActiveHeadBundle, LoadedActiveHeadBundle
+from trader.training.infra.model_bundles.bundle_snapshot import InspectPublishedHeadBundle, LoadedPublishedHeadBundle
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def PublishProfileBundles(
     staged: tuple[tuple[Strategy, Path], ...],
     *,
     timeout_seconds: float = 2.0,
-) -> tuple[LoadedActiveHeadBundle, ...]:
+) -> tuple[LoadedPublishedHeadBundle, ...]:
     """Expose a complete fixed-directory pair only after both heads validate."""
 
     if tuple(strategy for strategy, _ in staged) != tuple(head.strategy for head in profile.heads):
@@ -86,7 +86,7 @@ def PublishProfileBundles(
             _fsync_directory(destination)
         _fsync_directory(publication)
         heads = tuple(
-            InspectActiveHeadBundle(publication / contract.directory_name, contract.strategy, profile)
+            InspectPublishedHeadBundle(publication / contract.directory_name, contract.strategy, profile)
             for contract in profile.heads
         )
         _validate_profile_pair(heads)
@@ -119,9 +119,9 @@ def PublishProfileBundles(
             shutil.rmtree(publication)
 
 
-def InspectActiveProfileBundles(
+def InspectPublishedProfileBundles(
     profile_root: Path, profile: TrainedProfileContract, *, timeout_seconds: float = 2.0
-) -> tuple[LoadedActiveHeadBundle, ...]:
+) -> tuple[LoadedPublishedHeadBundle, ...]:
     """Validate the two fixed heads from one selected profile directory."""
 
     # A publisher creates this parent before entering its lock. An absent parent
@@ -134,14 +134,14 @@ def InspectActiveProfileBundles(
         if not profile_root.is_dir() or profile_root.is_symlink():
             raise ValueError("trained profile directory is invalid")
         heads = tuple(
-            InspectActiveHeadBundle(profile_root / contract.directory_name, contract.strategy, profile)
+            InspectPublishedHeadBundle(profile_root / contract.directory_name, contract.strategy, profile)
             for contract in profile.heads
         )
         _validate_profile_pair(heads)
         return heads
 
 
-def _validate_profile_pair(heads: tuple[LoadedActiveHeadBundle, ...]) -> None:
+def _validate_profile_pair(heads: tuple[LoadedPublishedHeadBundle, ...]) -> None:
     if (
         len(heads) != 2
         or len({item.training_input_hash for item in heads}) != 1
@@ -162,7 +162,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 __all__ = [
-    "InspectActiveProfileBundles",
+    "InspectPublishedProfileBundles",
     "ProfilePublicationBusyError",
     "ProfilePublicationLock",
     "PublishProfileBundles",

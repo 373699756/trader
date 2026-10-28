@@ -93,8 +93,8 @@
     if (payload.historical === true) return "hidden_history";
     if (payload.frozen === true) return "closed_frozen";
     if (typeof runtimePhase !== "string" || !runtimePhase) return "unknown";
-    const active = runtimePhase === "before_close";
-    if (!active) return "closed_market";
+    const isBeforeClose = runtimePhase === "before_close";
+    if (!isBeforeClose) return "closed_market";
     if (payload.status === "not_ready") {
       if (payload.draft) {
         const draftItems = Array.isArray(payload.draft.items) ? payload.draft.items : [];

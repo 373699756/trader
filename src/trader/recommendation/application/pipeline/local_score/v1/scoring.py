@@ -203,7 +203,7 @@ class LearnedRankScoringService:
     def _status_locked(self) -> ScoringHeadRuntimeStatus:
         evidence = self._head.evidence
         return ScoringHeadRuntimeStatus(
-            active=True,
+            is_enabled=True,
             profile_id="v1",
             model_id=self._predictor.model_id,
             model_hash=self._predictor.model_hash,

@@ -44,7 +44,7 @@ class CompanyRiskType(str, Enum):
 
 
 class CompanyEventStatus(str, Enum):
-    ACTIVE = "active"
+    ONGOING = "active"
     RESOLVED = "resolved"
     CANCELLED = "cancelled"
 
@@ -146,7 +146,7 @@ class CompanyRiskEvent:
             raise ValueError("company_risk_dates_invalid")
         if self.resolved_at is not None and self.resolved_at < self.first_disclosed_at:
             raise ValueError("company_risk_resolution_invalid")
-        if self.status is not CompanyEventStatus.ACTIVE and self.resolved_at is None:
+        if self.status is not CompanyEventStatus.ONGOING and self.resolved_at is None:
             raise ValueError("company_risk_resolution_missing")
         if not self.summary or len(self.summary) > 240:
             raise ValueError("company_event_summary_invalid")

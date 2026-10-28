@@ -135,7 +135,7 @@ def _trace_labels(history: Path, path: Path, signal: date) -> dict[str, object]:
         "signal_date": signal.isoformat(),
         "population": len(codes),
         "horizons": horizons,
-        "source_active_writes": 0,
+        "source_data_writes": 0,
         "price_scan_passes": 1,
         "interpretation": "observed_t1_sample_population; observed_returns_only_per_horizon; estimates_cannot_supply_labels",
     }
@@ -165,7 +165,7 @@ def main() -> int:
         {
             "schema_version": "training-coverage-diagnostic",
             "status": "degraded" if not profiles or any(item["missing"] for item in profiles) else "passed",
-            "summary": {"profiles": profiles, "source_active_writes": 0},
+            "summary": {"profiles": profiles, "source_data_writes": 0},
         }
     )
     return 0

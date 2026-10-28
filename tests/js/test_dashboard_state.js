@@ -405,7 +405,7 @@ const modelBlockedPayload = { status: "not_ready", strategy: "tomorrow", view: "
 const modelBlockedRuntime = {
   run_mode: "preview", preview_state: "failed", preview_error: "production_model_contract_conflict",
   market_trade_date: "2026-10-23", preview_started_at: "2026-10-24T16:00:00+08:00",
-  market_data: { active_source: "unavailable", candidate_quote_cache_entries: 0, candidate_quote_age: { sample_count: 0 } },
+  market_data: { latest_source: "unavailable", candidate_quote_cache_entries: 0, candidate_quote_age: { sample_count: 0 } },
 };
 function renderModelBlockedSummary(runtime, payload = modelBlockedPayload, firstVisible = null) {
   const elements = summaryFixture();
@@ -425,7 +425,7 @@ for (const reason of ["missing", "corrupt", "integrity_conflict", "contract_conf
   }
 }
 const cachedQuoteRuntime = { ...modelBlockedRuntime, market_data: {
-  active_source: "unavailable", candidate_quote_latest_source: "tencent", candidate_quote_cache_entries: 1,
+  latest_source: "unavailable", candidate_quote_latest_source: "tencent", candidate_quote_cache_entries: 1,
   candidate_quote_age: { sample_count: 1, latest_source_time: "2026-10-23T15:00:00+08:00" },
 } };
 assert.strictEqual(renderModelBlockedSummary(cachedQuoteRuntime).quoteSource.textContent, "腾讯行情");
@@ -831,7 +831,7 @@ state.renderSummary(
   {
     deepseek_budget: { used: 0, remaining: 168, limit: 168 },
     market_data: {
-      active_source: "eastmoney",
+      latest_source: "eastmoney",
       candidate_quote_latest_source: "tencent",
       candidate_quote_cache_entries: 360,
       candidate_quote_age: {

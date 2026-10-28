@@ -209,7 +209,7 @@ def test_discovery_response_is_not_counted_as_a_saved_page_replayed_by_parent_ve
     assert _saved_pages(index.path, [parent_key, child_key]) == {child_key}
 
 
-def test_replay_rejects_hard_link_to_active_database_before_any_write(tmp_path, monkeypatch):
+def test_replay_rejects_hard_link_to_source_database_before_any_write(tmp_path, monkeypatch):
     source = tmp_path / "active.sqlite3"
     with SqliteSession(source) as connection:
         connection.run("CREATE TABLE facts(value INTEGER)")

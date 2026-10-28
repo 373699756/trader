@@ -268,7 +268,7 @@ def _sample(
             "heads": {
                 _STRATEGY: {
                     "profile_id": "v2",
-                    "active": True,
+                    "is_enable": True,
                     "model_id": "tomorrow-model",
                     "model_hash": "a" * 64,
                     "computation": {
@@ -711,7 +711,7 @@ def test_research_observer_failure_is_reported_from_root_degradation() -> None:
     assert finding.evidence == {"error_code": "ResearchTraceCapacityError"}
 
 
-def test_runtime_report_exposes_active_model_head_consumption() -> None:
+def test_runtime_report_exposes_enabled_model_head_consumption() -> None:
     sample = _sample(3, predictor_batch_count=2, evaluated_count=65)
 
     report = build_report(
@@ -727,7 +727,7 @@ def test_runtime_report_exposes_active_model_head_consumption() -> None:
         "heads": {
             "tomorrow": {
                 "profile_id": "v2",
-                "active": True,
+                "is_enable": True,
                 "model_id": "tomorrow-model",
                 "model_hash": "a" * 64,
                 "request_count": 3,

@@ -89,7 +89,7 @@ def test_recovery_reads_each_physical_year_once_and_keeps_sequence_visibility(tm
     assert opened == ["prices_2025.sqlite3", "prices_2026.sqlite3"]
 
 
-def test_waiting_pipeline_reports_active_jobs_without_advancing_durable_completion(tmp_path, monkeypatch):
+def test_waiting_pipeline_reports_running_jobs_without_advancing_durable_completion(tmp_path, monkeypatch):
     ticks = count()
     release = Event()
     progress = []

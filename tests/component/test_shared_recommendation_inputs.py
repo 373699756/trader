@@ -223,17 +223,17 @@ def test_minute_pool_runs_five_requests_with_one_source_worker_and_one_deadline(
     lanes = SourceLaneScheduler(source)
     ready, release = threading.Event(), threading.Event()
     lock = threading.Lock()
-    active, peak = 0, 0
+    running_requests, peak = 0, 0
     deadlines = []
 
     class Client:
         def fetch_intraday_minutes(self, code, *, now, deadline, cancelled):
-            nonlocal active, peak
+            nonlocal running_requests, peak
             with lock:
-                active += 1
-                peak = max(peak, active)
+                running_requests += 1
+                peak = max(peak, running_requests)
                 deadlines.append(deadline)
-                if active == 5:
+                if running_requests == 5:
                     ready.set()
             try:
                 assert release.wait(2)
@@ -241,7 +241,7 @@ def test_minute_pool_runs_five_requests_with_one_source_worker_and_one_deadline(
                 return _tail_minute_bars()
             finally:
                 with lock:
-                    active -= 1
+                    running_requests -= 1
 
     service = _service(
         StaticGateway((_quote(),)),

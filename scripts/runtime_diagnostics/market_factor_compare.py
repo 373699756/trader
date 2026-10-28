@@ -889,7 +889,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
     local_references = ReadReferences(settings.data_paths.reference, at)
     base_references = local_references
     baostock_capability: BaostockCapability | None = None
-    active_references = base_references
+    comparison_references = base_references
     client = ExchangeSecurityMasterClient(
         sse_fetcher=partial(FetchSseListings, get=FetchExternalHttp),
         szse_fetcher=partial(FetchSzseListings, get=FetchExternalHttp),
@@ -1009,7 +1009,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
                                 plan,
                                 codes,
                                 inputs,
-                                active_references,
+                                comparison_references,
                                 official,
                                 batch,
                                 args,
@@ -1048,8 +1048,8 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
             "source": "baostock",
             "mode": baostock_capability.mode,
             "live_rows": 0,
-            "cached_rows": len(baostock_capability.active_industries),
-            "active_rows": len(baostock_capability.active_industries),
+            "cached_rows": len(baostock_capability.published_industries),
+            "published_rows": len(baostock_capability.published_industries),
             "invalid_rows": 0,
             "error": None,
             "elapsed_ms": local_references.industry_read_ms,
@@ -1059,7 +1059,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
             "source": "local_sqlite",
             "mode": "cached_only",
             "cached_rows": len(local_references.model_industries),
-            "active_rows": len(local_references.model_industries),
+            "published_rows": len(local_references.model_industries),
             "elapsed_ms": local_references.industry_read_ms,
         }
     )
@@ -1153,7 +1153,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
         "status": "degraded"
         if any(sample["status"] == "measured" for sample in samples)
         or baostock_capability is not None
-        and bool(baostock_capability.active_industries)
+        and bool(baostock_capability.published_industries)
         else "failed",
         "summary": summary,
         "findings": findings,

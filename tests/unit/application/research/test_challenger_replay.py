@@ -6,11 +6,23 @@ import pytest
 
 from tests.unit.application.research.test_historical_extraction import _Evaluator, _Port
 from tests.unit.application.research.test_historical_ports import _summary
+from trader.infra.serialization.canonical_codec import EncodeCanonicalValue
 from trader.training.application.baseline_replay_report import BaselineReplaySelection
-from trader.training.application.challenger_replay_report import ChallengerReplaySelection
+from trader.training.application.challenger_replay_report import ChallengerCandidateOverride, ChallengerReplaySelection
 from trader.training.application.challengers import ChallengerReplayer
 from trader.training.application.extraction import HistoricalExtractor
 from trader.training.application.replay import HistoricalBaselineReplayer
+
+
+def test_candidate_override_uses_candidate_field_in_output_and_identity() -> None:
+    override = ChallengerCandidateOverride("600001", None, "not_enabled", None, True, True, False, ())
+
+    assert override.candidate_set_expanded is True
+    assert override.content_hash == "c918d0aea53199264f41f03d8dbb74329a2c8e41b0278e6840df1daf581eef63"
+    encoded = EncodeCanonicalValue((override,), include_derived=True)
+    assert isinstance(encoded, list) and isinstance(encoded[0], dict)
+    assert encoded[0]["candidate_set_expanded"] is True
+    assert "active_set_expanded" not in encoded[0]
 
 
 class _ChallengerEvaluator:
@@ -97,7 +109,7 @@ def test_candidate_upper_bound_alone_can_select_a_loaded_non_top120_candidate() 
     ordinary = {item.code: item for item in by_id["coverage_shrink"].days[0].overrides}
     expanded = {item.code: item for item in by_id["candidate_upper_bound"].days[0].overrides}
     assert ordinary["600001"].selection_eligible is False
-    assert expanded["600001"].active_set_expanded is True
+    assert expanded["600001"].candidate_set_expanded is True
     assert expanded["600001"].selection_eligible is True
 
 

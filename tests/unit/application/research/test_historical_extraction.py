@@ -66,7 +66,7 @@ def test_extractor_is_deterministic_and_keeps_true_coverage_status() -> None:
     assert first.coverage[-1].status == "valid"
 
 
-def test_active_set_starts_from_each_board_top120_and_proves_exclusions() -> None:
+def test_candidate_set_starts_from_each_board_top120_and_proves_exclusions() -> None:
     summary = _summary()
     candidates = tuple(
         replace(candidate, production_top120=candidate.code != "600001") for candidate in summary.candidates
@@ -79,7 +79,7 @@ def test_active_set_starts_from_each_board_top120_and_proves_exclusions() -> Non
     assert all(len(proof.content_hash) == 64 for proof in day.proofs)
 
 
-def test_active_set_excludes_candidate_blocked_by_selection_constraint() -> None:
+def test_candidate_set_excludes_candidate_blocked_by_selection_constraint() -> None:
     summary = _summary()
     candidates = tuple(
         replace(

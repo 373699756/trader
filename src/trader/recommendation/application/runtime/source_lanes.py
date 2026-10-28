@@ -95,7 +95,7 @@ class LatestRequestLane:
         self._running: _LaneRequest | None = None
         self._pending: _LaneRequest | None = None
         self._runner_future: Future[None] | None = None
-        self._active_thread_ident: int | None = None
+        self._running_thread_ident: int | None = None
         self._sequence = 0
         self._stopped = False
         self._completed_count = 0
@@ -244,7 +244,7 @@ class LatestRequestLane:
                     self._pending.future.set_exception(RuntimeError(f"{self._source} source lane stopped"))
                     cancelled += 1
                 self._pending = None
-            if self._running is not None and self._active_thread_ident is None and self._runner_future is not None:
+            if self._running is not None and self._running_thread_ident is None and self._runner_future is not None:
                 cancelled += int(self._runner_future.cancel())
             while wait and self._running is not None:
                 if effective_deadline is None:
@@ -265,7 +265,7 @@ class LatestRequestLane:
 
     def owns_current_thread(self) -> bool:
         with self._condition:
-            return self._active_thread_ident == threading.get_ident()
+            return self._running_thread_ident == threading.get_ident()
 
     def is_stopped(self) -> bool:
         with self._condition:
@@ -290,7 +290,7 @@ class LatestRequestLane:
                 request = self._running
                 if request is None:
                     return
-                self._active_thread_ident = threading.get_ident()
+                self._running_thread_ident = threading.get_ident()
             self._execute(request)
             if not self._advance():
                 return
@@ -314,7 +314,7 @@ class LatestRequestLane:
     def _advance(self) -> bool:
         with self._condition:
             self._completed_count += 1
-            self._active_thread_ident = None
+            self._running_thread_ident = None
             if self._stopped:
                 if self._pending is not None and not self._pending.future.done():
                     self._pending.future.set_exception(RuntimeError(f"{self._source} source lane stopped"))
@@ -334,7 +334,7 @@ class LatestRequestLane:
             if future is not self._runner_future:
                 return
             self._runner_future = None
-            if self._running is None or self._active_thread_ident is not None:
+            if self._running is None or self._running_thread_ident is not None:
                 return
             error = RuntimeError(f"{self._source} source lane runner stopped before execution")
             if not self._running.future.done():

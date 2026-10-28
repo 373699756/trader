@@ -94,7 +94,7 @@ def test_runtime_and_configuration_paths_are_not_project_versioned() -> None:
     assert versioned_runtime_root.search(runtime_config) is None
 
 
-def test_active_baostock_modules_contain_no_legacy_versioned_schema() -> None:
+def test_baostock_modules_contain_no_legacy_versioned_schema() -> None:
     source_paths = (
         PROJECT_ROOT / "src/trader/download/domain/baostock_daily.py",
         PROJECT_ROOT / "src/trader/download/infra/baostock_gateway.py",

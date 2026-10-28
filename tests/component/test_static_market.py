@@ -446,17 +446,18 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
         company_evidence_reader=reader,
     )
     before = service.fetch_market_feature_batch(NOW)
-    active = service.fetch_market_feature_batch(effective + timedelta(seconds=10))
+    effective_batch = service.fetch_market_feature_batch(effective + timedelta(seconds=10))
     expired_at = effective + timedelta(days=365, microseconds=1)
     expired = service.fetch_market_feature_batch(expired_at)
     assert before.features[0].values["official_investigation_history"] == 1
-    assert active.features[0].values["official_investigation_history"] == 1
+    assert effective_batch.features[0].values["official_investigation_history"] == 1
     assert expired.features[0].values["official_investigation_history"] == 1
     assert "research_data_degraded" in expired.features[0].quote.execution_restrictions
     assert "official_investigation_history" in {
-        reason.filter_code for reason in HardFilter(active.features[0], now=effective, max_age_seconds=30).reasons
+        reason.filter_code
+        for reason in HardFilter(effective_batch.features[0], now=effective, max_age_seconds=30).reasons
     }
-    assert before.static_stages[1].output_count == active.static_stages[1].output_count == 1
+    assert before.static_stages[1].output_count == effective_batch.static_stages[1].output_count == 1
     assert before.static_stages[1].output_batch_id == expired.static_stages[1].output_batch_id
     assert reader.visits == 1
 

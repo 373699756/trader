@@ -123,7 +123,7 @@ def build_shadow_report(root: Path) -> dict[str, object]:
         },
         "request_baseline": {
             "raw_qfq_queries_per_security": 2,
-            "active_universe_raw_qfq_queries": baseline_calls,
+            "universe_raw_qfq_queries": baseline_calls,
             "recent_refresh_sessions": len(recent_sessions),
             "recent_refresh_raw_qfq_queries": baseline_calls,
             "recent_fully_paired_securities": recent_reusable,

@@ -386,7 +386,7 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         return {}
     scalar_fields = (
         "status",
-        "active_source",
+        "latest_source",
         "market_epoch",
         "reference_epoch",
         "market_feature_rows",
@@ -637,7 +637,7 @@ def _scoring_head(raw: Mapping[object, object]) -> dict[str, object]:
     result = {
         field: raw[field]
         for field in (
-            "active",
+            "is_enable",
             "status",
             "profile_id",
             "model_id",
@@ -722,7 +722,7 @@ def _latency_waterfall(value: object) -> dict[str, object]:
         "sample_capacity",
         "trace_capacity",
         "stage_capacity",
-        "active_trace_count",
+        "pending_trace_count",
         "planned_count",
         "completed_count",
         "failed_count",
@@ -812,9 +812,9 @@ def _reasons(runtime: Mapping[str, object]) -> tuple[str, ...]:
 def _health(runtime: Mapping[str, object]) -> dict[str, object]:
     direct = runtime.get("health")
     recent = _recent_errors(runtime)
-    active_count = sum(1 for issue in recent if issue["recovery_status"] == "active")
+    unresolved_count = sum(1 for issue in recent if issue["recovery_status"] == "active")
     level = ""
-    issue_count = active_count
+    issue_count = unresolved_count
     if isinstance(direct, Mapping):
         raw_level = direct.get("level")
         if raw_level in {"normal", "degraded", "error"}:

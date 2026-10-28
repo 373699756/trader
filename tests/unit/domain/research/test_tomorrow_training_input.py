@@ -107,7 +107,7 @@ def test_extra_source_fields_do_not_break_the_consumer_contract() -> None:
     assert report.status == "compatible"
 
 
-def test_dynamic_active_cutoff_is_compatible_only_when_bound_by_the_consumer() -> None:
+def test_dynamic_consumer_cutoff_is_compatible_only_when_bound_by_the_consumer() -> None:
     descriptor = replace(_descriptor(), source_cutoff=date(2026, 9, 2))
 
     compatible = EvaluateTomorrowTrainingInput(

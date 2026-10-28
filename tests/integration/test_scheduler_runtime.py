@@ -1652,7 +1652,7 @@ def test_midday_continuous_loop_retries_failed_input() -> None:
     assert index.snapshot(Strategy.TOMORROW).current is not None
 
 
-def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None:
+def test_midday_recovery_does_not_queue_duplicate_while_lane_is_running() -> None:
     midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
     clock = FixedClock(midday)
     entered = threading.Event()
@@ -2422,7 +2422,7 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
     assert status.strategy_error_codes == (("tomorrow", "freeze:freeze_unavailable"),)
 
 
-def test_afternoon_schedule_keeps_tomorrow_d25_and_long_active() -> None:
+def test_afternoon_schedule_keeps_tomorrow_d25_and_long_running() -> None:
     afternoon = datetime(2026, 8, 11, 13, 30, tzinfo=SHANGHAI)
     data = DataRefresh()
     runtime = SchedulerRuntime(

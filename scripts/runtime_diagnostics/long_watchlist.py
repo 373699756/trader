@@ -26,7 +26,7 @@ from trader.download.infra.reference_index import SQLiteReferenceIndex  # noqa: 
 from trader.infra.settings.loading import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings  # noqa: E402
 from trader.infra.sqlite_connection import SqliteConnectionOptions  # noqa: E402
 from trader.recommendation.domain.market.eligibility import (  # noqa: E402
-    IsActivePermanentEligibilityReason,
+    IsPermanentExclusionReason,
     IssuerEligibilityReason,
 )
 from trader.recommendation.domain.market.research import FinancialReport, LongResearchPolicy  # noqa: E402
@@ -98,7 +98,7 @@ def historical_exclusions(paths: tuple[Path, ...], observed_at: datetime) -> dic
                 "SELECT code, reason, effective_at, evidence_id FROM issuer_eligibility_facts"
             ):
                 eligibility_reason = IssuerEligibilityReason(str(reason))
-                if not IsActivePermanentEligibilityReason(eligibility_reason):
+                if not IsPermanentExclusionReason(eligibility_reason):
                     continue
                 effective = datetime.fromisoformat(effective_at)
                 if effective.tzinfo is None:

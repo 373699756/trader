@@ -98,7 +98,7 @@ def test_training_stream_releases_pages_after_each_annual_file(
     assert events == list(expected_events)
 
 
-def test_training_stream_early_close_releases_active_annual_file(tmp_path: Path, monkeypatch) -> None:
+def test_training_stream_early_close_releases_open_annual_file(tmp_path: Path, monkeypatch) -> None:
     dates = (date(2026, 8, 31), date(2026, 9, 1))
     snapshot = _build_snapshot(tmp_path, tuple(_revision("600001", day) for day in dates))
     released = []

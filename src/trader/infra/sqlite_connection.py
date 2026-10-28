@@ -248,30 +248,30 @@ class SqliteTransaction:
     def __init__(self, connection: SqliteConnection, *, immediate: bool = False) -> None:
         self._connection = connection
         self._immediate = immediate
-        self._active = False
+        self._is_open = False
 
     def begin(self) -> None:
-        if self._active or self._connection.in_transaction:
+        if self._is_open or self._connection.in_transaction:
             raise ValueError("sqlite_nested_transaction")
         self._connection.run("BEGIN IMMEDIATE" if self._immediate else "BEGIN")
-        self._active = True
+        self._is_open = True
 
     def commit(self) -> None:
-        if not self._active:
+        if not self._is_open:
             raise ValueError("sqlite_transaction_inactive")
         try:
             self._connection._driver.commit()
         except BaseException:
             self.rollback()
             raise
-        self._active = False
+        self._is_open = False
 
     def rollback(self) -> None:
-        if self._active:
+        if self._is_open:
             try:
                 self._connection._driver.rollback()
             finally:
-                self._active = False
+                self._is_open = False
 
     def __enter__(self) -> SqliteTransaction:
         self.begin()
@@ -282,7 +282,7 @@ class SqliteTransaction:
     ) -> None:
         if exc_type is not None:
             self.rollback()
-        elif self._active:
+        elif self._is_open:
             self.commit()
 
 

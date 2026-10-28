@@ -608,12 +608,12 @@ class _DocumentRun:
                 excluded=tuple(self.failed_identities),
             )
         )
-        active: dict[Future[str], tuple[int, Disclosure]] = {}
+        pending_documents: dict[Future[str], tuple[int, Disclosure]] = {}
         available = deque(range(len(self.sources)))
         completed_before = self.completed
         self.batch_started = dependencies.monotonic()
         self.report(workload, completed_before)
-        while queue or active:
+        while queue or pending_documents:
             while queue and available and not self.stopped and not _cancelled(dependencies):
                 slot = available.popleft()
                 item = queue.popleft()
@@ -621,17 +621,17 @@ class _DocumentRun:
                 self.report(workload, completed_before)
                 if _cancelled(dependencies):
                     break
-                active[self._submit(self.sources[slot], item)] = (slot, item)
+                pending_documents[self._submit(self.sources[slot], item)] = (slot, item)
                 self.attempted += 1
             if self.stopped or _cancelled(dependencies):
                 queue.clear()
-                for future in active:
+                for future in pending_documents:
                     future.cancel()
-            if not active:
+            if not pending_documents:
                 break
-            done, _ = wait(active, timeout=0.1, return_when=FIRST_COMPLETED)
+            done, _ = wait(pending_documents, timeout=0.1, return_when=FIRST_COMPLETED)
             for future in done:
-                slot, item = active.pop(future)
+                slot, item = pending_documents.pop(future)
                 available.append(slot)
                 self._accept(future, item)
                 self.report(workload, completed_before)

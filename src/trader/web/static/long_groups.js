@@ -107,9 +107,9 @@
     state.longScope = scope;
     if (els.longTitle) els.longTitle.textContent = scopeLabel(scope);
     els.longScopeTabs.querySelectorAll("button[data-scope]").forEach((button) => {
-      const active = button.dataset.scope === scope;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-selected", active ? "true" : "false");
+      const isSelected = button.dataset.scope === scope;
+      button.classList.toggle("is-active", isSelected);
+      button.setAttribute("aria-selected", isSelected ? "true" : "false");
     });
     const scopedGroups = normalized(payload, scope);
     if (!scopedGroups.some((group) => group.key === state.longGroup || group.name === state.longGroup)) {
@@ -122,8 +122,8 @@
       .map((group) => industryButton(group, state.longGroup, payload.items))
       .join("");
     if (els.longMeta) els.longMeta.textContent = `${scopedGroups.length} 个分组`;
-    const activeGroup = scopedGroups.find((group) => group.key === state.longGroup);
-    if (els.longStockContext) els.longStockContext.textContent = activeGroup ? activeGroup.name : scopeLabel(scope);
+    const selectedGroup = scopedGroups.find((group) => group.key === state.longGroup);
+    if (els.longStockContext) els.longStockContext.textContent = selectedGroup ? selectedGroup.name : scopeLabel(scope);
   }
 
   function groupAveragePct(group, items) {
@@ -151,8 +151,8 @@
     };
   }
 
-  function industryButton(group, activeGroup, items) {
-    const active = group.key === activeGroup;
+  function industryButton(group, selectedGroup, items) {
+    const isSelected = group.key === selectedGroup;
     const name = window.TraderRender.escapeHtml(group.name);
     const key = window.TraderRender.escapeHtml(group.key);
     const average = groupAveragePct(group, items);
@@ -164,8 +164,8 @@
     const description = window.TraderRender.escapeHtml(
       `${group.name}，平均涨跌幅 ${change.text}，有效行情 ${average.validCount}/${average.totalCount} 只`,
     );
-    const className = `long-industry-tab${active ? " is-active" : ""}`;
-    return `<button class="${className}" type="button" role="tab" aria-label="${description}" title="${description}" aria-selected="${active ? "true" : "false"}" data-group="${key}"><span class="long-industry-label"><span class="long-industry-name">${name}</span><em class="${averageClass}">${changeText}</em></span><b>${group.codes.length} 只</b></button>`;
+    const className = `long-industry-tab${isSelected ? " is-active" : ""}`;
+    return `<button class="${className}" type="button" role="tab" aria-label="${description}" title="${description}" aria-selected="${isSelected ? "true" : "false"}" data-group="${key}"><span class="long-industry-label"><span class="long-industry-name">${name}</span><em class="${averageClass}">${changeText}</em></span><b>${group.codes.length} 只</b></button>`;
   }
 
   function visibleRecommendations(payload, recommendations, scope, groupName) {

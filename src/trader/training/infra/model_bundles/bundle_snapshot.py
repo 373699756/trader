@@ -13,7 +13,7 @@ from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 
 @dataclass(frozen=True)
-class ActiveHeadBundle:
+class PublishedHeadBundle:
     model_path: Path
     strategy: Strategy
     training_input_hash: str
@@ -28,7 +28,7 @@ class ActiveHeadBundle:
 
 
 @dataclass(frozen=True)
-class LoadedActiveHeadBundle(ActiveHeadBundle):
+class LoadedPublishedHeadBundle(PublishedHeadBundle):
     model: TrainedHeadModelBundle
 
 
@@ -37,11 +37,11 @@ def MakeBundleStagingDirectory(profile_root: Path) -> Path:
     return Path(tempfile.mkdtemp(prefix=".bundle-staging.", dir=profile_root))
 
 
-def InspectActiveHeadBundle(
+def InspectPublishedHeadBundle(
     head_root: Path,
     strategy: Strategy,
     profile: TrainedProfileContract,
-) -> LoadedActiveHeadBundle:
+) -> LoadedPublishedHeadBundle:
     if not head_root.exists() and not head_root.is_symlink():
         raise FileNotFoundError(head_root)
     if not head_root.is_dir() or head_root.is_symlink():
@@ -58,7 +58,7 @@ def InspectActiveHeadBundle(
             raise ValueError("trained head fixed file is invalid")
     bundle = LoadHeadBundle(model_path, strategy, profile)
     metadata = bundle.metadata_hash
-    return LoadedActiveHeadBundle(
+    return LoadedPublishedHeadBundle(
         model_path,
         strategy,
         bundle.training_input_hash,
@@ -74,4 +74,9 @@ def InspectActiveHeadBundle(
     )
 
 
-__all__ = ["ActiveHeadBundle", "InspectActiveHeadBundle", "LoadedActiveHeadBundle", "MakeBundleStagingDirectory"]
+__all__ = [
+    "PublishedHeadBundle",
+    "InspectPublishedHeadBundle",
+    "LoadedPublishedHeadBundle",
+    "MakeBundleStagingDirectory",
+]

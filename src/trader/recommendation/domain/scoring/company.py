@@ -127,7 +127,7 @@ def BuildCompanyScoringContext(
     return CompanyScoringContext(facts, tuple(windows), covered)
 
 
-def CompanyRiskActive(event: CompanyRiskEvent, at: datetime) -> bool:
+def IsCompanyRiskEffective(event: CompanyRiskEvent, at: datetime) -> bool:
     if at.utcoffset() is None:
         raise ValueError("company_event_time_requires_timezone")
     if at < event.effective_at or at < event.first_disclosed_at:
@@ -152,10 +152,14 @@ def AssessCompanyAdjustments(
     if context is None:
         return CompanyAdjustments((), (), None, None)
     facts = context.facts
-    active = tuple(event for event in facts.risk_events if CompanyRiskActive(event, observed_at))
-    level = max((event.risk_level for event in active), default=0) if context.coverage_current or active else None
+    effective_risks = tuple(event for event in facts.risk_events if IsCompanyRiskEffective(event, observed_at))
+    level = (
+        max((event.risk_level for event in effective_risks), default=0)
+        if context.coverage_current or effective_risks
+        else None
+    )
     corporate = max(
-        (event for event in active if event.risk_level < 4),
+        (event for event in effective_risks if event.risk_level < 4),
         key=lambda event: (event.risk_level, event.event_id),
         default=None,
     )
@@ -181,7 +185,7 @@ def AssessCompanyAdjustments(
         "company_policy_pending"
         if not policy.enabled
         else "company_risk_active"
-        if active
+        if effective_risks
         else "company_coverage_incomplete"
         if not context.coverage_current
         else ""

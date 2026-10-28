@@ -30,7 +30,7 @@ class _ScoringCapability:
     def status(self) -> ScoringHeadRuntimeStatus:
         self.status_calls += 1
         return ScoringHeadRuntimeStatus(
-            active=True,
+            is_enabled=True,
             profile_id=self.profile_id,  # type: ignore[arg-type]
             model_id=f"{self.strategy.value}-model",
             model_hash="a" * 64,

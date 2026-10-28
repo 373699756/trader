@@ -305,7 +305,7 @@ def _append_risk(
         first,
         max(item.published_at, previous.last_disclosed_at) if previous else item.published_at,
         first,
-        previous.status if previous else CompanyEventStatus.ACTIVE,
+        previous.status if previous else CompanyEventStatus.ONGOING,
         previous.resolved_at if previous else None,
         previous.expires_at if previous and previous.resolved_at else expires,
         item.title[:240],

@@ -51,7 +51,7 @@ def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineId
     )
     claims = (
         BaselineIdentityClaim(
-            "active_profile",
+            "configured_profile",
             strategy.scoring_profile,
             strategy.scoring_profile,
             str(runtime.strategy_config_path),

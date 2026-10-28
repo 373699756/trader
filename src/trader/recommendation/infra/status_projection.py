@@ -48,11 +48,12 @@ def RuntimeStatus(
         market_data = {"status": "unavailable"}
     strategy_errors = dict(status.strategy_error_codes)
     recent_errors = [_runtime_issue_payload(issue) for issue in status.recent_errors]
-    active_issues = [issue for issue in status.recent_errors if issue.recovery_status == "active"]
+    unresolved_issues = [issue for issue in status.recent_errors if issue.recovery_status == "active"]
     observer = asdict(status.observer)
     observer_error = status.observer.last_error_code
     degraded_reasons = [
-        f"{issue.strategy.value}:{issue.code}" if issue.strategy is not None else issue.code for issue in active_issues
+        f"{issue.strategy.value}:{issue.code}" if issue.strategy is not None else issue.code
+        for issue in unresolved_issues
     ]
     if observer_error:
         degraded_reasons.append(f"observer:{observer_error}")
@@ -63,10 +64,10 @@ def RuntimeStatus(
     degraded_reasons.extend(
         f"{item.target.strategy.value}:publication_io:{item.operation}:{item.reasons[0].code}" for item in io_failures
     )
-    issue_count = len(active_issues) + int(bool(observer_error)) + len(io_failures) + int(preview_failed)
+    issue_count = len(unresolved_issues) + int(bool(observer_error)) + len(io_failures) + int(preview_failed)
     health_level = (
         "error"
-        if not status.running or any(issue.severity == "error" for issue in active_issues)
+        if not status.running or any(issue.severity == "error" for issue in unresolved_issues)
         else "degraded"
         if issue_count
         else "normal"
@@ -194,7 +195,7 @@ def _scoring_profile_payload(status: ScoringProfileRuntimeStatus | None) -> dict
 
 def _scoring_head_payload(status: ScoringHeadRuntimeStatus) -> dict[str, object]:
     return {
-        "active": status.active,
+        "is_enable": status.is_enabled,
         "profile_id": status.profile_id,
         "model_id": status.model_id,
         "model_hash": status.model_hash,

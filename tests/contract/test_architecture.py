@@ -47,7 +47,7 @@ def test_native_sqlite_statements_are_owned_only_by_the_connection_primitive() -
     assert forbidden == []
 
 
-def test_active_product_tree_uses_precise_resource_and_state_names() -> None:
+def test_product_tree_uses_precise_resource_and_state_names() -> None:
     prohibited = "life" + "cycle"
     tracked = (
         subprocess.run(
@@ -80,7 +80,7 @@ def _imports(path: Path) -> frozenset[str]:
     return SourceImportTargets(path, SOURCE_ROOT)
 
 
-def test_active_code_does_not_import_legacy_package() -> None:
+def test_product_code_does_not_import_legacy_package() -> None:
     violations = []
     for path in SOURCE_ROOT.rglob("*.py"):
         violations.extend(
@@ -114,7 +114,7 @@ def test_source_files_do_not_exceed_1500_lines() -> None:
     assert violations == {}
 
 
-def test_active_dependency_direction() -> None:
+def test_product_dependency_direction() -> None:
     BusinessSourceFiles(SOURCE_ROOT, "domain")
     BusinessSourceFiles(SOURCE_ROOT, "application")
     assert SourceBoundaryViolations(SOURCE_ROOT) == ()
@@ -273,7 +273,7 @@ def test_v3_profile_keeps_only_offline_training_implementation() -> None:
     assert not any((v3_root / "heads").rglob("*.py"))
 
 
-def test_old_production_chain_has_no_active_files() -> None:
+def test_old_production_chain_has_no_source_files() -> None:
     retired = (
         "application/candidate_features.py",
         "application/pipeline.py",
@@ -305,7 +305,7 @@ def test_old_production_chain_has_no_active_files() -> None:
     assert [name for name in retired if (SOURCE_ROOT / name).exists()] == []
 
 
-def test_active_web_surface_and_fixed_long_tabs_use_unified_routes() -> None:
+def test_web_surface_and_fixed_long_tabs_use_unified_routes() -> None:
     web = SOURCE_ROOT / "web"
     api = SOURCE_ROOT / "http_api"
     assert {"route_services.py"} <= {path.name for path in api.glob("*.py")}

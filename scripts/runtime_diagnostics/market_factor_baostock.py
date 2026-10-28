@@ -21,12 +21,12 @@ BAOSTOCK_REFERENCE_FIELDS = (
 
 @dataclass(frozen=True)
 class BaostockCapability:
-    active_industries: Mapping[str, ModelIndustryReference]
+    published_industries: Mapping[str, ModelIndustryReference]
     elapsed_ms: float
 
     @property
     def mode(self) -> str:
-        if self.active_industries:
+        if self.published_industries:
             return "validated_local_industry_query"
         return "unavailable"
 
@@ -46,7 +46,7 @@ def BaoStockSourceResults(
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     for scope, codes in scopes:
-        covered = sum(code in capability.active_industries for code in codes)
+        covered = sum(code in capability.published_industries for code in codes)
         total = len(codes)
         coverage = covered / total if total else 0.0
         results.append(
@@ -62,7 +62,7 @@ def BaoStockSourceResults(
                 "error": None,
                 "requested_rows": total,
                 "returned_rows": covered,
-                "physical_rows": len(capability.active_industries),
+                "physical_rows": len(capability.published_industries),
                 "coverage": round(coverage, 4),
                 "request_timings_ms": summarize_latency_ms([capability.elapsed_ms]),
                 "supported_reference_fields": list(BAOSTOCK_REFERENCE_FIELDS),

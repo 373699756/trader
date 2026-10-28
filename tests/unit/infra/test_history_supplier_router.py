@@ -580,7 +580,7 @@ def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
     assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | 本轮Tencent失败 0 股" in _compact_log(capsys.readouterr().err)
 
 
-def test_active_gap_scan_prints_the_month_before_the_query_starts(capsys):
+def test_current_gap_scan_prints_the_month_before_the_query_starts(capsys):
     progress = StderrHistorySyncProgress(monotonic=lambda: 0)
 
     progress.publish(HistorySyncProgress("history_published_gaps", "started", 88, 100, "2025-11"))

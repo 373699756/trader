@@ -53,7 +53,7 @@ def test_latency_waterfall_drops_oldest_unfinished_trace_at_capacity() -> None:
     waterfall.plan("new", "score")
 
     status = waterfall.status()
-    assert status.active_trace_count == 1
+    assert status.pending_trace_count == 1
     assert status.dropped_count == 1
 
 

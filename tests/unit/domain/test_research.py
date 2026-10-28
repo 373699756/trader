@@ -311,7 +311,7 @@ def test_current_announcement_coverage_does_not_claim_regulatory_history() -> No
     assert DeriveCorporateRiskFeatures((), NOW, window_complete=False)["corporate_risk_window_unavailable"] == 1.0
 
 
-def test_active_reduction_and_unresolved_investigation_are_hard_risk_facts() -> None:
+def test_effective_reduction_and_unresolved_investigation_are_hard_risk_facts() -> None:
     facts = (
         CorporateRiskFact(
             category=CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION,

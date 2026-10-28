@@ -50,7 +50,7 @@ def test_numbered_names_are_owned_only_by_scoring_profile_directories() -> None:
     assert violations == []
 
 
-def test_active_configuration_has_no_numbered_version_controllers() -> None:
+def test_runtime_configuration_has_no_numbered_version_controllers() -> None:
     violations: list[str] = []
 
     def inspect(value: object, location: str) -> None:

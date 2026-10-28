@@ -24,7 +24,7 @@ from trader.training.domain.model_publication import HeadTrainingStatus
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
 from trader.training.infra.model_bundles.profile_publication import (
-    InspectActiveProfileBundles,
+    InspectPublishedProfileBundles,
     ProfilePublicationBusyError,
 )
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -115,7 +115,7 @@ def LoadScoringProfile(
                 if profile_id == "v5"
                 else V3_TRAINING_PROFILE
             )
-            inspected = InspectActiveProfileBundles(training_root / profile.output_directory, profile)
+            inspected = InspectPublishedProfileBundles(training_root / profile.output_directory, profile)
             bundles = tuple(item.model for item in inspected)
             return BuildTrainedScoringProfile(profile_id, bundles)
         except FileNotFoundError as exc:

@@ -13,7 +13,7 @@ from typing import Literal
 from trader.download.domain.company_events import CompanyRiskType
 from trader.recommendation.domain.market.factors import Clamp, WeightedScore
 from trader.recommendation.domain.market.models import Evidence
-from trader.recommendation.domain.scoring.company import CompanyRiskActive, CompanyScoringContext
+from trader.recommendation.domain.scoring.company import CompanyScoringContext, IsCompanyRiskEffective
 
 
 @dataclass(frozen=True)
@@ -270,10 +270,10 @@ def ResearchComponentsFromObservation(
     if any(item.startswith(("financial:", "company_snapshot:")) for item in observation.source_errors):
         financial = "stale" if observation.financial is not None else "unknown"
     at = observed_at or observation.loaded_at or observation.snapshot_at
-    known_risk = any(at is None or _corporate_risk_is_active(fact, at) for fact in observation.corporate_risk_facts)
+    known_risk = any(at is None or _corporate_risk_is_effective(fact, at) for fact in observation.corporate_risk_facts)
     if observation.company_context is not None and at is not None:
         known_risk = known_risk or any(
-            CompanyRiskActive(event, at) for event in observation.company_context.facts.risk_events
+            IsCompanyRiskEffective(event, at) for event in observation.company_context.facts.risk_events
         )
     if known_risk:
         announcements: ResearchComponentStatus = "known_risk"
@@ -355,17 +355,19 @@ def DeriveCorporateRiskFeatures(
 ) -> dict[str, float | None]:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("corporate risk observation time must be timezone-aware")
-    active = {
+    effective_categories = {
         fact.category
         for fact in facts
-        if fact.announced_at <= observed_at and _corporate_risk_is_active(fact, observed_at)
+        if fact.announced_at <= observed_at and _corporate_risk_is_effective(fact, observed_at)
     }
-    values: dict[str, float | None] = {category.value: float(category in active) for category in CorporateRiskCategory}
+    values: dict[str, float | None] = {
+        category.value: float(category in effective_categories) for category in CorporateRiskCategory
+    }
     values["corporate_risk_window_unavailable"] = float(not window_complete)
     return values
 
 
-def _corporate_risk_is_active(fact: CorporateRiskFact, observed_at: datetime) -> bool:
+def _corporate_risk_is_effective(fact: CorporateRiskFact, observed_at: datetime) -> bool:
     if fact.announced_at > observed_at or (
         not fact.persistent and fact.expires_at is None and fact.announced_at < observed_at - timedelta(days=365)
     ):
@@ -463,10 +465,12 @@ def _event_features(
         context = observation.company_context
         events = context.facts.risk_events if context else ()
         at = observation.loaded_at or observation.snapshot_at
-        active = tuple(event for event in events if at is not None and CompanyRiskActive(event, at))
-        negative_level = float(min(3, max((event.risk_level for event in active), default=0)))
+        effective_events = tuple(event for event in events if at is not None and IsCompanyRiskEffective(event, at))
+        negative_level = float(min(3, max((event.risk_level for event in effective_events), default=0)))
         reduction_level = (
-            3 if any(event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for event in active) else 0
+            3
+            if any(event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for event in effective_events)
+            else 0
         )
     unlock_level = _severity(observation.unlock_ratio_pct, policy.unlock_thresholds)
     return {

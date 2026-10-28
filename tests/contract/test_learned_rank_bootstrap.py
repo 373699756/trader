@@ -21,7 +21,7 @@ def test_explicit_v1_build_is_lazy_authorized_and_binds_complete_published_histo
     status = system.app.test_client().get("/api/status").get_json()
     assert status["scoring_profile"]["profile_id"] == "v1"
     assert all(
-        not head["active"] and head["production_authority"] for head in status["scoring_profile"]["heads"].values()
+        not head["is_enable"] and head["production_authority"] for head in status["scoring_profile"]["heads"].values()
     )
     assert system.records._database == tmp_path / "data/recommendation/learned_rank/decisions.sqlite3"
     assert system.market_data.history.completed_features_enabled is True

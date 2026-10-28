@@ -39,7 +39,7 @@ class TomorrowResearchEvidenceIndexError(RuntimeError):
 class _TomorrowCommitContext:
     graph: TomorrowResearchEvidenceGraph
     run_id: str
-    active_run_id: str | None
+    current_run_id: str | None
     run_root: Path
     next_stage: TomorrowResearchStage | None
     resource_probe: TomorrowResearchResourceProbe | None
@@ -52,7 +52,7 @@ class TomorrowResearchEvidenceIndex:
         self._root = root
         self._handoff_root = root / ".handoffs"
         self._evidence_inbox_root = root / ".evidence"
-        self._active_run_path = root / ".active-run"
+        self._current_run_path = root / ".active-run"
         self._lock_path = root / ".orchestrator.lock"
         self._available_disk_gb = available_disk_gb or _available_disk_gb
 
@@ -137,23 +137,23 @@ class TomorrowResearchEvidenceIndex:
         run_id = DeriveTomorrowResearchRunId(updated)
         if run_id is None:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research run identity cannot be derived")
-        active_run_id = self.current_run_id()
-        self._validate_active_run(active_run_id, run_id)
+        current_run_id = self.current_run_id()
+        self._validate_current_run(current_run_id, run_id)
         run_root = self._run_root(run_id)
         next_stage = NextResearchStage(updated)
         return _TomorrowCommitContext(
             updated,
             run_id,
-            active_run_id,
+            current_run_id,
             run_root,
             next_stage,
             handoff.resource_probe or _read_report_resource_probe(run_root / ".report-checkpoint.json"),
         )
 
-    def _validate_active_run(self, active_run_id: str | None, run_id: str) -> None:
-        if active_run_id is None or active_run_id == run_id:
+    def _validate_current_run(self, current_run_id: str | None, run_id: str) -> None:
+        if current_run_id is None or current_run_id == run_id:
             return
-        if NextResearchStage(self._load_run_graph(active_run_id)) is not None:
+        if NextResearchStage(self._load_run_graph(current_run_id)) is not None:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research active run identity conflict")
 
     def _seal_commit_evidence(
@@ -187,8 +187,8 @@ class TomorrowResearchEvidenceIndex:
         ReplaceFile(context.run_root / ".report-checkpoint.json", report)
         if context.next_stage is None:
             ReplaceFile(context.run_root / "report.json", report)
-        if context.active_run_id != context.run_id:
-            ReplaceFile(self._active_run_path, f"{context.run_id}\n")
+        if context.current_run_id != context.run_id:
+            ReplaceFile(self._current_run_path, f"{context.run_id}\n")
 
     def host_available_disk_gb(self) -> float:
         path = self._root
@@ -197,10 +197,10 @@ class TomorrowResearchEvidenceIndex:
         return round(self._available_disk_gb(path), 3)
 
     def current_run_id(self) -> str | None:
-        if not self._active_run_path.is_file():
+        if not self._current_run_path.is_file():
             return None
         try:
-            run_id = self._active_run_path.read_text(encoding="ascii").strip()
+            run_id = self._current_run_path.read_text(encoding="ascii").strip()
         except OSError as exc:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research active run pointer is invalid") from exc
         if len(run_id) != 64 or any(value not in "0123456789abcdef" for value in run_id):

@@ -36,7 +36,7 @@ class UnavailableModelCapability:
 
     def status(self) -> ScoringHeadRuntimeStatus:
         return ScoringHeadRuntimeStatus(
-            active=False,
+            is_enabled=False,
             profile_id=self.profile_id,
             model_id="",
             model_hash="",

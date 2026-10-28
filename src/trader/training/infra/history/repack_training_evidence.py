@@ -11,7 +11,7 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.infra.serialization.fields import AsSequence
 from trader.training.application.tomorrow_training import TomorrowTrainingStage
 from trader.training.infra.memory_evidence import TomorrowTrainingMemoryEvidence, TomorrowTrainingStageDuration
-from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
+from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 
@@ -22,7 +22,7 @@ class TrainingRepackEvidenceError(ValueError):
 def VerifyHistoryRepackTraining(
     training_root: Path, memory_evidence_path: Path, snapshot_hash: str
 ) -> HistoryRepackTrainingProof:
-    bundle = InspectActiveProfileBundles(training_root.resolve() / "v3", V3_TRAINING_PROFILE)[0]
+    bundle = InspectPublishedProfileBundles(training_root.resolve() / "v3", V3_TRAINING_PROFILE)[0]
     evidence = ReadTomorrowTrainingMemoryEvidence(memory_evidence_path.resolve())
     if (
         bundle.training_input_hash != snapshot_hash

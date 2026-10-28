@@ -386,9 +386,9 @@ class CadencePlanner:
         band = _task_band(task, local, PhaseAt(local, is_trading_day=True))
         return self._policy.interval(task, band) if band is not None else None
 
-    def has_active_afternoon_freeze(self, trade_date: str) -> bool:
+    def has_unfinished_afternoon_freeze(self, trade_date: str) -> bool:
         with self._lock:
-            return self._afternoon_freeze_active(trade_date)
+            return self._afternoon_freeze_unfinished(trade_date)
 
     def _plan_locked(self, at: datetime, *, is_trading_day: bool) -> CadenceBatch:
         local = ShanghaiNow(at)
@@ -404,7 +404,7 @@ class CadencePlanner:
         self._synchronize_schedule_points(local)
         tasks: list[ScheduledPipelineTask] = []
         due_points = self._due_schedule_points(local)
-        if self._afternoon_freeze_active(trade_date):
+        if self._afternoon_freeze_unfinished(trade_date):
             due_points = tuple(item for item in due_points if item[0] is not SchedulePoint.CLOSE_QUOTES)
         for point, strategies in due_points:
             for task in _point_tasks(point, local, phase, strategies=strategies):
@@ -475,7 +475,7 @@ class CadencePlanner:
                 grouped.append((point, tuple(due_strategies)))
         return tuple(grouped)
 
-    def _afternoon_freeze_active(self, trade_date: str) -> bool:
+    def _afternoon_freeze_unfinished(self, trade_date: str) -> bool:
         return any(
             key.trade_date == trade_date
             and key.schedule_point is SchedulePoint.AFTERNOON_FREEZE

@@ -322,29 +322,29 @@ def ResolveHistoricalIndustry(
     code: str,
     trade_date: date,
 ) -> HistoricalIndustryResolution:
-    active = tuple(
+    effective_facts = tuple(
         item
         for item in facts
         if item.code == code
         and item.effective_from <= trade_date
         and (item.effective_to is None or trade_date < item.effective_to)
     )
-    if not active:
+    if not effective_facts:
         return HistoricalIndustryResolution("missing")
-    values = {(item.industry, item.classification) for item in active}
+    values = {(item.industry, item.classification) for item in effective_facts}
     if len(values) != 1:
         return HistoricalIndustryResolution(
             "conflict",
-            sources=tuple(sorted({item.source for item in active})),
-            evidence_hashes=tuple(sorted({item.evidence_hash for item in active})),
+            sources=tuple(sorted({item.source for item in effective_facts})),
+            evidence_hashes=tuple(sorted({item.evidence_hash for item in effective_facts})),
         )
     industry, classification = next(iter(values))
     return HistoricalIndustryResolution(
         "resolved",
         industry,
         classification,
-        tuple(sorted({item.source for item in active})),
-        tuple(sorted({item.evidence_hash for item in active})),
+        tuple(sorted({item.source for item in effective_facts})),
+        tuple(sorted({item.evidence_hash for item in effective_facts})),
     )
 
 

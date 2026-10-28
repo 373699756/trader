@@ -15,7 +15,7 @@ from trader.recommendation.application.pipeline.local_score.model_router import 
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
-from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
+from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +49,7 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
         assert scoring["profile_id"] == selected
         assert set(scoring["heads"]) == {"tomorrow", "d25"}
         for head in scoring["heads"].values():
-            assert head["active"] is False
+            assert head["is_enable"] is False
             assert head["production_authority"] is (selected != "v5")
             assert head["model_hash"] == ""
             assert head["historical_failure_reasons"] == ["production_model_missing"]
@@ -68,9 +68,9 @@ def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, cap
     system = BuildProfiledSystem(config)
     client = system.app.test_client()
 
-    for profile, active in (("v2", False), ("v3", True)):
+    for profile, is_enabled in (("v2", False), ("v3", True)):
         scoring = client.get(f"/api/status?profile={profile}").get_json()["scoring_profile"]
-        assert all(head["active"] is active for head in scoring["heads"].values())
+        assert all(head["is_enable"] is is_enabled for head in scoring["heads"].values())
     assert "V2 双头模型工件缺失" in caplog.text
     assert "V3 双头模型工件缺失" not in caplog.text
 
@@ -83,7 +83,7 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
     _write_bundle(tmp_path / "data/training/models/v3" / contract.directory_name, contract)
     system = BuildSystem(config, scoring_profile="v3")
     scoring = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
-    assert all(head["active"] is False for head in scoring["heads"].values())
+    assert all(head["is_enable"] is False for head in scoring["heads"].values())
     original = record()
     system.records.initialize()
     system.records.commit(original)
@@ -92,7 +92,7 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
 
     _publish_profile(tmp_path / "data/training/models", V3_TRAINING_PROFILE)
     metadata = (
-        InspectActiveProfileBundles(tmp_path / "data/training/models/v3", V3_TRAINING_PROFILE)[0].model_path.parent
+        InspectPublishedProfileBundles(tmp_path / "data/training/models/v3", V3_TRAINING_PROFILE)[0].model_path.parent
         / "metadata.json"
     )
     metadata.write_text("{}", encoding="utf-8")
@@ -102,7 +102,7 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
     scoring = client.get("/api/status").get_json()["scoring_profile"]
     assert scoring["profile_id"] == "v3"
     for head in scoring["heads"].values():
-        assert head["active"] is False
+        assert head["is_enable"] is False
         assert head["historical_failure_reasons"] == ["production_model_integrity_conflict"]
     after = client.get(route).get_json()
     assert after == before

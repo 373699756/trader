@@ -60,12 +60,12 @@ def PhaseAt(value: datetime, *, is_trading_day: bool) -> MarketPhase:
 
 def DecisionAt(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
     phase = PhaseAt(value, is_trading_day=is_trading_day)
-    active = phase is MarketPhase.BEFORE_CLOSE
+    is_before_close = phase is MarketPhase.BEFORE_CLOSE
     return ScheduleDecision(
         phase=phase,
-        should_refresh_market=active,
-        should_score=active,
-        should_review=active,
+        should_refresh_market=is_before_close,
+        should_score=is_before_close,
+        should_review=is_before_close,
         freeze_strategies=_freeze_at(value, is_trading_day=is_trading_day),
     )
 

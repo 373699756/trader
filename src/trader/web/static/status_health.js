@@ -35,11 +35,11 @@
       ? snapshotReasons.map((code) => normalizeSnapshotIssue(code, strategy)).filter(Boolean)
       : [];
     const issues = deduplicateIssues([...runtimeIssues, ...snapshotIssues]).sort(compareIssues);
-    const activeIssues = issues.filter((issue) => issue.recoveryStatus === "active");
+    const unresolvedIssues = issues.filter((issue) => issue.recoveryStatus === "active");
     const declaredCount = finiteNonNegativeInteger(payload.health && payload.health.issue_count);
-    const issueCount = Math.max(activeIssues.length, declaredCount == null ? 0 : declaredCount);
+    const issueCount = Math.max(unresolvedIssues.length, declaredCount == null ? 0 : declaredCount);
     const declaredLevel = payload.health && payload.health.level;
-    const level = declaredLevel === "error" || activeIssues.some((issue) => issue.severity === "error")
+    const level = declaredLevel === "error" || unresolvedIssues.some((issue) => issue.severity === "error")
       ? "error"
       : declaredLevel === "degraded" || issueCount > 0
         ? "degraded"
@@ -50,7 +50,7 @@
       badge: level === "normal"
         ? issues.length ? "正常 · 最近已恢复" : "正常 · 无最近错误"
         : `${level === "error" ? "错误" : "降级"} · ${issueCount}项`,
-      primary: activeIssues.length ? presentIssue(activeIssues[0]) : null,
+      primary: unresolvedIssues.length ? presentIssue(unresolvedIssues[0]) : null,
       issues,
     };
   }
@@ -141,10 +141,10 @@
 
   function issueSummaryTitle(issues) {
     const values = Array.isArray(issues) ? issues : [];
-    const active = values.filter((issue) => issue && issue.recoveryStatus !== "recovered").length;
-    const recovered = values.length - active;
-    if (active && recovered) return `最近错误 · 活动${active}项 / 已恢复${recovered}项`;
-    if (active) return `最近错误 · 活动${active}项`;
+    const unresolvedCount = values.filter((issue) => issue && issue.recoveryStatus !== "recovered").length;
+    const recovered = values.length - unresolvedCount;
+    if (unresolvedCount && recovered) return `最近错误 · 活动${unresolvedCount}项 / 已恢复${recovered}项`;
+    if (unresolvedCount) return `最近错误 · 活动${unresolvedCount}项`;
     if (recovered) return `最近错误 · 已恢复${recovered}项`;
     return "最近错误";
   }

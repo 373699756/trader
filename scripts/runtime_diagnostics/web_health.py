@@ -1273,7 +1273,7 @@ def _scoring_profile_payload(payload: ScoringProfileSnapshot | None) -> dict[str
             {
                 strategy: {
                     "profile_id": head.profile_id,
-                    "active": head.active,
+                    "is_enable": head.is_enabled,
                     "model_id": head.model_id,
                     "model_hash": head.model_hash,
                     "request_count": head.request_count,
