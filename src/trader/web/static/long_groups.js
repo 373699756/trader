@@ -14,7 +14,7 @@
 
   function staticFallbackPayload(reason) {
     return displayPayload({
-      schema_version: "decision_view",
+      schema_version: "freeze_view",
       status: "not_ready",
       strategy: "long",
       trade_date: null,
@@ -22,7 +22,7 @@
       historical: false,
       view: "current",
       score_status: "not_applicable",
-      decision_version: null,
+      freeze_version: null,
       published_at: null,
       phase: "current",
       frozen: false,

@@ -1,4 +1,4 @@
-"""Strict score ledger decoder; absent legacy ledgers are handled by the decision codec."""
+"""Strict score ledger decoder; absent legacy ledgers are handled by the freeze codec."""
 
 from __future__ import annotations
 

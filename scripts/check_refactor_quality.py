@@ -53,7 +53,7 @@ EXPECTED_DEBT = frozenset(
         ("PLR0913", "recommendation/application/pipeline/data_source/source_quality.py", "BuildSourceStageOutput"),
         (
             "PLR0913",
-            "recommendation/application/pipeline/final_selection/decision_projection.py",
+            "recommendation/application/pipeline/final_selection/freeze_projection.py",
             "BuildScoredHybrid",
         ),
         (
@@ -80,7 +80,7 @@ EXPECTED_DEBT = frozenset(
         ("PLR0912", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
         ("PLR0915", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
         ("PLR0913", "recommendation/infra/market_data/published_history_cache.py", "PublishedHistoryCache.__init__"),
-        ("C901", "training/domain/evaluation/models.py", "RecommendationOutcome.__post_init__"),
+        ("C901", "recommendation/domain/outcomes/models.py", "RecommendationOutcome.__post_init__"),
         ("C901", "training/infra/engine.py", "_run_locked"),
         ("PLR0912", "training/infra/engine.py", "_run_locked"),
         ("PLR0915", "training/infra/engine.py", "_run_locked"),

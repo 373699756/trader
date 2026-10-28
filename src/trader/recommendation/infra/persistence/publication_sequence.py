@@ -7,11 +7,33 @@ import threading
 from pathlib import Path
 
 from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    SqliteConnection,
     SqliteConnectionOptions,
+    SqliteSchema,
     SqliteSession,
     SqliteTransaction,
 )
-from trader.recommendation.infra.persistence.data_plane_sqlite import InitializeDatabase
+
+_SCHEMA = SqliteSchema(
+    1,
+    (
+        "CREATE TABLE schema_contract(schema_id TEXT NOT NULL PRIMARY KEY,schema_version INTEGER NOT NULL)",
+        "CREATE TABLE publication_sequence(singleton INTEGER NOT NULL PRIMARY KEY CHECK(singleton=1),"
+        "reserved_until INTEGER NOT NULL CHECK(reserved_until>=0))",
+    ),
+)
+
+
+def _initialize_schema(connection: SqliteConnection) -> None:
+    connection.run("INSERT INTO schema_contract VALUES ('publication_sequence',1)")
+    connection.run("INSERT INTO publication_sequence VALUES (1,0)")
+
+
+def _validate_schema(connection: SqliteConnection) -> None:
+    rows = connection.run("SELECT schema_id,schema_version FROM schema_contract").fetchall()
+    if [tuple(row) for row in rows] != [("publication_sequence", 1)]:
+        raise sqlite3.DatabaseError("publication_schema_invalid")
 
 
 class PublicationSequence:
@@ -32,8 +54,8 @@ class PublicationSequence:
             if self._initialized:
                 return
             try:
-                InitializeDatabase(self._path)
-                self._reserve()
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._reserve(allow_create=True)
             except (OSError, sqlite3.Error) as exc:
                 raise RuntimeError("publication_sequence_unavailable") from exc
             self._initialized = True
@@ -53,12 +75,19 @@ class PublicationSequence:
             self._next += width
             return value
 
-    def _reserve(self, *, minimum: int = 1) -> None:
+    def _reserve(self, *, minimum: int = 1, allow_create: bool = False) -> None:
         try:
             with (
                 SqliteSession(self._path, SqliteConnectionOptions(timeout_seconds=5.0)) as connection,
                 SqliteTransaction(connection, immediate=True),
             ):
+                EnsureSqliteSchema(
+                    connection,
+                    _SCHEMA,
+                    allow_create=allow_create,
+                    initialize=_initialize_schema,
+                    validate=_validate_schema,
+                )
                 row = connection.run("SELECT reserved_until FROM publication_sequence WHERE singleton=1").fetchone()
                 if row is None or not isinstance(row[0], int) or row[0] < 0 or row[0] > 2**63 - 1 - self._block_size:
                     raise RuntimeError("publication_sequence_invalid")

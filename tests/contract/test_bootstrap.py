@@ -16,7 +16,7 @@ from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
 from trader.bootstrap import BuildSystem
 from trader.infra.initialization import InitializeIfAvailable
 from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import FreezeObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.recommendation.application.ports.read_only_queries import (
     InputQualityStatus,
@@ -43,8 +43,7 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
-from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
-from trader.recommendation.infra.persistence.data_plane_initialization import InitializeReferenceDataPlane
+from trader.recommendation.infra.market_data.reference_initialization import InitializeMarketReferences
 from trader.recommendation.infra.status_projection import InputQualityPayload, RuntimeStatus
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -137,7 +136,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert not (tmp_path / "data/recommendation").exists()
     assert system.scheduler is not None
     assert system.records is not None
-    assert system.records._database == tmp_path / "data/recommendation/v2/decisions.sqlite3"  # noqa: SLF001
+    assert system.records._database == tmp_path / "data/recommendation/v2/freeze.sqlite3"  # noqa: SLF001
     assert system.research_trace is not None
     assert system.quote_pool.status().workers == 4
     assert system.quote_pool.is_running() is False
@@ -168,7 +167,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
         "candidate_count": 0,
         "computed_groups": [],
         "deadline_abandon_reason": None,
-        "decision_age_ms": 0.0,
+        "freeze_age_ms": 0.0,
         "predictor_batch_count": 0,
         "request_count": 0,
         "reused_groups": [],
@@ -223,14 +222,14 @@ def test_deepseek_toggle_rebuilds_with_new_configuration_identity_and_readable_s
     assert not (tmp_path / "data/recommendation").exists()
 
 
-def test_decision_index_initializes_only_under_the_freeze_directory(tmp_path) -> None:
+def test_freeze_index_initializes_only_under_the_freeze_directory(tmp_path) -> None:
     system = BuildSystem(_config(tmp_path))
 
     system.records.initialize()
 
     freeze_root = tmp_path / "data/recommendation/v2"
-    assert {path.name for path in freeze_root.iterdir() if path.suffix == ".sqlite3"} == {"decisions.sqlite3"}
-    assert not (tmp_path / "runtime" / "decisions").exists()
+    assert {path.name for path in freeze_root.iterdir() if path.suffix == ".sqlite3"} == {"freeze.sqlite3"}
+    assert not (tmp_path / "runtime" / "freezes").exists()
 
 
 def test_build_system_reads_the_same_history_owned_by_download(tmp_path) -> None:
@@ -324,45 +323,17 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
     assert observed == [tmp_path / "data" / "training" / "models"]
 
 
-def test_reference_data_plane_recovery_is_fail_open() -> None:
+def test_published_reference_initialization_updates_quote_merge() -> None:
     from unittest.mock import Mock
 
     market_data = Mock()
-    data_plane = Mock()
-    market_data.research = Mock()
-    data_plane.initialize.side_effect = RuntimeError("db unavailable")
 
-    InitializeReferenceDataPlane(market_data, data_plane)
-
-    data_plane.initialize.assert_called_once_with()
-    market_data.references.initialize.assert_called_once_with()
-
-
-def test_reference_data_plane_loads_published_reference_into_quote_merge() -> None:
-    from unittest.mock import Mock
-
-    market_data = Mock()
-    data_plane = Mock()
-
-    InitializeReferenceDataPlane(market_data, data_plane)
+    InitializeMarketReferences(market_data)
 
     market_data.references.initialize.assert_called_once_with()
     market_data.quotes.gateway.update_reference_observations.assert_called_once_with(
         market_data.references.security_observations.return_value
     )
-
-
-def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -> None:
-    from unittest.mock import Mock
-
-    database = tmp_path / "snapshots.sqlite3"
-    database.parent.mkdir(parents=True, exist_ok=True)
-    database.write_bytes(b"not-a-sqlite-database")
-    market_data = Mock()
-
-    InitializeReferenceDataPlane(market_data, SQLiteDataPlane((tmp_path) / "snapshots.sqlite3"))
-
-    market_data.references.initialize.assert_called_once_with()
 
 
 def test_research_trace_initialization_is_fail_open() -> None:
@@ -397,7 +368,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
             {point_key: SchedulePointState(SchedulePointStatus.COMPLETED, 1, point_updated_at)},
             (),
         ),
-        observer=DecisionObserverStatus(
+        observer=FreezeObserverStatus(
             capacity=16,
             accepting=True,
             thread_alive=True,
@@ -418,7 +389,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
         control_inflight=0,
         control_rejected_count=0,
         refresh_failure_count=0,
-        decision_failure_count=0,
+        freeze_failure_count=0,
         review_failure_count=0,
         overlay_publish_count=0,
         overlay_failure_count=0,
@@ -427,7 +398,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
         publish_rejection_count=0,
         observer_rejection_count=0,
         freeze_completed_count=0,
-        freeze_failure_count=0,
+        seal_failure_count=0,
         settlement_completed_count=0,
         settlement_failure_count=0,
         last_error_code="",

@@ -91,8 +91,8 @@ class ScoringHotPathCost:
 
     completed_epoch_count: int
     evaluated_candidate_count: int
-    formal_current_decision_count: int
-    formal_frozen_decision_count: int
+    formal_current_freeze_count: int
+    formal_freeze_record_count: int
     deepseek_candidate_count: int
     recomputed_stock_count: int
     recomputed_factor_count: int
@@ -108,8 +108,8 @@ class ScoringHotPathCost:
         values = (
             self.completed_epoch_count,
             self.evaluated_candidate_count,
-            self.formal_current_decision_count,
-            self.formal_frozen_decision_count,
+            self.formal_current_freeze_count,
+            self.formal_freeze_record_count,
             self.deepseek_candidate_count,
             self.recomputed_stock_count,
             self.recomputed_factor_count,
@@ -132,10 +132,10 @@ class ScoringHotPathCost:
         return self._ratio(self.external_request_count, self.evaluated_candidate_count)
 
     @property
-    def cost_per_formal_decision(self) -> float:
+    def cost_per_formal_freeze(self) -> float:
         return self._ratio(
             self.external_request_count,
-            self.formal_current_decision_count + self.formal_frozen_decision_count,
+            self.formal_current_freeze_count + self.formal_freeze_record_count,
         )
 
     @property
@@ -222,8 +222,8 @@ def BuildScoringHotPathBaseline(  # noqa: PLR0913
     epochs: Iterable[ScoringInputEpoch],
     *,
     latencies: Iterable[ScoringHotPathLatency] = (),
-    formal_current_decision_count: int = 0,
-    formal_frozen_decision_count: int = 0,
+    formal_current_freeze_count: int = 0,
+    formal_freeze_record_count: int = 0,
     deepseek_candidate_count: int = 0,
     equivalence: Iterable[ScoringHotPathEquivalence] = (),
     relative_regression_percent: float = 0.0,
@@ -243,8 +243,8 @@ def BuildScoringHotPathBaseline(  # noqa: PLR0913
         cost = ScoringHotPathCost(
             completed_epoch_count=len(grouped),
             evaluated_candidate_count=sum(item.evaluated_candidate_count for item in grouped),
-            formal_current_decision_count=formal_current_decision_count if len(slices) == 0 else 0,
-            formal_frozen_decision_count=formal_frozen_decision_count if len(slices) == 0 else 0,
+            formal_current_freeze_count=formal_current_freeze_count if len(slices) == 0 else 0,
+            formal_freeze_record_count=formal_freeze_record_count if len(slices) == 0 else 0,
             deepseek_candidate_count=deepseek_candidate_count if len(slices) == 0 else 0,
             recomputed_stock_count=sum(item.recomputed_stock_count for item in grouped),
             recomputed_factor_count=sum(item.recomputed_factor_count for item in grouped),
@@ -303,8 +303,8 @@ def _hash_baseline(report: ScoringHotPathBaseline) -> str:
                 "cost": {
                     "completed_epoch_count": item.cost.completed_epoch_count,
                     "evaluated_candidate_count": item.cost.evaluated_candidate_count,
-                    "formal_current_decision_count": item.cost.formal_current_decision_count,
-                    "formal_frozen_decision_count": item.cost.formal_frozen_decision_count,
+                    "formal_current_freeze_count": item.cost.formal_current_freeze_count,
+                    "formal_freeze_record_count": item.cost.formal_freeze_record_count,
                     "deepseek_candidate_count": item.cost.deepseek_candidate_count,
                     "recomputed_stock_count": item.cost.recomputed_stock_count,
                     "recomputed_factor_count": item.cost.recomputed_factor_count,

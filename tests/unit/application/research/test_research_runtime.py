@@ -25,7 +25,7 @@ def _request(strategy: Strategy = Strategy.TOMORROW) -> CycleRequest:
     )
 
 
-def test_published_decisions_only_update_research_visibility_without_starting_network_io() -> None:
+def test_published_freezes_only_update_research_visibility_without_starting_network_io() -> None:
     runtime = ResearchRuntime()
     runtime.start()
     try:

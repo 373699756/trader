@@ -15,7 +15,7 @@ from types import CodeType
 from lightgbm import Booster
 
 from trader.infra.serialization.canonical import ContentHash
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredLocal,
     ScoredLocalProjection,
     ScoredProjectionInputs,

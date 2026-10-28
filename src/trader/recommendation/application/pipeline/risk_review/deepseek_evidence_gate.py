@@ -9,38 +9,38 @@ from datetime import datetime
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionPolicy
+from trader.recommendation.domain.risk.scored_fusion import ScoredFreezePolicy
 
 
-def TomorrowDecisionPolicy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
-    return _decision_policy(policy, Strategy.TOMORROW, "tomorrow")
+def TomorrowFreezePolicy(policy: RecommendationPolicy) -> ScoredFreezePolicy:
+    return _freeze_policy(policy, Strategy.TOMORROW, "tomorrow")
 
 
-def D25DecisionPolicy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
-    return _decision_policy(policy, Strategy.D25, "d25")
+def D25FreezePolicy(policy: RecommendationPolicy) -> ScoredFreezePolicy:
+    return _freeze_policy(policy, Strategy.D25, "d25")
 
 
-def BuildScoredDecisionPolicy(
+def BuildScoredFreezePolicy(
     policy: RecommendationPolicy,
     strategy: Strategy,
     *,
     phase: str = "",
-) -> ScoredDecisionPolicy:
+) -> ScoredFreezePolicy:
     if strategy is Strategy.TOMORROW:
-        return TomorrowDecisionPolicy(policy)
+        return TomorrowFreezePolicy(policy)
     if strategy is Strategy.D25:
-        return D25DecisionPolicy(policy)
+        return D25FreezePolicy(policy)
     raise ValueError("unsupported scored strategy for DeepSeek policy")
 
 
-def _decision_policy(
+def _freeze_policy(
     policy: RecommendationPolicy,
     strategy: Strategy,
     threshold_key: str,
     *,
     executable_enabled: bool = True,
-) -> ScoredDecisionPolicy:
-    return ScoredDecisionPolicy(
+) -> ScoredFreezePolicy:
+    return ScoredFreezePolicy(
         strategy=strategy,
         dimension_weights=policy.dimension_weights[strategy],
         risk_rules=policy.risk_rules,
@@ -86,8 +86,8 @@ def NormalizeScoredReviewTimes(
 
 
 __all__ = [
-    "D25DecisionPolicy",
+    "D25FreezePolicy",
     "NormalizeScoredReviewTimes",
-    "TomorrowDecisionPolicy",
-    "BuildScoredDecisionPolicy",
+    "TomorrowFreezePolicy",
+    "BuildScoredFreezePolicy",
 ]

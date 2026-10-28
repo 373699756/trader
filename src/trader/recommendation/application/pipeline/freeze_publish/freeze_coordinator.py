@@ -1,4 +1,4 @@
-"""Formal checkpoint, first-wins freeze, and close recovery coordination."""
+"""First-wins freeze and close recovery coordination."""
 
 from __future__ import annotations
 
@@ -13,19 +13,17 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
     PublicationIoTracker,
 )
 from trader.recommendation.application.ports.clock import Clock
-from trader.recommendation.application.ports.decision_index import DecisionIndexPort
-from trader.recommendation.application.ports.decision_records import (
-    DecisionCheckpoint,
-    DecisionRecordError,
-    DecisionRecordPort,
+from trader.recommendation.application.ports.freeze_index import FreezeIndexPort
+from trader.recommendation.application.ports.freeze_records import (
+    FreezeRecordError,
+    FreezeRecordPort,
 )
 from trader.recommendation.domain.evidence.pipeline import StageState
-from trader.recommendation.domain.publication.decision_identity import (
-    CommitKind,
-    CommittedDecisionRecord,
-    IsPreviewDecision,
-    IsShadowDecision,
-    ScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    IsPreviewFreeze,
+    IsShadowFreeze,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -36,25 +34,25 @@ CloseRecoveryPath = Literal["current", "close_rebuild"]
 @dataclass(frozen=True)
 class FreezeOperationResult:
     status: str
-    record: CommittedDecisionRecord | None = None
+    record: CommittedFreezeRecord | None = None
     version: str | None = None
 
 
 @dataclass(frozen=True)
-class DecisionRuntimeIdentity:
+class FreezeRuntimeIdentity:
     config_version: str
     strategy_version: str
     fusion_version: str
 
     def __post_init__(self) -> None:
         if not all((self.config_version, self.strategy_version, self.fusion_version)):
-            raise ValueError("decision runtime identity must not be empty")
+            raise ValueError("freeze runtime identity must not be empty")
 
-    def matches(self, decision: ScoredDecision) -> bool:
+    def matches(self, freeze: ScoredFreeze) -> bool:
         return (
-            decision.config_version == self.config_version
-            and decision.strategy_version == self.strategy_version
-            and decision.fusion_version == self.fusion_version
+            freeze.config_version == self.config_version
+            and freeze.strategy_version == self.strategy_version
+            and freeze.fusion_version == self.fusion_version
         )
 
 
@@ -63,11 +61,11 @@ class ScoredFreezeCoordinator:
 
     def __init__(
         self,
-        index: DecisionIndexPort,
-        records: DecisionRecordPort,
+        index: FreezeIndexPort,
+        records: FreezeRecordPort,
         clock: Clock,
         *,
-        runtime_identity: DecisionRuntimeIdentity,
+        runtime_identity: FreezeRuntimeIdentity,
         strategy: Strategy = Strategy.TOMORROW,
         publication_io: PublicationIoTracker | None = None,
         production_authority: bool = True,
@@ -83,7 +81,7 @@ class ScoredFreezeCoordinator:
     def freeze_scheduled(self) -> FreezeOperationResult:
         now = _now(self._clock)
         current = self._current(now.date())
-        if current is not None and IsPreviewDecision(current):
+        if current is not None and IsPreviewFreeze(current):
             return FreezeOperationResult("preview_only")
         boundary = _at(now.date(), time(15, 0))
         if now < boundary:
@@ -93,50 +91,36 @@ class ScoredFreezeCoordinator:
             return existing
         if not self._production_authority:
             return FreezeOperationResult("shadow_only")
-        checkpoint, checkpoint_failed = self._checkpoint(now.date(), boundary)
         current = self._current(now.date())
-        if current is not None and IsShadowDecision(current):
+        if current is not None and IsShadowFreeze(current):
             return FreezeOperationResult("shadow_only")
         if current is not None and not self._runtime_identity.matches(current):
             return FreezeOperationResult("runtime_identity_mismatch")
         with ObservePublicationIo(
             self._publication_io,
             "freeze_seal",
-            self._target(now.date(), current or (checkpoint.decision if checkpoint is not None else None)),
+            self._target(now.date(), current),
         ) as observation:
             seal = self._index.seal_for_freeze(
                 self._strategy,
                 boundary_at=boundary,
-                fallback_decision=checkpoint.decision if checkpoint is not None else None,
             )
             observation.reason = seal.reason
             observation.state = StageState.READY if seal.accepted else StageState.NOT_READY
-            observation.output_version = seal.decision.version if seal.decision is not None else None
-        if not seal.accepted or seal.decision is None:
-            status = "checkpoint_unavailable" if checkpoint_failed else seal.reason
-            return FreezeOperationResult(status)
-        commit_kind: CommitKind = "checkpoint_recovery" if seal.source == "checkpoint" else "scheduled"
-        record = CommittedDecisionRecord(seal.decision, boundary, commit_kind)
-        committed = self._commit(record)
-        if committed.status == "frozen" and checkpoint is not None:
-            try:
-                with ObservePublicationIo(
-                    self._publication_io, "checkpoint_consume", PublicationIoTarget.decision(seal.decision)
-                ) as observation:
-                    self._records.consume_checkpoint(checkpoint, consumed_at=now)
-                    observation.output_version = checkpoint.version
-            except (DecisionRecordError, OSError):
-                pass
-        return committed
+            observation.output_version = seal.freeze.version if seal.freeze is not None else None
+        if not seal.accepted or seal.freeze is None:
+            return FreezeOperationResult(seal.reason)
+        record = CommittedFreezeRecord(seal.freeze, boundary, "scheduled")
+        return self._commit(record)
 
     def freeze_close_fallback(
         self,
-        decision: ScoredDecision,
+        freeze: ScoredFreeze,
         *,
         recovery_path: CloseRecoveryPath,
         official_close_version: str,
     ) -> FreezeOperationResult:
-        if IsPreviewDecision(decision):
+        if IsPreviewFreeze(freeze):
             return FreezeOperationResult("preview_only")
         now = _now(self._clock)
         close = _at(now.date(), time(15, 0))
@@ -148,7 +132,7 @@ class ScoredFreezeCoordinator:
         if not self._production_authority:
             return FreezeOperationResult("shadow_only")
         rejection = self._close_rejection(
-            decision,
+            freeze,
             recovery_path=recovery_path,
             official_close_version=official_close_version,
             now=now,
@@ -156,56 +140,56 @@ class ScoredFreezeCoordinator:
         if rejection is not None:
             return FreezeOperationResult(rejection)
         with ObservePublicationIo(
-            self._publication_io, "freeze_seal", PublicationIoTarget.decision(decision)
+            self._publication_io, "freeze_seal", PublicationIoTarget.freeze(freeze)
         ) as observation:
             seal = self._index.seal_close_fallback(
-                decision,
-                boundary_at=max(close, decision.observed_at),
+                freeze,
+                boundary_at=max(close, freeze.observed_at),
                 official_close_version=official_close_version,
             )
             observation.reason = seal.reason
             observation.state = StageState.READY if seal.accepted else StageState.NOT_READY
-            observation.output_version = seal.decision.version if seal.decision is not None else None
-        if not seal.accepted or seal.decision is None:
+            observation.output_version = seal.freeze.version if seal.freeze is not None else None
+        if not seal.accepted or seal.freeze is None:
             return FreezeOperationResult(seal.reason)
-        record = CommittedDecisionRecord(seal.decision, max(close, decision.observed_at), "close_fallback")
+        record = CommittedFreezeRecord(seal.freeze, max(close, freeze.observed_at), "close_fallback")
         return self._commit(record)
 
     def restore(self, trade_date: date) -> FreezeOperationResult:
         current = self._current(trade_date)
-        if current is not None and IsPreviewDecision(current):
+        if current is not None and IsPreviewFreeze(current):
             return FreezeOperationResult("preview_only")
-        return self._existing(trade_date) or FreezeOperationResult("formal_decision_unavailable")
+        return self._existing(trade_date) or FreezeOperationResult("formal_freeze_unavailable")
 
     def _close_rejection(
         self,
-        decision: ScoredDecision,
+        freeze: ScoredFreeze,
         *,
         recovery_path: CloseRecoveryPath,
         official_close_version: str,
         now: datetime,
     ) -> str | None:
-        if IsShadowDecision(decision):
+        if IsShadowFreeze(freeze):
             return "shadow_only"
         current = self._current(now.date())
         rejections = (
             (
-                decision.strategy is not self._strategy or decision.trade_date != now.date(),
-                "no_eligible_decision",
+                freeze.strategy is not self._strategy or freeze.trade_date != now.date(),
+                "no_eligible_freeze",
             ),
             (
-                decision.observed_at > now or not official_close_version.startswith("official-close:"),
+                freeze.observed_at > now or not official_close_version.startswith("official-close:"),
                 "invalid_official_close",
             ),
-            (not self._runtime_identity.matches(decision), "runtime_identity_mismatch"),
-            (recovery_path == "current" and current != decision, "current_decision_mismatch"),
-            (recovery_path == "close_rebuild" and decision.stage != "local", "close_rebuild_must_be_local"),
+            (not self._runtime_identity.matches(freeze), "runtime_identity_mismatch"),
+            (recovery_path == "current" and current != freeze, "current_freeze_mismatch"),
+            (recovery_path == "close_rebuild" and freeze.stage != "local", "close_rebuild_must_be_local"),
         )
         return next((reason for rejected, reason in rejections if rejected), None)
 
-    def _current(self, trade_date: date) -> ScoredDecision | None:
+    def _current(self, trade_date: date) -> ScoredFreeze | None:
         current = self._index.snapshot(self._strategy).current
-        return current if isinstance(current, ScoredDecision) and current.trade_date == trade_date else None
+        return current if isinstance(current, ScoredFreeze) and current.trade_date == trade_date else None
 
     def _existing(self, trade_date: date) -> FreezeOperationResult | None:
         try:
@@ -214,79 +198,49 @@ class ScoredFreezeCoordinator:
                 observation.reason = "formal_found" if record is not None else "formal_missing"
                 observation.state = StageState.READY if record is not None else StageState.NOT_READY
                 if record is not None:
-                    observation.target = PublicationIoTarget.decision(record.decision)
+                    observation.target = PublicationIoTarget.freeze(record.freeze)
                     observation.output_version = record.version
-        except (DecisionRecordError, OSError):
+        except (FreezeRecordError, OSError):
             return FreezeOperationResult("persistence_failed")
         if record is None:
             return None
         with ObservePublicationIo(
-            self._publication_io, "formal_restore", PublicationIoTarget.decision(record.decision)
+            self._publication_io, "formal_restore", PublicationIoTarget.freeze(record.freeze)
         ) as observation:
             restored = self._index.restore_formal(record)
             observation.reason = "already_frozen" if restored else "index_restore_conflict"
             observation.state = StageState.READY if restored else StageState.FAILED
-            observation.output_version = record.decision.version if restored else None
+            observation.output_version = record.freeze.version if restored else None
         if not restored:
             return FreezeOperationResult("index_restore_conflict", record, record.version)
         return FreezeOperationResult("already_frozen", record, record.version)
 
-    def _checkpoint(
-        self,
-        trade_date: date,
-        boundary: datetime,
-    ) -> tuple[DecisionCheckpoint | None, bool]:
-        try:
-            with ObservePublicationIo(
-                self._publication_io, "checkpoint_lookup", self._target(trade_date)
-            ) as observation:
-                checkpoint = self._records.load_checkpoint(self._strategy, trade_date)
-                observation.reason = "checkpoint_found" if checkpoint is not None else "checkpoint_missing"
-                observation.state = StageState.READY if checkpoint is not None else StageState.NOT_READY
-                if checkpoint is not None:
-                    observation.target = PublicationIoTarget.decision(checkpoint.decision)
-                    observation.output_version = checkpoint.version
-                    if (
-                        checkpoint.boundary_at != boundary
-                        or not self._runtime_identity.matches(checkpoint.decision)
-                        or not 0.0 <= (boundary - checkpoint.decision.observed_at).total_seconds() <= 30.0
-                    ):
-                        observation.reason = "checkpoint_ineligible"
-                        observation.state = StageState.NOT_READY
-                        observation.output_version = None
-                        return None, False
-        except (DecisionRecordError, OSError):
-            return None, True
-        if checkpoint is None:
-            return None, False
-        return checkpoint, False
-
-    def _commit(self, record: CommittedDecisionRecord) -> FreezeOperationResult:
-        if IsPreviewDecision(record.decision):
+    def _commit(self, record: CommittedFreezeRecord) -> FreezeOperationResult:
+        if IsPreviewFreeze(record.freeze):
             return FreezeOperationResult("preview_only")
         try:
             with ObservePublicationIo(
-                self._publication_io, "formal_write", PublicationIoTarget.decision(record.decision)
+                self._publication_io, "formal_write", PublicationIoTarget.freeze(record.freeze)
             ) as observation:
                 self._records.commit(record)
                 observation.output_version = record.version
-        except (DecisionRecordError, OSError):
+        except (FreezeRecordError, OSError):
             return FreezeOperationResult("persistence_failed", version=record.version)
         with ObservePublicationIo(
-            self._publication_io, "formal_publish", PublicationIoTarget.decision(record.decision)
+            self._publication_io, "formal_publish", PublicationIoTarget.freeze(record.freeze)
         ) as observation:
             published = self._index.commit_formal(record)
             observation.reason = "frozen" if published else "index_commit_conflict"
             observation.state = StageState.READY if published else StageState.FAILED
-            observation.output_version = record.decision.version if published else None
+            observation.output_version = record.freeze.version if published else None
         if not published:
             return FreezeOperationResult("index_commit_conflict", version=record.version)
         return FreezeOperationResult("frozen", record, record.version)
 
-    def _target(self, trade_date: date, decision: ScoredDecision | None = None) -> PublicationIoTarget:
-        value = decision or self._current(trade_date)
+    def _target(self, trade_date: date, freeze: ScoredFreeze | None = None) -> PublicationIoTarget:
+        value = freeze or self._current(trade_date)
         return (
-            PublicationIoTarget.decision(value)
+            PublicationIoTarget.freeze(value)
             if value is not None
             else PublicationIoTarget(self._strategy, trade_date, None, 0)
         )
@@ -310,6 +264,6 @@ def _at(trade_date: date, value: time) -> datetime:
 __all__ = [
     "CloseRecoveryPath",
     "ScoredFreezeCoordinator",
-    "DecisionRuntimeIdentity",
+    "FreezeRuntimeIdentity",
     "FreezeOperationResult",
 ]

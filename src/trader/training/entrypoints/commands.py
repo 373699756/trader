@@ -14,6 +14,8 @@ from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
 from trader.infra.settings import LoadStrategySettings, RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.infra.persistence.freeze_trace_index import SQLiteFreezeTraceIndex
+from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.application.historical_label import HistoricalLabelPreregistrationService
 from trader.training.application.tomorrow_research_evidence import (
     DeriveTomorrowResearchRunId,
@@ -33,8 +35,6 @@ from trader.training.infra.research.h1_point_in_time_snapshot import (
     SQLiteH1PointInTimeSnapshot,
 )
 from trader.training.infra.research.historical_screening_snapshot import SQLiteHistoricalScreeningSnapshot
-from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
-from trader.training.infra.research.research_trace_index import SQLiteResearchTraceIndex
 from trader.training.infra.research.tomorrow_historical_evidence import (
     TomorrowHistoricalEvidenceConflictError,
     TomorrowHistoricalEvidenceIndex,
@@ -125,7 +125,7 @@ def RunResearchCommand(
         from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
         from trader.training.domain.evaluation.selection_experiment import SELECTION_RESEARCH_IDENTITY
 
-        trace = SQLiteResearchTraceIndex(research_root)
+        trace = SQLiteFreezeTraceIndex(research_root)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)

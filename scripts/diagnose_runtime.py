@@ -1408,7 +1408,7 @@ def _history_daily_capability_details(
     candidates = source.get("candidates")
     candidate_values = candidates if isinstance(candidates, list) else []
     payload["summary"] = {
-        "decision": _mapping(source.get("decision")),
+        "freeze": _mapping(source.get("freeze")),
         "baostock_lower_bound": _mapping(source.get("baostock_lower_bound")),
         "candidates": [
             {
@@ -1614,7 +1614,7 @@ def _browser_details(_result: DiagnosticResult, source: Mapping[str, object], pa
         "passed": source.get("passed"),
         "browser_dom": _mapping(_mapping(source.get("browser_dom")).get("summary")),
         "patch_to_paint": _mapping(source.get("browser_patch_to_paint")),
-        "decision_patch": _mapping(source.get("browser_decision_patch")),
+        "freeze_patch": _mapping(source.get("browser_freeze_patch")),
         "retention": _mapping(source.get("web_snapshot_retention")),
     }
 

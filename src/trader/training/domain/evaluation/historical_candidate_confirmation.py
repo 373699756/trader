@@ -14,7 +14,7 @@ from trader.training.domain.evaluation.paired_statistics import (
     PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
-    PreregisteredHolmDecision,
+    PreregisteredHolmFreeze,
 )
 from trader.training.domain.evaluation.preregistered_rule_candidate import PreregisteredRuleCandidateFamily
 
@@ -73,7 +73,7 @@ class CandidateConfirmationEvidence:
     turnover_delta: float
     capacity_delta: float
     concentration_delta: float
-    holm: PreregisteredHolmDecision
+    holm: PreregisteredHolmFreeze
     passed: bool
     failure_reasons: tuple[str, ...]
     mean_absolute_20bp: float | None = None
@@ -312,7 +312,7 @@ def _candidate_confirmation_evidence(
     segment: _ConfirmationSegment,
     candidate_id: str,
     bootstrap_20: PreregisteredBootstrapResult,
-    holm: PreregisteredHolmDecision,
+    holm: PreregisteredHolmFreeze,
 ) -> CandidateConfirmationEvidence:
     item = segment.supplied[candidate_id]
     statistics = _ConfirmationStatistics(
@@ -345,7 +345,7 @@ def _candidate_confirmation_evidence(
 
 def _confirmation_failures(
     item: CandidateConfirmationSeries,
-    holm: PreregisteredHolmDecision,
+    holm: PreregisteredHolmFreeze,
     statistics: _ConfirmationStatistics,
 ) -> tuple[str, ...]:
     failures = [
@@ -358,7 +358,7 @@ def _confirmation_failures(
 
 def _confirmation_return_failures(
     item: CandidateConfirmationSeries,
-    holm: PreregisteredHolmDecision,
+    holm: PreregisteredHolmFreeze,
     bootstrap_20: PreregisteredBootstrapResult,
     bootstrap_50: PreregisteredBootstrapResult,
 ) -> tuple[str, ...]:
@@ -414,7 +414,7 @@ def _confirmation_risk_failures(item: CandidateConfirmationSeries) -> tuple[str,
 
 def _control_confirmation_evidence(
     segment: _ConfirmationSegment,
-    holm: PreregisteredHolmDecision,
+    holm: PreregisteredHolmFreeze,
 ) -> CandidateConfirmationEvidence:
     control_id = segment.ids[0]
     return CandidateConfirmationEvidence(

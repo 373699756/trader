@@ -48,7 +48,7 @@ from tests.component.market_data_test_support import (
 )
 from trader.infra.http_contracts import HttpStatusError, HttpTimeout
 from trader.recommendation.infra.market_data.providers.tencent import TencentFullMarketSource
-from trader.training.domain.evaluation.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 
 
 def test_eastmoney_normalizes_history() -> None:

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.feature_contracts import FeatureVector
 from trader.recommendation.domain.market.models import Board
-from trader.training.domain.evaluation.models import RecommendationOutcome
+from trader.recommendation.domain.outcomes.models import RecommendationOutcome
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 PointInTimeDatasetState = Literal["historical_point_in_time_parity", "historical_data_insufficient"]

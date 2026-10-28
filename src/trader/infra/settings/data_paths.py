@@ -50,11 +50,11 @@ class DataPaths:
 
     def recommendation(self, profile: str) -> Path:
         _validate_profile(profile)
-        return self.root / "recommendation" / ("learned_rank" if profile == "v1" else profile)
+        return self.root / "recommendation" / profile
 
     def research(self, profile: str) -> Path:
         _validate_profile(profile)
-        return self.root / "research" / ("learned_rank" if profile == "v1" else profile)
+        return self.root / "research" / profile
 
 
 def _validate_profile(profile: str) -> None:

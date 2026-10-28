@@ -6,17 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import NOW, decision
+from tests.unit.domain.test_freeze_identity import NOW, freeze
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
-    DecisionRuntimeIdentity,
+    FreezeRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, FormalScoredDecision
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, FormalScoredFreeze
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 
 
 class _Clock:
@@ -28,7 +27,7 @@ class _Clock:
 
 
 def _shadow(observed_at: datetime):
-    source = decision()
+    source = freeze()
     return replace(
         source,
         observed_at=observed_at,
@@ -52,18 +51,18 @@ def test_shadow_never_checkpoints_freezes_or_enters_official_history(
 ) -> None:
     now = NOW.replace(hour=hour, minute=minute)
     shadow = _shadow(now)
-    records = SQLiteDecisionRecords(tmp_path / "learned_rank/decisions.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "v1/freeze.sqlite3")
     records.initialize()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     if not cold:
         assert index.publish(shadow, expected_version=None).accepted
     freezer = ScoredFreezeCoordinator(
         index,
         records,
         _Clock(now),
-        runtime_identity=DecisionRuntimeIdentity(shadow.config_version, shadow.strategy_version, shadow.fusion_version),
+        runtime_identity=FreezeRuntimeIdentity(shadow.config_version, shadow.strategy_version, shadow.fusion_version),
     )
-    assert freezer.restore(now.date()).status == "formal_decision_unavailable"
+    assert freezer.restore(now.date()).status == "formal_freeze_unavailable"
     if now.hour < 15:
         assert freezer.freeze_scheduled().status == "before_freeze"
     elif not cold:
@@ -74,11 +73,9 @@ def test_shadow_never_checkpoints_freezes_or_enters_official_history(
     assert records.load(Strategy.TOMORROW, now.date()) is None
     assert records.list_dates(Strategy.TOMORROW) == ()
     with pytest.raises(ValueError, match="shadow"):
-        DecisionCheckpoint(shadow, now.replace(hour=15, minute=0))
+        FormalScoredFreeze(shadow)
     with pytest.raises(ValueError, match="shadow"):
-        FormalScoredDecision(shadow)
-    with pytest.raises(ValueError, match="shadow"):
-        CommittedDecisionRecord(shadow, now, "scheduled")
+        CommittedFreezeRecord(shadow, now, "scheduled")
 
 
 def test_shadow_adapter_skips_review_before_touching_any_production_dependency() -> None:

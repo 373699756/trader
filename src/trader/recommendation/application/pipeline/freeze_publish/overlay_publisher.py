@@ -1,4 +1,4 @@
-"""Refresh quote overlays without changing the published decision identity."""
+"""Refresh quote overlays without changing the published freeze identity."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
-    DecisionBuilderPort,
-    DecisionUnavailableError,
+    FreezeBuilderPort,
+    FreezeUnavailableError,
 )
 from trader.recommendation.application.runtime.trading_session import SessionGuard
-from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 
 FailureCodeMapper = Callable[[BaseException, str], str]
@@ -34,12 +34,12 @@ class OverlayRefreshOutcome:
 
 
 @dataclass(frozen=True)
-class DecisionOverlayRefresher:
+class FreezeOverlayRefresher:
     """Coordinate overlay CAS and event delivery for all scored strategies."""
 
-    index: UnifiedDecisionIndex
-    decisions: DecisionBuilderPort
-    publish_overlay: Callable[[DecisionOverlay], object]
+    index: UnifiedFreezeIndex
+    freezes: FreezeBuilderPort
+    publish_overlay: Callable[[FreezeOverlay], object]
     failure_code: FailureCodeMapper
 
     def refresh(self, request: CycleRequest) -> tuple[OverlayRefreshOutcome, ...]:
@@ -48,11 +48,11 @@ class DecisionOverlayRefresher:
     def _refresh_strategy(self, strategy: Strategy, request: CycleRequest) -> OverlayRefreshOutcome:
         snapshot = self.index.snapshot(strategy)
         current = snapshot.current
-        if not isinstance(current, ScoredDecision) or current.trade_date != request.trade_date:
+        if not isinstance(current, ScoredFreeze) or current.trade_date != request.trade_date:
             return OverlayRefreshOutcome(strategy, "skipped")
         try:
-            overlay = self.decisions.refreshed_overlay(current, request, snapshot.overlay)
-        except DecisionUnavailableError as exc:
+            overlay = self.freezes.refreshed_overlay(current, request, snapshot.overlay)
+        except FreezeUnavailableError as exc:
             return OverlayRefreshOutcome(strategy, "failed", self.failure_code(exc, "overlay_unavailable"))
         except ValueError as exc:
             boundary = traceback.extract_tb(exc.__traceback__, limit=-1)
@@ -74,7 +74,7 @@ class DecisionOverlayRefresher:
     def _publish(
         self,
         strategy: Strategy,
-        overlay: DecisionOverlay,
+        overlay: FreezeOverlay,
         *,
         expected_version: str | None,
     ) -> OverlayRefreshOutcome:
@@ -98,4 +98,4 @@ class DecisionOverlayRefresher:
 _SCORED_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
 
 
-__all__ = ["DecisionOverlayRefresher", "OverlayRefreshOutcome"]
+__all__ = ["FreezeOverlayRefresher", "OverlayRefreshOutcome"]

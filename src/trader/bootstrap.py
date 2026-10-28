@@ -74,20 +74,21 @@ from trader.infra.storage_runtime import ConfigureStorage
 from trader.infra.storage_types import StorageOverride
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
+from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.data_source import source_router
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
 from trader.recommendation.application.pipeline.freeze_publish import freeze_coordinator, read_only_queries
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import FreezeObservation
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import AsyncFreezeObserver
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
 from trader.recommendation.application.pipeline.freeze_publish.recent_news_codes import RecentPublishedNewsCodes
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.pipeline.local_score import local_decision_builder
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.pipeline.local_score import local_freeze_builder
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
@@ -101,7 +102,7 @@ from trader.recommendation.application.runtime.runtime_dependencies import Runti
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.domain.market.eligibility import SelectQuotePopulation
-from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -125,12 +126,13 @@ from trader.recommendation.infra.market_data.published_company_research import P
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
+from trader.recommendation.infra.market_data.reference_initialization import InitializeMarketReferences
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
-from trader.recommendation.infra.persistence.data_plane_initialization import InitializeReferenceDataPlane
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.infra.persistence.freeze_trace_index import ResearchTraceLimits, SQLiteFreezeTraceIndex
+from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 from trader.recommendation.infra.runtime import composition_inputs
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem, RuntimeWorkerResources
@@ -141,15 +143,12 @@ from trader.recommendation.infra.scoring import profile_factory
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 from trader.recommendation.infra.status_projection import RuntimeStatus as _runtime_status
-from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.application.research_audit import TryBuildCommittedResearchAudit
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.domain.training_reminder import TrainingReminderStatus
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.history.history_training_due import PublishedTrainingState
 from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
-from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
-from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
 from trader.training.infra.training_settings import LoadRuntimeTrainingSettings, ProfileTrainingSettings
 from trader.web import CreateApp
 
@@ -224,7 +223,7 @@ def ExecuteSync(
                 LoadStrategySettings(settings.strategy_config_path).company_scoring.events,
                 news_codes=RecentPublishedNewsCodes(
                     tuple(
-                        SQLiteDecisionRecords(settings.data_paths.recommendation(profile) / "decisions.sqlite3")
+                        SQLiteFreezeRecords(settings.data_paths.recommendation(profile) / "freeze.sqlite3")
                         for profile in ("v2", "v3")
                     ),
                     clock.now(),
@@ -587,7 +586,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     runtime_scope: ScoringProfileId | None = None,
     owns_shared_runtime: bool = True,
     shared_inputs: composition_inputs.SharedRecommendationInputs | None = None,
-) -> ApplicationSystem[SQLiteResearchTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
+) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
         settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
@@ -706,12 +705,12 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             monotonic=time.monotonic,
         ),
     )
-    decision_builder = local_decision_builder.LocalDecisionBuilder(
+    freeze_builder = local_freeze_builder.LocalFreezeBuilder(
         native_data,
         config_version=effective_config_version,
-        dependencies=local_decision_builder.DecisionBuildDependencies(
+        dependencies=local_freeze_builder.FreezeBuildDependencies(
             policy,
-            publication.decision_drafts,
+            publication.freeze_drafts,
             ShanghaiClock(now).now,
             model_scoring,
             local_scoring,
@@ -722,13 +721,13 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             ),
         ),
     )
-    deepseek = DeepSeekAdapter(reviewer, policy, decision_builder, ScoreFusionService(), now=ShanghaiClock(now).now)
+    deepseek = DeepSeekAdapter(reviewer, policy, freeze_builder, ScoreFusionService(), now=ShanghaiClock(now).now)
 
-    def publish_overlay_event(overlay: DecisionOverlay) -> object:
+    def publish_overlay_event(overlay: FreezeOverlay) -> object:
         current = publication.tomorrow_index.snapshot(overlay.strategy).current
-        if not isinstance(current, ScoredDecision) or current.version != overlay.parent_version:
-            raise ValueError("overlay event parent decision is unavailable")
-        return publication.decision_events.publish_overlay(overlay, parent_version=current.version)
+        if not isinstance(current, ScoredFreeze) or current.version != overlay.parent_version:
+            raise ValueError("overlay event parent freeze is unavailable")
+        return publication.freeze_events.publish_overlay(overlay, parent_version=current.version)
 
     scheduler = SchedulerRuntime(
         RuntimeDependencies(
@@ -737,11 +736,11 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             calendar=calendar,
             cadence=cadence_planner,
             data=native_data,
-            decisions=decision_builder,
+            freezes=freeze_builder,
             reviews=deepseek,
             index=publication.tomorrow_index,
             observer=publication.observer,
-            freezes=FreezeAdapter(publication.tomorrow_freezer, publication.d25_freezer),
+            sealing=FreezeAdapter(publication.tomorrow_freezer, publication.d25_freezer),
             settlement=OutcomeSettlementAdapter(
                 market_data,
                 OutcomeSettlementService(
@@ -749,7 +748,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 ),
             ),
             research_factory=ResearchRuntime,
-            publish_decision=publication.decision_events.publish_committed,
+            publish_freeze=publication.freeze_events.publish_committed,
             publish_overlay=publish_overlay_event,
             latency=latency,
             publication_io=publication_io,
@@ -789,7 +788,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                         publication.tomorrow_records.initialize,
                         lambda: _initialize_if_available(publication.research_trace),
                         lambda: _initialize_if_available(persistence.outcomes),
-                        lambda: InitializeReferenceDataPlane(market_data, persistence.data_plane),
+                        lambda: InitializeMarketReferences(market_data),
                         lambda: publication.tomorrow_freezer.restore(now().date()),
                         lambda: publication.d25_freezer.restore(now().date()),
                     )
@@ -802,8 +801,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         ),
     )
     web_services = UnifiedWebServices(
-        publication.decision_queries,
-        publication.decision_events,
+        publication.freeze_queries,
+        publication.freeze_events,
         lambda: _runtime_status(scheduler, reviewer, market_data.health, model_scoring.status()),
         WebApiConfig(settings.pipeline.publish_heartbeat_seconds, settings.api.web_snapshot_retention_seconds),
         profile_id,
@@ -824,8 +823,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         quote_pool=workers.quote_pool,
         market_quote_pool=workers.market_quote_pool,
         long_runtime=publication.long_runtime,
-        decision_queries=publication.decision_queries,
-        decision_events=publication.decision_events,
+        freeze_queries=publication.freeze_queries,
+        freeze_events=publication.freeze_events,
         tomorrow_index=publication.tomorrow_index,
         tomorrow_records=publication.tomorrow_records,
         research_trace=publication.research_trace,
@@ -1111,8 +1110,7 @@ def _build_persistence(
 ) -> composition_inputs.RuntimePersistenceContext:
     settings = context.settings
     profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
-    records = SQLiteDecisionRecords(profile_root / "decisions.sqlite3")
-    data_plane = SQLiteDataPlane(profile_root / "snapshots.sqlite3")
+    records = SQLiteFreezeRecords(profile_root / "freeze.sqlite3")
     outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records)
     budget = shared_budget or DeepSeekBudgetLedger(
         settings.data_paths.budget,
@@ -1123,8 +1121,8 @@ def _build_persistence(
         health_policy=DeepSeekHealthPolicy.from_settings(settings.deepseek.adaptive),
         write_lock=threading.Lock(),
     )
-    sequence = PublicationSequence(profile_root / "snapshots.sqlite3")
-    return composition_inputs.RuntimePersistenceContext(sequence, records, data_plane, budget, outcomes)
+    sequence = PublicationSequence(profile_root / "publication_state.sqlite3")
+    return composition_inputs.RuntimePersistenceContext(sequence, records, budget, outcomes)
 
 
 def _build_publication(
@@ -1135,36 +1133,36 @@ def _build_publication(
     production_authority: bool,
 ) -> composition_inputs.RuntimePublicationContext:
     settings, records, market_data = context.settings, dependencies.records, dependencies.market_data
-    tomorrow_decisions = UnifiedDecisionIndex()
-    decision_drafts = UnifiedDecisionDraftIndex()
-    decision_events = UnifiedDecisionEventStream(
+    tomorrow_freezes = UnifiedFreezeIndex()
+    freeze_drafts = UnifiedFreezeDraftIndex()
+    freeze_events = UnifiedFreezeEventStream(
         history_size=settings.api.sse_history_size,
         client_queue_size=settings.api.sse_client_queue_size,
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    query_sources = read_only_queries.DecisionQuerySources(
+    query_sources = read_only_queries.FreezeQuerySources(
         market_data, dependencies.outcomes, market_data.references, market_data.research
     )
-    decision_queries = read_only_queries.UnifiedDecisionQueries(
-        tomorrow_decisions, decision_drafts, records, clock, query_sources
+    freeze_queries = read_only_queries.UnifiedFreezeQueries(
+        tomorrow_freezes, freeze_drafts, records, clock, query_sources
     )
-    research_trace = SQLiteResearchTraceIndex(
+    research_trace = SQLiteFreezeTraceIndex(
         settings.data_paths.research(context.strategy.scoring_profile),
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
-    observer = AsyncDecisionObserver[DecisionObservation](
+    observer = AsyncFreezeObserver[FreezeObservation](
         (research_trace.record, *dependencies.additional_observers),
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
-        thread_name="trader-decision-observer",
-        prepare=DecisionObservation.materialize,
+        thread_name="trader-freeze-observer",
+        prepare=FreezeObservation.materialize,
     )
     freezer = partial(
         freeze_coordinator.ScoredFreezeCoordinator,
-        tomorrow_decisions,
+        tomorrow_freezes,
         records,
         clock,
-        runtime_identity=freeze_coordinator.DecisionRuntimeIdentity(
+        runtime_identity=freeze_coordinator.FreezeRuntimeIdentity(
             context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
         ),
         publication_io=publication_io,
@@ -1172,15 +1170,15 @@ def _build_publication(
     )
     return composition_inputs.RuntimePublicationContext(
         records,
-        tomorrow_decisions,
-        decision_drafts,
+        tomorrow_freezes,
+        freeze_drafts,
         research_trace,
         LongRuntime(
             LongRuntimeDependencies(
                 market_data,
-                tomorrow_decisions,
+                tomorrow_freezes,
                 context.now,
-                decision_events.publish_projection,
+                freeze_events.publish_projection,
                 context.owns_shared_runtime,
                 next_sequence=dependencies.next_sequence,
             ),
@@ -1189,8 +1187,8 @@ def _build_publication(
             items=policy_settings._long_item_definitions(context.watchlist),
             groups=policy_settings._long_group_definitions(context.watchlist),
         ),
-        decision_queries,
-        decision_events,
+        freeze_queries,
+        freeze_events,
         freezer(strategy=Strategy.TOMORROW),
         freezer(strategy=Strategy.D25),
         observer,

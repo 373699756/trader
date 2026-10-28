@@ -8,11 +8,11 @@ from datetime import time as wall_time
 from typing import Literal
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
-    DecisionCommitted,
-    DecisionObservation,
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
+    FreezeCommitted,
+    FreezeObservation,
 )
-from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
+from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import FreezeOverlayRefresher
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
     ObservePublicationIo,
     PublicationIoTarget,
@@ -49,9 +49,9 @@ from trader.recommendation.application.runtime.runtime_dependencies import Runti
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueIndex
 from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
-    DecisionAt,
+    FreezeAt,
     MarketPhase,
-    ScheduleDecision,
+    ScheduleFreeze,
     SchedulePoint,
     ShanghaiNow,
 )
@@ -67,12 +67,12 @@ from trader.recommendation.application.runtime.schedule_requests import (
 from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError, TradingSession
 from trader.recommendation.domain.evidence.pipeline import StageState
-from trader.recommendation.domain.publication.decision_identity import (
-    DecisionIdentity,
+from trader.recommendation.domain.publication.freeze_identity import (
     DisplayQuoteCodes,
+    FreezeIdentity,
     IdentityCodes,
     LongProjection,
-    ScoredDecision,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -110,9 +110,9 @@ class SchedulerRuntime:
         if contract.daily_physical_limit != 168 or not contract.shared_cache or not contract.shared_single_flight:
             raise ValueError("scheduler runtime requires the shared 168-request DeepSeek boundary")
         self._dependencies = dependencies
-        self._overlay_refresher = DecisionOverlayRefresher(
+        self._overlay_refresher = FreezeOverlayRefresher(
             dependencies.index,
-            dependencies.decisions,
+            dependencies.freezes,
             dependencies.publish_overlay,
             FailureCode,
         )
@@ -179,7 +179,7 @@ class SchedulerRuntime:
             ),
         )
         self._refresh_failure_count = 0
-        self._decision_failure_count = 0
+        self._freeze_failure_count = 0
         self._review_failure_count = 0
         self._overlay_publish_count = 0
         self._overlay_failure_count = 0
@@ -188,7 +188,7 @@ class SchedulerRuntime:
         self._publish_rejection_count = 0
         self._observer_rejection_count = 0
         self._freeze_completed_count = 0
-        self._freeze_failure_count = 0
+        self._seal_failure_count = 0
         self._settlement_completed_count = 0
         self._settlement_failure_count = 0
         self._issues = RuntimeIssueIndex()
@@ -240,7 +240,7 @@ class SchedulerRuntime:
 
     def _start_components(self) -> None:
         if not self._dependencies.observer.start():
-            raise RuntimeError("decision observer did not start")
+            raise RuntimeError("freeze observer did not start")
         if not self._control.start():
             raise RuntimeError("control executor did not start")
         self._start_task_lanes()
@@ -293,7 +293,7 @@ class SchedulerRuntime:
         if scope is not None:
             scope.initialize()
             if not scope.resolved:
-                self._calendar_decision(observed_at)
+                self._calendar_freeze(observed_at)
                 return 30.0
             if scope.is_preview:
                 return self._submit_preview(observed_at)
@@ -302,7 +302,7 @@ class SchedulerRuntime:
             self._dependencies.cadence.rotate_session(observed_at, reason=self._session.status().discontinuity_reason)
             self._close_control.rotate_session()
             self._planned_generation = session.generation
-        is_trading_day, retry_delay = self._calendar_decision(observed_at)
+        is_trading_day, retry_delay = self._calendar_freeze(observed_at)
         if is_trading_day is None:
             with self._lock:
                 self._phase = MarketPhase.CLOSED
@@ -312,7 +312,7 @@ class SchedulerRuntime:
             self._phase = (
                 batch.tasks[0].phase
                 if batch.tasks
-                else DecisionAt(
+                else FreezeAt(
                     observed_at,
                     is_trading_day=is_trading_day,
                 ).phase
@@ -353,7 +353,7 @@ class SchedulerRuntime:
             )
         return 1.0
 
-    def _calendar_decision(self, observed_at: datetime) -> tuple[bool | None, float]:
+    def _calendar_freeze(self, observed_at: datetime) -> tuple[bool | None, float]:
         trade_date = observed_at.date()
         with self._lock:
             if self._calendar_trade_date != trade_date:
@@ -460,13 +460,13 @@ class SchedulerRuntime:
             now = ShanghaiNow(self._dependencies.clock.now())
             if now.date() != scheduled.scheduled_at.date() or now.time() >= wall_time(15, 0):
                 return
-            decision = DecisionAt(scheduled.scheduled_at, is_trading_day=True)
-            strategies = self._due_strategies(decision, None, scheduled.scheduled_at)
+            freeze = FreezeAt(scheduled.scheduled_at, is_trading_day=True)
+            strategies = self._due_strategies(freeze, None, scheduled.scheduled_at)
             if not {Strategy.TOMORROW, Strategy.D25}.issubset(strategies):
                 return
             requests = tuple(
                 replace(
-                    self._scheduled_request(strategy, scheduled.scheduled_at, CyclePhase(strategy, decision.phase)),
+                    self._scheduled_request(strategy, scheduled.scheduled_at, CyclePhase(strategy, freeze.phase)),
                     session=scheduled.session,
                 )
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
@@ -560,7 +560,7 @@ class SchedulerRuntime:
 
     def _trigger_scoring_after_input(self) -> None:
         completed_at = ShanghaiNow(self._dependencies.clock.now())
-        is_trading_day, _retry_delay = self._calendar_decision(completed_at)
+        is_trading_day, _retry_delay = self._calendar_freeze(completed_at)
         if is_trading_day is None:
             return
         scheduled = self._dependencies.cadence.plan_score_after_input(
@@ -588,8 +588,8 @@ class SchedulerRuntime:
         visible_six = phase is MarketPhase.BEFORE_CLOSE
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = self._dependencies.index.snapshot(strategy)
-            identity = snapshot.formal.decision if snapshot.formal is not None else snapshot.current
-            if isinstance(identity, ScoredDecision):
+            identity = snapshot.formal.freeze if snapshot.formal is not None else snapshot.current
+            if isinstance(identity, ScoredFreeze):
                 codes.extend(sorted(DisplayQuoteCodes(identity) if visible_six else IdentityCodes(identity)))
         return tuple(dict.fromkeys(codes))
 
@@ -597,7 +597,7 @@ class SchedulerRuntime:
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = self._dependencies.index.snapshot(strategy)
             if (
-                not isinstance(snapshot.current, ScoredDecision)
+                not isinstance(snapshot.current, ScoredFreeze)
                 or snapshot.current.trade_date != scheduled.scheduled_at.date()
             ):
                 continue
@@ -684,7 +684,7 @@ class SchedulerRuntime:
                     preview = replace(preview, state="running")
                 elif self._review_failure_count:
                     preview = replace(preview, state="failed", error=issues.last_error_code or "review_unavailable")
-            elif preview.state == "failed" and preview.error == "preview_decision_unavailable":
+            elif preview.state == "failed" and preview.error == "preview_freeze_unavailable":
                 preview = replace(preview, error=issues.last_error_code or preview.error)
             return SchedulerRuntimeStatus(
                 running=self._running,
@@ -701,7 +701,7 @@ class SchedulerRuntime:
                 control_inflight=control.inflight,
                 control_rejected_count=control.rejected_count,
                 refresh_failure_count=self._refresh_failure_count,
-                decision_failure_count=self._decision_failure_count,
+                freeze_failure_count=self._freeze_failure_count,
                 review_failure_count=self._review_failure_count,
                 overlay_publish_count=self._overlay_publish_count,
                 overlay_failure_count=self._overlay_failure_count,
@@ -710,13 +710,13 @@ class SchedulerRuntime:
                 publish_rejection_count=self._publish_rejection_count,
                 observer_rejection_count=self._observer_rejection_count,
                 freeze_completed_count=self._freeze_completed_count,
-                freeze_failure_count=self._freeze_failure_count,
+                seal_failure_count=self._seal_failure_count,
                 settlement_completed_count=self._settlement_completed_count,
                 settlement_failure_count=self._settlement_failure_count,
                 last_error_code=issues.last_error_code,
                 strategy_error_codes=issues.strategy_error_codes,
                 recent_errors=issues.recent_errors,
-                input_quality=self._dependencies.decisions.input_quality_status(),
+                input_quality=self._dependencies.freezes.input_quality_status(),
                 preview_context=preview_context,
                 preview_state=preview.state if preview_context is not None else None,
                 preview_error=preview.error if preview_context is not None else None,
@@ -764,8 +764,8 @@ class SchedulerRuntime:
         self,
         *,
         hybrid: bool,
-        event: DecisionCommitted | None,
-        identity: DecisionIdentity,
+        event: FreezeCommitted | None,
+        identity: FreezeIdentity,
     ) -> None:
         strategy = identity.strategy
         with self._lock:
@@ -775,34 +775,34 @@ class SchedulerRuntime:
                 self._local_publish_count += 1
             self._resolve_issues_locked(
                 strategy=strategy,
-                stages=frozenset({"refresh", "decision", "review", "publish"}),
+                stages=frozenset({"refresh", "freeze", "review", "publish"}),
             )
         if event is not None:
             try:
-                assert isinstance(identity, ScoredDecision)
+                assert isinstance(identity, ScoredFreeze)
                 with ObservePublicationIo(
-                    self._dependencies.publication_io, "decision_event", PublicationIoTarget.decision(identity)
+                    self._dependencies.publication_io, "freeze_event", PublicationIoTarget.freeze(identity)
                 ) as receipt:
-                    self._dependencies.publish_decision(event)
-                    receipt.output_version = event.decision_version
+                    self._dependencies.publish_freeze(event)
+                    receipt.output_version = event.freeze_version
             except (RuntimeError, TypeError, ValueError) as exc:
-                self._record_failure("publish", f"decision_event:{type(exc).__name__}", strategy)
-        if isinstance(identity, ScoredDecision) and identity.preview_context is not None:
+                self._record_failure("publish", f"freeze_event:{type(exc).__name__}", strategy)
+        if isinstance(identity, ScoredFreeze) and identity.preview_context is not None:
             return
         observation = None
         if event is not None:
-            observation = DecisionObservation(
-                event, None, audit_factory=self._dependencies.decisions.research_audit_factory(event.decision_version)
+            observation = FreezeObservation(
+                event, None, audit_factory=self._dependencies.freezes.research_audit_factory(event.freeze_version)
             )
         if observation is not None:
-            assert isinstance(identity, ScoredDecision)
+            assert isinstance(identity, ScoredFreeze)
             with ObservePublicationIo(
-                self._dependencies.publication_io, "observer_enqueue", PublicationIoTarget.decision(identity)
+                self._dependencies.publication_io, "observer_enqueue", PublicationIoTarget.freeze(identity)
             ) as receipt:
                 offered = self._dependencies.observer.offer(observation)
                 receipt.state = StageState.READY if offered else StageState.FAILED
                 receipt.reason = "enqueued" if offered else "observer_capacity_rejected"
-                receipt.output_version = observation.event.decision_version if offered else None
+                receipt.output_version = observation.event.freeze_version if offered else None
                 if not offered:
                     with self._lock:
                         self._observer_rejection_count += 1
@@ -831,22 +831,22 @@ class SchedulerRuntime:
 
     def _due_strategies(
         self,
-        decision: ScheduleDecision,
+        freeze: ScheduleFreeze,
         schedule_point: SchedulePoint | None,
         observed_at: datetime,
     ) -> tuple[Strategy, ...]:
-        if decision.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
+        if freeze.phase is MarketPhase.AFTER_CLOSE and schedule_point is not SchedulePoint.CLOSE_QUOTES:
             return self._after_close_recovery_strategies(observed_at)
         strategies: tuple[Strategy, ...] = ()
-        if decision.should_score:
+        if freeze.should_score:
             strategies = (Strategy.TOMORROW, Strategy.D25)
-        if decision.phase is not MarketPhase.AFTER_CLOSE and decision.should_refresh_market:
+        if freeze.phase is not MarketPhase.AFTER_CLOSE and freeze.should_refresh_market:
             strategies = (*strategies, Strategy.LONG)
         return strategies
 
     def _record_control_success(self, stage: str, strategy: Strategy | None) -> None:
         with self._lock:
-            if stage == "freeze":
+            if stage == "seal":
                 self._freeze_completed_count += 1
             elif stage == "settlement":
                 self._settlement_completed_count += 1
@@ -864,14 +864,14 @@ class SchedulerRuntime:
         with self._lock:
             if stage == "refresh":
                 self._refresh_failure_count += 1
-            elif stage == "decision":
-                self._decision_failure_count += 1
+            elif stage == "freeze":
+                self._freeze_failure_count += 1
             elif stage == "review":
                 self._review_failure_count += 1
             elif stage == "overlay":
                 self._overlay_failure_count += 1
-            elif stage == "freeze":
-                self._freeze_failure_count += 1
+            elif stage == "seal":
+                self._seal_failure_count += 1
             elif stage == "settlement":
                 self._settlement_failure_count += 1
             qualified = f"{stage}:{code}"

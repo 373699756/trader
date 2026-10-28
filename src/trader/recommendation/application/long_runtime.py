@@ -10,14 +10,14 @@ from datetime import date, datetime
 from typing import Literal
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError, QuoteReaderPort
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus, LatestWinsWorker
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
-from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
+from trader.recommendation.domain.publication.freeze_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
@@ -27,7 +27,7 @@ from trader.recommendation.domain.publication.preview import PreviewContext
 class LongRuntimeDependencies:
     next_sequence: Callable[[], int] = field(kw_only=True)
     quotes: QuoteReaderPort
-    index: UnifiedDecisionIndex
+    index: UnifiedFreezeIndex
     now: Callable[[], datetime]
     publish_projection: Callable[[LongProjection], object] = lambda _projection: None
     enabled: bool = True

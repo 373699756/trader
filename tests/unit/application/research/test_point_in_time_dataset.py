@@ -17,7 +17,7 @@ from trader.training.application.point_in_time_dataset import (
     PointInTimeDaySource,
     PointInTimeSourceRow,
 )
-from trader.training.domain.evaluation.models import EntryDayPriceWindow, OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.recommendation.domain.outcomes.models import EntryDayPriceWindow, OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
     BuildPointInTimeDataQualification,
     DailyHistoryQualification,

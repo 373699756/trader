@@ -1,4 +1,4 @@
-"""Downside-protection boundary for recommendation decisions."""
+"""Downside-protection boundary for recommendation freezes."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from trader.recommendation.domain.risk.downside import AssessDownside, DownsideA
 
 
 class RiskControlPort(Protocol):
-    """Calculate point-in-time downside facts without publishing decisions."""
+    """Calculate point-in-time downside facts without publishing freezes."""
 
     def assess(self, features: FeatureSnapshot, strategy: Strategy) -> DownsideAssessment: ...
 

@@ -55,7 +55,7 @@
         state.streamRetry = null;
         state.streamRetryDelayMs = STREAM_RETRY_INITIAL_MS;
       };
-      const refreshDecision = (event) => {
+      const refreshFreeze = (event) => {
         const receivedAt = performance.now();
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
@@ -71,7 +71,7 @@
         const payload = eventPayload(event);
         if (!state.date && eventMatchesCurrent(payload) && applyOverlayPatch(payload)) recordPatchPaint(receivedAt);
       };
-      stream.addEventListener("decision", refreshDecision);
+      stream.addEventListener("freeze", refreshFreeze);
       stream.addEventListener("overlay", refreshOverlay);
       stream.addEventListener("resync_required", (event) => {
         rememberEvent(event);

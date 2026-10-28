@@ -252,7 +252,7 @@ def build_report(
         "configuration": {
             "universe_size": args.universe_size,
         },
-        "decision": {
+        "freeze": {
             "status": "blocked",
             "selected_baseline_source": "baostock",
             "efficient_daily_source": None,

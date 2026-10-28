@@ -9,10 +9,10 @@ import pytest
 
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
-from trader.recommendation.domain.publication.decision_identity import LongProjection
+from trader.recommendation.domain.publication.freeze_identity import LongProjection
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
@@ -42,8 +42,8 @@ def _runtime(
     *,
     completed_at: datetime = NOW,
     enabled: bool = True,
-) -> tuple[LongRuntime, UnifiedDecisionIndex]:
-    index = UnifiedDecisionIndex()
+) -> tuple[LongRuntime, UnifiedFreezeIndex]:
+    index = UnifiedFreezeIndex()
     runtime = LongRuntime(
         LongRuntimeDependencies(
             next_sequence=count(1).__next__,
@@ -205,7 +205,7 @@ def test_long_quote_failure_retains_current_and_does_not_replace_codes(applicati
 
 def test_empty_long_watchlist_keeps_current_unready_without_fetching() -> None:
     quotes = _Quotes([])
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     runtime = LongRuntime(
         LongRuntimeDependencies(next_sequence=count(1).__next__, quotes=quotes, index=index, now=lambda: NOW),
         config_version="config-fixture",
@@ -235,7 +235,7 @@ def test_long_rejects_duplicate_or_unassigned_group_membership() -> None:
         try:
             LongRuntime(
                 LongRuntimeDependencies(
-                    next_sequence=count(1).__next__, quotes=quotes, index=UnifiedDecisionIndex(), now=lambda: NOW
+                    next_sequence=count(1).__next__, quotes=quotes, index=UnifiedFreezeIndex(), now=lambda: NOW
                 ),
                 config_version="config-fixture",
                 watchlist_version="watchlist-fixture",

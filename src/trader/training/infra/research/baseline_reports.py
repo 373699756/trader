@@ -158,8 +158,8 @@ def _required_int(value: object) -> int:
     return value
 
 
-def _selection_status(value: object) -> Literal["selected", "no_decision"]:
-    if value not in {"selected", "no_decision"}:
+def _selection_status(value: object) -> Literal["selected", "no_freeze"]:
+    if value not in {"selected", "no_freeze"}:
         raise ValueError("Historical replay selection status is invalid")
     return value
 

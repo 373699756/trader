@@ -9,7 +9,7 @@ from trader.training.domain.evaluation.paired_statistics import (
     PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
-    PreregisteredHolmDecision,
+    PreregisteredHolmFreeze,
 )
 from trader.training.domain.evaluation.selection_experiment import (
     PairedSelectionExperimentReport,
@@ -23,7 +23,7 @@ class SelectionInference:
     variant_id: str
     cost_bps: int
     statistics: PreregisteredBootstrapResult
-    holm: PreregisteredHolmDecision
+    holm: PreregisteredHolmFreeze
 
 
 def EvaluateSelectionStatistics(
@@ -67,12 +67,12 @@ def EvaluateSelectionStatistics(
                 ),
             )
             results.append((identity, cost_bps, statistics))
-    decisions = FixedFamilyHolm(
+    freezes = FixedFamilyHolm(
         {identity: statistics.p_value for identity, _cost, statistics in results},
         family=tuple(identity for identity, _cost, _statistics in results),
         alpha=0.05,
     )
-    by_identity = {item.challenger_id: item for item in decisions}
+    by_identity = {item.challenger_id: item for item in freezes}
     return tuple(SelectionInference(identity, cost, stats, by_identity[identity]) for identity, cost, stats in results)
 
 

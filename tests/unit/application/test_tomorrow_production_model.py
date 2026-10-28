@@ -764,7 +764,7 @@ def test_incremental_scoring_fails_closed_at_its_deadline_and_retains_the_last_b
 
     status = service.computation_status()
     assert status.deadline_abandon_reason == "before_feature_computation"
-    assert status.decision_age_ms >= 2500.0
+    assert status.freeze_age_ms >= 2500.0
     assert service.score((feature,)) is accepted
 
 

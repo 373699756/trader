@@ -2,7 +2,7 @@
 
 The values in this module are deliberately independent from the production
 score and from the older H0 screening identity.  They describe only what can
-be proved to have been available at a historical decision anchor.
+be proved to have been available at a historical freeze anchor.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class H1PointInTimeSpec:
     minimum_coverage_ratio: float = H1_MIN_COVERAGE
     terminal_holdout_days: int = H1_TERMINAL_HOLDOUT_DAYS
     promotion_authority: bool = False
-    decision_anchor: Literal["15:00"] = "15:00"
+    freeze_anchor: Literal["15:00"] = "15:00"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -63,8 +63,8 @@ class H1PointInTimeSpec:
             raise ValueError("H1 coverage threshold is invalid")
         if self.promotion_authority:
             raise ValueError("H1 research cannot have production authority")
-        if self.decision_anchor != "15:00":
-            raise ValueError("H1 decision anchor must be 15:00")
+        if self.freeze_anchor != "15:00":
+            raise ValueError("H1 freeze anchor must be 15:00")
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property

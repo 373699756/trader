@@ -1,4 +1,4 @@
-"""Current market-input and decision adapters used by the production scheduler."""
+"""Current market-input and freeze adapters used by the production scheduler."""
 
 from __future__ import annotations
 

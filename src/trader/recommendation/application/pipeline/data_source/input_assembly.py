@@ -10,13 +10,13 @@ from trader.recommendation.application.ports.loaded_profile import ModelScoringC
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPendingError,
-    DecisionUnavailableError,
+    FreezeUnavailableError,
     PipelineTaskRequest,
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask, TaskExecutionBudgetSeconds
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.decision_identity import DecisionQuote
+from trader.recommendation.domain.publication.freeze_identity import FreezeQuote
 from trader.recommendation.domain.publication.models import Strategy
 
 if TYPE_CHECKING:
@@ -42,26 +42,26 @@ def SelectedQuoteFeatures(batch: InputBatch, selected_codes: Collection[str]) ->
 def OverlayObservedAt(request: CycleRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:
     target_zone = request.observed_at.tzinfo
     if target_zone is None:
-        raise DecisionUnavailableError("overlay_request_time_unavailable")
+        raise FreezeUnavailableError("overlay_request_time_unavailable")
     values = [request.observed_at]
     for feature in features:
         values.extend((feature.observed_at, feature.quote.received_time))
     if any(value.tzinfo is None or value.utcoffset() is None for value in values):
-        raise DecisionUnavailableError("overlay_input_time_unavailable")
+        raise FreezeUnavailableError("overlay_input_time_unavailable")
     observed_at = max(value.astimezone(target_zone) for value in values)
     if observed_at.date() != request.trade_date:
-        raise DecisionUnavailableError("overlay_observation_trade_date_mismatch")
+        raise FreezeUnavailableError("overlay_observation_trade_date_mismatch")
     return observed_at
 
 
-def MergeOverlayQuote(quotes: dict[str, DecisionQuote], feature: FeatureSnapshot, observed_at: datetime) -> bool:
+def MergeOverlayQuote(quotes: dict[str, FreezeQuote], feature: FeatureSnapshot, observed_at: datetime) -> bool:
     quote = feature.quote
     if quote.source_time.tzinfo is None or quote.source_time.utcoffset() is None:
         return False
     source_time = quote.source_time.astimezone(SHANGHAI)
     if quote.price is None or quote.price <= 0.0 or source_time > observed_at:
         return False
-    candidate = DecisionQuote(
+    candidate = FreezeQuote(
         code=quote.code,
         price=quote.price,
         pct_change=quote.pct_change,
@@ -125,17 +125,17 @@ def RefreshCompletedAt(request: PipelineTaskRequest, features: tuple[FeatureSnap
     return max(value.astimezone(SHANGHAI) for value in values)
 
 
-def DecisionObservedAt(batch: InputBatch) -> datetime:
+def FreezeObservedAt(batch: InputBatch) -> datetime:
     target_zone = batch.request.observed_at.tzinfo
     if target_zone is None:
-        raise ValueError("decision request time must be timezone-aware")
+        raise ValueError("freeze request time must be timezone-aware")
     values = [batch.request.observed_at]
     for feature in (*batch.market_features, *batch.candidate_features):
         values.extend((feature.observed_at, feature.quote.received_time))
         values.extend(evidence.received_at for evidence in feature.evidence if evidence.received_at is not None)
         values.extend(fact.observed_at for fact in feature.external_risk_facts)
     if any(value.tzinfo is None or value.utcoffset() is None for value in values):
-        raise ValueError("decision input times must be timezone-aware")
+        raise ValueError("freeze input times must be timezone-aware")
     return max(value.astimezone(target_zone) for value in values)
 
 
@@ -143,7 +143,7 @@ def BuildModelScoringContext(request: CycleRequest, batch: InputBatch, now: date
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("model scoring clock must be timezone-aware")
     local_now = now.astimezone(SHANGHAI)
-    input_at = DecisionObservedAt(batch).astimezone(SHANGHAI)
+    input_at = FreezeObservedAt(batch).astimezone(SHANGHAI)
     input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
     if request.preview_context is not None:
         return ModelScoringContext(

@@ -213,7 +213,7 @@ class ModelComputationStatus:
     computed_groups: tuple[str, ...] = ()
     reused_groups: tuple[str, ...] = ()
     stage_durations: tuple[ModelComputationStageStatus, ...] = ()
-    decision_age_ms: float = 0.0
+    freeze_age_ms: float = 0.0
     deadline_abandon_reason: str | None = None
 
     def __post_init__(self) -> None:
@@ -224,8 +224,8 @@ class ModelComputationStatus:
             or len(set(self.computed_groups)) != len(self.computed_groups)
             or len(set(self.reused_groups)) != len(self.reused_groups)
             or set(self.computed_groups).intersection(self.reused_groups)
-            or not math.isfinite(self.decision_age_ms)
-            or self.decision_age_ms < 0.0
+            or not math.isfinite(self.freeze_age_ms)
+            or self.freeze_age_ms < 0.0
             or self.deadline_abandon_reason == ""
         ):
             raise ValueError("model computation status is invalid")

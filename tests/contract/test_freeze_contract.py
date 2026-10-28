@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+FREEZE_EVENTS = (
+    ROOT / "src" / "trader" / "recommendation" / "application" / "pipeline" / "freeze_publish" / "freeze_events.py"
+)
+
+
+def test_committed_event_is_application_owned_and_research_free() -> None:
+    tree = ast.parse(FREEZE_EVENTS.read_text(encoding="utf-8"))
+    classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
+    imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None}
+
+    assert "FreezeCommitted" in classes
+    assert all(
+        not name.startswith(("trader.training.domain.evaluation", "trader.training.application")) for name in imports
+    )

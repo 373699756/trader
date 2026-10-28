@@ -32,29 +32,29 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     CandidatePlanningContext,
     CandidatePlanSet,
 )
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
     ScoredLocalProjection,
     ScoredProjectionInputs,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import BuildFreezeCommitted
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.ports.scoring import TomorrowNativeInput
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    DecisionItem,
-    DecisionOverlay,
-    DecisionQuote,
-    ScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    FreezeItem,
+    FreezeOverlay,
+    FreezeQuote,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -662,7 +662,7 @@ def _operations(
         "canonical_snapshot": "trader.recommendation.infra.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
         "targeted_overlay_commit": (
             "trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot + trader."
-            "recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedDecisionIndex.publish_overlay"
+            "recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedFreezeIndex.publish_overlay"
         ),
         "board_preselection": (
             "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans"
@@ -677,17 +677,17 @@ def _operations(
         "three_board_wall_clock": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "global_selection": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "board_ready_to_draft": (
-            "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local"
+            "trader.recommendation.application.pipeline.final_selection.freeze_projection.build_scored_local"
         ),
         "quote_to_draft": (
-            "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local"
+            "trader.recommendation.application.pipeline.final_selection.freeze_projection.build_scored_local"
         ),
         "deepseek_to_hybrid": (
-            "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_hybrid"
+            "trader.recommendation.application.pipeline.final_selection.freeze_projection.build_scored_hybrid"
         ),
         "sse_publish": (
             "trader.recommendation.application.pipeline.freeze_publish.event_stream."
-            "UnifiedDecisionEventStream.publish_committed"
+            "UnifiedFreezeEventStream.publish_committed"
         ),
         "snapshot_api": "trader.http_api.handlers.product_handler._current",
         "etag_api": "trader.http_api.handlers.product_handler._current",
@@ -701,22 +701,22 @@ def _api_operations(
     candidates: tuple[FeatureSnapshot, ...],
     observed_at: datetime,
 ) -> dict[str, Callable[[], object]]:
-    index = UnifiedDecisionIndex()
-    drafts = UnifiedDecisionDraftIndex()
-    stream = UnifiedDecisionEventStream(history_size=256, client_queue_size=16)
-    decision = _performance_decision(candidates, observed_at, sequence=1)
-    overlay = DecisionOverlay(
-        decision.strategy,
-        decision.trade_date,
-        decision.version,
-        decision.observed_at,
-        tuple(item.quote for item in decision.items if item.quote is not None),
+    index = UnifiedFreezeIndex()
+    drafts = UnifiedFreezeDraftIndex()
+    stream = UnifiedFreezeEventStream(history_size=256, client_queue_size=16)
+    freeze = _performance_freeze(candidates, observed_at, sequence=1)
+    overlay = FreezeOverlay(
+        freeze.strategy,
+        freeze.trade_date,
+        freeze.version,
+        freeze.observed_at,
+        tuple(item.quote for item in freeze.items if item.quote is not None),
         sequence=1,
     )
-    if not index.publish_scored(decision, overlay, expected_version=None).accepted:
-        raise RuntimeError("performance decision setup failed")
-    stream.publish_committed(BuildDecisionCommitted(decision))
-    queries = UnifiedDecisionQueries(index, drafts, _EmptyHistory(), _FixedClock(observed_at))
+    if not index.publish_scored(freeze, overlay, expected_version=None).accepted:
+        raise RuntimeError("performance freeze setup failed")
+    stream.publish_committed(BuildFreezeCommitted(freeze))
+    queries = UnifiedFreezeQueries(index, drafts, _EmptyHistory(), _FixedClock(observed_at))
     app = CreateApp(
         services=UnifiedWebServices(
             queries,
@@ -730,14 +730,14 @@ def _api_operations(
         )
     )
     client = app.test_client()
-    path = "/api/decisions/tomorrow/current"
+    path = "/api/freezes/tomorrow/current"
     etag = client.get(path).headers["ETag"]
-    event = BuildDecisionCommitted(decision)
+    event = BuildFreezeCommitted(freeze)
     return {
         "sse_publish": lambda: stream.publish_committed(event),
         "snapshot_api": lambda: client.get(path),
         "etag_api": lambda: client.get(path, headers={"If-None-Match": etag}),
-        "dates_api": lambda: client.get("/api/decisions/tomorrow/dates"),
+        "dates_api": lambda: client.get("/api/freezes/tomorrow/dates"),
         "status_api": lambda: client.get("/api/status"),
     }
 
@@ -746,24 +746,24 @@ def _overlay_cas_operation(
     candidates: tuple[FeatureSnapshot, ...],
     observed_at: datetime,
 ) -> Callable[[], object]:
-    index = UnifiedDecisionIndex()
-    decision = _performance_decision(candidates, observed_at, sequence=1)
-    initial = DecisionOverlay(
-        decision.strategy,
-        decision.trade_date,
-        decision.version,
+    index = UnifiedFreezeIndex()
+    freeze = _performance_freeze(candidates, observed_at, sequence=1)
+    initial = FreezeOverlay(
+        freeze.strategy,
+        freeze.trade_date,
+        freeze.version,
         observed_at,
-        tuple(item.quote for item in decision.items if item.quote is not None),
+        tuple(item.quote for item in freeze.items if item.quote is not None),
         sequence=1,
     )
-    if not index.publish_scored(decision, initial, expected_version=None).accepted:
+    if not index.publish_scored(freeze, initial, expected_version=None).accepted:
         raise RuntimeError("performance overlay setup failed")
     counter = 0
 
     def commit() -> object:
         nonlocal counter
         counter += 1
-        current = index.snapshot(decision.strategy).overlay
+        current = index.snapshot(freeze.strategy).overlay
         if current is None:
             raise RuntimeError("performance overlay is unavailable")
         at = observed_at + timedelta(milliseconds=counter)
@@ -771,27 +771,25 @@ def _overlay_cas_operation(
             replace(quote, price=quote.price + counter / 10000.0, source_time=at, data_version=f"overlay:{counter}")
             for quote in current.quotes
         )
-        overlay = DecisionOverlay(
-            decision.strategy, decision.trade_date, decision.version, at, quotes, sequence=counter + 1
-        )
+        overlay = FreezeOverlay(freeze.strategy, freeze.trade_date, freeze.version, at, quotes, sequence=counter + 1)
         return index.publish_overlay(overlay, expected_version=current.version)
 
     return commit
 
 
-def _performance_decision(
+def _performance_freeze(
     candidates: tuple[FeatureSnapshot, ...],
     observed_at: datetime,
     *,
     sequence: int,
-) -> ScoredDecision:
-    items: list[DecisionItem] = []
+) -> ScoredFreeze:
+    items: list[FreezeItem] = []
     for rank, feature in enumerate(candidates[:12], start=1):
         quote = feature.quote
         if quote.price is None:
             raise RuntimeError("performance quote price is unavailable")
         items.append(
-            DecisionItem(
+            FreezeItem(
                 quote.code,
                 RecommendationAction.EXECUTABLE if rank <= 6 else RecommendationAction.OBSERVE,
                 True,
@@ -806,7 +804,7 @@ def _performance_decision(
                 rank if rank <= 6 else rank - 6,
                 quote.name,
                 quote.industry,
-                DecisionQuote(
+                FreezeQuote(
                     quote.code,
                     quote.price,
                     quote.pct_change,
@@ -819,7 +817,7 @@ def _performance_decision(
                 ),
             )
         )
-    return ScoredDecision(
+    return ScoredFreeze(
         Strategy.TOMORROW,
         observed_at.date(),
         sequence,
@@ -962,7 +960,7 @@ class _FixedClock:
 
 
 class _EmptyHistory:
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None:
+    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
         del strategy, trade_date
         return None
 

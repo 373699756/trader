@@ -13,7 +13,7 @@ from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNM
 
 FeatureDirection = Literal["higher", "lower", "mixed", "diagnostic"]
 FeatureMissingPolicy = Literal["reject_model_input", "preserve_missing"]
-FeatureVisibility = Literal["completed_session", "decision_anchor", "same_anchor_cross_section"]
+FeatureVisibility = Literal["completed_session", "freeze_anchor", "same_anchor_cross_section"]
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,95}$")
 
@@ -280,7 +280,7 @@ def _content_hash(parts: tuple[str, ...]) -> str:
     return digest.hexdigest()
 
 
-_RETURN_SEMANTICS = _FeatureSemantics("short_return", "mixed", "decision_anchor", "reject_model_input", "daily_return")
+_RETURN_SEMANTICS = _FeatureSemantics("short_return", "mixed", "freeze_anchor", "reject_model_input", "daily_return")
 _MOMENTUM_SEMANTICS = _FeatureSemantics(
     "residual_momentum", "mixed", "completed_session", "preserve_missing", "skip_recent_momentum"
 )
@@ -384,7 +384,7 @@ _RESEARCH_SPECS = tuple(
                 else "intraday"
             ),
             "mixed",
-            "same_anchor_cross_section" if name.startswith("residual_") else "decision_anchor",
+            "same_anchor_cross_section" if name.startswith("residual_") else "freeze_anchor",
             "preserve_missing",
             "point_in_time_research",
         ),

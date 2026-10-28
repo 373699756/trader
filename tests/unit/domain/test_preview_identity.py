@@ -7,26 +7,25 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import decision
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    FormalScoredDecision,
-    IsPreviewDecision,
-    IsShadowDecision,
-    ScoredDecision,
+from tests.unit.domain.test_freeze_identity import freeze
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    FormalScoredFreeze,
+    IsPreviewFreeze,
+    IsShadowFreeze,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
-from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MARKET_DATE = date(2026, 10, 23)
 STARTED_AT = datetime(2026, 10, 24, 10, 0, tzinfo=SHANGHAI)
 
 
-def preview_decision(*, run_id: str = "preview-a", strategy: Strategy = Strategy.TOMORROW) -> ScoredDecision:
-    current = decision(strategy)
+def preview_freeze(*, run_id: str = "preview-a", strategy: Strategy = Strategy.TOMORROW) -> ScoredFreeze:
+    current = freeze(strategy)
     quote = current.items[0].quote
     assert quote is not None
     return replace(
@@ -76,20 +75,20 @@ def test_preview_context_normalizes_start_time_and_rejects_invalid_identity() ->
 
 
 def test_preview_uses_runtime_date_and_separate_market_session_and_run_namespace() -> None:
-    first = preview_decision()
-    second = preview_decision(run_id="preview-b")
+    first = preview_freeze()
+    second = preview_freeze(run_id="preview-b")
     assert first.trade_date == STARTED_AT.date()
     assert first.preview_context is not None and first.preview_context.market_trade_date == MARKET_DATE
     assert ("market_trade_date", "2026-10-23") in first.input_versions
     assert ("run_mode", "preview") in first.input_versions
-    assert IsPreviewDecision(first) and not IsShadowDecision(first)
+    assert IsPreviewFreeze(first) and not IsShadowFreeze(first)
     assert first.items[0].local_score == first.items[0].final_score == 88.0
     assert first.version != second.version and first.content_hash != second.content_hash
     assert replace(first, sequence=3).preview_context is first.preview_context
 
 
 def test_preview_context_cannot_be_removed_forged_or_used_with_unclosed_quotes() -> None:
-    current = preview_decision()
+    current = preview_freeze()
     with pytest.raises(ValueError, match="typed run context"):
         replace(current, preview_context=None)
     with pytest.raises(ValueError, match="conflicts"):
@@ -103,22 +102,20 @@ def test_preview_context_cannot_be_removed_forged_or_used_with_unclosed_quotes()
         )
 
 
-def test_preview_cannot_become_formal_or_checkpoint() -> None:
-    current = preview_decision()
+def test_preview_cannot_become_formal() -> None:
+    current = preview_freeze()
     with pytest.raises(ValueError, match="preview"):
-        FormalScoredDecision(current)
+        FormalScoredFreeze(current)
     with pytest.raises(ValueError, match="preview"):
-        CommittedDecisionRecord(current, STARTED_AT, "scheduled")
-    with pytest.raises(ValueError, match="preview"):
-        DecisionCheckpoint(current, STARTED_AT.replace(hour=15))
+        CommittedFreezeRecord(current, STARTED_AT, "scheduled")
     with pytest.raises(ValueError, match="preview"):
         replace(current, is_formal=True)
 
 
 def test_live_formal_codec_keeps_existing_shape_and_exact_round_trip() -> None:
-    current = decision()
-    record = CommittedDecisionRecord(current, current.observed_at, "scheduled")
+    current = freeze()
+    record = CommittedFreezeRecord(current, current.observed_at, "scheduled")
     encoded = CommittedRecordBytes(record)
-    assert not IsPreviewDecision(current)
-    assert "preview_context" not in json.loads(encoded)["decision"]
+    assert not IsPreviewFreeze(current)
+    assert "preview_context" not in json.loads(encoded)["freeze"]
     assert CommittedRecordBytes(CommittedRecordFromBytes(encoded)) == encoded

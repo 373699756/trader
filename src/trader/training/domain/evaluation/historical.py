@@ -111,7 +111,7 @@ def _validate_candidate_research_identity(candidate: HistoricalCandidateSummary)
 class CostSettlementBasis:
     code: str
     board: ResearchBoard
-    decision_date: date
+    freeze_date: date
     label_date: date
     gross_excess_return: float
     mae_atr20: float
@@ -121,8 +121,8 @@ class CostSettlementBasis:
         _require_code(self.code)
         if self.board not in SUPPORTED_RESEARCH_BOARDS:
             raise ValueError("settlement requires a supported research board")
-        if self.label_date <= self.decision_date:
-            raise ValueError("settlement label date must follow the decision date")
+        if self.label_date <= self.freeze_date:
+            raise ValueError("settlement label date must follow the freeze date")
         for value in (self.gross_excess_return, self.mae_atr20, self.turnover):
             if not math.isfinite(value):
                 raise ValueError("settlement values must be finite")

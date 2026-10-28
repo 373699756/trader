@@ -10,7 +10,7 @@ from tests.unit.application.review_helpers import review
 from tests.unit.application.test_input_runtime import _policy
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from trader.infra.serialization.canonical import ContentHash
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
     ScoredProjectionInputs,
@@ -29,7 +29,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
-from trader.recommendation.domain.publication.decision_identity import IsShadowDecision, VisibleScoredSeats
+from trader.recommendation.domain.publication.freeze_identity import IsShadowFreeze, VisibleScoredSeats
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.training.infra.profile.composition import SingleHeadCombiner
@@ -172,7 +172,7 @@ def test_v1_model_actually_changes_fixed_six_and_keeps_local_action_score(
         assert dict(projection.local.input_versions)["production_authority"] == "true"
     else:
         assert all(item.action is not RecommendationAction.EXECUTABLE for item in seats)
-    assert IsShadowDecision(projection.local) is not production_authority
+    assert IsShadowFreeze(projection.local) is not production_authority
     assert dict(projection.local.input_versions)["rank_population"].startswith("learned-rank-population:")
     # A high model percentile never bypasses the existing local evidence threshold.
     weak = replace(features[-1], values={**features[-1].values, "entry_quality": 0.0})
@@ -230,12 +230,12 @@ def test_production_rank_allows_qualified_actions_and_review_preserves_ranking(
         {code: applied},
         review_deadline=EVALUATED_AT.replace(hour=14, minute=48),
     )
-    assert hybrid is not None and hybrid.decision is not None
-    assert hybrid.decision.input_versions == projection.local.input_versions
-    assert [(item.code, item.local_score, item.final_score) for item in VisibleScoredSeats(hybrid.decision)] == [
+    assert hybrid is not None and hybrid.freeze is not None
+    assert hybrid.freeze.input_versions == projection.local.input_versions
+    assert [(item.code, item.local_score, item.final_score) for item in VisibleScoredSeats(hybrid.freeze)] == [
         (item.code, item.local_score, item.final_score) for item in seats
     ]
-    assert next(item for item in hybrid.decision.items if item.code == code).review_outcome == "applied"
+    assert next(item for item in hybrid.freeze.items if item.code == code).review_outcome == "applied"
 
 
 def test_non_positive_gross_minus_cost_closes_selection_before_local_score(application_feature_factory) -> None:

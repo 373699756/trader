@@ -2,7 +2,7 @@
   "use strict";
 
   const STATUS_SCHEMA = "runtime_status";
-  const DECISION_VIEW_SCHEMA = "decision_view";
+  const FREEZE_VIEW_SCHEMA = "freeze_view";
   const ERROR_CODE = "release_contract_mismatch";
 
   function statusPayloadCompatibility(payload) {
@@ -13,15 +13,15 @@
     if (!release || typeof release !== "object") {
       return { compatible: false, reason: "release_identity_missing" };
     }
-    if (release.decision_view_schema !== DECISION_VIEW_SCHEMA) {
-      return { compatible: false, reason: "decision_schema_mismatch" };
+    if (release.freeze_view_schema !== FREEZE_VIEW_SCHEMA) {
+      return { compatible: false, reason: "freeze_schema_mismatch" };
     }
     return { compatible: true, reason: "" };
   }
 
-  function decisionPayloadCompatibility(payload) {
-    if (!payload || payload.schema_version !== DECISION_VIEW_SCHEMA) {
-      return { compatible: false, reason: "decision_schema_mismatch" };
+  function freezePayloadCompatibility(payload) {
+    if (!payload || payload.schema_version !== FREEZE_VIEW_SCHEMA) {
+      return { compatible: false, reason: "freeze_schema_mismatch" };
     }
     return { compatible: true, reason: "" };
   }
@@ -39,7 +39,7 @@
 
   window.TraderReleaseContract = Object.freeze({
     statusPayloadCompatibility,
-    decisionPayloadCompatibility,
+    freezePayloadCompatibility,
     mismatchError,
     isMismatchError,
   });

@@ -1,4 +1,4 @@
-"""Shanghai-time trading phases and scheduling decisions."""
+"""Shanghai-time trading phases and scheduling freezes."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ _PHASE_BOUNDARIES = (
 
 
 @dataclass(frozen=True)
-class ScheduleDecision:
+class ScheduleFreeze:
     phase: MarketPhase
     should_refresh_market: bool
     should_score: bool
@@ -58,10 +58,10 @@ def PhaseAt(value: datetime, *, is_trading_day: bool) -> MarketPhase:
     return MarketPhase.BEFORE_CLOSE if current >= time(9, 15) else MarketPhase.CLOSED
 
 
-def DecisionAt(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
+def FreezeAt(value: datetime, *, is_trading_day: bool) -> ScheduleFreeze:
     phase = PhaseAt(value, is_trading_day=is_trading_day)
     is_before_close = phase is MarketPhase.BEFORE_CLOSE
-    return ScheduleDecision(
+    return ScheduleFreeze(
         phase=phase,
         should_refresh_market=is_before_close,
         should_score=is_before_close,
@@ -84,7 +84,7 @@ def FreezeDueAt(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
 
 
 def StartupFreezeStrategies(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
-    """Return same-day recovery freezes for initialization before close fallback."""
+    """Return same-day recovery sealing for initialization before close fallback."""
 
     if not is_trading_day:
         return ()
@@ -129,8 +129,8 @@ __all__ = [
     "MarketPhase",
     "SHANGHAI",
     "SchedulePoint",
-    "ScheduleDecision",
-    "DecisionAt",
+    "ScheduleFreeze",
+    "FreezeAt",
     "FreezeDueAt",
     "PhaseAt",
     "SchedulePointAt",

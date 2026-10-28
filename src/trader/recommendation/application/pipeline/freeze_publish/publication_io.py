@@ -1,4 +1,4 @@
-"""Bounded, immutable receipts for actual layer-14 I/O, outside decision hashes."""
+"""Bounded, immutable receipts for actual publication I/O, outside freeze hashes."""
 
 from __future__ import annotations
 
@@ -17,20 +17,17 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageReasonAggregate,
     StageState,
 )
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 
 PublicationOperation = Literal[
     "current_publish",
-    "decision_event",
+    "freeze_event",
     "observer_enqueue",
-    "checkpoint_write",
     "formal_lookup",
-    "checkpoint_lookup",
     "freeze_seal",
     "formal_write",
     "formal_publish",
-    "checkpoint_consume",
     "formal_restore",
 ]
 
@@ -39,18 +36,18 @@ PublicationOperation = Literal[
 class PublicationIoTarget:
     strategy: Strategy
     trade_date: date
-    decision_version: str | None
+    freeze_version: str | None
     sequence: int
     content_hash: str | None = None
 
     @classmethod
-    def decision(cls, decision: ScoredDecision) -> PublicationIoTarget:
-        return cls(decision.strategy, decision.trade_date, decision.version, decision.sequence, decision.content_hash)
+    def freeze(cls, freeze: ScoredFreeze) -> PublicationIoTarget:
+        return cls(freeze.strategy, freeze.trade_date, freeze.version, freeze.sequence, freeze.content_hash)
 
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("publication I/O requires a scored strategy")
-        if self.sequence < 0 or (self.sequence > 0) != (self.decision_version is not None):
+        if self.sequence < 0 or (self.sequence > 0) != (self.freeze_version is not None):
             raise ValueError("publication I/O target identity is invalid")
 
 
@@ -75,8 +72,8 @@ class PublicationIoSnapshot:
 class PublicationIoTracker:
     """One latest attempt per operation/strategy; late completions cannot replace it.
 
-    Counts are operations (one decision/record per call), never selected stocks.
-    A cold lookup may have no decision identity until the decision record adapter returns it.
+    Counts are operations (one freeze/record per call), never selected stocks.
+    A cold lookup may have no freeze identity until the freeze record adapter returns it.
     """
 
     def __init__(self, *, now: Callable[[], datetime], monotonic: Callable[[], float]) -> None:
@@ -94,7 +91,7 @@ class PublicationIoTracker:
             ticket = self._sequence
             # A delayed older cycle must not become the visible operation owner.
             previous = self._latest.get((target.strategy, operation))
-            lookup = operation in {"formal_lookup", "checkpoint_lookup"}
+            lookup = operation == "formal_lookup"
             if previous is None or (
                 target.trade_date >= previous.target.trade_date
                 if lookup

@@ -6,9 +6,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.recommendation.domain.risk.decision import (
+from trader.recommendation.domain.risk.freeze import (
     PredictionInterval,
-    RiskDecision,
+    RiskFreeze,
     UncertaintyAssessment,
 )
 from trader.recommendation.domain.scoring.alpha import AlphaScore
@@ -61,7 +61,7 @@ def _sample(
         ood_distance=0.1,
         missing_uncertainty=0.0,
     )
-    risk = RiskDecision(code, 10.0, False, ("local_tail_risk",), uncertainty)
+    risk = RiskFreeze(code, 10.0, False, ("local_tail_risk",), uncertainty)
     cost = ExecutionCost(
         code,
         0.002,
@@ -144,9 +144,9 @@ def test_uncertainty_and_deepseek_ablation_reports_all_required_metrics_and_fall
         "missing_uncertainty",
     }
     assert all(item.sample_count == 2 for item in report.calibration.uncertainty_buckets)
-    decisions = {(item.arm, item.code): item for item in report.decisions}
-    assert decisions[("fixed_68_32", "600001")].score == 81.8
-    assert decisions[("fixed_68_32", "600002")].score == 60.0
+    freezes = {(item.arm, item.code): item for item in report.freezes}
+    assert freezes[("fixed_68_32", "600001")].score == 81.8
+    assert freezes[("fixed_68_32", "600002")].score == 60.0
     assert {item.arm for item in report.ablation} == {
         "local_only",
         "structured_facts_veto",
@@ -299,12 +299,12 @@ def test_fixed_fusion_uses_decimal_half_up_without_a_second_local_risk_deduction
     report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (row,))
 
     assert BuildSelectionUtility(row.alpha, row.risk, row.cost).local_score == 47.79
-    decision = next(item for item in report.decisions if item.arm == "fixed_68_32")
+    freeze = next(item for item in report.freezes if item.arm == "fixed_68_32")
     # 47.79 * 0.68 + 77.03125 * 0.32 = 57.1472; use an exact half-cent next.
     tied = replace(row, deepseek=replace(review, score=77.024375))
     tied_report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (tied,))
-    assert decision.score == 57.15
-    assert next(item for item in tied_report.decisions if item.arm == "fixed_68_32").score == 57.15
+    assert freeze.score == 57.15
+    assert next(item for item in tied_report.freezes if item.arm == "fixed_68_32").score == 57.15
 
     golden = replace(
         row,
@@ -313,7 +313,7 @@ def test_fixed_fusion_uses_decimal_half_up_without_a_second_local_risk_deduction
         structured_facts=(_fact("local_tail_risk", row.trade_date), _fact("verified_fact", row.trade_date)),
     )
     golden_report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (golden,))
-    assert next(item for item in golden_report.decisions if item.arm == "fixed_68_32").score == 83.40
+    assert next(item for item in golden_report.freezes if item.arm == "fixed_68_32").score == 83.40
 
 
 def test_cost_report_uses_fixed_slots_with_unequal_daily_selected_counts() -> None:
@@ -347,7 +347,7 @@ def test_every_fallback_keeps_local_cost_results_and_score(outcome: str) -> None
     row = _sample("600001", signal_score=90, actual_net=0.02, severe=False, review=review)
     report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (row,))
 
-    assert len({item.score for item in report.decisions}) == 1
+    assert len({item.score for item in report.freezes}) == 1
     assert all(item.cost_sensitivity == report.ablation[0].cost_sensitivity for item in report.ablation)
     assert report.ablation[0].local_fallback_count == 0
     assert report.ablation[1].local_fallback_count == report.ablation[2].local_fallback_count == 1

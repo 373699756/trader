@@ -43,7 +43,7 @@ def test_missing_v5_build_closes_both_freezers_and_preserves_read_only_status(tm
         assert head["activation_basis"] == "trained_artifact"
 
     now = datetime(2026, 10, 23, 15, 5, tzinfo=ZoneInfo("Asia/Shanghai"))
-    freezers = system.scheduler._dependencies.freezes._freezers
+    freezers = system.scheduler._dependencies.sealing._freezers
     assert set(freezers) == {Strategy.TOMORROW, Strategy.D25}
     for strategy, freezer in freezers.items():
         assert system.tomorrow_index.snapshot(strategy).current is None

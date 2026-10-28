@@ -19,7 +19,7 @@ from trader.recommendation.application.runtime.runtime_dependencies import Runti
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.application.runtime.schedule_requests import FailureCode
 from trader.recommendation.application.runtime.trading_session import SessionLease
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 
@@ -81,13 +81,13 @@ class PreviewCycleRunner:
         except (DataRefreshUnavailableError, OSError, RuntimeError, ValueError) as exc:
             self._set_status("failed", FailureCode(exc, "preview_run_failed"))
             return
-        decisions = tuple(
+        freezes = tuple(
             self._dependencies.index.snapshot(strategy).current for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
-        if all(isinstance(decision, ScoredDecision) and decision.preview_context == context for decision in decisions):
+        if all(isinstance(freeze, ScoredFreeze) and freeze.preview_context == context for freeze in freezes):
             self._set_status("ready")
         else:
-            self._set_status("failed", "preview_decision_unavailable")
+            self._set_status("failed", "preview_freeze_unavailable")
 
     def _refresh(self, task: PipelineTask, context: PreviewContext, session: SessionLease | None) -> None:
         started = self._dependencies.monotonic()

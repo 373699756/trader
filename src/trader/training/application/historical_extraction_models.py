@@ -198,8 +198,8 @@ class HistoricalFullFieldBundle:
         settlements = _deduplicate(self.settlements, lambda item: item.basis.code, "settlements")
         if {item.basis.code for item in settlements} != set(requested):
             raise ValueError("settlements must exactly cover requested codes")
-        if any(item.basis.decision_date != self.trade_date for item in settlements):
-            raise ValueError("settlement decision dates must match the full-field bundle")
+        if any(item.basis.freeze_date != self.trade_date for item in settlements):
+            raise ValueError("settlement freeze dates must match the full-field bundle")
         board_by_code = {item.code: item.board for item in candidates}
         if any(board_by_code[item.basis.code] != item.basis.board for item in settlements):
             raise ValueError("settlement boards must match full-field candidates")

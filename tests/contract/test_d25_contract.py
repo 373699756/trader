@@ -14,6 +14,6 @@ def test_production_composition_installs_d25_and_unified_query() -> None:
 
     assert "trader.recommendation.application.pipeline.freeze_publish" in imports
     assert "freeze_coordinator.ScoredFreezeCoordinator" in source
-    assert "decision_queries=publication.decision_queries" in source
-    assert "decision_events=publication.decision_events" in source
+    assert "freeze_queries=publication.freeze_queries" in source
+    assert "freeze_events=publication.freeze_events" in source
     assert "strategy=Strategy.D25" in source

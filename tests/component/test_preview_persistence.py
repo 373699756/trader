@@ -4,45 +4,38 @@ from dataclasses import replace
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import decision
-from tests.unit.domain.test_preview_identity import STARTED_AT, preview_decision
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
-    BuildDecisionCommitted,
-    DecisionObservation,
-)
+from tests.unit.domain.test_freeze_identity import freeze
+from tests.unit.domain.test_preview_identity import STARTED_AT, preview_freeze
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
-    DecisionRuntimeIdentity,
+    FreezeRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
+    BuildFreezeCommitted,
+    FreezeObservation,
+)
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.training.infra.research.research_trace_index import SQLiteResearchTraceIndex
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.infra.persistence.freeze_trace_index import SQLiteFreezeTraceIndex
 
 
 def test_preview_writer_guards_reject_before_creating_any_database(tmp_path) -> None:
-    current = preview_decision()
-    live = decision()
-    record = CommittedDecisionRecord(live, live.observed_at, "scheduled")
-    checkpoint = DecisionCheckpoint(live, live.observed_at.replace(hour=15))
+    current = preview_freeze()
+    live = freeze()
+    record = CommittedFreezeRecord(live, live.observed_at, "scheduled")
     # Exercise adapter guards even if an unvalidated object bypasses frozen domain constructors.
-    object.__setattr__(record, "decision", current)
-    object.__setattr__(checkpoint, "decision", current)
+    object.__setattr__(record, "freeze", current)
     root = tmp_path / "formal"
-    records = SQLiteDecisionRecords(root / "decisions.sqlite3")
+    records = SQLiteFreezeRecords(root / "freeze.sqlite3")
     with pytest.raises(ValueError, match="preview"):
         records.commit(record)
     with pytest.raises(ValueError, match="preview"):
-        records.save_checkpoint(checkpoint)
-    with pytest.raises(ValueError, match="preview"):
-        records.consume_checkpoint(checkpoint, consumed_at=STARTED_AT)
-    with pytest.raises(ValueError, match="preview"):
         CommittedRecordBytes(record)
     assert not root.exists()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     assert not index.commit_formal(record)
     assert not index.restore_formal(record)
 
@@ -51,23 +44,23 @@ def test_preview_writer_guards_reject_before_creating_any_database(tmp_path) -> 
 def test_preview_research_trace_rejects_before_initialization_or_audit_materialization(
     tmp_path, with_projection: bool
 ) -> None:
-    event = BuildDecisionCommitted(preview_decision())
+    event = BuildFreezeCommitted(preview_freeze())
     if not with_projection:
         event = replace(event, projection=None)
     history_root = tmp_path / "history"
-    history = SQLiteResearchTraceIndex(history_root)
+    history = SQLiteFreezeTraceIndex(history_root)
     with pytest.raises(ValueError, match="preview"):
-        history.record(DecisionObservation(event, None))
+        history.record(FreezeObservation(event, None))
     assert not history_root.exists()
 
 
 def test_preview_freeze_and_restore_do_not_read_or_write_formal_storage(tmp_path) -> None:
-    current = preview_decision()
-    index = UnifiedDecisionIndex()
+    current = preview_freeze()
+    index = UnifiedFreezeIndex()
     assert index.publish(current, expected_version=None).accepted
     root = tmp_path / "formal"
 
-    class RejectRecords(SQLiteDecisionRecords):
+    class RejectRecords(SQLiteFreezeRecords):
         def load(self, strategy, trade_date):
             pytest.fail("preview accessed formal storage")
 
@@ -77,9 +70,9 @@ def test_preview_freeze_and_restore_do_not_read_or_write_formal_storage(tmp_path
 
     coordinator = ScoredFreezeCoordinator(
         index,
-        RejectRecords(root / "decisions.sqlite3"),
+        RejectRecords(root / "freeze.sqlite3"),
         Clock(),
-        runtime_identity=DecisionRuntimeIdentity(
+        runtime_identity=FreezeRuntimeIdentity(
             current.config_version, current.strategy_version, current.fusion_version
         ),
     )
@@ -103,9 +96,9 @@ def test_preview_freeze_and_restore_do_not_read_or_write_formal_storage(tmp_path
 
 
 def test_next_scored_sequence_reads_both_currents_without_creating_state() -> None:
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     assert index.next_scored_sequence == 1
-    assert index.publish(decision(sequence=3), expected_version=None).accepted
+    assert index.publish(freeze(sequence=3), expected_version=None).accepted
     assert index.next_scored_sequence == 4
-    assert index.publish(decision(Strategy.D25, sequence=8), expected_version=None).accepted
+    assert index.publish(freeze(Strategy.D25, sequence=8), expected_version=None).accepted
     assert index.next_scored_sequence == index.next_scored_sequence == 9

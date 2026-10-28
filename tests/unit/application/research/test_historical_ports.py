@@ -194,9 +194,9 @@ def test_full_bundle_rejects_conflicts_missing_fields_and_wrong_settlement_date(
         replace(bundle, daily_bars=(*bundle.daily_bars, conflict))
     with pytest.raises(ValueError, match="every requested code"):
         replace(bundle, minute_bars=bundle.minute_bars[1:])
-    wrong_basis = replace(bundle.settlements[0].basis, decision_date=TRADE_DATE - timedelta(days=1))
+    wrong_basis = replace(bundle.settlements[0].basis, freeze_date=TRADE_DATE - timedelta(days=1))
     wrong_date = replace(bundle.settlements[0], basis=wrong_basis)
-    with pytest.raises(ValueError, match="decision dates"):
+    with pytest.raises(ValueError, match="freeze dates"):
         replace(bundle, settlements=(wrong_date, *bundle.settlements[1:]))
 
     extra_window = replace(bundle.adjustment_windows[0], window_id="second-window")

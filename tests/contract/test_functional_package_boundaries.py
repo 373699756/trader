@@ -26,6 +26,7 @@ TARGET_PACKAGES = (
     "recommendation/domain/evidence",
     "recommendation/domain/selection",
     "recommendation/domain/publication",
+    "recommendation/domain/outcomes",
     "recommendation/application/ports",
     "recommendation/application/pipeline",
     "recommendation/application/runtime",
@@ -82,7 +83,6 @@ def test_currently_retired_paths_remain_absent() -> None:
         "application/publisher.py",
         "application/queries.py",
         "application/recommendation_replay.py",
-        "application/ports/decision_freezes.py",
         "application/today_scheduler_runtime.py",
         "application/tomorrow_scheduler_runtime.py",
         "application/tomorrow_shadow.py",
@@ -296,7 +296,7 @@ def test_recommendation_scoring_and_publication_are_owned_by_pipeline_stages() -
         "risk_review": {"deepseek_evidence_gate.py"},
         "score_merge": {"score_fusion.py"},
         "downside_action": {"downside_protection.py"},
-        "final_selection": {"decision_projection.py", "grouped_ranking.py"},
+        "final_selection": {"freeze_projection.py", "grouped_ranking.py"},
         "freeze_publish": {
             "snapshot_publisher.py",
             "freeze_coordinator.py",
@@ -311,21 +311,21 @@ def test_recommendation_scoring_and_publication_are_owned_by_pipeline_stages() -
         assert files <= {path.name for path in root.glob("*.py")}
 
     assert not any(
-        path.is_file() for name in ("recommendation", "decisions") for path in (application_root / name).rglob("*.py")
+        path.is_file() for name in ("recommendation", "freezes") for path in (application_root / name).rglob("*.py")
     )
     retired_files = {
         "scored_projection.py",
         "scored_freezing.py",
         "production_model_scoring.py",
-        "decision_core.py",
-        "decision_coverage.py",
-        "decision_drafts.py",
-        "decision_events.py",
-        "decision_observers.py",
-        "decision_overlay_refresh.py",
-        "decision_queries.py",
-        "decision_stream.py",
-        "decision_adapters.py",
+        "freeze_core.py",
+        "freeze_coverage.py",
+        "freeze_drafts.py",
+        "freeze_events.py",
+        "freeze_observers.py",
+        "freeze_overlay_refresh.py",
+        "freeze_queries.py",
+        "freeze_stream.py",
+        "freeze_adapters.py",
     }
     assert not any(path.name in retired_files for path in application_root.rglob("*.py"))
 
@@ -368,7 +368,7 @@ def test_http_api_and_presentation_resources_are_partitioned() -> None:
 
     assert api_root.is_dir()
     assert {path.name for path in api_root.glob("*.py")} >= api_files
-    assert (api_root / "response" / "decision_projection.py").is_file()
+    assert (api_root / "response" / "freeze_projection.py").is_file()
     assert (api_root / "routes" / "page_routes.py").is_file()
     assert not any((web_root / "api").glob("*.py"))
     assert not any((web_root / name).exists() for name in api_files | {"routes_v2.py"})
@@ -390,7 +390,7 @@ def test_http_api_and_presentation_resources_are_partitioned() -> None:
 def test_application_research_and_outcome_services_are_partitioned() -> None:
     application_root = SOURCE_ROOT / "training/application"
     research_root = application_root
-    outcomes_root = application_root
+    outcomes_root = SOURCE_ROOT / "recommendation/application"
     research_files = {
         "research_audit.py",
         "research_runtime.py",
@@ -398,7 +398,9 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
 
     assert {path.name for path in research_root.glob("*.py")} >= research_files
     assert (outcomes_root / "outcome_settlement.py").is_file()
-    assert (outcomes_root / "outcome_ports.py").is_file()
+    assert (outcomes_root / "ports/outcomes.py").is_file()
+    assert not (research_root / "outcome_settlement.py").exists()
+    assert not (research_root / "outcome_ports.py").exists()
     assert not any(
         (research_root / name).exists()
         for name in (
@@ -411,7 +413,8 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
 
     violations = [
         f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
-        for path in application_root.rglob("*.py")
+        for root in (application_root, outcomes_root)
+        for path in root.rglob("*.py")
         for imported in LayerImportViolations(SourceModuleName(path, SOURCE_ROOT), SourceImports(path, SOURCE_ROOT))
     ]
     assert violations == []

@@ -6,10 +6,10 @@ from datetime import timedelta
 
 import pytest
 
-from tests.integration.test_scheduler_runtime import Decisions, FixedClock, Freezes, NoopResearchRuntime, Settlement
+from tests.integration.test_scheduler_runtime import FixedClock, Freezes, NoopResearchRuntime, Sealing, Settlement
 from tests.unit.application.test_long_runtime import _Quotes, _runtime
 from tests.unit.application.test_preview_cycle import PreviewData, dependencies
-from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT, preview_decision
+from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT, preview_freeze
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
@@ -19,14 +19,14 @@ from trader.recommendation.application.ports.runtime import (
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
-from trader.recommendation.domain.publication.decision_identity import LongProjection, ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import LongProjection, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 
 
-class PreviewDecisions(Decisions):
-    def build_local(self, request: CycleRequest) -> ScoredDecision:
+class PreviewFreezes(Freezes):
+    def build_local(self, request: CycleRequest) -> ScoredFreeze:
         return replace(
-            preview_decision(strategy=request.strategy),
+            preview_freeze(strategy=request.strategy),
             observed_at=request.observed_at,
             sequence=request.sequence,
             preview_context=request.preview_context,
@@ -65,8 +65,8 @@ def test_long_close_refresh_is_independent_of_short_model_preparation(applicatio
             run_scope=scope,
             long_quotes=long_runtime,
             index=index,
-            decisions=PreviewDecisions(),
-            publish_decision=lambda _: None,
+            freezes=PreviewFreezes(),
+            publish_freeze=lambda _: None,
         ),
         config_version="preview-fixture",
     )
@@ -85,7 +85,7 @@ def test_long_close_refresh_is_independent_of_short_model_preparation(applicatio
         runtime.submit_due()
         assert long_runtime.wait_idle(3.0)
         assert len(quotes.calls) == 1
-        assert not deps.freezes.calls and not deps.settlement.calls
+        assert not deps.sealing.calls and not deps.settlement.calls
     finally:
         assert runtime.stop(ShutdownDeadline.start(3.0)).completed
         assert long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(3.0)).completed
@@ -101,9 +101,9 @@ def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_arch
     deps = replace(
         dependencies(data),
         clock=clock,
-        decisions=PreviewDecisions(),
+        freezes=PreviewFreezes(),
         research_factory=RejectResearch,
-        publish_decision=published.append,
+        publish_freeze=published.append,
         run_scope=scope,
     )
     runtime = SchedulerRuntime(deps, config_version="preview-fixture")
@@ -125,12 +125,12 @@ def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_arch
         assert set(deps.reviews.calls) == {Strategy.TOMORROW, Strategy.D25}
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = deps.index.snapshot(strategy)
-            assert isinstance(snapshot.current, ScoredDecision)
+            assert isinstance(snapshot.current, ScoredFreeze)
             assert snapshot.current.stage == "hybrid"
             assert snapshot.current.trade_date == clock.now().date()
             assert snapshot.current.preview_context is scope.preview
             assert snapshot.formal is None
-        assert isinstance(deps.freezes, Freezes) and not deps.freezes.calls and not deps.freezes.close_fallback_calls
+        assert isinstance(deps.sealing, Sealing) and not deps.sealing.calls and not deps.sealing.close_fallback_calls
         assert isinstance(deps.settlement, Settlement) and not deps.settlement.calls
         assert status.freeze_completed_count == status.settlement_completed_count == 0
         assert status.observer.accepted_count == status.observer.completed_count == 0
@@ -166,8 +166,8 @@ def test_preview_waits_for_risk_review_and_reports_failure_with_local_result(fai
             deps,
             run_scope=scope,
             reviews=BlockingReviews(),
-            decisions=PreviewDecisions(),
-            publish_decision=lambda _: None,
+            freezes=PreviewFreezes(),
+            publish_freeze=lambda _: None,
         ),
         config_version="preview-fixture",
     )

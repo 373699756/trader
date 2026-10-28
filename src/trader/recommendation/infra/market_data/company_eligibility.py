@@ -12,9 +12,9 @@ from threading import RLock
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.domain.company_exclusions import CompanyExclusion, CompanyExclusionReason, CompanyExclusionSource
 from trader.recommendation.domain.market.eligibility import (
-    IssuerEligibilityDecision,
     IssuerEligibilityFact,
     IssuerEligibilityFactHash,
+    IssuerEligibilityFreeze,
     IssuerEligibilityReason,
     IssuerEligibilityReasonCount,
     IssuerEligibilitySnapshot,
@@ -120,7 +120,7 @@ class CompanyEligibility:
             self._initialize()
             return tuple(sorted(self._facts.values()))
 
-    def exclusions(self, observed_at: datetime) -> tuple[IssuerEligibilityDecision, ...]:
+    def exclusions(self, observed_at: datetime) -> tuple[IssuerEligibilityFreeze, ...]:
         selected: dict[str, IssuerEligibilityFact] = {}
         for fact in self.facts():
             if fact.effective_at <= observed_at:

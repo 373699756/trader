@@ -22,10 +22,10 @@ from trader.recommendation.domain.publication.models import (
 )
 from trader.recommendation.domain.risk.fusion import FusionPolicy
 from trader.recommendation.domain.risk.scored_fusion import (
-    BuildScoredDecisionEpoch,
-    DecisionSelectionLimits,
-    ScoredDecisionPolicy,
-    ScoredDecisionRequest,
+    BuildScoredFreezeEpoch,
+    FreezeSelectionLimits,
+    ScoredFreezePolicy,
+    ScoredFreezeRequest,
     SelectFixedScoredSeats,
     SelectScoredReviewCandidates,
 )
@@ -86,7 +86,7 @@ def test_invalid_downside_input_changes_action_without_changing_score_or_promoti
         _evaluation(0, local_score=90, values={"atr20_pct": 0}),
         _evaluation(1, local_score=40, values={"atr20_pct": 0}),
     )
-    epoch = BuildScoredDecisionEpoch(_request(_selection(evaluations)))
+    epoch = BuildScoredFreezeEpoch(_request(_selection(evaluations)))
     by_code = {item.code: item for item in epoch.entries}
     assert by_code["600000"].score.final_score == 90
     assert by_code["600000"].action is RecommendationAction.OBSERVE
@@ -95,7 +95,7 @@ def test_invalid_downside_input_changes_action_without_changing_score_or_promoti
     assert by_code["600001"].score.final_score == 40
 
 
-def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> None:
+def test_hybrid_freeze_uses_fixed_fusion_without_repeating_local_risk() -> None:
     local_fact = _risk_fact("local-risk", "local_rule", penalty=2.0)
     deepseek_fact = _risk_fact(
         "deepseek-risk",
@@ -113,23 +113,23 @@ def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> Non
     )
     review = _review("600001", 100.0, risk_facts=(deepseek_fact,))
 
-    epoch = BuildScoredDecisionEpoch(
+    epoch = BuildScoredFreezeEpoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": review},
             projection_stage="hybrid",
             review_candidate_codes=("600001",),
-            parent_decision_version="decision:local",
+            parent_freeze_version="freeze:local",
         )
     )
 
-    decision = epoch.entries[0]
-    assert decision.score.local_score == 80.0
-    assert decision.score.deepseek_score is None
-    assert decision.score.deepseek_risk_penalty == 0.0
-    assert decision.score.final_score == 80.0
-    assert decision.score.fusion_applied is False
-    assert decision.action is RecommendationAction.EXECUTABLE
+    freeze = epoch.entries[0]
+    assert freeze.score.local_score == 80.0
+    assert freeze.score.deepseek_score is None
+    assert freeze.score.deepseek_risk_penalty == 0.0
+    assert freeze.score.final_score == 80.0
+    assert freeze.score.fusion_applied is False
+    assert freeze.action is RecommendationAction.EXECUTABLE
 
 
 def test_downside_guard_downgrades_executable_without_changing_local_score() -> None:
@@ -141,32 +141,32 @@ def test_downside_guard_downgrades_executable_without_changing_local_score() -> 
     )
     review = _review("600001", 100.0)
 
-    epoch = BuildScoredDecisionEpoch(
+    epoch = BuildScoredFreezeEpoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": review},
             projection_stage="hybrid",
             review_candidate_codes=("600001",),
-            parent_decision_version="decision:local",
+            parent_freeze_version="freeze:local",
         )
     )
 
-    decision = epoch.entries[0]
-    assert decision.score.final_score == 80.0
-    assert decision.action is RecommendationAction.OBSERVE
-    assert decision.action_reason == "downside_guard:trend_breakdown"
-    assert decision.selected is True
+    freeze = epoch.entries[0]
+    assert freeze.score.final_score == 80.0
+    assert freeze.action is RecommendationAction.OBSERVE
+    assert freeze.action_reason == "downside_guard:trend_breakdown"
+    assert freeze.selected is True
 
 
 def test_missing_downside_input_fails_closed_after_execution_threshold() -> None:
     evaluation = _evaluation(1, local_score=80.0, values={"atr20_pct": None})
 
-    epoch = BuildScoredDecisionEpoch(_request(_selection((evaluation,))))
+    epoch = BuildScoredFreezeEpoch(_request(_selection((evaluation,))))
 
-    decision = epoch.entries[0]
-    assert decision.score.final_score == 80.0
-    assert decision.action is RecommendationAction.OBSERVE
-    assert decision.action_reason == "downside_guard:downside_inputs_missing"
+    freeze = epoch.entries[0]
+    assert freeze.score.final_score == 80.0
+    assert freeze.action is RecommendationAction.OBSERVE
+    assert freeze.action_reason == "downside_guard:downside_inputs_missing"
 
 
 def test_late_review_cannot_change_score_or_create_model_risk() -> None:
@@ -188,21 +188,21 @@ def test_late_review_cannot_change_score_or_create_model_risk() -> None:
         completed_at=NOW + timedelta(seconds=1),
     )
 
-    epoch = BuildScoredDecisionEpoch(
+    epoch = BuildScoredFreezeEpoch(
         _request(
             _selection((late_evaluation, current_evaluation)),
             reviews={"600001": review, "600002": _review("600002", 90.0)},
             projection_stage="hybrid",
             review_candidate_codes=("600001", "600002"),
-            parent_decision_version="decision:local",
+            parent_freeze_version="freeze:local",
         )
     )
 
-    decision = next(item for item in epoch.entries if item.code == "600001")
-    assert decision.score.final_score == 80.0
-    assert decision.score.deepseek_risk_penalty == 0.0
-    assert decision.deepseek_risk_facts == ()
-    assert decision.review_outcome is ReviewOutcome.LATE
+    freeze = next(item for item in epoch.entries if item.code == "600001")
+    assert freeze.score.final_score == 80.0
+    assert freeze.score.deepseek_risk_penalty == 0.0
+    assert freeze.deepseek_risk_facts == ()
+    assert freeze.review_outcome is ReviewOutcome.LATE
 
 
 def test_abstain_review_cannot_apply_model_risk_or_veto() -> None:
@@ -223,21 +223,21 @@ def test_abstain_review_cannot_apply_model_risk_or_veto() -> None:
         outcome=ReviewOutcome.ABSTAIN,
     )
 
-    epoch = BuildScoredDecisionEpoch(
+    epoch = BuildScoredFreezeEpoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": abstain},
             projection_stage="hybrid",
             review_candidate_codes=("600001",),
-            parent_decision_version="decision:local",
+            parent_freeze_version="freeze:local",
         )
     )
 
-    decision = epoch.entries[0]
-    assert decision.score.final_score == decision.score.local_score == 80.0
-    assert decision.score.deepseek_risk_penalty == 0.0
-    assert decision.deepseek_risk_facts == ()
-    assert decision.veto is False
+    freeze = epoch.entries[0]
+    assert freeze.score.final_score == freeze.score.local_score == 80.0
+    assert freeze.score.deepseek_risk_penalty == 0.0
+    assert freeze.deepseek_risk_facts == ()
+    assert freeze.veto is False
 
 
 def test_hybrid_requires_a_current_applied_or_abstain_review() -> None:
@@ -245,18 +245,18 @@ def test_hybrid_requires_a_current_applied_or_abstain_review() -> None:
     rejected = replace(_review("600001", 100.0), outcome=ReviewOutcome.REJECTED)
 
     with pytest.raises(ValueError, match="usable DeepSeek review"):
-        BuildScoredDecisionEpoch(
+        BuildScoredFreezeEpoch(
             _request(
                 _selection((evaluation,)),
                 reviews={"600001": rejected},
                 projection_stage="hybrid",
                 review_candidate_codes=("600001",),
-                parent_decision_version="decision:local",
+                parent_freeze_version="freeze:local",
             )
         )
 
 
-def test_decision_rejects_risk_fact_from_after_its_observation_time() -> None:
+def test_freeze_rejects_risk_fact_from_after_its_observation_time() -> None:
     future_fact = replace(
         _risk_fact("future-risk", "deepseek_rule", penalty=1.0),
         observed_at=NOW + timedelta(seconds=1),
@@ -270,7 +270,7 @@ def test_decision_rejects_risk_fact_from_after_its_observation_time() -> None:
     )
 
     with pytest.raises(ValueError, match="future risk"):
-        BuildScoredDecisionEpoch(_request(_selection((evaluation,))))
+        BuildScoredFreezeEpoch(_request(_selection((evaluation,))))
 
 
 def test_fixed_seats_keep_board_ceiling_and_allow_one_industry() -> None:
@@ -278,7 +278,7 @@ def test_fixed_seats_keep_board_ceiling_and_allow_one_industry() -> None:
         _evaluation(index, local_score=95.0 - index, board=Board.MAIN if index < 10 else Board.CHINEXT, industry="same")
         for index in range(16)
     )
-    epoch = BuildScoredDecisionEpoch(_request(_selection(tuple(reversed(evaluations)))))
+    epoch = BuildScoredFreezeEpoch(_request(_selection(tuple(reversed(evaluations)))))
     assert tuple(item.code for item in epoch.entries) == ("600000", "600001", "600002", "600003", "600010", "600011")
     assert all(item.selected for item in epoch.entries)
     assert [item.rank for item in epoch.entries] == [1, 2, 3, 4, 5, 6]
@@ -298,7 +298,7 @@ def test_observe_only_candidate_still_requires_the_observation_score_floor() -> 
         disposition=ScoredDisposition.OBSERVE_ONLY,
     )
 
-    epoch = BuildScoredDecisionEpoch(_request(_selection((below, eligible))))
+    epoch = BuildScoredFreezeEpoch(_request(_selection((below, eligible))))
     by_code = {item.code: item for item in epoch.entries}
 
     assert by_code["600001"].action is RecommendationAction.UNAVAILABLE
@@ -308,11 +308,11 @@ def test_observe_only_candidate_still_requires_the_observation_score_floor() -> 
     assert by_code["600002"].selected is True
 
 
-def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set() -> None:
+def test_freeze_epoch_hash_is_stable_and_rejects_review_outside_protection_set() -> None:
     evaluations = tuple(_evaluation(index, local_score=90.0 - index) for index in range(3))
     selection = _selection(evaluations)
-    first = BuildScoredDecisionEpoch(_request(selection))
-    second = BuildScoredDecisionEpoch(_request(replace(selection, evaluations=tuple(reversed(selection.evaluations)))))
+    first = BuildScoredFreezeEpoch(_request(selection))
+    second = BuildScoredFreezeEpoch(_request(replace(selection, evaluations=tuple(reversed(selection.evaluations)))))
 
     assert first.content_hash == second.content_hash
     assert first.version == second.version
@@ -321,26 +321,26 @@ def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set
         evaluations[0],
         features=replace(evaluations[0].features, merge_epoch="market:2"),
     )
-    changed_epoch = BuildScoredDecisionEpoch(_request(_selection((changed, *evaluations[1:]))))
+    changed_epoch = BuildScoredFreezeEpoch(_request(_selection((changed, *evaluations[1:]))))
     assert changed_epoch.content_hash != first.content_hash
 
     with pytest.raises(ValueError, match="outside the review candidate set"):
-        BuildScoredDecisionEpoch(
+        BuildScoredFreezeEpoch(
             _request(
                 selection,
                 reviews={"600001": _review("600001", 80.0)},
                 projection_stage="hybrid",
                 review_candidate_codes=("600000",),
-                parent_decision_version="decision:local",
+                parent_freeze_version="freeze:local",
             )
         )
 
 
-def test_decision_epoch_carries_and_enforces_its_selection_limits() -> None:
+def test_freeze_epoch_carries_and_enforces_its_selection_limits() -> None:
     evaluations = tuple(_evaluation(index, local_score=90.0 - index) for index in range(4))
-    epoch = BuildScoredDecisionEpoch(_request(_selection(evaluations)))
+    epoch = BuildScoredFreezeEpoch(_request(_selection(evaluations)))
 
-    assert epoch.selection_limits == DecisionSelectionLimits(
+    assert epoch.selection_limits == FreezeSelectionLimits(
         top_k=6,
         observation_limit=6,
         maximum_board_fraction=0.60,
@@ -349,7 +349,7 @@ def test_decision_epoch_carries_and_enforces_its_selection_limits() -> None:
         replace(epoch, selection_limits=replace(epoch.selection_limits, maximum_board_fraction=0.30))
 
 
-def test_decision_epoch_rejects_pool_external_backfill_even_when_capacity_is_unchanged() -> None:
+def test_freeze_epoch_rejects_pool_external_backfill_even_when_capacity_is_unchanged() -> None:
     evaluations = tuple(
         _evaluation(
             index,
@@ -359,13 +359,13 @@ def test_decision_epoch_rejects_pool_external_backfill_even_when_capacity_is_unc
         )
         for index in range(7)
     )
-    epoch = BuildScoredDecisionEpoch(_request(_selection(evaluations)))
+    epoch = BuildScoredFreezeEpoch(_request(_selection(evaluations)))
     entries = []
     for item in epoch.entries:
         if item.selection_rank == 6:
-            entries.append(replace(item, selected=False, rank=0, decision_skip_reason="top_k_limit"))
+            entries.append(replace(item, selected=False, rank=0, freeze_skip_reason="top_k_limit"))
         elif item.selection_rank == 7:
-            entries.append(replace(item, selected=True, rank=6, decision_skip_reason=""))
+            entries.append(replace(item, selected=True, rank=6, freeze_skip_reason=""))
         else:
             entries.append(item)
 
@@ -377,7 +377,7 @@ def test_decision_epoch_rejects_pool_external_backfill_even_when_capacity_is_unc
     ("changes", "message"),
     (({"maximum_board_fraction": 0.61}, "board fraction"),),
 )
-def test_decision_policy_cannot_relax_fixed_concentration_limits(
+def test_freeze_policy_cannot_relax_fixed_concentration_limits(
     changes: dict[str, object],
     message: str,
 ) -> None:
@@ -385,8 +385,8 @@ def test_decision_policy_cannot_relax_fixed_concentration_limits(
         replace(_policy(), **changes)
 
 
-def _policy() -> ScoredDecisionPolicy:
-    return ScoredDecisionPolicy(
+def _policy() -> ScoredFreezePolicy:
+    return ScoredFreezePolicy(
         dimension_weights={
             "value_quality": 0.1875,
             "financial_health": 0.25,
@@ -421,9 +421,9 @@ def _request(
     reviews: dict[str, DeepSeekReview] | None = None,
     projection_stage: str = "local",
     review_candidate_codes: tuple[str, ...] = (),
-    parent_decision_version: str | None = None,
-) -> ScoredDecisionRequest:
-    return ScoredDecisionRequest(
+    parent_freeze_version: str | None = None,
+) -> ScoredFreezeRequest:
+    return ScoredFreezeRequest(
         selection=selection,
         reviews=reviews or {},
         observed_at=NOW,
@@ -436,7 +436,7 @@ def _request(
         candidate_epoch_version=None,
         research_epoch_version="research:1" if projection_stage == "hybrid" else None,
         projection_stage=projection_stage,
-        parent_decision_version=parent_decision_version,
+        parent_freeze_version=parent_freeze_version,
         review_candidate_codes=review_candidate_codes,
         degraded_reasons=(),
         policy=_policy(),

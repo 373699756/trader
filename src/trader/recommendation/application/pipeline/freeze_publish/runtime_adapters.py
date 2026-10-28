@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Literal
 
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import ScoredFreezeCoordinator
-from trader.recommendation.application.pipeline.local_score.local_decision_builder import LocalDecisionBuilder
+from trader.recommendation.application.pipeline.local_score.local_freeze_builder import LocalFreezeBuilder
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import NormalizeScoredReviewTimes
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionPort, ScoreFusionService
@@ -17,15 +17,15 @@ from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DeepSeekUpgradePort,
     FreezePort,
-    FreezeUnavailableError,
     ReviewUnavailableError,
+    SealUnavailableError,
     SharedDeepSeekRuntimeContract,
 )
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
-from trader.recommendation.domain.publication.decision_identity import (
-    DecisionIdentity,
-    IsShadowDecision,
-    ScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    FreezeIdentity,
+    IsShadowFreeze,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -35,7 +35,7 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
         self,
         reviewer: TomorrowDeepSeekReviewPort,
         policy: RecommendationPolicy,
-        data: LocalDecisionBuilder,
+        data: LocalFreezeBuilder,
         fusion: ScoreFusionPort | None = None,
         *,
         monotonic: Callable[[], float] = time.monotonic,
@@ -52,8 +52,8 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
     def runtime_contract(self) -> SharedDeepSeekRuntimeContract:
         return SharedDeepSeekRuntimeContract(168, True, True)
 
-    def build_hybrid(self, local: ScoredDecision, request: CycleRequest) -> ScoredDecision | None:
-        if IsShadowDecision(local):
+    def build_hybrid(self, local: ScoredFreeze, request: CycleRequest) -> ScoredFreeze | None:
+        if IsShadowFreeze(local):
             return None
         projection = self._data.projection(local.version)
         if projection is None:
@@ -133,7 +133,7 @@ class FreezeAdapter(FreezePort):
             Strategy.D25: d25,
         }
 
-    def freeze(self, strategy: Strategy, at: datetime, current: DecisionIdentity | None) -> None:
+    def freeze(self, strategy: Strategy, at: datetime, current: FreezeIdentity | None) -> None:
         del at, current
         result = self._freezers[strategy].freeze_scheduled()
         if result.status in {"persistence_failed", "index_commit_conflict"}:
@@ -143,7 +143,7 @@ class FreezeAdapter(FreezePort):
         self,
         strategy: Strategy,
         at: datetime,
-        current: ScoredDecision,
+        current: ScoredFreeze,
         *,
         recovery_path: Literal["current", "close_rebuild"],
         official_close_version: str,
@@ -151,14 +151,14 @@ class FreezeAdapter(FreezePort):
         del at
         freezer = self._freezers.get(strategy)
         if freezer is None:
-            raise FreezeUnavailableError("close fallback is only available for tomorrow and d25")
+            raise SealUnavailableError("close fallback is only available for tomorrow and d25")
         result = freezer.freeze_close_fallback(
             current,
             recovery_path=recovery_path,
             official_close_version=official_close_version,
         )
         if result.status not in {"frozen", "already_frozen", "shadow_only"}:
-            raise FreezeUnavailableError(result.status)
+            raise SealUnavailableError(result.status)
 
 
 __all__ = ["DeepSeekAdapter", "FreezeAdapter"]

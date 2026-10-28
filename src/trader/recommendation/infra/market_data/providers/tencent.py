@@ -31,7 +31,7 @@ from trader.recommendation.infra.normalization.quote import (
     ParseVolume,
     ToFloat,
 )
-from trader.training.domain.evaluation.models import OutcomeBar
+from trader.recommendation.domain.outcomes.models import OutcomeBar
 
 SessionFactory = Callable[[], HttpTransport]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")

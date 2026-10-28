@@ -93,7 +93,7 @@ _RECOMMENDATION_CONTRACT_PATHS = frozenset(
         "contract/test_candidate_planning_contract.py",
         "contract/test_current_product_contract.py",
         "contract/test_d25_contract.py",
-        "contract/test_decision_contract.py",
+        "contract/test_freeze_contract.py",
         "contract/test_feature_contract_unification.py",
         "contract/test_long_contract.py",
         "contract/test_recommendation_sections.py",
@@ -118,7 +118,7 @@ _RECOMMENDATION_INFRA_PATHS = frozenset(
     {
         "unit/infra/test_cninfo_incremental.py",
         "unit/infra/test_data_plane.py",
-        "unit/infra/test_decision_records.py",
+        "unit/infra/test_freeze_records.py",
         "unit/infra/test_issuer_eligibility_index.py",
     }
 )

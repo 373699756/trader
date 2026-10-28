@@ -27,7 +27,7 @@ from trader.training.domain.evaluation.limited_factor_family import (
     LimitedFactorCandidate,
     LimitedFactorFamilySpec,
 )
-from trader.training.domain.evaluation.models import OutcomeExitStatus, RecommendationOutcome
+from trader.recommendation.domain.outcomes.models import OutcomeExitStatus, RecommendationOutcome
 from trader.training.domain.evaluation.point_in_time_dataset import (
     POINT_IN_TIME_BOUNDARIES,
     PointInTimeBoardPopulation,

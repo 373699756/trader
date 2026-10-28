@@ -40,8 +40,8 @@ from trader.recommendation.domain.market.eligibility import (
     EligibilityFactsFromStaticIssuer,
     HistoricalStEligibilitySnapshot,
     IssuerEligibilityBatch,
-    IssuerEligibilityDecision,
     IssuerEligibilityFact,
+    IssuerEligibilityFreeze,
     IssuerEligibilityReason,
     IssuerEligibilityReasonCount,
     IssuerEligibilityState,
@@ -171,18 +171,18 @@ class StaticMarketPipeline:
                 exclusions_by_code.setdefault(issuer.code, ResolveIssuerEligibility(facts, issuer.code, observed_at))
         reason_counts = Counter(item.reason for item in exclusions_by_code.values() if item.reason is not None)
         historical_st = inputs.historical_st
-        decisions = tuple(
+        freezes = tuple(
             exclusions_by_code[code]
             if code in exclusions_by_code
-            else IssuerEligibilityDecision(code, self._historical_st_state(code, historical_st), observed_at)
+            else IssuerEligibilityFreeze(code, self._historical_st_state(code, historical_st), observed_at)
             for code in sorted(population)
         )
         eligible_codes = frozenset(
-            decision.code for decision in decisions if decision.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
+            freeze.code for freeze in freezes if freeze.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
         )
         company_exclusions = {code: "blacklisted" for code in eligible_codes if code in inputs.blacklist_codes}
         filtered = FilterPermanentEligibility(
-            source, decisions, as_of=observed_at, latency_ms=0, company_exclusions=company_exclusions
+            source, freezes, as_of=observed_at, latency_ms=0, company_exclusions=company_exclusions
         )
         filtered = self._measured_stage(filtered, started)
         batch = IssuerEligibilityBatch(
@@ -196,7 +196,7 @@ class StaticMarketPipeline:
                 IssuerEligibilityReasonCount(reason, reason_counts[reason])
                 for reason in sorted(reason_counts, key=lambda item: item.value)
             ),
-            pending_count=sum(decision.state is IssuerEligibilityState.QUALIFICATION_PENDING for decision in decisions),
+            pending_count=sum(freeze.state is IssuerEligibilityState.QUALIFICATION_PENDING for freeze in freezes),
         )
         return StaticEligibilitySnapshot(
             inputs, source, filtered, batch, frozenset(item.code for item in filtered.records)

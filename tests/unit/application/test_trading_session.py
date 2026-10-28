@@ -30,9 +30,9 @@ def test_clock_discontinuity_rejects_old_publication_lease(wall_seconds, monoton
     assert current.generation == old.generation + 1
     assert session.status().discontinuity_reason == reason
     with current.guard():
-        current.remember("new-decision")
-    assert current.allows_version("new-decision")
-    assert not current.allows_version("old-decision")
+        current.remember("new-freeze")
+    assert current.allows_version("new-freeze")
+    assert not current.allows_version("old-freeze")
 
 
 def test_continuous_elapsed_time_retains_session_across_freeze_boundary():

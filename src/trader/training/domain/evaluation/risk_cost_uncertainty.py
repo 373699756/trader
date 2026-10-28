@@ -13,7 +13,7 @@ from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.market.factors import RoundScore
-from trader.recommendation.domain.risk.decision import RiskDecision
+from trader.recommendation.domain.risk.freeze import RiskFreeze
 from trader.recommendation.domain.scoring.alpha import AlphaScore
 from trader.recommendation.domain.selection.execution_cost import ExecutionCost
 from trader.training.domain.evaluation.constrained_oracle import (
@@ -84,7 +84,7 @@ class RiskCostUncertaintySample:
     board: ResearchBoard
     industry: str
     alpha: AlphaScore
-    risk: RiskDecision
+    risk: RiskFreeze
     cost: ExecutionCost
     deepseek: DeepSeekResearchReview
     actual_alpha_return: float
@@ -149,7 +149,7 @@ class SelectionUtility:
             raise ValueError("selection utility severe-loss probability is invalid")
 
 
-def BuildSelectionUtility(alpha: AlphaScore, risk: RiskDecision, cost: ExecutionCost) -> SelectionUtility:
+def BuildSelectionUtility(alpha: AlphaScore, risk: RiskFreeze, cost: ExecutionCost) -> SelectionUtility:
     if len({alpha.code, risk.code, cost.code}) != 1:
         raise ValueError("selection utility component codes must match")
     uncertainty_values = (
@@ -248,7 +248,7 @@ class UncertaintyCalibrationMetrics:
 
 
 @dataclass(frozen=True)
-class DeepSeekAblationDecision:
+class DeepSeekAblationFreeze:
     trade_date: date
     code: str
     arm: DeepSeekAblationArm
@@ -259,9 +259,9 @@ class DeepSeekAblationDecision:
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit() or self.arm not in _ARMS:
-            raise ValueError("DeepSeek ablation decision identity is invalid")
+            raise ValueError("DeepSeek ablation freeze identity is invalid")
         if not math.isfinite(self.score) or not 0.0 <= self.score <= 100.0:
-            raise ValueError("DeepSeek ablation decision score is invalid")
+            raise ValueError("DeepSeek ablation freeze score is invalid")
         if self.selected_rank is not None and not 1 <= self.selected_rank <= _TOP_K:
             raise ValueError("DeepSeek ablation selected rank is invalid")
 
@@ -350,7 +350,7 @@ class RiskCostUncertaintyReport:
     sample_count: int
     calibration: UncertaintyCalibrationMetrics | None
     ablation: tuple[DeepSeekAblationMetrics, ...]
-    decisions: tuple[DeepSeekAblationDecision, ...]
+    freezes: tuple[DeepSeekAblationFreeze, ...]
     failure_reasons: tuple[str, ...]
     research_identity: RiskCostResearchIdentity | None
     production_authority: bool = False
@@ -412,41 +412,39 @@ def _validate_evaluated_report(
         raise ValueError("evaluated risk-cost report is incomplete")
     if reasons or report.model_artifact_hash is None or report.evidence_hash is None:
         raise ValueError("evaluated risk-cost report identity is inconsistent")
-    if len(report.decisions) != report.sample_count * len(_ARMS):
+    if len(report.freezes) != report.sample_count * len(_ARMS):
         raise ValueError("evaluated risk-cost report identity is inconsistent")
-    decision_keys = tuple((item.trade_date, item.code, item.arm) for item in report.decisions)
-    if len(decision_keys) != len(set(decision_keys)):
-        raise ValueError("evaluated risk-cost report decisions must be unique")
-    _validate_ablation_decisions(report)
+    freeze_keys = tuple((item.trade_date, item.code, item.arm) for item in report.freezes)
+    if len(freeze_keys) != len(set(freeze_keys)):
+        raise ValueError("evaluated risk-cost report freezes must be unique")
+    _validate_ablation_freezes(report)
     _validate_cost_selections(report)
 
 
-def _validate_ablation_decisions(report: RiskCostUncertaintyReport) -> None:
+def _validate_ablation_freezes(report: RiskCostUncertaintyReport) -> None:
     populations: list[frozenset[tuple[date, str]]] = []
     for metrics in report.ablation:
-        decisions = tuple(item for item in report.decisions if item.arm == metrics.arm)
-        populations.append(frozenset((item.trade_date, item.code) for item in decisions))
-        if metrics.evaluated_count != report.sample_count or len(decisions) != report.sample_count:
+        freezes = tuple(item for item in report.freezes if item.arm == metrics.arm)
+        populations.append(frozenset((item.trade_date, item.code) for item in freezes))
+        if metrics.evaluated_count != report.sample_count or len(freezes) != report.sample_count:
             raise ValueError("DeepSeek ablation population is inconsistent")
-        if metrics.selected_count != sum(item.selected_rank is not None for item in decisions):
+        if metrics.selected_count != sum(item.selected_rank is not None for item in freezes):
             raise ValueError("DeepSeek ablation selected count is inconsistent")
-        if metrics.deepseek_applied_count != sum(item.deepseek_applied for item in decisions):
+        if metrics.deepseek_applied_count != sum(item.deepseek_applied for item in freezes):
             raise ValueError("DeepSeek ablation applied count is inconsistent")
         expected_fallbacks = 0 if metrics.arm == "local_only" else report.sample_count - metrics.deepseek_applied_count
         if metrics.local_fallback_count != expected_fallbacks:
             raise ValueError("DeepSeek ablation fallback count is inconsistent")
-        _validate_selected_ranks(decisions)
+        _validate_selected_ranks(freezes)
     if any(population != populations[0] for population in populations[1:]):
         raise ValueError("DeepSeek ablation arms must share one population")
 
 
 def _validate_cost_selections(report: RiskCostUncertaintyReport) -> None:
-    dates = tuple(sorted({item.trade_date for item in report.decisions}))
+    dates = tuple(sorted({item.trade_date for item in report.freezes}))
     if report.research_identity is None or dates != report.research_identity.dates:
-        raise ValueError("risk-cost decisions do not match research partition dates")
-    selected_counts = Counter(
-        (item.trade_date, item.arm) for item in report.decisions if item.selected_rank is not None
-    )
+        raise ValueError("risk-cost freezes do not match research partition dates")
+    selected_counts = Counter((item.trade_date, item.arm) for item in report.freezes if item.selected_rank is not None)
     for metrics in report.ablation:
         for scenario in metrics.cost_sensitivity:
             if tuple(item.trade_date for item in scenario.days) != dates:
@@ -463,11 +461,11 @@ def _validate_cost_selections(report: RiskCostUncertaintyReport) -> None:
             raise ValueError("DeepSeek cost sensitivity arms must share one oracle")
 
 
-def _validate_selected_ranks(decisions: tuple[DeepSeekAblationDecision, ...]) -> None:
+def _validate_selected_ranks(freezes: tuple[DeepSeekAblationFreeze, ...]) -> None:
     by_day: dict[date, list[int]] = defaultdict(list)
-    for decision in decisions:
-        if decision.selected_rank is not None:
-            by_day[decision.trade_date].append(decision.selected_rank)
+    for freeze in freezes:
+        if freeze.selected_rank is not None:
+            by_day[freeze.trade_date].append(freeze.selected_rank)
     for ranks in by_day.values():
         if sorted(ranks) != list(range(1, len(ranks) + 1)):
             raise ValueError("DeepSeek ablation ranks must be unique and contiguous")
@@ -477,7 +475,7 @@ def _validate_blocked_report(
     report: RiskCostUncertaintyReport,
     reasons: tuple[str, ...],
 ) -> None:
-    if report.sample_count or report.calibration is not None or report.ablation or report.decisions or not reasons:
+    if report.sample_count or report.calibration is not None or report.ablation or report.freezes or not reasons:
         raise ValueError("blocked risk-cost report must contain only bounded failure evidence")
     if report.evidence_hash is not None:
         raise ValueError("blocked risk-cost report cannot claim evaluated evidence")
@@ -506,7 +504,7 @@ def EvaluateRiskCostUncertainty(
     ):
         raise ValueError("risk-cost sample model identity is inconsistent")
     _validate_cost_scenarios(ordered)
-    decisions = _decisions(ordered)
+    freezes = _freezes(ordered)
     return RiskCostUncertaintyReport(
         "evaluated",
         parent_report_hash,
@@ -514,8 +512,8 @@ def EvaluateRiskCostUncertainty(
         _sample_evidence_hash(ordered),
         len(ordered),
         _calibration(ordered),
-        _ablation(ordered, decisions),
-        decisions,
+        _ablation(ordered, freezes),
+        freezes,
         (),
         research_identity,
     )
@@ -542,8 +540,8 @@ def InsufficientRiskCostUncertaintyReport(
     )
 
 
-def _decisions(samples: tuple[RiskCostUncertaintySample, ...]) -> tuple[DeepSeekAblationDecision, ...]:
-    drafts: list[DeepSeekAblationDecision] = []
+def _freezes(samples: tuple[RiskCostUncertaintySample, ...]) -> tuple[DeepSeekAblationFreeze, ...]:
+    drafts: list[DeepSeekAblationFreeze] = []
     by_day: dict[tuple[date, DeepSeekAblationArm], list[tuple[RiskCostUncertaintySample, float, bool, bool]]] = (
         defaultdict(list)
     )
@@ -556,7 +554,7 @@ def _decisions(samples: tuple[RiskCostUncertaintySample, ...]) -> tuple[DeepSeek
         selected = _select(rows)
         ranks = {item.code: rank for rank, item in enumerate(selected, start=1)}
         drafts.extend(
-            DeepSeekAblationDecision(trade_date, sample.code, arm, score, veto, applied, ranks.get(sample.code))
+            DeepSeekAblationFreeze(trade_date, sample.code, arm, score, veto, applied, ranks.get(sample.code))
             for sample, score, veto, applied in sorted(rows, key=lambda item: item[0].code)
         )
     return tuple(sorted(drafts, key=lambda item: (item.trade_date, item.code, _ARMS.index(item.arm))))
@@ -719,31 +717,31 @@ def _bucket_dimension(
 
 def _ablation(
     samples: tuple[RiskCostUncertaintySample, ...],
-    decisions: tuple[DeepSeekAblationDecision, ...],
+    freezes: tuple[DeepSeekAblationFreeze, ...],
 ) -> tuple[DeepSeekAblationMetrics, ...]:
     sample_by_key = {(item.trade_date, item.code): item for item in samples}
     populations = _daily_cost_populations(samples)
     oracle_total = math.fsum(item.estimated_oracle_net_return_sum for item in populations)
     result: list[DeepSeekAblationMetrics] = []
     for arm in _ARMS:
-        arm_decisions = tuple(item for item in decisions if item.arm == arm)
+        arm_freezes = tuple(item for item in freezes if item.arm == arm)
         selected = tuple(
-            sample_by_key[(item.trade_date, item.code)] for item in arm_decisions if item.selected_rank is not None
+            sample_by_key[(item.trade_date, item.code)] for item in arm_freezes if item.selected_rank is not None
         )
         realized = tuple(item.actual_net_excess_return for item in selected)
         result.append(
             DeepSeekAblationMetrics(
                 arm,
-                len(arm_decisions),
+                len(arm_freezes),
                 len(selected),
-                sum(item.deepseek_applied for item in arm_decisions),
-                sum(sample_by_key[(item.trade_date, item.code)].deepseek.outcome != "applied" for item in arm_decisions)
+                sum(item.deepseek_applied for item in arm_freezes),
+                sum(sample_by_key[(item.trade_date, item.code)].deepseek.outcome != "applied" for item in arm_freezes)
                 if arm != "local_only"
                 else 0,
                 fmean(realized) if realized else None,
                 fmean(float(item.actual_severe_loss) for item in selected) if selected else None,
                 _opportunity_gap(oracle_total, math.fsum(realized)),
-                _cost_sensitivity(populations, arm_decisions),
+                _cost_sensitivity(populations, arm_freezes),
             )
         )
     return tuple(result)
@@ -801,9 +799,9 @@ def _opportunity_gap(oracle: float, realized: float) -> float:
 
 
 def _cost_sensitivity(
-    populations: tuple[_DailyCostPopulation, ...], decisions: tuple[DeepSeekAblationDecision, ...]
+    populations: tuple[_DailyCostPopulation, ...], freezes: tuple[DeepSeekAblationFreeze, ...]
 ) -> tuple[DeepSeekCostSensitivityMetrics, ...]:
-    selected_keys = {(item.trade_date, item.code) for item in decisions if item.selected_rank is not None}
+    selected_keys = {(item.trade_date, item.code) for item in freezes if item.selected_rank is not None}
     results = []
     for scenario_index, cost_bps in enumerate(_COST_BPS):
         days = []
@@ -863,7 +861,7 @@ def _content_hash(report: RiskCostUncertaintyReport) -> str:
         },
         "calibration": None if report.calibration is None else _calibration_payload(report.calibration),
         "ablation": tuple(_ablation_payload(item) for item in report.ablation),
-        "decisions": tuple(_decision_payload(item) for item in report.decisions),
+        "freezes": tuple(_freeze_payload(item) for item in report.freezes),
         "failure_reasons": report.failure_reasons,
         "production_authority": report.production_authority,
         "terminal_holdout_opened": report.terminal_holdout_opened,
@@ -928,7 +926,7 @@ def _sample_evidence_hash(samples: tuple[RiskCostUncertaintySample, ...]) -> str
     return CanonicalDigest(payload)
 
 
-def _uncertainty_evidence_payload(risk: RiskDecision) -> dict[str, float | tuple[float, float] | None]:
+def _uncertainty_evidence_payload(risk: RiskFreeze) -> dict[str, float | tuple[float, float] | None]:
     interval = risk.uncertainty.prediction_interval
     return {
         "severe_loss_probability": risk.uncertainty.severe_loss_probability,
@@ -1017,20 +1015,20 @@ def _cost_sensitivity_payload(
     }
 
 
-def _decision_payload(decision: DeepSeekAblationDecision) -> dict[str, str | int | float | bool | None]:
+def _freeze_payload(freeze: DeepSeekAblationFreeze) -> dict[str, str | int | float | bool | None]:
     return {
-        "trade_date": decision.trade_date.isoformat(),
-        "code": decision.code,
-        "arm": decision.arm,
-        "score": decision.score,
-        "veto": decision.veto,
-        "deepseek_applied": decision.deepseek_applied,
-        "selected_rank": decision.selected_rank,
+        "trade_date": freeze.trade_date.isoformat(),
+        "code": freeze.code,
+        "arm": freeze.arm,
+        "score": freeze.score,
+        "veto": freeze.veto,
+        "deepseek_applied": freeze.deepseek_applied,
+        "selected_rank": freeze.selected_rank,
     }
 
 
 __all__ = [
-    "DeepSeekAblationDecision",
+    "DeepSeekAblationFreeze",
     "DeepSeekAblationMetrics",
     "DeepSeekCostSensitivityMetrics",
     "DeepSeekDailyCostMetrics",

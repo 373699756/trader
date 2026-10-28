@@ -4,10 +4,10 @@
   const STRATEGIES = new Set(["tomorrow", "d25", "long"]);
   const STAGE_LABELS = {
     refresh: "数据刷新",
-    decision: "策略构建",
+    freeze: "策略构建",
     review: "模型复核",
     publish: "结果发布",
-    freeze: "快照冻结",
+    seal: "快照冻结",
     settlement: "收盘结算",
     snapshot: "快照质量",
     runtime: "运行状态",
@@ -15,12 +15,12 @@
   const ERROR_LABELS = {
     "refresh:source_unavailable": "行情刷新暂时不可用",
     "refresh:refresh_unavailable": "行情刷新暂时不可用",
-    "decision:decision_unavailable": "策略结果暂时无法构建",
+    "freeze:freeze_unavailable": "策略结果暂时无法构建",
     "review:review_unavailable": "模型复核暂时不可用",
     "review:review_identity_mismatch": "模型复核身份不一致",
-    "freeze:freeze_unavailable": "正式快照冻结失败",
-    "freeze:close_fallback_unavailable": "收盘补算冻结失败",
-    "freeze:freeze_capacity_rejected": "冻结任务队列已满",
+    "seal:freeze_unavailable": "正式快照冻结失败",
+    "seal:close_fallback_unavailable": "收盘补算冻结失败",
+    "seal:freeze_capacity_rejected": "冻结任务队列已满",
     "settlement:settlement_unavailable": "收盘结算暂时不可用",
     "settlement:settlement_capacity_rejected": "结算任务队列已满",
     runtime_status_unavailable: "运行状态暂时不可用",
@@ -157,10 +157,10 @@
     }
     return ({
       refresh: "行情刷新暂时不可用",
-      decision: "策略结果暂时无法构建",
+      freeze: "策略结果暂时无法构建",
       review: "模型复核暂时不可用",
       publish: "结果发布发生错误",
-      freeze: "正式快照冻结发生错误",
+      seal: "正式快照冻结发生错误",
       settlement: "收盘结算发生错误",
       snapshot: "快照数据质量降级",
     })[stage] || "运行链路暂时降级";
@@ -244,7 +244,7 @@
     local_risk: ["local_risk"],
     fixed_selection: ["fixed_selection"],
     risk_review: ["risk_review", "review"],
-    action_publish: ["action_publish", "freeze", "publish", "settlement"],
+    action_publish: ["action_publish", "seal", "publish", "settlement"],
   });
 
   function issueBelongsToStage(issue, key) {

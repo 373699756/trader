@@ -7,9 +7,9 @@ import pytest
 from tests.integration.test_scheduler_runtime import (
     NOW,
     DataRefresh,
-    Decisions,
     FixedClock,
     Freezes,
+    Sealing,
     Settlement,
     SharedReviews,
     TradingCalendar,
@@ -18,8 +18,8 @@ from tests.integration.test_scheduler_runtime import (
 )
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import AsyncFreezeObserver
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.runtime import CycleRequest
 from trader.recommendation.application.runtime.latest_wins import LatestWinsOffer
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
@@ -34,7 +34,7 @@ def test_old_inflight_result_cannot_replace_visible_snapshot_after_clock_jump(ju
     clock = FixedClock(NOW)
     elapsed = [10.0]
 
-    class BlockingDecisions(Decisions):
+    class BlockingFreezes(Freezes):
         def build_local(self, request):
             result = super().build_local(request)
             if stage == "local" and request.sequence == 1:
@@ -49,7 +49,7 @@ def test_old_inflight_result_cannot_replace_visible_snapshot_after_clock_jump(ju
             assert release.wait(5)
             return result
 
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     events = []
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -61,14 +61,14 @@ def test_old_inflight_result_cannot_replace_visible_snapshot_after_clock_jump(ju
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=BlockingDecisions(),
+            freezes=BlockingFreezes(),
             reviews=BlockingReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="session-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="session-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=events.append,
+            publish_freeze=events.append,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="test",

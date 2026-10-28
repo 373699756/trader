@@ -1,4 +1,4 @@
-"""Shared process resources retain independent profile decisions and model inputs."""
+"""Shared process resources retain independent profile freezes and model inputs."""
 
 import threading
 import time

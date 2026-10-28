@@ -28,7 +28,7 @@ SCORING_QUOTE_FIELDS = (
     "volume",
     "amplitude",
 )
-REQUIRED_DECISION_QUOTE_FIELDS = SCORING_QUOTE_FIELDS
+REQUIRED_FREEZE_QUOTE_FIELDS = SCORING_QUOTE_FIELDS
 DERIVABLE_QUOTE_FIELDS: tuple[str, ...] = ()
 OPTIONAL_FALLBACK_QUOTE_FIELDS = ("market_cap", "volume_ratio")
 VALIDATION_QUOTE_FIELDS = ("previous_close", "open_price")
@@ -99,7 +99,7 @@ def QuoteAudit(quotes: Sequence[MarketQuote], requested: tuple[str, ...], at: da
                 "field": name,
                 "required_quote_input": name in CORE_QUOTE_FIELDS,
                 "scoring_input": name in SCORING_QUOTE_FIELDS,
-                "decision_input": name in REQUIRED_DECISION_QUOTE_FIELDS,
+                "freeze_input": name in REQUIRED_FREEZE_QUOTE_FIELDS,
                 "derivable_input": name in DERIVABLE_QUOTE_FIELDS,
                 "optional_fallback_input": name in OPTIONAL_FALLBACK_QUOTE_FIELDS,
                 "validation_input": name in VALIDATION_QUOTE_FIELDS,
@@ -140,7 +140,7 @@ def MissingQuoteCodes(quotes: Sequence[MarketQuote], requested: tuple[str, ...],
         code
         for code in requested
         if code not in rows
-        or any(not ValidQuoteValue(name, rows[code].get(name)) for name in REQUIRED_DECISION_QUOTE_FIELDS)
+        or any(not ValidQuoteValue(name, rows[code].get(name)) for name in REQUIRED_FREEZE_QUOTE_FIELDS)
     )
 
 
@@ -289,7 +289,7 @@ __all__ = [
     "QUOTE_FIELDS",
     "CORE_QUOTE_FIELDS",
     "SCORING_QUOTE_FIELDS",
-    "REQUIRED_DECISION_QUOTE_FIELDS",
+    "REQUIRED_FREEZE_QUOTE_FIELDS",
     "DERIVABLE_QUOTE_FIELDS",
     "OPTIONAL_FALLBACK_QUOTE_FIELDS",
     "VALIDATION_QUOTE_FIELDS",

@@ -35,7 +35,7 @@ class BaselineDayMetrics:
     input_hash: str
     selected_codes: tuple[str, ...]
     oracle_codes: tuple[str, ...]
-    selection_status: Literal["selected", "no_decision"]
+    selection_status: Literal["selected", "no_freeze"]
     evaluated_count: int
     oracle_selected_count: int
     recalled_oracle_count: int
@@ -59,7 +59,7 @@ class BaselineDayMetrics:
             raise ValueError("baseline production and oracle codes must be unique")
         for code in (*self.selected_codes, *self.oracle_codes):
             _code(code)
-        if self.selection_status != ("selected" if self.selected_codes else "no_decision"):
+        if self.selection_status != ("selected" if self.selected_codes else "no_freeze"):
             raise ValueError("baseline selection status must match the production selection")
         if (
             self.evaluated_count < max(len(self.selected_codes), len(self.oracle_codes))

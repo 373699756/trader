@@ -4,13 +4,13 @@ import ast
 from pathlib import Path
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.domain.evaluation.models import OutcomeHorizons
+from trader.recommendation.domain.outcomes.models import OutcomeHorizons
 
 ROOT = Path(__file__).resolve().parents[2]
-DOMAIN = ROOT / "src/trader/training/domain/evaluation/evaluation.py"
-MODELS = ROOT / "src/trader/training/domain/evaluation/models.py"
-APPLICATION = ROOT / "src/trader/training/application/outcome_settlement.py"
-PERSISTENCE = ROOT / "src/trader/training/infra/research/outcome_evidence_index.py"
+DOMAIN = ROOT / "src/trader/recommendation/domain/outcomes/evaluation.py"
+MODELS = ROOT / "src/trader/recommendation/domain/outcomes/models.py"
+APPLICATION = ROOT / "src/trader/recommendation/application/outcome_settlement.py"
+PERSISTENCE = ROOT / "src/trader/recommendation/infra/persistence/outcome_evidence_index.py"
 HISTORY = ROOT / "src/trader/recommendation/infra/market_data/published_history_cache.py"
 WORK = ROOT / "docs/3_工程实施.md"
 

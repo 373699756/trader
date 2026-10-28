@@ -22,14 +22,14 @@ def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:
     assert "Long：不冻结、不写推荐历史" in strategy
 
 
-def test_decision_types_and_budget_belong_to_engineering_while_risk_belongs_to_scoring() -> None:
+def test_freeze_types_and_budget_belong_to_engineering_while_risk_belongs_to_scoring() -> None:
     design = DESIGN.read_text(encoding="utf-8")
     strategy = STRATEGY.read_text(encoding="utf-8")
 
-    for name in ("local ScoredDecision", "hybrid ScoredDecision", "UnifiedDecisionIndex", "LongProjection"):
+    for name in ("local ScoredFreeze", "hybrid ScoredFreeze", "UnifiedFreezeIndex", "LongProjection"):
         assert name in design
     assert "long 永远只发布 local" not in strategy
-    assert "local/hybrid DecisionEpoch" not in strategy
+    assert "local/hybrid FreezeEpoch" not in strategy
     assert "mandatory_known_local_risk_penalty" in strategy
     assert "不得假定已确认风险消失" in strategy
     assert "tomorrow 独占正常目标 36、硬上限 66" not in design
@@ -42,9 +42,9 @@ def test_authoritative_docs_keep_algorithm_and_product_ownership_separate() -> N
 
     assert "mandatory_known_local_risk_penalty" not in design
     assert "mandatory_known_local_risk_penalty" in strategy
-    assert "GET /api/decisions/<strategy>/current" in design
-    assert "GET /api/decisions/<strategy>/current" not in strategy
-    assert "GET /api/v2/decisions/<strategy>/current" not in design
+    assert "GET /api/freezes/<strategy>/current" in design
+    assert "GET /api/freezes/<strategy>/current" not in strategy
+    assert "GET /api/v2/freezes/<strategy>/current" not in design
     assert "GET /api/status" in design
     assert "GET /api/status" not in strategy
     assert "DeepSeek 单次网络 timeout 20 秒" in _compact(design)

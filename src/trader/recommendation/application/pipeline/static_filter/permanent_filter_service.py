@@ -12,30 +12,30 @@ from trader.recommendation.application.pipeline.stage_output import (
     StageOutput,
 )
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
-from trader.recommendation.domain.market.eligibility import IssuerEligibilityDecision, IssuerEligibilityState
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityFreeze, IssuerEligibilityState
 from trader.recommendation.domain.market.static import StaticIssuer
 
 
 def FilterPermanentEligibility(
     source: PipelineStageOutput[StaticIssuer],
-    decisions: Sequence[IssuerEligibilityDecision],
+    freezes: Sequence[IssuerEligibilityFreeze],
     *,
     as_of: datetime,
     latency_ms: int,
     company_exclusions: Mapping[str, str] | None = None,
 ) -> PipelineStageOutput[StaticIssuer]:
     RequirePreviousStage(source, PipelineStage.STATIC_FILTER)
-    by_code = {item.code: item for item in decisions}
-    if len(by_code) != len(decisions) or set(by_code) != {item.code for item in source.records}:
+    by_code = {item.code: item for item in freezes}
+    if len(by_code) != len(freezes) or set(by_code) != {item.code for item in source.records}:
         raise ValueError("permanent eligibility must cover the complete static population")
     accepted: list[StaticIssuer] = []
     rejected: Counter[str] = Counter()
     pending = 0
     for record in source.records:
-        decision = by_code[record.code]
-        if decision.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED:
-            rejected[decision.reason.value if decision.reason is not None else "permanent_excluded"] += 1
-        elif decision.state is IssuerEligibilityState.QUALIFICATION_PENDING:
+        freeze = by_code[record.code]
+        if freeze.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED:
+            rejected[freeze.reason.value if freeze.reason is not None else "permanent_excluded"] += 1
+        elif freeze.state is IssuerEligibilityState.QUALIFICATION_PENDING:
             pending += 1
         elif company_exclusions is not None and record.code in company_exclusions:
             rejected[company_exclusions[record.code]] += 1

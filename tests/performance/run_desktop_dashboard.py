@@ -27,19 +27,19 @@ from trader.bootstrap import OpenExternalHttp  # noqa: E402
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices  # noqa: E402
 from trader.infra.http_contracts import HttpRequest, HttpStatusError  # noqa: E402
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import (  # noqa: E402
-    UnifiedDecisionDraftIndex,
+    UnifiedFreezeDraftIndex,
 )
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (  # noqa: E402
-    UnifiedDecisionEventStream,
+    UnifiedFreezeEventStream,
 )
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (  # noqa: E402
-    DecisionQuerySources,
-    UnifiedDecisionQueries,
+    FreezeQuerySources,
+    UnifiedFreezeQueries,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (  # noqa: E402
-    UnifiedDecisionIndex,
+    UnifiedFreezeIndex,
 )
-from trader.recommendation.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
+from trader.recommendation.application.ports.freeze_records import CommittedFreezeRecord  # noqa: E402
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary  # noqa: E402
 from trader.recommendation.domain.evidence.pipeline import (  # noqa: E402
     PIPELINE_STAGES,
@@ -53,12 +53,12 @@ from trader.recommendation.domain.evidence.pipeline import (  # noqa: E402
     StageState,
 )
 from trader.recommendation.domain.market.models import Board, ModelIndustryReference  # noqa: E402
-from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
-    DecisionItem,
-    DecisionQuote,
+from trader.recommendation.domain.publication.freeze_identity import (  # noqa: E402
+    FreezeItem,
+    FreezeQuote,
     LongProjection,
     LongProjectionItem,
-    ScoredDecision,
+    ScoredFreeze,
     SelectionDiagnostics,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
@@ -89,7 +89,7 @@ class _BrowserIndustryClassifications:
 
 
 class _BrowserHistory:
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None:
+    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
         del strategy, trade_date
         return None
 
@@ -104,22 +104,22 @@ class _PreviewClock:
 
 
 class _PreviewBrowserFixtures:
-    def __init__(self, items: tuple[DecisionItem, ...], pipeline: RecommendationPipelineStatus) -> None:
+    def __init__(self, items: tuple[FreezeItem, ...], pipeline: RecommendationPipelineStatus) -> None:
         started_at = datetime(2026, 8, 16, 17, 0, tzinfo=_SHANGHAI)
         self.context = PreviewContext("browser-preview", date(2026, 8, 14), started_at)
         self.generated_at = started_at.replace(second=5)
         self._state: Literal["waiting_inputs", "running", "ready", "failed"] = "waiting_inputs"
         self._error: str | None = None
         self._published_count = 0
-        self._indexes = {profile: UnifiedDecisionIndex() for profile in ("v1", "v2", "v3", "v5")}
+        self._indexes = {profile: UnifiedFreezeIndex() for profile in ("v1", "v2", "v3", "v5")}
         completed_items = tuple(
             replace(item, quote=replace(item.quote, source_time=self.context.market_as_of))
             if item.quote is not None
             else item
             for item in items
         )
-        self._decisions = {
-            (profile, strategy): ScoredDecision(
+        self._freezes = {
+            (profile, strategy): ScoredFreeze(
                 strategy,
                 started_at.date(),
                 1,
@@ -141,8 +141,8 @@ class _PreviewBrowserFixtures:
         self.services = ProfiledWebServices(
             {
                 profile: UnifiedWebServices(
-                    UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _BrowserHistory(), _PreviewClock()),
-                    UnifiedDecisionEventStream(),
+                    UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _BrowserHistory(), _PreviewClock()),
+                    UnifiedFreezeEventStream(),
                     self._status,
                     profile_id=profile,
                 )
@@ -169,8 +169,8 @@ class _PreviewBrowserFixtures:
         if self._published_count:
             raise RuntimeError("preview browser fixture must only compute once")
         self._state = "running"
-        for (profile, _), decision in self._decisions.items():
-            result = self._indexes[profile].publish(decision, expected_version=None)
+        for (profile, _), freeze in self._freezes.items():
+            result = self._indexes[profile].publish(freeze, expected_version=None)
             if not result.accepted or result.event is None:
                 raise RuntimeError("preview browser fixture publication failed")
             self.services.profiles[profile].events.publish_committed(result.event)
@@ -321,7 +321,7 @@ def _run(
                     _execute(
                         base,
                         f"""
-                    return ['status', 'decisions/d25/dates', 'decisions/d25/current'].every((path) =>
+                    return ['status', 'freezes/d25/dates', 'freezes/d25/current'].every((path) =>
                       performance.getEntriesByType('resource').some((entry) =>
                         entry.name.includes('/api/' + path) && entry.name.includes('profile={profile}')))
                       && document.querySelectorAll('#tableBody tr[data-code]').length === 2;
@@ -479,7 +479,7 @@ def _preview_acceptance(
     _wait(lambda: publication_text() == "测试预览 · 已完成", "preview completed status")
     before = _execute(
         base,
-        "return fetch('/api/decisions/tomorrow/current?profile=v2').then(r => r.json()).then(p => p.publication_id);",
+        "return fetch('/api/freezes/tomorrow/current?profile=v2').then(r => r.json()).then(p => p.publication_id);",
     )
     refresh()
     for _ in range(2):
@@ -496,7 +496,7 @@ def _preview_acceptance(
         )
     after = _execute(
         base,
-        "return fetch('/api/decisions/tomorrow/current?profile=v2').then(r => r.json()).then(p => p.publication_id);",
+        "return fetch('/api/freezes/tomorrow/current?profile=v2').then(r => r.json()).then(p => p.publication_id);",
     )
     profiles = []
     for profile in ("v1", "v3", "v5", "v2"):
@@ -690,7 +690,7 @@ def _close_chain(base: str | _ChromeSession, output_dir: Path) -> dict[str, obje
         base,
         """
         return (async () => {
-          const response = await fetch('/api/decisions/tomorrow/current?profile=v2');
+          const response = await fetch('/api/freezes/tomorrow/current?profile=v2');
           const published = {...await response.json(), historical: false};
           const full = published.pipeline?.stage_snapshots;
           if (!Array.isArray(full) || full.length !== 11) return {passed: false, reason: 'missing_api_stages'};
@@ -792,9 +792,9 @@ def _close_chain(base: str | _ChromeSession, output_dir: Path) -> dict[str, obje
 
 
 def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
-    index = UnifiedDecisionIndex()
-    drafts = UnifiedDecisionDraftIndex()
-    decisions: dict[Strategy, ScoredDecision] = {}
+    index = UnifiedFreezeIndex()
+    drafts = UnifiedFreezeDraftIndex()
+    freezes: dict[Strategy, ScoredFreeze] = {}
     for strategy, codes in (
         (Strategy.TOMORROW, ("600009", "600001")),
         (Strategy.D25, ("600010", "600002")),
@@ -803,7 +803,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             _observation_item(code, rank=rank, final_score=score)
             for rank, (code, score) in enumerate(zip(codes, (74.0, 72.0), strict=True), start=1)
         )
-        decision = ScoredDecision(
+        freeze = ScoredFreeze(
             strategy,
             _NOW.date(),
             1,
@@ -818,8 +818,8 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             (),
             pipeline=_browser_pipeline(),
         )
-        decisions[strategy] = decision
-    if not drafts.publish(decisions[Strategy.D25]).accepted:
+        freezes[strategy] = freeze
+    if not drafts.publish(freezes[Strategy.D25]).accepted:
         raise RuntimeError("browser d25 draft publication failed")
     long_projection = LongProjection(
         _NOW.date(),
@@ -853,7 +853,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
         nonlocal status_calls
         status_calls += 1
         if status_calls == 2:
-            result = drafts.publish(decisions[Strategy.TOMORROW])
+            result = drafts.publish(freezes[Strategy.TOMORROW])
             if not result.accepted:
                 raise RuntimeError(f"browser tomorrow draft publication failed: {result.reason}")
         input_quality = _browser_input_quality(empty=empty_draft_published) if status_calls >= 2 else {}
@@ -912,7 +912,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
 
     def publish_empty_draft() -> None:
         nonlocal empty_draft_published
-        empty = ScoredDecision(
+        empty = ScoredFreeze(
             Strategy.TOMORROW,
             _NOW.date(),
             3,
@@ -952,21 +952,21 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
         )
         result = index.publish(empty, expected_version=None)
         if not result.accepted:
-            raise RuntimeError(f"browser empty decision publication failed: {result.reason}")
+            raise RuntimeError(f"browser empty freeze publication failed: {result.reason}")
         empty_draft_published = True
 
     return (
         ProfiledWebServices(
             {
                 profile: UnifiedWebServices(
-                    UnifiedDecisionQueries(
+                    UnifiedFreezeQueries(
                         index,
                         drafts,
                         _BrowserHistory(),
                         _BrowserClock(),
-                        DecisionQuerySources(industry_classifications=_BrowserIndustryClassifications()),
+                        FreezeQuerySources(industry_classifications=_BrowserIndustryClassifications()),
                     ),
-                    UnifiedDecisionEventStream(),
+                    UnifiedFreezeEventStream(),
                     status_provider,
                     profile_id=profile,
                 )
@@ -1048,8 +1048,8 @@ def _browser_pipeline(*, empty: bool = False) -> RecommendationPipelineStatus:
     )
 
 
-def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionItem:
-    return DecisionItem(
+def _observation_item(code: str, *, rank: int, final_score: float) -> FreezeItem:
+    return FreezeItem(
         code,
         RecommendationAction.OBSERVE,
         True,
@@ -1068,7 +1068,7 @@ def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionIt
             "600010": "包钢股份",
             "600002": "齐鲁石化",
         }[code],
-        quote=DecisionQuote(
+        quote=FreezeQuote(
             code,
             10.25,
             2.5,

@@ -19,7 +19,7 @@ class HistorySyncGateway:
 
     The synchronizer derives the operation from the published snapshot: absence
     creates the complete 2000-session archive, while an existing snapshot only
-    downloads missing or reread data.  Keeping that decision in one owner
+    downloads missing or reread data.  Keeping that freeze in one owner
     prevents two writers from evolving different publication semantics.
     """
 

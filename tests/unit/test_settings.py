@@ -438,9 +438,9 @@ def test_long_watchlist_rejects_unknown_source_section(tmp_path) -> None:
         LoadLongWatchlist(changed_path)
 
 
-def test_runtime_rejects_removed_decision_execution_mode(tmp_path) -> None:
+def test_runtime_rejects_removed_freeze_execution_mode(tmp_path) -> None:
     raw = _runtime_document()
-    raw["pipeline"]["decision_execution_mode"] = "unsafe_parallel"
+    raw["pipeline"]["freeze_execution_mode"] = "unsafe_parallel"
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="unknown keys"):

@@ -1,4 +1,4 @@
-"""Pure scored review selection, controlled fusion, and decision epochs."""
+"""Pure scored review selection, controlled fusion, and freeze epochs."""
 
 from __future__ import annotations
 
@@ -42,14 +42,14 @@ from trader.recommendation.domain.risk.fusion import (
     FusionRequest,
 )
 
-DECISION_EPOCH_SCHEMA_VERSION = "decision_epoch"
+FREEZE_EPOCH_SCHEMA_VERSION = "freeze_epoch"
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
 _CanonicalValue: TypeAlias = str | int | float | bool | None | list["_CanonicalValue"] | dict[str, "_CanonicalValue"]
 
 
 @dataclass(frozen=True)
-class ScoredDecisionPolicy:
+class ScoredFreezePolicy:
     dimension_weights: Mapping[str, float]
     risk_rules: Mapping[str, RiskRule]
     executable_threshold: float
@@ -65,10 +65,10 @@ class ScoredDecisionPolicy:
     def __post_init__(self) -> None:
         weights = dict(self.dimension_weights)
         rules = dict(self.risk_rules)
-        _validate_decision_weights(weights)
-        _validate_decision_limits(self)
+        _validate_freeze_weights(weights)
+        _validate_freeze_limits(self)
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
-            raise ValueError("scored decision policy requires a scored strategy")
+            raise ValueError("scored freeze policy requires a scored strategy")
         object.__setattr__(self, "dimension_weights", MappingProxyType(weights))
         object.__setattr__(self, "risk_rules", MappingProxyType(rules))
 
@@ -88,7 +88,7 @@ class ScoredReviewCandidate:
 
 
 @dataclass(frozen=True)
-class ScoredDecisionEntry:
+class ScoredFreezeEntry:
     features: FeatureSnapshot
     disposition: ScoredDisposition
     score: ScoreBreakdown
@@ -107,7 +107,7 @@ class ScoredDecisionEntry:
     score_ledger: ScoreLedger | None = field(default=None, kw_only=True)
     selection_rank: int = 0
     local_selection_skip_reason: str = ""
-    decision_skip_reason: str = ""
+    freeze_skip_reason: str = ""
 
     @property
     def code(self) -> str:
@@ -130,31 +130,31 @@ class FusedScoredEvaluation:
 
 
 @dataclass(frozen=True)
-class _NormalizedDecisionPayload:
-    entries: tuple[ScoredDecisionEntry, ...]
+class _NormalizedFreezePayload:
+    entries: tuple[ScoredFreezeEntry, ...]
     codes: frozenset[str]
     review_codes: tuple[str, ...]
     reasons: tuple[str, ...]
-    selected: tuple[ScoredDecisionEntry, ...]
+    selected: tuple[ScoredFreezeEntry, ...]
     reason_counts: dict[str, int]
     populations: dict[str, str]
 
 
 @dataclass(frozen=True)
-class DecisionSelectionLimits:
+class FreezeSelectionLimits:
     top_k: int
     observation_limit: int
     maximum_board_fraction: float
 
     def __post_init__(self) -> None:
         if not 0 <= self.top_k <= 10 or not 0 <= self.observation_limit <= 8:
-            raise ValueError("decision selection pool limits are invalid")
+            raise ValueError("freeze selection pool limits are invalid")
         if not math.isfinite(self.maximum_board_fraction) or not 0.0 < self.maximum_board_fraction <= 0.60:
-            raise ValueError("decision selection board fraction is invalid")
+            raise ValueError("freeze selection board fraction is invalid")
 
 
 @dataclass(frozen=True)
-class DecisionEpoch:
+class FreezeEpoch:
     trade_date: date
     sequence: int
     observed_at: datetime
@@ -165,24 +165,24 @@ class DecisionEpoch:
     candidate_epoch_version: str | None
     research_epoch_version: str | None
     projection_stage: Literal["local", "hybrid"]
-    parent_decision_version: str | None
-    entries: tuple[ScoredDecisionEntry, ...]
+    parent_freeze_version: str | None
+    entries: tuple[ScoredFreezeEntry, ...]
     review_candidate_codes: tuple[str, ...]
     evaluated_count: int
     rejected_count: int
     unscored_count: int
     filter_reason_counts: Mapping[str, int]
     population_versions: Mapping[str, str]
-    selection_limits: DecisionSelectionLimits
+    selection_limits: FreezeSelectionLimits
     degraded_reasons: tuple[str, ...] = ()
-    schema_version: str = DECISION_EPOCH_SCHEMA_VERSION
+    schema_version: str = FREEZE_EPOCH_SCHEMA_VERSION
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
-        _validate_decision_coordinates(self)
-        payload = _normalize_decision_payload(self)
-        _validate_decision_entries(self, payload)
-        _validate_decision_metadata(self, payload)
+        _validate_freeze_coordinates(self)
+        payload = _normalize_freeze_payload(self)
+        _validate_freeze_entries(self, payload)
+        _validate_freeze_metadata(self, payload)
         object.__setattr__(self, "entries", payload.entries)
         object.__setattr__(self, "review_candidate_codes", payload.review_codes)
         object.__setattr__(self, "filter_reason_counts", MappingProxyType(payload.reason_counts))
@@ -191,16 +191,16 @@ class DecisionEpoch:
         object.__setattr__(
             self,
             "version",
-            f"decision:{self.trade_date.isoformat()}:{self.projection_stage}:{self.sequence}",
+            f"freeze:{self.trade_date.isoformat()}:{self.projection_stage}:{self.sequence}",
         )
 
     @cached_property
     def content_hash(self) -> str:
-        return _decision_epoch_hash(self, _normalize_decision_payload(self))
+        return _freeze_epoch_hash(self, _normalize_freeze_payload(self))
 
 
 @dataclass(frozen=True)
-class ScoredDecisionRequest:
+class ScoredFreezeRequest:
     selection: ScoredSelectionResult
     reviews: Mapping[str, DeepSeekReview]
     observed_at: datetime
@@ -213,13 +213,13 @@ class ScoredDecisionRequest:
     candidate_epoch_version: str | None
     research_epoch_version: str | None
     projection_stage: Literal["local", "hybrid"]
-    parent_decision_version: str | None
+    parent_freeze_version: str | None
     review_candidate_codes: tuple[str, ...]
     degraded_reasons: tuple[str, ...]
-    policy: ScoredDecisionPolicy
+    policy: ScoredFreezePolicy
 
     def __post_init__(self) -> None:
-        _require_shanghai_time(self.observed_at, "decision request observed_at")
+        _require_shanghai_time(self.observed_at, "freeze request observed_at")
         reviews = dict(self.reviews)
         review_codes = _sorted_unique_codes(self.review_candidate_codes, "review_candidate_codes")
         evaluations = {item.code: item for item in self.selection.scored_candidates}
@@ -240,17 +240,17 @@ class ScoredDecisionRequest:
         if any(code not in set(review_codes) for code in reviews):
             raise ValueError("DeepSeek review is outside the review candidate set")
         if self.projection_stage == "local" and reviews:
-            raise ValueError("local decision cannot contain DeepSeek reviews")
+            raise ValueError("local freeze cannot contain DeepSeek reviews")
         if self.projection_stage == "hybrid" and not any(
             review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} and review.completed_at <= self.observed_at
             for review in reviews.values()
         ):
-            raise ValueError("hybrid decision requires a current usable DeepSeek review")
+            raise ValueError("hybrid freeze requires a current usable DeepSeek review")
         object.__setattr__(self, "reviews", MappingProxyType(reviews))
         object.__setattr__(self, "review_candidate_codes", review_codes)
 
 
-def _validate_decision_weights(weights: Mapping[str, float]) -> None:
+def _validate_freeze_weights(weights: Mapping[str, float]) -> None:
     if set(weights) != set(DIMENSION_NAMES) or abs(sum(weights.values()) - 1.0) > 1e-9:
         raise ValueError("scored DeepSeek weights must contain five dimensions and sum to 1.0")
     if any(not math.isfinite(value) or value < 0.0 for value in weights.values()):
@@ -259,7 +259,7 @@ def _validate_decision_weights(weights: Mapping[str, float]) -> None:
         raise ValueError("scored industry_policy DeepSeek weight must remain zero")
 
 
-def _validate_decision_limits(policy: ScoredDecisionPolicy) -> None:
+def _validate_freeze_limits(policy: ScoredFreezePolicy) -> None:
     if not math.isfinite(policy.executable_threshold) or not 0.0 <= policy.executable_threshold <= 100.0:
         raise ValueError("scored executable threshold must be in [0, 100]")
     if not math.isfinite(policy.observation_margin) or policy.observation_margin < 0.0:
@@ -274,12 +274,12 @@ def _validate_decision_limits(policy: ScoredDecisionPolicy) -> None:
         raise ValueError("scored board fraction must be in (0, 0.60]")
 
 
-def _validate_decision_coordinates(epoch: DecisionEpoch) -> None:
+def _validate_freeze_coordinates(epoch: FreezeEpoch) -> None:
     if epoch.sequence < 0:
-        raise ValueError("decision epoch sequence cannot be negative")
-    _require_shanghai_time(epoch.observed_at, "decision observed_at")
+        raise ValueError("freeze epoch sequence cannot be negative")
+    _require_shanghai_time(epoch.observed_at, "freeze observed_at")
     if epoch.observed_at.date() != epoch.trade_date:
-        raise ValueError("decision trade date must match observed_at")
+        raise ValueError("freeze trade date must match observed_at")
     for value, name in (
         (epoch.config_version, "config_version"),
         (epoch.strategy_version, "strategy_version"),
@@ -287,21 +287,21 @@ def _validate_decision_coordinates(epoch: DecisionEpoch) -> None:
         (epoch.market_epoch_version, "market_epoch_version"),
     ):
         _require_text(value, name)
-    if epoch.schema_version != DECISION_EPOCH_SCHEMA_VERSION:
-        raise ValueError(f"decision schema_version must be {DECISION_EPOCH_SCHEMA_VERSION}")
-    if epoch.projection_stage == "local" and epoch.parent_decision_version is not None:
-        raise ValueError("local decision cannot reference a parent decision")
-    if epoch.projection_stage == "hybrid" and not epoch.parent_decision_version:
-        raise ValueError("hybrid decision must reference its local parent")
+    if epoch.schema_version != FREEZE_EPOCH_SCHEMA_VERSION:
+        raise ValueError(f"freeze schema_version must be {FREEZE_EPOCH_SCHEMA_VERSION}")
+    if epoch.projection_stage == "local" and epoch.parent_freeze_version is not None:
+        raise ValueError("local freeze cannot reference a parent freeze")
+    if epoch.projection_stage == "hybrid" and not epoch.parent_freeze_version:
+        raise ValueError("hybrid freeze must reference its local parent")
 
 
-def _normalize_decision_payload(epoch: DecisionEpoch) -> _NormalizedDecisionPayload:
+def _normalize_freeze_payload(epoch: FreezeEpoch) -> _NormalizedFreezePayload:
     entries = tuple(sorted(epoch.entries, key=lambda item: item.code))
     codes = frozenset(item.code for item in entries)
     review_codes = _sorted_unique_codes(epoch.review_candidate_codes, "review_candidate_codes")
     reasons = tuple(sorted(set(epoch.degraded_reasons)))
     selected = tuple(sorted((item for item in entries if item.selected), key=lambda item: item.rank))
-    return _NormalizedDecisionPayload(
+    return _NormalizedFreezePayload(
         entries=entries,
         codes=codes,
         review_codes=review_codes,
@@ -312,58 +312,58 @@ def _normalize_decision_payload(epoch: DecisionEpoch) -> _NormalizedDecisionPayl
     )
 
 
-def _validate_decision_entries(
-    epoch: DecisionEpoch,
-    payload: _NormalizedDecisionPayload,
+def _validate_freeze_entries(
+    epoch: FreezeEpoch,
+    payload: _NormalizedFreezePayload,
 ) -> None:
     if len(payload.entries) != len(payload.codes):
-        raise ValueError("decision entries must contain unique codes")
+        raise ValueError("freeze entries must contain unique codes")
     if any(item.features.observed_at > epoch.observed_at for item in payload.entries):
-        raise ValueError("decision cannot contain future features")
-    _validate_decision_risk_times(payload.entries, epoch.observed_at)
+        raise ValueError("freeze cannot contain future features")
+    _validate_freeze_risk_times(payload.entries, epoch.observed_at)
     if len(payload.review_codes) > 6:
-        raise ValueError("decision epoch cannot exceed six review candidates")
+        raise ValueError("freeze epoch cannot exceed six review candidates")
     if any(code not in payload.codes for code in payload.review_codes):
-        raise ValueError("decision review candidates must reference decision entries")
+        raise ValueError("freeze review candidates must reference freeze entries")
     if [item.rank for item in payload.selected] != list(range(1, len(payload.selected) + 1)):
-        raise ValueError("selected decision ranks must be contiguous")
+        raise ValueError("selected freeze ranks must be contiguous")
     _validate_selection_ranks(payload.entries)
     _validate_stage_entries(epoch.projection_stage, payload.entries, set(payload.review_codes))
     _validate_selected_pools(list(payload.selected), epoch.selection_limits)
 
 
-def _validate_decision_risk_times(
-    entries: tuple[ScoredDecisionEntry, ...],
+def _validate_freeze_risk_times(
+    entries: tuple[ScoredFreezeEntry, ...],
     observed_at: datetime,
 ) -> None:
     for item in entries:
         for fact in (*item.local_risk_facts, *item.deepseek_risk_facts):
-            _require_shanghai_time(fact.observed_at, "decision risk observed_at")
+            _require_shanghai_time(fact.observed_at, "freeze risk observed_at")
             if fact.observed_at > observed_at:
-                raise ValueError("decision cannot contain future risk facts")
+                raise ValueError("freeze cannot contain future risk facts")
 
 
-def _validate_decision_metadata(
-    epoch: DecisionEpoch,
-    payload: _NormalizedDecisionPayload,
+def _validate_freeze_metadata(
+    epoch: FreezeEpoch,
+    payload: _NormalizedFreezePayload,
 ) -> None:
     if any(_REASON_CODE.fullmatch(reason) is None for reason in payload.reasons):
-        raise ValueError("decision degraded reasons must be structured codes")
+        raise ValueError("freeze degraded reasons must be structured codes")
     if epoch.evaluated_count < len(payload.entries):
-        raise ValueError("decision evaluated count cannot be smaller than scored entries")
+        raise ValueError("freeze evaluated count cannot be smaller than scored entries")
     if not 0 <= epoch.rejected_count <= epoch.evaluated_count:
-        raise ValueError("decision rejected count is invalid")
+        raise ValueError("freeze rejected count is invalid")
     if not 0 <= epoch.unscored_count <= epoch.evaluated_count:
-        raise ValueError("decision unscored count is invalid")
+        raise ValueError("freeze unscored count is invalid")
     if any(_REASON_CODE.fullmatch(reason) is None or count < 1 for reason, count in payload.reason_counts.items()):
-        raise ValueError("decision filter reason counts are invalid")
+        raise ValueError("freeze filter reason counts are invalid")
     if any(not board.strip() or not version.strip() for board, version in payload.populations.items()):
-        raise ValueError("decision population versions must not be empty")
+        raise ValueError("freeze population versions must not be empty")
 
 
-def _decision_epoch_hash(
-    epoch: DecisionEpoch,
-    payload: _NormalizedDecisionPayload,
+def _freeze_epoch_hash(
+    epoch: FreezeEpoch,
+    payload: _NormalizedFreezePayload,
 ) -> str:
     return _content_hash(
         {
@@ -378,8 +378,8 @@ def _decision_epoch_hash(
             "candidate_epoch_version": epoch.candidate_epoch_version,
             "research_epoch_version": epoch.research_epoch_version,
             "projection_stage": epoch.projection_stage,
-            "parent_decision_version": epoch.parent_decision_version,
-            "entries": tuple(_decision_entry_identity(item) for item in payload.entries),
+            "parent_freeze_version": epoch.parent_freeze_version,
+            "entries": tuple(_freeze_entry_identity(item) for item in payload.entries),
             "review_candidate_codes": payload.review_codes,
             "evaluated_count": epoch.evaluated_count,
             "rejected_count": epoch.rejected_count,
@@ -394,7 +394,7 @@ def _decision_epoch_hash(
 
 def SelectScoredReviewCandidates(
     fixed_seats: tuple[ScoredStockEvaluation, ...],
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
 ) -> tuple[ScoredReviewCandidate, ...]:
     eligible = tuple(
         item
@@ -423,11 +423,11 @@ def SelectScoredReviewCandidates(
     )
 
 
-def BuildScoredDecisionEpoch(
-    request: ScoredDecisionRequest,
+def BuildScoredFreezeEpoch(
+    request: ScoredFreezeRequest,
     *,
-    entries: tuple[ScoredDecisionEntry, ...] | None = None,
-) -> DecisionEpoch:
+    entries: tuple[ScoredFreezeEntry, ...] | None = None,
+) -> FreezeEpoch:
     if entries is None:
         fixed = SelectFixedScoredSeats(request.selection.scored_candidates, request.policy)
         reviewed = ReviewScoredEvaluations(fixed, tuple(request.reviews.values()), request.observed_at)
@@ -437,7 +437,7 @@ def BuildScoredDecisionEpoch(
             for rank, item in enumerate(ApplyScoredActions(fused, request.policy), start=1)
         )
     reason_counts = _filter_reason_counts(request.selection)
-    return DecisionEpoch(
+    return FreezeEpoch(
         trade_date=request.trade_date,
         sequence=request.sequence,
         observed_at=request.observed_at,
@@ -448,7 +448,7 @@ def BuildScoredDecisionEpoch(
         candidate_epoch_version=request.candidate_epoch_version,
         research_epoch_version=request.research_epoch_version,
         projection_stage=request.projection_stage,
-        parent_decision_version=request.parent_decision_version,
+        parent_freeze_version=request.parent_freeze_version,
         entries=entries,
         review_candidate_codes=request.review_candidate_codes,
         evaluated_count=len(request.selection.evaluations),
@@ -456,7 +456,7 @@ def BuildScoredDecisionEpoch(
         unscored_count=sum(item.local_score is None for item in request.selection.evaluations),
         filter_reason_counts=reason_counts,
         population_versions={board.value: version for board, version in request.selection.population_versions.items()},
-        selection_limits=DecisionSelectionLimits(
+        selection_limits=FreezeSelectionLimits(
             top_k=request.policy.top_k,
             observation_limit=request.policy.observation_limit,
             maximum_board_fraction=request.policy.maximum_board_fraction,
@@ -474,14 +474,14 @@ def ReviewScoredEvaluations(
     for evaluation in evaluations:
         review = next((item for item in reviews if item.code == evaluation.code), None)
         if review is not None and review.completed_at > observed_at:
-            review = replace(review, outcome=ReviewOutcome.LATE, error="review_completed_after_decision")
+            review = replace(review, outcome=ReviewOutcome.LATE, error="review_completed_after_freeze")
         result.append(ReviewedScoredEvaluation(evaluation, review))
     return tuple(result)
 
 
 def FuseScoredEvaluations(
     reviewed: tuple[ReviewedScoredEvaluation, ...],
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
     observed_at: datetime,
 ) -> tuple[FusedScoredEvaluation, ...]:
     return tuple(_fuse_evaluation(item, policy, observed_at) for item in reviewed)
@@ -489,7 +489,7 @@ def FuseScoredEvaluations(
 
 def _fuse_evaluation(
     reviewed: ReviewedScoredEvaluation,
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
     observed_at: datetime,
 ) -> FusedScoredEvaluation:
     evaluation = reviewed.evaluation
@@ -538,16 +538,16 @@ def _fuse_evaluation(
 
 def ApplyScoredActions(
     fused: tuple[FusedScoredEvaluation, ...],
-    policy: ScoredDecisionPolicy,
-) -> tuple[ScoredDecisionEntry, ...]:
+    policy: ScoredFreezePolicy,
+) -> tuple[ScoredFreezeEntry, ...]:
     return tuple(_action_entry(item, policy) for item in fused)
 
 
-def _action_entry(fused: FusedScoredEvaluation, policy: ScoredDecisionPolicy) -> ScoredDecisionEntry:
+def _action_entry(fused: FusedScoredEvaluation, policy: ScoredFreezePolicy) -> ScoredFreezeEntry:
     evaluation = fused.evaluation
     review = fused.review
     action, action_reason = _action_for(evaluation, fused.score, fused.veto, policy)
-    return ScoredDecisionEntry(
+    return ScoredFreezeEntry(
         score_ledger=evaluation.score_ledger,
         features=evaluation.features,
         disposition=evaluation.disposition,
@@ -566,7 +566,7 @@ def _action_entry(fused: FusedScoredEvaluation, policy: ScoredDecisionPolicy) ->
         veto=fused.veto,
         selection_rank=0,
         local_selection_skip_reason=evaluation.selection_skip_reason,
-        decision_skip_reason="" if action is not RecommendationAction.UNAVAILABLE else action_reason,
+        freeze_skip_reason="" if action is not RecommendationAction.UNAVAILABLE else action_reason,
     )
 
 
@@ -574,7 +574,7 @@ def _action_for(
     evaluation: ScoredStockEvaluation,
     score: ScoreBreakdown,
     veto: bool,
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
 ) -> tuple[RecommendationAction, str]:
     unavailable_reason = _unavailable_reason(evaluation, score, veto, policy)
     if unavailable_reason is not None:
@@ -603,7 +603,7 @@ def _unavailable_reason(
     evaluation: ScoredStockEvaluation,
     score: ScoreBreakdown,
     veto: bool,
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
 ) -> str | None:
     if evaluation.local_score is None or evaluation.disposition is ScoredDisposition.REJECT:
         return evaluation.selection_skip_reason or "not_scored"
@@ -618,7 +618,7 @@ def _unavailable_reason(
 
 def SelectFixedScoredSeats(
     evaluations: tuple[ScoredStockEvaluation, ...],
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
 ) -> tuple[ScoredStockEvaluation, ...]:
     """Fix six seats before optional review and action evaluation."""
     selected: list[ScoredStockEvaluation] = []
@@ -640,7 +640,7 @@ def SelectFixedScoredSeats(
 def _review_context(
     item: ScoredStockEvaluation,
     rank: int,
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
 ) -> ReviewCandidateContext:
     assert item.local_score is not None
     downside = AssessDownside(item.features, policy.strategy, require_industry_breadth=False)
@@ -685,7 +685,7 @@ def _filter_reason_counts(selection: ScoredSelectionResult) -> dict[str, int]:
 
 def _validate_stage_entries(
     projection_stage: Literal["local", "hybrid"],
-    entries: tuple[ScoredDecisionEntry, ...],
+    entries: tuple[ScoredFreezeEntry, ...],
     review_codes: set[str],
 ) -> None:
     if projection_stage == "local" and any(
@@ -695,28 +695,28 @@ def _validate_stage_entries(
         or item.deepseek_risk_facts
         for item in entries
     ):
-        raise ValueError("local decision entries cannot contain DeepSeek results")
+        raise ValueError("local freeze entries cannot contain DeepSeek results")
     if any(item.review is not None and item.code not in review_codes for item in entries):
-        raise ValueError("decision review must belong to the review candidate set")
+        raise ValueError("freeze review must belong to the review candidate set")
     if any(
         item.score.fusion_applied and (projection_stage != "hybrid" or item.review_outcome is not ReviewOutcome.APPLIED)
         for item in entries
     ):
-        raise ValueError("fusion can only apply to an applied review in a hybrid decision")
+        raise ValueError("fusion can only apply to an applied review in a hybrid freeze")
 
 
 def _validate_selected_pools(
-    selected: list[ScoredDecisionEntry],
-    limits: DecisionSelectionLimits,
+    selected: list[ScoredFreezeEntry],
+    limits: FreezeSelectionLimits,
 ) -> None:
-    if len(selected) > 6 or tuple(selected) != tuple(sorted(selected, key=_decision_order)):
-        raise ValueError("fixed decision seats must preserve score order")
+    if len(selected) > 6 or tuple(selected) != tuple(sorted(selected, key=_freeze_order)):
+        raise ValueError("fixed freeze seats must preserve score order")
     board_limit = math.ceil(6 * limits.maximum_board_fraction)
     if any(count > board_limit for count in Counter(item.features.quote.board for item in selected).values()):
-        raise ValueError("fixed decision seats exceed the board limit")
+        raise ValueError("fixed freeze seats exceed the board limit")
 
 
-def _validate_selection_ranks(entries: tuple[ScoredDecisionEntry, ...]) -> None:
+def _validate_selection_ranks(entries: tuple[ScoredFreezeEntry, ...]) -> None:
     for item in entries:
         if item.selection_rank != item.rank:
             raise ValueError("selection rank must identify the fixed seat")
@@ -727,11 +727,11 @@ def _local_order(item: ScoredStockEvaluation) -> tuple[float, str]:
     return (-score, item.code)
 
 
-def _decision_order(item: ScoredDecisionEntry) -> tuple[float, str]:
+def _freeze_order(item: ScoredFreezeEntry) -> tuple[float, str]:
     return (-item.score.final_score, item.code)
 
 
-def _decision_entry_identity(item: ScoredDecisionEntry) -> dict[str, object]:
+def _freeze_entry_identity(item: ScoredFreezeEntry) -> dict[str, object]:
     population = item.features.board_population
     feature_identity = {
         "code": item.code,
@@ -772,7 +772,7 @@ def _decision_entry_identity(item: ScoredDecisionEntry) -> dict[str, object]:
         "review_outcome": item.review_outcome,
         "veto": item.veto,
         "local_selection_skip_reason": item.local_selection_skip_reason,
-        "decision_skip_reason": item.decision_skip_reason,
+        "freeze_skip_reason": item.freeze_skip_reason,
     }
 
 
@@ -802,13 +802,13 @@ def _require_text(value: str, name: str) -> None:
 
 
 __all__ = [
-    "DECISION_EPOCH_SCHEMA_VERSION",
-    "DecisionEpoch",
-    "DecisionSelectionLimits",
-    "ScoredDecisionEntry",
-    "ScoredDecisionPolicy",
-    "ScoredDecisionRequest",
+    "FREEZE_EPOCH_SCHEMA_VERSION",
+    "FreezeEpoch",
+    "FreezeSelectionLimits",
+    "ScoredFreezeEntry",
+    "ScoredFreezePolicy",
+    "ScoredFreezeRequest",
     "ScoredReviewCandidate",
-    "BuildScoredDecisionEpoch",
+    "BuildScoredFreezeEpoch",
     "SelectScoredReviewCandidates",
 ]

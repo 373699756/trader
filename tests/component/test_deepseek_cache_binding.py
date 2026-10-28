@@ -14,7 +14,7 @@ from tests.component.test_deepseek import _reviewer_policy, _settings
 from tests.component.test_deepseek_schema import NOW, _budget, _candidate, _primary_payload, _Response
 from tests.unit.application.test_recommendation_boundaries import _features, _native_input, _runtime_policy
 from trader.infra.http_contracts import HttpTimeout
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     ValidateReviewManifests,
 )
@@ -56,8 +56,8 @@ def test_reused_review_binds_current_input_without_rewriting_request_manifest(ap
         {current.quote.code: rebound},
         review_deadline=projection.native_input.evaluated_at + timedelta(minutes=1),
     )
-    assert hybrid is not None and hybrid.decision is not None
-    assert tuple((item.code, item.final_score) for item in hybrid.decision.items) == tuple(
+    assert hybrid is not None and hybrid.freeze is not None
+    assert tuple((item.code, item.final_score) for item in hybrid.freeze.items) == tuple(
         (item.code, item.final_score) for item in projection.local.items
     )
     for field in ("original_manifest_hash", "current_manifest_hash"):

@@ -17,17 +17,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.runtime_migration import (  # noqa: E402
-    CopyFile,
     FileDigest,
-    ImportDecisions,
-    ImportSequence,
-    ImportTraces,
     MergeDatabase,
     ValidateDatabase,
 )
 from trader.infra.process_lock import ProcessLock  # noqa: E402
 from trader.infra.settings.data_paths import DataPaths  # noqa: E402
-from trader.recommendation.application.ports.decision_records import DecisionRecordError  # noqa: E402
 
 MANIFEST_NAME = "migration-manifest.json"
 
@@ -88,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             rollback(args.target, args.backup)
             result = {"state": "rolled_back"}
-    except (MigrationError, DecisionRecordError, OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+    except (MigrationError, OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         result = {"state": "failed", "error_code": _error_code(exc)}
         print(json.dumps(result, sort_keys=True))
         return 1
@@ -112,34 +107,14 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
         before, _count, _size = _fingerprint(source, validate=True)
         staging.mkdir(parents=True)
         paths = DataPaths(staging)
-        data, runtime = source / "data", source / ".runtime/trader"
+        runtime = source / ".runtime/trader"
         # Company facts require a fresh extraction; legacy evidence is never copied into the new contract.
         # All existing budget histories contribute. Duplicate request identities must agree.
         runtime_roots = (runtime, runtime / "profiles/v2", runtime / "profiles/v3")
         for root in (runtime / "shared", *runtime_roots):
             MergeDatabase(root / "deepseek-budget.sqlite3", paths.budget)
-        for profile in ("v2", "v3"):
-            profile_root = paths.recommendation(profile)
-            research = paths.research(profile)
-            roots: tuple[Path, ...] = (runtime / "profiles" / profile,)
-            if profile == default_profile:
-                roots += (runtime,)
-            for root in roots:
-                MergeDatabase(root / "market-data/market-data.sqlite3", profile_root / "snapshots.sqlite3")
-            for root in roots:
-                ImportSequence(root / "publication-sequence.sqlite3", profile_root / "snapshots.sqlite3")
-                MergeDatabase(root / "research/outcomes.sqlite3", research / "outcomes.sqlite3")
-                for trace in sorted((root / "research/committed-events").glob("*.sqlite3")):
-                    ImportTraces(trace, research / "traces")
-                ImportTraces(root / "research/committed-events.sqlite3", research / "traces")
-                ImportDecisions(root / "decisions/decisions.sqlite3", profile_root / "decisions.sqlite3")
-                _experiments(root, research)
-            ImportDecisions(data / "freeze" / profile / "freeze.sqlite3", profile_root / "decisions.sqlite3")
-            ImportDecisions(
-                data / "freeze" / profile / "decisions/decisions.sqlite3", profile_root / "decisions.sqlite3"
-            )
-            if profile == default_profile:
-                ImportDecisions(data / "freeze/freeze.sqlite3", profile_root / "decisions.sqlite3")
+        # Freeze records, outcomes, traces and research schemas start empty.
+        # Old evidence stays in the source release; no import can grant new formal authority.
         after, _count, _size = _fingerprint(source, validate=True)
         if after != before:
             raise MigrationError("migration_source_changed")
@@ -162,6 +137,11 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
                 "models",
                 "training_samples",
                 "company_facts",
+                "freeze_records",
+                "publication_sequence",
+                "outcomes",
+                "freeze_traces",
+                "research_experiments",
             ),
             cleanup,
         )
@@ -182,30 +162,6 @@ def _flush_candidate(root: Path) -> None:
     ):
         _fsync_directory(directory)
     _fsync_directory(root)
-
-
-def _experiments(root: Path, research: Path) -> None:
-    experiments = research / "experiments"
-    MergeDatabase(
-        root / "score-h1-point-in-time/score-h1-point-in-time.sqlite3", experiments / "h1_point_in_time/samples.sqlite3"
-    )
-    MergeDatabase(root / "score-history/score-history.sqlite3", experiments / "historical_screening/samples.sqlite3")
-    for name in ("tomorrow-historical", "tomorrow-historical-risk"):
-        source = root / name
-        if source.is_dir():
-            _copy_tree(source, experiments)
-    source = root / "tomorrow-research"
-    if source.is_dir():
-        _copy_tree(source, experiments / "tomorrow_research")
-
-
-def _copy_tree(source: Path, target: Path) -> None:
-    for path in _files(source):
-        destination = target / path.relative_to(source)
-        if path.suffix == ".sqlite3":
-            MergeDatabase(path, destination)
-        else:
-            CopyFile(path, destination)
 
 
 def inspect_layout(source: Path) -> MigrationManifest:

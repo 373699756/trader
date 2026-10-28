@@ -13,11 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = ROOT / "src/trader"
 SEALING = SOURCE_ROOT / "infra/serialization/sealing.py"
 
-# ``infra/persistence/decision_records.py`` publishes formal decision records with a
-# crash-injectable, directory-fsynced variant owned by the decision-record durability
+# ``infra/persistence/freeze_records.py`` publishes formal freeze records with a
+# crash-injectable, directory-fsynced variant owned by the freeze-record durability
 # boundary. Folding it in requires the shared durability consolidation instead of this
 # contract, so it stays the single documented exemption.
-DURABILITY_EXEMPT = {SOURCE_ROOT / "recommendation/infra/persistence/decision_records.py"}
+DURABILITY_EXEMPT = {SOURCE_ROOT / "recommendation/infra/persistence/freeze_records.py"}
 
 
 def _hard_link_lines(path: Path) -> list[int]:

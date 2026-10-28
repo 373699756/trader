@@ -59,7 +59,7 @@ def test_r5_bootstrap_refuses_short_non_circular_blocks() -> None:
 
 
 def test_r5_holm_keeps_the_fixed_five_variant_family_after_first_failure() -> None:
-    decisions = HolmStepDown(
+    freezes = HolmStepDown(
         {
             "continuous_entry": 0.009,
             "coverage_shrink": 0.020,
@@ -68,9 +68,9 @@ def test_r5_holm_keeps_the_fixed_five_variant_family_after_first_failure() -> No
             "combined": 0.021,
         }
     )
-    by_id = {item.variant_id: item for item in decisions}
+    by_id = {item.variant_id: item for item in freezes}
 
-    assert tuple(item.family_rank for item in decisions) == (1, 2, 3, 4, 5)
+    assert tuple(item.family_rank for item in freezes) == (1, 2, 3, 4, 5)
     assert by_id["heat_weak_structure"].rejected_null is True
     assert by_id["continuous_entry"].rejected_null is True
     assert by_id["coverage_shrink"].rejected_null is False

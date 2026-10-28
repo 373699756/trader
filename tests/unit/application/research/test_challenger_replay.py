@@ -93,7 +93,7 @@ def test_r4_replays_all_five_variants_as_same_day_same_stock_pairs() -> None:
     for variant in report.variants:
         day = variant.days[0]
         assert tuple(item.code for item in day.pairs) == ("300001", "600001", "688001")
-        assert all(item.settlement.decision_date == day.trade_date for item in day.pairs)
+        assert all(item.settlement.freeze_date == day.trade_date for item in day.pairs)
         assert sum(item.production_weight for item in day.pairs) == pytest.approx(1.0)
         assert sum(item.local_weight for item in day.pairs) in (pytest.approx(0.0), pytest.approx(1.0))
         assert sum(item.hybrid_weight for item in day.pairs) in (pytest.approx(0.0), pytest.approx(1.0))

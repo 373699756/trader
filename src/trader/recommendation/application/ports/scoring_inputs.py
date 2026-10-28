@@ -1,4 +1,4 @@
-"""Immutable accepted input batches exposed to decision construction."""
+"""Immutable accepted input batches exposed to freeze construction."""
 
 from __future__ import annotations
 

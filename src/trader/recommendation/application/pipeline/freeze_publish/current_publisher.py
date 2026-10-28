@@ -10,27 +10,27 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
     PublicationIoTracker,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
-    UnifiedDecisionIndex,
-    UnifiedDecisionPublishResult,
+    UnifiedFreezeIndex,
+    UnifiedFreezePublishResult,
     UnifiedPairedPublishResult,
 )
-from trader.recommendation.application.ports.runtime import DecisionBuilderPort
+from trader.recommendation.application.ports.runtime import FreezeBuilderPort
 from trader.recommendation.domain.evidence.pipeline import StageState
-from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 
 
 def PublishCurrentSnapshot(
-    index: UnifiedDecisionIndex,
-    builder: DecisionBuilderPort,
-    identity: DecisionIdentity,
+    index: UnifiedFreezeIndex,
+    builder: FreezeBuilderPort,
+    identity: FreezeIdentity,
     *,
     expected_version: str | None,
     publication_io: PublicationIoTracker | None,
-) -> UnifiedDecisionPublishResult:
-    if not isinstance(identity, ScoredDecision):
+) -> UnifiedFreezePublishResult:
+    if not isinstance(identity, ScoredFreeze):
         return index.publish(identity, expected_version=expected_version)
-    with ObservePublicationIo(publication_io, "current_publish", PublicationIoTarget.decision(identity)) as observation:
+    with ObservePublicationIo(publication_io, "current_publish", PublicationIoTarget.freeze(identity)) as observation:
         overlay = builder.initial_overlay(identity)
         result = index.publish_scored(identity, overlay, expected_version=expected_version)
         observation.reason = result.reason
@@ -40,26 +40,26 @@ def PublishCurrentSnapshot(
 
 
 def PublishCurrentPair(
-    index: UnifiedDecisionIndex,
-    builder: DecisionBuilderPort,
-    decisions: tuple[ScoredDecision, ScoredDecision],
+    index: UnifiedFreezeIndex,
+    builder: FreezeBuilderPort,
+    freezes: tuple[ScoredFreeze, ScoredFreeze],
     *,
     expected_versions: tuple[str | None, str | None],
     publication_io: PublicationIoTracker | None,
 ) -> UnifiedPairedPublishResult:
-    if tuple(decision.strategy for decision in decisions) != (Strategy.TOMORROW, Strategy.D25):
+    if tuple(freeze.strategy for freeze in freezes) != (Strategy.TOMORROW, Strategy.D25):
         raise ValueError("paired publication requires tomorrow and d25")
     with ExitStack() as stack:
         observations = tuple(
             stack.enter_context(
-                ObservePublicationIo(publication_io, "current_publish", PublicationIoTarget.decision(item))
+                ObservePublicationIo(publication_io, "current_publish", PublicationIoTarget.freeze(item))
             )
-            for item in decisions
+            for item in freezes
         )
-        overlays = (builder.initial_overlay(decisions[0]), builder.initial_overlay(decisions[1]))
-        result = index.publish_scored_pair(decisions, overlays, expected_versions)
-        for observation, decision in zip(observations, decisions, strict=True):
+        overlays = (builder.initial_overlay(freezes[0]), builder.initial_overlay(freezes[1]))
+        result = index.publish_scored_pair(freezes, overlays, expected_versions)
+        for observation, freeze in zip(observations, freezes, strict=True):
             observation.reason = result.reason
             observation.state = StageState.READY if result.accepted else StageState.FAILED
-            observation.output_version = decision.version if result.accepted else None
+            observation.output_version = freeze.version if result.accepted else None
         return result

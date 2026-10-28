@@ -8,21 +8,21 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import NOW, decision
+from tests.unit.domain.test_freeze_identity import NOW, freeze
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.data_source.source_quality import FailureCode
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import AsyncFreezeObserver
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPendingError,
     DataRefreshUnavailableError,
-    DecisionUnavailableError,
+    FreezeUnavailableError,
     RefreshOutcome,
     ResearchIntent,
     ResearchRuntimeStatus,
@@ -40,12 +40,12 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    DecisionOverlay,
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    FreezeOverlay,
     LongProjection,
     LongProjectionItem,
-    ScoredDecision,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -131,7 +131,7 @@ def _cadence(at: datetime) -> CadencePlanner:
     )
 
 
-class Decisions:
+class Freezes:
     def input_quality_status(self):
         return ()
 
@@ -148,7 +148,7 @@ class Decisions:
                 (("quotes", request.input_version),),
                 (LongProjectionItem("600001", "core", request.input_version),),
             )
-        current = decision(request.strategy, sequence=request.sequence)
+        current = freeze(request.strategy, sequence=request.sequence)
         items = tuple(
             replace(
                 item,
@@ -163,18 +163,16 @@ class Decisions:
             items=items,
         )
 
-    def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
-        quotes = tuple(item.quote for item in decision.items if item.selected and item.quote is not None)
-        return DecisionOverlay(
-            decision.strategy, decision.trade_date, decision.version, decision.observed_at, quotes, sequence=1
-        )
+    def initial_overlay(self, freeze: ScoredFreeze) -> FreezeOverlay:
+        quotes = tuple(item.quote for item in freeze.items if item.selected and item.quote is not None)
+        return FreezeOverlay(freeze.strategy, freeze.trade_date, freeze.version, freeze.observed_at, quotes, sequence=1)
 
     def refreshed_overlay(
         self,
-        decision: ScoredDecision,
+        freeze: ScoredFreeze,
         request: CycleRequest,
-        previous: DecisionOverlay | None,
-    ) -> DecisionOverlay | None:
+        previous: FreezeOverlay | None,
+    ) -> FreezeOverlay | None:
         del previous
         quotes = tuple(
             replace(
@@ -183,13 +181,13 @@ class Decisions:
                 source_time=request.observed_at,
                 data_version=request.input_version,
             )
-            for item in decision.items
+            for item in freeze.items
             if item.selected and item.quote is not None
         )
         if not quotes:
             return None
-        return DecisionOverlay(
-            decision.strategy, decision.trade_date, decision.version, request.observed_at, quotes, sequence=1
+        return FreezeOverlay(
+            freeze.strategy, freeze.trade_date, freeze.version, request.observed_at, quotes, sequence=1
         )
 
     def research_audit_factory(self, version: str):
@@ -200,7 +198,7 @@ class Decisions:
         del version
         return None
 
-    def research_intent(self, current: ScoredDecision) -> ResearchIntent:
+    def research_intent(self, current: ScoredFreeze) -> ResearchIntent:
         codes = tuple(item.code for item in current.items)
         return ResearchIntent(current.strategy, current.trade_date, codes, codes)
 
@@ -239,7 +237,7 @@ class SharedReviews:
     def __init__(self) -> None:
         self.calls: list[Strategy] = []
 
-    def build_hybrid(self, local: ScoredDecision, request: CycleRequest) -> ScoredDecision:
+    def build_hybrid(self, local: ScoredFreeze, request: CycleRequest) -> ScoredFreeze:
         self.calls.append(request.strategy)
         return replace(
             local,
@@ -253,22 +251,22 @@ class SharedReviews:
 @pytest.mark.parametrize("failure", ("overlay", "cas", "event", "observer"))
 def test_publication_failure_receipts_reach_http_without_changing_valid_current(failure: str, tmp_path) -> None:
     from trader.http_api.route_services import UnifiedWebServices
-    from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-    from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-    from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-    from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+    from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+    from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+    from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+    from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
     from trader.web import CreateApp
 
     clock = FixedClock(NOW)
     tracker = PublicationIoTracker(now=clock.now, monotonic=lambda: 1.0)
-    index = UnifiedDecisionIndex()
-    current = decision()
+    index = UnifiedFreezeIndex()
+    current = freeze()
     assert index.publish(current, expected_version=None).accepted
-    builder = Decisions()
+    builder = Freezes()
 
-    class BrokenOverlay(Decisions):
-        def initial_overlay(self, value: ScoredDecision) -> DecisionOverlay:
-            raise DecisionUnavailableError("controlled_overlay_failure")
+    class BrokenOverlay(Freezes):
+        def initial_overlay(self, value: ScoredFreeze) -> FreezeOverlay:
+            raise FreezeUnavailableError("controlled_overlay_failure")
 
     class StatusReviewer:
         def status(self):
@@ -291,14 +289,14 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=BrokenOverlay() if failure == "overlay" else builder,
+            freezes=BrokenOverlay() if failure == "overlay" else builder,
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-publication-failure"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-publication-failure"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=event_sink,
+            publish_freeze=event_sink,
             publish_overlay=lambda _overlay: None,
             publication_io=tracker,
         ),
@@ -314,30 +312,30 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
         operation = "current_publish"
     else:
         assert published and index.snapshot(Strategy.TOMORROW).current == candidate
-        operation = "decision_event" if failure == "event" else "observer_enqueue"
+        operation = "freeze_event" if failure == "event" else "observer_enqueue"
     payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["health"]["issue_count"] > 0
-    repository = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    repository = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
     repository.initialize()
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), repository, clock)
-    stream = UnifiedDecisionEventStream()
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), repository, clock)
+    stream = UnifiedFreezeEventStream()
     client = CreateApp(services=UnifiedWebServices(queries, stream, lambda: payload)).test_client()
     response = client.get("/api/status").get_json()
     receipt = next(item for item in response["scheduler"]["publication_io"] if item["operation"] == operation)
     assert receipt["input_count"] == receipt["failed_count"] == 1
     assert receipt["rejected_count"] == receipt["output_count"] == 0
-    assert receipt["decision_version"] == candidate.version
+    assert receipt["freeze_version"] == candidate.version
     assert receipt["count_unit"] == "operation" and "rejection_rate" not in receipt
     assert "secret" not in str(receipt) and "items" not in receipt
-    assert current.content_hash == decision().content_hash
-    visible = client.get("/api/decisions/tomorrow/current").get_json()
+    assert current.content_hash == freeze().content_hash
+    visible = client.get("/api/freezes/tomorrow/current").get_json()
     expected = current if failure in {"overlay", "cas"} else candidate
-    assert visible["decision_version"] == expected.version
+    assert visible["freeze_version"] == expected.version
     assert visible["content_hash"] is None
 
 
 def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -> None:
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     tracker = PublicationIoTracker(now=lambda: NOW, monotonic=lambda: 1.0)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -351,14 +349,14 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-overlay-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-overlay-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
             publication_io=tracker,
         ),
@@ -381,11 +379,11 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
     runtime.stop(ShutdownDeadline.start(2.0))
 
     snapshot = index.snapshot(Strategy.TOMORROW)
-    assert isinstance(snapshot.current, ScoredDecision)
+    assert isinstance(snapshot.current, ScoredFreeze)
     assert snapshot.current.stage == "hybrid"
     receipts = runtime.status().publication_io
-    assert {item.operation for item in receipts} == {"current_publish", "decision_event", "observer_enqueue"}
-    assert all(item.target.decision_version == snapshot.current.version for item in receipts)
+    assert {item.operation for item in receipts} == {"current_publish", "freeze_event", "observer_enqueue"}
+    assert all(item.target.freeze_version == snapshot.current.version for item in receipts)
     assert all(item.output_count == 1 and item.rejected_count == item.failed_count == 0 for item in receipts)
     assert snapshot.overlay is not None
     assert snapshot.overlay.parent_version == snapshot.current.version
@@ -400,12 +398,12 @@ def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
     release_review = threading.Event()
 
     class BlockingReviews(SharedReviews):
-        def build_hybrid(self, local: ScoredDecision, request: CycleRequest) -> ScoredDecision:
+        def build_hybrid(self, local: ScoredFreeze, request: CycleRequest) -> ScoredFreeze:
             review_started.set()
             assert release_review.wait(2.0)
             return super().build_hybrid(local, request)
 
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -418,14 +416,14 @@ def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=BlockingReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-async-review-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-async-review-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -455,7 +453,7 @@ def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
         runtime.submit_cycle(second)
         assert _wait_for(
             lambda: (
-                isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
+                isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredFreeze)
                 and index.snapshot(Strategy.TOMORROW).current.sequence == 3
             )
         )
@@ -465,16 +463,16 @@ def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
         runtime.stop(ShutdownDeadline.start(2.0))
 
     current = index.snapshot(Strategy.TOMORROW).current
-    assert isinstance(current, ScoredDecision)
+    assert isinstance(current, ScoredFreeze)
     assert current.sequence == 3
     assert current.stage == "local"
 
 
-def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_decision() -> None:
+def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_freeze() -> None:
     observed_at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     frozen_at = observed_at.replace(hour=14, minute=50)
-    index = UnifiedDecisionIndex()
-    source = decision(Strategy.TOMORROW, sequence=1)
+    index = UnifiedFreezeIndex()
+    source = freeze(Strategy.TOMORROW, sequence=1)
     source_quote = source.items[0].quote
     assert source_quote is not None
     source = replace(
@@ -488,9 +486,9 @@ def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_dec
             ),
         ),
     )
-    record = CommittedDecisionRecord(source, frozen_at, "scheduled")
+    record = CommittedFreezeRecord(source, frozen_at, "scheduled")
     assert index.restore_formal(record)
-    overlay_events: list[DecisionOverlay] = []
+    overlay_events: list[FreezeOverlay] = []
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -503,14 +501,14 @@ def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_dec
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=DataRefresh(),
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-frozen-overlay-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-frozen-overlay-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=overlay_events.append,
         ),
         config_version="runtime-current",
@@ -533,17 +531,17 @@ def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_dec
 
     snapshot = index.snapshot(Strategy.TOMORROW)
     assert snapshot.formal == record
-    assert snapshot.current == record.decision
+    assert snapshot.current == record.freeze
     assert snapshot.overlay is not None
-    assert snapshot.overlay.parent_version == record.decision.version
+    assert snapshot.overlay.parent_version == record.freeze.version
     assert snapshot.overlay.quotes[0].price == (source_quote.price or 0.0) + 1.0
     assert overlay_events == [snapshot.overlay]
 
 
 def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_rescoring() -> None:
     frozen_at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
-    index = UnifiedDecisionIndex()
-    source = decision(Strategy.TOMORROW, sequence=1)
+    index = UnifiedFreezeIndex()
+    source = freeze(Strategy.TOMORROW, sequence=1)
     anchor = source.items[0].quote
     assert anchor is not None
     source = replace(
@@ -566,17 +564,17 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
         quote=replace(source.items[0].quote, code="600002"),
     )
     source = replace(source, items=(*source.items, visible_unselected))
-    record = CommittedDecisionRecord(source, frozen_at.replace(hour=15, minute=0), "scheduled")
+    record = CommittedFreezeRecord(source, frozen_at.replace(hour=15, minute=0), "scheduled")
     assert index.restore_formal(record)
     d25_source = replace(
-        decision(Strategy.D25, sequence=1),
+        freeze(Strategy.D25, sequence=1),
         trade_date=frozen_at.date(),
         observed_at=source.observed_at,
     )
-    assert index.restore_formal(CommittedDecisionRecord(d25_source, record.committed_at, "scheduled"))
+    assert index.restore_formal(CommittedFreezeRecord(d25_source, record.committed_at, "scheduled"))
     data = DataRefresh()
 
-    class RecordingOverlayDecisions(Decisions):
+    class RecordingOverlayFreezes(Freezes):
         def __init__(self) -> None:
             self.overlay_times: list[datetime] = []
 
@@ -584,7 +582,7 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
             self.overlay_times.append(request.observed_at)
             return super().refreshed_overlay(current, request, previous)
 
-    decisions = RecordingOverlayDecisions()
+    freezes = RecordingOverlayFreezes()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -597,14 +595,14 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
             calendar=TradingCalendar(),
             cadence=_cadence(frozen_at),
             data=data,
-            decisions=decisions,
+            freezes=freezes,
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-frozen-cadence-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-frozen-cadence-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -619,7 +617,7 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
 
     topk = next(request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES)
     assert topk.selected_codes == ("600001",)
-    assert topk.observed_at in decisions.overlay_times
+    assert topk.observed_at in freezes.overlay_times
     assert not [
         request
         for request in data.requests
@@ -634,8 +632,8 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
 def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
     observed_at = datetime(2026, 8, 11, 13, 5, tzinfo=SHANGHAI)
     clock = FixedClock(observed_at)
-    index = UnifiedDecisionIndex()
-    source = decision(Strategy.TOMORROW, sequence=1)
+    index = UnifiedFreezeIndex()
+    source = freeze(Strategy.TOMORROW, sequence=1)
     source_quote = source.items[0].quote
     assert source_quote is not None
     source = replace(
@@ -644,16 +642,16 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
         observed_at=observed_at - timedelta(minutes=1),
         items=(replace(source.items[0], quote=replace(source_quote, source_time=observed_at - timedelta(minutes=1))),),
     )
-    assert index.restore_formal(CommittedDecisionRecord(source, observed_at, "scheduled"))
+    assert index.restore_formal(CommittedFreezeRecord(source, observed_at, "scheduled"))
 
-    class FailingOnceOverlayDecisions(Decisions):
+    class FailingOnceOverlayFreezes(Freezes):
         def __init__(self) -> None:
             self.failed = False
 
         def refreshed_overlay(self, current, request, previous):
             if current.strategy is Strategy.TOMORROW and not self.failed:
                 self.failed = True
-                raise DecisionUnavailableError("overlay_source_unavailable")
+                raise FreezeUnavailableError("overlay_source_unavailable")
             return super().refreshed_overlay(current, request, previous)
 
     runtime = SchedulerRuntime(
@@ -669,14 +667,14 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=DataRefresh(),
-            decisions=FailingOnceOverlayDecisions(),
+            freezes=FailingOnceOverlayFreezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-overlay-recovery-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-overlay-recovery-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -713,7 +711,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
 
 
 def test_scheduler_publishes_local_before_research_visibility_and_does_not_defer_review() -> None:
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     reviews = SharedReviews()
     holder: list[object] = []
 
@@ -745,14 +743,14 @@ def test_scheduler_publishes_local_before_research_visibility_and_does_not_defer
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=reviews,
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-research-order-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-research-order-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -778,12 +776,12 @@ def test_scheduler_publishes_local_before_research_visibility_and_does_not_defer
     runtime.stop(ShutdownDeadline.start(2.0))
 
     current = index.snapshot(Strategy.TOMORROW).current
-    assert isinstance(current, ScoredDecision)
+    assert isinstance(current, ScoredFreeze)
     assert current.stage == "hybrid"
 
 
-class Freezes:
-    def __init__(self, index: UnifiedDecisionIndex | None = None) -> None:
+class Sealing:
+    def __init__(self, index: UnifiedFreezeIndex | None = None) -> None:
         self._index = index
         self.calls: list[tuple[Strategy, str | None]] = []
         self.close_fallback_calls: list[tuple[Strategy, str, str]] = []
@@ -793,8 +791,8 @@ class Freezes:
         if self._index is None:
             return
         sealed = self._index.seal_for_freeze(strategy, boundary_at=at)
-        assert sealed.accepted and sealed.decision is not None
-        assert self._index.commit_formal(CommittedDecisionRecord(sealed.decision, at, "scheduled"))
+        assert sealed.accepted and sealed.freeze is not None
+        assert self._index.commit_formal(CommittedFreezeRecord(sealed.freeze, at, "scheduled"))
 
     def freeze_close_fallback(
         self,
@@ -810,8 +808,8 @@ class Freezes:
             sealed = self._index.seal_close_fallback(
                 current, boundary_at=at, official_close_version=official_close_version
             )
-            assert sealed.accepted and sealed.decision is not None
-            assert self._index.commit_formal(CommittedDecisionRecord(sealed.decision, at, "close_fallback"))
+            assert sealed.accepted and sealed.freeze is not None
+            assert self._index.commit_formal(CommittedFreezeRecord(sealed.freeze, at, "close_fallback"))
 
 
 class Settlement:
@@ -826,7 +824,7 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
     clock = FixedClock(observed_at)
     data = DataRefresh()
-    freezes = Freezes()
+    sealing = Sealing()
 
     class RecoveringCalendar:
         def __init__(self) -> None:
@@ -852,14 +850,14 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
             calendar=calendar,
             cadence=_cadence(observed_at),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-calendar-observer"),
-            freezes=freezes,
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-calendar-observer"),
+            sealing=sealing,
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -876,7 +874,7 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
         assert failed.calendar.next_retry_at == observed_at + timedelta(seconds=30)
         assert failed.last_error_code == "calendar:calendar_unavailable"
         assert data.task_requests == []
-        assert freezes.calls == []
+        assert sealing.calls == []
 
         class StatusReviewer:
             @staticmethod
@@ -929,9 +927,9 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
 def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_market: bool) -> None:
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
     data = BlockingScoringInputs(block_full_market=block_full_market)
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
 
-    class TrackingDecisions(Decisions):
+    class TrackingFreezes(Freezes):
         def __init__(self) -> None:
             self.build_started = threading.Event()
 
@@ -940,7 +938,7 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
                 self.build_started.set()
             return super().build_local(request)
 
-    decisions = TrackingDecisions()
+    freezes = TrackingFreezes()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -953,14 +951,14 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=data,
-            decisions=decisions,
+            freezes=freezes,
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-input-trigger-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-input-trigger-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -980,7 +978,7 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
         )
         assert candidate_lane.running
         assert not candidate_lane.pending
-        assert not decisions.build_started.wait(0.2)
+        assert not freezes.build_started.wait(0.2)
         assert index.snapshot(Strategy.TOMORROW).current is None
 
         data.release_candidate.set()
@@ -990,21 +988,21 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
         data.release_candidate.set()
         runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
-    assert isinstance(index.snapshot(Strategy.D25).current, ScoredDecision)
+    assert isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredFreeze)
+    assert isinstance(index.snapshot(Strategy.D25).current, ScoredFreeze)
 
 
 def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> None:
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
-    index = UnifiedDecisionIndex()
-    originals = (decision(Strategy.TOMORROW), decision(Strategy.D25))
+    index = UnifiedFreezeIndex()
+    originals = (freeze(Strategy.TOMORROW), freeze(Strategy.D25))
     for original in originals:
         assert index.publish(original, expected_version=None).accepted
 
-    class FailedD25(Decisions):
+    class FailedD25(Freezes):
         def build_local(self, request: CycleRequest):
             if request.strategy is Strategy.D25:
-                raise DecisionUnavailableError("model_input_pending")
+                raise FreezeUnavailableError("model_input_pending")
             return super().build_local(request)
 
     runtime = SchedulerRuntime(
@@ -1019,14 +1017,14 @@ def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> 
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=DataRefresh(),
-            decisions=FailedD25(),
+            freezes=FailedD25(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-paired-failure-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-paired-failure-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1042,8 +1040,8 @@ def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> 
 
 def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> None:
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
-    index = UnifiedDecisionIndex()
-    originals = (decision(Strategy.TOMORROW), decision(Strategy.D25))
+    index = UnifiedFreezeIndex()
+    originals = (freeze(Strategy.TOMORROW), freeze(Strategy.D25))
     for original in originals:
         assert index.publish(original, expected_version=None).accepted
 
@@ -1074,14 +1072,14 @@ def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> N
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-source-epoch-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-source-epoch-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1093,7 +1091,7 @@ def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> N
     finally:
         runtime.stop(ShutdownDeadline.start(2.0))
     assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
-    assert runtime.status().last_error_code == "decision:paired_input_epoch_mismatch"
+    assert runtime.status().last_error_code == "freeze:paired_input_epoch_mismatch"
 
 
 @pytest.mark.parametrize("finish_after_close", (False, True))
@@ -1113,7 +1111,7 @@ def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> Non
 
     data = ChangingAfterCutData()
 
-    class BlockingD25(Decisions):
+    class BlockingD25(Freezes):
         def __init__(self) -> None:
             self.built: list[Strategy] = []
 
@@ -1123,11 +1121,11 @@ def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> Non
                 assert release.wait(2.0)
             self.built.append(request.strategy)
             local = super().build_local(request)
-            assert isinstance(local, ScoredDecision)
+            assert isinstance(local, ScoredFreeze)
             return replace(local, input_versions=(("market", f"native-market:{request.strategy.value}"),))
 
-    decisions = BlockingD25()
-    index = UnifiedDecisionIndex()
+    freezes = BlockingD25()
+    index = UnifiedFreezeIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1140,14 +1138,14 @@ def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> Non
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=data,
-            decisions=decisions,
+            freezes=freezes,
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-overlap-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-overlap-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1173,11 +1171,11 @@ def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> Non
         release.set()
         runtime.stop(ShutdownDeadline.start(2.0))
     expected = [Strategy.TOMORROW, Strategy.D25] * (1 if finish_after_close else 2)
-    assert decisions.built == expected
+    assert freezes.built == expected
     if finish_after_close:
         assert all(index.snapshot(strategy).current is None for strategy in expected)
     else:
-        assert all(isinstance(index.snapshot(strategy).current, ScoredDecision) for strategy in expected)
+        assert all(isinstance(index.snapshot(strategy).current, ScoredFreeze) for strategy in expected)
 
 
 @pytest.mark.parametrize("task", (PipelineTask.CANDIDATE_QUOTES, PipelineTask.INTRADAY_TAIL))
@@ -1193,7 +1191,7 @@ def test_scoring_input_refresh_triggers_score_only_when_changed(task, changed) -
             return outcome
 
     data = UnchangedCandidates()
-    decisions = Decisions()
+    freezes = Freezes()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1206,14 +1204,14 @@ def test_scoring_input_refresh_triggers_score_only_when_changed(task, changed) -
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=data,
-            decisions=decisions,
+            freezes=freezes,
             reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-unchanged-input-observer"),
-            freezes=Freezes(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-unchanged-input-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1226,7 +1224,7 @@ def test_scoring_input_refresh_triggers_score_only_when_changed(task, changed) -
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert decisions.input_quality_status() == ()
+    assert freezes.input_quality_status() == ()
     assert data.calls == ([Strategy.TOMORROW, Strategy.D25] if changed else [])
 
 
@@ -1239,13 +1237,13 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
     reviews = SharedReviews()
     settlement = Settlement()
     observed: list[str] = []
-    observer = AsyncDecisionObserver(
+    observer = AsyncFreezeObserver(
         (lambda observation: observed.append(observation.event.event_id),),
         capacity=16,
         thread_name="test-fixture-observer",
     )
-    index = UnifiedDecisionIndex()
-    freezes = Freezes(index)
+    index = UnifiedFreezeIndex()
+    sealing = Sealing(index)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1259,14 +1257,14 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
             calendar=TradingCalendar(),
             cadence=_cadence(morning),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=reviews,
             index=index,
             observer=observer,
-            freezes=freezes,
+            sealing=sealing,
             settlement=settlement,
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1282,7 +1280,7 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
         runtime.submit_due(final_window_at)
         runtime.submit_due(final_window_at)
         assert runtime.wait_idle(2.0)
-        assert freezes.calls == []
+        assert sealing.calls == []
         assert len(observed) == 8
         assert len(reviews.calls) == 4
         final_versions = {
@@ -1291,7 +1289,7 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
         clock.current = close_at
         runtime.submit_due(close_at)
         assert runtime.wait_idle(2.0)
-        assert dict(freezes.calls) == final_versions
+        assert dict(sealing.calls) == final_versions
         assert all(
             index.snapshot(strategy).formal.commit_kind == "scheduled" for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
@@ -1307,8 +1305,8 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
     assert set(data.calls) == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
     assert set(reviews.calls) == {Strategy.TOMORROW, Strategy.D25}
     assert len(observed) == 8
-    assert {strategy for strategy, version in freezes.calls if version} == {Strategy.TOMORROW, Strategy.D25}
-    assert freezes.close_fallback_calls == []
+    assert {strategy for strategy, version in sealing.calls if version} == {Strategy.TOMORROW, Strategy.D25}
+    assert sealing.close_fallback_calls == []
     assert settlement.calls == [close_at + timedelta(seconds=1)]
     assert status.freeze_completed_count == 2
     assert status.settlement_completed_count == 1
@@ -1324,11 +1322,11 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
 def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour, minute, second) -> None:
     after_close = datetime(2026, 8, 11, hour, minute, second, tzinfo=SHANGHAI)
     data = DataRefresh()
-    decisions = Decisions()
+    freezes = Freezes()
     reviews = SharedReviews()
     settlement = Settlement()
-    index = UnifiedDecisionIndex()
-    freezes = Freezes(index)
+    index = UnifiedFreezeIndex()
+    sealing = Sealing(index)
     clock = FixedClock(after_close)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -1343,14 +1341,14 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
             data=data,
-            decisions=decisions,
+            freezes=freezes,
             reviews=reviews,
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-after-close-observer"),
-            freezes=freezes,
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-after-close-observer"),
+            sealing=sealing,
             settlement=settlement,
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1372,16 +1370,16 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour
 
     assert set(data.calls) == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
     assert reviews.calls == []
-    assert {(strategy, recovery_path) for strategy, recovery_path, _version in freezes.close_fallback_calls} == {
+    assert {(strategy, recovery_path) for strategy, recovery_path, _version in sealing.close_fallback_calls} == {
         (Strategy.TOMORROW, "close_rebuild"),
         (Strategy.D25, "close_rebuild"),
     }
-    assert all(version.startswith("official-close:") for _strategy, _path, version in freezes.close_fallback_calls)
+    assert all(version.startswith("official-close:") for _strategy, _path, version in sealing.close_fallback_calls)
     assert all(index.snapshot(strategy).current is not None for strategy in (Strategy.TOMORROW, Strategy.D25))
     assert index.snapshot(Strategy.LONG).current is not None
     assert settlement.calls == [after_close + timedelta(seconds=10)]
     assert sum(request.task is PipelineTask.CLOSE_QUOTES for request in data.task_requests) == 1
-    assert freezes.calls == []
+    assert sealing.calls == []
 
 
 @pytest.mark.parametrize("loading_history", (False, True))
@@ -1418,8 +1416,8 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
     data = FailingOnceCloseData()
     reviews = SharedReviews()
     settlement = Settlement()
-    index = UnifiedDecisionIndex()
-    freezes = Freezes(index)
+    index = UnifiedFreezeIndex()
+    sealing = Sealing(index)
     clock = FixedClock(after_close)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -1434,14 +1432,14 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=reviews,
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-close-retry-observer"),
-            freezes=freezes,
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-close-retry-observer"),
+            sealing=sealing,
             settlement=settlement,
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1457,7 +1455,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
         assert failed.cadence.schedule_points[close_key].status is SchedulePointStatus.RETRY_WAIT
         assert all(index.snapshot(strategy).formal is None for strategy in (Strategy.TOMORROW, Strategy.D25))
         assert index.snapshot(Strategy.LONG).current is not None
-        assert freezes.close_fallback_calls == []
+        assert sealing.close_fallback_calls == []
         assert settlement.calls == []
 
         clock.current = after_close + timedelta(milliseconds=999)
@@ -1479,8 +1477,8 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
         runtime.stop(ShutdownDeadline.start(2.0))
 
     assert sum(item.task is PipelineTask.CLOSE_QUOTES for item in data.task_requests) == 2
-    assert len(freezes.close_fallback_calls) == 2
-    assert freezes.calls == []
+    assert len(sealing.close_fallback_calls) == 2
+    assert sealing.calls == []
     assert reviews.calls == []
     assert index.snapshot(Strategy.LONG).formal is None
     assert settlement.calls == [after_close + timedelta(seconds=10)]
@@ -1491,7 +1489,7 @@ def test_midday_continues_ten_second_scoring_and_review() -> None:
     clock = FixedClock(midday)
     data = DataRefresh()
     reviews = SharedReviews()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1504,14 +1502,14 @@ def test_midday_continues_ten_second_scoring_and_review() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=reviews,
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-midday-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-midday-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1543,7 +1541,7 @@ def test_midday_pending_draft_does_not_disable_later_scoring() -> None:
     midday = datetime(2026, 8, 11, 12, 15, tzinfo=SHANGHAI)
     clock = FixedClock(midday)
 
-    class DraftOnlyDecisions(Decisions):
+    class DraftOnlyFreezes(Freezes):
         def __init__(self) -> None:
             self.drafts: set[tuple[Strategy, date]] = set()
 
@@ -1553,11 +1551,11 @@ def test_midday_pending_draft_does_not_disable_later_scoring() -> None:
         def build_local(self, request: CycleRequest):
             if request.strategy is Strategy.TOMORROW:
                 self.drafts.add((request.strategy, request.trade_date))
-                raise DecisionUnavailableError("security_master_coverage_incomplete")
+                raise FreezeUnavailableError("security_master_coverage_incomplete")
             return super().build_local(request)
 
     data = DataRefresh()
-    decisions = DraftOnlyDecisions()
+    freezes = DraftOnlyFreezes()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1570,14 +1568,14 @@ def test_midday_pending_draft_does_not_disable_later_scoring() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=data,
-            decisions=decisions,
+            freezes=freezes,
             reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-midday-draft-observer"),
-            freezes=Freezes(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-midday-draft-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1592,7 +1590,7 @@ def test_midday_pending_draft_does_not_disable_later_scoring() -> None:
     runtime.stop(ShutdownDeadline.start(2.0))
 
     assert data.calls.count(Strategy.TOMORROW) == 2
-    assert decisions.has_local_draft(Strategy.TOMORROW, midday.date())
+    assert freezes.has_local_draft(Strategy.TOMORROW, midday.date())
 
 
 def test_midday_continuous_loop_retries_failed_input() -> None:
@@ -1611,7 +1609,7 @@ def test_midday_continuous_loop_retries_failed_input() -> None:
                 raise DataRefreshUnavailableError("source_unavailable")
 
     data = FailingOnceData()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1624,14 +1622,14 @@ def test_midday_continuous_loop_retries_failed_input() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-midday-retry-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-midday-retry-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1677,14 +1675,14 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_running() -> Non
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
             data=BlockingData(),
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-midday-active-observer"),
             freezes=Freezes(),
+            reviews=SharedReviews(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-midday-active-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1709,8 +1707,8 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
     before_close = datetime(2026, 8, 11, 14, 49, 55, tzinfo=SHANGHAI)
     after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     data = DataRefresh()
-    index = UnifiedDecisionIndex()
-    freezes = Freezes(index)
+    index = UnifiedFreezeIndex()
+    sealing = Sealing(index)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1723,21 +1721,21 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-after-close-current-observer"),
-            freezes=freezes,
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-after-close-current-observer"),
+            sealing=sealing,
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
     )
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         current = replace(
-            decision(strategy, sequence=1),
+            freeze(strategy, sequence=1),
             trade_date=before_close.date(),
             observed_at=before_close,
         )
@@ -1749,7 +1747,7 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
     runtime.stop(ShutdownDeadline.start(2.0))
 
     assert [request.strategy for request in data.requests if request.phase != "quote_overlay"] == [Strategy.LONG]
-    assert {(strategy, recovery_path) for strategy, recovery_path, _version in freezes.close_fallback_calls} == {
+    assert {(strategy, recovery_path) for strategy, recovery_path, _version in sealing.close_fallback_calls} == {
         (Strategy.TOMORROW, "current"),
         (Strategy.D25, "current"),
     }
@@ -1763,11 +1761,11 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
 def test_after_close_formal_records_only_refresh_selected_overlays_without_full_market_recovery() -> None:
     after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     data = DataRefresh()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     settlement = Settlement()
     for strategy in (Strategy.TOMORROW, Strategy.D25):
-        formal = replace(decision(strategy, sequence=1), trade_date=after_close.date())
-        assert index.restore_formal(CommittedDecisionRecord(formal, after_close, "scheduled"))
+        formal = replace(freeze(strategy, sequence=1), trade_date=after_close.date())
+        assert index.restore_formal(CommittedFreezeRecord(formal, after_close, "scheduled"))
     existing = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -1781,14 +1779,14 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-after-close-formal-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-after-close-formal-observer"),
+            sealing=Sealing(),
             settlement=settlement,
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1812,14 +1810,14 @@ def test_tomorrow_lane_progresses_while_d25_lane_is_blocked() -> None:
     d25_entered = threading.Event()
     d25_release = threading.Event()
 
-    class BlockingDecisions(Decisions):
+    class BlockingFreezes(Freezes):
         def build_local(self, request: CycleRequest):
             if request.strategy is Strategy.D25:
                 d25_entered.set()
                 d25_release.wait(timeout=1.0)
             return super().build_local(request)
 
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1832,14 +1830,14 @@ def test_tomorrow_lane_progresses_while_d25_lane_is_blocked() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=BlockingDecisions(),
+            freezes=BlockingFreezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-reserved-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-reserved-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1863,14 +1861,14 @@ def test_newer_same_strategy_cycle_does_not_starve_first_current_publication() -
     first_entered = threading.Event()
     release_first = threading.Event()
 
-    class BlockingFirstDecision(Decisions):
+    class BlockingFirstFreeze(Freezes):
         def build_local(self, request: CycleRequest):
             if request.sequence == 1:
                 first_entered.set()
                 release_first.wait(timeout=1.0)
             return super().build_local(request)
 
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     published = []
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -1884,14 +1882,14 @@ def test_newer_same_strategy_cycle_does_not_starve_first_current_publication() -
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=BlockingFirstDecision(),
+            freezes=BlockingFirstFreeze(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=2, thread_name="test-superseded-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=2, thread_name="test-superseded-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=published.append,
+            publish_freeze=published.append,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1912,7 +1910,7 @@ def test_newer_same_strategy_cycle_does_not_starve_first_current_publication() -
     try:
         assert runtime.wait_idle(2.0)
         current = index.snapshot(Strategy.TOMORROW).current
-        assert isinstance(current, ScoredDecision)
+        assert isinstance(current, ScoredFreeze)
         assert current.sequence == 3
         assert [event.projection.sequence for event in published if event.projection is not None] == [1, 3]
         assert runtime.status().local_publish_count == 2
@@ -1929,7 +1927,7 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
     observed_at = datetime(2026, 8, 11, 14, 59, 30, tzinfo=SHANGHAI)
     freeze_at = observed_at.replace(hour=15, minute=0, second=0)
 
-    class BlockingBothDecisions(Decisions):
+    class BlockingBothFreezes(Freezes):
         def build_local(self, request: CycleRequest):
             if request.sequence == 1:
                 first_entered.set()
@@ -1940,7 +1938,7 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
             return super().build_local(request)
 
     clock = FixedClock(observed_at)
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     published = []
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -1955,14 +1953,14 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=DataRefresh(),
-            decisions=BlockingBothDecisions(),
+            freezes=BlockingBothFreezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=2, thread_name="test-freeze-progress-observer"),
-            freezes=Freezes(index),
+            observer=AsyncFreezeObserver((), capacity=2, thread_name="test-freeze-progress-observer"),
+            sealing=Sealing(index),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=published.append,
+            publish_freeze=published.append,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -1992,7 +1990,7 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
     try:
         assert second_entered.wait(timeout=1.0)
         current = index.snapshot(Strategy.TOMORROW).current
-        assert isinstance(current, ScoredDecision)
+        assert isinstance(current, ScoredFreeze)
         assert current.sequence == 1
         clock.current = freeze_at
         runtime._dispatch_pipeline_task(  # noqa: SLF001 - verifies the score-to-freeze race boundary
@@ -2014,12 +2012,12 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
 
     snapshot = index.snapshot(Strategy.TOMORROW)
     assert snapshot.formal is not None
-    assert snapshot.formal.decision.sequence == 1
+    assert snapshot.formal.freeze.sequence == 1
     assert [event.projection.sequence for event in published if event.projection is not None] == [1]
     assert runtime.status().publish_rejection_count == 1
 
 
-def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() -> None:
+def test_direct_freeze_stream_delivery_survives_a_full_audit_observer_queue() -> None:
     audit_entered = threading.Event()
     audit_release = threading.Event()
 
@@ -2028,7 +2026,7 @@ def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() 
         audit_release.wait(timeout=2.0)
 
     events = []
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -2041,18 +2039,18 @@ def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() 
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver(
+            observer=AsyncFreezeObserver(
                 (blocked_audit,),
                 capacity=1,
                 thread_name="test-full-audit-observer",
             ),
-            freezes=Freezes(),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=events.append,
+            publish_freeze=events.append,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -2074,7 +2072,7 @@ def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() 
             )
             assert _wait_for(
                 lambda expected=sequence: (
-                    isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
+                    isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredFreeze)
                     and index.snapshot(Strategy.TOMORROW).current.sequence == expected
                 )
             )
@@ -2086,7 +2084,7 @@ def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() 
         runtime.stop(ShutdownDeadline.start(2.0))
 
 
-def test_refresh_failure_retains_last_valid_decision_without_cascading_build_failure() -> None:
+def test_refresh_failure_retains_last_valid_freeze_without_cascading_build_failure() -> None:
     class FailingData(DataRefresh):
         fail = True
 
@@ -2095,7 +2093,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
             if self.fail:
                 raise DataRefreshUnavailableError("source unavailable")
 
-    class TrackingDecisions(Decisions):
+    class TrackingFreezes(Freezes):
         def __init__(self) -> None:
             self.calls: list[Strategy] = []
 
@@ -2103,10 +2101,10 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
             self.calls.append(request.strategy)
             return super().build_local(request)
 
-    index = UnifiedDecisionIndex()
-    previous = replace(decision(Strategy.TOMORROW, sequence=1), observed_at=NOW - timedelta(minutes=1))
+    index = UnifiedFreezeIndex()
+    previous = replace(freeze(Strategy.TOMORROW, sequence=1), observed_at=NOW - timedelta(minutes=1))
     assert index.publish(previous, expected_version=None).accepted
-    decisions = TrackingDecisions()
+    freezes = TrackingFreezes()
     data = FailingData()
     clock = FixedClock(NOW)
     runtime = SchedulerRuntime(
@@ -2122,14 +2120,14 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=data,
-            decisions=decisions,
+            freezes=freezes,
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-failure-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-failure-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -2151,9 +2149,9 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
 
     current = index.snapshot(Strategy.TOMORROW).current
     assert current is previous
-    assert decisions.calls == []
+    assert freezes.calls == []
     assert status.refresh_failure_count == 1
-    assert status.decision_failure_count == 0
+    assert status.freeze_failure_count == 0
     assert status.review_failure_count == 0
     assert status.local_publish_count == 0
     assert status.hybrid_publish_count == 0
@@ -2191,7 +2189,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
         }
     ]
     assert payload["runtime_version"] == "runtime-current"
-    assert payload["scheduler"]["decision_failure_count"] == 0  # type: ignore[index]
+    assert payload["scheduler"]["freeze_failure_count"] == 0  # type: ignore[index]
     assert payload["scheduler"]["cadence"]["started_at"] == NOW.isoformat()  # type: ignore[index]
     assert payload["scheduler"]["control"] == {  # type: ignore[index]
         "running": True,
@@ -2199,7 +2197,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
         "rejected_count": 0,
     }
     assert payload["scheduler"]["freeze_completed_count"] == 0  # type: ignore[index]
-    assert payload["scheduler"]["freeze_failure_count"] == 0  # type: ignore[index]
+    assert payload["scheduler"]["seal_failure_count"] == 0  # type: ignore[index]
 
     data.fail = False
     clock.current = NOW + timedelta(minutes=1)
@@ -2244,14 +2242,14 @@ def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=data,
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-task-issue-observer"),
             freezes=Freezes(),
+            reviews=SharedReviews(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-task-issue-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -2296,7 +2294,7 @@ def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
         runtime.stop(ShutdownDeadline.start(2.0))
 
 
-def test_successful_hybrid_publish_recovers_decision_path_issues() -> None:
+def test_successful_hybrid_publish_recovers_freeze_path_issues() -> None:
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -2309,21 +2307,21 @@ def test_successful_hybrid_publish_recovers_decision_path_issues() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-hybrid-recovery-observer"),
             freezes=Freezes(),
+            reviews=SharedReviews(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-hybrid-recovery-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
     )
     runtime._record_failure("review", "review_unavailable", Strategy.TOMORROW)
 
-    runtime._record_publish(hybrid=True, event=None, identity=decision(Strategy.TOMORROW))
+    runtime._record_publish(hybrid=True, event=None, identity=freeze(Strategy.TOMORROW))
     status = runtime.status()
     runtime.stop(ShutdownDeadline.start(1.0))
 
@@ -2347,14 +2345,14 @@ def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() 
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-error-history-observer"),
             freezes=Freezes(),
+            reviews=SharedReviews(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-error-history-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -2387,19 +2385,22 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-freeze-issue-observer"),
             freezes=Freezes(),
+            reviews=SharedReviews(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-freeze-issue-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
     )
+    runtime._record_failure("seal", "freeze_unavailable", Strategy.TOMORROW)
     runtime._record_failure("freeze", "freeze_unavailable", Strategy.TOMORROW)
+    assert runtime.status().freeze_failure_count == 1
+    assert runtime.status().seal_failure_count == 1
     request = CycleRequest(
         Strategy.TOMORROW,
         NOW.date(),
@@ -2417,9 +2418,10 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
     status = runtime.status()
     runtime.stop(ShutdownDeadline.start(1.0))
 
-    freeze_issue = next(issue for issue in status.recent_errors if issue.stage == "freeze")
-    assert freeze_issue.recovery_status == "active"
-    assert status.strategy_error_codes == (("tomorrow", "freeze:freeze_unavailable"),)
+    seal_issue = next(issue for issue in status.recent_errors if issue.stage == "seal")
+    assert seal_issue.recovery_status == "active"
+    assert seal_issue.severity == "error"
+    assert status.strategy_error_codes == (("tomorrow", "seal:freeze_unavailable"),)
 
 
 def test_afternoon_schedule_keeps_tomorrow_d25_and_long_running() -> None:
@@ -2437,14 +2439,14 @@ def test_afternoon_schedule_keeps_tomorrow_d25_and_long_running() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(afternoon),
             data=data,
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-afternoon-observer"),
             freezes=Freezes(),
+            reviews=SharedReviews(),
+            index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-afternoon-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -2464,8 +2466,8 @@ def test_afternoon_schedule_keeps_tomorrow_d25_and_long_running() -> None:
 def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -> None:
     before_freeze = datetime(2026, 8, 11, 14, 59, 59, tzinfo=SHANGHAI)
     after_freeze = datetime(2026, 8, 11, 15, 0, 1, tzinfo=SHANGHAI)
-    index = UnifiedDecisionIndex()
-    fixture = decision(Strategy.TOMORROW, sequence=1)
+    index = UnifiedFreezeIndex()
+    fixture = freeze(Strategy.TOMORROW, sequence=1)
     fixture_quote = fixture.items[0].quote
     assert fixture_quote is not None
     current = replace(
@@ -2489,14 +2491,14 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
             calendar=TradingCalendar(),
             cadence=_cadence(after_freeze),
             data=DataRefresh(),
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-late-tomorrow-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-late-tomorrow-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -2525,7 +2527,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
 
 def test_review_deadline_prevents_a_late_model_upgrade() -> None:
     reviews = SharedReviews()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -2538,14 +2540,14 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=reviews,
             index=index,
-            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-deadline-observer"),
-            freezes=Freezes(),
+            observer=AsyncFreezeObserver((), capacity=1, thread_name="test-deadline-observer"),
+            sealing=Sealing(),
             settlement=Settlement(),
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -2558,7 +2560,7 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
     runtime.stop(ShutdownDeadline.start(1.0))
 
     current = index.snapshot(Strategy.TOMORROW).current
-    assert isinstance(current, ScoredDecision)
+    assert isinstance(current, ScoredFreeze)
     assert current.stage == "local"
     assert reviews.calls == []
     assert status.local_publish_count == 1

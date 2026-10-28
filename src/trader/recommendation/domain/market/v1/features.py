@@ -40,7 +40,7 @@ class LearnedRankDailyPoint:
 
 
 def CalculateLearnedRankFeatures(points: Sequence[LearnedRankDailyPoint]) -> tuple[float, ...] | None:
-    """Use exactly 251 complete, ascending sessions ending before the decision day.
+    """Use exactly 251 complete, ascending sessions ending before the freeze day.
 
     The caller verifies membership and continuity against its market calendar;
     this calculator never skips an invalid session or substitutes a live quote.

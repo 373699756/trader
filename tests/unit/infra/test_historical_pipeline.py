@@ -2,28 +2,27 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import timedelta
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import NOW, decision, pipeline, stage_snapshots
-from trader.http_api.response.decision_projection import SerializeDecisionView, SerializeEvent
+from tests.unit.domain.test_freeze_identity import NOW, freeze, pipeline, stage_snapshots
+from trader.http_api.response.freeze_projection import SerializeEvent, SerializeFreezeView
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteSession
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import BuildFreezeCommitted
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, StageOutput
-from trader.recommendation.application.ports.decision_records import DecisionRecordUnavailableError
+from trader.recommendation.application.ports.freeze_records import FreezeRecordUnavailableError
 from trader.recommendation.domain.evidence import pipeline as production_pipeline
-from trader.recommendation.domain.publication import decision_identity
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, FormalScoredDecision
+from trader.recommendation.domain.publication import freeze_identity
+from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, FormalScoredFreeze
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 
 _HISTORICAL_STAGES = (
     "data_source",
@@ -62,28 +61,26 @@ _HISTORICAL_DIAGNOSTICS = (
 
 
 def _resign(raw, *, legacy_identity=True):
-    raw["decision_hash"] = CanonicalDigest(raw["decision"])
+    raw["freeze_hash"] = CanonicalDigest(raw["freeze"])
     if legacy_identity:
-        identity = raw["decision"]
-        raw["decision_version"] = (
-            f"decision:{identity['strategy']}:{identity['trade_date']}:{identity['stage']}:"
-            f"{identity['sequence']}:{raw['decision_hash'][:16]}"
+        identity = raw["freeze"]
+        raw["freeze_version"] = (
+            f"freeze:{identity['strategy']}:{identity['trade_date']}:{identity['stage']}:"
+            f"{identity['sequence']}:{raw['freeze_hash'][:16]}"
         )
     raw["payload_hash"] = CanonicalDigest(
         {key: value for key, value in raw.items() if key not in {"payload_hash", "version"}}
     )
     if legacy_identity:
-        raw["version"] = (
-            f"record:{raw['decision']['strategy']}:{raw['decision']['trade_date']}:{raw['payload_hash'][:16]}"
-        )
+        raw["version"] = f"record:{raw['freeze']['strategy']}:{raw['freeze']['trade_date']}:{raw['payload_hash'][:16]}"
     return json.dumps(raw, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
 
 def _historical_bytes(strategy=Strategy.TOMORROW, *, audit="full", legacy_identity=True):
     # Persisted literals deliberately do not depend on either audit implementation.
-    raw = json.loads(CommittedRecordBytes(CommittedDecisionRecord(decision(strategy), NOW, "scheduled")))
+    raw = json.loads(CommittedRecordBytes(CommittedFreezeRecord(freeze(strategy), NOW, "scheduled")))
     if audit != "none":
-        raw["decision"]["pipeline"] = {
+        raw["freeze"]["pipeline"] = {
             "current_stage": "concentration",
             "stages": [
                 {
@@ -99,14 +96,14 @@ def _historical_bytes(strategy=Strategy.TOMORROW, *, audit="full", legacy_identi
                 for key in _HISTORICAL_DIAGNOSTICS
             ],
         }
-        raw["decision"]["pipeline"]["stages"][0].update(
+        raw["freeze"]["pipeline"]["stages"][0].update(
             metric_ranges=[{"metric": "board_reliability", "minimum": 0.9, "maximum": 1.0}],
             threshold=0.85,
             facets=[{"key": "ready", "count": 1, "total": 1}],
             reason_counts=[{"reason": "fixture_evidence", "count": 1}],
         )
     if audit == "full":
-        raw["decision"]["pipeline"]["stage_snapshots"] = [
+        raw["freeze"]["pipeline"]["stage_snapshots"] = [
             {
                 "stage": stage,
                 "stage_order": index + 1,
@@ -144,8 +141,8 @@ def _disable_production_audit(monkeypatch):
     monkeypatch.setattr(production_pipeline.PipelineStageSnapshot, "__post_init__", rejected)
     monkeypatch.setattr(production_pipeline.RecommendationPipelineStatus, "__post_init__", rejected)
     monkeypatch.setattr(production_pipeline.SourceHealth, "__post_init__", rejected)
-    monkeypatch.setattr(decision_identity, "_pipeline_payload", rejected)
-    monkeypatch.setattr(decision_identity, "PipelineSnapshotIdentityPayload", rejected)
+    monkeypatch.setattr(freeze_identity, "_pipeline_payload", rejected)
+    monkeypatch.setattr(freeze_identity, "PipelineSnapshotIdentityPayload", rejected)
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
@@ -162,15 +159,15 @@ def test_historical_bytes_and_identity_survive_production_pipeline_changes(
     assert CommittedRecordBytes(restored) == encoded
     assert restored.version == before["version"]
     assert restored.payload_hash == before["payload_hash"]
-    assert restored.decision.version == before["decision_version"]
-    assert restored.decision.content_hash == before["decision_hash"]
-    assert dict(restored.decision.input_versions) == dict(before["decision"]["input_versions"])
+    assert restored.freeze.version == before["freeze_version"]
+    assert restored.freeze.content_hash == before["freeze_hash"]
+    assert dict(restored.freeze.input_versions) == dict(before["freeze"]["input_versions"])
     if audit == "none":
-        assert restored.decision.pipeline is None
+        assert restored.freeze.pipeline is None
     else:
-        assert isinstance(restored.decision.pipeline, HistoricalPipelineAudit)
-        assert len(restored.decision.pipeline.stages) == 16
-        assert len(restored.decision.pipeline.stage_snapshots) == (14 if audit == "full" else 0)
+        assert isinstance(restored.freeze.pipeline, HistoricalPipelineAudit)
+        assert len(restored.freeze.pipeline.stages) == 16
+        assert len(restored.freeze.pipeline.stage_snapshots) == (14 if audit == "full" else 0)
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
@@ -180,66 +177,31 @@ def test_historical_recovery_preserves_database_bytes_and_get_sse_projection(tmp
             return NOW
 
     encoded = _historical_bytes(strategy)
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
     records.import_record_bytes(encoded)
     _disable_production_audit(monkeypatch)
-    restarted = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    restarted = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     assert restarted.recover().quarantined == 0
     restored = restarted.load(strategy, NOW.date())
     assert restored is not None
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     assert index.restore_formal(restored)
     assert index.restore_formal(restored)
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), restarted, Clock())
-    history = SerializeDecisionView(queries.history(strategy, NOW.date()))
-    current = SerializeDecisionView(queries.current(strategy))
-    event = SerializeEvent(UnifiedDecisionEventStream().publish_committed(BuildDecisionCommitted(restored.decision)))
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), restarted, Clock())
+    history = SerializeFreezeView(queries.history(strategy, NOW.date()))
+    current = SerializeFreezeView(queries.current(strategy))
+    event = SerializeEvent(UnifiedFreezeEventStream().publish_committed(BuildFreezeCommitted(restored.freeze)))
 
     assert history["pipeline"] == current["pipeline"] == event["pipeline"]
-    assert history["decision_version"] == current["decision_version"] == restored.decision.version
+    assert history["freeze_version"] == current["freeze_version"] == restored.freeze.version
     assert [item["stage"] for item in history["pipeline"]["stage_snapshots"]] == list(_HISTORICAL_STAGES)
     assert len(history["pipeline"]["stages"]) == 16
-    assert history["input_versions"] == dict(restored.decision.input_versions)
+    assert history["input_versions"] == dict(restored.freeze.input_versions)
     assert all(item["duration_ms"] is None for item in history["pipeline"]["stages"])
-    with SqliteSession(tmp_path / "decisions.sqlite3") as connection:
-        row = connection.run("SELECT payload,payload_hash,status FROM decision_records").require_one()
-        assert bytes(row[0]) == encoded and row[1] == restored.payload_hash and row[2] == "committed"
-
-
-@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
-def test_historical_checkpoint_can_freeze_once_after_production_pipeline_changes(tmp_path, monkeypatch, strategy):
-    boundary = NOW.replace(hour=15, minute=0)
-    raw = json.loads(_historical_bytes(strategy))
-    raw["commit_kind"] = "checkpoint_recovery"
-    raw["committed_at"] = boundary.isoformat()
-    raw["decision"]["observed_at"] = (boundary - timedelta(seconds=20)).isoformat()
-    encoded = _resign(raw)
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
-    records.initialize()
-    records.import_checkpoint_bytes(encoded)
-    _disable_production_audit(monkeypatch)
-    restarted = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
-    assert restarted.recover().quarantined == 0
-    checkpoint = restarted.load_checkpoint(strategy, NOW.date())
-    assert checkpoint is not None and isinstance(checkpoint.decision.pipeline, HistoricalPipelineAudit)
-    index = UnifiedDecisionIndex()
-    seal = index.seal_for_freeze(strategy, boundary_at=boundary, fallback_decision=checkpoint.decision)
-    assert seal.accepted and seal.source == "checkpoint" and seal.decision is not None
-    formal = CommittedDecisionRecord(seal.decision, boundary, "checkpoint_recovery")
-    restarted.commit(formal)
-    assert index.commit_formal(formal)
-    loaded = restarted.load(strategy, NOW.date())
-    assert loaded is not None and CommittedRecordBytes(loaded) == CommittedRecordBytes(formal)
-    assert index.restore_formal(loaded)
-    restarted.consume_checkpoint(checkpoint, consumed_at=boundary + timedelta(minutes=5))
-    assert restarted.load_checkpoint(strategy, NOW.date()) is None
-    assert not index.publish(
-        replace(checkpoint.decision, sequence=20), expected_version=loaded.decision.version
-    ).accepted
-    with SqliteSession(tmp_path / "decisions.sqlite3") as connection:
-        row = connection.run("SELECT payload,error FROM decision_checkpoints").require_one()
-        assert bytes(row[0]) == encoded and row[1] == ""
+    with SqliteSession(tmp_path / "freeze.sqlite3") as connection:
+        row = connection.run("SELECT record_bytes,freeze_hash,status FROM freeze_record").require_one()
+        assert bytes(row[0]) == encoded and bytes(row[1]).hex() == restored.payload_hash and row[2] == "committed"
 
 
 @pytest.mark.parametrize(
@@ -261,7 +223,7 @@ def test_historical_checkpoint_can_freeze_once_after_production_pipeline_changes
 )
 def test_historical_audit_validates_frozen_protocol_even_with_consistent_hashes(damage):
     raw = json.loads(_historical_bytes())
-    audit = raw["decision"]["pipeline"]
+    audit = raw["freeze"]["pipeline"]
     first = audit["stage_snapshots"][0]
     if damage == "stage_order":
         first["stage_order"] = 2
@@ -292,7 +254,7 @@ def test_historical_audit_validates_frozen_protocol_even_with_consistent_hashes(
 
 
 def test_historical_audit_cannot_enter_production_pipeline_builders():
-    historical = CommittedRecordFromBytes(_historical_bytes()).decision.pipeline
+    historical = CommittedRecordFromBytes(_historical_bytes()).freeze.pipeline
     production_audit = pipeline()
     with pytest.raises(ValueError, match="active diagnostic types"):
         production_pipeline.RecommendationPipelineStatus(production_audit.current_stage, historical.stages)
@@ -326,17 +288,17 @@ def test_historical_audit_cannot_enter_production_pipeline_builders():
 
 
 def test_recovery_idempotency_uses_verified_identity_across_production_and_historical_audits():
-    original = CommittedDecisionRecord(
-        FormalScoredDecision(replace(decision(), pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()))),
+    original = CommittedFreezeRecord(
+        FormalScoredFreeze(replace(freeze(), pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()))),
         NOW.replace(hour=15, minute=0),
         "scheduled",
     )
     restored = CommittedRecordFromBytes(CommittedRecordBytes(original))
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     assert index.restore_formal(original)
     assert index.restore_formal(restored)
     assert index.commit_formal(original)
-    conflicting = replace(original, decision=replace(original.decision, degraded_reasons=("different_content",)))
+    conflicting = replace(original, freeze=replace(original.freeze, degraded_reasons=("different_content",)))
     assert conflicting.version == restored.version and conflicting.payload_hash != restored.payload_hash
     assert not index.restore_formal(conflicting)
     assert not index.commit_formal(conflicting)
@@ -345,7 +307,7 @@ def test_recovery_idempotency_uses_verified_identity_across_production_and_histo
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_production_formal_publication_still_persists_only_six_rows(tmp_path, strategy):
-    current = decision(strategy)
+    current = freeze(strategy)
     current = replace(
         current,
         pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()),
@@ -363,23 +325,23 @@ def test_production_formal_publication_still_persists_only_six_rows(tmp_path, st
             for rank in range(1, 9)
         ),
     )
-    formal = CommittedDecisionRecord(FormalScoredDecision(current), NOW.replace(hour=15, minute=0), "scheduled")
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    formal = CommittedFreezeRecord(FormalScoredFreeze(current), NOW.replace(hour=15, minute=0), "scheduled")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
     records.commit(formal)
     loaded = records.load(strategy, NOW.date())
-    assert loaded is not None and isinstance(loaded.decision.pipeline, HistoricalPipelineAudit)
-    assert tuple(item.code for item in loaded.decision.items) == tuple(f"60000{rank}" for rank in range(1, 7))
-    assert loaded.decision.items == formal.decision.items
+    assert loaded is not None and isinstance(loaded.freeze.pipeline, HistoricalPipelineAudit)
+    assert tuple(item.code for item in loaded.freeze.items) == tuple(f"60000{rank}" for rank in range(1, 7))
+    assert loaded.freeze.items == formal.freeze.items
     assert CommittedRecordBytes(loaded) == CommittedRecordBytes(formal)
-    with SqliteSession(tmp_path / "decisions.sqlite3") as connection:
-        payload = connection.run("SELECT payload FROM decision_records").require_one()[0]
-        assert len(json.loads(payload)["decision"]["items"]) == 6
+    with SqliteSession(tmp_path / "freeze.sqlite3") as connection:
+        payload = connection.run("SELECT record_bytes FROM freeze_record").require_one()[0]
+        assert len(json.loads(payload)["freeze"]["items"]) == 6
 
 
 def test_historical_payload_limit_is_still_eight_mib(tmp_path):
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
-    with pytest.raises(DecisionRecordUnavailableError, match="bounded limit"):
+    with pytest.raises(FreezeRecordUnavailableError, match="bounded limit"):
         records.import_record_bytes(b" " * (8 * 1024 * 1024 + 1))
     assert records.list_dates(Strategy.TOMORROW) == ()

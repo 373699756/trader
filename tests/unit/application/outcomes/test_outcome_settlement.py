@@ -8,8 +8,8 @@ import pytest
 
 from trader.recommendation.application.ports.runtime import SettlementUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.training.domain.evaluation.models import (
+from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
+from trader.recommendation.domain.outcomes.models import (
     BenchmarkReturn,
     OutcomeBar,
     OutcomePrice,

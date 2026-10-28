@@ -10,31 +10,31 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
 from typing import Literal, Protocol
 
-from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import (
-    DecisionCoverage,
-    ScoredDecisionCoverage,
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.freeze_coverage import (
+    FreezeCoverage,
+    ScoredFreezeCoverage,
 )
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
-    UnifiedDecisionIndex,
-    UnifiedDecisionSnapshot,
+    UnifiedFreezeIndex,
+    UnifiedFreezeSnapshot,
 )
 from trader.recommendation.application.ports.clock import Clock
-from trader.recommendation.application.ports.decision_records import DecisionRecordError
+from trader.recommendation.application.ports.freeze_records import FreezeRecordError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    DecisionItem,
-    DecisionOverlay,
-    DecisionQuote,
-    DecisionRiskDisclosure,
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    FreezeItem,
+    FreezeOverlay,
+    FreezeQuote,
+    FreezeRiskDisclosure,
     LongProjection,
     LongProjectionItem,
-    ScoredDecision,
+    ScoredFreeze,
     SelectionDiagnostics,
     VisibleScoredSeats,
 )
@@ -43,13 +43,13 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedger
 
-DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
+FreezeViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
-DECISION_VIEW_SCHEMA_VERSION = "decision_view"
+FREEZE_VIEW_SCHEMA_VERSION = "freeze_view"
 
 
-class DecisionHistoryReader(Protocol):
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None: ...
+class FreezeHistoryReader(Protocol):
+    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None: ...
 
     def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]: ...
 
@@ -81,7 +81,7 @@ class CompanyDocumentLinkReader(Protocol):
 
 
 @dataclass(frozen=True)
-class DecisionQuerySources:
+class FreezeQuerySources:
     cached_quotes: CachedQuoteReader | None = None
     outcome_summaries: OutcomeSummaryReader | None = None
     industry_classifications: _IndustryClassificationReader | None = None
@@ -89,7 +89,7 @@ class DecisionQuerySources:
 
 
 @dataclass(frozen=True)
-class DecisionItemView:
+class FreezeItemView:
     code: str
     name: str
     board: str
@@ -134,7 +134,7 @@ class DecisionItemView:
     predicted_net_excess_pct: float | None = None
     model_disagreement_pct: float | None = None
     research_components: ResearchComponentCoverage | None = None
-    risk_details: tuple[DecisionRiskDisclosure, ...] = ()
+    risk_details: tuple[FreezeRiskDisclosure, ...] = ()
     score_ledger: ScoreLedger | None = None
     anchor_daily_return_pct: float | None = None
     anchor_to_now_pct: float | None = None
@@ -142,23 +142,23 @@ class DecisionItemView:
 
 
 @dataclass(frozen=True)
-class DecisionDraftView:
-    decision_version: str
+class FreezeDraftView:
+    freeze_version: str
     content_hash: str | None
     observed_at: datetime
     input_versions: tuple[tuple[str, str], ...]
-    items: tuple[DecisionItemView, ...]
-    top_scores: tuple[DecisionItemView, ...] = ()
+    items: tuple[FreezeItemView, ...]
+    top_scores: tuple[FreezeItemView, ...] = ()
 
 
 @dataclass(frozen=True)
-class DecisionView:
-    status: DecisionViewStatus
+class FreezeView:
+    status: FreezeViewStatus
     strategy: Strategy
     trade_date: date | None
     view: Literal["current", "history"]
     score_status: ScoreStatus
-    decision_version: str | None
+    freeze_version: str | None
     content_hash: str | None
     observed_at: datetime | None
     data_age_seconds: float | None
@@ -167,17 +167,17 @@ class DecisionView:
     frozen_at: datetime | None
     freeze_kind: str | None
     input_versions: tuple[tuple[str, str], ...]
-    coverage: DecisionCoverage
+    coverage: FreezeCoverage
     filter_reason_counts: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...]
-    items: tuple[DecisionItemView, ...]
+    items: tuple[FreezeItemView, ...]
     etag: str | None
-    draft: DecisionDraftView | None = None
+    draft: FreezeDraftView | None = None
     selection_diagnostics: SelectionDiagnostics | None = None
-    top_scores: tuple[DecisionItemView, ...] = ()
+    top_scores: tuple[FreezeItemView, ...] = ()
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     outcome_summaries: tuple[OutcomeTierSummary, ...] = ()
-    schema_version: str = DECISION_VIEW_SCHEMA_VERSION
+    schema_version: str = FREEZE_VIEW_SCHEMA_VERSION
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
 
     @property
@@ -185,16 +185,16 @@ class DecisionView:
         return self.etag
 
 
-class UnifiedDecisionQueries:
+class UnifiedFreezeQueries:
     """Read current identities and immutable formal history without external I/O."""
 
     def __init__(
         self,
-        index: UnifiedDecisionIndex,
-        drafts: UnifiedDecisionDraftIndex,
-        history: DecisionHistoryReader,
+        index: UnifiedFreezeIndex,
+        drafts: UnifiedFreezeDraftIndex,
+        history: FreezeHistoryReader,
         clock: Clock,
-        sources: DecisionQuerySources | None = None,
+        sources: FreezeQuerySources | None = None,
     ) -> None:
         self._index = index
         self._drafts = drafts
@@ -214,22 +214,22 @@ class UnifiedDecisionQueries:
             return ()
         return self._company_documents.document_links(code, tuple(dict.fromkeys(evidence_ids)))
 
-    def current(self, strategy: Strategy) -> DecisionView:
+    def current(self, strategy: Strategy) -> FreezeView:
         now = self._clock.now()
         snapshot = self._index.snapshot(strategy)
         if strategy is Strategy.LONG:
             return _long_current(snapshot, now)
-        decision, formal = _current_scored(snapshot, strategy, now)
-        if decision is None:
-            empty = _empty_view(strategy, now.date(), "current", "scored", "current_decision_unavailable")
+        freeze, formal = _current_scored(snapshot, strategy, now)
+        if freeze is None:
+            empty = _empty_view(strategy, now.date(), "current", "scored", "current_freeze_unavailable")
             draft = _current_draft(self._drafts.snapshot(strategy), strategy, now)
             if draft is None:
                 return empty
             classified_industries = self._classified_industries(draft, now)
             draft_view = _observation_draft(draft, classified_industries)
             return replace(empty, draft=draft_view, etag=_classified_etag(draft.version, classified_industries))
-        quotes = _valid_overlay_quotes(decision, snapshot.overlay)
-        classified_industries = self._classified_industries(decision, now)
+        quotes = _valid_overlay_quotes(freeze, snapshot.overlay)
+        classified_industries = self._classified_industries(freeze, now)
         view_input = _ScoredViewInput(
             "current",
             quotes,
@@ -237,13 +237,13 @@ class UnifiedDecisionQueries:
             formal,
             classified_industries,
         )
-        return _scored_view(decision, now, view_input)
+        return _scored_view(freeze, now, view_input)
 
-    def _classified_industries(self, decision: ScoredDecision, now: datetime) -> Mapping[str, str]:
+    def _classified_industries(self, freeze: ScoredFreeze, now: datetime) -> Mapping[str, str]:
         source = self._industry_classifications
         if source is None:
             return {}
-        codes = tuple(item.code for item in VisibleScoredSeats(decision) if not item.industry.strip())
+        codes = tuple(item.code for item in VisibleScoredSeats(freeze) if not item.industry.strip())
         references = source.model_industries(codes) if codes else {}
         return {
             code: reference.industry_id
@@ -251,23 +251,23 @@ class UnifiedDecisionQueries:
             if code in codes and reference.classification == "证监会行业分类" and reference.effective_date <= now.date()
         }
 
-    def history(self, strategy: Strategy, trade_date: date) -> DecisionView:
+    def history(self, strategy: Strategy, trade_date: date) -> FreezeView:
         now = self._clock.now()
         if strategy is Strategy.LONG:
             return _empty_view(strategy, trade_date, "history", "not_applicable", "history_not_applicable")
         try:
             record = self._history.load(strategy, trade_date)
-        except (DecisionRecordError, OSError):
+        except (FreezeRecordError, OSError):
             return _empty_view(strategy, trade_date, "history", "scored", "history_unavailable")
         if record is None:
-            return _empty_view(strategy, trade_date, "history", "scored", "formal_decision_unavailable")
-        decision = record.decision
-        selected = tuple(item for item in decision.items if item.selected)
-        top = VisibleScoredSeats(decision)
+            return _empty_view(strategy, trade_date, "history", "scored", "formal_freeze_unavailable")
+        freeze = record.freeze
+        selected = tuple(item for item in freeze.items if item.selected)
+        top = VisibleScoredSeats(freeze)
         codes = tuple(sorted({item.code for item in (*selected, *top)}))
         cached = self._cached_quotes.cached_quotes(codes) if self._cached_quotes is not None else {}
         anchors = {item.code: item.quote for item in (*selected, *top)}
-        quotes: dict[str, DecisionQuote] = {}
+        quotes: dict[str, FreezeQuote] = {}
         for code, quote in cached.items():
             anchor = anchors.get(code)
             price = quote.price
@@ -284,7 +284,7 @@ class UnifiedDecisionQueries:
                 or source_time > now
             ):
                 continue
-            quotes[code] = DecisionQuote(
+            quotes[code] = FreezeQuote(
                 code,
                 price,
                 quote.pct_change,
@@ -295,7 +295,7 @@ class UnifiedDecisionQueries:
                 source_time,
                 quote.data_version,
             )
-        view = _scored_view(decision, now, _ScoredViewInput("history", quotes, None, record))
+        view = _scored_view(freeze, now, _ScoredViewInput("history", quotes, None, record))
         if self._outcome_summaries is None:
             return view
         try:
@@ -308,17 +308,17 @@ class UnifiedDecisionQueries:
             return ()
         try:
             return self._history.list_dates(strategy, limit=limit)
-        except (DecisionRecordError, OSError):
+        except (FreezeRecordError, OSError):
             return ()
 
 
 def _current_scored(
-    snapshot: UnifiedDecisionSnapshot,
+    snapshot: UnifiedFreezeSnapshot,
     strategy: Strategy,
     now: datetime,
-) -> tuple[ScoredDecision | None, CommittedDecisionRecord | None]:
+) -> tuple[ScoredFreeze | None, CommittedFreezeRecord | None]:
     current = snapshot.current
-    if isinstance(current, ScoredDecision) and current.strategy is strategy and current.preview_context is not None:
+    if isinstance(current, ScoredFreeze) and current.strategy is strategy and current.preview_context is not None:
         return current, None
     boundary = datetime.combine(
         now.date(),
@@ -329,33 +329,33 @@ def _current_scored(
         formal = snapshot.formal
         if formal is None or formal.trade_date != now.date():
             return None, None
-        return formal.decision, formal
-    if not isinstance(current, ScoredDecision) or current.trade_date != now.date():
+        return formal.freeze, formal
+    if not isinstance(current, ScoredFreeze) or current.trade_date != now.date():
         return None, None
     return current, None
 
 
-def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: datetime) -> ScoredDecision | None:
-    if decision is None or decision.strategy is not strategy or decision.trade_date != now.date():
+def _current_draft(freeze: ScoredFreeze | None, strategy: Strategy, now: datetime) -> ScoredFreeze | None:
+    if freeze is None or freeze.strategy is not strategy or freeze.trade_date != now.date():
         return None
     boundary = datetime.combine(
         now.date(),
         time(15, 0),
         tzinfo=now.tzinfo,
     )
-    return decision if now < boundary else None
+    return freeze if now < boundary else None
 
 
-def _observation_draft(decision: ScoredDecision, classified_industries: Mapping[str, str]) -> DecisionDraftView:
+def _observation_draft(freeze: ScoredFreeze, classified_industries: Mapping[str, str]) -> FreezeDraftView:
     top_scores = tuple(
         replace(_scored_item(item, None, classified_industry=classified_industries.get(item.code)), rank=rank)
-        for rank, item in enumerate(VisibleScoredSeats(decision), start=1)
+        for rank, item in enumerate(VisibleScoredSeats(freeze), start=1)
     )
-    return DecisionDraftView(
-        decision.version,
+    return FreezeDraftView(
+        freeze.version,
         None,
-        decision.observed_at,
-        decision.input_versions,
+        freeze.observed_at,
+        freeze.input_versions,
         top_scores,
         top_scores,
     )
@@ -364,13 +364,13 @@ def _observation_draft(decision: ScoredDecision, classified_industries: Mapping[
 @dataclass(frozen=True)
 class _ScoredViewInput:
     view: Literal["current", "history"]
-    quotes: Mapping[str, DecisionQuote]
+    quotes: Mapping[str, FreezeQuote]
     overlay_version: str | None
-    formal: CommittedDecisionRecord | None
+    formal: CommittedFreezeRecord | None
     classified_industries: Mapping[str, str] = field(default_factory=dict)
 
 
-def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredViewInput) -> DecisionView:
+def _scored_view(freeze: ScoredFreeze, now: datetime, view_input: _ScoredViewInput) -> FreezeView:
     overlay_quotes = view_input.quotes
     view = view_input.view
     formal = view_input.formal
@@ -384,11 +384,11 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
             ),
             rank=rank,
         )
-        for rank, item in enumerate(VisibleScoredSeats(decision), start=1)
+        for rank, item in enumerate(VisibleScoredSeats(freeze), start=1)
     )
     items = top_scores
-    coverage = ScoredDecisionCoverage(decision)
-    etag = _classified_etag(_etag(decision.version, view_input.overlay_version), view_input.classified_industries)
+    coverage = ScoredFreezeCoverage(freeze)
+    etag = _classified_etag(_etag(freeze.version, view_input.overlay_version), view_input.classified_industries)
     if view == "history":
         quote_identity = [
             (code, quote.price, quote.pct_change, quote.source, quote.source_time.isoformat(), quote.data_version)
@@ -397,45 +397,45 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
         digest = hashlib.sha256(
             json.dumps(quote_identity, ensure_ascii=True, separators=(",", ":")).encode()
         ).hexdigest()[:16]
-        etag = f"{decision.version}+history:{digest}"
-    return DecisionView(
+        etag = f"{freeze.version}+history:{digest}"
+    return FreezeView(
         "ready",
-        decision.strategy,
-        decision.trade_date,
+        freeze.strategy,
+        freeze.trade_date,
         view,
         "scored",
-        decision.version,
+        freeze.version,
         None,
-        decision.observed_at,
-        max(0.0, (now - decision.observed_at).total_seconds()),
-        decision.stage,
+        freeze.observed_at,
+        max(0.0, (now - freeze.observed_at).total_seconds()),
+        freeze.stage,
         formal is not None,
         formal.committed_at if formal is not None else None,
         formal.commit_kind if formal is not None else None,
-        decision.input_versions,
+        freeze.input_versions,
         coverage,
-        decision.filter_aggregates,
-        decision.degraded_reasons,
+        freeze.filter_aggregates,
+        freeze.degraded_reasons,
         items,
         etag,
-        selection_diagnostics=decision.selection_diagnostics,
+        selection_diagnostics=freeze.selection_diagnostics,
         top_scores=top_scores,
-        pipeline=decision.pipeline,
-        preview_context=decision.preview_context,
+        pipeline=freeze.pipeline,
+        preview_context=freeze.preview_context,
     )
 
 
 def _scored_item(
-    item: DecisionItem,
-    quote: DecisionQuote | None,
+    item: FreezeItem,
+    quote: FreezeQuote | None,
     *,
     historical: bool = False,
     classified_industry: str | None = None,
-) -> DecisionItemView:
+) -> FreezeItemView:
     components = dict(item.score_components)
     model = item.model_diagnostics
     display_quote = quote if historical else quote or item.quote
-    return DecisionItemView(
+    return FreezeItemView(
         item.code,
         item.name,
         item.board.value,
@@ -464,7 +464,7 @@ def _scored_item(
         if quote is not None
         else "missing"
         if historical
-        else "decision_anchor"
+        else "freeze_anchor"
         if item.quote is not None
         else "missing",
         anchor_price=item.quote.price if item.quote is not None else None,
@@ -500,13 +500,13 @@ def _scored_item(
     )
 
 
-def _long_current(snapshot: UnifiedDecisionSnapshot, now: datetime) -> DecisionView:
+def _long_current(snapshot: UnifiedFreezeSnapshot, now: datetime) -> FreezeView:
     projection = snapshot.current
     if not isinstance(projection, LongProjection):
         return _empty_view(Strategy.LONG, now.date(), "current", "not_applicable", "current_projection_unavailable")
     items = tuple(_long_item(item) for item in projection.items)
     available = sum(item.quote_status != "missing" for item in projection.items)
-    coverage = DecisionCoverage(
+    coverage = FreezeCoverage(
         candidate_count=len(items),
         evaluated_count=available,
         rejected_count=0,
@@ -515,7 +515,7 @@ def _long_current(snapshot: UnifiedDecisionSnapshot, now: datetime) -> DecisionV
         observation_count=len(items),
     )
     degraded = ("long_quotes_partial",) if available != len(items) else ()
-    return DecisionView(
+    return FreezeView(
         "ready",
         Strategy.LONG,
         projection.trade_date,
@@ -538,8 +538,8 @@ def _long_current(snapshot: UnifiedDecisionSnapshot, now: datetime) -> DecisionV
     )
 
 
-def _long_item(item: LongProjectionItem) -> DecisionItemView:
-    return DecisionItemView(
+def _long_item(item: LongProjectionItem) -> FreezeItemView:
+    return FreezeItemView(
         item.code,
         item.name,
         "unsupported",
@@ -568,18 +568,18 @@ def _long_item(item: LongProjectionItem) -> DecisionItemView:
     )
 
 
-def _valid_overlay_quotes(decision: ScoredDecision, overlay: DecisionOverlay | None) -> dict[str, DecisionQuote]:
+def _valid_overlay_quotes(freeze: ScoredFreeze, overlay: FreezeOverlay | None) -> dict[str, FreezeQuote]:
     if (
         overlay is None
-        or overlay.strategy is not decision.strategy
-        or overlay.trade_date != decision.trade_date
-        or overlay.parent_version != decision.version
+        or overlay.strategy is not freeze.strategy
+        or overlay.trade_date != freeze.trade_date
+        or overlay.parent_version != freeze.version
     ):
         return {}
     return {quote.code: quote for quote in overlay.quotes}
 
 
-def _top_score_order(item: DecisionItemView) -> tuple[float, float, str]:
+def _top_score_order(item: FreezeItemView) -> tuple[float, float, str]:
     return (-(item.final_score or 0.0), -(item.local_score or 0.0), item.code)
 
 
@@ -589,8 +589,8 @@ def _empty_view(
     view: Literal["current", "history"],
     score_status: ScoreStatus,
     reason: str,
-) -> DecisionView:
-    return DecisionView(
+) -> FreezeView:
+    return FreezeView(
         "not_applicable" if score_status == "not_applicable" and view == "history" else "not_ready",
         strategy,
         trade_date,
@@ -605,7 +605,7 @@ def _empty_view(
         None,
         None,
         (),
-        DecisionCoverage(0, 0, 0, 0, 0, 0),
+        FreezeCoverage(0, 0, 0, 0, 0, 0),
         (),
         (reason,),
         (),
@@ -613,10 +613,10 @@ def _empty_view(
     )
 
 
-def _etag(decision_version: str, overlay_version: str | None) -> str:
+def _etag(freeze_version: str, overlay_version: str | None) -> str:
     if overlay_version is None:
-        return decision_version
-    return f"{decision_version}+{overlay_version}"
+        return freeze_version
+    return f"{freeze_version}+{overlay_version}"
 
 
 def _classified_etag(base: str, classified_industries: Mapping[str, str]) -> str:
@@ -629,10 +629,10 @@ def _classified_etag(base: str, classified_industries: Mapping[str, str]) -> str
 
 __all__ = [
     "CachedQuoteReader",
-    "DecisionQuerySources",
-    "DecisionDraftView",
-    "DecisionHistoryReader",
-    "DecisionItemView",
-    "DecisionView",
-    "UnifiedDecisionQueries",
+    "FreezeQuerySources",
+    "FreezeDraftView",
+    "FreezeHistoryReader",
+    "FreezeItemView",
+    "FreezeView",
+    "UnifiedFreezeQueries",
 ]

@@ -24,7 +24,7 @@ class TrainingRunnerPort(Protocol[_ResultT]):
 
 
 class TrainingDuePort(Protocol[_QueryT, _ResultT]):
-    """Read-only training cadence decision supplied by infrastructure."""
+    """Read-only training cadence freeze supplied by infrastructure."""
 
     def __call__(self, query: _QueryT) -> _ResultT: ...
 

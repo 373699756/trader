@@ -37,12 +37,6 @@ from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadS
 from trader.infra.workers import BoundedExecutor, InjectedExecutor
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
-from trader.recommendation.application.ports.data_plane_records import (
-    DataPlaneRecoverySummary,
-    DataPlaneUnavailableError,
-    SecurityMasterRecord,
-    SourceCursorRecord,
-)
 from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
     MarketDataFailedError,
@@ -98,7 +92,6 @@ from trader.recommendation.infra.market_data.trading_calendar import (
 from trader.recommendation.infra.market_data.vendor_routing import Route, VendorRoute, VendorSeverity
 from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -222,9 +215,6 @@ class _FixtureHistory:
                 self._bars[code] = ordered[-20:]
                 self._contexts[code] = BuildHistoryContext(ordered, lookback_sessions=61)
 
-    def recover_from_data_plane(self):
-        return None
-
     def entries(self):
         return {
             code: SimpleNamespace(bars=bars, context=self._contexts.get(code), expires_at=self._monotonic() + 60)
@@ -233,7 +223,7 @@ class _FixtureHistory:
 
     def status(self):
         return SimpleNamespace(
-            state="active" if self._bars else "unavailable",
+            state="published" if self._bars else "unavailable",
             snapshot_hash="fixture" if self._bars else None,
             disk_snapshot_hash="fixture" if self._bars else None,
             outcome_snapshot_hash=None,
@@ -272,7 +262,6 @@ def _service(
     gateway: Any,
     history_client: Any,
     feature_builder: Any,
-    data_plane: SQLiteDataPlane | None = None,
     **kwargs: Any,
 ) -> MarketFeatureService:
     monotonic = kwargs.pop("monotonic", time.monotonic)

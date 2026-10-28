@@ -33,7 +33,7 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     BuildCandidatePlans,
     CandidatePlanningContext,
 )
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredLocal,
     ScoredProjectionInputs,
 )
@@ -52,7 +52,7 @@ from .market_factor_audit import (
     IGNORED_REALTIME_FIELDS,
     OPTIONAL_FALLBACK_QUOTE_FIELDS,
     QUOTE_FIELDS,
-    REQUIRED_DECISION_QUOTE_FIELDS,
+    REQUIRED_FREEZE_QUOTE_FIELDS,
     SCORING_QUOTE_FIELDS,
     VALIDATION_QUOTE_FIELDS,
     FactorAudit,
@@ -526,7 +526,7 @@ def SummarizeRoutes(samples: Sequence[Mapping[str, object]], profile: str) -> li
         all_fields_complete_rounds = sum(QuoteFieldsComplete(audit, QUOTE_FIELDS) for audit in audits)
         scoring_fields_complete_rounds = sum(QuoteFieldsComplete(audit, SCORING_QUOTE_FIELDS) for audit in audits)
         selection_fields_complete_rounds = sum(
-            QuoteFieldsComplete(audit, REQUIRED_DECISION_QUOTE_FIELDS) for audit in audits
+            QuoteFieldsComplete(audit, REQUIRED_FREEZE_QUOTE_FIELDS) for audit in audits
         )
         model_industry_complete_rounds = sum(
             int(str(factors.get("model_industry_rows", 0))) == int(str(audit.get("requested", -1)))
@@ -551,7 +551,7 @@ def SummarizeRoutes(samples: Sequence[Mapping[str, object]], profile: str) -> li
                 "model_industry_complete_rounds": model_industry_complete_rounds,
                 "source_owned_inputs_complete_rounds": sum(
                     isinstance(row.get("quotes"), dict)
-                    and QuoteFieldsComplete(cast(Mapping[str, object], row["quotes"]), REQUIRED_DECISION_QUOTE_FIELDS)
+                    and QuoteFieldsComplete(cast(Mapping[str, object], row["quotes"]), REQUIRED_FREEZE_QUOTE_FIELDS)
                     and isinstance(row.get("factors"), dict)
                     and int(str(cast(Mapping[str, object], row["factors"]).get("model_industry_rows", 0)))
                     == int(str(cast(Mapping[str, object], row["quotes"]).get("requested", -1)))
@@ -677,7 +677,7 @@ def SummarizeScoringFields(
         results.append(
             {
                 "profile": profile,
-                "decision_fields_by_owner": {owner: sorted(names) for owner, names in sorted(owners.items())},
+                "freeze_fields_by_owner": {owner: sorted(names) for owner, names in sorted(owners.items())},
                 "model_gate_features": sorted(model_features),
             }
         )
@@ -798,10 +798,10 @@ def CompactSummary(
             unresolved.extend(
                 str(item.get("field"))
                 for item in partial
-                if isinstance(item, dict) and item.get("field") in REQUIRED_DECISION_QUOTE_FIELDS
+                if isinstance(item, dict) and item.get("field") in REQUIRED_FREEZE_QUOTE_FIELDS
             )
         if isinstance(missing, list):
-            unresolved.extend(str(item) for item in missing if item in REQUIRED_DECISION_QUOTE_FIELDS)
+            unresolved.extend(str(item) for item in missing if item in REQUIRED_FREEZE_QUOTE_FIELDS)
     if selected is not None and selected.get("model_industry_complete_rounds") != selected.get("rounds"):
         unresolved.append("model_industry")
     return {
@@ -811,7 +811,7 @@ def CompactSummary(
         "level_one_eligibility": eligibility,
         "input_owners": {
             "market_sources_compared": list(compared_sources),
-            "required_realtime_fields": list(REQUIRED_DECISION_QUOTE_FIELDS),
+            "required_realtime_fields": list(REQUIRED_FREEZE_QUOTE_FIELDS),
             "local_industry_fields": ["industry", "model_industry"],
             "derivable_realtime_fields": list(DERIVABLE_QUOTE_FIELDS),
             "optional_fallback_realtime_fields": list(OPTIONAL_FALLBACK_QUOTE_FIELDS),
@@ -1114,7 +1114,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
             {
                 "severity": "warning",
                 "code": "source_inputs_incomplete",
-                "message": "No Tencent-primary route supplied every source-owned decision input in every measured round.",
+                "message": "No Tencent-primary route supplied every source-owned freeze input in every measured round.",
                 "evidence": {"selected_route": recommended.get("selected_route"), "fields": unresolved},
             }
         )

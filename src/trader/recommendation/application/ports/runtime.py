@@ -14,7 +14,7 @@ from trader.recommendation.application.ports.clock import TradingCalendarPort
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, ResearchAuditIdentity
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.trading_session import SessionLease
-from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity, FreezeOverlay, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 
@@ -128,20 +128,20 @@ class DataRefreshPendingError(DataRefreshUnavailableError):
     """A refresh is waiting for a local dependency and has not failed."""
 
 
-class DecisionUnavailableError(RuntimeError):
-    """A local decision could not be produced from the retained data plane."""
+class FreezeUnavailableError(RuntimeError):
+    """A local freeze could not be produced from the retained data plane."""
 
 
 class ReviewUnavailableError(RuntimeError):
-    """The shared DeepSeek path failed and the local decision must remain current."""
+    """The shared DeepSeek path failed and the local freeze must remain current."""
 
 
-class FreezeUnavailableError(RuntimeError):
+class SealUnavailableError(RuntimeError):
     """A freeze attempt failed without changing an existing formal record."""
 
 
 class SettlementUnavailableError(RuntimeError):
-    """Background settlement failed without changing current decisions."""
+    """Background settlement failed without changing current freezes."""
 
 
 class TradingCalendarUnavailableError(RuntimeError):
@@ -158,25 +158,25 @@ class DataRefreshPort(Protocol):
     def scoring_epoch(self) -> str: ...
 
 
-class DecisionBuilderPort(Protocol):
+class FreezeBuilderPort(Protocol):
     def input_quality_status(self) -> tuple[InputQualityStatus, ...]: ...
 
     def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool: ...
 
-    def build_local(self, request: CycleRequest) -> DecisionIdentity | None: ...
+    def build_local(self, request: CycleRequest) -> FreezeIdentity | None: ...
 
-    def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay: ...
+    def initial_overlay(self, freeze: ScoredFreeze) -> FreezeOverlay: ...
 
     def refreshed_overlay(
         self,
-        decision: ScoredDecision,
+        freeze: ScoredFreeze,
         request: CycleRequest,
-        previous: DecisionOverlay | None,
-    ) -> DecisionOverlay | None: ...
+        previous: FreezeOverlay | None,
+    ) -> FreezeOverlay | None: ...
 
     def research_audit_factory(self, version: str) -> Callable[[], ResearchAuditIdentity | None]: ...
 
-    def research_intent(self, decision: ScoredDecision) -> ResearchIntent: ...
+    def research_intent(self, freeze: ScoredFreeze) -> ResearchIntent: ...
 
 
 class ResearchRuntimePort(Protocol):
@@ -204,7 +204,7 @@ class DeepSeekUpgradePort(Protocol):
     @property
     def runtime_contract(self) -> SharedDeepSeekRuntimeContract: ...
 
-    def build_hybrid(self, local: ScoredDecision, request: CycleRequest) -> ScoredDecision | None: ...
+    def build_hybrid(self, local: ScoredFreeze, request: CycleRequest) -> ScoredFreeze | None: ...
 
 
 class FreezePort(Protocol):
@@ -212,14 +212,14 @@ class FreezePort(Protocol):
         self,
         strategy: Strategy,
         at: datetime,
-        current: DecisionIdentity | None,
+        current: FreezeIdentity | None,
     ) -> None: ...
 
     def freeze_close_fallback(
         self,
         strategy: Strategy,
         at: datetime,
-        current: ScoredDecision,
+        current: ScoredFreeze,
         *,
         recovery_path: Literal["current", "close_rebuild"],
         official_close_version: str,
@@ -252,11 +252,11 @@ __all__ = [
     "DataRefreshPort",
     "DataRefreshUnavailableError",
     "DataRefreshPendingError",
-    "DecisionBuilderPort",
-    "DecisionUnavailableError",
+    "FreezeBuilderPort",
+    "FreezeUnavailableError",
     "DeepSeekUpgradePort",
     "FreezePort",
-    "FreezeUnavailableError",
+    "SealUnavailableError",
     "PipelineTaskRequest",
     "RefreshOutcome",
     "ReviewUnavailableError",

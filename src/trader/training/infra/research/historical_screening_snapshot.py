@@ -1,4 +1,4 @@
-"""Immutable SQLite archive for downloadable historical screening bars."""
+"""Immutable SQLite prices for independent historical screening."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     SqliteConnection,
@@ -70,7 +71,7 @@ class SQLiteHistoricalScreeningSnapshot:
             existing_codes = tuple(
                 str(row[0])
                 for row in connection.run(
-                    "SELECT code FROM universe WHERE research_identity = ? ORDER BY code",
+                    "SELECT code FROM screening_universe WHERE research_id = ? ORDER BY code",
                     (spec.research_identity,),
                 ).fetchall()
             )
@@ -80,15 +81,15 @@ class SQLiteHistoricalScreeningSnapshot:
             for item in ordered:
                 payload = _canonical(asdict(item))
                 existing = connection.run(
-                    "SELECT payload_hash FROM universe WHERE research_identity = ? AND code = ?",
+                    "SELECT content_hash FROM screening_universe WHERE research_id = ? AND code = ?",
                     (spec.research_identity, item.code),
                 ).fetchone()
-                if existing is not None and str(existing[0]) != _sha256(payload):
+                if existing is not None and DecodeHash(existing[0]) != _sha256(payload):
                     raise HistoricalScreeningSnapshotConflictError("historical screening universe identity conflict")
                 connection.run(
                     """
-                    INSERT OR IGNORE INTO universe(
-                        research_identity, code, board, name, is_st, is_suspended, payload_hash
+                    INSERT OR IGNORE INTO screening_universe(
+                        research_id, code, board, name, is_st, is_suspended, content_hash
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -98,7 +99,7 @@ class SQLiteHistoricalScreeningSnapshot:
                         item.name,
                         int(item.is_st),
                         int(item.is_suspended),
-                        _sha256(payload),
+                        EncodeHash(_sha256(payload)),
                     ),
                 )
 
@@ -109,8 +110,9 @@ class SQLiteHistoricalScreeningSnapshot:
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
-                "SELECT code FROM downloads WHERE research_identity = ? AND status = 'complete'",
+                "SELECT code FROM screening_download WHERE research_id = ? AND status = 'complete'",
                 (research_identity,),
             ).fetchall()
         return frozenset(str(row[0]) for row in rows)
@@ -122,10 +124,11 @@ class SQLiteHistoricalScreeningSnapshot:
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
                 """
                 SELECT code, board, name, is_st, is_suspended
-                FROM universe WHERE research_identity = ? ORDER BY code
+                FROM screening_universe WHERE research_id = ? ORDER BY code
                 """,
                 (research_identity,),
             ).fetchall()
@@ -151,7 +154,7 @@ class SQLiteHistoricalScreeningSnapshot:
             self._register_spec(connection, spec)
             if (
                 connection.run(
-                    "SELECT 1 FROM universe WHERE research_identity = ? AND code = ?",
+                    "SELECT 1 FROM screening_universe WHERE research_id = ? AND code = ?",
                     (spec.research_identity, code),
                 ).fetchone()
                 is None
@@ -164,24 +167,24 @@ class SQLiteHistoricalScreeningSnapshot:
                 hashes.append(payload_hash)
                 existing = connection.run(
                     """
-                    SELECT payload_hash FROM bars
-                    WHERE research_identity = ? AND code = ? AND trade_date = ?
+                    SELECT content_hash FROM screening_price
+                    WHERE research_id = ? AND code = ? AND trade_date = ?
                     """,
-                    (spec.research_identity, code, bar.trade_date.isoformat()),
+                    (spec.research_identity, code, EncodeDate(bar.trade_date)),
                 ).fetchone()
-                if existing is not None and str(existing[0]) != payload_hash:
+                if existing is not None and DecodeHash(existing[0]) != payload_hash:
                     raise HistoricalScreeningSnapshotConflictError("historical screening bar identity conflict")
                 connection.run(
                     """
-                    INSERT OR IGNORE INTO bars(
-                        research_identity, code, trade_date, open_price, close_price, high_price, low_price,
-                        volume, amount, pct_change, turnover_rate, adjustment, source, payload_hash
+                    INSERT OR IGNORE INTO screening_price(
+                        research_id, code, trade_date, open, close, high, low,
+                        volume, amount, change_pct, turnover_pct, adjustment, source, content_hash
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         spec.research_identity,
                         code,
-                        bar.trade_date.isoformat(),
+                        EncodeDate(bar.trade_date),
                         bar.open_price,
                         bar.close,
                         bar.high,
@@ -192,30 +195,30 @@ class SQLiteHistoricalScreeningSnapshot:
                         bar.turnover_rate,
                         bar.adjustment,
                         bar.source,
-                        payload_hash,
+                        EncodeHash(payload_hash),
                     ),
                 )
             content_hash = _sha256(_canonical({"code": code, "bars": hashes}))
             existing_download = connection.run(
                 """
-                SELECT content_hash FROM downloads
-                WHERE research_identity = ? AND code = ? AND status = 'complete'
+                SELECT content_hash FROM screening_download
+                WHERE research_id = ? AND code = ? AND status = 'complete'
                 """,
                 (spec.research_identity, code),
             ).fetchone()
-            if existing_download is not None and str(existing_download[0]) != content_hash:
+            if existing_download is not None and DecodeHash(existing_download[0]) != content_hash:
                 raise HistoricalScreeningSnapshotConflictError("historical screening download identity conflict")
             connection.run(
                 """
-                INSERT INTO downloads(research_identity, code, status, bar_count, content_hash, error_code)
-                VALUES (?, ?, 'complete', ?, ?, '')
-                ON CONFLICT(research_identity, code) DO UPDATE SET
+                INSERT INTO screening_download(research_id, code, status, bar_count, content_hash, failure_code)
+                VALUES (?, ?, 'complete', ?, ?, NULL)
+                ON CONFLICT(research_id, code) DO UPDATE SET
                     status = excluded.status,
                     bar_count = excluded.bar_count,
                     content_hash = excluded.content_hash,
-                    error_code = excluded.error_code
+                    failure_code = excluded.failure_code
                 """,
-                (spec.research_identity, code, len(ordered), content_hash),
+                (spec.research_identity, code, len(ordered), EncodeHash(content_hash)),
             )
 
     def record_failure(self, spec: HistoricalScreeningSpec, code: str, error_code: str) -> None:
@@ -231,12 +234,12 @@ class SQLiteHistoricalScreeningSnapshot:
             self._register_spec(connection, spec)
             connection.run(
                 """
-                INSERT INTO downloads(research_identity, code, status, bar_count, content_hash, error_code)
-                VALUES (?, ?, 'failed', 0, '', ?)
-                ON CONFLICT(research_identity, code) DO UPDATE SET
-                    status = CASE WHEN downloads.status = 'complete' THEN downloads.status ELSE excluded.status END,
-                    error_code = CASE
-                        WHEN downloads.status = 'complete' THEN downloads.error_code ELSE excluded.error_code
+                INSERT INTO screening_download(research_id, code, status, bar_count, content_hash, failure_code)
+                VALUES (?, ?, 'failed', 0, NULL, ?)
+                ON CONFLICT(research_id, code) DO UPDATE SET
+                    status = CASE WHEN screening_download.status = 'complete' THEN screening_download.status ELSE excluded.status END,
+                    failure_code = CASE
+                        WHEN screening_download.status = 'complete' THEN screening_download.failure_code ELSE excluded.failure_code
                     END
                 """,
                 (spec.research_identity, code, error_code),
@@ -250,12 +253,13 @@ class SQLiteHistoricalScreeningSnapshot:
                 SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
                 SqliteTransaction(connection),
             ):
+                EnsureSqliteSchema(connection, _SCHEMA)
                 spec = connection.run(
-                    "SELECT spec_hash FROM specs WHERE research_identity = ?", (research_identity,)
+                    "SELECT spec_hash FROM screening_spec WHERE research_id = ?", (research_identity,)
                 ).fetchone()
                 universe_count = int(
                     connection.run(
-                        "SELECT COUNT(*) FROM universe WHERE research_identity = ?", (research_identity,)
+                        "SELECT COUNT(*) FROM screening_universe WHERE research_id = ?", (research_identity,)
                     ).require_one()[0]
                 )
                 completed, failed = connection.run(
@@ -263,14 +267,14 @@ class SQLiteHistoricalScreeningSnapshot:
                     SELECT
                         SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END),
                         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
-                    FROM downloads WHERE research_identity = ?
+                    FROM screening_download WHERE research_id = ?
                     """,
                     (research_identity,),
                 ).require_one()
                 bar_count, first_date, last_date = connection.run(
                     """
                     SELECT COUNT(*), MIN(trade_date), MAX(trade_date)
-                    FROM bars WHERE research_identity = ?
+                    FROM screening_price WHERE research_id = ?
                     """,
                     (research_identity,),
                 ).require_one()
@@ -283,9 +287,9 @@ class SQLiteHistoricalScreeningSnapshot:
             completed_codes=int(completed or 0),
             failed_codes=int(failed or 0),
             bar_count=int(bar_count or 0),
-            first_trade_date=str(first_date) if first_date is not None else None,
-            last_trade_date=str(last_date) if last_date is not None else None,
-            spec_hash=str(spec[0]) if spec is not None else "",
+            first_trade_date=DecodeDate(first_date).isoformat() if first_date is not None else None,
+            last_trade_date=DecodeDate(last_date).isoformat() if last_date is not None else None,
+            spec_hash=DecodeHash(spec[0]) if spec is not None else "",
         )
 
     def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalScreeningSnapshotManifest:
@@ -296,15 +300,16 @@ class SQLiteHistoricalScreeningSnapshot:
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             persisted_spec = connection.run(
-                "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
+                "SELECT spec_hash FROM screening_spec WHERE research_id = ?", (spec.research_identity,)
             ).fetchone()
-            if persisted_spec is None or str(persisted_spec[0]) != spec.content_hash:
+            if persisted_spec is None or DecodeHash(persisted_spec[0]) != spec.content_hash:
                 raise HistoricalScreeningSnapshotConflictError("historical screening spec manifest conflict")
             universe_rows = connection.run(
                 """
-                SELECT code, board, name, is_st, is_suspended, payload_hash
-                FROM universe WHERE research_identity = ? ORDER BY code
+                SELECT code, board, name, is_st, is_suspended, content_hash
+                FROM screening_universe WHERE research_id = ? ORDER BY code
                 """,
                 (spec.research_identity,),
             ).fetchall()
@@ -318,24 +323,24 @@ class SQLiteHistoricalScreeningSnapshot:
                     bool(is_suspended),
                 )
                 payload_hash = _sha256(_canonical(asdict(security)))
-                if payload_hash != str(persisted_hash):
+                if payload_hash != DecodeHash(persisted_hash):
                     raise HistoricalScreeningSnapshotConflictError("historical screening universe payload conflict")
                 universe_identities.append((security.code, payload_hash))
             downloads = {
-                str(code): (int(bar_count), str(content_hash))
+                str(code): (int(bar_count), DecodeHash(content_hash))
                 for code, bar_count, content_hash in connection.run(
                     """
-                    SELECT code, bar_count, content_hash FROM downloads
-                    WHERE research_identity = ? AND status = 'complete' ORDER BY code
+                    SELECT code, bar_count, content_hash FROM screening_download
+                    WHERE research_id = ? AND status = 'complete' ORDER BY code
                     """,
                     (spec.research_identity,),
                 ).fetchall()
             }
             bar_rows = connection.run(
                 """
-                SELECT code, trade_date, open_price, close_price, high_price, low_price, volume, amount,
-                       pct_change, turnover_rate, adjustment, source, payload_hash
-                FROM bars WHERE research_identity = ? ORDER BY code, trade_date
+                SELECT code, trade_date, open, close, high, low, volume, amount,
+                       change_pct, turnover_pct, adjustment, source, content_hash
+                FROM screening_price WHERE research_id = ? ORDER BY code, trade_date
                 """,
                 (spec.research_identity,),
             )
@@ -343,7 +348,7 @@ class SQLiteHistoricalScreeningSnapshot:
             for row in bar_rows:
                 code = str(row[0])
                 payload = {
-                    "trade_date": str(row[1]),
+                    "trade_date": DecodeDate(row[1]).isoformat(),
                     "open_price": float(row[2]),
                     "close": float(row[3]),
                     "high": float(row[4]),
@@ -356,7 +361,7 @@ class SQLiteHistoricalScreeningSnapshot:
                     "source": str(row[11]),
                 }
                 payload_hash = _sha256(_canonical(payload))
-                if payload_hash != str(row[12]):
+                if payload_hash != DecodeHash(row[12]):
                     raise HistoricalScreeningSnapshotConflictError("historical screening bar payload conflict")
                 bar_hashes.setdefault(code, []).append(payload_hash)
         if set(bar_hashes) != set(downloads):
@@ -380,7 +385,7 @@ class SQLiteHistoricalScreeningSnapshot:
         )
 
     def screening_days(self, spec: HistoricalScreeningSpec) -> tuple[HistoricalScreeningDay, ...]:
-        """Return fixed OHLCV-only daily diagnostics without mutating the archive."""
+        """Return fixed OHLCV-only daily diagnostics without mutating the snapshot."""
 
         if not self._database.is_file():
             return ()
@@ -388,18 +393,19 @@ class SQLiteHistoricalScreeningSnapshot:
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
                 _SCREENING_QUERY,
                 {
                     "identity": spec.research_identity,
-                    "start": spec.training_start.isoformat(),
-                    "end": spec.validation_end.isoformat(),
+                    "start": EncodeDate(spec.training_start),
+                    "end": EncodeDate(spec.validation_end),
                     "cost_pct": spec.round_trip_cost_bps / 100.0,
                 },
             ).fetchall()
         return tuple(
             HistoricalScreeningDay(
-                trade_date=date.fromisoformat(str(row[0])),
+                trade_date=DecodeDate(row[0]),
                 population=int(row[1]),
                 selected=int(row[2]),
                 selected_return_1d_pct=float(row[3]),
@@ -412,7 +418,7 @@ class SQLiteHistoricalScreeningSnapshot:
         )
 
     def tomorrow_historical_rows(self, spec: HistoricalScreeningSpec) -> tuple[TomorrowHistoricalRow, ...]:
-        """Return decision-day qfq features and next-day labels bound to the H0 archive."""
+        """Return freeze-day qfq features and next-day labels bound to the H0 snapshot."""
 
         return tuple(self.iter_tomorrow_historical_rows(spec))
 
@@ -428,12 +434,13 @@ class SQLiteHistoricalScreeningSnapshot:
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
                     "identity": spec.research_identity,
-                    "start": spec.training_start.isoformat(),
-                    "end": spec.validation_end.isoformat(),
+                    "start": EncodeDate(spec.training_start),
+                    "end": EncodeDate(spec.validation_end),
                 },
             )
             daily: list[tuple[object, ...]] = []
@@ -461,12 +468,13 @@ class SQLiteHistoricalScreeningSnapshot:
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
                     "identity": spec.research_identity,
-                    "start": spec.training_start.isoformat(),
-                    "end": spec.validation_end.isoformat(),
+                    "start": EncodeDate(spec.training_start),
+                    "end": EncodeDate(spec.validation_end),
                 },
             ).fetchall()
         historical_rows = _tomorrow_historical_rows(tuple(tuple(row) for row in rows))
@@ -499,13 +507,13 @@ class SQLiteHistoricalScreeningSnapshot:
 
     def _register_spec(self, connection: SqliteConnection, spec: HistoricalScreeningSpec) -> None:
         existing = connection.run(
-            "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
+            "SELECT spec_hash FROM screening_spec WHERE research_id = ?", (spec.research_identity,)
         ).fetchone()
-        if existing is not None and str(existing[0]) != spec.content_hash:
+        if existing is not None and DecodeHash(existing[0]) != spec.content_hash:
             raise HistoricalScreeningSnapshotConflictError("historical screening spec identity conflict")
         connection.run(
-            "INSERT OR IGNORE INTO specs(research_identity, spec_hash) VALUES (?, ?)",
-            (spec.research_identity, spec.content_hash),
+            "INSERT OR IGNORE INTO screening_spec(research_id, spec_hash) VALUES (?, ?)",
+            (spec.research_identity, EncodeHash(spec.content_hash)),
         )
 
 
@@ -534,59 +542,59 @@ def _sha256(value: bytes) -> str:
 
 
 _SCHEMA = SqliteSchema(
-    None,
+    1,
     (
         """
-        CREATE TABLE IF NOT EXISTS specs(
-            research_identity TEXT PRIMARY KEY,
-            spec_hash TEXT NOT NULL
+        CREATE TABLE screening_spec(
+            research_id TEXT NOT NULL PRIMARY KEY,
+            spec_hash BLOB NOT NULL CHECK(length(spec_hash)=32)
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS universe(
-            research_identity TEXT NOT NULL,
+        CREATE TABLE screening_universe(
+            research_id TEXT NOT NULL,
             code TEXT NOT NULL,
             board TEXT NOT NULL,
             name TEXT NOT NULL,
             is_st INTEGER NOT NULL,
             is_suspended INTEGER NOT NULL,
-            payload_hash TEXT NOT NULL,
-            PRIMARY KEY(research_identity, code),
-            FOREIGN KEY(research_identity) REFERENCES specs(research_identity)
+            content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
+            PRIMARY KEY(research_id, code),
+            FOREIGN KEY(research_id) REFERENCES screening_spec(research_id)
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS bars(
-            research_identity TEXT NOT NULL,
+        CREATE TABLE screening_price(
+            research_id TEXT NOT NULL,
             code TEXT NOT NULL,
-            trade_date TEXT NOT NULL,
-            open_price REAL NOT NULL,
-            close_price REAL NOT NULL,
-            high_price REAL NOT NULL,
-            low_price REAL NOT NULL,
+            trade_date INTEGER NOT NULL,
+            open REAL NOT NULL,
+            close REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
             volume REAL NOT NULL,
             amount REAL NOT NULL,
-            pct_change REAL NOT NULL,
-            turnover_rate REAL,
+            change_pct REAL NOT NULL,
+            turnover_pct REAL,
             adjustment TEXT NOT NULL,
             source TEXT NOT NULL,
-            payload_hash TEXT NOT NULL,
-            PRIMARY KEY(research_identity, code, trade_date),
-            FOREIGN KEY(research_identity, code) REFERENCES universe(research_identity, code)
+            content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
+            PRIMARY KEY(research_id, code, trade_date),
+            FOREIGN KEY(research_id, code) REFERENCES screening_universe(research_id, code)
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS downloads(
-            research_identity TEXT NOT NULL,
+        CREATE TABLE screening_download(
+            research_id TEXT NOT NULL,
             code TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('complete', 'failed')),
             bar_count INTEGER NOT NULL,
-            content_hash TEXT NOT NULL,
-            error_code TEXT NOT NULL,
-            PRIMARY KEY(research_identity, code)
+            content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash)=32),
+            failure_code TEXT,
+            PRIMARY KEY(research_id, code)
         )
         """,
-        "CREATE INDEX IF NOT EXISTS bars_identity_date ON bars(research_identity, trade_date)",
+        "CREATE INDEX screening_price_date ON screening_price(research_id, trade_date)",
     ),
 )
 
@@ -595,35 +603,35 @@ WITH ordered AS (
     SELECT
         code,
         trade_date,
-        close_price,
+        close,
         amount,
-        pct_change,
-        LAG(close_price, 20) OVER (PARTITION BY code ORDER BY trade_date) AS close_20,
-        LEAD(close_price, 1) OVER (PARTITION BY code ORDER BY trade_date) AS close_f1,
-        LEAD(close_price, 5) OVER (PARTITION BY code ORDER BY trade_date) AS close_f5,
+        change_pct,
+        LAG(close, 20) OVER (PARTITION BY code ORDER BY trade_date) AS close_20,
+        LEAD(close, 1) OVER (PARTITION BY code ORDER BY trade_date) AS close_f1,
+        LEAD(close, 5) OVER (PARTITION BY code ORDER BY trade_date) AS close_f5,
         COUNT(*) OVER (
             PARTITION BY code ORDER BY trade_date ROWS BETWEEN 60 PRECEDING AND CURRENT ROW
         ) AS history_count,
-        AVG(pct_change) OVER (
+        AVG(change_pct) OVER (
             PARTITION BY code ORDER BY trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
         ) AS mean_return_20,
-        AVG(pct_change * pct_change) OVER (
+        AVG(change_pct * change_pct) OVER (
             PARTITION BY code ORDER BY trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
         ) AS mean_square_return_20,
         AVG(amount) OVER (
             PARTITION BY code ORDER BY trade_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
         ) AS mean_amount_20
-    FROM bars
-    WHERE research_identity = :identity
+    FROM screening_price
+    WHERE research_id = :identity
 ), metrics AS (
     SELECT
         code,
         trade_date,
-        100.0 * (close_price / close_20 - 1.0) AS momentum_20,
+        100.0 * (close / close_20 - 1.0) AS momentum_20,
         MAX(0.0, mean_square_return_20 - mean_return_20 * mean_return_20) AS variance_20,
         mean_amount_20,
-        100.0 * (close_f1 / close_price - 1.0) AS return_1d,
-        100.0 * (close_f5 / close_price - 1.0) AS return_5d
+        100.0 * (close_f1 / close - 1.0) AS return_1d,
+        100.0 * (close_f5 / close - 1.0) AS return_5d
     FROM ordered
     WHERE history_count >= 61
       AND close_20 > 0.0
@@ -666,29 +674,29 @@ ORDER BY trade_date
 _TOMORROW_HISTORICAL_QUERY = """
 WITH lagged AS (
     SELECT
-        bars.code,
-        bars.trade_date,
-        universe.board,
-        bars.close_price,
-        bars.high_price,
-        bars.low_price,
-        bars.amount,
-        bars.pct_change / 100.0 AS daily_return,
-        LAG(bars.close_price, 1) OVER code_dates AS close_1,
-        LAG(bars.close_price, 3) OVER code_dates AS close_3,
-        LAG(bars.close_price, 5) OVER code_dates AS close_5,
-        LAG(bars.close_price, 20) OVER code_dates AS close_20,
-        LAG(bars.close_price, 40) OVER code_dates AS close_40,
-        LAG(bars.close_price, 60) OVER code_dates AS close_60,
-        LEAD(bars.close_price, 1) OVER code_dates AS next_close,
-        LEAD(bars.low_price, 1) OVER code_dates AS next_low,
-        COUNT(*) OVER (PARTITION BY bars.code ORDER BY bars.trade_date ROWS BETWEEN 60 PRECEDING AND CURRENT ROW)
+        screening_price.code,
+        screening_price.trade_date,
+        screening_universe.board,
+        screening_price.close,
+        screening_price.high,
+        screening_price.low,
+        screening_price.amount,
+        screening_price.change_pct / 100.0 AS daily_return,
+        LAG(screening_price.close, 1) OVER code_dates AS close_1,
+        LAG(screening_price.close, 3) OVER code_dates AS close_3,
+        LAG(screening_price.close, 5) OVER code_dates AS close_5,
+        LAG(screening_price.close, 20) OVER code_dates AS close_20,
+        LAG(screening_price.close, 40) OVER code_dates AS close_40,
+        LAG(screening_price.close, 60) OVER code_dates AS close_60,
+        LEAD(screening_price.close, 1) OVER code_dates AS next_close,
+        LEAD(screening_price.low, 1) OVER code_dates AS next_low,
+        COUNT(*) OVER (PARTITION BY screening_price.code ORDER BY screening_price.trade_date ROWS BETWEEN 60 PRECEDING AND CURRENT ROW)
             AS history_count
-    FROM bars
-    JOIN universe
-      ON universe.research_identity = bars.research_identity AND universe.code = bars.code
-    WHERE bars.research_identity = :identity
-    WINDOW code_dates AS (PARTITION BY bars.code ORDER BY bars.trade_date)
+    FROM screening_price
+    JOIN screening_universe
+      ON screening_universe.research_id = screening_price.research_id AND screening_universe.code = screening_price.code
+    WHERE screening_price.research_id = :identity
+    WINDOW code_dates AS (PARTITION BY screening_price.code ORDER BY screening_price.trade_date)
 ), rolling AS (
     SELECT
         *,
@@ -698,8 +706,8 @@ WITH lagged AS (
             OVER recent_20 AS downside_semivariance_20,
         AVG(amount) OVER recent_20 AS average_amount_20,
         AVG(ABS(daily_return) / MAX(amount / 1000000.0, 0.000000001)) OVER recent_20 AS amihud_20,
-        MAX(high_price) OVER recent_60 AS maximum_high_60,
-        AVG(MAX(high_price - low_price, ABS(high_price - close_1), ABS(low_price - close_1)))
+        MAX(high) OVER recent_60 AS maximum_high_60,
+        AVG(MAX(high - low, ABS(high - close_1), ABS(low - close_1)))
             OVER recent_20 AS atr_20
     FROM lagged
     WINDOW
@@ -710,21 +718,21 @@ WITH lagged AS (
         trade_date,
         code,
         board,
-        close_price / close_1 - 1.0 AS return_1,
-        close_price / close_3 - 1.0 AS return_3,
-        close_price / close_5 - 1.0 AS return_5,
+        close / close_1 - 1.0 AS return_1,
+        close / close_3 - 1.0 AS return_3,
+        close / close_5 - 1.0 AS return_5,
         close_5 / close_20 - 1.0 AS momentum_20_skip5,
         close_5 / close_40 - 1.0 AS momentum_40_skip5,
         close_5 / close_60 - 1.0 AS momentum_60_skip5,
         MAX(0.0, mean_square_return_20 - mean_return_20 * mean_return_20) AS variance_20,
         downside_semivariance_20,
-        close_price / maximum_high_60 AS drawdown_recovery_60,
+        close / maximum_high_60 AS drawdown_recovery_60,
         amihud_20,
         average_amount_20,
-        close_price / close_20 - 1.0 AS baseline_momentum_20,
-        next_close / close_price - 1.0 AS next_return,
-        atr_20 / close_price AS atr20_pct,
-        (next_low - close_price) / atr_20 AS mae_atr20
+        close / close_20 - 1.0 AS baseline_momentum_20,
+        next_close / close - 1.0 AS next_return,
+        atr_20 / close AS atr20_pct,
+        (next_low - close) / atr_20 AS mae_atr20
     FROM rolling
     WHERE history_count >= 61
       AND close_1 > 0.0 AND close_3 > 0.0 AND close_5 > 0.0
@@ -771,7 +779,7 @@ ORDER BY trade_date, code
 def _tomorrow_historical_rows(rows: Sequence[tuple[object, ...]]) -> tuple[TomorrowHistoricalRow, ...]:
     grouped: dict[date, list[tuple[object, ...]]] = {}
     for row in rows:
-        grouped.setdefault(date.fromisoformat(str(row[0])), []).append(row)
+        grouped.setdefault(DecodeDate(row[0]), []).append(row)
     result: list[TomorrowHistoricalRow] = []
     for trade_date in sorted(grouped):
         daily = grouped[trade_date]
@@ -834,7 +842,7 @@ def _residualize(rows: Sequence[tuple[object, ...]], momentum_column: int) -> tu
 
 def _number(value: object) -> float:
     if not isinstance(value, (int, float)):
-        raise TypeError("historical archive numeric column is invalid")
+        raise TypeError("historical snapshot numeric column is invalid")
     return float(value)
 
 

@@ -2,27 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from scripts.migrate_runtime_data import MigrationError, inspect_layout, migrate
-from scripts.runtime_migration import ImportTraces, MergeDatabase
-from tests.unit.infra.test_decision_records import NOW, decision, record
+from scripts.runtime_migration import MergeDatabase
+from tests.unit.infra.test_freeze_records import NOW, record
 from tests.unit.infra.test_issuer_eligibility_index import _fact
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint, DecisionRecordConflictError
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFactHash, ManualBlacklistFact
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
-from trader.training.infra.research.trace_codec import PersistedPayloadBytes
-from trader.training.infra.research.trace_storage import InitializeDatabase
 
 
 def _source(root: Path) -> Path:
@@ -38,10 +32,10 @@ def _legacy_freeze(source: Path) -> dict[str, bytes]:
         root.mkdir(parents=True)
         with SqliteSession(root / "freeze.sqlite3") as connection, SqliteTransaction(connection):
             connection.run(
-                "CREATE TABLE decision_records(strategy TEXT,trade_date TEXT,version TEXT,payload_hash TEXT,committed_at TEXT,commit_kind TEXT,status TEXT,relative_path TEXT,payload_sha256 TEXT)"
+                "CREATE TABLE freeze_records(strategy TEXT,trade_date TEXT,version TEXT,payload_hash TEXT,committed_at TEXT,commit_kind TEXT,status TEXT,relative_path TEXT,payload_sha256 TEXT)"
             )
             connection.run(
-                "CREATE TABLE decision_checkpoints(strategy TEXT,trade_date TEXT,version TEXT,decision_version TEXT,boundary_at TEXT,observed_at TEXT,relative_path TEXT,payload_sha256 TEXT,consumed_at TEXT)"
+                "CREATE TABLE freeze_checkpoints(strategy TEXT,trade_date TEXT,version TEXT,freeze_version TEXT,boundary_at TEXT,observed_at TEXT,relative_path TEXT,payload_sha256 TEXT,consumed_at TEXT)"
             )
             for strategy in (Strategy.TOMORROW, Strategy.D25):
                 item = record(strategy)
@@ -50,7 +44,7 @@ def _legacy_freeze(source: Path) -> dict[str, bytes]:
                 (root / relative).write_bytes(payload)
                 expected[profile + "/" + strategy.value] = payload
                 connection.run(
-                    "INSERT INTO decision_records VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO freeze_records VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         strategy.value,
                         item.trade_date.isoformat(),
@@ -70,77 +64,26 @@ def _fingerprint(root):
     return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
-def test_candidate_preserves_exact_formal_bytes_and_first_wins(tmp_path):
+def test_candidate_keeps_old_formal_evidence_isolated_and_requests_rebuild(tmp_path):
     source = _source(tmp_path)
-    expected = _legacy_freeze(source)
+    _legacy_freeze(source)
     before = _fingerprint(source)
     target = tmp_path / "candidate"
     manifest = migrate(source, target, default_profile="v2")
     assert inspect_layout(target) == manifest
     assert _fingerprint(source) == before
-    for profile in ("v2", "v3"):
-        path = target / "recommendation" / profile / "decisions.sqlite3"
-        records = SQLiteDecisionRecords(path)
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
-            assert records.load(strategy, NOW.date()) == record(strategy)
-            with SqliteSession(path) as connection:
-                payload = connection.run(
-                    "SELECT payload FROM decision_records WHERE strategy=?", (strategy.value,)
-                ).require_one()[0]
-            assert payload == expected[profile + "/" + strategy.value]
-        with pytest.raises(DecisionRecordConflictError):
-            records.commit(record(sequence=3))
-    assert not tuple(target.rglob("tomorrow.json"))
-
-
-@pytest.mark.parametrize("consumed", (False, True))
-def test_checkpoint_bytes_and_consumption_survive_migration(tmp_path, consumed):
-    source = _source(tmp_path)
-    _legacy_freeze(source)
-    root = source / "data/freeze/v2"
-    boundary = NOW.replace(hour=14, minute=50)
-    checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
-    payload = CommittedRecordBytes(CommittedDecisionRecord(checkpoint.decision, boundary, "checkpoint_recovery"))
-    (root / "checkpoint.json").write_bytes(payload)
-    with SqliteSession(root / "freeze.sqlite3") as connection, SqliteTransaction(connection):
-        connection.run(
-            "INSERT INTO decision_checkpoints VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                "tomorrow",
-                NOW.date().isoformat(),
-                checkpoint.version,
-                checkpoint.decision.version,
-                boundary.isoformat(),
-                checkpoint.decision.observed_at.isoformat(),
-                "checkpoint.json",
-                hashlib.sha256(payload).hexdigest(),
-                boundary.isoformat() if consumed else None,
-            ),
-        )
-    target = tmp_path / "candidate"
-    migrate(source, target, default_profile="v2")
-    database = target / "recommendation/v2/decisions.sqlite3"
-    assert SQLiteDecisionRecords(database).load_checkpoint(Strategy.TOMORROW, NOW.date()) == (
-        None if consumed else checkpoint
+    assert not (target / "recommendation").exists()
+    assert not (target / "research").exists()
+    assert {"freeze_records", "publication_sequence", "outcomes", "freeze_traces", "research_experiments"} <= set(
+        manifest.regenerate
     )
-    with SqliteSession(database) as connection:
-        assert connection.run("SELECT payload FROM decision_checkpoints").require_one()[0] == payload
 
 
-@pytest.mark.parametrize("damage", ("corrupt", "orphan", "wal", "staged"))
-def test_unverified_source_never_publishes_or_changes_source(tmp_path, damage):
+def test_uncheckpointed_source_never_publishes_or_changes_source(tmp_path):
     source = _source(tmp_path)
     _legacy_freeze(source)
     root = source / "data/freeze/v2"
-    if damage == "corrupt":
-        (root / "tomorrow.json").write_bytes(b"corrupt")
-    elif damage == "orphan":
-        (root / "orphan.json").write_bytes(b"unindexed")
-    elif damage == "wal":
-        (root / "freeze.sqlite3-wal").write_bytes(b"uncheckpointed")
-    else:
-        with SqliteSession(root / "freeze.sqlite3") as connection, SqliteTransaction(connection):
-            connection.run("UPDATE decision_records SET status='staged'")
+    (root / "freeze.sqlite3-wal").write_bytes(b"uncheckpointed")
     before = _fingerprint(source)
     target = tmp_path / "candidate"
     with pytest.raises((ValueError, MigrationError)):
@@ -149,7 +92,7 @@ def test_unverified_source_never_publishes_or_changes_source(tmp_path, damage):
     assert _fingerprint(source) == before
 
 
-def test_budget_rows_and_sequence_reservations_survive_profile_merge(tmp_path):
+def test_budget_rows_survive_merge_and_sequences_require_fresh_generation(tmp_path):
     source = _source(tmp_path)
     runtime = source / ".runtime/trader"
     for index, root in enumerate((runtime, runtime / "profiles/v2")):
@@ -164,9 +107,7 @@ def test_budget_rows_and_sequence_reservations_survive_profile_merge(tmp_path):
     migrate(source, target, default_profile="v2")
     with SqliteSession(target / "recommendation/shared/deepseek_budget.sqlite3") as connection:
         assert connection.run("SELECT SUM(used) FROM calls").require_one()[0] == 168
-    sequence = PublicationSequence(target / "recommendation/v2/snapshots.sqlite3", block_size=10)
-    sequence.initialize()
-    assert sequence.allocate() > 200
+    assert not (target / "recommendation/v2").exists()
 
 
 def test_conflicting_budget_identity_stops_instead_of_resetting(tmp_path):
@@ -205,20 +146,6 @@ def test_real_budget_reservations_keep_the_global_168_limit_after_merge(tmp_path
     migrate(source, target, default_profile="v2")
     merged = ledger(target / "recommendation/shared/deepseek_budget.sqlite3")
     assert not merged.reserve(Strategy.TOMORROW, phase="morning_main", requested_at=NOW).allowed
-
-
-def test_compressed_quarantine_bytes_survive_partitioning(tmp_path):
-    source = tmp_path / "traces.sqlite3"
-    InitializeDatabase(source, set())
-    payload = PersistedPayloadBytes(json.dumps({"trade_date": "2026-10-16", "padding": "a" * 2000}).encode())
-    with SqliteSession(source) as connection, SqliteTransaction(connection):
-        connection.run(
-            "INSERT INTO committed_event_quarantine VALUES(?,?,?,?)", ("decision", "fixture", "hash", payload)
-        )
-    target = tmp_path / "traces"
-    ImportTraces(source, target)
-    with SqliteSession(target / "2026-10-16.sqlite3") as connection:
-        assert connection.run("SELECT payload FROM committed_event_quarantine").require_one()[0] == payload
 
 
 def test_existing_target_and_repository_paths_are_rejected(tmp_path):

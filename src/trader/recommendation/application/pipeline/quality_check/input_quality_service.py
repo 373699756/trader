@@ -1,4 +1,4 @@
-"""Classify native scored input before an empty decision can be published."""
+"""Classify native scored input before an empty freeze can be published."""
 
 from __future__ import annotations
 

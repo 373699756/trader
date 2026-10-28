@@ -1,4 +1,4 @@
-"""Immutable research audit projected from an already-built decision batch."""
+"""Immutable research audit projected from an already-built freeze batch."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
-from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import ScoredLocalProjection
+from trader.recommendation.domain.publication.freeze_identity import ScoredFreeze
 from trader.recommendation.domain.publication.models import ScoredDisposition
-from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionEntry
+from trader.recommendation.domain.risk.scored_fusion import ScoredFreezeEntry
 
 LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit_legacy"
 RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"
@@ -70,7 +70,7 @@ class ResearchCandidateAudit:
 
 
 @dataclass(frozen=True)
-class ResearchDecisionCandidateAudit:
+class ResearchFreezeCandidateAudit:
     code: str
     components: tuple[tuple[str, float | None], ...]
     component_coverage_ratio: float
@@ -91,9 +91,9 @@ class ResearchDecisionCandidateAudit:
 
     def __post_init__(self) -> None:
         if not all((self.code, self.action, self.skip_reason)):
-            raise ValueError("research decision candidate identity must not be empty")
+            raise ValueError("research freeze candidate identity must not be empty")
         if self.rank < 0 or self.board_rank < 0:
-            raise ValueError("research decision candidate ranks cannot be negative")
+            raise ValueError("research freeze candidate ranks cannot be negative")
         if self.selected != (self.rank > 0):
             raise ValueError("research selected identity must match rank")
         if self.fusion_applied and not self.reused_deepseek_facts:
@@ -113,16 +113,16 @@ class ResearchDecisionCandidateAudit:
 
 
 @dataclass(frozen=True)
-class ResearchDecisionSetAudit:
-    decision_version: str
-    candidates: tuple[ResearchDecisionCandidateAudit, ...]
+class ResearchFreezeSetAudit:
+    freeze_version: str
+    candidates: tuple[ResearchFreezeCandidateAudit, ...]
 
     def __post_init__(self) -> None:
-        if not self.decision_version:
-            raise ValueError("research decision version must not be empty")
+        if not self.freeze_version:
+            raise ValueError("research freeze version must not be empty")
         candidates = tuple(sorted(self.candidates, key=lambda item: item.code))
         if len({item.code for item in candidates}) != len(candidates):
-            raise ValueError("research decision candidates must be unique")
+            raise ValueError("research freeze candidates must be unique")
         object.__setattr__(self, "candidates", candidates)
 
 
@@ -182,13 +182,13 @@ class ResearchPopulationAudit:
 
 @dataclass(frozen=True)
 class CommittedResearchAudit:
-    decision_version: str
-    decision_hash: str
+    freeze_version: str
+    freeze_hash: str
     input_version: str
     hard_filter_aggregates: tuple[tuple[str, int], ...]
     passed_candidates: tuple[ResearchCandidateAudit, ...]
-    production_local: ResearchDecisionSetAudit
-    research_shadow: ResearchDecisionSetAudit
+    production_local: ResearchFreezeSetAudit
+    research_shadow: ResearchFreezeSetAudit
     shadow_mode: ShadowMode
     deepseek_request_delta: int = 0
     schema_version: str = RESEARCH_AUDIT_SCHEMA_VERSION
@@ -211,7 +211,7 @@ class CommittedResearchAudit:
 
 
 def _validate_audit_identity(audit: CommittedResearchAudit) -> None:
-    if not all((audit.decision_version, audit.decision_hash, audit.input_version)):
+    if not all((audit.freeze_version, audit.freeze_hash, audit.input_version)):
         raise ValueError("committed research audit identity must not be empty")
     if audit.schema_version not in {LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION, RESEARCH_AUDIT_SCHEMA_VERSION}:
         raise ValueError("committed research audit schema is invalid")
@@ -262,22 +262,19 @@ def _validate_audit_pairing(
     population: tuple[ResearchPopulationAudit, ...],
 ) -> None:
     passed_codes = {item.code for item in candidates}
-    decision_codes = {
-        item.code
-        for decision_set in (audit.production_local, audit.research_shadow)
-        for item in decision_set.candidates
+    freeze_codes = {
+        item.code for freeze_set in (audit.production_local, audit.research_shadow) for item in freeze_set.candidates
     }
-    if not decision_codes.issubset(passed_codes):
-        raise ValueError("research decisions must belong to the hard-filter passed population")
+    if not freeze_codes.issubset(passed_codes):
+        raise ValueError("research freezes must belong to the hard-filter passed population")
     if audit.schema_version == RESEARCH_AUDIT_SCHEMA_VERSION:
         _validate_population_evidence(audit, passed_codes, population)
-    if audit.research_shadow.decision_version != audit.decision_version:
-        raise ValueError("research shadow must match committed decision identity")
+    if audit.research_shadow.freeze_version != audit.freeze_version:
+        raise ValueError("research shadow must match committed freeze identity")
     if audit.shadow_mode == "control_copy" and audit.production_local != audit.research_shadow:
         raise ValueError("research control copy must equal production local")
     if audit.shadow_mode == "reused_facts" and (
-        audit.production_local == audit.research_shadow
-        or audit.production_local.decision_version == audit.decision_version
+        audit.production_local == audit.research_shadow or audit.production_local.freeze_version == audit.freeze_version
     ):
         raise ValueError("reused-facts research shadow requires a distinct production local")
 
@@ -309,21 +306,21 @@ def _validate_population_evidence(
 
 def BuildCommittedResearchAudit(
     projection: ScoredLocalProjection,
-    committed: ScoredDecision,
+    committed: ScoredFreeze,
 ) -> CommittedResearchAudit:
     if committed.strategy is not projection.local.strategy:
-        raise ValueError("research audit strategy must match committed decision")
+        raise ValueError("research audit strategy must match committed freeze")
     if committed.stage == "local" and committed.version != projection.local.version:
-        raise ValueError("research local audit must match the production local decision")
+        raise ValueError("research local audit must match the production local freeze")
     if committed.stage == "hybrid" and committed.parent_version != projection.local.version:
-        raise ValueError("research hybrid must reference the production local decision")
+        raise ValueError("research hybrid must reference the production local freeze")
     local_entries = {entry.code: entry for entry in projection.local_epoch.entries}
-    production_local = _decision_set(projection.local, local_entries, reused_facts=False)
-    shadow = _decision_set(committed, local_entries, reused_facts=committed.stage == "hybrid")
+    production_local = _freeze_set(projection.local, local_entries, reused_facts=False)
+    shadow = _freeze_set(committed, local_entries, reused_facts=committed.stage == "hybrid")
     population = _population_audits(projection)
     return CommittedResearchAudit(
-        decision_version=committed.version,
-        decision_hash=committed.content_hash,
+        freeze_version=committed.version,
+        freeze_hash=committed.content_hash,
         input_version=projection.native_input.input_version,
         hard_filter_aggregates=_hard_filter_aggregates(projection),
         passed_candidates=_candidate_audits(projection),
@@ -338,7 +335,7 @@ def BuildCommittedResearchAudit(
 
 def TryBuildCommittedResearchAudit(
     projection: ScoredLocalProjection,
-    committed: ScoredDecision,
+    committed: ScoredFreeze,
 ) -> CommittedResearchAudit | None:
     try:
         return BuildCommittedResearchAudit(projection, committed)
@@ -432,21 +429,21 @@ def _population_audits(projection: ScoredLocalProjection) -> tuple[ResearchPopul
     return population
 
 
-def _decision_set(
-    decision: ScoredDecision,
-    local_entries: dict[str, ScoredDecisionEntry],
+def _freeze_set(
+    freeze: ScoredFreeze,
+    local_entries: dict[str, ScoredFreezeEntry],
     *,
     reused_facts: bool,
-) -> ResearchDecisionSetAudit:
-    candidates: list[ResearchDecisionCandidateAudit] = []
-    for item in decision.items:
+) -> ResearchFreezeSetAudit:
+    candidates: list[ResearchFreezeCandidateAudit] = []
+    for item in freeze.items:
         entry = local_entries[item.code]
         local_codes = tuple(fact.risk_code for fact in entry.local_risk_facts)
         deepseek_codes = tuple(code for code in item.risk_codes if code not in set(local_codes))
         components = dict(item.score_components)
         fusion_applied = reused_facts and components.get("deepseek_score") is not None
         candidates.append(
-            ResearchDecisionCandidateAudit(
+            ResearchFreezeCandidateAudit(
                 code=item.code,
                 components=tuple(item.score_components),
                 component_coverage_ratio=round(entry.features.board_supported_weight, 6),
@@ -466,7 +463,7 @@ def _decision_set(
                 skip_reason=item.reason,
             )
         )
-    return ResearchDecisionSetAudit(decision.version, tuple(candidates))
+    return ResearchFreezeSetAudit(freeze.version, tuple(candidates))
 
 
 def _audit_payload(
@@ -477,13 +474,13 @@ def _audit_payload(
 ) -> bytes:
     payload = {
         "schema_version": audit.schema_version,
-        "decision_version": audit.decision_version,
-        "decision_hash": audit.decision_hash,
+        "freeze_version": audit.freeze_version,
+        "freeze_hash": audit.freeze_hash,
         "input_version": audit.input_version,
         "hard_filter_aggregates": aggregates,
         "passed_candidates": [_candidate_audit_payload(candidate) for candidate in candidates],
-        "production_local": _decision_set_audit_payload(audit.production_local),
-        "research_shadow": _decision_set_audit_payload(audit.research_shadow),
+        "production_local": _freeze_set_audit_payload(audit.production_local),
+        "research_shadow": _freeze_set_audit_payload(audit.research_shadow),
         "shadow_mode": audit.shadow_mode,
         "deepseek_request_delta": audit.deepseek_request_delta,
     }
@@ -568,14 +565,14 @@ def _candidate_audit_payload(candidate: ResearchCandidateAudit) -> dict[str, obj
     }
 
 
-def _decision_set_audit_payload(decision_set: ResearchDecisionSetAudit) -> dict[str, object]:
+def _freeze_set_audit_payload(freeze_set: ResearchFreezeSetAudit) -> dict[str, object]:
     return {
-        "decision_version": decision_set.decision_version,
-        "candidates": [_decision_candidate_audit_payload(candidate) for candidate in decision_set.candidates],
+        "freeze_version": freeze_set.freeze_version,
+        "candidates": [_freeze_candidate_audit_payload(candidate) for candidate in freeze_set.candidates],
     }
 
 
-def _decision_candidate_audit_payload(candidate: ResearchDecisionCandidateAudit) -> dict[str, object]:
+def _freeze_candidate_audit_payload(candidate: ResearchFreezeCandidateAudit) -> dict[str, object]:
     return {
         "code": candidate.code,
         "components": candidate.components,
@@ -636,8 +633,8 @@ __all__ = [
     "RESEARCH_AUDIT_SCHEMA_VERSION",
     "CommittedResearchAudit",
     "ResearchCandidateAudit",
-    "ResearchDecisionCandidateAudit",
-    "ResearchDecisionSetAudit",
+    "ResearchFreezeCandidateAudit",
+    "ResearchFreezeSetAudit",
     "ResearchPopulationAudit",
     "ResearchRiskFactAudit",
     "BuildCommittedResearchAudit",

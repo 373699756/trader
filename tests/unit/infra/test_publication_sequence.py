@@ -19,6 +19,10 @@ def test_construction_is_inert_and_restart_skips_reserved_numbers(tmp_path):
     restarted.initialize()
     assert restarted.allocate() > local + 7
     assert first.allocate() < restarted.allocate()
+    with SqliteSession(path) as connection:
+        tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert tables == {"schema_contract", "publication_sequence"}
+        assert connection.run("PRAGMA user_version").require_one()[0] == 1
 
 
 def test_recovered_legacy_coordinate_advances_the_persistent_reservation(tmp_path):
@@ -52,6 +56,7 @@ def test_invalid_persistent_coordinate_fails_closed(tmp_path, reserved_until):
     first = PublicationSequence(path, block_size=8)
     first.initialize()
     with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("PRAGMA ignore_check_constraints=ON")
         connection.run("UPDATE publication_sequence SET reserved_until=?", (reserved_until,))
     with pytest.raises(RuntimeError, match="invalid"):
         PublicationSequence(path, block_size=8).initialize()

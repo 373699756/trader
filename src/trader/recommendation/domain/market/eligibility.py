@@ -119,7 +119,7 @@ class IssuerEligibilityFact:
 
 
 @dataclass(frozen=True)
-class IssuerEligibilityDecision:
+class IssuerEligibilityFreeze:
     code: str
     state: IssuerEligibilityState
     observed_at: datetime
@@ -129,9 +129,9 @@ class IssuerEligibilityDecision:
 
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None:
-            raise ValueError("issuer eligibility decision code is invalid")
+            raise ValueError("issuer eligibility freeze code is invalid")
         if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
-            raise ValueError("issuer eligibility decision time must be timezone-aware")
+            raise ValueError("issuer eligibility freeze time must be timezone-aware")
         excluded = self.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED
         if excluded != (self.reason is not None and self.effective_at is not None and self.evidence_hash is not None):
             raise ValueError("permanent issuer exclusion must bind its complete fact identity")
@@ -213,7 +213,7 @@ def ResolveIssuerEligibility(
     facts: tuple[IssuerEligibilityFact, ...],
     code: str,
     observed_at: datetime,
-) -> IssuerEligibilityDecision:
+) -> IssuerEligibilityFreeze:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("issuer eligibility observation time must be timezone-aware")
     effective_exclusions = tuple(
@@ -224,9 +224,9 @@ def ResolveIssuerEligibility(
         )
     )
     if not effective_exclusions:
-        return IssuerEligibilityDecision(code, IssuerEligibilityState.ELIGIBLE_UNVERIFIED, observed_at)
+        return IssuerEligibilityFreeze(code, IssuerEligibilityState.ELIGIBLE_UNVERIFIED, observed_at)
     fact = effective_exclusions[0]
-    return IssuerEligibilityDecision(
+    return IssuerEligibilityFreeze(
         code,
         IssuerEligibilityState.PERMANENTLY_EXCLUDED,
         observed_at,
@@ -354,7 +354,7 @@ def _sha256(payload: dict[str, str]) -> str:
 
 def SelectQuotePopulation(
     reference: StaticMarketReference | None,
-    exclusions: tuple[IssuerEligibilityDecision, ...],
+    exclusions: tuple[IssuerEligibilityFreeze, ...],
     historical_st: HistoricalStEligibilitySnapshot,
 ) -> tuple[str, ...]:
     """Apply the existing ST-only admission before requesting current quotes."""
@@ -370,7 +370,7 @@ __all__ = [
     "SelectQuotePopulation",
     "HistoricalStEligibilitySnapshot",
     "IssuerEligibilityBatch",
-    "IssuerEligibilityDecision",
+    "IssuerEligibilityFreeze",
     "IssuerEligibilityFact",
     "IssuerEligibilityReason",
     "IssuerEligibilityReasonCount",

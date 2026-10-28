@@ -121,7 +121,7 @@ def test_repository_whitelists_only_portable_model_heads() -> None:
         "data/training/models/v3/d25/active-bundle.json": True,
         "data/training/models/v2/active-profile.json": True,
         "data/training/samples/v2/complete.json": True,
-        "data/recommendation/v3/decisions.sqlite3": True,
+        "data/recommendation/v3/freeze.sqlite3": True,
         "data/market/history/catalog.sqlite3": True,
     }
     for relative, ignored in cases.items():

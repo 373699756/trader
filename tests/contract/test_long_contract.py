@@ -16,13 +16,13 @@ def test_production_composition_installs_long_without_legacy_snapshot_publicatio
 
     assert "trader.recommendation.application.long_runtime" in imports
     assert "long_runtime=publication.long_runtime" in source
-    assert "DecisionBuildDependencies(" in source
+    assert "FreezeBuildDependencies(" in source
     assert "publication.long_runtime," in source
     for forbidden in (
         "RecommendationSnapshot",
         "DeepSeek",
         "FreezeCoordinator",
-        "DecisionRecordPort",
+        "FreezeRecordPort",
         "settle_outcomes",
     ):
         assert forbidden not in runtime_source

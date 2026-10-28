@@ -229,7 +229,7 @@ class _ScoringDeadline:
         return max(0.0, self._monotonic() - self._started_at)
 
     @property
-    def decision_age_ms(self) -> float:
+    def freeze_age_ms(self) -> float:
         return (self._context.input_age_seconds + self.elapsed_seconds) * 1000.0
 
     def require_time(self, reason: str) -> None:
@@ -708,7 +708,7 @@ class ProductionModelScoringService:
                 ModelComputationStageStatus(stage, count, last, total)
                 for stage, (count, last, total) in sorted(self._stage_metrics.items())
             ),
-            decision_age_ms=deadline.decision_age_ms,
+            freeze_age_ms=deadline.freeze_age_ms,
             deadline_abandon_reason=abandon_reason,
         )
 

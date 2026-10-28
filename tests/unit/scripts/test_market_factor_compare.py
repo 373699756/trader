@@ -120,7 +120,7 @@ def test_quote_age_never_treats_received_time_or_future_time_as_verified_freshne
     assert report["future_timestamp_rows"] == 1
 
 
-def test_supplementation_ignores_optional_speed_but_keeps_decision_gaps() -> None:
+def test_supplementation_ignores_optional_speed_but_keeps_freeze_gaps() -> None:
     quotes = (_quote(speed=None), _quote("600002", turnover_rate=None))
     assert MissingQuoteCodes(quotes, ("600001", "600002", "600003"), AT) == ("600002", "600003")
 

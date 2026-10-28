@@ -7,54 +7,56 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import decision
+from tests.unit.domain.test_freeze_identity import freeze
+from trader.infra.sqlite_codec import EncodeDate, EncodeHash, EncodeTime
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
     SqliteSession,
     SqliteTransaction,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
-    BuildDecisionCommitted,
-    DecisionObservation,
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
+    BuildFreezeCommitted,
+    FreezeObservation,
 )
+from trader.recommendation.infra.persistence.freeze_trace_index import (
+    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+    ResearchTraceConflictError,
+    ResearchTraceLimits,
+    SQLiteFreezeTraceIndex,
+)
+from trader.recommendation.infra.persistence.trace_capacity import ResearchTraceCapacityError
+from trader.recommendation.infra.persistence.trace_projection import ObservationBytes
 from trader.training.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
     PointInTimePopulationHash,
     ResearchCandidateAudit,
-    ResearchDecisionCandidateAudit,
-    ResearchDecisionSetAudit,
+    ResearchFreezeCandidateAudit,
+    ResearchFreezeSetAudit,
     ResearchPopulationAudit,
 )
-from trader.training.infra.research.research_trace_index import (
-    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-    ResearchTraceConflictError,
-    ResearchTraceLimits,
-    SQLiteResearchTraceIndex,
-)
-from trader.training.infra.research.trace_capacity import ResearchTraceCapacityError
-from trader.training.infra.research.trace_projection import ObservationBytes
+from trader.training.infra.research.research_trace_index import ResearchTraceIndex
 
 
 def _persistent_event(value):
-    return DecisionObservation(BuildDecisionCommitted(value), None).materialize().event
+    return FreezeObservation(BuildFreezeCommitted(value), None).materialize().event
 
 
 @pytest.mark.parametrize("limit", ("physical_trade_date_bytes", "physical_total_bytes"))
 def test_physical_capacity_rejection_preserves_old_audit_and_allows_duplicate(tmp_path, limit):
-    first = DecisionObservation(_persistent_event(decision()), None)
-    existing = SQLiteResearchTraceIndex(tmp_path)
+    first = FreezeObservation(_persistent_event(freeze()), None)
+    existing = SQLiteFreezeTraceIndex(tmp_path)
     existing.record(first)
-    restricted = SQLiteResearchTraceIndex(tmp_path, limits=replace(ResearchTraceLimits(), **{limit: 1}))
+    restricted = SQLiteFreezeTraceIndex(tmp_path, limits=replace(ResearchTraceLimits(), **{limit: 1}))
     restricted.record(first)
     with pytest.raises(ResearchTraceCapacityError, match="physical"):
-        restricted.record(DecisionObservation(_persistent_event(decision(sequence=2)), None))
-    assert existing.get(first.event.decision_version) == first
+        restricted.record(FreezeObservation(_persistent_event(freeze(sequence=2)), None))
+    assert existing.get(first.event.freeze_version) == first
     assert existing.status().retained == 1
 
 
 def test_physical_capacity_counts_wal_and_rejects_before_partition_creation(tmp_path):
-    from trader.training.infra.research.trace_capacity import TracePhysicalBudget
+    from trader.recommendation.infra.persistence.trace_capacity import TracePhysicalBudget
 
     database = tmp_path / "audit.sqlite3"
     database.write_bytes(b"a" * 4096)
@@ -66,19 +68,19 @@ def test_physical_capacity_counts_wal_and_rejects_before_partition_creation(tmp_
     hardlink.hardlink_to(database)
     physical = sum(max(path.stat().st_size, getattr(path.stat(), "st_blocks", 0) * 512) for path in (database, wal))
     TracePhysicalBudget(physical, physical).require((database, hardlink), database)
-    limited = SQLiteResearchTraceIndex(tmp_path / "limited", limits=ResearchTraceLimits(physical_total_bytes=1))
+    limited = SQLiteFreezeTraceIndex(tmp_path / "limited", limits=ResearchTraceLimits(physical_total_bytes=1))
     with pytest.raises(ResearchTraceCapacityError, match="physical total"):
-        limited.record(DecisionObservation(_persistent_event(decision()), None))
+        limited.record(FreezeObservation(_persistent_event(freeze()), None))
     assert not tuple((tmp_path / "limited").rglob("*.sqlite3"))
 
 
 def test_physical_commit_admission_rolls_back_index_and_payload_growth(tmp_path):
-    from trader.training.infra.research.trace_capacity import TracePhysicalBudget
+    from trader.recommendation.infra.persistence.trace_capacity import TracePhysicalBudget
 
     database = tmp_path / "audit.sqlite3"
     with SqliteSession(database, SqliteConnectionOptions(journal_mode="WAL")) as conn, SqliteTransaction(conn):
-        conn.run("CREATE TABLE audit (id INTEGER PRIMARY KEY, payload BLOB)")
-        conn.run("CREATE INDEX payload_idx ON audit(payload)")
+        conn.run("CREATE TABLE audit (id INTEGER PRIMARY KEY, event_bytes BLOB)")
+        conn.run("CREATE INDEX payload_idx ON audit(event_bytes)")
         conn.run("INSERT INTO audit VALUES(1, 'old')")
     size_before = database.stat().st_size
     with pytest.raises(ResearchTraceCapacityError, match="physical"):
@@ -92,18 +94,18 @@ def test_physical_commit_admission_rolls_back_index_and_payload_growth(tmp_path)
 
 
 def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_path) -> None:
-    event = _persistent_event(decision())
-    audit = _audit(event.decision_version, event.decision_hash)
-    observation = DecisionObservation(event, audit)
-    first = SQLiteResearchTraceIndex(tmp_path)
+    event = _persistent_event(freeze())
+    audit = _audit(event.freeze_version, event.freeze_hash)
+    observation = FreezeObservation(event, audit)
+    first = SQLiteFreezeTraceIndex(tmp_path)
     first.initialize()
 
     first.record(observation)
     first.record(observation)
 
-    reopened = SQLiteResearchTraceIndex(tmp_path)
+    reopened = SQLiteFreezeTraceIndex(tmp_path)
     reopened.initialize()
-    assert reopened.get(event.decision_version) == observation
+    assert reopened.get(event.freeze_version) == observation
     assert reopened.list_trade_dates(limit=4) == (event.trade_date,)
     assert reopened.list_by_trade_date(event.trade_date) == (observation,)
     assert reopened.status().retained == 1
@@ -111,10 +113,10 @@ def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_pat
 
 
 def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tmp_path) -> None:
-    event = _persistent_event(decision())
-    legacy_audit = _legacy_audit(event.decision_version, event.decision_hash)
-    observation = DecisionObservation(event, legacy_audit)
-    archive = SQLiteResearchTraceIndex(tmp_path)
+    event = _persistent_event(freeze())
+    legacy_audit = _legacy_audit(event.freeze_version, event.freeze_hash)
+    observation = FreezeObservation(event, legacy_audit)
+    archive = SQLiteFreezeTraceIndex(tmp_path)
     archive.initialize()
 
     with pytest.raises(ValueError, match="read-only"):
@@ -127,63 +129,68 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
         current_schema_version="research_committed_event",
     )
     database = tmp_path / "traces" / f"{event.trade_date.isoformat()}.sqlite3"
-    from trader.training.infra.research.trace_storage import InitializeDatabase
+    from trader.recommendation.infra.persistence.trace_schema import InitializeDatabase
 
     InitializeDatabase(database, set())
     with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run(
             """
             INSERT INTO committed_events (
-                decision_version, strategy, trade_date, observed_at,
-                decision_hash, schema_version, payload_hash, payload
+                freeze_id, strategy, trade_date, observed_at,
+                freeze_hash, schema_version, event_hash, event_bytes
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                event.decision_version,
+                event.freeze_version,
                 event.strategy.value,
-                event.trade_date.isoformat(),
-                event.observed_at.isoformat(),
-                event.decision_hash,
+                EncodeDate(event.trade_date),
+                EncodeTime(event.observed_at),
+                EncodeHash(event.freeze_hash),
                 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-                sha256(payload).hexdigest(),
+                sha256(payload).digest(),
                 payload,
             ),
         )
 
-    assert SQLiteResearchTraceIndex(tmp_path).get(event.decision_version) == observation
+    assert SQLiteFreezeTraceIndex(tmp_path).get(event.freeze_version) == observation
 
 
 def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) -> None:
     before = replace(
-        decision(sequence=1),
+        freeze(sequence=1),
         observed_at=datetime(2026, 8, 11, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     before_event = _persistent_event(before)
-    before_audit = _point_in_time_audit(before_event.decision_version, before_event.decision_hash, before.observed_at)
-    before_observation = DecisionObservation(before_event, before_audit)
+    before_audit = _point_in_time_audit(before_event.freeze_version, before_event.freeze_hash, before.observed_at)
+    before_observation = FreezeObservation(before_event, before_audit)
     late = replace(
         before,
         sequence=2,
         observed_at=datetime(2026, 8, 11, 15, 0, 1, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     late_event = _persistent_event(late)
-    late_observation = DecisionObservation(
+    late_observation = FreezeObservation(
         late_event,
-        _point_in_time_audit(late_event.decision_version, late_event.decision_hash, late.observed_at),
+        _point_in_time_audit(late_event.freeze_version, late_event.freeze_hash, late.observed_at),
     )
-    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive = SQLiteFreezeTraceIndex(tmp_path)
     archive.record(before_observation)
     archive.record(late_observation)
 
-    reopened = SQLiteResearchTraceIndex(tmp_path)
+    reopened = SQLiteFreezeTraceIndex(tmp_path)
 
-    assert reopened.get(before_event.decision_version) == before_observation
-    assert reopened.latest_point_in_time_observation(before.trade_date, before.strategy) == before_observation
+    assert reopened.get(before_event.freeze_version) == before_observation
+    assert (
+        ResearchTraceIndex(reopened.list_by_trade_date).latest_point_in_time_observation(
+            before.trade_date, before.strategy
+        )
+        == before_observation
+    )
 
 
 def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path) -> None:
-    archive = SQLiteResearchTraceIndex(tmp_path)
-    base = decision()
+    archive = SQLiteFreezeTraceIndex(tmp_path)
+    base = freeze()
     late = replace(base, sequence=2, observed_at=datetime(2026, 8, 11, 15, 1, tzinfo=ZoneInfo("Asia/Shanghai")))
     following = replace(
         base,
@@ -193,7 +200,7 @@ def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path
     )
     for item in (late, base, following):
         event = _persistent_event(item)
-        archive.record(DecisionObservation(event, None))
+        archive.record(FreezeObservation(event, None))
 
     observations = archive.inspect_first_observations(limit=4)
 
@@ -203,62 +210,69 @@ def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path
 
 
 def test_committed_event_trace_rejects_same_identity_with_different_payload(tmp_path) -> None:
-    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive = SQLiteFreezeTraceIndex(tmp_path)
     archive.initialize()
-    event = _persistent_event(decision())
-    archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
+    event = _persistent_event(freeze())
+    archive.record(FreezeObservation(event, _audit(event.freeze_version, event.freeze_hash)))
 
     with pytest.raises(ResearchTraceConflictError):
-        archive.record(DecisionObservation(replace(event, degraded_reasons=("conflicting_trace",)), None))
+        archive.record(FreezeObservation(replace(event, degraded_reasons=("conflicting_trace",)), None))
 
 
-def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
-    archive = SQLiteResearchTraceIndex(tmp_path)
+def test_trace_reads_preserve_corrupt_bytes_and_writer_quarantines(tmp_path) -> None:
+    archive = SQLiteFreezeTraceIndex(tmp_path)
     archive.initialize()
-    event = _persistent_event(decision())
-    archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
+    event = _persistent_event(freeze())
+    archive.record(FreezeObservation(event, _audit(event.freeze_version, event.freeze_hash)))
     database = tmp_path / "traces" / f"{event.trade_date.isoformat()}.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run(
-            "UPDATE committed_events SET payload = ? WHERE decision_version = ?",
-            (b"{}", event.decision_version),
+            "UPDATE committed_events SET event_bytes = ? WHERE freeze_id = ?",
+            (b"{}", event.freeze_version),
         )
 
-    reopened = SQLiteResearchTraceIndex(tmp_path)
+    reopened = SQLiteFreezeTraceIndex(tmp_path)
     reopened.initialize()
 
-    assert reopened.get(event.decision_version) is None
+    before = database.read_bytes()
+    with pytest.raises(ResearchTraceConflictError, match="verification"):
+        reopened.get(event.freeze_version)
+    assert database.read_bytes() == before
+    assert reopened.status().quarantined == 0
+    next_event = _persistent_event(freeze(sequence=2))
+    reopened.record(FreezeObservation(next_event, None))
+    assert reopened.get(event.freeze_version) is None
     assert reopened.status().quarantined == 1
 
 
 def test_committed_event_trace_refuses_capacity_without_deleting_immutable_rows(tmp_path) -> None:
-    archive = SQLiteResearchTraceIndex(tmp_path, limits=ResearchTraceLimits(events_per_trade_date=1))
+    archive = SQLiteFreezeTraceIndex(tmp_path, limits=ResearchTraceLimits(events_per_trade_date=1))
     archive.initialize()
-    first = _persistent_event(decision(sequence=1))
-    archive.record(DecisionObservation(first, _audit(first.decision_version, first.decision_hash)))
+    first = _persistent_event(freeze(sequence=1))
+    archive.record(FreezeObservation(first, _audit(first.freeze_version, first.freeze_hash)))
 
     with pytest.raises(RuntimeError, match="capacity"):
-        second = _persistent_event(decision(sequence=2))
-        archive.record(DecisionObservation(second, _audit(second.decision_version, second.decision_hash)))
+        second = _persistent_event(freeze(sequence=2))
+        archive.record(FreezeObservation(second, _audit(second.freeze_version, second.freeze_hash)))
 
     assert archive.status().retained == 1
 
 
 def test_committed_event_trace_rejects_payload_over_byte_limit(tmp_path) -> None:
-    archive = SQLiteResearchTraceIndex(
+    archive = SQLiteFreezeTraceIndex(
         tmp_path,
         limits=ResearchTraceLimits(payload_bytes=64, trade_date_bytes=128),
     )
 
     with pytest.raises(RuntimeError, match="payload capacity"):
-        archive.record(DecisionObservation(_persistent_event(decision()), None))
+        archive.record(FreezeObservation(_persistent_event(freeze()), None))
 
     assert archive.status().retained == 0
 
 
 def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path) -> None:
-    event = _persistent_event(decision())
-    audit = _point_in_time_audit(event.decision_version, event.decision_hash, event.observed_at)
+    event = _persistent_event(freeze())
+    audit = _point_in_time_audit(event.freeze_version, event.freeze_hash, event.observed_at)
     template = audit.point_in_time_population[0]
     population = tuple(
         sorted(
@@ -277,7 +291,7 @@ def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path)
         point_in_time_population=population,
         point_in_time_population_hash=PointInTimePopulationHash(population),
     )
-    observation = DecisionObservation(event, expanded_audit)
+    observation = FreezeObservation(event, expanded_audit)
     logical_payload = ObservationBytes(
         observation,
         schema_version="research_committed_event",
@@ -286,15 +300,15 @@ def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path)
     )
     assert len(logical_payload) > 4 * 1024 * 1024
 
-    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive = SQLiteFreezeTraceIndex(tmp_path)
     archive.record(observation)
 
     assert 0 < archive.status().retained_bytes < 4 * 1024 * 1024
-    assert SQLiteResearchTraceIndex(tmp_path).get(event.decision_version) == observation
+    assert SQLiteFreezeTraceIndex(tmp_path).get(event.freeze_version) == observation
 
 
 def test_research_trace_rejects_compressed_payload_over_decoded_limit(tmp_path) -> None:
-    archive = SQLiteResearchTraceIndex(
+    archive = SQLiteFreezeTraceIndex(
         tmp_path,
         limits=ResearchTraceLimits(
             payload_bytes=4096,
@@ -304,16 +318,16 @@ def test_research_trace_rejects_compressed_payload_over_decoded_limit(tmp_path) 
     )
 
     with pytest.raises(ResearchTraceCapacityError, match="decoded payload capacity"):
-        archive.record(DecisionObservation(_persistent_event(decision()), None))
+        archive.record(FreezeObservation(_persistent_event(freeze()), None))
 
 
 def test_committed_event_trace_rejects_total_bytes_without_deleting_rows(tmp_path) -> None:
-    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
-    second = DecisionObservation(_persistent_event(decision(sequence=2)), None)
-    probe = SQLiteResearchTraceIndex(tmp_path / "probe")
+    first = FreezeObservation(_persistent_event(freeze(sequence=1)), None)
+    second = FreezeObservation(_persistent_event(freeze(sequence=2)), None)
+    probe = SQLiteFreezeTraceIndex(tmp_path / "probe")
     probe.record(first)
     first_bytes = probe.status().retained_bytes
-    archive = SQLiteResearchTraceIndex(
+    archive = SQLiteFreezeTraceIndex(
         tmp_path / "bounded",
         limits=ResearchTraceLimits(payload_bytes=first_bytes + 1, trade_date_bytes=first_bytes + 1),
     )
@@ -322,30 +336,30 @@ def test_committed_event_trace_rejects_total_bytes_without_deleting_rows(tmp_pat
     with pytest.raises(RuntimeError, match="capacity"):
         archive.record(second)
 
-    assert archive.get(first.event.decision_version) == first
+    assert archive.get(first.event.freeze_version) == first
     assert archive.status().retained == 1
 
 
 def test_committed_event_trace_rotates_by_trade_date_and_preserves_previous_partition(tmp_path) -> None:
-    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
-    legacy = SQLiteResearchTraceIndex(tmp_path)
+    first = FreezeObservation(_persistent_event(freeze(sequence=1)), None)
+    legacy = SQLiteFreezeTraceIndex(tmp_path)
     legacy.record(first)
     legacy_path = tmp_path / "traces" / f"{first.event.trade_date.isoformat()}.sqlite3"
     legacy_bytes = legacy_path.read_bytes()
 
-    second_identity = decision(sequence=2)
+    second_identity = freeze(sequence=2)
     second_identity = replace(
         second_identity,
         trade_date=second_identity.trade_date + timedelta(days=1),
         observed_at=second_identity.observed_at + timedelta(days=1),
     )
-    second = DecisionObservation(_persistent_event(second_identity), None)
-    partitioned = SQLiteResearchTraceIndex(tmp_path)
+    second = FreezeObservation(_persistent_event(second_identity), None)
+    partitioned = SQLiteFreezeTraceIndex(tmp_path)
     partitioned.record(second)
 
     assert legacy_path.read_bytes() == legacy_bytes
-    assert partitioned.get(first.event.decision_version) == first
-    assert partitioned.get(second.event.decision_version) == second
+    assert partitioned.get(first.event.freeze_version) == first
+    assert partitioned.get(second.event.freeze_version) == second
     assert partitioned.list_trade_dates(limit=4) == (second.event.trade_date, first.event.trade_date)
     assert partitioned.status().legacy_retained == 0
     assert partitioned.status().trade_dates == 2
@@ -353,58 +367,58 @@ def test_committed_event_trace_rotates_by_trade_date_and_preserves_previous_part
 
 
 def test_full_previous_partition_does_not_block_a_new_trade_date(tmp_path) -> None:
-    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
-    probe = SQLiteResearchTraceIndex(tmp_path / "probe")
+    first = FreezeObservation(_persistent_event(freeze(sequence=1)), None)
+    probe = SQLiteFreezeTraceIndex(tmp_path / "probe")
     probe.record(first)
     payload_bytes = probe.status().retained_bytes
-    legacy = SQLiteResearchTraceIndex(
+    legacy = SQLiteFreezeTraceIndex(
         tmp_path,
         limits=ResearchTraceLimits(payload_bytes=payload_bytes, trade_date_bytes=payload_bytes),
     )
     legacy.record(first)
 
-    next_identity = decision(sequence=2)
+    next_identity = freeze(sequence=2)
     next_identity = replace(
         next_identity,
         trade_date=next_identity.trade_date + timedelta(days=1),
         observed_at=next_identity.observed_at + timedelta(days=1),
     )
-    partitioned = SQLiteResearchTraceIndex(
+    partitioned = SQLiteFreezeTraceIndex(
         tmp_path,
         limits=ResearchTraceLimits(
             payload_bytes=payload_bytes,
             trade_date_bytes=payload_bytes,
-            archive_bytes=payload_bytes * 3,
+            total_bytes=payload_bytes * 3,
         ),
     )
-    partitioned.record(DecisionObservation(_persistent_event(next_identity), None))
+    partitioned.record(FreezeObservation(_persistent_event(next_identity), None))
 
     assert partitioned.status().retained == 2
     assert partitioned.status().remaining_bytes > 0
 
 
 def test_archive_capacity_rejects_a_new_partition_without_creating_an_empty_database(tmp_path) -> None:
-    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
-    probe = SQLiteResearchTraceIndex(tmp_path / "probe")
+    first = FreezeObservation(_persistent_event(freeze(sequence=1)), None)
+    probe = SQLiteFreezeTraceIndex(tmp_path / "probe")
     probe.record(first)
     payload_bytes = probe.status().retained_bytes
-    archive = SQLiteResearchTraceIndex(
+    archive = SQLiteFreezeTraceIndex(
         tmp_path,
         limits=ResearchTraceLimits(
             payload_bytes=payload_bytes + 1,
             trade_date_bytes=payload_bytes + 1,
-            archive_bytes=payload_bytes + 1,
+            total_bytes=payload_bytes + 1,
         ),
     )
     archive.record(first)
     next_identity = replace(
-        decision(sequence=2),
+        freeze(sequence=2),
         trade_date=first.event.trade_date + timedelta(days=1),
         observed_at=first.event.observed_at + timedelta(days=1),
     )
 
-    with pytest.raises(ResearchTraceCapacityError, match="archive capacity"):
-        archive.record(DecisionObservation(_persistent_event(next_identity), None))
+    with pytest.raises(ResearchTraceCapacityError, match="total capacity"):
+        archive.record(FreezeObservation(_persistent_event(next_identity), None))
 
     rejected_partition = tmp_path / "traces" / f"{next_identity.trade_date.isoformat()}.sqlite3"
     assert not rejected_partition.exists()
@@ -412,39 +426,39 @@ def test_archive_capacity_rejects_a_new_partition_without_creating_an_empty_data
 
 
 def test_formal_replay_without_audit_preserves_existing_committed_audit(tmp_path) -> None:
-    event = _persistent_event(decision())
-    audit = _audit(event.decision_version, event.decision_hash)
-    archive = SQLiteResearchTraceIndex(tmp_path)
+    event = _persistent_event(freeze())
+    audit = _audit(event.freeze_version, event.freeze_hash)
+    archive = SQLiteFreezeTraceIndex(tmp_path)
     archive.initialize()
-    archive.record(DecisionObservation(event, audit))
+    archive.record(FreezeObservation(event, audit))
 
-    archive.record(DecisionObservation(event, None))
+    archive.record(FreezeObservation(event, None))
 
-    assert archive.get(event.decision_version) == DecisionObservation(event, audit)
+    assert archive.get(event.freeze_version) == FreezeObservation(event, audit)
     assert archive.status().duplicate == 1
 
 
-def test_committed_research_audit_rejects_decisions_outside_passed_population() -> None:
-    event = _persistent_event(decision())
-    audit = _audit(event.decision_version, event.decision_hash)
+def test_committed_research_audit_rejects_freezes_outside_passed_population() -> None:
+    event = _persistent_event(freeze())
+    audit = _audit(event.freeze_version, event.freeze_hash)
 
     with pytest.raises(ValueError, match="hard-filter passed population"):
         replace(audit, passed_candidates=())
 
 
-def _audit(decision_version: str, decision_hash: str) -> CommittedResearchAudit:
+def _audit(freeze_version: str, freeze_hash: str) -> CommittedResearchAudit:
     return _point_in_time_audit(
-        decision_version,
-        decision_hash,
+        freeze_version,
+        freeze_hash,
         datetime(2026, 8, 11, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
 
 
-def _legacy_audit(decision_version: str, decision_hash: str) -> CommittedResearchAudit:
-    decision_set = ResearchDecisionSetAudit(
-        decision_version=decision_version,
+def _legacy_audit(freeze_version: str, freeze_hash: str) -> CommittedResearchAudit:
+    freeze_set = ResearchFreezeSetAudit(
+        freeze_version=freeze_version,
         candidates=(
-            ResearchDecisionCandidateAudit(
+            ResearchFreezeCandidateAudit(
                 code="600001",
                 components=(("trend", 88.0),),
                 component_coverage_ratio=1.0,
@@ -466,8 +480,8 @@ def _legacy_audit(decision_version: str, decision_hash: str) -> CommittedResearc
         ),
     )
     return CommittedResearchAudit(
-        decision_version=decision_version,
-        decision_hash=decision_hash,
+        freeze_version=freeze_version,
+        freeze_hash=freeze_hash,
         input_version="native-input",
         hard_filter_aggregates=(("main:st_or_delisting", 2),),
         passed_candidates=(
@@ -485,15 +499,15 @@ def _legacy_audit(decision_version: str, decision_hash: str) -> CommittedResearc
                 preselection_status="selected_for_full_scoring",
             ),
         ),
-        production_local=decision_set,
-        research_shadow=decision_set,
+        production_local=freeze_set,
+        research_shadow=freeze_set,
         shadow_mode="control_copy",
         schema_version=LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     )
 
 
-def _point_in_time_audit(decision_version: str, decision_hash: str, observed_at: datetime) -> CommittedResearchAudit:
-    legacy = _legacy_audit(decision_version, decision_hash)
+def _point_in_time_audit(freeze_version: str, freeze_hash: str, observed_at: datetime) -> CommittedResearchAudit:
+    legacy = _legacy_audit(freeze_version, freeze_hash)
     population = (
         ResearchPopulationAudit(
             code="600001",
@@ -530,8 +544,8 @@ def _point_in_time_audit(decision_version: str, decision_hash: str, observed_at:
         ),
     )
     return CommittedResearchAudit(
-        decision_version=legacy.decision_version,
-        decision_hash=legacy.decision_hash,
+        freeze_version=legacy.freeze_version,
+        freeze_hash=legacy.freeze_hash,
         input_version=legacy.input_version,
         hard_filter_aggregates=legacy.hard_filter_aggregates,
         passed_candidates=legacy.passed_candidates,

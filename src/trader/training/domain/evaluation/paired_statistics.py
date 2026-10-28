@@ -28,7 +28,7 @@ class PreregisteredBootstrapResult:
 
 
 @dataclass(frozen=True)
-class PreregisteredHolmDecision:
+class PreregisteredHolmFreeze:
     challenger_id: str
     p_value: float | None
     family_rank: int
@@ -134,7 +134,7 @@ def FixedFamilyHolm(
     *,
     family: tuple[str, ...],
     alpha: float,
-) -> tuple[PreregisteredHolmDecision, ...]:
+) -> tuple[PreregisteredHolmFreeze, ...]:
     if len(family) != len(set(family)) or set(p_values) != set(family):
         raise ValueError("Holm input must contain the complete preregistered family")
     if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
@@ -143,15 +143,15 @@ def FixedFamilyHolm(
         raise ValueError("Holm p-values must be finite and in [0, 1]")
     ordered = sorted(family, key=lambda challenger: (_p_order(p_values[challenger]), challenger))
     accepting = True
-    decisions: list[PreregisteredHolmDecision] = []
+    freezes: list[PreregisteredHolmFreeze] = []
     for family_rank, challenger_id in enumerate(ordered, start=1):
         threshold = alpha / (len(family) - family_rank + 1)
         p_value = p_values[challenger_id]
         rejected = accepting and p_value is not None and p_value <= threshold
         if not rejected:
             accepting = False
-        decisions.append(PreregisteredHolmDecision(challenger_id, p_value, family_rank, threshold, rejected))
-    return tuple(decisions)
+        freezes.append(PreregisteredHolmFreeze(challenger_id, p_value, family_rank, threshold, rejected))
+    return tuple(freezes)
 
 
 def NeweyWestLongRunStd(values: tuple[float, ...], *, lag_days: int) -> float:
@@ -184,7 +184,7 @@ def _nearest_rank(values: list[float], probability: float) -> float:
 __all__ = [
     "PreregisteredBootstrapResult",
     "PreregisteredBootstrapPlan",
-    "PreregisteredHolmDecision",
+    "PreregisteredHolmFreeze",
     "FixedFamilyHolm",
     "NeweyWestLongRunStd",
     "PairedMovingBlockStatistics",

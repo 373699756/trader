@@ -1,46 +1,46 @@
-"""Ephemeral observation drafts kept outside formal decision publication."""
+"""Ephemeral observation drafts kept outside formal freeze publication."""
 
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
 
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)
-class DecisionDraftPublishResult:
+class FreezeDraftPublishResult:
     accepted: bool
     reason: str
 
 
-class UnifiedDecisionDraftIndex:
-    """Keep the newest incomplete scored decision per strategy in memory only."""
+class UnifiedFreezeDraftIndex:
+    """Keep the newest incomplete scored freeze per strategy in memory only."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._drafts: dict[Strategy, ScoredDecision] = {}
+        self._drafts: dict[Strategy, ScoredFreeze] = {}
 
-    def publish(self, decision: ScoredDecision) -> DecisionDraftPublishResult:
+    def publish(self, freeze: ScoredFreeze) -> FreezeDraftPublishResult:
         with self._lock:
-            current = self._drafts.get(decision.strategy)
+            current = self._drafts.get(freeze.strategy)
             if current is not None:
-                if decision.trade_date < current.trade_date:
-                    return DecisionDraftPublishResult(False, "stale_trade_date")
-                if decision.trade_date == current.trade_date:
-                    if decision.sequence < current.sequence:
-                        return DecisionDraftPublishResult(False, "stale_sequence")
-                    if decision.sequence == current.sequence:
-                        if decision == current:
-                            return DecisionDraftPublishResult(True, "already_current")
-                        return DecisionDraftPublishResult(False, "conflicting_sequence")
-            self._drafts[decision.strategy] = decision
-            return DecisionDraftPublishResult(True, "accepted")
+                if freeze.trade_date < current.trade_date:
+                    return FreezeDraftPublishResult(False, "stale_trade_date")
+                if freeze.trade_date == current.trade_date:
+                    if freeze.sequence < current.sequence:
+                        return FreezeDraftPublishResult(False, "stale_sequence")
+                    if freeze.sequence == current.sequence:
+                        if freeze == current:
+                            return FreezeDraftPublishResult(True, "already_current")
+                        return FreezeDraftPublishResult(False, "conflicting_sequence")
+            self._drafts[freeze.strategy] = freeze
+            return FreezeDraftPublishResult(True, "accepted")
 
-    def snapshot(self, strategy: Strategy) -> ScoredDecision | None:
+    def snapshot(self, strategy: Strategy) -> ScoredFreeze | None:
         with self._lock:
             return self._drafts.get(strategy)
 
 
-__all__ = ["DecisionDraftPublishResult", "UnifiedDecisionDraftIndex"]
+__all__ = ["FreezeDraftPublishResult", "UnifiedFreezeDraftIndex"]

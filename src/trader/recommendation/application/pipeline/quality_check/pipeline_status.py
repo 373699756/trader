@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 
-from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import ScoredStageChain
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
 from trader.recommendation.application.pipeline.stage_output import StageOutput
@@ -23,7 +23,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     ValidateStageBatchContinuity,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.freeze_identity import ScoredFreeze
 from trader.recommendation.domain.publication.models import (
     RecommendationAction,
 )
@@ -37,7 +37,7 @@ def BuildSupplyStatus(
     candidate_stage_counts: ScoredCandidateStageCounts | None = None,
     *,
     candidate_quote_eligible: int | None = None,
-    decision: ScoredDecision | None = None,
+    freeze: ScoredFreeze | None = None,
     input_stages: tuple[PipelineStageSnapshot, ...] = (),
     scored_stages: ScoredStageChain | None = None,
 ) -> InputQualityStatus:
@@ -46,16 +46,16 @@ def BuildSupplyStatus(
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
     evaluations = tuple(item for item in projection.selection.evaluations if item.code in requested)
-    published_freeze = decision or projection.local
+    published_freeze = freeze or projection.local
     diagnostics = published_freeze.selection_diagnostics
     if diagnostics is None:
         raise ValueError("scored input status requires selection diagnostics")
-    decision_items = published_freeze.items
+    freeze_items = published_freeze.items
     scored_chain = scored_stages or projection.stages
     snapshots = JoinStageSnapshots(input_stages, scored_chain.snapshots) if input_stages else ()
     pipeline = ProjectPipelineFacts(
         snapshots or scored_chain.snapshots,
-        decision=published_freeze,
+        freeze=published_freeze,
         quality=quality,
         stage_counts=candidate_stage_counts or projection.selection.stage_counts,
     )
@@ -67,13 +67,13 @@ def BuildSupplyStatus(
             reasons[item.candidate_audit_pruning_reason] += 1
         if item.selection_skip_reason:
             reasons[item.selection_skip_reason] += 1
-    reasons.update(item.reason for item in decision_items if item.reason)
-    reasons.update(risk for item in decision_items for risk in item.risk_codes)
+    reasons.update(item.reason for item in freeze_items if item.reason)
+    reasons.update(risk for item in freeze_items for risk in item.risk_codes)
     return InputQualityStatus(
         strategy=projection.local.strategy,
         status=quality.status,
         publishable=quality.publishable,
-        summary=_supply_summary(projection, decision=published_freeze),
+        summary=_supply_summary(projection, freeze=published_freeze),
         pipeline=pipeline,
         stage_snapshots=snapshots,
         population_count=quality.population_count,
@@ -136,7 +136,7 @@ def BuildPendingStageSnapshots(
 def ProjectPipelineFacts(
     snapshots: tuple[PipelineStageSnapshot, ...],
     *,
-    decision: ScoredDecision | None = None,
+    freeze: ScoredFreeze | None = None,
     quality: ScoredInputQuality | None = None,
     stage_counts: ScoredCandidateStageCounts | None = None,
 ) -> RecommendationPipelineStatus:
@@ -174,10 +174,10 @@ def ProjectPipelineFacts(
                     "deepseek_source_failed",
                 )
             )
-        if stage is PipelineStage.ACTION_PUBLISH and decision is not None:
+        if stage is PipelineStage.ACTION_PUBLISH and freeze is not None:
             facets = tuple(
                 PipelineFacet(
-                    f"action_{action.value}", sum(item.action is action for item in decision.items), len(decision.items)
+                    f"action_{action.value}", sum(item.action is action for item in freeze.items), len(freeze.items)
                 )
                 for action in RecommendationAction
             )
@@ -200,10 +200,10 @@ def ProjectPipelineFacts(
     return RecommendationPipelineStatus(current, tuple(diagnostics), complete)
 
 
-def UpdateSupplyStatusDecision(
+def UpdateSupplyStatusFreeze(
     current: InputQualityStatus,
     projection: ScoredLocalProjection,
-    decision: ScoredDecision,
+    freeze: ScoredFreeze,
     *,
     scored_stages: ScoredStageChain,
 ) -> InputQualityStatus:
@@ -212,13 +212,13 @@ def UpdateSupplyStatusDecision(
         projection,
         projection.selection.stage_counts,
         candidate_quote_eligible=current.candidate_feature_count,
-        decision=decision,
+        freeze=freeze,
         input_stages=tuple(snapshot for snapshot in current.stage_snapshots if snapshot.stage not in scoring_keys),
         scored_stages=scored_stages,
     )
 
 
-def _supply_summary(projection: ScoredLocalProjection, *, decision: ScoredDecision | None = None) -> SupplySummary:
+def _supply_summary(projection: ScoredLocalProjection, *, freeze: ScoredFreeze | None = None) -> SupplySummary:
     requested = set(projection.native_input.requested_codes)
     features = tuple(
         feature for feature in projection.native_input.candidate_features if feature.quote.code in requested
@@ -229,7 +229,7 @@ def _supply_summary(projection: ScoredLocalProjection, *, decision: ScoredDecisi
         key=lambda quote: (quote.source_time, quote.received_time, quote.data_version),
         default=None,
     )
-    highest = max((item.final_score for item in (decision or projection.local).items), default=None)
+    highest = max((item.final_score for item in (freeze or projection.local).items), default=None)
     total = projection.input_quality.candidate_count
     return SupplySummary(
         trade_date=projection.local.trade_date,
@@ -288,5 +288,5 @@ __all__ = [
     "BuildPendingStageSnapshots",
     "ProjectPipelineFacts",
     "BuildSupplyStatus",
-    "UpdateSupplyStatusDecision",
+    "UpdateSupplyStatusFreeze",
 ]

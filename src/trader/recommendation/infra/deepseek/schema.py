@@ -51,7 +51,7 @@ __all__ = [
 ]
 
 
-_FORBIDDEN_MODEL_DECISION_FIELDS = frozenset(
+_FORBIDDEN_MODEL_FREEZE_FIELDS = frozenset(
     {
         "action",
         "rank",
@@ -142,7 +142,7 @@ def _parse_review(
     candidate: FeatureSnapshot,
     completed_at: datetime,
 ) -> DeepSeekReview:
-    _reject_forbidden_model_decisions(raw)
+    _reject_forbidden_model_freezes(raw)
     routed_evidence = RoutePromptEvidence(candidate).evidence
     allowed_evidence = {item.evidence_id for item in routed_evidence}
     evidence_by_id = {item.evidence_id: item for item in routed_evidence}
@@ -398,15 +398,15 @@ def _parse_risks(
     return tuple(facts)
 
 
-def _reject_forbidden_model_decisions(raw: object) -> None:
+def _reject_forbidden_model_freezes(raw: object) -> None:
     if isinstance(raw, dict):
         for key, value in raw.items():
-            if str(key) in _FORBIDDEN_MODEL_DECISION_FIELDS:
-                raise DeepSeekSchemaError(f"forbidden model decision field: {key}")
-            _reject_forbidden_model_decisions(value)
+            if str(key) in _FORBIDDEN_MODEL_FREEZE_FIELDS:
+                raise DeepSeekSchemaError(f"forbidden model freeze field: {key}")
+            _reject_forbidden_model_freezes(value)
     elif isinstance(raw, list):
         for value in raw:
-            _reject_forbidden_model_decisions(value)
+            _reject_forbidden_model_freezes(value)
 
 
 def _parse_json_content(content: str) -> Mapping[str, object]:

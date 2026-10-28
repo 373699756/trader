@@ -5,24 +5,24 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from trader.infra.workers import BoundedExecutor
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
-    DecisionCommitted,
-    DecisionObservation,
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
+    FreezeCommitted,
+    FreezeObservation,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (
-    DecisionObserverRuntime,
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import (
+    FreezeObserverRuntime,
 )
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
     PublicationIoTracker,
 )
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
 from trader.recommendation.application.ports.long import LongRefreshPort
 from trader.recommendation.application.ports.publisher import OverlayPublisher
 from trader.recommendation.application.ports.runtime import (
     DataRefreshPort,
-    DecisionBuilderPort,
     DeepSeekUpgradePort,
+    FreezeBuilderPort,
     FreezePort,
     ResearchRuntimeFactoryPort,
     SettlementPort,
@@ -41,14 +41,14 @@ class RuntimeDependencies:
     calendar: TradingCalendarPort
     cadence: CadencePlanner
     data: DataRefreshPort
-    decisions: DecisionBuilderPort
+    freezes: FreezeBuilderPort
     reviews: DeepSeekUpgradePort
-    index: UnifiedDecisionIndex
-    observer: DecisionObserverRuntime[DecisionObservation]
-    freezes: FreezePort
+    index: UnifiedFreezeIndex
+    observer: FreezeObserverRuntime[FreezeObservation]
+    sealing: FreezePort
     settlement: SettlementPort
     research_factory: ResearchRuntimeFactoryPort
-    publish_decision: Callable[[DecisionCommitted], object]
+    publish_freeze: Callable[[FreezeCommitted], object]
     publish_overlay: OverlayPublisher
     latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
     publication_io: PublicationIoTracker | None = None

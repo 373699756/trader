@@ -820,7 +820,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official decision confirms financial fraud, false records or material omissions",
+      "formula": "1 permanently after official ruling confirms financial fraud, false records or material omissions",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -878,7 +878,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official decision confirms major illegality",
+      "formula": "1 permanently after official ruling confirms major illegality",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -907,7 +907,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official decision confirms funds occupation",
+      "formula": "1 permanently after official ruling confirms funds occupation",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -936,7 +936,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official decision confirms illegal guarantee",
+      "formula": "1 permanently after official ruling confirms illegal guarantee",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",

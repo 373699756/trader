@@ -9,16 +9,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import (
-    DecisionCoverage,
-    ScoredDecisionCoverage,
+from trader.recommendation.application.pipeline.freeze_publish.freeze_coverage import (
+    FreezeCoverage,
+    ScoredFreezeCoverage,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import FreezeCommitted
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
-from trader.recommendation.domain.publication.decision_identity import (
-    DecisionItem,
-    DecisionOverlay,
-    DecisionQuote,
+from trader.recommendation.domain.publication.freeze_identity import (
+    FreezeItem,
+    FreezeOverlay,
+    FreezeQuote,
     LongProjection,
     SelectionDiagnostics,
     VisibleScoredSeats,
@@ -36,33 +36,33 @@ ResyncReason = Literal[
     "schema_mismatch",
     "identity_mismatch",
 ]
-EventType = Literal["decision", "overlay", "resync_required"]
+EventType = Literal["freeze", "overlay", "resync_required"]
 
 
 @dataclass(frozen=True)
-class DecisionReplacementPatch:
+class FreezeReplacementPatch:
     projection_version: str
     observed_at: datetime
     strategy_version: str
     input_versions: tuple[tuple[str, str], ...]
     fusion_mode: str
-    coverage: DecisionCoverage
+    coverage: FreezeCoverage
     selection_diagnostics: SelectionDiagnostics | None
     degraded_reasons: tuple[str, ...]
-    items: tuple[DecisionItem, ...]
-    top_scores: tuple[DecisionItem, ...] = ()
+    items: tuple[FreezeItem, ...]
+    top_scores: tuple[FreezeItem, ...] = ()
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     preview_context: PreviewContext | None = None
 
 
 @dataclass(frozen=True)
-class DecisionEventPayload:
+class FreezeEventPayload:
     strategy: Strategy
     trade_date: str
     version: str
     content_hash: str | None
     stage: str
-    replacement: DecisionReplacementPatch | None
+    replacement: FreezeReplacementPatch | None
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ class OverlayEventPayload:
     parent_version: str
     content_hash: str | None
     projection_version: str
-    quotes: tuple[DecisionQuote, ...]
+    quotes: tuple[FreezeQuote, ...]
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ class ResyncEventPayload:
     reason: ResyncReason
 
 
-UnifiedEventPayload = DecisionEventPayload | OverlayEventPayload | ResyncEventPayload
+UnifiedEventPayload = FreezeEventPayload | OverlayEventPayload | ResyncEventPayload
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class UnifiedSubscriberLimitError(RuntimeError):
     """The event stream has no free bounded subscriber slot."""
 
 
-class UnifiedDecisionEventStream:
+class UnifiedFreezeEventStream:
     def __init__(
         self,
         *,
@@ -120,7 +120,7 @@ class UnifiedDecisionEventStream:
         subscriber_limit: int = 32,
     ) -> None:
         if min(history_size, client_queue_size, subscriber_limit) < 1:
-            raise ValueError("decision event stream bounds must be positive")
+            raise ValueError("freeze event stream bounds must be positive")
         self._lock = threading.RLock()
         self._history: deque[UnifiedPublishedEvent] = deque(maxlen=history_size)
         self._client_queue_size = client_queue_size
@@ -129,39 +129,39 @@ class UnifiedDecisionEventStream:
         self._sequence = 0
         self._slow_subscriber_drops = 0
 
-    def publish_committed(self, event: DecisionCommitted) -> UnifiedPublishedEvent:
-        decision = event.projection
+    def publish_committed(self, event: FreezeCommitted) -> UnifiedPublishedEvent:
+        freeze = event.projection
         replacement = None
-        if decision is not None:
-            top_scores = VisibleScoredSeats(decision)
+        if freeze is not None:
+            top_scores = VisibleScoredSeats(freeze)
             selected = top_scores
-            replacement = DecisionReplacementPatch(
-                event.projection_version or event.decision_version,
-                decision.observed_at,
-                decision.strategy_version,
-                decision.input_versions,
-                decision.stage,
-                ScoredDecisionCoverage(decision),
-                decision.selection_diagnostics,
-                decision.degraded_reasons,
+            replacement = FreezeReplacementPatch(
+                event.projection_version or event.freeze_version,
+                freeze.observed_at,
+                freeze.strategy_version,
+                freeze.input_versions,
+                freeze.stage,
+                ScoredFreezeCoverage(freeze),
+                freeze.selection_diagnostics,
+                freeze.degraded_reasons,
                 selected,
                 top_scores,
-                decision.pipeline,
-                decision.preview_context,
+                freeze.pipeline,
+                freeze.preview_context,
             )
-        payload = DecisionEventPayload(
+        payload = FreezeEventPayload(
             event.strategy,
             event.trade_date.isoformat(),
-            event.decision_version,
-            event.decision_hash,
+            event.freeze_version,
+            event.freeze_hash,
             event.stage,
             replacement,
         )
         with self._lock:
-            return self._publish_locked("decision", payload)
+            return self._publish_locked("freeze", payload)
 
     def publish_projection(self, projection: LongProjection) -> UnifiedPublishedEvent:
-        payload = DecisionEventPayload(
+        payload = FreezeEventPayload(
             Strategy.LONG,
             projection.trade_date.isoformat(),
             projection.version,
@@ -170,11 +170,11 @@ class UnifiedDecisionEventStream:
             None,
         )
         with self._lock:
-            return self._publish_locked("decision", payload)
+            return self._publish_locked("freeze", payload)
 
     def publish_overlay(
         self,
-        overlay: DecisionOverlay,
+        overlay: FreezeOverlay,
         *,
         parent_version: str,
     ) -> UnifiedPublishedEvent:
@@ -197,11 +197,11 @@ class UnifiedDecisionEventStream:
 
     def open_subscription(self, after_sequence: int | None) -> UnifiedSubscription:
         if after_sequence is not None and after_sequence < 0:
-            raise ValueError("decision event cursor cannot be negative")
+            raise ValueError("freeze event cursor cannot be negative")
         subscriber: queue.Queue[UnifiedPublishedEvent] = queue.Queue(maxsize=self._client_queue_size)
         with self._lock:
             if len(self._subscribers) >= self._subscriber_limit:
-                raise UnifiedSubscriberLimitError("decision event subscriber limit reached")
+                raise UnifiedSubscriberLimitError("freeze event subscriber limit reached")
             sequence = self._sequence
             cursor = sequence if after_sequence is None else after_sequence
             replay, reason = self._replay_locked(cursor)
@@ -261,12 +261,12 @@ class UnifiedDecisionEventStream:
 
 
 __all__ = [
-    "DecisionEventPayload",
-    "DecisionReplacementPatch",
+    "FreezeEventPayload",
+    "FreezeReplacementPatch",
     "OverlayEventPayload",
     "ResyncEventPayload",
     "ResyncReason",
-    "UnifiedDecisionEventStream",
+    "UnifiedFreezeEventStream",
     "UnifiedEventStreamStatus",
     "UnifiedPublishedEvent",
     "UnifiedSubscriberLimitError",

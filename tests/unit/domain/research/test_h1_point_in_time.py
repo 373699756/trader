@@ -66,8 +66,8 @@ def test_capability_probe_requires_qfq_and_point_in_time_evidence() -> None:
 def test_h1_spec_hash_separates_the_retired_anchor() -> None:
     spec = H1PointInTimeSpec("tomorrow")
     legacy_payload = {field.name: getattr(spec, field.name) for field in fields(spec) if field.init}
-    legacy_payload.pop("decision_anchor")
+    legacy_payload.pop("freeze_anchor")
 
     assert spec.content_hash != CanonicalResearchHash(legacy_payload)
     with pytest.raises(ValueError, match="anchor"):
-        replace(spec, decision_anchor="14:50")
+        replace(spec, freeze_anchor="14:50")

@@ -8,16 +8,16 @@ from datetime import datetime
 
 from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
 from trader.recommendation.application.long_runtime import LongRuntime
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (
-    AsyncDecisionObserver,
-    DecisionEventConsumer,
-)
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import ScoredFreezeCoordinator
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import FreezeObservation
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import (
+    AsyncFreezeObserver,
+    FreezeEventConsumer,
+)
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.runtime.cadence import CadencePolicy
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
@@ -25,12 +25,11 @@ from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
-from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.infra.persistence.freeze_trace_index import SQLiteFreezeTraceIndex
+from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 from trader.recommendation.infra.runtime.application_system import RuntimeWorkerResources
-from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
-from trader.training.infra.research.research_trace_index import SQLiteResearchTraceIndex
 
 
 @dataclass(frozen=True)
@@ -49,8 +48,7 @@ class RuntimeBuildContext:
 @dataclass(frozen=True)
 class RuntimePersistenceContext:
     sequence: PublicationSequence
-    records: SQLiteDecisionRecords
-    data_plane: SQLiteDataPlane
+    records: SQLiteFreezeRecords
     budget: DeepSeekBudgetLedger
     outcomes: SQLiteOutcomeEvidenceIndex
 
@@ -67,25 +65,25 @@ class SharedRecommendationInputs:
 
 @dataclass(frozen=True)
 class RuntimePublicationContext:
-    tomorrow_records: SQLiteDecisionRecords
-    tomorrow_index: UnifiedDecisionIndex
-    decision_drafts: UnifiedDecisionDraftIndex
-    research_trace: SQLiteResearchTraceIndex
+    tomorrow_records: SQLiteFreezeRecords
+    tomorrow_index: UnifiedFreezeIndex
+    freeze_drafts: UnifiedFreezeDraftIndex
+    research_trace: SQLiteFreezeTraceIndex
     long_runtime: LongRuntime
-    decision_queries: UnifiedDecisionQueries
-    decision_events: UnifiedDecisionEventStream
+    freeze_queries: UnifiedFreezeQueries
+    freeze_events: UnifiedFreezeEventStream
     tomorrow_freezer: ScoredFreezeCoordinator
     d25_freezer: ScoredFreezeCoordinator
-    observer: AsyncDecisionObserver[DecisionObservation]
+    observer: AsyncFreezeObserver[FreezeObservation]
 
 
 @dataclass(frozen=True)
 class RuntimePublicationDependencies:
     next_sequence: Callable[[], int]
-    records: SQLiteDecisionRecords
+    records: SQLiteFreezeRecords
     market_data: MarketFeatureService
     outcomes: SQLiteOutcomeEvidenceIndex
-    additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
+    additional_observers: tuple[FreezeEventConsumer[FreezeObservation], ...] = ()
 
 
 __all__ = [

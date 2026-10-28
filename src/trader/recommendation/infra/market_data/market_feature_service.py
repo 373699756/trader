@@ -43,7 +43,7 @@ from trader.recommendation.infra.market_data.market_task_runner import MarketTas
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
-from trader.training.domain.evaluation.models import OutcomeBar
+from trader.recommendation.domain.outcomes.models import OutcomeBar
 
 
 @dataclass(frozen=True)

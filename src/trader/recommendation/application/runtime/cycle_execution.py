@@ -8,14 +8,14 @@ from trader.recommendation.application.pipeline.freeze_publish.current_publisher
     PublishCurrentPair,
     PublishCurrentSnapshot,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
-    DecisionCommitted,
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
+    FreezeCommitted,
 )
-from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
+from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import FreezeOverlayRefresher
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
-    DecisionUnavailableError,
+    FreezeUnavailableError,
     ResearchRuntimePort,
     ReviewUnavailableError,
 )
@@ -32,16 +32,16 @@ from trader.recommendation.application.runtime.schedule_requests import (
     ValidateCycleIdentity,
 )
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
-from trader.recommendation.domain.publication.decision_identity import (
-    DecisionIdentity,
-    ScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    FreezeIdentity,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)
 class HybridUpgradeRequest:
-    local: ScoredDecision
+    local: ScoredFreeze
     cycle: CycleRequest
 
 
@@ -51,7 +51,7 @@ class CycleExecutionHooks:
     hybrid_lane: Callable[[Strategy], LatestWinsWorker[HybridUpgradeRequest]]
     failure: Callable[[str, str, Strategy | None], None]
     overlay_success: Callable[[Strategy, bool], None]
-    published: Callable[[bool, DecisionCommitted | None, DecisionIdentity], None]
+    published: Callable[[bool, FreezeCommitted | None, FreezeIdentity], None]
     rejected: Callable[[str, Strategy], None]
 
 
@@ -62,7 +62,7 @@ class RecommendationCycleExecutor:
         self,
         dependencies: RuntimeDependencies,
         *,
-        overlay_refresher: DecisionOverlayRefresher,
+        overlay_refresher: FreezeOverlayRefresher,
         close_control: CloseControlCoordinator,
         research: ResearchRuntimePort,
         hooks: CycleExecutionHooks,
@@ -89,29 +89,29 @@ class RecommendationCycleExecutor:
         try:
             with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
                 pass
-            decisions = self._build_pair(requests)
-            if decisions is None or not self._publish_local_pair(requests, decisions):
+            freezes = self._build_pair(requests)
+            if freezes is None or not self._publish_local_pair(requests, freezes):
                 return
-            for request, local in zip(requests, decisions, strict=True):
+            for request, local in zip(requests, freezes, strict=True):
                 self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
         except StaleSessionError:
             return
 
-    def _build_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> tuple[ScoredDecision, ScoredDecision] | None:
+    def _build_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> tuple[ScoredFreeze, ScoredFreeze] | None:
         started_at = time.perf_counter()
         shared_epoch = self._dependencies.data.scoring_epoch()
         if not all(self._prepare_cycle_data(request) for request in requests):
             return None
         if self._dependencies.data.scoring_epoch() != shared_epoch:
-            self._hooks.failure("decision", "paired_input_epoch_mismatch", None)
+            self._hooks.failure("freeze", "paired_input_epoch_mismatch", None)
             return None
         self._record_latency("scoring_data_prepare", started_at)
         started_at = time.perf_counter()
         tomorrow = self._build_local(requests[0])
-        if not isinstance(tomorrow, ScoredDecision):
+        if not isinstance(tomorrow, ScoredFreeze):
             return None
         d25 = self._build_local(requests[1])
-        if not isinstance(d25, ScoredDecision):
+        if not isinstance(d25, ScoredFreeze):
             return None
         self._record_latency("local_scoring", started_at)
         return tomorrow, d25
@@ -119,33 +119,33 @@ class RecommendationCycleExecutor:
     def _publish_local_pair(
         self,
         requests: tuple[CycleRequest, CycleRequest],
-        decisions: tuple[ScoredDecision, ScoredDecision],
+        freezes: tuple[ScoredFreeze, ScoredFreeze],
     ) -> bool:
         expected = tuple(
             current.version if current is not None else None
-            for current in (self._dependencies.index.snapshot(item.strategy).current for item in decisions)
+            for current in (self._dependencies.index.snapshot(item.strategy).current for item in freezes)
         )
         try:
             with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
                 result = PublishCurrentPair(
                     self._dependencies.index,
-                    self._dependencies.decisions,
-                    decisions,
+                    self._dependencies.freezes,
+                    freezes,
                     expected_versions=(expected[0], expected[1]),
                     publication_io=self._dependencies.publication_io,
                 )
                 if result.accepted:
-                    for request, local in zip(requests, decisions, strict=True):
+                    for request, local in zip(requests, freezes, strict=True):
                         if request.session is not None:
                             request.session.remember(local.version)
-        except DecisionUnavailableError as exc:
-            self._hooks.failure("decision", FailureCode(exc, "decision_quote_unavailable"), None)
+        except FreezeUnavailableError as exc:
+            self._hooks.failure("freeze", FailureCode(exc, "freeze_quote_unavailable"), None)
             return False
         if not result.accepted:
             for request in requests:
                 self._hooks.rejected(result.reason, request.strategy)
             return False
-        for local, event in zip(decisions, result.events, strict=True):
+        for local, event in zip(freezes, result.events, strict=True):
             self._hooks.published(False, event, local)
         return True
 
@@ -163,7 +163,7 @@ class RecommendationCycleExecutor:
             snapshot = self._dependencies.index.snapshot(request.strategy)
             if snapshot.formal is not None and snapshot.formal.trade_date == request.trade_date:
                 return True
-            if isinstance(snapshot.current, ScoredDecision) and snapshot.current.trade_date == request.trade_date:
+            if isinstance(snapshot.current, ScoredFreeze) and snapshot.current.trade_date == request.trade_date:
                 if request.session is not None and not request.session.allows_version(snapshot.current.version):
                     return False
                 self._close_control.freeze_close_fallback(request, snapshot.current, recovery_path="current")
@@ -173,7 +173,7 @@ class RecommendationCycleExecutor:
     def _build_fresh_local(
         self,
         request: CycleRequest,
-    ) -> DecisionIdentity | None:
+    ) -> FreezeIdentity | None:
         started_at = time.perf_counter()
         if not self._prepare_cycle_data(request):
             return None
@@ -187,7 +187,7 @@ class RecommendationCycleExecutor:
 
     def _publish_fresh_local(
         self,
-        local: DecisionIdentity,
+        local: FreezeIdentity,
         request: CycleRequest,
     ) -> bool:
         started_at = time.perf_counter()
@@ -197,16 +197,16 @@ class RecommendationCycleExecutor:
                 request.session.remember(local.version)
         if not published:
             return False
-        self._record_latency("decision_publish", started_at)
+        self._record_latency("freeze_publish", started_at)
         return True
 
     def _continue_after_local_publish(
         self,
         request: CycleRequest,
-        local: DecisionIdentity,
+        local: FreezeIdentity,
         lane: LatestWinsWorker[CycleRequest],
     ) -> None:
-        if lane.is_superseded(request) or not isinstance(local, ScoredDecision):
+        if lane.is_superseded(request) or not isinstance(local, ScoredFreeze):
             return
         defer_initial_review = False if local.preview_context is not None else self._observe_research(local, request)
         if request.phase == "close_fallback":
@@ -216,11 +216,11 @@ class RecommendationCycleExecutor:
         if request.allow_review and not defer_initial_review and review_now < request.review_deadline:
             self._hooks.hybrid_lane(request.strategy).offer(HybridUpgradeRequest(local, request))
 
-    def _observe_research(self, local: ScoredDecision, request: CycleRequest) -> bool:
+    def _observe_research(self, local: ScoredFreeze, request: CycleRequest) -> bool:
         try:
             with SessionGuard(request.session):
                 return self._research.observe(
-                    self._dependencies.decisions.research_intent(local),
+                    self._dependencies.freezes.research_intent(local),
                     request,
                 )
         except StaleSessionError:
@@ -263,29 +263,29 @@ class RecommendationCycleExecutor:
                 self._hooks.overlay_success(outcome.strategy, outcome.status == "published")
         return True
 
-    def _build_local(self, request: CycleRequest) -> DecisionIdentity | None:
+    def _build_local(self, request: CycleRequest) -> FreezeIdentity | None:
         try:
-            local = self._dependencies.decisions.build_local(request)
+            local = self._dependencies.freezes.build_local(request)
             if local is not None:
                 ValidateCycleIdentity(request, local)
-        except DecisionUnavailableError as exc:
+        except FreezeUnavailableError as exc:
             with SessionGuard(request.session):
-                self._hooks.failure("decision", FailureCode(exc, "decision_unavailable"), request.strategy)
+                self._hooks.failure("freeze", FailureCode(exc, "freeze_unavailable"), request.strategy)
             return None
         return local
 
-    def _publish(self, identity: DecisionIdentity, *, hybrid: bool) -> bool:
+    def _publish(self, identity: FreezeIdentity, *, hybrid: bool) -> bool:
         expected = self._dependencies.index.snapshot(identity.strategy).current
         try:
             published = PublishCurrentSnapshot(
                 self._dependencies.index,
-                self._dependencies.decisions,
+                self._dependencies.freezes,
                 identity,
                 expected_version=expected.version if expected is not None else None,
                 publication_io=self._dependencies.publication_io,
             )
-        except DecisionUnavailableError as exc:
-            self._hooks.failure("decision", FailureCode(exc, "decision_quote_unavailable"), identity.strategy)
+        except FreezeUnavailableError as exc:
+            self._hooks.failure("freeze", FailureCode(exc, "freeze_quote_unavailable"), identity.strategy)
             return False
         if not published.accepted:
             self._hooks.rejected(published.reason, identity.strategy)
@@ -293,7 +293,7 @@ class RecommendationCycleExecutor:
         self._hooks.published(hybrid, published.event, identity)
         return True
 
-    def _upgrade_hybrid(self, local: ScoredDecision, request: CycleRequest) -> None:
+    def _upgrade_hybrid(self, local: ScoredFreeze, request: CycleRequest) -> None:
         try:
             hybrid = self._dependencies.reviews.build_hybrid(local, request)
         except ReviewUnavailableError as exc:
@@ -304,7 +304,7 @@ class RecommendationCycleExecutor:
             return
         try:
             ValidateCycleIdentity(request, hybrid)
-        except DecisionUnavailableError:
+        except FreezeUnavailableError:
             self._hooks.failure("review", "review_identity_mismatch", request.strategy)
             return
         upgrade = HybridUpgradeRequest(local, request)

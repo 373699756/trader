@@ -48,7 +48,7 @@ class PairedBootstrapResult:
 
 
 @dataclass(frozen=True)
-class HolmDecision:
+class HolmFreeze:
     variant_id: ChallengerVariantId
     p_value: float | None
     family_rank: int
@@ -111,7 +111,7 @@ def PairedMovingBlockBootstrap(
 
 def HolmStepDown(
     p_values: dict[ChallengerVariantId, float | None],
-) -> tuple[HolmDecision, ...]:
+) -> tuple[HolmFreeze, ...]:
     """Apply the fixed five-member Holm family without dropping invalid variants."""
 
     if set(p_values) != set(VARIANT_FAMILY):
@@ -120,16 +120,16 @@ def HolmStepDown(
         if value is not None and (not math.isfinite(value) or not 0.0 <= value <= 1.0):
             raise ValueError("Stability analysis Holm p-values must be finite and in [0, 1]")
     generic_p_values: dict[str, float | None] = {str(key): value for key, value in p_values.items()}
-    decisions = FixedFamilyHolm(generic_p_values, family=VARIANT_FAMILY, alpha=HOLM_ALPHA)
+    freezes = FixedFamilyHolm(generic_p_values, family=VARIANT_FAMILY, alpha=HOLM_ALPHA)
     return tuple(
-        HolmDecision(
-            variant_id=cast(ChallengerVariantId, decision.challenger_id),
-            p_value=decision.p_value,
-            family_rank=decision.family_rank,
-            threshold=decision.threshold,
-            rejected_null=decision.rejected_null,
+        HolmFreeze(
+            variant_id=cast(ChallengerVariantId, freeze.challenger_id),
+            p_value=freeze.p_value,
+            family_rank=freeze.family_rank,
+            threshold=freeze.threshold,
+            rejected_null=freeze.rejected_null,
         )
-        for decision in decisions
+        for freeze in freezes
     )
 
 
@@ -147,7 +147,7 @@ __all__ = [
     "HOLM_ALPHA",
     "PRIMARY_BLOCK_DAYS",
     "VARIANT_FAMILY",
-    "HolmDecision",
+    "HolmFreeze",
     "PairedBootstrapResult",
     "BootstrapSeed",
     "HolmStepDown",

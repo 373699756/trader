@@ -1,15 +1,16 @@
-"""Atomic SQLite storage for the independent H1 point-in-time archive."""
+"""Atomic SQLite facts for independent H1 point-in-time research."""
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash, DecodeTime, EncodeDate, EncodeHash, EncodeTime
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     SqliteConnection,
@@ -90,7 +91,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             existing = tuple(
                 str(row[0])
                 for row in connection.run(
-                    "SELECT code FROM universe WHERE strategy = ? ORDER BY code", (spec.strategy,)
+                    "SELECT code FROM h1_universe WHERE strategy = ? ORDER BY code", (spec.strategy,)
                 ).fetchall()
             )
             requested = tuple(item.code for item in ordered)
@@ -99,13 +100,13 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             for item in ordered:
                 payload_hash = CanonicalResearchHash(item)
                 prior = connection.run(
-                    "SELECT payload_hash FROM universe WHERE strategy = ? AND code = ?",
+                    "SELECT content_hash FROM h1_universe WHERE strategy = ? AND code = ?",
                     (spec.strategy, item.code),
                 ).fetchone()
-                if prior is not None and str(prior[0]) != payload_hash:
+                if prior is not None and DecodeHash(prior[0]) != payload_hash:
                     raise H1PointInTimeSnapshotConflictError("H1 universe identity conflict")
                 connection.run(
-                    "INSERT OR IGNORE INTO universe(strategy, code, board, name, is_st, is_suspended, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO h1_universe(strategy, code, board, name, is_st, is_suspended, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         spec.strategy,
                         item.code,
@@ -113,7 +114,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                         item.name,
                         int(item.is_st),
                         int(item.is_suspended),
-                        payload_hash,
+                        EncodeHash(payload_hash),
                     ),
                 )
 
@@ -124,8 +125,9 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
-                "SELECT code, board, name, is_st, is_suspended FROM universe WHERE strategy = ? ORDER BY code",
+                "SELECT code, board, name, is_st, is_suspended FROM h1_universe WHERE strategy = ? ORDER BY code",
                 (strategy,),
             ).fetchall()
         return tuple(
@@ -140,8 +142,9 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
-                "SELECT code FROM downloads WHERE strategy = ? AND status = 'complete'", (strategy,)
+                "SELECT code FROM h1_download WHERE strategy = ? AND status = 'complete'", (strategy,)
             ).fetchall()
         return frozenset(str(row[0]) for row in rows)
 
@@ -162,7 +165,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             self._register_spec(connection, spec)
             if (
                 connection.run(
-                    "SELECT 1 FROM universe WHERE strategy = ? AND code = ?", (spec.strategy, code)
+                    "SELECT 1 FROM h1_universe WHERE strategy = ? AND code = ?", (spec.strategy, code)
                 ).fetchone()
                 is None
             ):
@@ -173,18 +176,18 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                 payload_hash = CanonicalResearchHash(payload)
                 hashes.append(payload_hash)
                 prior = connection.run(
-                    "SELECT payload_hash FROM records WHERE strategy = ? AND code = ? AND trade_date = ?",
-                    (spec.strategy, code, record.trade_date.isoformat()),
+                    "SELECT content_hash FROM h1_price WHERE strategy = ? AND code = ? AND trade_date = ?",
+                    (spec.strategy, code, EncodeDate(record.trade_date)),
                 ).fetchone()
-                if prior is not None and str(prior[0]) != payload_hash:
+                if prior is not None and DecodeHash(prior[0]) != payload_hash:
                     raise H1PointInTimeSnapshotConflictError("H1 record identity conflict")
                 connection.run(
-                    """INSERT OR IGNORE INTO records(strategy, code, trade_date, observed_at, open_price, close_price, high_price, low_price, volume, amount, pct_change, turnover_rate, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT OR IGNORE INTO h1_price(strategy, code, trade_date, observed_at, open, close, high, low, volume, amount, change_pct, turnover_pct, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, content_hash, utc_offset_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         spec.strategy,
                         code,
-                        record.trade_date.isoformat(),
-                        record.observed_at.isoformat(),
+                        EncodeDate(record.trade_date),
+                        EncodeTime(record.observed_at),
                         record.daily_bar.open_price,
                         record.daily_bar.close,
                         record.daily_bar.high,
@@ -198,23 +201,24 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                         record.anchor_price,
                         record.anchor_volume,
                         record.anchor_amount,
-                        record.security_state_hash,
-                        record.sector_hash,
-                        record.risk_facts_hash,
-                        record.tail_field_hash,
-                        payload_hash,
+                        EncodeHash(record.security_state_hash),
+                        EncodeHash(record.sector_hash),
+                        EncodeHash(record.risk_facts_hash),
+                        EncodeHash(record.tail_field_hash) if record.tail_field_hash else None,
+                        EncodeHash(payload_hash),
+                        _offset_microseconds(record.observed_at),
                     ),
                 )
             content_hash = CanonicalResearchHash({"code": code, "records": hashes})
             prior_download = connection.run(
-                "SELECT content_hash FROM downloads WHERE strategy = ? AND code = ? AND status = 'complete'",
+                "SELECT content_hash FROM h1_download WHERE strategy = ? AND code = ? AND status = 'complete'",
                 (spec.strategy, code),
             ).fetchone()
-            if prior_download is not None and str(prior_download[0]) != content_hash:
+            if prior_download is not None and DecodeHash(prior_download[0]) != content_hash:
                 raise H1PointInTimeSnapshotConflictError("H1 download identity conflict")
             connection.run(
-                "INSERT INTO downloads(strategy, code, status, record_count, content_hash, error_code) VALUES (?, ?, 'complete', ?, ?, '') ON CONFLICT(strategy, code) DO UPDATE SET status = excluded.status, record_count = excluded.record_count, content_hash = excluded.content_hash, error_code = excluded.error_code",
-                (spec.strategy, code, len(ordered), content_hash),
+                "INSERT INTO h1_download(strategy, code, status, record_count, content_hash, failure_code) VALUES (?, ?, 'complete', ?, ?, NULL) ON CONFLICT(strategy, code) DO UPDATE SET status = excluded.status, record_count = excluded.record_count, content_hash = excluded.content_hash, failure_code = excluded.failure_code",
+                (spec.strategy, code, len(ordered), EncodeHash(content_hash)),
             )
 
     def record_failure(self, spec: H1PointInTimeSpec, code: str, error_code: str) -> None:
@@ -227,7 +231,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         ):
             self._register_spec(connection, spec)
             connection.run(
-                "INSERT INTO downloads(strategy, code, status, record_count, content_hash, error_code) VALUES (?, ?, 'failed', 0, '', ?) ON CONFLICT(strategy, code) DO UPDATE SET status = CASE WHEN downloads.status = 'complete' THEN downloads.status ELSE excluded.status END, error_code = CASE WHEN downloads.status = 'complete' THEN downloads.error_code ELSE excluded.error_code END",
+                "INSERT INTO h1_download(strategy, code, status, record_count, content_hash, failure_code) VALUES (?, ?, 'failed', 0, NULL, ?) ON CONFLICT(strategy, code) DO UPDATE SET status = CASE WHEN h1_download.status = 'complete' THEN h1_download.status ELSE excluded.status END, failure_code = CASE WHEN h1_download.status = 'complete' THEN h1_download.failure_code ELSE excluded.failure_code END",
                 (spec.strategy, code, error_code),
             )
 
@@ -253,21 +257,22 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             completed = tuple(
                 str(row[0])
                 for row in connection.run(
-                    "SELECT code FROM downloads WHERE strategy = ? AND status = 'complete' ORDER BY code",
+                    "SELECT code FROM h1_download WHERE strategy = ? AND status = 'complete' ORDER BY code",
                     (spec.strategy,),
                 ).fetchall()
             )
             rows = connection.run(
-                "SELECT code, trade_date FROM records WHERE strategy = ? ORDER BY code, trade_date",
+                "SELECT code, trade_date FROM h1_price WHERE strategy = ? ORDER BY code, trade_date",
                 (spec.strategy,),
             ).fetchall()
         per_code: dict[str, set[str]] = {code: set() for code in completed}
         for code, trade_date in rows:
             if str(code) in per_code:
-                per_code[str(code)].add(str(trade_date))
+                per_code[str(code)].add(DecodeDate(trade_date).isoformat())
         date_sets = tuple(per_code[code] for code in completed)
         common = set.intersection(*date_sets) if date_sets else set()
         return H1CoverageMetadata(
@@ -287,7 +292,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             )
         snapshot = self._manifest_snapshot(spec)
         universe_hash = _h1_universe_hash(snapshot.universe_rows)
-        history_hashes = tuple((str(row[0]), _db_int(row[1]), str(row[2])) for row in snapshot.completed_rows)
+        history_hashes = tuple((str(row[0]), _db_int(row[1]), DecodeHash(row[2])) for row in snapshot.completed_rows)
         histories_hash = CanonicalResearchHash(history_hashes)
         audit = _audit_h1_records(spec, snapshot.records)
         _validate_h1_histories(history_hashes, audit.per_code)
@@ -325,30 +330,31 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
+            EnsureSqliteSchema(connection, _SCHEMA)
             persisted = connection.run(
-                "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
+                "SELECT research_id, spec_hash FROM h1_spec WHERE strategy = ?", (spec.strategy,)
             ).fetchone()
             if (
                 persisted is None
-                or str(persisted[1]) != spec.content_hash
+                or DecodeHash(persisted[1]) != spec.content_hash
                 or str(persisted[0]) != spec.research_identity
             ):
                 raise H1PointInTimeSnapshotConflictError("H1 spec manifest conflict")
             universe_rows = tuple(
                 connection.run(
-                    "SELECT code, board, name, is_st, is_suspended, payload_hash FROM universe WHERE strategy = ? ORDER BY code",
+                    "SELECT code, board, name, is_st, is_suspended, content_hash FROM h1_universe WHERE strategy = ? ORDER BY code",
                     (spec.strategy,),
                 ).fetchall()
             )
             completed_rows = tuple(
                 connection.run(
-                    "SELECT code, record_count, content_hash FROM downloads WHERE strategy = ? AND status = 'complete' ORDER BY code",
+                    "SELECT code, record_count, content_hash FROM h1_download WHERE strategy = ? AND status = 'complete' ORDER BY code",
                     (spec.strategy,),
                 ).fetchall()
             )
             records = tuple(
                 connection.run(
-                    "SELECT strategy, code, trade_date, observed_at, open_price, close_price, high_price, low_price, volume, amount, pct_change, turnover_rate, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, payload_hash FROM records WHERE strategy = ? ORDER BY code, trade_date",
+                    "SELECT strategy, code, trade_date, observed_at, open, close, high, low, volume, amount, change_pct, turnover_pct, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, content_hash, utc_offset_us FROM h1_price WHERE strategy = ? ORDER BY code, trade_date",
                     (spec.strategy,),
                 ).fetchall()
             )
@@ -365,16 +371,17 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
-            spec_row = connection.run("SELECT spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)).fetchone()
+            EnsureSqliteSchema(connection, _SCHEMA)
+            spec_row = connection.run("SELECT spec_hash FROM h1_spec WHERE strategy = ?", (spec.strategy,)).fetchone()
             universe_count = int(
-                connection.run("SELECT COUNT(*) FROM universe WHERE strategy = ?", (spec.strategy,)).require_one()[0]
+                connection.run("SELECT COUNT(*) FROM h1_universe WHERE strategy = ?", (spec.strategy,)).require_one()[0]
             )
             completed, failed = connection.run(
-                "SELECT SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END), SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) FROM downloads WHERE strategy = ?",
+                "SELECT SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END), SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) FROM h1_download WHERE strategy = ?",
                 (spec.strategy,),
             ).require_one()
             count, first_date, last_date = connection.run(
-                "SELECT COUNT(*), MIN(trade_date), MAX(trade_date) FROM records WHERE strategy = ?", (spec.strategy,)
+                "SELECT COUNT(*), MIN(trade_date), MAX(trade_date) FROM h1_price WHERE strategy = ?", (spec.strategy,)
             ).require_one()
         return H1PointInTimeSnapshotStatus(
             True,
@@ -383,20 +390,20 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             int(completed or 0),
             int(failed or 0),
             int(count or 0),
-            str(first_date) if first_date else None,
-            str(last_date) if last_date else None,
-            str(spec_row[0]) if spec_row else "",
+            DecodeDate(first_date).isoformat() if first_date is not None else None,
+            DecodeDate(last_date).isoformat() if last_date is not None else None,
+            DecodeHash(spec_row[0]) if spec_row else "",
         )
 
     def _register_spec(self, connection: SqliteConnection, spec: H1PointInTimeSpec) -> None:
         prior = connection.run(
-            "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
+            "SELECT research_id, spec_hash FROM h1_spec WHERE strategy = ?", (spec.strategy,)
         ).fetchone()
-        if prior is not None and (str(prior[0]) != spec.research_identity or str(prior[1]) != spec.content_hash):
+        if prior is not None and (str(prior[0]) != spec.research_identity or DecodeHash(prior[1]) != spec.content_hash):
             raise H1PointInTimeSnapshotConflictError("H1 spec identity conflict")
         connection.run(
-            "INSERT OR IGNORE INTO specs(strategy, research_identity, spec_hash) VALUES (?, ?, ?)",
-            (spec.strategy, spec.research_identity, spec.content_hash),
+            "INSERT OR IGNORE INTO h1_spec(strategy, research_id, spec_hash) VALUES (?, ?, ?)",
+            (spec.strategy, spec.research_identity, EncodeHash(spec.content_hash)),
         )
 
 
@@ -407,7 +414,7 @@ def _h1_universe_hash(rows: tuple[tuple[object, ...], ...]) -> str:
             str(code), cast(ResearchBoard, str(board)), str(name), bool(is_st), bool(is_suspended)
         )
         payload_hash = CanonicalResearchHash(security)
-        if payload_hash != str(persisted_hash):
+        if payload_hash != DecodeHash(persisted_hash):
             raise H1PointInTimeSnapshotConflictError("H1 universe payload conflict")
         identities.append((security.code, payload_hash))
     return CanonicalResearchHash(tuple(identities))
@@ -457,7 +464,17 @@ def _audit_h1_record(
         risk_hash,
         tail_hash,
         payload_hash,
+        utc_offset_us,
     ) = row
+    trade_date = DecodeDate(trade_date).isoformat()
+    observed_at = (
+        DecodeTime(observed_at).astimezone(timezone(timedelta(microseconds=_db_int(utc_offset_us)))).isoformat()
+    )
+    state_hash = DecodeHash(state_hash)
+    sector_hash = DecodeHash(sector_hash)
+    risk_hash = DecodeHash(risk_hash)
+    tail_hash = DecodeHash(tail_hash) if tail_hash is not None else ""
+    payload_hash = DecodeHash(payload_hash)
     _validate_h1_record_timing(spec, str(trade_date), str(observed_at), str(adjustment))
     payload = {
         "strategy": str(strategy),
@@ -529,6 +546,13 @@ def _db_float(value: object) -> float:
     raise H1PointInTimeSnapshotConflictError("H1 numeric storage value is invalid")
 
 
+def _offset_microseconds(value: datetime) -> int:
+    offset = value.utcoffset()
+    if offset is None:
+        raise ValueError("H1 observation must have a UTC offset")
+    return (offset.days * 86400 + offset.seconds) * 1000000 + offset.microseconds
+
+
 def _record_payload(record: H1PointInTimeRecord) -> dict[str, object]:
     bar = record.daily_bar
     return {
@@ -560,39 +584,41 @@ __all__ = ["H1PointInTimeSnapshotConflictError", "H1PointInTimeSnapshotStatus", 
 
 
 _SCHEMA = SqliteSchema(
-    None,
+    1,
     (
         """
-        CREATE TABLE IF NOT EXISTS specs (
-            strategy TEXT PRIMARY KEY, research_identity TEXT NOT NULL,
-            spec_hash TEXT NOT NULL
+        CREATE TABLE h1_spec (
+            strategy TEXT NOT NULL PRIMARY KEY, research_id TEXT NOT NULL,
+            spec_hash BLOB NOT NULL CHECK(length(spec_hash)=32)
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS universe (
+        CREATE TABLE h1_universe (
             strategy TEXT NOT NULL, code TEXT NOT NULL, board TEXT NOT NULL,
             name TEXT NOT NULL, is_st INTEGER NOT NULL, is_suspended INTEGER NOT NULL,
-            payload_hash TEXT NOT NULL, PRIMARY KEY(strategy, code)
+            content_hash BLOB NOT NULL CHECK(length(content_hash)=32), PRIMARY KEY(strategy, code)
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS records (
-            strategy TEXT NOT NULL, code TEXT NOT NULL, trade_date TEXT NOT NULL,
-            observed_at TEXT NOT NULL, open_price REAL NOT NULL, close_price REAL NOT NULL,
-            high_price REAL NOT NULL, low_price REAL NOT NULL, volume REAL NOT NULL,
-            amount REAL NOT NULL, pct_change REAL NOT NULL, turnover_rate REAL,
+        CREATE TABLE h1_price (
+            strategy TEXT NOT NULL, code TEXT NOT NULL, trade_date INTEGER NOT NULL,
+            observed_at INTEGER NOT NULL, open REAL NOT NULL, close REAL NOT NULL,
+            high REAL NOT NULL, low REAL NOT NULL, volume REAL NOT NULL,
+            amount REAL NOT NULL, change_pct REAL NOT NULL, turnover_pct REAL,
             adjustment TEXT NOT NULL, source TEXT NOT NULL, anchor_price REAL NOT NULL,
             anchor_volume REAL NOT NULL, anchor_amount REAL NOT NULL,
-            security_state_hash TEXT NOT NULL, sector_hash TEXT NOT NULL,
-            risk_facts_hash TEXT NOT NULL, tail_field_hash TEXT NOT NULL,
-            payload_hash TEXT NOT NULL, PRIMARY KEY(strategy, code, trade_date)
+            security_state_hash BLOB NOT NULL CHECK(length(security_state_hash)=32), sector_hash BLOB NOT NULL CHECK(length(sector_hash)=32),
+            risk_facts_hash BLOB NOT NULL CHECK(length(risk_facts_hash)=32), tail_field_hash BLOB CHECK(tail_field_hash IS NULL OR length(tail_field_hash)=32),
+            content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
+            utc_offset_us INTEGER NOT NULL CHECK(abs(utc_offset_us)<86400000000),
+            PRIMARY KEY(strategy, code, trade_date)
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS downloads (
+        CREATE TABLE h1_download (
             strategy TEXT NOT NULL, code TEXT NOT NULL, status TEXT NOT NULL,
-            record_count INTEGER NOT NULL, content_hash TEXT NOT NULL,
-            error_code TEXT NOT NULL, PRIMARY KEY(strategy, code)
+            record_count INTEGER NOT NULL, content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash)=32),
+            failure_code TEXT, PRIMARY KEY(strategy, code)
         )
         """,
     ),

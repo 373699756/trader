@@ -128,7 +128,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     status = sample.status
     if status is None:
         return findings
-    long_current = sample.decisions.get("long")
+    long_current = sample.freezes.get("long")
     if long_current is not None and long_current.status != "ready":
         findings.append(
             _finding(
@@ -147,7 +147,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     if not status.runtime_started or status.runtime_status != "running":
         findings.append(_finding("error", "runtime_not_running", sample, None, "runtime is not reported as running"))
     findings.extend(_observer_findings(sample, status.degraded_reasons))
-    if not status.release_decision_schema:
+    if not status.release_freeze_schema:
         findings.append(
             _finding("error", "release_identity_missing", sample, None, "status release identity is incomplete")
         )
@@ -206,19 +206,19 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     findings.extend(_scoring_starvation_findings(sample, strategies))
     for strategy in strategies:
         strategy_status = status.strategies.get(strategy)
-        decision = sample.decisions.get(strategy)
-        if decision is not None:
+        freeze = sample.freezes.get(strategy)
+        if freeze is not None:
             findings.extend(
-                _decision_contract_findings(
+                _freeze_contract_findings(
                     sample,
                     strategy,
                     strategy_status,
-                    decision,
-                    status.release_decision_schema,
+                    freeze,
+                    status.release_freeze_schema,
                 )
             )
-            if decision.pipeline is not None:
-                audit = decision.pipeline.committed_audit
+            if freeze.pipeline is not None:
+                audit = freeze.pipeline.committed_audit
                 if audit.invalid_fields:
                     findings.append(
                         _finding(
@@ -248,9 +248,9 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
             findings.extend(_market_liquidity_history_findings(sample, strategy, quality))
             findings.extend(_model_input_findings(sample, strategy, quality))
             findings.extend(_model_industry_reference_findings(sample, strategy, quality))
-            findings.extend(_scoring_output_findings(sample, strategy, quality, decision))
-        elif decision is not None and decision.pipeline is not None:
-            findings.extend(_pipeline_consistency_findings(sample, strategy, decision.pipeline))
+            findings.extend(_scoring_output_findings(sample, strategy, quality, freeze))
+        elif freeze is not None and freeze.pipeline is not None:
+            findings.extend(_pipeline_consistency_findings(sample, strategy, freeze.pipeline))
     return findings
 
 
@@ -261,7 +261,7 @@ def _observer_findings(sample: WebSample, degraded_reasons: tuple[str, ...]) -> 
             "research_observer_failed",
             sample,
             None,
-            "the committed-decision research observer failed",
+            "the committed-freeze research observer failed",
             {"error_code": reason.partition(":")[2]},
         )
         for reason in degraded_reasons
@@ -388,7 +388,7 @@ def _scoring_output_findings(
     sample: WebSample,
     strategy: str,
     quality: InputQualitySnapshot,
-    decision: ProjectionSnapshot | None,
+    freeze: ProjectionSnapshot | None,
 ) -> list[Finding]:
     candidate_features = quality.pipeline.count("candidate_features") or 0
     full_scored = quality.pipeline.count("full_scored")
@@ -417,14 +417,14 @@ def _scoring_output_findings(
                 {"field": "input_quality", "full_scored": full_scored},
             )
         )
-    if decision is not None and decision.status == "ready" and decision.maximum_final_score is None:
+    if freeze is not None and freeze.status == "ready" and freeze.maximum_final_score is None:
         findings.append(
             _finding(
                 "error",
                 "highest_final_score_missing",
                 sample,
                 strategy,
-                "ready decision omitted the maximum final score despite scored candidates",
+                "ready freeze omitted the maximum final score despite scored candidates",
                 {"field": "current", "full_scored": full_scored},
             )
         )
@@ -432,8 +432,8 @@ def _scoring_output_findings(
         score
         for score in (
             quality.highest_final_score,
-            decision.maximum_final_score if decision is not None else None,
-            decision.highest_top_score if decision is not None else None,
+            freeze.maximum_final_score if freeze is not None else None,
+            freeze.highest_top_score if freeze is not None else None,
         )
         if score is not None
     )
@@ -447,33 +447,33 @@ def _scoring_output_findings(
                 "scored candidates exist but a published highest final score is not positive",
                 {
                     "highest_final_score": quality.highest_final_score,
-                    "decision_maximum_final_score": decision.maximum_final_score if decision is not None else None,
-                    "top_score": decision.highest_top_score if decision is not None else None,
+                    "freeze_maximum_final_score": freeze.maximum_final_score if freeze is not None else None,
+                    "top_score": freeze.highest_top_score if freeze is not None else None,
                     "full_scored": full_scored,
                 },
             )
         )
-    if decision is not None and decision.status == "ready":
-        if not decision.top_score_count:
+    if freeze is not None and freeze.status == "ready":
+        if not freeze.top_score_count:
             findings.append(
                 _finding(
                     "error",
                     "scored_top_scores_missing",
                     sample,
                     strategy,
-                    "ready decision omitted top score rows despite scored candidates",
-                    {"full_scored": full_scored, "evaluated_count": decision.coverage.evaluated_count},
+                    "ready freeze omitted top score rows despite scored candidates",
+                    {"full_scored": full_scored, "evaluated_count": freeze.coverage.evaluated_count},
                 )
             )
-        elif decision.top_score_count is not None and decision.highest_top_score is None:
+        elif freeze.top_score_count is not None and freeze.highest_top_score is None:
             findings.append(
                 _finding(
                     "error",
                     "top_score_value_invalid",
                     sample,
                     strategy,
-                    "ready decision top score rows lack a valid final score",
-                    {"top_score_count": decision.top_score_count},
+                    "ready freeze top score rows lack a valid final score",
+                    {"top_score_count": freeze.top_score_count},
                 )
             )
     return findings
@@ -488,9 +488,9 @@ def _scoring_starvation_findings(sample: WebSample, strategies: tuple[str, ...])
     for issue in status.recent_errors:
         if issue.strategy not in strategies or issue.count is None:
             continue
-        if issue.code in {"refresh:input_superseded", "decision:input_superseded"}:
+        if issue.code in {"refresh:input_superseded", "freeze:input_superseded"}:
             supersession_counts[issue.strategy] = supersession_counts.get(issue.strategy, 0) + issue.count
-        elif issue.code == "checkpoint:no_eligible_decision":
+        elif issue.code == "checkpoint:no_eligible_freeze":
             checkpoint_miss_counts[issue.strategy] = checkpoint_miss_counts.get(issue.strategy, 0) + issue.count
     return [
         _finding(
@@ -532,11 +532,11 @@ def _history_gate_findings(
     ]
 
 
-def _decision_contract_findings(
+def _freeze_contract_findings(
     sample: WebSample,
     strategy: str,
     strategy_status: ProjectionSnapshot | None,
-    decision: ProjectionSnapshot,
+    freeze: ProjectionSnapshot,
     release_schema: str | None,
 ) -> list[Finding]:
     findings: list[Finding] = []
@@ -544,43 +544,43 @@ def _decision_contract_findings(
         ()
         if strategy_status is None
         else (
-            ("status", "status", strategy_status.status, decision.status),
-            ("trade_date", "trade_date", strategy_status.trade_date, decision.trade_date),
+            ("status", "status", strategy_status.status, freeze.status),
+            ("trade_date", "trade_date", strategy_status.trade_date, freeze.trade_date),
             (
                 "projection",
                 "projection_version",
                 strategy_status.projection_version,
-                decision.projection_version,
+                freeze.projection_version,
             ),
             (
                 "candidate_count",
                 "candidate_count",
                 strategy_status.coverage.candidate_count,
-                decision.coverage.candidate_count,
+                freeze.coverage.candidate_count,
             ),
             (
                 "evaluated_count",
                 "evaluated_count",
                 strategy_status.coverage.evaluated_count,
-                decision.coverage.evaluated_count,
+                freeze.coverage.evaluated_count,
             ),
             (
                 "selected_count",
                 "selected_count",
                 strategy_status.coverage.selected_count,
-                decision.coverage.selected_count,
+                freeze.coverage.selected_count,
             ),
         )
     )
-    for code_field, evidence_field, status_value, decision_value in comparisons:
-        if status_value != decision_value:
+    for code_field, evidence_field, status_value, freeze_value in comparisons:
+        if status_value != freeze_value:
             findings.append(
                 _finding(
                     "warning" if code_field == "projection" else "error",
                     f"status_current_{code_field}_mismatch",
                     sample,
                     strategy,
-                    "status and current decision identities disagree",
+                    "status and current freeze identities disagree",
                     {"field": evidence_field},
                 )
             )
@@ -594,35 +594,35 @@ def _decision_contract_findings(
                 "status lacks the requested strategy projection",
             )
         )
-    if decision.strategy != strategy:
+    if freeze.strategy != strategy:
         findings.append(
-            _finding("error", "current_strategy_mismatch", sample, strategy, "current decision strategy is incorrect")
+            _finding("error", "current_strategy_mismatch", sample, strategy, "current freeze strategy is incorrect")
         )
-    if release_schema and decision.schema_version != release_schema:
+    if release_schema and freeze.schema_version != release_schema:
         findings.append(
             _finding(
                 "error",
                 "release_contract_mismatch",
                 sample,
                 strategy,
-                "current decision schema does not match the loaded release identity",
+                "current freeze schema does not match the loaded release identity",
             )
         )
-    selected_count = decision.coverage.selected_count
-    if selected_count is None or decision.item_count is None or decision.selected_item_count is None:
+    selected_count = freeze.coverage.selected_count
+    if selected_count is None or freeze.item_count is None or freeze.selected_item_count is None:
         findings.append(
             _finding(
                 "error",
                 "current_projection_shape_invalid",
                 sample,
                 strategy,
-                "current decision coverage or item collection is invalid",
+                "current freeze coverage or item collection is invalid",
             )
         )
     if (
         selected_count is not None
-        and decision.selected_item_count is not None
-        and selected_count != decision.selected_item_count
+        and freeze.selected_item_count is not None
+        and selected_count != freeze.selected_item_count
     ):
         findings.append(
             _finding(
@@ -630,48 +630,48 @@ def _decision_contract_findings(
                 "coverage_item_count_mismatch",
                 sample,
                 strategy,
-                "current decision selected count does not match selected display rows",
+                "current freeze selected count does not match selected display rows",
                 {
                     "selected_count": selected_count,
-                    "item_count": decision.item_count,
-                    "selected_item_count": decision.selected_item_count,
+                    "item_count": freeze.item_count,
+                    "selected_item_count": freeze.selected_item_count,
                 },
             )
         )
-    if decision.status == "ready" and selected_count == 0 and decision.frozen is not True and not decision.empty_reason:
+    if freeze.status == "ready" and selected_count == 0 and freeze.frozen is not True and not freeze.empty_reason:
         findings.append(
             _finding(
                 "error",
                 "legal_empty_diagnostics_missing",
                 sample,
                 strategy,
-                "ready decision with zero selected items lacks a legal-empty explanation",
+                "ready freeze with zero selected items lacks a legal-empty explanation",
             )
         )
-    if decision.empty_reason == "no_positive_net_utility" and decision.coverage.evaluated_count == 0:
+    if freeze.empty_reason == "no_positive_net_utility" and freeze.coverage.evaluated_count == 0:
         findings.append(
             _finding(
-                "warning" if decision.frozen is True else "error",
+                "warning" if freeze.frozen is True else "error",
                 "no_positive_net_utility_without_scored_candidates",
                 sample,
                 strategy,
                 (
-                    "frozen decision retains a non-positive-utility claim without any scored candidate"
-                    if decision.frozen is True
-                    else "decision claims non-positive model utility without any scored candidate"
+                    "formal freeze retains a non-positive-utility claim without any scored candidate"
+                    if freeze.frozen is True
+                    else "freeze claims non-positive model utility without any scored candidate"
                 ),
-                {"evaluated_count": decision.coverage.evaluated_count, "frozen": decision.frozen},
+                {"evaluated_count": freeze.coverage.evaluated_count, "frozen": freeze.frozen},
             )
         )
-    if decision.degraded_reasons:
+    if freeze.degraded_reasons:
         findings.append(
             _finding(
                 "warning",
                 "snapshot_quality_degraded",
                 sample,
                 strategy,
-                "current decision retains controlled snapshot-quality degradation",
-                {"reason_count": len(decision.degraded_reasons), "frozen": decision.frozen},
+                "current freeze retains controlled snapshot-quality degradation",
+                {"reason_count": len(freeze.degraded_reasons), "frozen": freeze.frozen},
             )
         )
     return findings
@@ -1004,7 +1004,7 @@ def _collect_sample(
     scoring_profile: str | None = None,
 ) -> WebSample:
     status_payload: Mapping[str, object] | None = None
-    decision_payloads: dict[str, Mapping[str, object]] = {}
+    freeze_payloads: dict[str, Mapping[str, object]] = {}
     issues: list[FetchIssue] = []
     suffix = "?" + urllib.parse.urlencode({"profile": scoring_profile}) if scoring_profile else ""
     try:
@@ -1012,10 +1012,10 @@ def _collect_sample(
     except FetchError as exc:
         issues.append(FetchIssue("status", exc.error_code))
     for strategy in (*strategies, "long"):
-        endpoint = f"decision:{strategy}"
+        endpoint = f"freeze:{strategy}"
         try:
-            decision_payloads[strategy] = _fetch_mapping(
-                f"{base_url}/api/decisions/{strategy}/current{suffix}",
+            freeze_payloads[strategy] = _fetch_mapping(
+                f"{base_url}/api/freezes/{strategy}/current{suffix}",
                 timeout_seconds,
             )
         except FetchError as exc:
@@ -1024,7 +1024,7 @@ def _collect_sample(
         sample_number,
         datetime.now(_SHANGHAI).isoformat(),
         status_payload=status_payload,
-        decision_payloads=decision_payloads,
+        freeze_payloads=freeze_payloads,
         fetch_issues=tuple(issues),
     )
 
@@ -1115,7 +1115,7 @@ def _finding_payload(finding: Finding) -> dict[str, object]:
 def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str, object]:
     status = sample.status
     result: dict[str, object] = {}
-    long_current = sample.decisions.get("long")
+    long_current = sample.freezes.get("long")
     if long_current is not None:
         result["long"] = {
             "current_projection": _projection_summary(long_current),
@@ -1124,7 +1124,7 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "degraded_reasons": list(long_current.degraded_reasons),
         }
     for strategy in strategies:
-        current = sample.decisions.get(strategy)
+        current = sample.freezes.get(strategy)
         quality = _strategy_quality(sample, strategy)
         result[strategy] = {
             "status_projection": _projection_summary(status.strategies.get(strategy) if status is not None else None),

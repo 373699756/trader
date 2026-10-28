@@ -19,8 +19,8 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredSelectionRequest,
     SelectScored,
 )
-from trader.training.domain.evaluation.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest
-from trader.training.domain.evaluation.models import (
+from trader.recommendation.domain.outcomes.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest
+from trader.recommendation.domain.outcomes.models import (
     BenchmarkConstituentReturn,
     EntryDayPriceWindow,
     OutcomeBar,

@@ -37,7 +37,7 @@
 | 公共参考合并 | inputs.json与historical_st.sqlite3的职责合并到market/reference/company_st.sqlite3；证券、ST、日历及参考发布同库管理 |
 | 列式处理 | 使用已有Polars对照具名列Parquet；按第6节的固定门槛决定是否接入，不新增DuckDB或PyArrow |
 | 公司风险 | 保留阶段281已实现的采集、正式关系表和临时正文设计；先补完原任务，再实施新增命名调整 |
-| 冻结库 | 原decisions.sqlite3统一改为freeze.sqlite3，活动代码不保留旧文件名别名或双读 |
+| 冻结库 | 正式冻结统一使用freeze.sqlite3，活动代码不保留旧文件名别名或双读 |
 | DeepSeek固定参数 | 继续使用config/deepseek.json，不建立DeepSeek数据库 |
 | DeepSeek运行状态 | 内存维护，使用runtime_dir/deepseek/state.json临时文件保存预算和必要恢复状态；默认.runtime/trader/deepseek/state.json |
 | 执行前提 | 用户已自行清空data；按A→各实现包→G/H推进。清空目录不等于新schema、下载、模型或运行已验收 |
@@ -103,7 +103,7 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 
 ### 2.2 文件名复审与旧路径去向
 
-| 数据组 | 当前路径或结构 | 目标与处理 |
+| 数据组 | 改造前路径或结构 | 目标与处理 |
 | --- | --- | --- |
 | ST | market/reference/historical_st.sqlite3 | 职责并入company_st.sqlite3，版本化证据和当前采集指针分表；取消独立ST库 |
 | 公共参考 | market/reference/inputs.json | 职责并入同一company_st.sqlite3，以不可变发布、版本成员及当前发布指针替代整包JSON |
@@ -115,7 +115,7 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 | 公司采集 | 旧事实库内的公告、分页、正文、重试 | 代码已拆入raw采集库及临时压缩正文；不重做采集，字段复审见第13节 |
 | 公司资格 | company/eligibility.sqlite3 | 独立活动owner已删除，活动旧文件仍待清理；ST暂归既有参考、B包后归company_st.sqlite3，非ST排除归正式公司事实 |
 | 旧公司证据 | company/evidence.sqlite3 | 清理清单明确列出；不作为失败回退或旧数据导入来源 |
-| 正式决策 | recommendation/*/decisions.sqlite3 | 统一为freeze.sqlite3；新库不导入旧记录 |
+| 正式冻结 | recommendation下的旧正式记录库 | 统一为freeze.sqlite3；新库不导入旧记录 |
 | 推荐快照 | recommendation/*/snapshots.sqlite3 | 删除没有活动读写消费者的参考表体系；发布序号进入publication_state.sqlite3 |
 | DeepSeek | recommendation/shared/deepseek_budget.sqlite3 | 删除全部活动SQLite读写及建表；固定参数保留config，预算及健康改为内存加临时文件 |
 | V1目录 | recommendation/learned_rank、research/learned_rank | 统一为v1；不改变模型排序尺度标识和评分语义 |
@@ -136,7 +136,7 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 | freeze及发布序号 | recommendation | 冻结、恢复及只读历史查询；不授予V5正式写入资格 |
 | DeepSeek配置 | 现有配置owner | 启动解析为类型对象，不由预算adapter回写 |
 | DeepSeek临时状态 | recommendation，组合根注入共享实例 | 跨档原子预留；状态接口读取内存，不每次读文件 |
-| 在线收益和追踪 | recommendation | training只读；存储实现若仍位于training/infra，切换全部消费者到正确owner后删除旧活动实现 |
+| 在线收益和追踪 | recommendation | 结算编排、端口及存储写入统一归recommendation，training只读；切换全部消费者后删除training下旧活动实现 |
 
 ### 2.4 company_st.sqlite3合并方案
 
@@ -203,7 +203,7 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 | 财务 | eps、bps、revenue_growth_pct、profit_growth_pct、core_profit_growth_pct | 只采用公认EPS/BPS/ROE缩写；保留归母与扣非的区别，不创造晦涩首字母缩写 |
 | 状态与布尔 | status、finance_state、is_complete | 表内生命周期用status，完整性用state，布尔用明确谓词；不丢掉同表多个组件的区分 |
 | 关系与身份 | id、risk_id、evidence_id、publication_id、revision_id、sync_sequence | 表自己的主键可用id；外键必须说明所指对象；修订、版本、发布和序号不可混成一个version |
-| 摘要 | content_hash、body_hash、record_hash、decision_hash | 字典明确SHA-256及32字节BLOB；不在每列重复_sha256；普通ID不能因外观相似就转摘要 |
+| 摘要 | content_hash、body_hash、record_hash、freeze_hash | 字典明确SHA-256及32字节BLOB；不在每列重复_sha256；普通ID不能因外观相似就转摘要 |
 | 规范字节 | record_bytes、event_bytes、sequence_bytes | 指明字节的对象，保留真正需要的BLOB；不改成无含义data |
 | 失败 | failure_code；raw可保留failure | 正式库是稳定类别，raw是来源细节；不能将详情误改名为code或写进正式数值事实 |
 
@@ -216,7 +216,7 @@ runtime_dir由现有配置解析，不在adapter内硬编码`.runtime/trader`。
 
 NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串不得代替缺失日期、摘要和数值。数值改变单位必须有显式codec和往返测试，不能靠名称变化隐式乘除100。
 
-不为本次改名提高最低SQLite版本；在受支持环境中使用明确类型、CHECK与codec落实约束。正式决策、事件和序列块保留确有用途的BLOB/JSON边界，不为追求全部拆列破坏规范字节或制造大量重复字段。
+不为本次改名提高最低SQLite版本；在受支持环境中使用明确类型、CHECK与codec落实约束。正式冻结、事件和序列块保留确有用途的BLOB/JSON边界。用户已追加授权全仓及公开协议统一freeze命名：新规范字段参与新摘要，不保留旧字段别名；旧记录留在隔离副本，不原地改字节。SQL列类型改名本身仍不改变业务值。
 
 ### 3.2 必须覆盖的表族
 
@@ -229,14 +229,14 @@ NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串
 | 独立短窗 | 价格单元、档位绑定、日历、完成状态及发布记录分表；不按V2/V3复制同一价格事实 |
 | 公司正式/采集 | 保留第12、13节已实现的关系和code；按“当前字段→目标字段”映射调整冗长及含糊字段，不另建同义事实表 |
 | 训练 | 样本、日期分区、统计、诊断和序列块分别具名；f0/f1替换为真实特征语义列，禁止通用EAV特征表 |
-| 冻结 | frozen_decision保存正式记录；新库不创建已经退役的定时检查点表，旧检查点读取代码随无迁移切换删除 |
+| 冻结 | freeze_record保存正式记录；新库不创建已经退役的定时检查点表，旧检查点读取代码随无迁移切换删除 |
 | 发布序号 | publication_sequence记录预留高水位；schema_contract说明库合同，不承载证券/日历副本 |
 | 收益和追踪 | 明确关联原决策身份、观察期限、成熟状态、原始事件字节和隔离失败类别 |
 | 研究样本/残差 | 按真实研究身份命名；spec、总体、日期、预测和结算边界保持，不能并入生产决策 |
 
 完整字段映射写入下载训练权威文档：每个旧字段必须列出保留、改名、派生或删除去向、目标类型/单位、写入者及消费者。删除要有无消费者或可推导证据，禁止按字段名猜测。最终当前结构字典按第10节格式逐字段交付。
 
-模型内部特征ID、特征排列、API字段和供应商固定字段不随数据库统一改名。存储adapter使用明确的类型化映射，不创建供旧消费者继续使用的兼容别名。V5序列块维度、dtype、字节序及通道顺序单独写入存储合同。
+模型内部特征ID、特征排列和供应商固定字段不随数据库统一改名。API、事件和规范字节按用户追加授权统一使用freeze字段，前后端及诊断同批切换。存储adapter使用明确的类型化映射，不创建供旧消费者继续使用的兼容别名。V5序列块维度、dtype、字节序及通道顺序单独写入存储合同。
 
 ### 3.3 跨库命名清单与消费者
 
@@ -254,14 +254,14 @@ NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串
 | 历史身份 | revision_id、sync_sequence、first_seen_sequence、content_hash | 保留现名 | 修订ID、观察序号、首次见到序号及内容摘要不能混用 | B；年库、catalog、证明、研究读取 |
 | 公司主事实 | financial_report_date、basic_eps、book_value_per_share、pledge_ratio_pct等 | report_date、eps、bps、pledge_pct等 | 利用表上下文缩短；保留财务、质押、解禁和公告完整性区别 | E；公司writer/reader、评分输入、证据详情、排除、CLI及诊断；逐行见第12节 |
 | 公司采集 | start、end、day、digest、identity、policy | start_date、end_date、as_of_date、record_hash及具名策略ID | 消除范围、统计日和身份歧义；不把raw原文误改成正式失败码 | E；采集、分页、重试、恢复、编译与清理；逐行见第13节 |
-| 冻结身份 | strategy、version、payload_hash、payload_sha256、payload、error | strategy、decision_id、decision_hash、record_hash、record_bytes、failure_code | 区分原决策身份、决策摘要和整条规范字节校验；保留trade_date、committed_at、commit_kind、status | C；冻结、恢复、历史查询、结算、研究、CLI及只读投影 |
+| 冻结身份 | strategy、version、payload_hash、payload_sha256、payload、error | strategy、freeze_id、freeze_hash、record_hash、record_bytes、failure_code | 区分原决策身份、决策摘要和整条规范字节校验；保留trade_date、committed_at、commit_kind、status | C；冻结、恢复、历史查询、结算、研究、CLI及只读投影 |
 | 发布序号 | publication_sequence.reserved_until | 保留现名 | 直接说明持久预留高水位，不简写为seq | C；序号预留、发布与SSE恢复 |
 | 训练样本 | V1的day、各档code、industry、average_amount_20d | trade_date、code、industry、avg_amount_20d | 对齐真实交易日；avg为公认统计词，成交额单位在字典固定 | F；样本生成、续传、拟合、资格及诊断 |
 | 样本标签 | target_t1～target_t5、target_d25、target_d25_aggregate | 保留现名 | 当前标签有各档计算合同，不能凭名称改成普通收益或统一成一个target | F；标签、校准、验证及模型报告 |
 | 样本特征 | f0/f1等位置列、V1 features字节 | 按本档固定特征合同使用具名列 | A包从真实特征ID生成逐项映射；保留顺序、dtype、缺失和模型身份，不臆造简写 | F；样本codec、矩阵构建、V1/V2/V3/V5双头拟合 |
 | V5序列块 | block、payload | block_id、sequence_bytes | 明确块键及序列字节；保留sequence_start及重叠编码 | F；序列样本写入、读取、矩阵和释放 |
-| 收益 | stock_code、recommend_date、strategy、snapshot_id、horizon | code、decision_date、strategy、snapshot_id、horizon | 去掉多余股票前缀、明确推荐决策日期；不把snapshot_id猜成decision_id | C；在线结算、训练研究及只读查询 |
-| 追踪 | decision_version、payload、payload_hash | decision_id、event_bytes、event_hash | 保存既有事件字节及身份，不重解释已发布记录；schema_version、decision_hash保留 | C；追踪写入、隔离、研究及诊断 |
+| 收益 | stock_code、recommend_date、strategy、snapshot_id、horizon | code、freeze_date、strategy、snapshot_id、horizon | 去掉多余股票前缀、明确推荐决策日期；不把snapshot_id猜成freeze_id | C；在线结算、训练研究及只读查询 |
+| 追踪 | 原冻结版本、payload、payload_hash | freeze_id、event_bytes、event_hash | 保存新freeze事件字节及身份，旧记录不导入；schema_version、freeze_hash保留 | C；追踪写入、隔离、研究及诊断 |
 
 新建参考表用第2.4节的短字段；冻结表用第4节字段，不能继续沿用旧候选长名称。表自身主键id、表内明确的status、reason、source可保留；跨表引用才需要risk_id、positive_id、evidence_id等限定。金额的人民币元、成交量的股数及正负号必须逐字段写清，不能仅因名称缩短而改变单位。
 
@@ -275,14 +275,14 @@ NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串
 
 ### 4.1 保存什么
 
-每档只有一个`recommendation/{profile}/freeze.sqlite3`。`frozen_decision`至少明确以下身份和校验信息，内部类型以实际领域对象为准：
+每档只有一个`recommendation/{profile}/freeze.sqlite3`。`freeze_record`至少明确以下身份和校验信息，内部类型以实际领域对象为准：
 
 | 字段 | 含义及约束 |
 | --- | --- |
 | strategy | 只允许tomorrow、d25；与trade_date组成正式记录唯一键 |
 | trade_date | INTEGER业务日期；不能用提交时刻推断交易日 |
-| decision_id | 原领域决策身份，唯一，不按新库路径重算其业务意义 |
-| decision_hash | 决策内容摘要，与保存整条规范字节的摘要区分 |
+| freeze_id | 原领域决策身份，唯一，不按新库路径重算其业务意义 |
+| freeze_hash | 正式冻结记录的逻辑内容摘要，与包含版本/摘要字段的整条规范字节校验区分 |
 | record_hash | record_bytes的SHA-256，32字节BLOB |
 | record_bytes | 正式决策的规范字节及既有审计，不拆成第二份可修改的评分事实 |
 | committed_at | UTC微秒，表示持久提交时刻 |
@@ -290,11 +290,11 @@ NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串
 | status | committed/quarantined等既有状态的明确编码 |
 | failure_code | 校验或恢复失败类别，正常记录为NULL |
 
-库级合同通过`schema_contract`和既有schema机制校验。正式记录的大小上限、规范字节、摘要、幂等和损坏隔离保持；同日重复同内容可幂等，异内容必须拒绝。
+库级合同为freeze_record/2，通过`schema_contract`和PRAGMA user_version=2校验。公开协议、事件及规范字段统一freeze，不保留旧字段别名；新字段生成新摘要，旧格式拒绝读取和导入。正式记录的大小上限、摘要校验、幂等和损坏隔离规则保持；同日重复同内容可幂等，异内容必须拒绝。
 
 ### 4.2 全部消费者一次切换
 
-同时切换DataPaths、组合根、冻结端口和adapter、收盘恢复、历史查询、结算、追踪、研究只读、CLI、迁移/诊断及对应测试。搜索旧文件名和旧SQL后，删除活动路径；不保留`decisions.sqlite3`读取、软链接、自动rename或别名。
+同时切换DataPaths、组合根、冻结端口和adapter、收盘恢复、历史查询、结算、追踪、研究只读、CLI、迁移/诊断及对应测试。搜索旧文件名和旧SQL后，删除旧活动路径；仅使用新`freeze.sqlite3`，不保留旧库读取、软链接、自动rename或别名。
 
 发布序号独立保留在`publication_state.sqlite3`，沿用现有预留块语义：先持久化预留，再发放内存坐标；崩溃可以跳号，不能复用。此次不新增跨库原子提交承诺，也不把未使用的data-plane参考表继续带入新库。
 
@@ -613,7 +613,7 @@ make package
 
 示例行只说明格式，正式字典必须按各表真实用途写清楚。链条层号对应评分文档现行十一层；下载控制、训练准备、收盘冻结、收益结算等不属于十一层的字段应写真实阶段，不能硬编层号。不可将多个字段、通配符或整组JSON中的业务事实合成一行。
 
-DeepSeek文件化切换后不再维护其SQLite字段表，工程设计中改列静态参数、临时状态字段及恢复语义；下载训练只保留路径和引用。旧decisions.sqlite3、inputs.json、historical_st.sqlite3及DeepSeek数据库名称只允许作为明确的迁移/历史说明，不得留在活动配置、建库、消费或启动探测路径；此前拟议的security_st.sqlite3也不再是目标库。
+DeepSeek文件化切换后不再维护其SQLite字段表，工程设计中改列静态参数、临时状态字段及恢复语义；下载训练只保留路径和引用。旧冻结库、inputs.json、historical_st.sqlite3及DeepSeek数据库名称只允许作为明确的迁移/历史说明，不得留在活动配置、建库、消费或启动探测路径；此前拟议的security_st.sqlite3也不再是目标库。
 
 ### 10.4 最终可检查结果
 
@@ -1090,9 +1090,9 @@ raw中不再有published、publication或company_facts的第二份正式表。�
 
 ### 15.1 读法、类型和身份
 
-每个建表来源给出当前owner、目标owner、消费者及必删职责。表中按源码顺序穷举当前列；类型后“?”表示允许NULL，PK单列或组合键另列。目标说明未点名的列保留名称及含义；“删除”指新格式不再建立，不是对已删除实库执行迁移。目标日期统一采用第11.2节的日期codec，时刻采用UTC微秒INTEGER，明确的raw供应商查询证据保留ISO TEXT边界。计数和序号INTEGER，有限价格/量额/收益/特征REAL；SHA-256为32字节BLOB，普通ID仍为TEXT。可空性沿用业务合同，不因重命名将缺失填0。
+每个建表来源给出当前owner、目标owner、消费者及必删职责。表中按基线源码顺序穷举列；涉及退役冻结协议的名称按业务含义描述，不作为旧库读取合同；类型后“?”表示允许NULL，PK单列或组合键另列。目标说明未点名的列保留名称及含义；“删除”指新格式不再建立，不是对已删除实库执行迁移。目标日期统一采用第11.2节的日期codec，时刻采用UTC微秒INTEGER，明确的raw供应商查询证据保留ISO TEXT边界。计数和序号INTEGER，有限价格/量额/收益/特征REAL；SHA-256为32字节BLOB，普通ID仍为TEXT。可空性沿用业务合同，不因重命名将缺失填0。
 
-价格单位为元/股，volume为股、amount为人民币元，change_pct/turnover_pct为百分数；raw/qfq两侧存在性及缺失配对保持。研究价格的adjustment列继续区分口径，不能去掉它后只剩含义不明的open/close。样本特征和标签依各档固定定义，不能因为都是REAL就互换尺度。每个原摘要的逻辑输入和规范字节保持，不对新SQL列名重新计算模型/决策身份。
+价格单位为元/股，volume为股、amount为人民币元，change_pct/turnover_pct为百分数；raw/qfq两侧存在性及缺失配对保持。研究价格的adjustment列继续区分口径，不能去掉它后只剩含义不明的open/close。样本特征和标签依各档固定定义，不能因为都是REAL就互换尺度。SQL列改名和类型codec保持逻辑值及研究身份；用户另行授权的freeze协议改名会改变新冻结/事件规范字节与摘要，不反向改写旧记录。
 
 下列PK来自建表定义；所有已有外键、UNIQUE、CHECK和查询索引在原子切换时对应改名。年度库继续支持(code,trade_date,first_seen_sequence,revision_id)、(trade_date,board,code,first_seen_sequence,revision_id)、观察序号及缺口条件索引；样本保留(industry,trade_date,code)读取索引。逐表原约束和索引以链接源码为准，不能仅复制下表列名重建无约束表。目标实现完成时按第10.3节更新实际结构字典。
 
@@ -1167,7 +1167,7 @@ B；业务事实仍归download。当前通用primitive却创建两张行业表�
 | queries；PK(day) | day TEXT；source TEXT；observed_on TEXT；payload TEXT；digest TEXT | industry_query；day→anchor_date；observed_on→checked_date；digest→content_hash BLOB；source保留；payload→members_json TEXT，仅保留供应商查询证据codec，不充当可修改证券总体。 |
 | current_industry_queries；PK(day) | day TEXT；source TEXT；observed_on TEXT；payload TEXT；digest TEXT | current_industry_query；day→as_of_date；observed_on→checked_date；digest→content_hash BLOB；source/payload映射同上，当前查询不得覆盖历史锚点。 |
 
-**[recommendation/infra/persistence/data_plane_sqlite.py](../src/trader/recommendation/infra/persistence/data_plane_sqlite.py)**
+**原data-plane表族；序号新owner：[publication_sequence.py](../src/trader/recommendation/infra/persistence/publication_sequence.py)**
 
 C；recommendation保持序号owner。消费者：publication_sequence、组合根及运行发布/SSE。其余data-plane接口只剩实现/端口/测试，切换前再次搜索全部调用；删除data_plane/sqlite/codec中空置参考读写、端口与相关测试，不误删训练研究快照。
 
@@ -1183,36 +1183,36 @@ C；recommendation保持序号owner。消费者：publication_sequence、组合�
 | data_plane_quarantine_audit；PK(audit_key) | audit_key TEXT；record_kind TEXT；record_identity TEXT；reason TEXT；observed_at TEXT | 删除；全部列随空置data-plane删除；正式冻结/事件各自仍保留隔离失败职责。 |
 | publication_sequence；PK(singleton) | singleton INTEGER；reserved_until INTEGER | publication_sequence；singleton/reserved_until全部保留为INTEGER，保留持久预留高水位及单写事务。 |
 
-**[recommendation/infra/persistence/decision_records.py](../src/trader/recommendation/infra/persistence/decision_records.py)**
+**[recommendation/infra/persistence/freeze_records.py](../src/trader/recommendation/infra/persistence/freeze_records.py)**
 
-C；recommendation保持owner。消费者：freeze_coordinator、read_only_queries、recent_news_codes、application_system、结算与追踪、HTTP/SSE只读投影及诊断。删除旧decisions路径、检查点读写与旧schema；新数据不导入旧记录。
+C；recommendation保持owner。消费者：freeze_coordinator、read_only_queries、recent_news_codes、application_system、结算与追踪、HTTP/SSE只读投影及诊断。删除旧冻结库路径、检查点读写与旧schema；新数据不导入旧记录。
 
 | 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
 | --- | --- | --- |
-| decision_records；PK(strategy,trade_date) | strategy TEXT；trade_date TEXT；version TEXT；payload_hash TEXT；payload_sha256 TEXT；payload BLOB；committed_at TEXT；commit_kind TEXT；status TEXT；error TEXT | frozen_decision；version→decision_id TEXT；payload_hash→decision_hash BLOB；payload_sha256→record_hash BLOB；payload→record_bytes BLOB；error→failure_code TEXT；其余保留，第4节明确规范字节及first-wins约束。 |
-| decision_checkpoints；PK(strategy,trade_date) | strategy TEXT；trade_date TEXT；version TEXT；decision_version TEXT；observed_at TEXT；boundary_at TEXT；payload_sha256 TEXT；payload BLOB；consumed_at TEXT?；error TEXT | 删除；全部列随退役检查点owner删除；新库不建表、不读旧检查点。 |
+| 旧正式记录表；PK(strategy,trade_date) | strategy TEXT；trade_date TEXT；version TEXT；payload_hash TEXT；payload_sha256 TEXT；payload BLOB；committed_at TEXT；commit_kind TEXT；status TEXT；error TEXT | freeze_record；version→freeze_id TEXT；payload_hash→freeze_hash BLOB；payload_sha256→record_hash BLOB；payload→record_bytes BLOB；error→failure_code TEXT；其余保留，第4节明确规范字节及first-wins约束。 |
+| 旧冻结检查点表；PK(strategy,trade_date) | strategy TEXT；trade_date TEXT；version TEXT；原冻结版本 TEXT；observed_at TEXT；boundary_at TEXT；payload_sha256 TEXT；payload BLOB；consumed_at TEXT?；error TEXT | 删除；全部列随退役检查点owner删除；新库不建表、不读旧检查点。 |
 
-**[training/infra/research/outcome_evidence_index.py](../src/trader/training/infra/research/outcome_evidence_index.py)**
+**收益新owner：[recommendation/infra/persistence/outcome_evidence_index.py](../src/trader/recommendation/infra/persistence/outcome_evidence_index.py)**
 
-C；当前实现位于training，目标写入owner归recommendation，training只读。消费者：在线收益结算、研究证据/状态、只读查询、bootstrap及诊断；原实现路径在全部消费者切换后删除。
+C；改造前的收益计算、类型、结算编排、端口和写入实现位于training，新owner分别为recommendation/domain/outcomes、recommendation/application/outcome_settlement.py、recommendation/application/ports/outcomes.py及上述持久化模块，training只读。消费者：在线收益结算、点时研究、收益证据/状态、行情适配器、只读查询、bootstrap及诊断；原training/domain/evaluation/evaluation.py与models.py、training/application/outcome_settlement.py与outcome_ports.py、training/infra/research/outcome_evidence_index.py随消费者切换删除，研究复用新owner的纯计算和不可变类型。
 
 | 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
 | --- | --- | --- |
 | benchmark_returns；PK(trade_date) | trade_date TEXT；return_pct REAL；observed_at TEXT；payload_hash TEXT；payload BLOB | benchmark_returns；payload_hash→record_hash BLOB；payload→record_bytes BLOB；trade_date/return_pct/observed_at保留，return_pct为百分数。 |
-| recommendation_outcomes；PK(snapshot_id,strategy,stock_code,horizon) | snapshot_id TEXT；strategy TEXT；recommend_date TEXT；stock_code TEXT；horizon INTEGER；status TEXT；settled_at TEXT；payload_hash TEXT；payload BLOB | recommendation_outcomes；stock_code→code；recommend_date→decision_date；payload_hash→record_hash BLOB；payload→record_bytes BLOB；其余保留，snapshot_id不猜作decision_id。 |
+| recommendation_outcomes；PK(snapshot_id,strategy,stock_code,horizon) | snapshot_id TEXT；strategy TEXT；recommend_date TEXT；stock_code TEXT；horizon INTEGER；status TEXT；settled_at TEXT；payload_hash TEXT；payload BLOB | recommendation_outcomes；stock_code→code；recommend_date→freeze_date；payload_hash→record_hash BLOB；payload→record_bytes BLOB；其余保留，snapshot_id不猜作freeze_id。 |
 
-**[training/infra/research/trace_storage.py](../src/trader/training/infra/research/trace_storage.py)**
+**追踪新owner：[recommendation/infra/persistence/trace_schema.py](../src/trader/recommendation/infra/persistence/trace_schema.py)**
 
-C；当前实现位于training，目标写入owner归recommendation；training的research_trace_index保留只读研究职责。消费者：事件sink、冻结发布、研究追踪及诊断；原写入路径删除。
+C；改造前实现位于training，写入owner迁入recommendation；training的research_trace_index保留只读研究职责。消费者：事件sink、冻结发布、研究追踪及诊断；原写入路径删除。
 
 | 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
 | --- | --- | --- |
-| committed_events；PK(decision_version) | decision_version TEXT；strategy TEXT；trade_date TEXT；observed_at TEXT；decision_hash TEXT；schema_version TEXT；payload_hash TEXT；payload BLOB | committed_events；decision_version→decision_id；payload_hash→event_hash BLOB；payload→event_bytes BLOB；decision_hash→同名BLOB；其余保留，原schema_version及规范事件字节不重解释。 |
-| committed_event_quarantine；PK(decision_version) | decision_version TEXT；reason TEXT；payload_hash TEXT；payload BLOB | committed_event_quarantine；decision_version→decision_id；payload_hash→event_hash BLOB；payload→event_bytes BLOB；reason保留原隔离原因。 |
+| committed_events；PK(原冻结版本) | 原冻结版本 TEXT；strategy TEXT；trade_date TEXT；observed_at TEXT；原冻结摘要 TEXT；schema_version TEXT；payload_hash TEXT；payload BLOB | committed_events；原冻结版本→freeze_id；payload_hash→event_hash BLOB；payload→event_bytes BLOB；原冻结摘要→freeze_hash BLOB；其余保留，新规范事件统一freeze字段；隔离旧字节不改写。 |
+| committed_event_quarantine；PK(原冻结版本) | 原冻结版本 TEXT；reason TEXT；payload_hash TEXT；payload BLOB | committed_event_quarantine；原冻结版本→freeze_id；payload_hash→event_hash BLOB；payload→event_bytes BLOB；reason保留原隔离原因。 |
 
 **[training/infra/research/h1_point_in_time_snapshot.py](../src/trader/training/infra/research/h1_point_in_time_snapshot.py)**
 
-C；training保持研究owner。消费者：h1_point_in_time入口及研究资格/样本读取；不混入生产冻结。仅具名表/列codec原子替换，研究身份及算法保持。
+C；training保持研究owner。消费者：h1_point_in_time入口及研究资格/样本读取；不混入生产冻结。具名表/列codec保持同一新规范对象的摘要与算法；freeze_anchor等规范字段改名生成新的研究规格摘要，不复用旧格式证据。h1_price增加utc_offset_us保存原时区偏移表示，避免UTC微秒往返改变新规范摘要。
 
 | 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
 | --- | --- | --- |

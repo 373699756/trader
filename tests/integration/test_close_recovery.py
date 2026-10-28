@@ -8,9 +8,9 @@ import pytest
 
 from tests.integration.test_scheduler_runtime import (
     DataRefresh,
-    Decisions,
     FixedClock,
     Freezes,
+    Sealing,
     Settlement,
     SharedReviews,
     TradingCalendar,
@@ -19,18 +19,18 @@ from tests.integration.test_scheduler_runtime import (
 )
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
-    DecisionRuntimeIdentity,
+    FreezeRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import AsyncFreezeObserver
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import FreezeAdapter
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.runtime import (
     DataRefreshUnavailableError,
-    DecisionUnavailableError,
+    FreezeUnavailableError,
     SettlementUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask, SchedulePointKey, SchedulePointStatus
@@ -39,7 +39,7 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI, Schedul
 from trader.recommendation.application.runtime.schedule_requests import PipelineLane
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 
 WAIT_IDLE_SECONDS = 10.0
 
@@ -48,7 +48,7 @@ WAIT_IDLE_SECONDS = 10.0
 def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, failure: str) -> None:
     at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     clock = FixedClock(at)
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     attempts = []
     builds = []
 
@@ -59,15 +59,15 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
                 if request.strategy is Strategy.TOMORROW:
                     raise DataRefreshUnavailableError("controlled_prepare_failure")
 
-    class Builder(Decisions):
+    class Builder(Freezes):
         def build_local(self, request):
             builds.append(request.strategy)
             if failure == "local" and request.strategy is Strategy.TOMORROW:
                 if builds.count(Strategy.TOMORROW) == 1:
-                    raise DecisionUnavailableError("controlled_local_failure")
+                    raise FreezeUnavailableError("controlled_local_failure")
             return super().build_local(request)
 
-    class RecoverableDecisionRecords(SQLiteDecisionRecords):
+    class RecoverableFreezeRecords(SQLiteFreezeRecords):
         def commit(self, record):
             if record.strategy is Strategy.TOMORROW:
                 attempts.append(record)
@@ -84,14 +84,14 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             if failure == "settlement" and len(self.calls) == 1:
                 raise SettlementUnavailableError("controlled_settlement_failure")
 
-    records = RecoverableDecisionRecords(tmp_path / "decisions.sqlite3")
+    records = RecoverableFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(
             index,
             records,
             clock,
-            runtime_identity=DecisionRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+            runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
             strategy=strategy,
         )
         for strategy in (Strategy.TOMORROW, Strategy.D25)
@@ -109,20 +109,20 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             calendar=TradingCalendar(),
             cadence=_cadence(at),
             data=data,
-            decisions=Builder(),
+            freezes=Builder(),
             reviews=reviews,
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-close-recovery"),
-            freezes=FreezeAdapter(*freezers),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-close-recovery"),
+            sealing=FreezeAdapter(*freezers),
             settlement=settlement,
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
     )
     key = SchedulePointKey(at.date().isoformat(), SchedulePoint.CLOSE_QUOTES, "-")
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), records, clock)
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), records, clock)
     runtime.start()
     try:
         runtime.submit_due(at)
@@ -154,7 +154,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
         for view in (queries.current(Strategy.TOMORROW), queries.history(Strategy.TOMORROW, at.date())):
             assert view.status == "ready" and view.frozen
             assert view.content_hash is None
-            assert view.decision_version == formal.decision.version
+            assert view.freeze_version == formal.freeze.version
         if failure == "commit":
             assert len(attempts) == 2 and attempts[0] == attempts[1]
             assert builds.count(Strategy.TOMORROW) == 1
@@ -182,11 +182,11 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
 def test_close_retry_does_not_duplicate_inflight_work(blocking_stage: str) -> None:
     # Reuse the full scheduler fixture while holding local scoring across retry ticks.
     at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
-    clock, data, index = FixedClock(at), DataRefresh(), UnifiedDecisionIndex()
+    clock, data, index = FixedClock(at), DataRefresh(), UnifiedFreezeIndex()
     started, release = threading.Event(), threading.Event()
     calls = []
 
-    class Builder(Decisions):
+    class Builder(Freezes):
         def build_local(self, request):
             calls.append(request.strategy)
             if blocking_stage == "local" and request.strategy is Strategy.TOMORROW:
@@ -214,14 +214,14 @@ def test_close_retry_does_not_duplicate_inflight_work(blocking_stage: str) -> No
             calendar=TradingCalendar(),
             cadence=_cadence(at),
             data=data,
-            decisions=Builder(),
+            freezes=Builder(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-close-running"),
-            freezes=Freezes(index),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-close-running"),
+            sealing=Sealing(index),
             settlement=settlement,
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
@@ -254,16 +254,16 @@ def test_close_retry_does_not_duplicate_inflight_work(blocking_stage: str) -> No
 @pytest.mark.parametrize("transition", ("session", "next_day", "fast_handoff"))
 def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, transition: str) -> None:
     at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
-    clock, data, index = FixedClock(at), DataRefresh(), UnifiedDecisionIndex()
+    clock, data, index = FixedClock(at), DataRefresh(), UnifiedFreezeIndex()
     cadence, settlement = _cadence(at), Settlement()
-    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
     records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(
             index,
             records,
             clock,
-            runtime_identity=DecisionRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+            runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
             strategy=strategy,
         )
         for strategy in (Strategy.TOMORROW, Strategy.D25)
@@ -280,14 +280,14 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
             calendar=TradingCalendar(),
             cadence=cadence,
             data=data,
-            decisions=Decisions(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-close-transition"),
-            freezes=FreezeAdapter(*freezers),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-close-transition"),
+            sealing=FreezeAdapter(*freezers),
             settlement=settlement,
             research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",

@@ -1,1 +1,1 @@
-"""Decision identity and publication values."""
+"""Freeze identity and publication values."""

@@ -10,19 +10,19 @@ import pytest
 
 from tests.unit.application.cycle_fixture import CycleFixture, CycleFixtureDependencies, build_cycle_fixture
 from tests.unit.application.pipeline_helpers import observed_market_batch
-from tests.unit.domain.test_decision_identity import decision
+from tests.unit.domain.test_freeze_identity import freeze
 from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     BuildModelScoringContext as _model_scoring_context,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import MergeOverlayQuote
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPendingError,
     DataRefreshUnavailableError,
-    DecisionUnavailableError,
+    FreezeUnavailableError,
     PipelineTaskRequest,
     RefreshOutcome,
 )
@@ -39,7 +39,7 @@ from trader.recommendation.domain.market.refresh import (
     IntradayRefreshResult,
     ResearchRefreshResult,
 )
-from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
+from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 
@@ -143,7 +143,7 @@ class _Market:
 
     def refresh_intraday_tail(self, codes, _observed_at):
         del codes
-        raise AssertionError("the local decision path must not wait for an intraday network refresh")
+        raise AssertionError("the local freeze path must not wait for an intraday network refresh")
 
 
 class _LongRuntime:
@@ -159,7 +159,7 @@ def test_loading_local_history_is_pending_without_a_refresh_failure(application_
     adapter = build_cycle_fixture(
         LoadingMarket((application_feature_factory("600001", TEST_NOW),)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
 
     with pytest.raises(DataRefreshPendingError, match="history_projection_loading"):
@@ -172,8 +172,8 @@ class _RejectingLongRuntime:
         return False
 
 
-def _decision_build(
-    drafts: UnifiedDecisionDraftIndex | None = None,
+def _freeze_build(
+    drafts: UnifiedFreezeDraftIndex | None = None,
     *,
     now=lambda: TEST_NOW.replace(hour=9),
     monotonic=None,
@@ -181,7 +181,7 @@ def _decision_build(
     return CycleFixtureDependencies(
         _LongRuntime(),
         _policy(),
-        drafts or UnifiedDecisionDraftIndex(),
+        drafts or UnifiedFreezeDraftIndex(),
         now,
         **({"monotonic": monotonic} if monotonic is not None else {}),
     )
@@ -263,7 +263,7 @@ def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_chan
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
 
     market = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -293,13 +293,13 @@ def test_generated_evidence_refresh_reuses_scoring_but_current_time_still_expire
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: now[0]),
+        freeze_build=_freeze_build(now=lambda: now[0]),
     )
     _prime_scoring_cache(adapter, observed_at)
     first_epoch = adapter.data.scoring_epoch()
     first_request = _request(observed_at, phase="afternoon")
     adapter.data.refresh(first_request)
-    assert adapter.decisions.build_local(first_request).items
+    assert adapter.freezes.build_local(first_request).items
     reads = len(market.candidate_reads)
     now[0] = observed_at + timedelta(seconds=1)
     market._features = (
@@ -316,14 +316,14 @@ def test_generated_evidence_refresh_reuses_scoring_but_current_time_still_expire
     assert adapter.data.scoring_epoch() == first_epoch
     request = _request(now[0], phase="afternoon")
     adapter.data.refresh(request)
-    assert adapter.decisions.build_local(request).items
+    assert adapter.freezes.build_local(request).items
     assert len(market.candidate_reads) == reads
     assert market.market_fetch_count == market.candidate_quote_refresh_count == 2
     now[0] = observed_at + timedelta(seconds=31)
     expired = _request(now[0], phase="afternoon")
     adapter.data.refresh(expired)
-    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
-        adapter.decisions.build_local(expired)
+    with pytest.raises(FreezeUnavailableError, match="transient_invalid_empty"):
+        adapter.freezes.build_local(expired)
     assert len(market.candidate_reads) == reads
 
 
@@ -337,7 +337,7 @@ def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     _prime_scoring_cache(adapter, observed_at)
     shared_epoch = adapter.data.scoring_epoch()
@@ -385,7 +385,7 @@ def test_refresh_outcome_normalizes_later_utc_completion_to_shanghai(
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
 
     outcome = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, observed_at))
@@ -399,10 +399,10 @@ def test_long_refresh_rejection_is_visible_to_scheduler_recovery() -> None:
     adapter = build_cycle_fixture(
         _Market(()),
         config_version="test-config",
-        decision_build=CycleFixtureDependencies(
+        freeze_build=CycleFixtureDependencies(
             _RejectingLongRuntime(),
             _policy(),
-            UnifiedDecisionDraftIndex(),
+            UnifiedFreezeDraftIndex(),
             lambda: TEST_NOW,
         ),
     )
@@ -420,15 +420,15 @@ def test_production_adapter_rejects_transient_invalid_empty_projection(
     adapter = build_cycle_fixture(
         _Market((stale,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at)
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="transient_invalid_empty"):
+        adapter.freezes.build_local(request)
 
 
 @pytest.mark.parametrize("minute", (0, 4))
@@ -439,13 +439,13 @@ def test_production_adapter_accepts_same_day_closing_quote(application_feature_f
     adapter = build_cycle_fixture(
         _Market((closing,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at)
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    result = adapter.decisions.build_local(request)
+    result = adapter.freezes.build_local(request)
 
     assert tuple(item.code for item in result.items) == ("600001",)
 
@@ -465,15 +465,15 @@ def test_primary_blocker_reports_blocked_history_and_retains_partial_stale_marke
     adapter = build_cycle_fixture(
         _Market((stale, history_incomplete)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at)
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="transient_invalid_empty"):
+        adapter.freezes.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.pipeline.stage("market_features").input_count == 1
     assert dict(status.population_filter_reason_counts)["stale_quote"] == 1
@@ -496,15 +496,15 @@ def test_primary_blocker_reports_dominant_missing_market_liquidity_history(
     adapter = build_cycle_fixture(
         _Market(tuple(features)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at)
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="transient_invalid_empty"):
+        adapter.freezes.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.pipeline.stage("market_features").input_count == 0
     assert dict(status.population_filter_reason_counts)["missing_liquidity_history"] == 2
@@ -520,16 +520,16 @@ def test_production_adapter_preserves_publishable_business_empty_projection(
     adapter = build_cycle_fixture(
         _Market((blocked,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
-    decision = adapter.decisions.build_local(request)
+    freeze = adapter.freezes.build_local(request)
 
-    assert decision is not None
-    assert decision.items == ()
+    assert freeze is not None
+    assert freeze.items == ()
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
@@ -554,32 +554,32 @@ def test_invalid_candidate_refresh_cannot_replace_the_previous_valid_projection(
     observed_at = datetime(2026, 8, 12, hour, minute, second, tzinfo=SHANGHAI)
     feature = application_feature_factory("600001", observed_at - timedelta(seconds=1))
     market = _Market((feature,))
-    drafts = UnifiedDecisionDraftIndex()
+    drafts = UnifiedFreezeDraftIndex()
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(drafts, now=lambda: observed_at),
+        freeze_build=_freeze_build(drafts, now=lambda: observed_at),
     )
     request = _request(observed_at, strategy=strategy, phase=phase)
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
-    previous = adapter.decisions.build_local(request)
+    previous = adapter.freezes.build_local(request)
     assert previous is not None
-    previous_projection = adapter.decisions.projection(previous.version)
+    previous_projection = adapter.freezes.projection(previous.version)
 
     market._features = (replace(feature, quote=replace(feature.quote, price=None)),)
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
     updated_request = replace(request, input_version=request.input_version + ":invalid")
     adapter.data.refresh(updated_request)
 
-    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
-        adapter.decisions.build_local(updated_request)
+    with pytest.raises(FreezeUnavailableError, match="transient_invalid_empty"):
+        adapter.freezes.build_local(updated_request)
 
-    assert adapter.decisions.projection(previous.version) is previous_projection
+    assert adapter.freezes.projection(previous.version) is previous_projection
     assert previous_projection is not None and previous_projection.local is previous
     draft = drafts.snapshot(strategy)
     assert draft is not None
-    assert adapter.decisions.projection(draft.version) is None
+    assert adapter.freezes.projection(draft.version) is None
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is strategy)
     assert not status.publishable
     assert status.status == "transient_invalid_empty"
@@ -594,13 +594,13 @@ def test_invalid_market_input_does_not_block_another_eligible_stock(application_
     adapter = build_cycle_fixture(
         _Market((complete, invalid)),
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
     request = _request(observed_at, strategy=strategy, phase="afternoon")
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    result = adapter.decisions.build_local(request)
+    result = adapter.freezes.build_local(request)
 
     assert result is not None
     assert {item.code for item in result.items} == {"600001"}
@@ -625,10 +625,10 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
     adapter = build_cycle_fixture(
         _Market(features),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
-    frozen = decision(Strategy.D25)
+    frozen = freeze(Strategy.D25)
     frozen_quote = frozen.items[0].quote
     assert frozen_quote is not None
     frozen_at = observed_at.replace(hour=11, minute=19, second=59)
@@ -652,7 +652,7 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
         observed_at=frozen_at,
         items=items,
     )
-    previous = DecisionOverlay(
+    previous = FreezeOverlay(
         frozen.strategy,
         frozen.trade_date,
         frozen.version,
@@ -663,7 +663,7 @@ def test_production_adapter_builds_current_overlay_from_another_scored_lane_batc
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
-    overlay = adapter.decisions.refreshed_overlay(frozen, request, previous)
+    overlay = adapter.freezes.refreshed_overlay(frozen, request, previous)
 
     assert overlay is not None
     assert overlay.strategy is Strategy.D25
@@ -686,9 +686,9 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
-    source = decision(Strategy.TOMORROW)
+    source = freeze(Strategy.TOMORROW)
     anchor = source.items[0].quote
     assert anchor is not None
     frozen_at = observed_at.replace(hour=14, minute=50)
@@ -711,13 +711,11 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
     )
     frozen_quote = frozen.items[0].quote
     assert frozen_quote is not None
-    previous = DecisionOverlay(
-        frozen.strategy, frozen.trade_date, frozen.version, frozen_at, (frozen_quote,), sequence=1
-    )
+    previous = FreezeOverlay(frozen.strategy, frozen.trade_date, frozen.version, frozen_at, (frozen_quote,), sequence=1)
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="quote_overlay")
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.TOPK_QUOTES, observed_at, ("600001", "600002")))
-    overlay = adapter.decisions.refreshed_overlay(frozen, request, previous)
+    overlay = adapter.freezes.refreshed_overlay(frozen, request, previous)
 
     assert overlay is not None
     assert market.market_fetch_count == 0
@@ -739,7 +737,7 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        decision_build=_decision_build(monotonic=lambda: next(ticks)),
+        freeze_build=_freeze_build(monotonic=lambda: next(ticks)),
     )
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -789,11 +787,11 @@ def test_production_adapter_rejects_vendor_future_time_without_local_observation
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
     frozen_at = observed_at - timedelta(minutes=1)
-    source = decision(Strategy.D25)
+    source = freeze(Strategy.D25)
     frozen_quote = source.items[0].quote
     assert frozen_quote is not None
     frozen_quote = replace(frozen_quote, source_time=frozen_at)
@@ -803,14 +801,14 @@ def test_production_adapter_rejects_vendor_future_time_without_local_observation
         observed_at=frozen_at,
         items=(replace(source.items[0], quote=frozen_quote),),
     )
-    previous = DecisionOverlay(
+    previous = FreezeOverlay(
         frozen.strategy, frozen.trade_date, frozen.version, frozen.observed_at, (frozen_quote,), sequence=1
     )
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    assert adapter.decisions.refreshed_overlay(frozen, request, previous) is None
+    assert adapter.freezes.refreshed_overlay(frozen, request, previous) is None
 
 
 def test_production_adapter_publishes_eligible_scores_with_partial_history_coverage(
@@ -826,21 +824,21 @@ def test_production_adapter_publishes_eligible_scores_with_partial_history_cover
         quote=replace(application_feature_factory("600002", observed_at).quote, board=Board.MAIN),
         history_days=19,
     )
-    drafts = UnifiedDecisionDraftIndex()
+    drafts = UnifiedFreezeDraftIndex()
     adapter = build_cycle_fixture(
         _Market((complete, incomplete)),
         config_version="test-config",
-        decision_build=_decision_build(drafts),
+        freeze_build=_freeze_build(drafts),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    decision = adapter.decisions.build_local(request)
+    freeze = adapter.freezes.build_local(request)
 
-    assert decision is not None
-    assert {item.code for item in decision.items} == {"600001"}
+    assert freeze is not None
+    assert {item.code for item in freeze.items} == {"600001"}
     assert drafts.snapshot(Strategy.TOMORROW) is None
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.history_covered_count == 1
@@ -862,15 +860,15 @@ def test_production_adapter_does_not_publish_business_empty_when_all_candidate_h
     adapter = build_cycle_fixture(
         _Market((incomplete,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="transient_invalid_empty"):
+        adapter.freezes.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.candidate_scored_count == 0
     assert status.status == "transient_invalid_empty"
@@ -899,15 +897,15 @@ def test_production_adapter_rejects_candidate_security_identity_degradation(
     adapter = build_cycle_fixture(
         _Market((degraded,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="not_ready"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="not_ready"):
+        adapter.freezes.build_local(request)
 
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.strategy is Strategy.TOMORROW
@@ -945,15 +943,15 @@ def test_production_adapter_accepts_exactly_ninety_nine_percent_history_coverage
     adapter = build_cycle_fixture(
         _Market(features),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
-    decision = adapter.decisions.build_local(request)
+    freeze = adapter.freezes.build_local(request)
 
-    assert decision is not None
+    assert freeze is not None
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.history_covered_count == 99
     assert status.history_coverage_ratio == 0.99
@@ -983,15 +981,15 @@ def test_production_adapter_rejects_partial_candidate_feature_response(
     adapter = build_cycle_fixture(
         PartialCandidateMarket(features),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="not_ready"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="not_ready"):
+        adapter.freezes.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.candidate_count == 2
     assert status.candidate_feature_count == 1
@@ -1019,7 +1017,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
     requests = tuple(
         _request(observed_at, strategy=strategy, phase="morning") for strategy in (Strategy.TOMORROW, Strategy.D25)
@@ -1034,13 +1032,13 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
     with ThreadPoolExecutor(max_workers=3) as executor:
         tuple(executor.map(refresh, requests))
 
-    decisions = tuple(adapter.decisions.build_local(request) for request in requests)
+    freezes = tuple(adapter.freezes.build_local(request) for request in requests)
 
     assert market.market_fetch_count == 1
     assert market.candidate_quote_refresh_count == 1
     assert set(market.requested_codes) == {"600001", "300001", "688001"}
     assert market.reference_requests == []
-    assert all(decision is not None for decision in decisions)
+    assert all(freeze is not None for freeze in freezes)
     assert len(market.candidate_reads) == 1
     assert market.candidate_reads[0][1] is True
     assert all(read[2] for read in market.candidate_reads)
@@ -1075,7 +1073,7 @@ def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_c
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
     _prime_scoring_cache(adapter, observed_at)
@@ -1084,7 +1082,7 @@ def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_c
     )
 
     adapter.data.refresh(request)
-    built = adapter.decisions.build_local(request)
+    built = adapter.freezes.build_local(request)
 
     assert built is not None
     assert built.trade_date == observed_at.date()
@@ -1109,7 +1107,7 @@ def test_intraday_changes_invalidate_scoring_only_for_content_or_qualification(a
             )
 
     market = MinuteMarket((application_feature_factory("600001", observed_at),))
-    adapter = build_cycle_fixture(market, config_version="test-config", decision_build=_decision_build())
+    adapter = build_cycle_fixture(market, config_version="test-config", freeze_build=_freeze_build())
     _prime_scoring_cache(adapter, observed_at)
     first = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.INTRADAY_TAIL, observed_at))
     assert first.changed and first.changed_codes == ("600001",)
@@ -1152,7 +1150,7 @@ def test_completed_immutable_input_remains_scoreable_after_a_new_quote_epoch(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, strategy=Strategy.D25, phase="afternoon")
     _prime_scoring_cache(adapter, observed_at)
@@ -1170,7 +1168,7 @@ def test_completed_immutable_input_remains_scoreable_after_a_new_quote_epoch(
     market._features = (changed,)
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at + timedelta(seconds=1)))
 
-    built = adapter.decisions.build_local(request)
+    built = adapter.freezes.build_local(request)
 
     assert built is not None
     assert built.observed_at == observed_at
@@ -1185,7 +1183,7 @@ def test_topk_refresh_reuses_returned_features_without_a_second_feature_read(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
 
     outcome = adapter.data.refresh_task(
@@ -1197,7 +1195,7 @@ def test_topk_refresh_reuses_returned_features_without_a_second_feature_read(
     assert market.candidate_reads == []
 
 
-def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
+def test_three_scored_strategies_use_refresh_completion_as_the_freeze_time(
     application_feature_factory,
 ) -> None:
     requested_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1229,7 +1227,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     requests = tuple(
         _request(requested_at, strategy=strategy, phase="morning") for strategy in (Strategy.TOMORROW, Strategy.D25)
@@ -1238,13 +1236,13 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
     _prime_scoring_cache(adapter, requested_at)
     for request in requests:
         adapter.data.refresh(request)
-    decisions = tuple(adapter.decisions.build_local(request) for request in requests)
+    freezes = tuple(adapter.freezes.build_local(request) for request in requests)
 
-    assert all(decision is not None for decision in decisions)
-    assert all(decision.observed_at == completed_at for decision in decisions if decision is not None)
+    assert all(freeze is not None for freeze in freezes)
+    assert all(freeze.observed_at == completed_at for freeze in freezes if freeze is not None)
 
 
-def test_decision_time_does_not_trust_a_future_vendor_source_time(
+def test_freeze_time_does_not_trust_a_future_vendor_source_time(
     application_feature_factory,
 ) -> None:
     requested_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
@@ -1261,15 +1259,15 @@ def test_decision_time_does_not_trust_a_future_vendor_source_time(
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(requested_at, phase="morning")
 
     _prime_scoring_cache(adapter, requested_at)
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="future_input_time"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="future_input_time"):
+        adapter.freezes.build_local(request)
 
 
 def test_complete_population_is_requested_for_each_supported_board(
@@ -1293,7 +1291,7 @@ def test_complete_population_is_requested_for_each_supported_board(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
 
     _prime_scoring_cache(adapter, observed_at)
@@ -1358,7 +1356,7 @@ def test_qualification_precedes_one_complete_quote_request_without_refill(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -1398,7 +1396,7 @@ def test_all_121_inputs_are_requested_once_even_when_first_quote_fails(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -1438,7 +1436,7 @@ def test_candidate_refresh_keeps_population_watermark_but_checks_raw_quote_age(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: refresh_at),
+        freeze_build=_freeze_build(now=lambda: refresh_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     original = adapter.data._candidate_plans
@@ -1484,7 +1482,7 @@ def test_candidate_refresh_checks_quotes_at_receipt_time_without_accepting_futur
     adapter = build_cycle_fixture(
         LaterCandidateMarket((feature,)),
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: current_time[0]),
+        freeze_build=_freeze_build(now=lambda: current_time[0]),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, requested_at))
     outcome = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, requested_at))
@@ -1512,7 +1510,7 @@ def test_candidate_refresh_retains_unrequested_history_pending_reasons(applicati
     adapter = build_cycle_fixture(
         _Market((ready, short)),
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
@@ -1559,7 +1557,7 @@ def test_deadline_stops_refresh_and_preserves_the_last_complete_candidate_batch(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: current_time[0]),
+        freeze_build=_freeze_build(now=lambda: current_time[0]),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     first = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
@@ -1603,7 +1601,7 @@ def test_candidate_quote_exhaustion_is_reported_as_transient_empty(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
@@ -1611,8 +1609,8 @@ def test_candidate_quote_exhaustion_is_reported_as_transient_empty(
 
     adapter.data.refresh(request)
 
-    with pytest.raises(DecisionUnavailableError, match="not_ready"):
-        adapter.decisions.build_local(request)
+    with pytest.raises(FreezeUnavailableError, match="not_ready"):
+        adapter.freezes.build_local(request)
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert status.status == "not_ready"
     assert status.publishable is False
@@ -1663,13 +1661,13 @@ def test_unrequested_vendor_candidate_is_discarded_before_scoring(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="morning")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
-    built = adapter.decisions.build_local(request)
+    built = adapter.freezes.build_local(request)
 
     assert built is not None
     batch = adapter.data._batches[(Strategy.TOMORROW, request.input_version)]
@@ -1744,7 +1742,7 @@ def test_stale_candidate_quote_stays_pending_without_a_replacement(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
 
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -1804,7 +1802,7 @@ def test_two_strategy_candidate_windows_share_deduplicated_quote_io(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
 
     _prime_scoring_cache(adapter, observed_at)
@@ -1829,7 +1827,7 @@ def test_two_strategy_candidate_windows_share_deduplicated_quote_io(
     )
 
 
-def test_reference_refresh_scheduling_failure_does_not_block_local_decision(
+def test_reference_refresh_scheduling_failure_does_not_block_local_freeze(
     application_feature_factory,
 ) -> None:
     observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
@@ -1851,16 +1849,16 @@ def test_reference_refresh_scheduling_failure_does_not_block_local_decision(
     adapter = build_cycle_fixture(
         ReferenceFailureMarket((blocked,)),
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
 
-    decision = adapter.decisions.build_local(request)
-    assert decision is not None
-    assert decision.items == ()
+    freeze = adapter.freezes.build_local(request)
+    assert freeze is not None
+    assert freeze.items == ()
 
 
 def test_research_intent_prioritizes_published_output_before_bounded_candidates(
@@ -1895,29 +1893,29 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
-    decision = adapter.decisions.build_local(request)
+    freeze = adapter.freezes.build_local(request)
 
-    assert decision is not None
-    diagnostics = decision.selection_diagnostics
+    assert freeze is not None
+    diagnostics = freeze.selection_diagnostics
     assert diagnostics is not None
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert decision.pipeline is not None
-    assert decision.pipeline == status.pipeline
-    assert len(decision.pipeline.stages) == len(PIPELINE_STAGE_ORDER)
+    assert freeze.pipeline is not None
+    assert freeze.pipeline == status.pipeline
+    assert len(freeze.pipeline.stages) == len(PIPELINE_STAGE_ORDER)
     assert _pipeline_facet(status, "action_publish", "action_observe") == sum(
-        item.action.value == "observe" for item in decision.items
+        item.action.value == "observe" for item in freeze.items
     )
     assert _pipeline_facet(status, "action_publish", "action_executable") == sum(
-        item.action.value == "executable" for item in decision.items
+        item.action.value == "executable" for item in freeze.items
     )
-    intent = adapter.decisions.research_intent(decision)
-    assert intent.priority_codes == tuple(item.code for item in decision.items)
+    intent = adapter.freezes.research_intent(freeze)
+    assert intent.priority_codes == tuple(item.code for item in freeze.items)
     assert intent.candidate_codes == market.requested_codes
     next_refresh = observed_at + timedelta(seconds=10)
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, next_refresh))
@@ -1927,7 +1925,7 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
         adapter.data.refresh(_request(next_refresh, phase="afternoon"))
     assert pending.stage_snapshots[4].as_of == observed_at
     assert pending.stage_snapshots[4].output_batch_id == status.stage_snapshots[4].output_batch_id
-    assert adapter.decisions.projection(decision.version).local is decision
+    assert adapter.freezes.projection(freeze.version).local is freeze
 
 
 def test_close_fallback_can_use_sealed_market_quotes_before_candidate_refresh(application_feature_factory) -> None:
@@ -1937,7 +1935,7 @@ def test_close_fallback_can_use_sealed_market_quotes_before_candidate_refresh(ap
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, observed_at))
     request = _request(observed_at, phase="close_fallback")
@@ -1963,7 +1961,7 @@ def test_candidate_refresh_rejects_results_from_a_superseded_observed_population
     adapter = build_cycle_fixture(
         SupersedingMarket((feature,)),
         config_version="test-config",
-        decision_build=_decision_build(now=lambda: observed_at),
+        freeze_build=_freeze_build(now=lambda: observed_at),
     )
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     with pytest.raises(DataRefreshUnavailableError, match="candidate_population_superseded"):
@@ -1993,7 +1991,7 @@ def test_unexpected_shared_input_failure_releases_single_flight_owner(
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
-        decision_build=_decision_build(),
+        freeze_build=_freeze_build(),
     )
     request = _request(observed_at, phase="morning")
 
@@ -2003,7 +2001,7 @@ def test_unexpected_shared_input_failure_releases_single_flight_owner(
     adapter.data.refresh(request)
 
     assert market.market_fetch_count == 2
-    assert adapter.decisions.build_local(request) is not None
+    assert adapter.freezes.build_local(request) is not None
 
 
 def _policy():

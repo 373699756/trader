@@ -96,7 +96,7 @@ class HistoricalBaselineReplayer:
             day.summary.input_hash,
             selected_codes,
             oracle_codes,
-            "selected" if selected else "no_decision",
+            "selected" if selected else "no_freeze",
             len(day.evaluated),
             len(oracle),
             recalled_oracle_count,

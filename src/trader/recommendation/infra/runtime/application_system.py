@@ -11,9 +11,9 @@ from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettin
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.runtime.resource_orchestration import (
     ApplicationResources,
     StartApplicationResources,
@@ -28,7 +28,7 @@ from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 
 ResearchTraceT = TypeVar("ResearchTraceT")
 OutcomeEvidenceT = TypeVar("OutcomeEvidenceT")
@@ -59,7 +59,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     app: ApplicationT
     supervisor: RuntimeSupervisor
     scheduler: SchedulerRuntime
-    records: SQLiteDecisionRecords
+    records: SQLiteFreezeRecords
     market_cache: BoundedLruCache[object]
     minute_pool: BoundedExecutor
     source_lanes: SourceLaneScheduler
@@ -67,10 +67,10 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     quote_pool: BoundedExecutor
     market_quote_pool: BoundedExecutor
     long_runtime: LongRuntime
-    decision_queries: UnifiedDecisionQueries
-    decision_events: UnifiedDecisionEventStream
-    tomorrow_index: UnifiedDecisionIndex
-    tomorrow_records: SQLiteDecisionRecords
+    freeze_queries: UnifiedFreezeQueries
+    freeze_events: UnifiedFreezeEventStream
+    tomorrow_index: UnifiedFreezeIndex
+    tomorrow_records: SQLiteFreezeRecords
     research_trace: ResearchTraceT
     outcome_evidence: OutcomeEvidenceT
     input_preloader: PublishedInputPreloader

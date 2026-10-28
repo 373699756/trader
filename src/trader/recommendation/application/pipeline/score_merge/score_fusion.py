@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     ScoredLocalProjection,
     ScoredReviewProjection,

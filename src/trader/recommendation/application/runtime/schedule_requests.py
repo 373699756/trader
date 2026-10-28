@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 
-from trader.recommendation.application.ports.runtime import CycleRequest, DecisionUnavailableError
+from trader.recommendation.application.ports.runtime import CycleRequest, FreezeUnavailableError
 from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.recommendation.domain.publication.decision_identity import DecisionIdentity
+from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -18,11 +18,11 @@ def CyclePhase(strategy: Strategy, phase: MarketPhase) -> str:
     return phase.value
 
 
-def ValidateCycleIdentity(request: CycleRequest, identity: DecisionIdentity) -> None:
+def ValidateCycleIdentity(request: CycleRequest, identity: FreezeIdentity) -> None:
     if identity.strategy is not request.strategy or identity.trade_date != request.trade_date:
-        raise DecisionUnavailableError("decision identity does not match its scheduled cycle")
+        raise FreezeUnavailableError("freeze identity does not match its scheduled cycle")
     if identity.observed_at < request.observed_at:
-        raise DecisionUnavailableError("decision identity predates its scheduled cycle")
+        raise FreezeUnavailableError("freeze identity predates its scheduled cycle")
 
 
 def CycleOrderKey(request: CycleRequest) -> int:

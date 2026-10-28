@@ -9,7 +9,7 @@ from trader.training.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
     PointInTimePopulationHash,
-    ResearchDecisionSetAudit,
+    ResearchFreezeSetAudit,
     ResearchPopulationAudit,
 )
 
@@ -55,16 +55,16 @@ def _population(observed_at: datetime) -> tuple[ResearchPopulationAudit, ...]:
 def test_local_audit_keeps_rejected_point_in_time_identity() -> None:
     observed_at = datetime(2026, 8, 28, 14, 49, tzinfo=SHANGHAI)
     population = _population(observed_at)
-    decision_set = ResearchDecisionSetAudit("local-decision", ())
+    freeze_set = ResearchFreezeSetAudit("local-freeze", ())
 
     audit = CommittedResearchAudit(
-        decision_version="local-decision",
-        decision_hash="decision-hash",
+        freeze_version="local-freeze",
+        freeze_hash="freeze-hash",
         input_version="input-initial",
         hard_filter_aggregates=(("main:st_stock", 1),),
         passed_candidates=(),
-        production_local=decision_set,
-        research_shadow=decision_set,
+        production_local=freeze_set,
+        research_shadow=freeze_set,
         shadow_mode="control_copy",
         input_observed_at=observed_at,
         point_in_time_population=population,
@@ -79,17 +79,17 @@ def test_local_audit_keeps_rejected_point_in_time_identity() -> None:
 def test_audit_rejects_population_evidence_after_input_time() -> None:
     input_at = datetime(2026, 8, 28, 14, 49, tzinfo=SHANGHAI)
     population = _population(input_at + timedelta(seconds=1))
-    decision_set = ResearchDecisionSetAudit("local-decision", ())
+    freeze_set = ResearchFreezeSetAudit("local-freeze", ())
 
     with pytest.raises(ValueError, match="after input_observed_at"):
         CommittedResearchAudit(
-            decision_version="local-decision",
-            decision_hash="decision-hash",
+            freeze_version="local-freeze",
+            freeze_hash="freeze-hash",
             input_version="input-initial",
             hard_filter_aggregates=(("main:st_stock", 1),),
             passed_candidates=(),
-            production_local=decision_set,
-            research_shadow=decision_set,
+            production_local=freeze_set,
+            research_shadow=freeze_set,
             shadow_mode="control_copy",
             input_observed_at=input_at,
             point_in_time_population=population,
@@ -98,16 +98,16 @@ def test_audit_rejects_population_evidence_after_input_time() -> None:
 
 
 def test_legacy_v1_audit_remains_read_only_constructible() -> None:
-    decision_set = ResearchDecisionSetAudit("local-decision", ())
+    freeze_set = ResearchFreezeSetAudit("local-freeze", ())
 
     audit = CommittedResearchAudit(
-        decision_version="local-decision",
-        decision_hash="decision-hash",
+        freeze_version="local-freeze",
+        freeze_hash="freeze-hash",
         input_version="input-initial",
         hard_filter_aggregates=(("main:st_stock", 1),),
         passed_candidates=(),
-        production_local=decision_set,
-        research_shadow=decision_set,
+        production_local=freeze_set,
+        research_shadow=freeze_set,
         shadow_mode="control_copy",
         schema_version=LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     )

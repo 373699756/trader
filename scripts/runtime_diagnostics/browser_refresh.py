@@ -31,26 +31,26 @@ from trader.infra.http_contracts import HttpRequest, HttpStatusError  # noqa: E4
 from trader.infra.settings import LoadRuntimeSettings  # noqa: E402
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
 from trader.infra.workers import BoundedExecutor  # noqa: E402
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (  # noqa: E402
-    AsyncDecisionObserver,
-)
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import (  # noqa: E402
-    UnifiedDecisionDraftIndex,
+    UnifiedFreezeDraftIndex,
 )
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (  # noqa: E402
-    UnifiedDecisionEventStream,
+    UnifiedFreezeEventStream,
     UnifiedPublishedEvent,
 )
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import (  # noqa: E402
+    AsyncFreezeObserver,
+)
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (  # noqa: E402
-    UnifiedDecisionQueries,
+    UnifiedFreezeQueries,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (  # noqa: E402
-    UnifiedDecisionIndex,
+    UnifiedFreezeIndex,
 )
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus  # noqa: E402
 from trader.recommendation.application.ports.runtime import (  # noqa: E402
     CycleRequest,
-    DecisionUnavailableError,
+    FreezeUnavailableError,
     PipelineTaskRequest,
     RefreshOutcome,
     ResearchIntent,
@@ -67,13 +67,13 @@ from trader.recommendation.application.runtime.supervisor import (  # noqa: E402
     SchedulerIntervalSeconds,
 )
 from trader.recommendation.domain.market.models import Board  # noqa: E402
-from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
-    CommittedDecisionRecord,
-    DecisionIdentity,
-    DecisionItem,
-    DecisionOverlay,
-    DecisionQuote,
-    ScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (  # noqa: E402
+    CommittedFreezeRecord,
+    FreezeIdentity,
+    FreezeItem,
+    FreezeOverlay,
+    FreezeQuote,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
 from trader.training.application.research_audit import CommittedResearchAudit  # noqa: E402
@@ -106,7 +106,7 @@ class _TradingCalendar:
 
 
 class _History:
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None:
+    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
         del strategy, trade_date
         return None
 
@@ -150,7 +150,7 @@ class _RecordingData:
             return [dict(call) for call in self._calls]
 
 
-class _OverlayOnlyDecisions:
+class _OverlayOnlyFreezes:
     def input_quality_status(self) -> tuple[InputQualityStatus, ...]:
         return ()
 
@@ -158,22 +158,20 @@ class _OverlayOnlyDecisions:
         del strategy, trade_date
         return False
 
-    def build_local(self, request: CycleRequest) -> DecisionIdentity | None:
+    def build_local(self, request: CycleRequest) -> FreezeIdentity | None:
         del request
-        raise DecisionUnavailableError("measurement_score_disabled")
+        raise FreezeUnavailableError("measurement_score_disabled")
 
-    def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
-        quotes = tuple(item.quote for item in decision.items if item.quote is not None)
-        return DecisionOverlay(
-            decision.strategy, decision.trade_date, decision.version, decision.observed_at, quotes, sequence=1
-        )
+    def initial_overlay(self, freeze: ScoredFreeze) -> FreezeOverlay:
+        quotes = tuple(item.quote for item in freeze.items if item.quote is not None)
+        return FreezeOverlay(freeze.strategy, freeze.trade_date, freeze.version, freeze.observed_at, quotes, sequence=1)
 
     def refreshed_overlay(
         self,
-        decision: ScoredDecision,
+        freeze: ScoredFreeze,
         request: CycleRequest,
-        previous: DecisionOverlay | None,
-    ) -> DecisionOverlay | None:
+        previous: FreezeOverlay | None,
+    ) -> FreezeOverlay | None:
         observed_at = request.observed_at
         input_version = request.input_version
         if previous is None or previous.observed_at >= observed_at:
@@ -187,10 +185,10 @@ class _OverlayOnlyDecisions:
             )
             for quote in previous.quotes
         )
-        return DecisionOverlay(
-            decision.strategy,
-            decision.trade_date,
-            decision.version,
+        return FreezeOverlay(
+            freeze.strategy,
+            freeze.trade_date,
+            freeze.version,
             observed_at,
             quotes,
             sequence=previous.sequence + 1,
@@ -200,8 +198,8 @@ class _OverlayOnlyDecisions:
         del version
         return lambda: None
 
-    def research_intent(self, decision: ScoredDecision) -> ResearchIntent:
-        raise AssertionError(f"measurement does not build research intents: {decision.version}")
+    def research_intent(self, freeze: ScoredFreeze) -> ResearchIntent:
+        raise AssertionError(f"measurement does not build research intents: {freeze.version}")
 
 
 class _Reviews:
@@ -211,7 +209,7 @@ class _Reviews:
         shared_single_flight=True,
     )
 
-    def build_hybrid(self, local: ScoredDecision, request: CycleRequest) -> ScoredDecision:
+    def build_hybrid(self, local: ScoredFreeze, request: CycleRequest) -> ScoredFreeze:
         del local, request
         raise AssertionError("measurement disables scoring and DeepSeek review")
 
@@ -236,7 +234,7 @@ class _NoopResearchRuntime:
         return ResearchRuntimeStatus(state="idle")
 
 
-class _Freezes:
+class _Sealing:
     def freeze(self, strategy: Strategy, at: datetime, current: object) -> None:
         raise AssertionError(f"unexpected freeze during interval measurement: {strategy.value}:{at}:{current}")
 
@@ -301,8 +299,8 @@ def _validate(args: argparse.Namespace) -> datetime:
     return normalized
 
 
-def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: str) -> None:
-    quote = DecisionQuote(
+def _seed(index: UnifiedFreezeIndex, strategy: Strategy, at: datetime, code: str) -> None:
+    quote = FreezeQuote(
         code,
         10.0,
         1.0,
@@ -313,7 +311,7 @@ def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: s
         at,
         f"seed:{code}",
     )
-    item = DecisionItem(
+    item = FreezeItem(
         code,
         RecommendationAction.EXECUTABLE,
         True,
@@ -330,7 +328,7 @@ def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: s
         industry="测量行业",
         quote=quote,
     )
-    decision = ScoredDecision(
+    freeze = ScoredFreeze(
         strategy,
         at.date(),
         1,
@@ -344,21 +342,21 @@ def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: s
         (item,),
         (),
     )
-    overlay = DecisionOverlay(strategy, at.date(), decision.version, at, (quote,), sequence=1)
-    result = index.publish_scored(decision, overlay, expected_version=None)
+    overlay = FreezeOverlay(strategy, at.date(), freeze.version, at, (quote,), sequence=1)
+    result = index.publish_scored(freeze, overlay, expected_version=None)
     if not result.accepted:
         raise RuntimeError(f"cannot seed {strategy.value}: {result.reason}")
 
 
-def _publish_decision_replacement(
-    index: UnifiedDecisionIndex,
-    events: UnifiedDecisionEventStream,
+def _publish_freeze_replacement(
+    index: UnifiedFreezeIndex,
+    events: UnifiedFreezeEventStream,
     strategy: Strategy,
     observed_at: datetime,
 ) -> None:
     current = index.snapshot(strategy).current
-    if not isinstance(current, ScoredDecision):
-        raise RuntimeError("measurement decision parent is unavailable")
+    if not isinstance(current, ScoredFreeze):
+        raise RuntimeError("measurement freeze parent is unavailable")
     items = tuple(
         replace(
             item,
@@ -367,7 +365,7 @@ def _publish_decision_replacement(
                     item.quote,
                     price=round((item.quote.price or 0.0) + 0.01, 2),
                     source_time=observed_at,
-                    data_version=f"decision-patch:{observed_at.isoformat()}",
+                    data_version=f"freeze-patch:{observed_at.isoformat()}",
                 )
                 if item.quote is not None
                 else None
@@ -379,10 +377,10 @@ def _publish_decision_replacement(
         current,
         sequence=current.sequence + 2,
         observed_at=observed_at,
-        input_versions=(("market", f"decision-patch:{observed_at.isoformat()}"),),
+        input_versions=(("market", f"freeze-patch:{observed_at.isoformat()}"),),
         items=items,
     )
-    overlay = DecisionOverlay(
+    overlay = FreezeOverlay(
         strategy,
         replacement.trade_date,
         replacement.version,
@@ -392,7 +390,7 @@ def _publish_decision_replacement(
     )
     published = index.publish_scored(replacement, overlay, expected_version=current.version)
     if not published.accepted or published.event is None:
-        raise RuntimeError(f"cannot publish measurement decision patch: {published.reason}")
+        raise RuntimeError(f"cannot publish measurement freeze patch: {published.reason}")
     events.publish_committed(published.event)
 
 
@@ -502,16 +500,16 @@ def _run(
     target_strategy = Strategy(args.strategy)
     target_codes = {Strategy.TOMORROW: "600002", Strategy.D25: "600003"}
     clock = _AdvancingClock(simulated_start)
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     for strategy, code in target_codes.items():
         _seed(index, strategy, simulated_start - timedelta(seconds=1), code)
     data = _RecordingData()
-    events = UnifiedDecisionEventStream(history_size=64, client_queue_size=16, subscriber_limit=4)
+    events = UnifiedFreezeEventStream(history_size=64, client_queue_size=16, subscriber_limit=4)
     event_times: list[dict[str, object]] = []
     event_lock = threading.Lock()
     measurement_started = 0.0
 
-    def publish_overlay(overlay: DecisionOverlay) -> UnifiedPublishedEvent:
+    def publish_overlay(overlay: FreezeOverlay) -> UnifiedPublishedEvent:
         with event_lock:
             event_times.append(
                 {
@@ -522,7 +520,7 @@ def _run(
                 }
             )
         current = index.snapshot(overlay.strategy).current
-        if not isinstance(current, ScoredDecision):
+        if not isinstance(current, ScoredFreeze):
             raise RuntimeError("measurement overlay parent is unavailable")
         return events.publish_overlay(overlay, parent_version=current.version)
 
@@ -544,14 +542,14 @@ def _run(
             calendar=_TradingCalendar(),
             cadence=cadence,
             data=data,
-            decisions=_OverlayOnlyDecisions(),
+            freezes=_OverlayOnlyFreezes(),
             reviews=_Reviews(),
             index=index,
-            observer=AsyncDecisionObserver((), capacity=16, thread_name="measurement-observer"),
-            freezes=_Freezes(),
+            observer=AsyncFreezeObserver((), capacity=16, thread_name="measurement-observer"),
+            sealing=_Sealing(),
             settlement=_Settlement(),
             research_factory=_research_factory,
-            publish_decision=lambda _event: None,
+            publish_freeze=lambda _event: None,
             publish_overlay=publish_overlay,
         ),
         config_version="measurement",
@@ -566,7 +564,7 @@ def _run(
             shutdown_timeout_seconds=5.0,
         ),
     )
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _History(), clock)
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _History(), clock)
 
     def status_provider() -> dict[str, object]:
         return {
@@ -664,7 +662,7 @@ def _run(
         )
         clock.start()
         measurement_started = time.monotonic()
-        _publish_decision_replacement(index, events, target_strategy, clock.now())
+        _publish_freeze_replacement(index, events, target_strategy, clock.now())
         if not supervisor.start():
             raise RuntimeError("runtime supervisor did not start")
         supervisor_started = True
@@ -730,7 +728,7 @@ def _run(
         and float(patch_p95) <= patch_to_paint_budget_ms
     )
     recommendation_patches = diagnostics.get("recommendationPatchesApplied")
-    direct_decision_patch_passed = (
+    direct_freeze_patch_passed = (
         isinstance(recommendation_patches, int)
         and not isinstance(recommendation_patches, bool)
         and recommendation_patches >= 1
@@ -743,7 +741,7 @@ def _run(
         and retention_margin is not None
         and retention_margin > 0
         and patch_latency_passed
-        and direct_decision_patch_passed
+        and direct_freeze_patch_passed
     )
     return {
         "schema_version": "web-refresh-interval",
@@ -771,9 +769,9 @@ def _run(
             "budget_ms": patch_to_paint_budget_ms,
             "passed": patch_latency_passed,
         },
-        "browser_decision_patch": {
+        "browser_freeze_patch": {
             "applied_count": recommendation_patches,
-            "passed": direct_decision_patch_passed,
+            "passed": direct_freeze_patch_passed,
         },
         "web_snapshot_retention": {
             "configured_seconds": snapshot_retention_seconds,

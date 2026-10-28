@@ -16,7 +16,7 @@ from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 HybridSource = Literal["control_copy", "existing_facts"]
-SelectionStatus = Literal["selected", "no_decision"]
+SelectionStatus = Literal["selected", "no_freeze"]
 ChallengerReplayStatus = Literal["replayed", "exploratory"]
 
 
@@ -126,7 +126,7 @@ class ChallengerDayReplay:
         pairs = tuple(sorted(self.pairs, key=lambda item: item.code))
         if tuple(item.code for item in overrides) != tuple(item.code for item in pairs):
             raise ValueError("Challenger replay overrides and pair rows must cover the same stocks")
-        if any(item.settlement.decision_date != self.trade_date for item in pairs):
+        if any(item.settlement.freeze_date != self.trade_date for item in pairs):
             raise ValueError("Challenger replay pair settlement dates must match the replay day")
         _validate_status(self.local_status, tuple(item.local_rank for item in pairs), "local")
         _validate_status(self.hybrid_status, tuple(item.hybrid_rank for item in pairs), "hybrid")
@@ -226,7 +226,7 @@ class ChallengerReport:
 
 
 def _validate_status(status: SelectionStatus, ranks: tuple[int | None, ...], label: str) -> None:
-    expected = "selected" if any(rank is not None for rank in ranks) else "no_decision"
+    expected = "selected" if any(rank is not None for rank in ranks) else "no_freeze"
     if status != expected:
         raise ValueError(f"Challenger replay {label} status must match its selection")
 

@@ -9,7 +9,7 @@ import pytest
 
 from tests.unit.application.cycle_fixture import CycleFixtureDependencies, build_cycle_fixture
 from tests.unit.application.review_helpers import review
-from tests.unit.application.test_input_runtime import _decision_build, _Market, _prime_scoring_cache, _request
+from tests.unit.application.test_input_runtime import _freeze_build, _Market, _prime_scoring_cache, _request
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from tests.unit.application.test_tomorrow_selection import _data_snapshot
 from tests.unit.application.test_tomorrow_selection import _policy as snapshot_policy
@@ -31,13 +31,13 @@ from trader.recommendation.application.pipeline.final_selection.grouped_ranking 
     RankingSelectionPort,
     RankingSelectionService,
 )
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringPort, LocalScoringService
 from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
-from trader.recommendation.application.ports.runtime import DecisionUnavailableError
+from trader.recommendation.application.ports.runtime import FreezeUnavailableError
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
@@ -164,10 +164,10 @@ def test_market_adapter_uses_candidate_and_local_boundaries(application_feature_
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
-        decision_build=CycleFixtureDependencies(
-            _decision_build().long_runtime,
+        freeze_build=CycleFixtureDependencies(
+            _freeze_build().long_runtime,
             policy,
-            UnifiedDecisionDraftIndex(),
+            UnifiedFreezeDraftIndex(),
             lambda: observed_at,
             candidate_filtering=candidate,
             local_scoring=local,
@@ -178,8 +178,8 @@ def test_market_adapter_uses_candidate_and_local_boundaries(application_feature_
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
     try:
-        adapter.decisions.build_local(request)
-    except DecisionUnavailableError:
+        adapter.freezes.build_local(request)
+    except FreezeUnavailableError:
         # The fixture is intentionally minimal; the boundary call is the contract under test.
         pass
 
@@ -221,9 +221,9 @@ def test_local_scoring_injects_risk_control(application_feature_factory) -> None
     )
 
     assert fused is not None
-    assert fused.decision is not None
+    assert fused.freeze is not None
     assert risk.calls == len(scored.local.items)
-    assert all(item.setup_type == "fixture" for item in fused.decision.items)
+    assert all(item.setup_type == "fixture" for item in fused.freeze.items)
 
 
 def test_local_scoring_injects_ranking_selection(application_feature_factory) -> None:
@@ -263,8 +263,8 @@ def test_score_fusion_service_preserves_manifest_gate_and_parentage(application_
     fused = service.fuse(projection, policy, {code: candidate_review}, review_deadline=deadline)
 
     assert fused is not None
-    assert fused.decision is not None
-    assert fused.decision.parent_version == projection.local.version
+    assert fused.freeze is not None
+    assert fused.freeze.parent_version == projection.local.version
 
 
 def test_recommendation_application_does_not_import_infrastructure_or_training() -> None:

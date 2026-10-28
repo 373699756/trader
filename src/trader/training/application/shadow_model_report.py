@@ -58,8 +58,8 @@ class ShadowLabeledDay:
             raise ValueError("shadow settlements must exactly cover feature rows")
         if any(item.horizon != self.horizon for item in settlements):
             raise ValueError("shadow settlement horizon must match its labeled day")
-        if any(item.basis.decision_date != self.features.trade_date for item in settlements):
-            raise ValueError("shadow settlement decision date must match feature date")
+        if any(item.basis.freeze_date != self.features.trade_date for item in settlements):
+            raise ValueError("shadow settlement freeze date must match feature date")
         if any(item.basis.board != rows[item.basis.code].board for item in settlements):
             raise ValueError("shadow settlement board must match feature row")
         object.__setattr__(self, "settlements", settlements)

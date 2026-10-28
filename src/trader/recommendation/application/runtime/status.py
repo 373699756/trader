@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import FreezeObserverStatus
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoSnapshot
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.recommendation.application.ports.runtime import ResearchRuntimeStatus, SharedDeepSeekRuntimeContract
@@ -36,14 +36,14 @@ class SchedulerRuntimeStatus:
     hybrid_lanes: tuple[LatestWinsStatus, ...]
     task_lanes: tuple[LatestWinsStatus, ...]
     cadence: CadencePlannerStatus
-    observer: DecisionObserverStatus
+    observer: FreezeObserverStatus
     deepseek: SharedDeepSeekRuntimeContract
     company_research: ResearchRuntimeStatus
     control_running: bool
     control_inflight: int
     control_rejected_count: int
     refresh_failure_count: int
-    decision_failure_count: int
+    freeze_failure_count: int
     review_failure_count: int
     overlay_publish_count: int
     overlay_failure_count: int
@@ -52,7 +52,7 @@ class SchedulerRuntimeStatus:
     publish_rejection_count: int
     observer_rejection_count: int
     freeze_completed_count: int
-    freeze_failure_count: int
+    seal_failure_count: int
     settlement_completed_count: int
     settlement_failure_count: int
     last_error_code: str

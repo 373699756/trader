@@ -6,7 +6,7 @@ import pytest
 
 from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
-    DecisionAt,
+    FreezeAt,
     FreezeDueAt,
     MarketPhase,
     PhaseAt,
@@ -42,20 +42,20 @@ def test_phase_boundaries_are_left_closed(clock, expected) -> None:
     assert PhaseAt(at, is_trading_day=True) is expected
 
 
-def test_freeze_decisions_are_exact_windows() -> None:
+def test_freeze_windows_are_exact() -> None:
     midday = datetime(2026, 7, 16, 11, 20, tzinfo=SHANGHAI)
     afternoon = datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI)
 
-    assert DecisionAt(midday, is_trading_day=True).freeze_strategies == ()
-    assert DecisionAt(afternoon, is_trading_day=True).freeze_strategies == ("tomorrow", "d25")
-    assert DecisionAt(midday, is_trading_day=False).freeze_strategies == ()
+    assert FreezeAt(midday, is_trading_day=True).freeze_strategies == ()
+    assert FreezeAt(afternoon, is_trading_day=True).freeze_strategies == ("tomorrow", "d25")
+    assert FreezeAt(midday, is_trading_day=False).freeze_strategies == ()
 
 
 def test_freeze_due_survives_a_missed_exact_window() -> None:
     midday = datetime(2026, 7, 16, 13, 0, tzinfo=SHANGHAI)
     after_freeze = datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI)
 
-    assert DecisionAt(midday, is_trading_day=True).freeze_strategies == ()
+    assert FreezeAt(midday, is_trading_day=True).freeze_strategies == ()
     assert FreezeDueAt(midday, is_trading_day=True) == ()
     assert FreezeDueAt(after_freeze, is_trading_day=True) == ("tomorrow", "d25")
     assert FreezeDueAt(after_freeze, is_trading_day=False) == ()
@@ -87,10 +87,10 @@ def test_final_schedule_points_match_the_freeze_acceptance_window(clock, point) 
 def test_review_and_scoring_continue_until_close() -> None:
     cutoff = datetime(2026, 7, 16, 14, 59, 20, tzinfo=SHANGHAI)
 
-    decision = DecisionAt(cutoff, is_trading_day=True)
+    freeze = FreezeAt(cutoff, is_trading_day=True)
 
-    assert decision.should_score is True
-    assert decision.should_review is True
+    assert freeze.should_score is True
+    assert freeze.should_review is True
     assert SecondsUntilNextScheduleBoundary(cutoff.replace(second=19), maximum_seconds=60) == 41
 
 

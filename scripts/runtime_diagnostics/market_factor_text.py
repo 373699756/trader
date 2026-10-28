@@ -150,7 +150,7 @@ def RenderMarketFactorText(report: Mapping[str, object]) -> str:
         if not isinstance(item, dict):
             continue
         lines.append(f"评分派生字段（{item.get('profile')}）：")
-        for owner, fields in _mapping(item.get("decision_fields_by_owner")).items():
+        for owner, fields in _mapping(item.get("freeze_fields_by_owner")).items():
             lines.append(f"  {owner}：{_field_names(fields)}")
         lines.append(f"  model_gate：{_field_names(item.get('model_gate_features'))}")
     lines.extend(("", "一、单源结果"))

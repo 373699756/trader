@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import shutil
-import sqlite3
-from datetime import date, datetime
 from pathlib import Path
 
 from trader.infra.sqlite_connection import (
@@ -17,12 +14,6 @@ from trader.infra.sqlite_connection import (
     SqliteSession,
     SqliteTransaction,
 )
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
-from trader.recommendation.infra.persistence import data_plane_sqlite
-from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordFromBytes
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.training.infra.research.trace_codec import DEFAULT_DECODED_PAYLOAD_BYTES, DecodedPayloadBytes
-from trader.training.infra.research.trace_storage import InitializeDatabase
 
 _READ = SqliteConnectionOptions(read_only=True, immutable=True)
 
@@ -112,129 +103,9 @@ def _insert_exact(connection: SqliteConnection, table: str, columns: tuple[str, 
             raise ValueError("migration_database_identity_conflict")
 
 
-def ImportDecisions(database: Path, target: Path) -> None:
-    if not database.is_file():
-        return
-    ValidateDatabase(database)
-    records = SQLiteDecisionRecords(target)
-    records.initialize()
-    with SqliteSession(database, _READ) as connection:
-        for row in connection.run("SELECT * FROM decision_records ORDER BY trade_date,strategy"):
-            if row["status"] != "committed":
-                raise ValueError("migration_requires_recovered_formal_decisions")
-            payload = _verified_payload(database.parent, row)
-            record = CommittedRecordFromBytes(payload)
-            if (
-                record.strategy.value,
-                record.trade_date.isoformat(),
-                record.version,
-                record.payload_hash,
-                record.committed_at.isoformat(),
-                record.commit_kind,
-            ) != tuple(
-                row[key] for key in ("strategy", "trade_date", "version", "payload_hash", "committed_at", "commit_kind")
-            ):
-                raise ValueError("migration_decision_identity_invalid")
-            records.import_record_bytes(payload)
-        for row in connection.run("SELECT * FROM decision_checkpoints ORDER BY trade_date,strategy"):
-            payload = _verified_payload(database.parent, row)
-            envelope = CommittedRecordFromBytes(payload)
-            checkpoint = DecisionCheckpoint(envelope.decision, envelope.committed_at)
-            if (
-                checkpoint.version,
-                checkpoint.decision.version,
-                checkpoint.boundary_at.isoformat(),
-                checkpoint.decision.observed_at.isoformat(),
-                checkpoint.decision.strategy.value,
-                checkpoint.decision.trade_date.isoformat(),
-            ) != tuple(
-                row[key]
-                for key in ("version", "decision_version", "boundary_at", "observed_at", "strategy", "trade_date")
-            ):
-                raise ValueError("migration_checkpoint_identity_invalid")
-            records.import_checkpoint_bytes(payload)
-            if row["consumed_at"] is not None:
-                records.consume_checkpoint(checkpoint, consumed_at=datetime.fromisoformat(row["consumed_at"]))
-        known = {
-            str(row[0])
-            for row in connection.run(
-                "SELECT relative_path FROM decision_records UNION SELECT relative_path FROM decision_checkpoints"
-            )
-        }
-        for path in database.parent.rglob("*.json"):
-            if path.relative_to(database.parent).as_posix() not in known:
-                raise ValueError("migration_unindexed_decision_evidence")
-    # Verify exact persisted bytes, independently of the decoder's in-memory representation.
-    with (
-        SqliteSession(database, _READ) as reader,
-        SqliteSession(target, SqliteConnectionOptions(read_only=True)) as writer,
-    ):
-        for table in ("decision_records", "decision_checkpoints"):
-            for row in reader.run(f"SELECT * FROM {table}"):
-                actual = writer.run(
-                    f"SELECT payload,payload_sha256 FROM {table} WHERE strategy=? AND trade_date=?",
-                    (row["strategy"], row["trade_date"]),
-                ).require_one()
-                if tuple(actual) != (_verified_payload(database.parent, row), row["payload_sha256"]):
-                    raise ValueError("migration_decision_bytes_changed")
-
-
-def _verified_payload(root: Path, row: sqlite3.Row) -> bytes:
-    relative = Path(row["relative_path"])
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError("migration_manifest_path_invalid")
-    payload = (root / relative).read_bytes()
-    if hashlib.sha256(payload).hexdigest() != row["payload_sha256"]:
-        raise ValueError("migration_payload_checksum_invalid")
-    return payload
-
-
-def ImportSequence(source: Path, target: Path) -> None:
-    if not source.is_file():
-        return
-    ValidateDatabase(source)
-    with SqliteSession(source, _READ) as reader:
-        reserved = reader.run("SELECT reserved_until FROM publication_sequence WHERE singleton=1").require_one()[0]
-    if type(reserved) is not int or not 0 <= reserved < 2**63:
-        raise ValueError("migration_sequence_invalid")
-    data_plane_sqlite.InitializeDatabase(target)
-    with SqliteSession(target) as writer, SqliteTransaction(writer, immediate=True):
-        writer.run(
-            "INSERT INTO publication_sequence VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET reserved_until=MAX(reserved_until,excluded.reserved_until)",
-            (reserved,),
-        )
-
-
-def ImportTraces(source: Path, target: Path) -> None:
-    """Partition existing canonical rows by their original trade date, retaining quarantine bytes."""
-    if not source.is_file():
-        return
-    ValidateDatabase(source)
-    initialized: set[Path] = set()
-    with SqliteSession(source, _READ) as reader:
-        for table in ("committed_events", "committed_event_quarantine"):
-            columns = tuple(str(row[1]) for row in reader.run(f"PRAGMA table_info({table})"))
-            for row in reader.run(f"SELECT * FROM {table}"):
-                if table == "committed_events":
-                    day = date.fromisoformat(row["trade_date"])
-                else:
-                    # Quarantine has no date column. Its unchanged JSON envelope must supply the partition.
-                    envelope = json.loads(
-                        DecodedPayloadBytes(bytes(row["payload"]), maximum_bytes=DEFAULT_DECODED_PAYLOAD_BYTES)
-                    )
-                    day = date.fromisoformat(envelope["trade_date"])
-                path = target / f"{day.isoformat()}.sqlite3"
-                InitializeDatabase(path, initialized)
-                with SqliteSession(path) as writer, SqliteTransaction(writer, immediate=True):
-                    _insert_exact(writer, table, columns, tuple(row))
-
-
 __all__ = [
     "CopyFile",
     "FileDigest",
     "ValidateDatabase",
     "MergeDatabase",
-    "ImportDecisions",
-    "ImportSequence",
-    "ImportTraces",
 ]

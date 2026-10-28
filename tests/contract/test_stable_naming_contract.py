@@ -26,10 +26,10 @@ PROHIBITED_PATH = re.compile(
     re.IGNORECASE,
 )
 PROHIBITED_PROJECT_TOKEN = re.compile(
-    r"\bV\d+(?:Runtime|Cycle|Decision|Data|DeepSeek|Freeze|Input|Market|Outcome|Overlay|Pipeline|"
+    r"\bV\d+(?:Runtime|Cycle|Freeze|Data|DeepSeek|Input|Market|Outcome|Overlay|Pipeline|"
     r"Refresh|Research|Review|Scheduler|Settlement|Supply|Trading|Control|Committed)|"
-    r"\b(?:v\d+[_-])?(?:decision_view|status|event|error|long_projection|decision_identity|"
-    r"committed_decision|decision_overlay|research_readiness|production_performance)[_-]v\d+\b|"
+    r"\b(?:v\d+[_-])?(?:freeze_view|status|event|error|long_projection|freeze_identity|"
+    r"committed_freeze|freeze_overlay|research_readiness|production_performance)[_-]v\d+\b|"
     r"\b(?:runtime|market|feature|cache|columnar|issuer|diagnostic|sampling|probe|report|audit|"
     r"progress|artifact|manifest|dataset|contract|policy|rule)[A-Za-z0-9_-]*[_-]v\d+\b",
     re.IGNORECASE,
@@ -70,16 +70,16 @@ def test_non_scoring_code_and_contracts_use_stable_semantic_names() -> None:
 
 def test_public_release_contract_uses_stable_schema_identities() -> None:
     release_contract = (PROJECT_ROOT / "src/trader/web/static/release_contract.js").read_text(encoding="utf-8")
-    decision_queries = (
+    freeze_queries = (
         PROJECT_ROOT / "src/trader/recommendation/application/pipeline/freeze_publish/read_only_queries.py"
     ).read_text(encoding="utf-8")
 
     assert 'const STATUS_SCHEMA = "runtime_status";' in release_contract
-    assert 'const DECISION_VIEW_SCHEMA = "decision_view";' in release_contract
-    assert 'DECISION_VIEW_SCHEMA_VERSION = "decision_view"' in decision_queries
-    versioned_decision_schema = re.compile(r"\bv\d+_decision_view_v\d+\b", re.IGNORECASE)
-    assert versioned_decision_schema.search(release_contract) is None
-    assert versioned_decision_schema.search(decision_queries) is None
+    assert 'const FREEZE_VIEW_SCHEMA = "freeze_view";' in release_contract
+    assert 'FREEZE_VIEW_SCHEMA_VERSION = "freeze_view"' in freeze_queries
+    versioned_freeze_schema = re.compile(r"\bv\d+_freeze_view_v\d+\b", re.IGNORECASE)
+    assert versioned_freeze_schema.search(release_contract) is None
+    assert versioned_freeze_schema.search(freeze_queries) is None
 
 
 def test_runtime_and_configuration_paths_are_not_project_versioned() -> None:

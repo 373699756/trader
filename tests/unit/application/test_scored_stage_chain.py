@@ -10,7 +10,7 @@ from tests.unit.application.cycle_fixture import build_cycle_fixture
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
 from tests.unit.application.test_input_runtime import (
-    _decision_build,
+    _freeze_build,
     _Market,
     _policy,
     _prime_scoring_cache,
@@ -26,7 +26,7 @@ from tests.unit.application.test_tomorrow_projection import (
     _verified_feature,
     _with_model_features,
 )
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
     ScoredProjectionInputs,
@@ -45,7 +45,7 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.evidence.review import ReviewOutcome, RiskFact, RiskRule
 from trader.recommendation.domain.market.models import Board, Evidence
-from trader.recommendation.domain.publication.decision_identity import FormalScoredDecision, VisibleScoredSeats
+from trader.recommendation.domain.publication.freeze_identity import FormalScoredFreeze, VisibleScoredSeats
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
@@ -124,11 +124,11 @@ def test_full_population_places_former_121st_input_third_and_veto_never_refills(
     hybrid = BuildScoredHybrid(
         projection, policy, {"600120": reviewed}, review_deadline=EVALUATED_AT + timedelta(minutes=1)
     )
-    assert hybrid is not None and hybrid.decision is not None
+    assert hybrid is not None and hybrid.freeze is not None
     assert hybrid.stages.fixed_selection is projection.stages.fixed_selection
-    assert tuple(item.code for item in VisibleScoredSeats(hybrid.decision)) == expected
-    assert tuple(item.code for item in VisibleScoredSeats(FormalScoredDecision(hybrid.decision))) == expected
-    vetoed = next(item for item in hybrid.decision.items if item.code == "600120")
+    assert tuple(item.code for item in VisibleScoredSeats(hybrid.freeze)) == expected
+    assert tuple(item.code for item in VisibleScoredSeats(FormalScoredFreeze(hybrid.freeze))) == expected
+    vetoed = next(item for item in hybrid.freeze.items if item.code == "600120")
     assert vetoed.action.value == "unavailable" and vetoed.selected and vetoed.rank == 3
     assert vetoed.final_score == vetoed.local_score == 79.0
     review_counts = {reason.code: reason.count for reason in hybrid.stages.risk_review.snapshot.reasons}
@@ -152,7 +152,7 @@ def _features(factory):
 
 
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
-def test_real_scored_handoffs_measure_operations_and_match_selected_decision(application_feature_factory, native_type):
+def test_real_scored_handoffs_measure_operations_and_match_selected_freeze(application_feature_factory, native_type):
     features = _features(application_feature_factory)
     before = tuple(features)
     ticks = count()
@@ -228,17 +228,17 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
         monotonic=lambda: float(next(ticks)),
         review_latency_ms=73,
     )
-    assert result is not None and result.decision is not None
-    assert local.local.preview_context is result.decision.preview_context is context
+    assert result is not None and result.freeze is not None
+    assert local.local.preview_context is result.freeze.preview_context is context
     assert result.stages.local_score is local.stages.local_score
     assert result.stages.risk_review.snapshot.latency_ms == 1073
     assert result.stages.fixed_selection is local.stages.fixed_selection
     assert result.stages.action_publish.snapshot.latency_ms == 1000
     assert result.stages.risk_review.snapshot.output_batch_id != local.stages.risk_review.snapshot.output_batch_id
     assert tuple(item.code for item in result.stages.action_publish.records) == tuple(
-        item.code for item in sorted(result.decision.items, key=lambda item: item.rank) if item.selected
+        item.code for item in sorted(result.freeze.items, key=lambda item: item.rank) if item.selected
     )
-    assert result.decision.parent_version == local.local.version
+    assert result.freeze.parent_version == local.local.version
     assert local.stages.risk_review.records[0].review is None
 
 
@@ -289,7 +289,7 @@ def test_non_trading_day_real_adapters_predict_and_register_review_after_15(appl
     adapter = build_cycle_fixture(
         _Market(tuple(features)),
         config_version="preview-adapter-fixture",
-        decision_build=replace(_decision_build(now=lambda: clock[0]), model_scoring=router),
+        freeze_build=replace(_freeze_build(now=lambda: clock[0]), model_scoring=router),
     )
     request = replace(
         _request(observed_at, strategy=strategy, phase="before_close"),
@@ -299,11 +299,11 @@ def test_non_trading_day_real_adapters_predict_and_register_review_after_15(appl
     )
     _prime_scoring_cache(adapter, observed_at)
     adapter.data.refresh(request)
-    local = adapter.decisions.build_local(request)
+    local = adapter.freezes.build_local(request)
     assert local is not None and local.preview_context is context
     assert local.trade_date == observed_at.date() and local.observed_at == observed_at
     assert predictor.codes and set(predictor.codes).issubset({feature.quote.code for feature in features})
-    projection = adapter.decisions.projection(local.version)
+    projection = adapter.freezes.projection(local.version)
     assert projection is not None and projection.native_input.phase == "before_close"
     assert len(VisibleScoredSeats(local)) == 6
     assert all(item.model_diagnostics is not None for item in local.items)
@@ -317,8 +317,8 @@ def test_non_trading_day_real_adapters_predict_and_register_review_after_15(appl
         {item.code: replace(review(item.code, 100), completed_at=clock[0]) for item in projection.review_candidates},
         review_deadline=request.review_deadline,
     )
-    assert result is not None and result.decision is not None
-    accepted = adapter.decisions.register_review(projection, result)
+    assert result is not None and result.freeze is not None
+    accepted = adapter.freezes.register_review(projection, result)
     assert accepted is not None and accepted.preview_context is context
     assert accepted.stage == "hybrid" and accepted.parent_version == local.version
     assert tuple(item.code for item in VisibleScoredSeats(accepted)) == tuple(
@@ -326,7 +326,7 @@ def test_non_trading_day_real_adapters_predict_and_register_review_after_15(appl
     )
     assert all(item.final_score == item.local_score for item in accepted.items)
     clock[0] = request.review_deadline
-    assert adapter.decisions.register_review(projection, result) is None
+    assert adapter.freezes.register_review(projection, result) is None
 
 
 def test_non_trading_day_real_adapter_publishes_empty_seats_when_population_is_ineligible(application_feature_factory):
@@ -343,7 +343,7 @@ def test_non_trading_day_real_adapter_publishes_empty_seats_when_population_is_i
     adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="preview-empty-fixture",
-        decision_build=replace(_decision_build(now=lambda: observed_at), model_scoring=_router(predictor)),
+        freeze_build=replace(_freeze_build(now=lambda: observed_at), model_scoring=_router(predictor)),
     )
     request = replace(
         _request(observed_at, phase="before_close"),
@@ -357,7 +357,7 @@ def test_non_trading_day_real_adapter_publishes_empty_seats_when_population_is_i
     )
     assert tail.data_version == "intraday:empty"
     adapter.data.refresh(request)
-    local = adapter.decisions.build_local(request)
+    local = adapter.freezes.build_local(request)
     assert local is not None and local.preview_context is context
     assert not VisibleScoredSeats(local) and not local.items
     assert not predictor.codes
@@ -376,7 +376,7 @@ def test_non_trading_day_real_adapter_fails_empty_population_without_pending_ret
     observed_at = EVALUATED_AT.replace(month=10, day=24, hour=16, minute=0)
     context = PreviewContext("missing-population-preview", observed_at.date() - timedelta(days=1), observed_at)
     adapter = build_cycle_fixture(
-        _Market(()), config_version="preview-missing-fixture", decision_build=_decision_build(now=lambda: observed_at)
+        _Market(()), config_version="preview-missing-fixture", freeze_build=_freeze_build(now=lambda: observed_at)
     )
     with pytest.raises(DataRefreshUnavailableError, match=code) as error:
         adapter.data.refresh_task(PipelineTaskRequest(task, observed_at, preview_context=context))
@@ -384,7 +384,7 @@ def test_non_trading_day_real_adapter_fails_empty_population_without_pending_ret
 
 
 @pytest.mark.parametrize("failure", ("rejected", "empty", "late", "deadline"))
-def test_unusable_reviews_leave_real_degraded_observation_without_new_decision(application_feature_factory, failure):
+def test_unusable_reviews_leave_real_degraded_observation_without_new_freeze(application_feature_factory, failure):
     local = BuildScoredLocal(_native_input(_features(application_feature_factory)), _policy(), sequence=1)
     assert local.review_candidates
     deadline = EVALUATED_AT + timedelta(minutes=8)
@@ -401,7 +401,7 @@ def test_unusable_reviews_leave_real_degraded_observation_without_new_decision(a
         }
     )
     result = BuildScoredHybrid(local, _policy(), reviews, review_deadline=deadline, review_latency_ms=73)
-    assert result is not None and result.decision is None
+    assert result is not None and result.freeze is None
     snapshot = result.stages.risk_review.snapshot
     assert snapshot.state is StageState.DEGRADED
     assert snapshot.source_health.state is SourceHealthState.DEGRADED
@@ -476,21 +476,21 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     adapter = build_cycle_fixture(
         _Market(_features(application_feature_factory)),
         config_version="fixture",
-        decision_build=_decision_build(now=lambda: EVALUATED_AT),
+        freeze_build=_freeze_build(now=lambda: EVALUATED_AT),
     )
     request = _request(EVALUATED_AT, phase="afternoon")
     _prime_scoring_cache(adapter, EVALUATED_AT)
     adapter.data.refresh(request)
-    local = adapter.decisions.build_local(request)
+    local = adapter.freezes.build_local(request)
     assert local is not None
     initial_status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert local.pipeline is not None
     assert local.pipeline.stage_snapshots == initial_status.stage_snapshots
     ValidateStageBatchContinuity(local.pipeline.stage_snapshots)
-    projection = adapter.decisions.projection(local.version)
+    projection = adapter.freezes.projection(local.version)
     assert projection is not None and projection.review_candidates
     failed_at = request.review_deadline + timedelta(microseconds=1) if after_deadline else EVALUATED_AT
-    reviewer = DeepSeekAdapter(_FailedReviewer(failure), _policy(), adapter.decisions, now=lambda: failed_at)
+    reviewer = DeepSeekAdapter(_FailedReviewer(failure), _policy(), adapter.freezes, now=lambda: failed_at)
     if failure in {"exception", "manifest_exception"}:
         with pytest.raises(ReviewUnavailableError) as error:
             reviewer.build_hybrid(local, request)
@@ -515,14 +515,14 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
             for reason in next(stage for stage in status.stage_snapshots if stage.stage.value == "risk_review").reasons
         }
     assert status.summary.highest_final_score == max(item.final_score for item in local.items)
-    assert adapter.decisions.projection(local.version) is projection
+    assert adapter.freezes.projection(local.version) is projection
 
     observed = BuildScoredHybrid(projection, _policy(), {}, review_deadline=request.review_deadline)
     assert observed is not None
     later = EVALUATED_AT + timedelta(seconds=1)
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, later))
     pending = adapter.data.input_quality_status()
-    assert adapter.decisions.register_review(projection, observed) is None
+    assert adapter.freezes.register_review(projection, observed) is None
     assert adapter.data.input_quality_status() == pending
 
 
@@ -537,7 +537,7 @@ def test_review_writes_require_current_parent_input_session_and_open_day(
     adapter = build_cycle_fixture(
         _Market(_features(application_feature_factory)),
         config_version="fixture",
-        decision_build=_decision_build(now=lambda: clock[0]),
+        freeze_build=_freeze_build(now=lambda: clock[0]),
     )
     request = _request(EVALUATED_AT, phase="afternoon")
     if superseded_by in {"date", "resume"}:
@@ -545,8 +545,8 @@ def test_review_writes_require_current_parent_input_session_and_open_day(
         request = replace(request, session=session.capture())
     _prime_scoring_cache(adapter, EVALUATED_AT)
     adapter.data.refresh(request)
-    local = adapter.decisions.build_local(request)
-    projection = adapter.decisions.projection(local.version)
+    local = adapter.freezes.build_local(request)
+    projection = adapter.freezes.projection(local.version)
     assert projection is not None and projection.review_candidates
     result = BuildScoredHybrid(
         projection,
@@ -557,13 +557,13 @@ def test_review_writes_require_current_parent_input_session_and_open_day(
         review_deadline=request.review_deadline,
     )
     assert result is not None
-    assert (result.decision is not None) == successful
+    assert (result.freeze is not None) == successful
     if superseded_by == "input":
         adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, EVALUATED_AT + timedelta(seconds=1)))
     elif superseded_by == "local":
         newer = replace(request, sequence=2, input_version="newer-local")
         adapter.data.refresh(newer)
-        assert adapter.decisions.build_local(newer).version != local.version
+        assert adapter.freezes.build_local(newer).version != local.version
     elif superseded_by == "date":
         clock[0] += timedelta(days=1)
     elif superseded_by == "resume":
@@ -571,9 +571,9 @@ def test_review_writes_require_current_parent_input_session_and_open_day(
     elif superseded_by == "close":
         clock[0] = clock[0].replace(hour=15, minute=0)
     elif superseded_by in {"cas_close", "cas_input"}:
-        from trader.recommendation.application.pipeline.local_score import local_decision_builder
+        from trader.recommendation.application.pipeline.local_score import local_freeze_builder
 
-        update = local_decision_builder.UpdateSupplyStatusDecision
+        update = local_freeze_builder.UpdateSupplyStatusFreeze
 
         def advance_before_commit(*args, **kwargs):
             quality = update(*args, **kwargs)
@@ -585,9 +585,9 @@ def test_review_writes_require_current_parent_input_session_and_open_day(
                 )
             return quality
 
-        monkeypatch.setattr(local_decision_builder, "UpdateSupplyStatusDecision", advance_before_commit)
+        monkeypatch.setattr(local_freeze_builder, "UpdateSupplyStatusFreeze", advance_before_commit)
     before = adapter.data.input_quality_status()
-    accepted = adapter.decisions.register_review(projection, result)
+    accepted = adapter.freezes.register_review(projection, result)
     after = adapter.data.input_quality_status()
     if superseded_by != "none":
         assert accepted is None
@@ -604,34 +604,34 @@ def test_review_writes_require_current_parent_input_session_and_open_day(
         else:
             assert accepted is None
             assert updated.stage_snapshots[10].state is StageState.DEGRADED
-    assert adapter.decisions.projection(local.version) is projection
+    assert adapter.freezes.projection(local.version) is projection
 
 
 def test_local_diagnostics_cannot_commit_after_inputs_advance_during_scoring(application_feature_factory, monkeypatch):
-    from trader.recommendation.application.pipeline.local_score import local_decision_builder
+    from trader.recommendation.application.pipeline.local_score import local_freeze_builder
 
     adapter = build_cycle_fixture(
         _Market(_features(application_feature_factory)),
         config_version="fixture",
-        decision_build=_decision_build(now=lambda: EVALUATED_AT),
+        freeze_build=_freeze_build(now=lambda: EVALUATED_AT),
     )
     request = _request(EVALUATED_AT, phase="afternoon")
     _prime_scoring_cache(adapter, EVALUATED_AT)
     adapter.data.refresh(request)
     before = adapter.data.input_quality_status()
-    build = local_decision_builder.BuildSupplyStatus
+    build = local_freeze_builder.BuildSupplyStatus
 
     def advance_before_commit(*args, **kwargs):
         quality = build(*args, **kwargs)
         adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, EVALUATED_AT + timedelta(seconds=1)))
         return quality
 
-    monkeypatch.setattr(local_decision_builder, "BuildSupplyStatus", advance_before_commit)
-    local = adapter.decisions.build_local(request)
+    monkeypatch.setattr(local_freeze_builder, "BuildSupplyStatus", advance_before_commit)
+    local = adapter.freezes.build_local(request)
     assert local is not None
     assert adapter.data.input_quality_status() == before
-    projection = adapter.decisions.projection(local.version)
+    projection = adapter.freezes.projection(local.version)
     observed = BuildScoredHybrid(projection, _policy(), {}, review_deadline=request.review_deadline)
     assert observed is not None
-    assert adapter.decisions.register_review(projection, observed) is None
+    assert adapter.freezes.register_review(projection, observed) is None
     assert adapter.data.input_quality_status() == before

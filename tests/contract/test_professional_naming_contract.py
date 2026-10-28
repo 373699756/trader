@@ -136,14 +136,11 @@ FORBIDDEN_PUBLIC_NAMES = {
 FORBIDDEN_MODULE_CONSTANTS = {"HISTORICAL_RISK_VALIDATION_SPEC"}
 
 MIGRATED_DATA_PLANE_PATHS = (
-    "recommendation/application/ports/data_plane_records.py",
-    "recommendation/infra/persistence/data_plane.py",
-    "recommendation/infra/persistence/data_plane_initialization.py",
     "recommendation/application/runtime/runtime_issues.py",
     "recommendation/application/runtime/source_lanes.py",
-    "recommendation/application/ports/decision_records.py",
+    "recommendation/application/ports/freeze_records.py",
     "recommendation/application/pipeline/freeze_publish/freeze_coordinator.py",
-    "recommendation/infra/persistence/decision_records.py",
+    "recommendation/infra/persistence/freeze_records.py",
     "recommendation/domain/market/eligibility.py",
     "recommendation/application/ports/eligibility.py",
 )

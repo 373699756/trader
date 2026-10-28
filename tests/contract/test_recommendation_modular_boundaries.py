@@ -13,21 +13,21 @@ def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> 
     input_runtime = (SOURCE / "recommendation/application/pipeline/data_source/source_router.py").read_text(
         encoding="utf-8"
     )
-    decision_adapters = (SOURCE / "recommendation/application/pipeline/freeze_publish/runtime_adapters.py").read_text(
+    freeze_adapters = (SOURCE / "recommendation/application/pipeline/freeze_publish/runtime_adapters.py").read_text(
         encoding="utf-8"
     )
-    local_builder = (SOURCE / "recommendation/application/pipeline/local_score/local_decision_builder.py").read_text(
+    local_builder = (SOURCE / "recommendation/application/pipeline/local_score/local_freeze_builder.py").read_text(
         encoding="utf-8"
     )
 
     assert "CandidateFilteringPort" in input_runtime
     assert "LocalScoringPort" not in input_runtime
     assert "LocalScoringPort" in local_builder
-    assert "ScoreFusionPort" in decision_adapters
+    assert "ScoreFusionPort" in freeze_adapters
     assert "build_candidate_plans" not in input_runtime
     assert "refresh_candidate_reserves" not in input_runtime
     assert "build_scored_local" not in input_runtime
-    assert "build_scored_hybrid" not in decision_adapters
+    assert "build_scored_hybrid" not in freeze_adapters
     assert "run_v2_training" not in input_runtime
     assert "run_v3_training" not in input_runtime
     assert "run_v2_training" not in local_builder

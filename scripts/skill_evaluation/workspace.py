@@ -22,7 +22,7 @@ _AGENTS = """# Isolated Trader skill fixture
 This is a synthetic repository. No market data or production services exist here.
 Use the repository skills when applicable. Read AGENTS.md and pyproject.toml first.
 Planning and read-only requests do not authorize edits, commits or pushes.
-For repository changes use $trader-delivery; Python decisions use $python-engineering-guide.
+For repository changes use $trader-delivery; Python changes use $python-engineering-guide.
 Naming authority: [.agents coding rules](.agents/skills/python-engineering-guide/references/coding-standard.md).
 Current branch is Afuture. Keep unrelated files unchanged. One responsibility has one owner;
 switch all consumers atomically and delete the old path, with no compatibility aliases.

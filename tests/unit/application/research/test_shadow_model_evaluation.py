@@ -133,7 +133,7 @@ def _labeled_day(index: int, horizon: str) -> ShadowLabeledDay:
             basis=CostSettlementBasis(
                 code=code,
                 board=rows[position].board,
-                decision_date=trade_date,
+                freeze_date=trade_date,
                 label_date=trade_date + timedelta(days=label_lag),
                 gross_excess_return=(index % 9 - 4) * 0.003 + position * 0.001,
                 mae_atr20=-1.8 if (index + position) % 11 == 0 else -0.4,

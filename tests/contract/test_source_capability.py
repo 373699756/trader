@@ -11,7 +11,6 @@ COORDINATOR = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_dat
 SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings" / "runtime_loader.py"
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
 MARKET_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data.py"
-DATA_PLANE_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "data_plane_records.py"
 
 
 def test_unimplemented_sources_are_not_wired_into_market_runtime() -> None:
@@ -46,11 +45,9 @@ def test_source_contracts_contract_expected_five_sources() -> None:
     assert actual == {"eastmoney", "sina", "tencent", "tushare"}
 
 
-def test_source_contract_freezes_unified_read_and_persisted_calendar_ports() -> None:
+def test_source_contract_keeps_read_port_and_removes_unused_calendar_copy() -> None:
     market_tree = ast.parse(MARKET_PORTS.read_text(encoding="utf-8"))
-    data_plane_tree = ast.parse(DATA_PLANE_PORTS.read_text(encoding="utf-8"))
     market_classes = {node.name for node in ast.walk(market_tree) if isinstance(node, ast.ClassDef)}
-    data_plane_classes = {node.name for node in ast.walk(data_plane_tree) if isinstance(node, ast.ClassDef)}
 
     assert "DataPlaneReadPort" in market_classes
-    assert "TradingCalendarRecord" in data_plane_classes
+    assert not (ROOT / "src/trader/recommendation/application/ports/data_plane_records.py").exists()

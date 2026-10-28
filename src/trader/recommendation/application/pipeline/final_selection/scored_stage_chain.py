@@ -26,15 +26,15 @@ from trader.recommendation.domain.risk.scored_fusion import (
     FuseScoredEvaluations,
     ReviewedScoredEvaluation,
     ReviewScoredEvaluations,
-    ScoredDecisionEntry,
-    ScoredDecisionPolicy,
+    ScoredFreezeEntry,
+    ScoredFreezePolicy,
     SelectFixedScoredSeats,
 )
 
 
 @dataclass(frozen=True)
 class ScoredStageContext:
-    policy: ScoredDecisionPolicy
+    policy: ScoredFreezePolicy
     observed_at: datetime
     review_candidate_codes: tuple[str, ...]
     reviews: tuple[DeepSeekReview, ...]
@@ -51,8 +51,8 @@ class ScoredStageChain:
     local_risk: PipelineStageOutput[ScoredStockEvaluation]
     fixed_selection: PipelineStageOutput[ScoredStockEvaluation]
     risk_review: PipelineStageOutput[ReviewedScoredEvaluation]
-    action_publish: PipelineStageOutput[ScoredDecisionEntry]
-    entries: tuple[ScoredDecisionEntry, ...]
+    action_publish: PipelineStageOutput[ScoredFreezeEntry]
+    entries: tuple[ScoredFreezeEntry, ...]
 
     @property
     def snapshots(self) -> tuple[PipelineStageSnapshot, ...]:
@@ -153,7 +153,7 @@ def CompleteScoredStages(
     actions = ApplyScoredActions(fused, request.policy)
     # A veto changes the action, never membership or rank.
     entries = tuple(
-        replace(item, selected=True, rank=index, selection_rank=index, decision_skip_reason="")
+        replace(item, selected=True, rank=index, selection_rank=index, freeze_skip_reason="")
         for index, item in enumerate(actions, start=1)
     )
     action = MeasuredOutput(
@@ -175,7 +175,7 @@ def CompleteScoredStages(
 
 def FixScoredSeats(
     source: PipelineStageOutput[ScoredStockEvaluation],
-    policy: ScoredDecisionPolicy,
+    policy: ScoredFreezePolicy,
     at: datetime,
     monotonic: Callable[[], float],
 ) -> PipelineStageOutput[ScoredStockEvaluation]:

@@ -124,8 +124,8 @@ class ChallengerReplayer:
             day.summary.input_hash,
             overrides,
             pairs,
-            "selected" if local_count else "no_decision",
-            "selected" if hybrid_count else "no_decision",
+            "selected" if local_count else "no_freeze",
+            "selected" if hybrid_count else "no_freeze",
         )
 
 

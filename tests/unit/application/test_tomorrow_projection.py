@@ -11,28 +11,28 @@ from tests.unit.application.pipeline_helpers import observed_input_stages, obser
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
 from trader.infra.settings import LoadStrategySettings
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
     ScoredProjectionInputs,
     _model_eligible_features,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import ScoredDecisionCoverage
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.freeze_coverage import ScoredFreezeCoverage
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import QualityScoringBatch
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     BuildSupplyStatus,
-    UpdateSupplyStatusDecision,
+    UpdateSupplyStatusFreeze,
 )
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, StageState, ValidateStageBatchContinuity
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    FormalScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    FormalScoredFreeze,
     VisibleScoredSeats,
 )
 from trader.recommendation.domain.publication.models import Strategy
@@ -42,7 +42,7 @@ from trader.recommendation.domain.scoring.residualization import (
 )
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
-from trader.recommendation.infra.persistence.decision_record_codec import (
+from trader.recommendation.infra.persistence.freeze_record_codec import (
     CommittedRecordBytes,
     CommittedRecordFromBytes,
 )
@@ -162,7 +162,7 @@ def test_fourteenth_stage_cannot_select_beyond_the_global_score_six(application_
     assert stages[-2].output_count == 1
     assert stages[-1].input_count == 1
     assert stages[-1].output_count == 1
-    assert ScoredDecisionCoverage(projection.local).selected_count == 1
+    assert ScoredFreezeCoverage(projection.local).selected_count == 1
     assert all(item.selected for item in VisibleScoredSeats(projection.local))
 
 
@@ -226,7 +226,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert all(item.downside is not None for item in projection.local.items)
     assert all(item.research_coverage is not None for item in projection.local.items)
     audit = BuildCommittedResearchAudit(projection, projection.local)
-    assert audit.decision_hash == projection.local.content_hash
+    assert audit.freeze_hash == projection.local.content_hash
     assert audit.deepseek_request_delta == 0
     assert audit.shadow_mode == "control_copy"
     assert audit.production_local == audit.research_shadow
@@ -243,26 +243,26 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     )
 
     assert hybrid is not None
-    assert hybrid.decision is not None
-    hybrid = hybrid.decision
+    assert hybrid.freeze is not None
+    hybrid = hybrid.freeze
     assert hybrid.parent_version == projection.local.version
     assert hybrid.input_versions == projection.local.input_versions
     local_scores = {item.code: item.final_score for item in projection.local.items}
     assert all(item.final_score == local_scores[item.code] for item in hybrid.items)
-    record = CommittedDecisionRecord(FormalScoredDecision(hybrid), EVALUATED_AT.replace(hour=15, minute=0), "scheduled")
+    record = CommittedFreezeRecord(FormalScoredFreeze(hybrid), EVALUATED_AT.replace(hour=15, minute=0), "scheduled")
     encoded = CommittedRecordBytes(record)
     restored = CommittedRecordFromBytes(encoded)
     assert restored == record
     assert CommittedRecordBytes(restored) == encoded
-    assert restored.decision.input_versions == projection.local.input_versions
+    assert restored.freeze.input_versions == projection.local.input_versions
     reviewed = next(item for item in hybrid.items if item.code == code)
     assert reviewed.review_outcome == "applied"
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     local_result = index.publish(projection.local, expected_version=None)
     hybrid_result = index.publish(hybrid, expected_version=projection.local.version)
     assert local_result.accepted and hybrid_result.accepted
     assert hybrid_result.event is not None
-    assert hybrid_result.event.decision_version == hybrid.version
+    assert hybrid_result.event.freeze_version == hybrid.version
     assert index.snapshot(Strategy.TOMORROW).current == hybrid
 
 
@@ -304,7 +304,7 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     assert all(complete_status.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert tuple(stage.stage for stage in complete_status.stage_snapshots) == tuple(PipelineStage)
     ValidateStageBatchContinuity(complete_status.stage_snapshots)
-    updated = UpdateSupplyStatusDecision(complete_status, projection, projection.local, scored_stages=projection.stages)
+    updated = UpdateSupplyStatusFreeze(complete_status, projection, projection.local, scored_stages=projection.stages)
     assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert complete_status.stage_snapshots[-1].stage is PipelineStage.ACTION_PUBLISH
     assert complete_status.stage_snapshots[-1].state is StageState.READY
@@ -501,7 +501,7 @@ def test_tomorrow_model_history_coverage_requires_the_loaded_profile_fields(
         (0.01, "executable"),
     ),
 )
-def test_configured_action_floors_reach_decision_projection(
+def test_configured_action_floors_reach_freeze_projection(
     application_feature_factory,
     native_type: type[ScoredNativeInput],
     offset: float,
@@ -583,15 +583,15 @@ def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
     )
 
     assert hybrid is not None
-    assert hybrid.decision is not None
-    hybrid = hybrid.decision
+    assert hybrid.freeze is not None
+    hybrid = hybrid.freeze
     assert hybrid.parent_version == projection.local.version
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     local_result = index.publish(projection.local, expected_version=None)
     hybrid_result = index.publish(hybrid, expected_version=projection.local.version)
     assert local_result.accepted and hybrid_result.accepted
     assert hybrid_result.event is not None
-    assert hybrid_result.event.decision_version == hybrid.version
+    assert hybrid_result.event.freeze_version == hybrid.version
     assert index.snapshot(Strategy.D25).current == hybrid
 
 
@@ -803,7 +803,7 @@ def test_review_completed_after_1448_cannot_create_hybrid(application_feature_fa
         review_deadline=deadline,
     )
     assert result is not None
-    assert result.decision is None
+    assert result.freeze is None
     assert any(reason.code == "deepseek_late" for reason in result.stages.risk_review.snapshot.reasons)
 
 
@@ -825,7 +825,7 @@ def test_review_completed_at_1448_cannot_create_hybrid(application_feature_facto
         review_deadline=deadline,
     )
     assert result is not None
-    assert result.decision is None
+    assert result.freeze is None
 
 
 def _native_input(

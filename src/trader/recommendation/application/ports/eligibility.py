@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Protocol
 
 from trader.recommendation.domain.market.eligibility import (
-    IssuerEligibilityDecision,
     IssuerEligibilityFact,
+    IssuerEligibilityFreeze,
     IssuerEligibilitySnapshot,
 )
 
@@ -18,7 +18,7 @@ class IssuerEligibilityPort(Protocol):
 
     def filter_codes(self, codes: Sequence[str], observed_at: datetime) -> tuple[str, ...]: ...
 
-    def exclusions(self, observed_at: datetime) -> tuple[IssuerEligibilityDecision, ...]: ...
+    def exclusions(self, observed_at: datetime) -> tuple[IssuerEligibilityFreeze, ...]: ...
 
     def facts(self) -> tuple[IssuerEligibilityFact, ...]: ...
 

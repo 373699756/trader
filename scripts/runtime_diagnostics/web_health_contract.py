@@ -284,7 +284,7 @@ class WebRuntimeIssue:
 @dataclass(frozen=True)
 class StatusSnapshot:
     schema_version: str | None
-    release_decision_schema: str | None
+    release_freeze_schema: str | None
     runtime_status: str | None
     runtime_started: bool
     runtime_version: str | None
@@ -313,13 +313,13 @@ class WebSample:
     sample_number: int
     collected_at: str
     status: StatusSnapshot | None
-    decisions: Mapping[str, ProjectionSnapshot]
+    freezes: Mapping[str, ProjectionSnapshot]
     fetch_issues: tuple[FetchIssue, ...] = ()
 
     def __post_init__(self) -> None:
         if self.sample_number < 1:
             raise ValueError("sample number must be positive")
-        object.__setattr__(self, "decisions", MappingProxyType(dict(self.decisions)))
+        object.__setattr__(self, "freezes", MappingProxyType(dict(self.freezes)))
 
 
 def parse_web_sample(
@@ -327,7 +327,7 @@ def parse_web_sample(
     collected_at: str,
     *,
     status_payload: Mapping[str, object] | None,
-    decision_payloads: Mapping[str, Mapping[str, object]],
+    freeze_payloads: Mapping[str, Mapping[str, object]],
     fetch_issues: tuple[FetchIssue, ...] = (),
 ) -> WebSample:
     """Parse external JSON projections into the immutable diagnostic model."""
@@ -336,7 +336,7 @@ def parse_web_sample(
         sample_number,
         collected_at,
         _parse_status(status_payload) if status_payload is not None else None,
-        {strategy: _parse_projection(payload, include_items=True) for strategy, payload in decision_payloads.items()},
+        {strategy: _parse_projection(payload, include_items=True) for strategy, payload in freeze_payloads.items()},
         fetch_issues,
     )
 
@@ -362,7 +362,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
     }
     return StatusSnapshot(
         schema_version=_text(payload.get("schema_version")),
-        release_decision_schema=_text(release.get("decision_view_schema")),
+        release_freeze_schema=_text(release.get("freeze_view_schema")),
         runtime_status=_text(payload.get("status")),
         runtime_started=payload.get("runtime_started") is True,
         runtime_version=_text(payload.get("runtime_version")),

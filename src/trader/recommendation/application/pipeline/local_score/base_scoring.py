@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlPort
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredLocal,
     ScoredLocalProjection,
     ScoredProjectionInputs,
@@ -33,7 +33,7 @@ class LocalScoringContext:
 
 
 class LocalScoringPort(Protocol):
-    """Build a local decision from prepared native input only."""
+    """Build a local freeze from prepared native input only."""
 
     def score(
         self,

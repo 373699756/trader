@@ -6,14 +6,14 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from tests.contract.test_web_contract import NOW, _app, _decision, _Repository
+from tests.contract.test_web_contract import NOW, _app, _freeze, _Repository
 from trader.http_api.route_services import UnifiedWebServices
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import BuildFreezeCommitted
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.domain.publication.freeze_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.models import RecommendationAction
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.web import CreateApp
@@ -23,7 +23,7 @@ from trader.web import CreateApp
 def test_preview_get_sse_and_refresh_share_context_without_losing_algorithm_identity(profile):
     generated_at = NOW.replace(day=16, hour=17)
     context = PreviewContext("preview-http", NOW.date(), generated_at - timedelta(minutes=1))
-    source = _decision()
+    source = _freeze()
     if profile == "v1":
         source = replace(
             source,
@@ -48,16 +48,16 @@ def test_preview_get_sse_and_refresh_share_context_without_losing_algorithm_iden
         preview_context=context,
         items=completed_items,
     )
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     assert index.publish(preview, expected_version=None).accepted
-    stream = UnifiedDecisionEventStream()
-    stream.publish_committed(BuildDecisionCommitted(preview))
+    stream = UnifiedFreezeEventStream()
+    stream.publish_committed(BuildFreezeCommitted(preview))
 
     class Clock:
         def now(self) -> datetime:
             return generated_at + timedelta(days=1)
 
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), Clock())
     preview_status = {
         "status": "running",
         "run_mode": "preview",
@@ -72,9 +72,9 @@ def test_preview_get_sse_and_refresh_share_context_without_losing_algorithm_iden
     services = UnifiedWebServices(queries, stream, lambda: preview_status, profile_id=profile)
     client = CreateApp(services=services).test_client()
 
-    response = client.get("/api/decisions/tomorrow/current")
+    response = client.get("/api/freezes/tomorrow/current")
     current = response.get_json()
-    repeated = client.get("/api/decisions/tomorrow/current", headers={"If-None-Match": response.headers["ETag"]})
+    repeated = client.get("/api/freezes/tomorrow/current", headers={"If-None-Match": response.headers["ETag"]})
     events = client.get("/api/events", headers={"Last-Event-ID": "0"}, buffered=False)
     iterator = iter(events.response)
     next(iterator)
@@ -133,22 +133,22 @@ def test_nontrading_long_http_keeps_close_change_when_short_models_are_blocked()
             ),
         ),
     )
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     assert index.publish(projection, expected_version=None).accepted
 
     class Clock:
         def now(self):
             return observed
 
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), Clock())
     client = CreateApp(
         services=UnifiedWebServices(
             queries,
-            UnifiedDecisionEventStream(),
+            UnifiedFreezeEventStream(),
             lambda: {"status": "running", "run_mode": "preview", "preview_error": "production_model_contract_conflict"},
         )
     ).test_client()
-    response = client.get("/api/decisions/long/current")
+    response = client.get("/api/freezes/long/current")
     assert response.status_code == 200
     quote = response.get_json()["items"][0]["quote"]
     assert quote["price"] == 12.3 and quote["pct_change"] == -1.2

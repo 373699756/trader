@@ -37,7 +37,7 @@ def test_capability_gate_fails_closed_when_no_configured_source_is_bulk_and_trai
     )
 
     assert report["status"] == "degraded"
-    assert report["decision"] == {
+    assert report["freeze"] == {
         "status": "blocked",
         "selected_baseline_source": "baostock",
         "efficient_daily_source": None,
@@ -76,7 +76,7 @@ def test_capability_report_does_not_claim_baostock_semantics_when_probe_failed()
     candidates = {item["source"]: item for item in report["candidates"]}
     assert candidates["baostock"]["raw_qfq_semantics_observed"] is False
     assert candidates["tushare"]["adjustment_factor"] is True
-    assert report["decision"]["status"] == "blocked"
+    assert report["freeze"]["status"] == "blocked"
 
 
 def test_disabled_tushare_is_not_reported_as_an_available_market_day_source() -> None:
@@ -89,5 +89,5 @@ def test_disabled_tushare_is_not_reported_as_an_available_market_day_source() ->
 
     candidates = {item["source"]: item for item in report["candidates"]}
     assert candidates["tushare"]["market_day_raw"] is False
-    assert report["decision"]["blockers"][0] == "configured_tushare_unavailable"
+    assert report["freeze"]["blockers"][0] == "configured_tushare_unavailable"
     assert "/private/runtime.json" not in str(report)

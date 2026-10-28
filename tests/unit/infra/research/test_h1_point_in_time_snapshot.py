@@ -1,4 +1,6 @@
-from datetime import date, datetime
+import sqlite3
+from dataclasses import replace
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -31,52 +33,80 @@ def _record(close: float = 10.2):
     )
 
 
-def test_h1_archive_is_idempotent_and_detects_tampering(tmp_path):
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
+def test_h1_snapshot_is_idempotent_and_detects_tampering(tmp_path):
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
     spec = H1PointInTimeSpec("tomorrow")
-    archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
-    archive.save_records(spec, "600001", (_record(),))
-    archive.save_records(spec, "600001", (_record(),))
-    manifest = archive.manifest(spec)
+    snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
+    snapshot.save_records(spec, "600001", (_record(),))
+    snapshot.save_records(spec, "600001", (_record(),))
+    manifest = snapshot.manifest(spec)
     assert manifest.spec_hash == spec.content_hash
     assert manifest.completed_codes == 1
-    assert archive.completed_codes("tomorrow") == frozenset({"600001"})
+    assert snapshot.completed_codes("tomorrow") == frozenset({"600001"})
     with (
         SqliteSession(tmp_path / "experiments/h1_point_in_time/samples.sqlite3") as connection,
         SqliteTransaction(connection),
     ):
-        connection.run("UPDATE records SET close_price = 10.7 WHERE code = '600001'")
+        connection.run("UPDATE h1_price SET close = 10.7 WHERE code = '600001'")
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="payload"):
-        archive.manifest(spec)
+        snapshot.manifest(spec)
 
 
-def test_h1_archive_audit_marks_insufficient_without_opening_holdout(tmp_path):
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
-    audit = archive.audit(H1PointInTimeSpec("d25"))
+def test_h1_snapshot_audit_marks_insufficient_without_opening_holdout(tmp_path):
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    audit = snapshot.audit(H1PointInTimeSpec("d25"))
     assert audit.manifest.state == "historical_data_insufficient"
     assert audit.terminal_holdout_opened is False
 
 
-def test_h1_archive_rejects_retired_spec_identity_without_migration(tmp_path):
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
+def test_h1_snapshot_preserves_utc_observation_identity(tmp_path):
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
     spec = H1PointInTimeSpec("tomorrow")
-    archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
+    snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
+    original = _record()
+    record = replace(original, observed_at=original.observed_at.astimezone(timezone.utc))
+    snapshot.save_records(spec, "600001", (record,))
+
+    manifest = snapshot.manifest(spec)
+    assert manifest.completed_codes == 1
+    snapshot.save_records(spec, "600001", (record,))
+    assert snapshot.manifest(spec) == manifest
+
+
+def test_h1_reader_rejects_unsupported_schema_without_writing(tmp_path):
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    spec = H1PointInTimeSpec("tomorrow")
+    snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
+    database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
+    with SqliteSession(database) as connection:
+        connection.run("PRAGMA user_version=0")
+    before = database.read_bytes()
+
+    with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
+        snapshot.registered_universe("tomorrow")
+    assert database.read_bytes() == before
+
+
+def test_h1_snapshot_rejects_retired_spec_identity_without_migration(tmp_path):
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    spec = H1PointInTimeSpec("tomorrow")
+    snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE specs SET spec_hash = ? WHERE strategy = 'tomorrow'", ("f" * 64,))
+        connection.run("UPDATE h1_spec SET spec_hash = ? WHERE strategy = 'tomorrow'", (bytes.fromhex("f" * 64),))
 
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="spec"):
-        archive.manifest(spec)
+        snapshot.manifest(spec)
 
 
-def test_h1_archive_rejects_direct_identity_mismatch_and_universe_tampering(tmp_path):
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
+def test_h1_snapshot_rejects_direct_identity_mismatch_and_universe_tampering(tmp_path):
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
     spec = H1PointInTimeSpec("tomorrow")
-    archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
+    snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     with pytest.raises(ValueError, match="identity"):
-        archive.save_records(spec, "600002", (_record(),))
+        snapshot.save_records(spec, "600002", (_record(),))
     database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE universe SET name = 'tampered' WHERE code = '600001'")
+        connection.run("UPDATE h1_universe SET name = 'tampered' WHERE code = '600001'")
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="universe payload"):
-        archive.manifest(spec)
+        snapshot.manifest(spec)

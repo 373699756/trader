@@ -172,7 +172,7 @@ def test_json_decoder_gate_reads_each_business_core(tmp_path, monkeypatch, busin
         "trader.bootstrap",
         "trader.download.application.download_history",
         "trader.training.infra.engine",
-        "trader.recommendation.infra.persistence.decision_records",
+        "trader.recommendation.infra.persistence.freeze_records",
         "trader.recommendation.application.pipeline.local_score.base_scoring",
     ),
 )
@@ -185,7 +185,7 @@ def test_delivery_gate_rejects_business_execution_and_infrastructure(owner, targ
 def test_delivery_gate_accepts_read_only_queries_and_domain_values(owner) -> None:
     module = f"trader.{owner}.example"
     source = (
-        "from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries\n"
+        "from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries\n"
         "from trader.recommendation.domain.publication.models import Strategy\n"
     )
     assert LayerImportViolations(module, ParseSourceImports(source, module)) == ()

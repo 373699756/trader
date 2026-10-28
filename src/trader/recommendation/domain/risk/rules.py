@@ -36,7 +36,7 @@ _RISK_SEVERITIES = frozenset({"low", "medium", "high"})
 class Rating(str, Enum):
     """Explicit mapping from DeepSeek free-text assessment to local action labels.
 
-    Used to bridge unstructured model output with deterministic local decisions.
+    Used to bridge unstructured model output with deterministic local freezes.
     The fallback is always ``NEUTRAL`` — missing or unparseable text must not
     be silently promoted.
     """

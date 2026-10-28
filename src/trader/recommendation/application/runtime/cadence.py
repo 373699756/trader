@@ -10,7 +10,7 @@ from enum import Enum
 from types import MappingProxyType
 
 from trader.recommendation.application.runtime.schedule import (
-    DecisionAt,
+    FreezeAt,
     MarketPhase,
     PhaseAt,
     SchedulePoint,
@@ -203,10 +203,10 @@ class CadencePlanner:
         is_trading_day: bool,
     ) -> ScheduledPipelineTask | None:
         local = ShanghaiNow(at)
-        decision = DecisionAt(local, is_trading_day=is_trading_day)
-        if not decision.should_score:
+        freeze = FreezeAt(local, is_trading_day=is_trading_day)
+        if not freeze.should_score:
             return None
-        phase = decision.phase
+        phase = freeze.phase
         band = ResolveCadenceBand(phase)
         interval = self._policy.interval(PipelineTask.SCORE, band)
         if interval is None:
@@ -522,7 +522,7 @@ class CadencePlanner:
         if key not in self._pending_scores or due is None or local < due:
             return
         self._pending_scores.discard(key)
-        if not DecisionAt(local, is_trading_day=True).should_score:
+        if not FreezeAt(local, is_trading_day=True).should_score:
             return
         tasks.append(ScheduledPipelineTask(PipelineTask.SCORE, local, phase))
         interval = self._policy.interval(PipelineTask.SCORE, key[1])

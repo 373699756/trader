@@ -22,8 +22,8 @@ def test_strategy_contract_requires_all_hot_path_denominators_and_equivalence_ca
     for token in (
         "completed_epoch_count",
         "evaluated_candidate_count",
-        "formal_current_decision_count",
-        "formal_frozen_decision_count",
+        "formal_current_freeze_count",
+        "formal_freeze_record_count",
         "deepseek_candidate_count",
         "ScoringHotPathEquivalence",
         "result_hash",

@@ -40,7 +40,7 @@ class ResearchRuntime:
 
     def observe(self, intent: ResearchIntent, request: CycleRequest) -> bool:
         if intent.strategy is not request.strategy or intent.trade_date != request.trade_date:
-            raise ValueError("research intent must match its published decision cycle")
+            raise ValueError("research intent must match its published freeze cycle")
         with self._lock:
             self._rotate_locked(intent.trade_date)
             self._intents[intent.strategy] = intent

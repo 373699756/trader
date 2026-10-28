@@ -81,18 +81,18 @@ def test_r3_candidate_recall_uses_the_candidate_set_oracle_micro_denominator() -
     assert report.aggregate.candidate_recall == 0.5
 
 
-class _NoDecisionEvaluator(_ReplayEvaluator):
+class _NoFreezeEvaluator(_ReplayEvaluator):
     def replay(self, day):  # noqa: ANN001
         return tuple(BaselineReplaySelection(item.code, None, None) for item in day.evaluated)
 
 
-def test_r3_records_legal_no_decision_as_zero_exposure() -> None:
+def test_r3_records_legal_no_freeze_as_zero_exposure() -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
 
-    report = HistoricalBaselineReplayer(_NoDecisionEvaluator()).replay(extraction)
+    report = HistoricalBaselineReplayer(_NoFreezeEvaluator()).replay(extraction)
 
     day = report.days[0]
-    assert day.selection_status == "no_decision"
+    assert day.selection_status == "no_freeze"
     assert day.selected_codes == ()
     assert day.net_excess_returns == (0.0, 0.0, 0.0)
     assert day.mean_mae_atr20 is None

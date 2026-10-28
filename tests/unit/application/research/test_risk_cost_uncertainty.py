@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from tests.unit.application.research.test_candidate_recall_ledger import _dataset, _day, _insufficient_dataset
-from trader.recommendation.domain.risk.decision import RiskDecision, UncertaintyAssessment
+from trader.recommendation.domain.risk.freeze import RiskFreeze, UncertaintyAssessment
 from trader.recommendation.domain.scoring.alpha import AlphaScore
 from trader.recommendation.domain.selection.execution_cost import ExecutionCost, ExecutionCostScenario
 from trader.training.application.risk_cost_uncertainty import (
@@ -54,7 +54,7 @@ def _sample(row: PointInTimeDatasetRow) -> RiskCostUncertaintySample:
         cast(ResearchBoard, row.board.value),
         row.industry,
         AlphaScore(row.code, "v3", MODEL_ID, MODEL_HASH, CanonicalResearchHash(row.feature_vector), 90, 0.01),
-        RiskDecision(row.code, 0, False, (), UncertaintyAssessment(None, None, None, None, None, None)),
+        RiskFreeze(row.code, 0, False, (), UncertaintyAssessment(None, None, None, None, None, None)),
         ExecutionCost(
             row.code,
             0.002,
@@ -127,7 +127,7 @@ class _Evidence:
 def _assert_closed(report: RiskCostUncertaintyReport) -> None:
     assert report.status == "historical_data_insufficient"
     assert report.calibration is None
-    assert report.ablation == report.decisions == ()
+    assert report.ablation == report.freezes == ()
     assert report.evidence_hash is report.research_identity is None
     assert report.production_authority is report.terminal_holdout_opened is False
 
@@ -174,7 +174,7 @@ def test_complete_partition_binds_exact_population_outcomes_features_and_model(
     assert report.research_identity == BindRiskCostPopulation(dataset, partition, "v3", MODEL_ID, MODEL_HASH)
     assert report.production_authority is report.terminal_holdout_opened is False
     assert report.research_identity is not None
-    assert {item.trade_date for item in report.decisions} == set(report.research_identity.dates)
+    assert {item.trade_date for item in report.freezes} == set(report.research_identity.dates)
     assert all(item.evaluated_count == 55 for item in report.ablation)
 
 
@@ -500,11 +500,11 @@ def test_bound_visible_fact_allows_risk_effects_without_double_deduction(owner: 
     report = RiskCostUncertaintyResearchBuilder(source).build(_prerequisite(dataset), dataset)
     assert report.status == "evaluated"
     assert source.calls == 1
-    decisions = {item.arm: item for item in report.decisions if item.code == first.code}
-    assert decisions["local_only"].score == (80 if owner in {"local", "both"} else 90)
+    freezes = {item.arm: item for item in report.freezes if item.code == first.code}
+    assert freezes["local_only"].score == (80 if owner in {"local", "both"} else 90)
     if owner in {"deepseek", "both"}:
-        assert decisions["structured_facts_veto"].selected_rank is None
-        assert decisions["fixed_68_32"].selected_rank is None
+        assert freezes["structured_facts_veto"].selected_rank is None
+        assert freezes["fixed_68_32"].selected_rank is None
     assert report.production_authority is report.terminal_holdout_opened is False
 
 

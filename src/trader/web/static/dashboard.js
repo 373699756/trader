@@ -78,7 +78,7 @@
   function profileQuery() {
     return state.profile ? `profile=${encodeURIComponent(state.profile)}` : "";
   }
-  function decisionProfileQuery(strategy) {
+  function freezeProfileQuery(strategy) {
     const profile = deliveryProfile(strategy);
     return profile ? `profile=${encodeURIComponent(profile)}` : "";
   }
@@ -271,8 +271,8 @@
   async function loadDates(strategy, selectionId) {
     if (strategy === "long") return [];
     try {
-      const query = decisionProfileQuery(strategy);
-      const response = await fetch(`/api/decisions/${encodeURIComponent(strategy)}/dates${query ? `?${query}` : ""}`, { cache: "no-store" });
+      const query = freezeProfileQuery(strategy);
+      const response = await fetch(`/api/freezes/${encodeURIComponent(strategy)}/dates${query ? `?${query}` : ""}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error("历史日期接口请求失败");
       if (selectionId !== state.selectionSequence || strategy !== state.strategy) return [];
@@ -375,10 +375,10 @@
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const query = decisionProfileQuery(strategy);
+      const query = freezeProfileQuery(strategy);
       const endpoint = selectedDate
-        ? `/api/decisions/${encodeURIComponent(strategy)}/history?date=${encodeURIComponent(selectedDate)}${query ? `&${query}` : ""}`
-        : `/api/decisions/${encodeURIComponent(strategy)}/current${query ? `?${query}` : ""}`;
+        ? `/api/freezes/${encodeURIComponent(strategy)}/history?date=${encodeURIComponent(selectedDate)}${query ? `&${query}` : ""}`
+        : `/api/freezes/${encodeURIComponent(strategy)}/current${query ? `?${query}` : ""}`;
       const headers = {};
       if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
       diagnostics.recommendationRequests += 1;
@@ -399,10 +399,10 @@
         error.httpStatus = response.status;
         throw error;
       }
-      const compatibility = releaseContract.decisionPayloadCompatibility(rawPayload);
+      const compatibility = releaseContract.freezePayloadCompatibility(rawPayload);
       if (!compatibility.compatible) throw releaseContract.mismatchError(compatibility.reason);
       diagnostics.recommendationFullResponses += 1;
-      const payload = normalizeDecisionPayload(rawPayload, strategy, selectedDate, view);
+      const payload = normalizeFreezePayload(rawPayload, strategy, selectedDate, view);
       diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
       if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
@@ -423,22 +423,22 @@
     return `${deliveryProfile(strategy) || "single"}:${strategy}:${selectedDate || view}`;
   }
 
-  function normalizeDecisionPayload(raw, strategy, selectedDate, view) {
+  function normalizeFreezePayload(raw, strategy, selectedDate, view) {
     const historical = Boolean(selectedDate);
     const coverage = raw.coverage || {};
-    const items = Array.isArray(raw.items) ? raw.items.map(normalizeDecisionItem) : [];
-    const topScores = Array.isArray(raw.top_scores) ? raw.top_scores.map(normalizeDecisionItem) : [];
+    const items = Array.isArray(raw.items) ? raw.items.map(normalizeFreezeItem) : [];
+    const topScores = Array.isArray(raw.top_scores) ? raw.top_scores.map(normalizeFreezeItem) : [];
     const draft = raw.draft && typeof raw.draft === "object"
       ? {
         ...raw.draft,
-        items: Array.isArray(raw.draft.items) ? raw.draft.items.map(normalizeDecisionItem) : [],
-        top_scores: Array.isArray(raw.draft.top_scores) ? raw.draft.top_scores.map(normalizeDecisionItem) : [],
+        items: Array.isArray(raw.draft.items) ? raw.draft.items.map(normalizeFreezeItem) : [],
+        top_scores: Array.isArray(raw.draft.top_scores) ? raw.draft.top_scores.map(normalizeFreezeItem) : [],
       }
       : null;
     return {
       ...raw,
-      snapshot_id: raw.decision_version,
-      projection_version: raw.projection_version || raw.decision_version,
+      snapshot_id: raw.freeze_version,
+      projection_version: raw.projection_version || raw.freeze_version,
       requested_date: historical ? raw.trade_date : null,
       current_trade_date: historical ? null : raw.trade_date,
       historical,
@@ -458,7 +458,7 @@
     };
   }
 
-  function normalizeDecisionItem(item) {
+  function normalizeFreezeItem(item) {
     const quote = item.quote || {};
     const scores = item.scores || {};
     return {
@@ -883,10 +883,10 @@
 
   function applyRecommendationPatch(patch) {
     const currentVersion = state.projectionVersion || patches.projectionVersion(state.payload);
-    const decision = patches.recommendationPatchDecision(patch, state.payload, currentVersion, state.strategy, state.view);
-    if (decision === "ignore_late_draft") return false;
-    if (decision !== "apply") {
-      requestRecommendationResync(decision);
+    const freeze = patches.recommendationPatchFreeze(patch, state.payload, currentVersion, state.strategy, state.view);
+    if (freeze === "ignore_late_draft") return false;
+    if (freeze !== "apply") {
+      requestRecommendationResync(freeze);
       return false;
     }
     const current = state.payload || {};
@@ -912,9 +912,9 @@
 
   function applyOverlayPatch(patch) {
     if (state.date) return false;
-    const decision = patches.overlayPatchDecision(patch, state.payload, state.projectionVersion, state.strategy);
-    if (decision !== "apply") {
-      requestRecommendationResync(decision);
+    const freeze = patches.overlayPatchFreeze(patch, state.payload, state.projectionVersion, state.strategy);
+    if (freeze !== "apply") {
+      requestRecommendationResync(freeze);
       return false;
     }
     const previous = state.payload;
@@ -1011,11 +1011,11 @@
       notReadyMessage: (payload) => payload && payload.strategy === "long"
         ? { message: "长期策略当前尚无可用数据", notice: "长期策略只展示当前研究快照", level: "idle" }
         : { message: "当前暂无可用荐股数据", notice: "等待策略数据更新", level: "idle" },
-      overlayPatchDecision: () => "dependency_missing",
+      overlayPatchFreeze: () => "dependency_missing",
       eventMatchesCurrent: () => false,
       patchVersionValid: () => false,
       projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",
-      recommendationPatchDecision: () => "dependency_missing",
+      recommendationPatchFreeze: () => "dependency_missing",
       replacementPayload: (payload) => payload || {},
       snapshotNotice: (payload) => ({ message: payload && payload.status === "not_ready" ? "等待策略数据更新" : "快照状态不可用", level: "idle" }),
       topKValid: () => false,
@@ -1025,7 +1025,7 @@
   function failClosedReleaseContract() {
     const mismatch = () => ({ compatible: false, reason: "release_contract_dependency_missing" });
     return Object.freeze({
-      decisionPayloadCompatibility: mismatch,
+      freezePayloadCompatibility: mismatch,
       statusPayloadCompatibility: mismatch,
       mismatchError: (reason) => {
         const error = new Error("页面资源与后台服务版本不一致");

@@ -7,12 +7,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.domain.evaluation.evaluation import (
+from trader.recommendation.domain.outcomes.evaluation import (
     CanonicalOutcomeEvaluator,
     EvaluateOutcome,
     OutcomeEvaluationRequest,
 )
-from trader.training.domain.evaluation.models import (
+from trader.recommendation.domain.outcomes.models import (
     BenchmarkConstituentReturn,
     BenchmarkReturn,
     EntryDayPriceWindow,

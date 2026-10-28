@@ -14,9 +14,9 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
         "runtime_dir承载锁、日志和可丢弃临时产物",
         "数据回退必须完整release配合匹配数据副本",
         "缺数据或模型时只读Web仍可启动并报告未就绪",
-        "GET /api/decisions/<strategy>/current",
-        "GET /api/decisions/<strategy>/history?date=YYYY-MM-DD",
-        "GET /api/decisions/<strategy>/dates",
+        "GET /api/freezes/<strategy>/current",
+        "GET /api/freezes/<strategy>/history?date=YYYY-MM-DD",
+        "GET /api/freezes/<strategy>/dates",
         "GET /api/status",
         "GET /api/events",
     ):

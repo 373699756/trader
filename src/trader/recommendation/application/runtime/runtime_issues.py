@@ -55,7 +55,7 @@ class RuntimeIssueIndex:
         existing = self._recent_errors.pop(key, None)
         self._recent_errors[key] = RuntimeIssue(
             code=code,
-            severity="error" if stage in {"freeze", "settlement", "publish"} else "degraded",
+            severity="error" if stage in {"seal", "settlement", "publish"} else "degraded",
             strategy=strategy,
             stage=stage,
             occurred_at=existing.occurred_at if existing is not None else occurred_at,

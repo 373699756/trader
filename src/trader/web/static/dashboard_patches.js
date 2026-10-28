@@ -3,13 +3,13 @@
 
   function patchVersionValid(patch) {
     return Boolean(
-      patch && patch.schema_version === "decision_event" && patch.patch_schema_version === 4
+      patch && patch.schema_version === "freeze_event" && patch.patch_schema_version === 4
       && typeof patch.publication_id === "string" && patch.publication_id
       && patch.publication_id === patch.snapshot_id
     );
   }
 
-  function recommendationPatchDecision(patch, payload, currentVersion, strategy, view) {
+  function recommendationPatchFreeze(patch, payload, currentVersion, strategy, view) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
       || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals || [])) return "schema_mismatch";
     if (!patchCoverageValid(patch.coverage) || patch.coverage.selected_count > patch.upserts.length) {
@@ -30,7 +30,7 @@
     return "apply";
   }
 
-  function overlayPatchDecision(patch, payload, currentVersion, strategy) {
+  function overlayPatchFreeze(patch, payload, currentVersion, strategy) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.quotes)) return "schema_mismatch";
     if (!payload || patch.strategy !== strategy || patch.trade_date !== payload.trade_date) return "identity_mismatch";
     const incomingProjection = patch.projection_version || "";
@@ -501,11 +501,11 @@
     frozenEmptyMessage,
     mergePatchItems,
     notReadyMessage,
-    overlayPatchDecision,
+    overlayPatchFreeze,
     eventMatchesCurrent,
     patchVersionValid,
     projectionVersion,
-    recommendationPatchDecision,
+    recommendationPatchFreeze,
     replacementPayload,
     snapshotNotice,
     topKValid,

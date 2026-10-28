@@ -103,9 +103,9 @@
     const marketWarmup = payload && payload.status === "not_ready" && !inputQuality
       ? marketWarmupStatus(statusPayload)
       : null;
-    const decisionPipeline = payload && payload.pipeline;
-    const pipeline = decisionPipeline && Array.isArray(decisionPipeline.stages)
-      && decisionPipeline.stages.some((stage) => stage.key === "local_data") ? decisionPipeline : null;
+    const freezePipeline = payload && payload.pipeline;
+    const pipeline = freezePipeline && Array.isArray(freezePipeline.stages)
+      && freezePipeline.stages.some((stage) => stage.key === "local_data") ? freezePipeline : null;
     const stageSnapshots = pipeline && pipeline.stage_snapshots;
     const runtimeSummary = inputQuality && inputQuality.summary
       || marketWarmup && marketWarmup.summary
@@ -151,7 +151,7 @@
       } else {
         els.funnelStatus.textContent = payload.stage === "hybrid" ? "已发布复核结果"
           : render.scorePresentation(payload).learnedRank ? "已发布模型排序" : "已发布本地结果";
-        els.funnelStages.textContent = `轮次 ${payload.decision_version || "未知"} · 本轮至决策 ${formatStageDuration(pipeline.elapsed_ms)} · ${decisionPipelineDetails(pipeline)}`;
+        els.funnelStages.textContent = `轮次 ${payload.freeze_version || "未知"} · 本轮至决策 ${formatStageDuration(pipeline.elapsed_ms)} · ${freezePipelineDetails(pipeline)}`;
       }
       els.funnelMeta.textContent = pipelineFunnelSummary(
         stageSnapshots,
@@ -183,7 +183,7 @@
         strategyQuality && strategyQuality.pipeline, false, [],
       );
     } else {
-      const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
+      const legacy = legacyFreezeSummary(payload, evaluated, executableCount, observed, topScore);
       els.funnelStatus.textContent = "阶段观测不可用";
       els.funnelStages.textContent = "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗";
       els.funnelMeta.textContent = `旧快照 · ${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
@@ -316,13 +316,13 @@
     const receipts = statusPayload && statusPayload.scheduler && statusPayload.scheduler.publication_io;
     return Array.isArray(receipts)
       ? receipts.filter((item) => item.strategy === payload.strategy && item.trade_date === payload.trade_date
-        && item.decision_version === payload.decision_version
+        && item.freeze_version === payload.freeze_version
         && item.content_hash && item.content_hash === payload.content_hash)
       : [];
   }
 
   const PUBLICATION_OPERATIONS = Object.freeze({
-    current_publish: "当前快照发布", decision_event: "决策事件交接", observer_enqueue: "研究观察队列交接",
+    current_publish: "当前快照发布", freeze_event: "决策事件交接", observer_enqueue: "研究观察队列交接",
     checkpoint_write: "检查点写入", formal_lookup: "正式记录读取", checkpoint_lookup: "检查点读取",
     freeze_seal: "冻结封口", formal_write: "正式记录写入", formal_publish: "正式快照发布",
     checkpoint_consume: "检查点清理", formal_restore: "正式快照恢复",
@@ -335,7 +335,7 @@
         const reason = Array.isArray(item.reasons) ? item.reasons.map((r) => `${window.TraderRender.pipelineReasonLabel(r.code)}（${displayCount(r.count)}次）`).join(" · ") : "";
         const health = item.source_health || {};
         const duration = Number.isFinite(item.latency_ms) ? `${item.latency_ms}毫秒` : "进行中";
-        const identity = item.decision_version || "尚未取得评分结果版本";
+        const identity = item.freeze_version || "尚未取得评分结果版本";
         const sourceState = ({ ready: "正常", degraded: "已降级", unavailable: "不可用", unknown: "未知" })[health.state] || "未知";
         const text = `${PUBLICATION_OPERATIONS[item.operation] || "其他发布操作"} · ${stageStateLabel(item.state)} · 输入 ${item.input_count} / 输出 ${item.output_count} / 业务拒绝 ${item.rejected_count} / 待补充 ${item.pending_count} / 失败 ${item.failed_count} · 耗时 ${duration} · 来源 ${sourceState} · 距最近成功 ${Number.isFinite(health.age_seconds) ? `${health.age_seconds.toFixed(1)}秒` : "未知"}${reason ? ` · ${reason}` : ""}`;
         return `<small data-publication-operation="${escapeHtml(item.operation)}" data-state="${escapeHtml(item.state)}">${escapeHtml(text)}</small><details class="publication-version-detail"><summary>版本核对（排查结果是否一致）</summary><small>操作所用评分版本：${escapeHtml(identity)}<br>操作产出版本：${escapeHtml(item.output_version || "尚无产出版本")}</small></details>`;
@@ -449,7 +449,7 @@
     }
     const executable = items.filter((item) => item.action === "executable").length;
     const observed = items.filter((item) => item.action === "observe").length;
-    const legacy = legacyDecisionSummary(payload, evaluated, executable, observed, topScore);
+    const legacy = legacyFreezeSummary(payload, evaluated, executable, observed, topScore);
     els.inputQualityStatus.textContent = `${legacy.scored} / 总体 ${legacy.population}`;
     els.inputQualityStages.textContent = `旧快照未保存评分输入阶段观测；已保存聚合 ${legacy.counts}${legacy.reasons}`;
     els.inputQualityMeta.textContent = `最高 ${topScore} · 阶段范围与门槛未保存`;
@@ -459,7 +459,7 @@
       : "仅降级，不代表股票存在风险：可核验聚合已展示，阶段归属不可恢复";
   }
 
-  function legacyDecisionSummary(payload, evaluated, executable, observed, topScore) {
+  function legacyFreezeSummary(payload, evaluated, executable, observed, topScore) {
     const coverage = payload && payload.coverage || {};
     const population = finiteNonNegativeInteger(coverage.candidate_count);
     const rejected = finiteNonNegativeInteger(coverage.rejected_count);
@@ -510,7 +510,7 @@
   }
 
   function quoteAvailable(item) {
-    if (!item || ["missing", "decision_anchor"].includes(cleanString(item.quote_status))) return false;
+    if (!item || ["missing", "freeze_anchor"].includes(cleanString(item.quote_status))) return false;
     const price = Number(item.price);
     const change = Number(item.pct_change);
     const sourceTime = new Date(item.source_time || "").getTime();
@@ -712,7 +712,7 @@
     }).join(" ｜ ");
   }
 
-  function decisionPipelineDetails(pipeline) {
+  function freezePipelineDetails(pipeline) {
     return OBSERVATION_STAGE_DEFINITIONS.slice(6).map(([keys, label]) => {
       const stage = pipelineStage(pipeline, keys[0]);
       return `${stageTransition(label, stage)}${pipelineReasonSuffix(stage)}`;
@@ -865,7 +865,7 @@
   window.TraderStatusView = Object.freeze({
     createDashboardStateRenderer,
     formatDurationHms,
-    decisionPipelineDetails,
+    freezePipelineDetails,
     healthView,
     inputPipelineDetails,
     pendingFunnelSummary,

@@ -194,9 +194,11 @@ def test_process_limits_preserve_partial_evidence_and_reap_children(tmp_path: Pa
         "print(p.pid,flush=True); "
         + ("time.sleep(60)" if mode == "timeout" else "print('x'*200000,flush=True); time.sleep(60)")
     )
-    result = RunBounded((sys.executable, "-c", program), tmp_path, tmp_path, timeout_seconds=0.5, output_limit=1024)
+    # Allow interpreter/descendant startup under parallel suite I/O before
+    # testing the deadline; the fixture still sleeps far beyond this budget.
+    result = RunBounded((sys.executable, "-c", program), tmp_path, tmp_path, timeout_seconds=3, output_limit=1024)
     assert result.problem == expected
-    assert result.elapsed_seconds < 5
+    assert result.elapsed_seconds < 8
     raw = (tmp_path / "trace.jsonl").read_text(encoding="utf-8")
     assert raw and len(raw) <= 1024
     child = int(raw.splitlines()[0])

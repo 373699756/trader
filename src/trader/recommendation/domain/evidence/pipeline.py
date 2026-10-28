@@ -1,4 +1,4 @@
-"""Immutable recommendation-pipeline audit carried by scored decisions."""
+"""Immutable recommendation-pipeline audit carried by scored freezes."""
 
 from __future__ import annotations
 

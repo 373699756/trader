@@ -10,21 +10,21 @@ import pytest
 
 from tests.integration.test_scheduler_runtime import (
     DataRefresh,
-    Decisions,
     FixedClock,
     Freezes,
+    Sealing,
     Settlement,
     SharedReviews,
     TradingCalendar,
     _cadence,
     noop_research_factory,
 )
-from tests.unit.domain.test_decision_identity import decision
-from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT, preview_decision
+from tests.unit.domain.test_freeze_identity import freeze
+from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT, preview_freeze
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.data_source.input_assembly import TaskDeadline
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import AsyncFreezeObserver
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPendingError,
@@ -82,14 +82,14 @@ def dependencies(data: PreviewData) -> RuntimeDependencies:
         calendar=TradingCalendar(),
         cadence=_cadence(STARTED_AT),
         data=data,
-        decisions=Decisions(),
-        reviews=SharedReviews(),
-        index=UnifiedDecisionIndex(),
-        observer=AsyncDecisionObserver((), capacity=1, thread_name="test-preview-observer"),
         freezes=Freezes(),
+        reviews=SharedReviews(),
+        index=UnifiedFreezeIndex(),
+        observer=AsyncFreezeObserver((), capacity=1, thread_name="test-preview-observer"),
+        sealing=Sealing(),
         settlement=Settlement(),
         research_factory=noop_research_factory,
-        publish_decision=lambda _event: pytest.fail("runner published a decision directly"),
+        publish_freeze=lambda _event: pytest.fail("runner published a freeze directly"),
         publish_overlay=lambda _overlay: pytest.fail("runner published an overlay directly"),
         monotonic=lambda: 0.0,
     )
@@ -111,7 +111,7 @@ def request_builder(strategy: Strategy, observed_at: datetime, phase: str) -> Cy
 def publish_pair(deps: RuntimeDependencies) -> Callable[[tuple[CycleRequest, CycleRequest]], None]:
     def execute(requests: tuple[CycleRequest, CycleRequest]) -> None:
         for request in requests:
-            current = preview_decision(strategy=request.strategy)
+            current = preview_freeze(strategy=request.strategy)
             assert current.preview_context == request.preview_context
             previous = deps.index.snapshot(request.strategy).current
             assert deps.index.publish(current, expected_version=previous.version if previous else None).accepted
@@ -185,7 +185,7 @@ def test_failed_preview_retains_old_currents_and_does_not_repeat(failure: Except
     data = PreviewData()
     data.failure_task, data.failure = PipelineTask.CANDIDATE_QUOTES, failure
     deps = dependencies(data)
-    old = decision()
+    old = freeze()
     assert deps.index.publish(old, expected_version=None).accepted
     runner = PreviewCycleRunner(deps, lambda _requests: pytest.fail("failed inputs scored"), request_builder)
     context = PreviewContext("preview-a", MARKET_DATE, STARTED_AT)
@@ -198,18 +198,18 @@ def test_failed_preview_retains_old_currents_and_does_not_repeat(failure: Except
     assert len(data.preview_requests) == count
 
 
-def test_preview_is_ready_only_when_both_current_decisions_belong_to_the_run() -> None:
+def test_preview_is_ready_only_when_both_current_freezes_belong_to_the_run() -> None:
     deps = dependencies(PreviewData())
-    other = preview_decision(run_id="another-run", strategy=Strategy.D25)
+    other = preview_freeze(run_id="another-run", strategy=Strategy.D25)
     assert deps.index.publish(other, expected_version=None).accepted
 
     def execute(_requests: tuple[CycleRequest, CycleRequest]) -> None:
-        assert deps.index.publish(preview_decision(), expected_version=None).accepted
+        assert deps.index.publish(preview_freeze(), expected_version=None).accepted
 
     runner = PreviewCycleRunner(deps, execute, request_builder)
     runner.execute(PreviewContext("preview-a", MARKET_DATE, STARTED_AT), None)
     assert runner.status().state == "failed"
-    assert runner.status().error == "preview_decision_unavailable"
+    assert runner.status().error == "preview_freeze_unavailable"
 
 
 def test_running_preview_claim_rejects_duplicate_concurrent_execution() -> None:

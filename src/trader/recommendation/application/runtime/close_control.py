@@ -11,9 +11,9 @@ from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPendingError,
     DataRefreshUnavailableError,
-    FreezeUnavailableError,
     PipelineTaskRequest,
     RefreshOutcome,
+    SealUnavailableError,
     SettlementUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import (
@@ -34,8 +34,8 @@ from trader.recommendation.application.runtime.schedule_requests import (
     FailureCode,
 )
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
-from trader.recommendation.domain.publication.decision_identity import (
-    ScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -114,14 +114,14 @@ class CloseControlCoordinator:
     def freeze_close_fallback(
         self,
         request: CycleRequest,
-        current: ScoredDecision,
+        current: ScoredFreeze,
         *,
         recovery_path: Literal["current", "close_rebuild"],
     ) -> None:
         native_version = dict(current.input_versions).get("native", current.version)
         try:
             with SessionGuard(request.session):
-                self._dependencies.freezes.freeze_close_fallback(
+                self._dependencies.sealing.freeze_close_fallback(
                     request.strategy,
                     request.observed_at,
                     current,
@@ -130,13 +130,13 @@ class CloseControlCoordinator:
                 )
         except StaleSessionError:
             return
-        except FreezeUnavailableError:
-            self._hooks.failure("freeze", "close_fallback_unavailable", request.strategy)
+        except SealUnavailableError:
+            self._hooks.failure("seal", "close_fallback_unavailable", request.strategy)
         except Exception as exc:
-            self._hooks.failure("freeze", f"close_fallback_unexpected:{type(exc).__name__}", request.strategy)
+            self._hooks.failure("seal", f"close_fallback_unexpected:{type(exc).__name__}", request.strategy)
         else:
             with self._lock:
-                self._hooks.success("freeze", request.strategy)
+                self._hooks.success("seal", request.strategy)
 
     def submit_freeze(
         self,
@@ -152,7 +152,7 @@ class CloseControlCoordinator:
         future = self._control.submit_urgent(self._run_freeze, key, strategy, at, scheduled)
         if future is None:
             self._finish_control(key, success=False)
-            self._hooks.failure("freeze", "freeze_capacity_rejected", strategy)
+            self._hooks.failure("seal", "freeze_capacity_rejected", strategy)
             return False
         return True
 
@@ -177,17 +177,17 @@ class CloseControlCoordinator:
                     # close recovery can build a fresh, explicitly labelled fallback.
                     missed = True
                     return
-                self._dependencies.freezes.freeze(strategy, at, current)
+                self._dependencies.sealing.freeze(strategy, at, current)
         except StaleSessionError:
             return
-        except FreezeUnavailableError:
-            self._hooks.failure("freeze", "freeze_unavailable", strategy)
+        except SealUnavailableError:
+            self._hooks.failure("seal", "freeze_unavailable", strategy)
         except Exception as exc:
-            self._hooks.failure("freeze", f"freeze_unexpected:{type(exc).__name__}", strategy)
+            self._hooks.failure("seal", f"freeze_unexpected:{type(exc).__name__}", strategy)
         else:
             success = True
             with self._lock:
-                self._hooks.success("freeze", strategy)
+                self._hooks.success("seal", strategy)
         finally:
             self._finish_control(key, success=success)
             try:

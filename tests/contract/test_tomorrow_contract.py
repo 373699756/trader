@@ -15,8 +15,7 @@ def test_production_composition_has_no_tomorrow_shadow_or_cutover_dependencies()
         "trader.application.tomorrow_shadow",
         "trader.application.tomorrow_shadow_runtime",
         "trader.infra.persistence.tomorrow_shadow_evidence",
-        "trader.infra.persistence.tomorrow_decision_freezes",
-        "trader.application.current_decisions",
+        "trader.application.current_freezes",
     )
     assert not imports.intersection(forbidden)
 
@@ -25,8 +24,8 @@ def test_tomorrow_freeze_control_is_owned_by_the_scheduler() -> None:
     runtime = ROOT / "src/trader/recommendation/application/runtime"
     scheduler = (runtime / "scheduler_runtime.py").read_text(encoding="utf-8")
     close_control = (runtime / "close_control.py").read_text(encoding="utf-8")
-    assert "self._dependencies.freezes.freeze" in close_control
-    assert "self._dependencies.freezes.freeze" not in scheduler
+    assert "self._dependencies.sealing.freeze" in close_control
+    assert "self._dependencies.sealing.freeze" not in scheduler
     assert "self._close_control.submit_freeze" in scheduler
     assert "submit_due" in scheduler
 

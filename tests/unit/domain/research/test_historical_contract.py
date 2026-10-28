@@ -69,7 +69,7 @@ def test_settlement_basis_requires_a_later_label_and_finite_cost_inputs() -> Non
     basis = CostSettlementBasis(
         code="600001",
         board="main",
-        decision_date=date(2026, 8, 10),
+        freeze_date=date(2026, 8, 10),
         label_date=date(2026, 8, 11),
         gross_excess_return=0.025,
         mae_atr20=-0.4,
@@ -78,4 +78,4 @@ def test_settlement_basis_requires_a_later_label_and_finite_cost_inputs() -> Non
 
     assert basis.gross_excess_return == 0.025
     with pytest.raises(ValueError, match="follow"):
-        replace(basis, label_date=basis.decision_date)
+        replace(basis, label_date=basis.freeze_date)

@@ -23,7 +23,7 @@ from trader.recommendation.infra.market_data.outcome_history import PairOutcomeH
 from trader.recommendation.infra.normalization.quote import (
     ToFloat,
 )
-from trader.training.domain.evaluation.models import OutcomeBar
+from trader.recommendation.domain.outcomes.models import OutcomeBar
 
 
 class JsonResponse(Protocol):

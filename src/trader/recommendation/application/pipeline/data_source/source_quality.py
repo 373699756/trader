@@ -27,7 +27,7 @@ def FailureCode(exc: BaseException) -> str:
     return "".join((f"_{character.lower()}" if character.isupper() else character) for character in name).lstrip("_")
 
 
-def DecisionFailureCode(exc: BaseException) -> str:
+def FreezeFailureCode(exc: BaseException) -> str:
     if str(exc) == "scored native input cannot contain future features":
         return "future_input_time"
     return FailureCode(exc)

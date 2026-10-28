@@ -62,7 +62,7 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
         assert primary.scheduler.status().preview_error == "production_model_missing"
         assert primary.long_runtime.status().worker.failed_count == 0
         client = system.app.test_client()
-        payload = client.get("/api/decisions/long/current").get_json()
+        payload = client.get("/api/freezes/long/current").get_json()
         assert payload["status"] == "ready"
         assert len(payload["items"]) == len(primary.long_runtime.codes) > 0
         assert payload["coverage"]["available_quote_count"] == (len(codes) if quote_available else 0)

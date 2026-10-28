@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.unit.domain.test_decision_identity import NOW
+from tests.unit.domain.test_freeze_identity import NOW
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanSet
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy

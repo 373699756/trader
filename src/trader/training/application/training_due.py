@@ -1,4 +1,4 @@
-"""Application boundary for read-only training cadence decisions."""
+"""Application boundary for read-only training cadence freezes."""
 
 from __future__ import annotations
 

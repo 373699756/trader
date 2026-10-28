@@ -21,7 +21,7 @@ from scripts.runtime_diagnostics import baostock_concurrency
 from scripts.runtime_diagnostics.browser_refresh import _seed
 from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_space
 from trader.download.infra.baostock_session import RateLimitedBaoStockSdk
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -258,8 +258,8 @@ def test_local_research_insufficiency_is_degraded_but_specialist_stays_strict():
     assert build_report("research", (result,))["status"] == "failed"
 
 
-def test_browser_diagnostic_seed_matches_the_current_decision_item_contract() -> None:
-    index = UnifiedDecisionIndex()
+def test_browser_diagnostic_seed_matches_the_current_freeze_item_contract() -> None:
+    index = UnifiedFreezeIndex()
     observed_at = datetime(2026, 8, 24, 13, 5, tzinfo=SHANGHAI)
 
     _seed(index, Strategy.TOMORROW, observed_at, "600002")
@@ -971,7 +971,7 @@ def test_daily_history_capability_projection_keeps_only_the_audit_whitelist() ->
                 {
                     "schema_version": "history-daily-capability-audit",
                     "status": "degraded",
-                    "decision": {"status": "blocked", "efficient_daily_source": None},
+                    "freeze": {"status": "blocked", "efficient_daily_source": None},
                     "baostock_lower_bound": {"minimum_raw_qfq_calls": 10906},
                     "candidates": [
                         {

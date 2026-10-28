@@ -30,17 +30,17 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     CandidatePlanningContext,
 )
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredLocal,
     ScoredLocalProjection,
     ScoredProjectionInputs,
 )
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.loaded_profile import ModelComputationStatus
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
-from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
+from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.performance.cpu_trace import PerformanceCpuTrace
@@ -232,7 +232,7 @@ class _ProfileReplay:
         self.quotes = tuple(replace(item.quote, data_version="performance-replay") for item in workload.model.features)
         self.versions = InputVersionClock()
         self.version = ""
-        self.index = UnifiedDecisionIndex()
+        self.index = UnifiedFreezeIndex()
         self.sequence = 0
         self.projections: tuple[ScoredLocalProjection, ...] = ()
         self.market: tuple[FeatureSnapshot, ...] = ()
@@ -378,7 +378,7 @@ class _ProfileReplay:
     def _publish(self) -> None:
         first, second = (projection.local for projection in self.projections)
         overlays = tuple(
-            DecisionOverlay(
+            FreezeOverlay(
                 item.strategy,
                 item.trade_date,
                 item.version,

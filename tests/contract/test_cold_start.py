@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.infra.test_decision_records import record
+from tests.unit.infra.test_freeze_records import record
 from tests.unit.training.infra.profile.v3.test_profile import _publish_profile, _write_bundle
 from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
@@ -87,7 +87,7 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
     original = record()
     system.records.initialize()
     system.records.commit(original)
-    route = f"/api/decisions/tomorrow/history?date={original.trade_date.isoformat()}"
+    route = f"/api/freezes/tomorrow/history?date={original.trade_date.isoformat()}"
     before = system.app.test_client().get(route).get_json()
 
     _publish_profile(tmp_path / "data/training/models", V3_TRAINING_PROFILE)
@@ -106,7 +106,7 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
         assert head["historical_failure_reasons"] == ["production_model_integrity_conflict"]
     after = client.get(route).get_json()
     assert after == before
-    assert after["items"][0]["code"] == original.decision.items[0].code
+    assert after["items"][0]["code"] == original.freeze.items[0].code
 
 
 @pytest.mark.parametrize("profile,sessions", (("v2", 251), ("v3", 61)))

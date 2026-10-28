@@ -8,14 +8,14 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import BuildFreezeCommitted
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
-    DecisionQuerySources,
-    UnifiedDecisionQueries,
+    FreezeQuerySources,
+    UnifiedFreezeQueries,
 )
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
@@ -23,13 +23,13 @@ from trader.recommendation.domain.evidence.pipeline import (
     RecommendationPipelineStatus,
 )
 from trader.recommendation.domain.market.models import Board, MarketQuote
-from trader.recommendation.domain.publication.decision_identity import (
-    DecisionItem,
-    DecisionModelDiagnostics,
-    DecisionQuote,
+from trader.recommendation.domain.publication.freeze_identity import (
+    FreezeItem,
+    FreezeModelDiagnostics,
+    FreezeQuote,
     LongProjection,
     LongProjectionItem,
-    ScoredDecision,
+    ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
@@ -53,24 +53,24 @@ class _Repository:
         return (date(2026, 8, 8),) if strategy is Strategy.TOMORROW else ()
 
 
-def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
+def test_unified_freeze_routes_validate_strategy_date_and_etag() -> None:
     app, _, _ = _app()
     client = app.test_client()
 
-    current = client.get("/api/decisions/tomorrow/current")
+    current = client.get("/api/freezes/tomorrow/current")
     cached = client.get(
-        "/api/decisions/tomorrow/current",
+        "/api/freezes/tomorrow/current",
         headers={"If-None-Match": current.headers["ETag"]},
     )
-    dates = client.get("/api/decisions/tomorrow/dates")
-    invalid_strategy = client.get("/api/decisions/weekly/current")
-    invalid_date = client.get("/api/decisions/tomorrow/history?date=2026-8-8")
+    dates = client.get("/api/freezes/tomorrow/dates")
+    invalid_strategy = client.get("/api/freezes/weekly/current")
+    invalid_date = client.get("/api/freezes/tomorrow/history?date=2026-8-8")
 
     assert current.status_code == 200
-    assert current.get_json()["schema_version"] == "decision_view"
+    assert current.get_json()["schema_version"] == "freeze_view"
     assert current.get_json()["draft"] is None
     assert current.get_json()["strategy"] == "tomorrow"
-    assert current.get_json()["publication_id"] == current.get_json()["decision_version"]
+    assert current.get_json()["publication_id"] == current.get_json()["freeze_version"]
     assert current.get_json()["items"][0]["name"] == "浦发银行"
     assert current.get_json()["items"][0]["board"] == "main"
     assert current.get_json()["items"][0]["industry"] == "银行"
@@ -89,7 +89,7 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
         "market_cap": 300_000_000_000.0,
         "source": "fixture",
         "source_time": NOW.isoformat(),
-        "status": "decision_anchor",
+        "status": "freeze_anchor",
     }
     assert cached.status_code == 304
     assert dates.get_json()["dates"] == ["2026-08-08"]
@@ -125,14 +125,14 @@ def test_company_evidence_links_are_bounded_read_only_and_explicitly_projected()
                 CompanyDocumentReference("notice", "正式公告", "https://example.test/notice.pdf", NOW, "extracted"),
             )
 
-    queries = UnifiedDecisionQueries(
-        UnifiedDecisionIndex(),
-        UnifiedDecisionDraftIndex(),
+    queries = UnifiedFreezeQueries(
+        UnifiedFreezeIndex(),
+        UnifiedFreezeDraftIndex(),
         _Repository(),
         _Clock(),
-        sources=DecisionQuerySources(company_documents=Links()),
+        sources=FreezeQuerySources(company_documents=Links()),
     )
-    client = CreateApp(services=UnifiedWebServices(queries, UnifiedDecisionEventStream(), lambda: {})).test_client()
+    client = CreateApp(services=UnifiedWebServices(queries, UnifiedFreezeEventStream(), lambda: {})).test_client()
     response = client.get("/api/company/600001/documents?evidence_id=notice&evidence_id=notice")
     assert response.status_code == 200
     assert calls == [("600001", ("notice",))]
@@ -170,9 +170,9 @@ def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
     )
     client = CreateApp(services=services).test_client()
 
-    assert client.get("/api/decisions/tomorrow/current").get_json()["scoring_profile"] == "v3"
-    assert client.get("/api/decisions/tomorrow/current?profile=v2").get_json()["scoring_profile"] == "v2"
-    assert client.get("/api/decisions/long/current?profile=v3").get_json()["scoring_profile"] == "v2"
+    assert client.get("/api/freezes/tomorrow/current").get_json()["scoring_profile"] == "v3"
+    assert client.get("/api/freezes/tomorrow/current?profile=v2").get_json()["scoring_profile"] == "v2"
+    assert client.get("/api/freezes/long/current?profile=v3").get_json()["scoring_profile"] == "v2"
     status = client.get("/api/status?profile=v3").get_json()
     assert status["selected_profile"] == "v3"
     assert status["available_profiles"] == ["v2", "v3"]
@@ -185,8 +185,8 @@ def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
 @pytest.mark.parametrize("production_authority", (True, False), ids=("production", "legacy_shadow"))
 def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(production_authority: bool) -> None:
     _, existing_queries, existing_stream = _app()
-    source = _decision()
-    decision = replace(
+    source = _freeze()
+    freeze = replace(
         source,
         input_versions=(
             ("score_scale", "learned_rank_percentile_0_100"),
@@ -205,11 +205,11 @@ def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(producti
             ),
         ),
     )
-    index = UnifiedDecisionIndex()
-    assert index.publish(decision, expected_version=None).accepted
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock())
-    stream = UnifiedDecisionEventStream()
-    stream.publish_committed(BuildDecisionCommitted(decision))
+    index = UnifiedFreezeIndex()
+    assert index.publish(freeze, expected_version=None).accepted
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock())
+    stream = UnifiedFreezeEventStream()
+    stream.publish_committed(BuildFreezeCommitted(freeze))
     status = {
         "scoring_profile": {
             "profile_id": "v1",
@@ -233,16 +233,16 @@ def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(producti
     )
     client = CreateApp(services=services).test_client()
 
-    response = client.get("/api/decisions/tomorrow/current?profile=v1")
+    response = client.get("/api/freezes/tomorrow/current?profile=v1")
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["scoring_profile"] == "v1"
-    assert payload["input_versions"] == dict(decision.input_versions)
+    assert payload["input_versions"] == dict(freeze.input_versions)
     assert payload["items"][0]["scores"]["local"] == 84.0
     assert payload["items"][0]["scores"]["final"] == 99.5
     assert payload["items"][0]["action"] == ("executable" if production_authority else "observe")
-    assert client.get("/api/decisions/tomorrow/current?profile=v2").get_json()["items"][0]["scores"]["final"] == 84.0
-    long = client.get("/api/decisions/long/current?profile=v1").get_json()
+    assert client.get("/api/freezes/tomorrow/current?profile=v2").get_json()["items"][0]["scores"]["final"] == 84.0
+    long = client.get("/api/freezes/long/current?profile=v1").get_json()
     assert long["scoring_profile"] == "v2"
     assert long["score_status"] == "not_applicable"
     assert "scores" not in long["items"][0]
@@ -268,9 +268,9 @@ def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(producti
 def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_fields() -> None:
     client = _app()[0].test_client()
 
-    current = client.get("/api/decisions/long/current")
-    dates = client.get("/api/decisions/long/dates")
-    history = client.get("/api/decisions/long/history?date=2026-08-11")
+    current = client.get("/api/freezes/long/current")
+    dates = client.get("/api/freezes/long/dates")
+    history = client.get("/api/freezes/long/history?date=2026-08-11")
 
     assert current.status_code == 200
     payload = current.get_json()
@@ -282,7 +282,7 @@ def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_field
     assert set(payload).isdisjoint({"frozen", "frozen_at", "freeze_kind", "top_scores", "selection_diagnostics"})
     assert set(payload["items"][0]).isdisjoint({"rank", "selection_rank", "scores", "score_status"})
     assert dates.get_json() == {
-        "schema_version": "decision_dates",
+        "schema_version": "freeze_dates",
         "strategy": "long",
         "scoring_profile": "v2",
         "dates": [],
@@ -307,29 +307,29 @@ def test_root_injects_configured_web_snapshot_retention_margin() -> None:
 
 
 def test_not_ready_current_keeps_observation_draft_separate_and_private_from_status() -> None:
-    drafts = UnifiedDecisionDraftIndex()
+    drafts = UnifiedFreezeDraftIndex()
     draft = replace(
-        _decision(),
+        _freeze(),
         items=(
             replace(
-                _decision().items[0],
+                _freeze().items[0],
                 action=RecommendationAction.OBSERVE,
                 reason="near_score_threshold",
             ),
         ),
     )
     assert drafts.publish(draft).accepted
-    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _Clock())
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), drafts, _Repository(), _Clock())
     app = CreateApp(
         services=UnifiedWebServices(
             queries,
-            UnifiedDecisionEventStream(),
+            UnifiedFreezeEventStream(),
             lambda: {"status": "running", "phase": "morning_main"},
         )
     )
     client = app.test_client()
 
-    current = client.get("/api/decisions/tomorrow/current")
+    current = client.get("/api/freezes/tomorrow/current")
     status = client.get("/api/status")
 
     assert current.status_code == 200
@@ -344,7 +344,7 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
 
 def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     app, queries, stream = _app()
-    stream.publish_committed(BuildDecisionCommitted(_decision()))
+    stream.publish_committed(BuildFreezeCommitted(_freeze()))
     client = app.test_client()
 
     response = client.get("/api/events", headers={"Last-Event-ID": "0"}, buffered=False)
@@ -356,15 +356,15 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
 
     assert status["schema_version"] == "runtime_status"
     assert status["release"] == {
-        "decision_view_schema": "decision_view",
+        "freeze_view_schema": "freeze_view",
     }
-    assert "event: decision" in event
-    decision_patch = json.loads(event.split("data: ", 1)[1])
-    assert decision_patch["strategy"] == "tomorrow"
-    assert decision_patch["patch_schema_version"] == 4
-    assert decision_patch["publication_id"] == _decision().version
-    assert decision_patch["replace"] is True
-    assert decision_patch["coverage"] == {
+    assert "event: freeze" in event
+    freeze_patch = json.loads(event.split("data: ", 1)[1])
+    assert freeze_patch["strategy"] == "tomorrow"
+    assert freeze_patch["patch_schema_version"] == 4
+    assert freeze_patch["publication_id"] == _freeze().version
+    assert freeze_patch["replace"] is True
+    assert freeze_patch["coverage"] == {
         "candidate_count": 11,
         "evaluated_count": 1,
         "rejected_count": 10,
@@ -373,11 +373,11 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "observation_count": 0,
         "unavailable_count": 0,
     }
-    assert decision_patch["coverage"] == client.get("/api/decisions/tomorrow/current").get_json()["coverage"]
-    assert "filtered_count" not in decision_patch
-    assert decision_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
-    assert [item["code"] for item in decision_patch["upserts"]] == ["600000"]
-    assert decision_patch["upserts"][0]["scores"]["predicted_net_excess_pct"] == 1.25
+    assert freeze_patch["coverage"] == client.get("/api/freezes/tomorrow/current").get_json()["coverage"]
+    assert "filtered_count" not in freeze_patch
+    assert freeze_patch["input_versions"]["score_model"] == ("daily_reconstructible_ensemble:model-hash")
+    assert [item["code"] for item in freeze_patch["upserts"]] == ["600000"]
+    assert freeze_patch["upserts"][0]["scores"]["predicted_net_excess_pct"] == 1.25
     assert status["events"]["sequence"] == 1
     assert status["strategies"]["tomorrow"]["status"] == queries.current(Strategy.TOMORROW).status
     assert status["runtime_version"] == "runtime:test"
@@ -469,7 +469,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "sample_capacity": 512,
             "stage_capacity": 64,
             "stages": {
-                "decision_publish": {
+                "freeze_publish": {
                     "maximum_ms": 4.0,
                     "p50_ms": 1.0,
                     "p95_ms": 3.0,
@@ -574,8 +574,8 @@ def test_http_reads_do_not_invoke_external_io() -> None:
 
     for path in (
         "/",
-        "/api/decisions/tomorrow/current",
-        "/api/decisions/tomorrow/dates",
+        "/api/freezes/tomorrow/current",
+        "/api/freezes/tomorrow/dates",
         "/api/status",
     ):
         assert client.get(path).status_code == 200
@@ -632,9 +632,9 @@ def test_maintenance_status_projects_six_heads_and_restart_identity_without_io(m
 
 
 def _app():
-    index = UnifiedDecisionIndex()
-    decision = _decision()
-    assert index.publish(decision, expected_version=None).accepted
+    index = UnifiedFreezeIndex()
+    freeze = _freeze()
+    assert index.publish(freeze, expected_version=None).accepted
     long_projection = LongProjection(
         NOW.date(),
         1,
@@ -656,8 +656,8 @@ def _app():
         ),
     )
     assert index.publish(long_projection, expected_version=None).accepted
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock())
-    stream = UnifiedDecisionEventStream()
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock())
+    stream = UnifiedFreezeEventStream()
     services = UnifiedWebServices(
         queries,
         stream,
@@ -785,7 +785,7 @@ def _app():
                     "dropped_count": 0,
                     "dropped_stage_count": 0,
                     "stages": {
-                        "decision_publish": {
+                        "freeze_publish": {
                             "sample_count": 40,
                             "p50_ms": 1.0,
                             "p95_ms": 3.0,
@@ -903,9 +903,9 @@ def _app():
     return CreateApp(services=services), queries, stream
 
 
-def _decision() -> ScoredDecision:
+def _freeze() -> ScoredFreeze:
     pipeline_keys = PIPELINE_STAGE_KEYS
-    return ScoredDecision(
+    return ScoredFreeze(
         Strategy.TOMORROW,
         NOW.date(),
         1,
@@ -921,7 +921,7 @@ def _decision() -> ScoredDecision:
         "strategy:1",
         "fusion:1",
         (
-            DecisionItem(
+            FreezeItem(
                 "600000",
                 RecommendationAction.EXECUTABLE,
                 True,
@@ -939,7 +939,7 @@ def _decision() -> ScoredDecision:
                 1,
                 "浦发银行",
                 "银行",
-                DecisionQuote(
+                FreezeQuote(
                     "600000",
                     10.25,
                     2.5,
@@ -950,7 +950,7 @@ def _decision() -> ScoredDecision:
                     NOW,
                     "quote:1",
                 ),
-                model_diagnostics=DecisionModelDiagnostics(84.0, 1.45, 0.2, 1.25, 0.1),
+                model_diagnostics=FreezeModelDiagnostics(84.0, 1.45, 0.2, 1.25, 0.1),
             ),
         ),
         (("hard_filter", 10),),

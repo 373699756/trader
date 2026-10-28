@@ -13,7 +13,7 @@ from trader.infra.serialization.sealing import PublishImmutable
 from trader.recommendation.domain.market.feature_contracts import FeatureVector
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.domain.evaluation.models import (
+from trader.recommendation.domain.outcomes.models import (
     OutcomeExitStatus,
     RecommendationOutcome,
 )

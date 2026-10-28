@@ -242,7 +242,7 @@ def _shift_bundle(bundle: HistoricalFullFieldBundle, trade_date: date) -> Histor
                 settlement,
                 basis=replace(
                     settlement.basis,
-                    decision_date=settlement.basis.decision_date + timedelta(days=days),
+                    freeze_date=settlement.basis.freeze_date + timedelta(days=days),
                     label_date=settlement.basis.label_date + timedelta(days=days),
                 ),
                 lineage=_shift_lineage(settlement.lineage, days),

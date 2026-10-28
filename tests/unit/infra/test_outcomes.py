@@ -7,23 +7,23 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import NOW, decision
+from tests.unit.domain.test_freeze_identity import NOW, freeze
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    DecisionDownside,
-    FormalScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    FormalScoredFreeze,
+    FreezeDownside,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.training.domain.evaluation.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
-from trader.training.infra.research.outcome_evidence_index import (
+from trader.recommendation.infra.persistence.outcome_evidence_index import (
     OutcomeEvidenceConflictError,
     SQLiteOutcomeEvidenceIndex,
 )
+from trader.recommendation.domain.outcomes.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
 
 
-class _Decisions:
-    def __init__(self, record: CommittedDecisionRecord | None = None) -> None:
+class _Freezes:
+    def __init__(self, record: CommittedFreezeRecord | None = None) -> None:
         self.record = record
 
     def list_dates(self, strategy, *, limit=31):
@@ -38,8 +38,8 @@ class _Decisions:
         return None
 
 
-def _repository(tmp_path: Path, record: CommittedDecisionRecord | None = None):
-    return SQLiteOutcomeEvidenceIndex(tmp_path, _Decisions(record))
+def _repository(tmp_path: Path, record: CommittedFreezeRecord | None = None):
+    return SQLiteOutcomeEvidenceIndex(tmp_path, _Freezes(record))
 
 
 def _outcome(
@@ -74,10 +74,10 @@ def _outcome(
     )
 
 
-def test_pending_targets_are_derived_only_from_selected_formal_decisions(tmp_path: Path) -> None:
-    original = decision(Strategy.TOMORROW)
+def test_pending_targets_are_derived_only_from_selected_formal_freezes(tmp_path: Path) -> None:
+    original = freeze(Strategy.TOMORROW)
     item = original.items[0]
-    formal = CommittedDecisionRecord(
+    formal = CommittedFreezeRecord(
         replace(
             original,
             items=(
@@ -85,7 +85,7 @@ def test_pending_targets_are_derived_only_from_selected_formal_decisions(tmp_pat
                     item,
                     selected=True,
                     rank=1,
-                    downside=DecisionDownside("pass", (), 2.5, None, None),
+                    downside=FreezeDownside("pass", (), 2.5, None, None),
                 ),
             ),
         ),
@@ -103,9 +103,9 @@ def test_pending_targets_are_derived_only_from_selected_formal_decisions(tmp_pat
 
 
 def test_pending_target_does_not_fabricate_zero_atr_when_downside_is_unavailable(tmp_path: Path) -> None:
-    original = decision(Strategy.TOMORROW)
+    original = freeze(Strategy.TOMORROW)
     item = original.items[0]
-    formal = CommittedDecisionRecord(
+    formal = CommittedFreezeRecord(
         replace(original, items=(replace(item, selected=True, rank=1, downside=None),)),
         NOW,
         "scheduled",
@@ -119,7 +119,7 @@ def test_pending_target_does_not_fabricate_zero_atr_when_downside_is_unavailable
 
 
 def test_recommend_and_watch_outcomes_are_counted_separately_from_avoided_leader(tmp_path: Path) -> None:
-    original = decision(Strategy.TOMORROW)
+    original = freeze(Strategy.TOMORROW)
     base = original.items[0]
     assert base.quote is not None
     current = replace(
@@ -153,7 +153,7 @@ def test_recommend_and_watch_outcomes_are_counted_separately_from_avoided_leader
         ),
         selection_diagnostics=None,
     )
-    formal = CommittedDecisionRecord(FormalScoredDecision(current), NOW, "scheduled")
+    formal = CommittedFreezeRecord(FormalScoredFreeze(current), NOW, "scheduled")
     repository = _repository(tmp_path, formal)
 
     assert {target.stock_code for target in repository.pending_outcome_targets(limit=10)} == {
@@ -214,11 +214,11 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
 
     database = tmp_path / "outcomes.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
-        row = connection.run("SELECT status, payload_hash, payload FROM recommendation_outcomes").fetchone()
+        row = connection.run("SELECT status, record_hash, record_bytes FROM recommendation_outcomes").fetchone()
 
     assert row is not None
     assert row[0] == "complete"
-    assert len(row[1]) == 64
+    assert len(row[1]) == 32
     payload = json.loads(row[2])
     assert payload["anchor_raw_price"] == 10.0
     assert payload["anchor_qfq_price"] == 10.0
@@ -249,7 +249,7 @@ def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_
 
     database = tmp_path / "outcomes.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
-        row = connection.run("SELECT status, payload FROM recommendation_outcomes").fetchone()
+        row = connection.run("SELECT status, record_bytes FROM recommendation_outcomes").fetchone()
     assert row is not None
     payload = json.loads(row[1])
     assert row[0] == "complete"
@@ -280,9 +280,9 @@ def test_benchmark_read_rejects_tampered_columns(tmp_path: Path) -> None:
 
 
 def test_legacy_d25_outcomes_resume_with_only_t4_pending(tmp_path: Path) -> None:
-    original = decision(Strategy.D25)
+    original = freeze(Strategy.D25)
     item = original.items[0]
-    formal = CommittedDecisionRecord(
+    formal = CommittedFreezeRecord(
         replace(original, items=(replace(item, selected=True, rank=1),)),
         NOW,
         "scheduled",

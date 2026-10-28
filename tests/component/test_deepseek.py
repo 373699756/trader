@@ -18,10 +18,10 @@ from trader.infra.sqlite_connection import (
     SqliteSession,
     SqliteTransaction,
 )
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError
 from trader.recommendation.domain.evidence.review import ReviewOutcome
 from trader.recommendation.domain.market.models import (
@@ -377,8 +377,8 @@ def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked
     clock.now.return_value = NOW
     app = CreateApp(
         services=UnifiedWebServices(
-            UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), history, clock),
-            UnifiedDecisionEventStream(),
+            UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), history, clock),
+            UnifiedFreezeEventStream(),
             lambda: {
                 "runtime_started": True,
                 "deepseek_budget": dict(reviewer.status())["budget"],
@@ -446,8 +446,8 @@ def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, 
     clock.now.return_value = NOW
     app = CreateApp(
         services=UnifiedWebServices(
-            UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), history, clock),
-            UnifiedDecisionEventStream(),
+            UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), history, clock),
+            UnifiedFreezeEventStream(),
             lambda: {
                 "runtime_started": True,
                 "dependencies": {"deepseek": dict(reviewer.status())},

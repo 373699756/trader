@@ -45,7 +45,7 @@ def test_empty_recommendation_keeps_candidate_and_epoch_denominators() -> None:
     assert cost.evaluated_candidate_count == 0
     assert cost.cost_per_epoch == 2.0
     assert cost.cost_per_candidate == 0.0
-    assert cost.cost_per_formal_decision == 0.0
+    assert cost.cost_per_formal_freeze == 0.0
     assert cost.cost_per_deepseek_candidate == 0.0
 
 
@@ -53,8 +53,8 @@ def test_baseline_groups_strategy_phase_and_records_freeze_completion_rate() -> 
     report = BuildScoringHotPathBaseline(
         (_epoch(Strategy.TOMORROW, candidates=2), _epoch(Strategy.TOMORROW, candidates=1, completed=False)),
         latencies=(ScoringHotPathLatency("local_scoring", 1.0, 2.0, 3.0, 2),),
-        formal_current_decision_count=1,
-        formal_frozen_decision_count=1,
+        formal_current_freeze_count=1,
+        formal_freeze_record_count=1,
         deepseek_candidate_count=2,
         equivalence=(ScoringHotPathEquivalence("same_input", "passed", "0" * 64),),
     )
@@ -62,7 +62,7 @@ def test_baseline_groups_strategy_phase_and_records_freeze_completion_rate() -> 
     item = report.slices[0]
     assert item.freeze_before_completion_rate == 0.5
     assert item.cost.evaluated_candidate_count == 3
-    assert item.cost.formal_current_decision_count == 1
+    assert item.cost.formal_current_freeze_count == 1
     assert item.latencies[0].p95_ms == 2.0
     assert item.recompute_shrink_ratio == 0.0
 

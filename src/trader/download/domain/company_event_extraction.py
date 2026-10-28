@@ -210,22 +210,22 @@ def _confirm_risks(
 
 def _risk_categories(text: str) -> tuple[CompanyRiskType, ...]:
     result: list[CompanyRiskType] = []
-    decision = any(x in text for x in ("行政处罚决定", "纪律处分决定", "处罚决定书", "判决书"))
+    freeze = any(x in text for x in ("行政处罚决定", "纪律处分决定", "处罚决定书", "判决书"))
     major_holder = any(x in text for x in ("控股股东", "实际控制人", "持股5%以上", "5%以上股东", "大股东"))
     reduction_start = any(x in text for x in ("拟减持", "减持股份预披露", "减持股份的预披露")) or (
         "减持计划" in text and not any(x in text for x in ("进展", "实施情况", "结果", "终止"))
     )
     if major_holder and reduction_start:
         result.append(CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION)
-    if decision and any(x in text for x in ("财务造假", "虚假记载", "虚增收入", "虚增利润", "重大遗漏")):
+    if freeze and any(x in text for x in ("财务造假", "虚假记载", "虚增收入", "虚增利润", "重大遗漏")):
         result.append(CompanyRiskType.FINANCIAL_FRAUD)
     if any(x in text for x in ("立案告知书", "收到立案", "决定立案", "被立案")):
         result.append(CompanyRiskType.OFFICIAL_INVESTIGATION)
-    if decision and "重大违法" in text:
+    if freeze and "重大违法" in text:
         result.append(CompanyRiskType.MAJOR_ILLEGAL)
-    if decision and "资金占用" in text:
+    if freeze and "资金占用" in text:
         result.append(CompanyRiskType.FUND_OCCUPATION)
-    if decision and any(x in text for x in ("违规担保", "违法担保")):
+    if freeze and any(x in text for x in ("违规担保", "违法担保")):
         result.append(CompanyRiskType.ILLEGAL_GUARANTEE)
     if any(x in text for x in ("强制退市决定", "终止上市决定", "强制退市程序")):
         result.append(CompanyRiskType.FORCED_DELISTING)

@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
+from trader.infra.sqlite_codec import DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     SqliteConnection,
@@ -87,13 +88,13 @@ class SQLiteHistoricalResidualLedger:
     def read_joined(self, strategy: ResearchStrategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
         with SqliteSession(self._path) as connection, SqliteTransaction(connection):
             outcomes = connection.run(
-                "SELECT content_hash, payload FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
-                (strategy, parent_split_hash),
+                "SELECT content_hash, outcome_json FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
+                (strategy, EncodeHash(parent_split_hash)),
             ).fetchall()
         outcome_by_identity: dict[str, HistoricalOutcomeRecord] = {}
         for persisted_hash, payload in outcomes:
             outcome = _decode_outcome(str(payload))
-            if outcome.content_hash != persisted_hash:
+            if outcome.content_hash != DecodeHash(persisted_hash):
                 raise HistoricalResidualLedgerCorruptionError("historical outcome payload hash mismatch")
             outcome_by_identity[_outcome_identity(outcome)] = outcome
         joined: list[JoinedHistoricalResidual] = []
@@ -108,15 +109,15 @@ class SQLiteHistoricalResidualLedger:
     ) -> tuple[HistoricalPredictionRecord, ...]:
         with SqliteSession(self._path) as connection, SqliteTransaction(connection):
             rows = connection.run(
-                "SELECT content_hash, payload FROM historical_prediction "
+                "SELECT content_hash, prediction_json FROM historical_prediction "
                 "WHERE strategy = ? AND parent_split_hash = ? "
                 "ORDER BY trade_date, code, horizon, model_hash",
-                (strategy, parent_split_hash),
+                (strategy, EncodeHash(parent_split_hash)),
             ).fetchall()
         result: list[HistoricalPredictionRecord] = []
         for persisted_hash, payload in rows:
             prediction = _decode_prediction(str(payload))
-            if prediction.content_hash != persisted_hash:
+            if prediction.content_hash != DecodeHash(persisted_hash):
                 raise HistoricalResidualLedgerCorruptionError("historical prediction payload hash mismatch")
             result.append(prediction)
         return tuple(result)
@@ -130,25 +131,26 @@ class SQLiteHistoricalResidualLedger:
         connection: SqliteConnection,
         row: _LedgerRow,
     ) -> None:
+        identity_column = "prediction_id" if row.table == "historical_prediction" else "outcome_id"
         existing = connection.run(
-            f"SELECT content_hash FROM {row.table} WHERE identity = ?", (row.identity,)
+            f"SELECT content_hash FROM {row.table} WHERE {identity_column} = ?", (row.identity,)
         ).fetchone()
         if existing is not None:
-            if existing[0] != row.content_hash:
+            if DecodeHash(existing[0]) != row.content_hash:
                 raise HistoricalResidualLedgerConflictError(f"immutable {row.table} identity conflicts")
             return
         values: list[object] = [
             row.identity,
             row.key.strategy,
-            row.key.trade_date.isoformat(),
+            EncodeDate(row.key.trade_date),
             row.key.code,
             row.key.horizon,
         ]
         if row.table == "historical_prediction":
             if row.model_hash is None:
                 raise ValueError("historical prediction persistence requires a model hash")
-            values.append(row.model_hash)
-        values.extend((row.parent_split_hash, row.content_hash, row.payload))
+            values.append(EncodeHash(row.model_hash))
+        values.extend((EncodeHash(row.parent_split_hash), EncodeHash(row.content_hash), row.payload))
         placeholders = ",".join("?" for _ in values)
         connection.run(f"INSERT INTO {row.table} VALUES ({placeholders})", values)
 
@@ -358,31 +360,31 @@ __all__ = [
 
 
 _SCHEMA = SqliteSchema(
-    None,
+    1,
     (
         """
-        CREATE TABLE IF NOT EXISTS historical_prediction (
-            identity TEXT PRIMARY KEY,
+        CREATE TABLE historical_prediction (
+            prediction_id TEXT NOT NULL PRIMARY KEY,
             strategy TEXT NOT NULL,
-            trade_date TEXT NOT NULL,
+            trade_date INTEGER NOT NULL,
             code TEXT NOT NULL,
             horizon INTEGER NOT NULL,
-            model_hash TEXT NOT NULL,
-            parent_split_hash TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            payload TEXT NOT NULL
+            model_hash BLOB NOT NULL CHECK(length(model_hash)=32),
+            parent_split_hash BLOB NOT NULL CHECK(length(parent_split_hash)=32),
+            content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
+            prediction_json TEXT NOT NULL
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS historical_outcome (
-            identity TEXT PRIMARY KEY,
+        CREATE TABLE historical_outcome (
+            outcome_id TEXT NOT NULL PRIMARY KEY,
             strategy TEXT NOT NULL,
-            trade_date TEXT NOT NULL,
+            trade_date INTEGER NOT NULL,
             code TEXT NOT NULL,
             horizon INTEGER NOT NULL,
-            parent_split_hash TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            payload TEXT NOT NULL
+            parent_split_hash BLOB NOT NULL CHECK(length(parent_split_hash)=32),
+            content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
+            outcome_json TEXT NOT NULL
         )
         """,
     ),

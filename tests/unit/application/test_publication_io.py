@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from tests.unit.application.test_tomorrow_freezing import _assert_formal_current_and_history, _at, _Clock
-from tests.unit.domain.test_decision_identity import decision
+from tests.unit.domain.test_freeze_identity import freeze
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
-    DecisionRuntimeIdentity,
+    FreezeRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
@@ -19,12 +19,11 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
     PublicationIoTracker,
     PublicationOperation,
 )
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint, DecisionRecordUnavailableError
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.ports.freeze_records import FreezeRecordUnavailableError
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
-from trader.recommendation.domain.publication.decision_identity import FormalScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 from trader.recommendation.infra.status_projection import PublicationIoPayload
 
 
@@ -42,7 +41,7 @@ def _freezer(index, records, clock, tracker, strategy):
         index,
         records,
         clock,
-        runtime_identity=DecisionRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+        runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
         strategy=strategy,
         publication_io=tracker,
     )
@@ -58,10 +57,10 @@ def _receipt(tracker: PublicationIoTracker, operation: PublicationOperation):
 def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, cold, hour, minute) -> None:
     clock = _Clock(_at(hour, minute))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    index = UnifiedDecisionIndex()
-    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    index = UnifiedFreezeIndex()
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
     records.initialize()
-    current = replace(decision(strategy), observed_at=_at(14, 59, 35))
+    current = replace(freeze(strategy), observed_at=_at(14, 59, 35))
     original_hash = current.content_hash
     if not cold:
         assert index.publish(current, expected_version=None).accepted
@@ -72,11 +71,11 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
         assert tracker.snapshots() == ()  # No pretend zero-duration I/O.
         return
     if cold:
-        assert result.status == "no_eligible_decision"
+        assert result.status == "no_eligible_freeze"
         missing = _receipt(tracker, "formal_lookup")
         assert missing.pending_count == 1 and missing.failed_count == 0
         assert missing.source_health.state is SourceHealthState.READY
-        assert missing.target.decision_version is None
+        assert missing.target.freeze_version is None
         result = freezer.freeze_close_fallback(
             current, recovery_path="close_rebuild", official_close_version="official-close:fixture"
         )
@@ -89,14 +88,12 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
         assert receipt.failed_count == receipt.pending_count == receipt.rejected_count == 0
         assert receipt.latency_ms == 125
     _assert_formal_current_and_history(index, records, clock, result.record)
-    cold_index = UnifiedDecisionIndex()
+    cold_index = UnifiedFreezeIndex()
     cold_tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    restored = _freezer(
-        cold_index, SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3"), clock, cold_tracker, strategy
-    )
+    restored = _freezer(cold_index, SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3"), clock, cold_tracker, strategy)
     assert restored.restore(clock.value.date()).record == result.record
     restored_receipt = _receipt(cold_tracker, "formal_restore")
-    assert restored_receipt.output_version == result.record.decision.version
+    assert restored_receipt.output_version == result.record.freeze.version
     assert {item.operation for item in cold_tracker.snapshots()} == {"formal_lookup", "formal_restore"}
     assert (
         restored.freeze_close_fallback(
@@ -111,10 +108,10 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
 def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_path, monkeypatch, strategy) -> None:
     clock = _Clock(_at(15, 0))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    index = UnifiedDecisionIndex()
-    current = replace(decision(strategy), observed_at=_at(14, 59, 35))
+    index = UnifiedFreezeIndex()
+    current = replace(freeze(strategy), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
     records.initialize()
     commit = records.commit
     attempted = []
@@ -122,7 +119,7 @@ def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_pa
     def fail_once(record):
         attempted.append(record)
         if len(attempted) == 1:
-            raise DecisionRecordUnavailableError("controlled_write_failure")
+            raise FreezeRecordUnavailableError("controlled_write_failure")
         commit(record)
 
     monkeypatch.setattr(records, "commit", fail_once)
@@ -143,35 +140,11 @@ def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_pa
     _assert_formal_current_and_history(index, records, clock, result.record)
 
 
-def test_cleanup_failure_is_visible_without_revoking_formal_record(tmp_path, monkeypatch) -> None:
-    clock = _Clock(_at(14, 59, 40))
-    tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    index = UnifiedDecisionIndex()
-    current = replace(decision(), observed_at=_at(14, 59, 35))
-    assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
-    records.initialize()
-    freezer = _freezer(index, records, clock, tracker, Strategy.TOMORROW)
-    records.save_checkpoint(DecisionCheckpoint(FormalScoredDecision(current), _at(15, 0)))
-
-    def fail_cleanup(*_args, **_kwargs):
-        raise OSError("controlled_cleanup_failure")
-
-    monkeypatch.setattr(records, "consume_checkpoint", fail_cleanup)
-    clock.value = _at(15, 0)
-    result = freezer.freeze_scheduled()
-    assert result.status == "frozen" and result.record is not None
-    assert _receipt(tracker, "checkpoint_consume").failed_count == 1
-    assert _receipt(tracker, "formal_publish").output_count == 1
-    assert freezer.freeze_scheduled().record == result.record
-    _assert_formal_current_and_history(index, records, clock, result.record)
-
-
 def test_late_completion_and_older_cycle_cannot_replace_new_io_and_age_is_preserved() -> None:
     clock = _Clock(_at(14, 50))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    old = PublicationIoTarget.decision(decision())
-    new = PublicationIoTarget.decision(replace(decision(), sequence=3))
+    old = PublicationIoTarget.freeze(freeze())
+    new = PublicationIoTarget.freeze(replace(freeze(), sequence=3))
     first = tracker.begin("current_publish", old)
     second = tracker.begin("current_publish", new)
     tracker.finish(*second, "current_publish", new, PublicationIoCompletion(), error=None)
@@ -199,10 +172,10 @@ def test_observation_clock_failure_cannot_block_freeze(tmp_path) -> None:
         raise RuntimeError("telemetry unavailable")
 
     tracker = PublicationIoTracker(now=broken_clock, monotonic=_Monotonic())
-    index = UnifiedDecisionIndex()
-    current = replace(decision(), observed_at=_at(14, 59, 35))
+    index = UnifiedFreezeIndex()
+    current = replace(freeze(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
     records.initialize()
     result = _freezer(index, records, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
     assert result.status == "frozen" and result.record is not None
@@ -213,42 +186,27 @@ def test_observation_clock_failure_cannot_block_freeze(tmp_path) -> None:
 def test_cold_lookup_after_success_reports_latest_failure(tmp_path, monkeypatch) -> None:
     clock = _Clock(_at(15, 0))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    index = UnifiedDecisionIndex()
-    current = replace(decision(), observed_at=_at(14, 59, 35))
+    index = UnifiedFreezeIndex()
+    current = replace(freeze(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
     records.initialize()
     result = _freezer(index, records, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
     assert result.status == "frozen"
-    cold = _freezer(UnifiedDecisionIndex(), records, clock, tracker, Strategy.TOMORROW)
+    cold = _freezer(UnifiedFreezeIndex(), records, clock, tracker, Strategy.TOMORROW)
     assert cold.restore(clock.value.date()).status == "already_frozen"
     previous = _receipt(tracker, "formal_lookup")
 
     def fail_lookup(*_args):
-        raise DecisionRecordUnavailableError("controlled_lookup_failure")
+        raise FreezeRecordUnavailableError("controlled_lookup_failure")
 
     monkeypatch.setattr(records, "load", fail_lookup)
-    cold_again = _freezer(UnifiedDecisionIndex(), records, clock, tracker, Strategy.TOMORROW)
+    cold_again = _freezer(UnifiedFreezeIndex(), records, clock, tracker, Strategy.TOMORROW)
     assert cold_again.restore(clock.value.date()).status == "persistence_failed"
     latest = _receipt(tracker, "formal_lookup")
     assert latest.attempt_id > previous.attempt_id
-    assert latest.failed_count == 1 and latest.target.decision_version is None
+    assert latest.failed_count == 1 and latest.target.freeze_version is None
     assert latest.source_health.latest_success_at == previous.source_health.latest_success_at
-
-
-def test_ineligible_checkpoint_remains_pending_without_business_rejection(tmp_path) -> None:
-    clock = _Clock(_at(15, 0))
-    tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
-    records.initialize()
-    checkpoint = DecisionCheckpoint(FormalScoredDecision(decision()), _at(15, 0))
-    records.save_checkpoint(checkpoint)
-    freezer = _freezer(UnifiedDecisionIndex(), records, clock, tracker, Strategy.TOMORROW)
-    assert freezer.freeze_scheduled().status == "no_eligible_decision"
-    receipt = _receipt(tracker, "checkpoint_lookup")
-    assert receipt.pending_count == 1 and receipt.output_count == receipt.rejected_count == receipt.failed_count == 0
-    assert receipt.reasons[0].code == "checkpoint_ineligible"
-    assert receipt.source_health.state is SourceHealthState.READY
 
 
 def test_status_clock_failure_retains_receipt_with_unknown_age() -> None:
@@ -261,7 +219,7 @@ def test_status_clock_failure_retains_receipt_with_unknown_age() -> None:
         return clock.now()
 
     tracker = PublicationIoTracker(now=now, monotonic=_Monotonic())
-    with ObservePublicationIo(tracker, "current_publish", PublicationIoTarget.decision(decision())):
+    with ObservePublicationIo(tracker, "current_publish", PublicationIoTarget.freeze(freeze())):
         pass
     before = tracker.snapshots()[0]
     available = False

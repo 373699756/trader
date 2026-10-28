@@ -45,7 +45,7 @@ from trader.recommendation.infra.market_data.history_tail_recovery import (
 )
 from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
-from trader.training.domain.evaluation.models import OutcomeBar
+from trader.recommendation.domain.outcomes.models import OutcomeBar
 
 _RAW_RETENTION_SESSIONS = 20
 

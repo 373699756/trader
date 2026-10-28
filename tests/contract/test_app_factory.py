@@ -98,7 +98,7 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert "明日</button>" not in page
     assert "2-5日</button>" not in page
     assert "quote_status: quote.status" in dashboard
-    assert "/api/decisions/" in dashboard
+    assert "/api/freezes/" in dashboard
     assert "/api/v2/" not in dashboard
     assert "/api/recommendations/" not in dashboard
     assert "WEB_ASSET_REVISION" not in release_contract

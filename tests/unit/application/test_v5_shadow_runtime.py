@@ -1,4 +1,4 @@
-"""V5 engineering decisions stay observable without acquiring formal authority."""
+"""V5 engineering freezes stay observable without acquiring formal authority."""
 
 from __future__ import annotations
 
@@ -13,36 +13,35 @@ from tests.unit.application.test_input_runtime import _policy
 from tests.unit.application.test_tomorrow_production_model import _model_feature
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from tests.unit.application.test_v5_model_filtering import _SequencePredictor
-from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+from tests.unit.domain.test_freeze_identity import NOW, freeze
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredLocal,
     ScoredProjectionInputs,
 )
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
-    DecisionRuntimeIdentity,
+    FreezeRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    FormalScoredDecision,
-    IsShadowDecision,
-    ScoredDecision,
+from trader.recommendation.domain.publication.freeze_identity import (
+    CommittedFreezeRecord,
+    FormalScoredFreeze,
+    IsShadowFreeze,
+    ScoredFreeze,
     VisibleScoredSeats,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 
 
 class _Clock:
@@ -53,8 +52,8 @@ class _Clock:
         return self.value
 
 
-def _shadow(strategy: Strategy, now: datetime) -> ScoredDecision:
-    source = decision(strategy)
+def _shadow(strategy: Strategy, now: datetime) -> ScoredFreeze:
+    source = freeze(strategy)
     return replace(
         source,
         observed_at=now,
@@ -74,7 +73,7 @@ def _freezer(index, records, clock, strategy, *, production_authority=False):
         index,
         records,
         clock,
-        runtime_identity=DecisionRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+        runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
         strategy=strategy,
         production_authority=production_authority,
     )
@@ -131,7 +130,7 @@ def test_v5_local_and_model_free_close_rebuild_keep_shadow_actions_and_local_sco
 
     seats = VisibleScoredSeats(projection.local)
     assert seats
-    assert IsShadowDecision(projection.local)
+    assert IsShadowFreeze(projection.local)
     assert projection.production_authority is False
     assert dict(projection.local.input_versions)["production_authority"] == "false"
     assert projection.score_scale == "weighted_evidence_quality_0_100"
@@ -154,7 +153,7 @@ def test_v5_missing_model_close_rebuild_cannot_gain_production_authority(applica
 
     projection = BuildScoredLocal(native, _policy(), sequence=1, runtime=ScoredProjectionInputs(model_scoring=router))
 
-    assert IsShadowDecision(projection.local)
+    assert IsShadowFreeze(projection.local)
     assert projection.production_authority is False
     assert all(item.action is not RecommendationAction.EXECUTABLE for item in projection.local.items)
 
@@ -181,9 +180,9 @@ def test_v5_weighted_score_shadow_identity_rejects_authority_upgrades(upgrade):
 def test_v5_shadow_five_time_windows_never_checkpoint_or_freeze(tmp_path: Path, hour, minute, cold):
     now = NOW.replace(hour=hour, minute=minute)
     shadow = _shadow(Strategy.TOMORROW, now)
-    records = SQLiteDecisionRecords(tmp_path / "v5" / "decisions.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "v5" / "freeze.sqlite3")
     records.initialize()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     if not cold:
         assert index.publish(shadow, expected_version=None).accepted
     freezer = _freezer(index, records, _Clock(now), Strategy.TOMORROW)
@@ -196,26 +195,21 @@ def test_v5_shadow_five_time_windows_never_checkpoint_or_freeze(tmp_path: Path, 
     assert records.list_dates(Strategy.TOMORROW) == ()
     assert not index.is_sealed(Strategy.TOMORROW, now.date())
     with pytest.raises(ValueError, match="shadow"):
-        DecisionCheckpoint(shadow, now.replace(hour=15, minute=0))
+        FormalScoredFreeze(shadow)
     with pytest.raises(ValueError, match="shadow"):
-        FormalScoredDecision(shadow)
-    with pytest.raises(ValueError, match="shadow"):
-        CommittedDecisionRecord(shadow, max(now, now.replace(hour=15, minute=0)), "scheduled")
+        CommittedFreezeRecord(shadow, max(now, now.replace(hour=15, minute=0)), "scheduled")
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_v5_cold_start_cannot_restore_old_checkpoint_or_freeze_unmarked_rebuild(tmp_path: Path, strategy):
     now = NOW.replace(hour=15, minute=5)
-    old = replace(decision(strategy), observed_at=now.replace(hour=14, minute=59, second=50))
-    checkpoint = DecisionCheckpoint(FormalScoredDecision(old), now.replace(minute=0))
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    old = replace(freeze(strategy), observed_at=now.replace(hour=14, minute=59, second=50))
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
-    records.save_checkpoint(checkpoint)
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     freezer = _freezer(index, records, _Clock(now), strategy)
 
     assert freezer.freeze_scheduled().status == "shadow_only"
-    assert records.load_checkpoint(strategy, now.date()) == checkpoint
     assert index.snapshot(strategy).current is None
     assert (
         freezer.freeze_close_fallback(
@@ -232,12 +226,12 @@ def test_v5_cold_start_cannot_restore_old_checkpoint_or_freeze_unmarked_rebuild(
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_v5_existing_formal_record_remains_readable_without_new_freeze_authority(tmp_path: Path, strategy):
     now = NOW.replace(hour=15, minute=5)
-    old = FormalScoredDecision(decision(strategy))
-    formal = CommittedDecisionRecord(old, now.replace(minute=0), "scheduled")
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    old = FormalScoredFreeze(freeze(strategy))
+    formal = CommittedFreezeRecord(old, now.replace(minute=0), "scheduled")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
     records.commit(formal)
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     clock = _Clock(now)
     freezer = _freezer(index, records, clock, strategy)
 
@@ -249,20 +243,20 @@ def test_v5_existing_formal_record_remains_readable_without_new_freeze_authority
         ).record
         == formal
     )
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), records, clock)
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), records, clock)
     history = queries.history(strategy, now.date())
     assert history.status == "ready" and history.frozen
-    assert history.decision_version == old.version
+    assert history.freeze_version == old.version
     assert history.input_versions == old.input_versions
     assert records.load(strategy, now.date()).payload_hash == formal.payload_hash
 
 
 def test_authorized_production_freeze_keeps_existing_first_wins_contract(tmp_path: Path):
     now = NOW.replace(hour=15, minute=0)
-    current = decision()
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    current = freeze()
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     assert index.publish(current, expected_version=None).accepted
     freezer = _freezer(index, records, _Clock(now), Strategy.TOMORROW, production_authority=True)
 

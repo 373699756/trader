@@ -7,23 +7,22 @@ from pathlib import Path
 import pytest
 
 from tests.unit.application.test_tomorrow_freezing import _assert_formal_current_and_history, _at, _Clock, _coordinator
-from tests.unit.domain.test_decision_identity import decision
+from tests.unit.domain.test_freeze_identity import freeze
 from trader.http_api.route_services import UnifiedWebServices
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
-from trader.recommendation.domain.publication.decision_identity import FormalScoredDecision, ScoredDecision
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.domain.publication.freeze_identity import FormalScoredFreeze, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
+from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.web import CreateApp
 
 
-def _production(strategy: Strategy) -> ScoredDecision:
-    source = decision(strategy)
+def _production(strategy: Strategy) -> ScoredFreeze:
+    source = freeze(strategy)
     return replace(
         source,
         input_versions=(
@@ -42,7 +41,7 @@ def _production(strategy: Strategy) -> ScoredDecision:
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 @pytest.mark.parametrize("hour,minute", ((10, 0), (12, 30), (14, 59), (15, 0), (15, 10)))
 @pytest.mark.parametrize("cold", (False, True), ids=("hot", "cold"))
-def test_production_rank_checkpoint_freeze_and_history_keep_identity(
+def test_production_rank_freeze_and_history_keep_identity(
     tmp_path: Path, strategy: Strategy, hour: int, minute: int, cold: bool
 ) -> None:
     now = _at(hour, minute)
@@ -53,13 +52,12 @@ def test_production_rank_checkpoint_freeze_and_history_keep_identity(
     current = replace(
         source, observed_at=observed_at, items=(replace(item, quote=replace(item.quote, source_time=observed_at)),)
     )
-    path = tmp_path / "learned_rank/decisions.sqlite3"
-    records = SQLiteDecisionRecords(path)
+    path = tmp_path / "v1/freeze.sqlite3"
+    records = SQLiteFreezeRecords(path)
     records.initialize()
-    records.save_checkpoint(DecisionCheckpoint(FormalScoredDecision(current), _at(15, 0)))
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     if cold:
-        records = SQLiteDecisionRecords(path)
+        records = SQLiteFreezeRecords(path)
     else:
         assert index.publish(current, expected_version=None).accepted
     clock = _Clock(now)
@@ -69,11 +67,16 @@ def test_production_rank_checkpoint_freeze_and_history_keep_identity(
         assert result.status == "before_freeze"
         assert records.load(strategy, now.date()) is None
         return
+    if cold:
+        assert result.status == "no_eligible_freeze"
+        result = coordinator.freeze_close_fallback(
+            current, recovery_path="close_rebuild", official_close_version="official-close:fixture"
+        )
     assert result.status == "frozen" and result.record is not None
-    assert result.record.commit_kind == ("checkpoint_recovery" if cold else "scheduled")
-    assert result.record.decision.input_versions == current.input_versions
-    assert result.record.decision.items[0].final_score == 99.5
-    assert result.record.decision.items[0].local_score == 88.0
+    assert result.record.commit_kind == ("close_fallback" if cold else "scheduled")
+    assert all(dict(result.record.freeze.input_versions)[key] == value for key, value in current.input_versions)
+    assert result.record.freeze.items[0].final_score == 99.5
+    assert result.record.freeze.items[0].local_score == 88.0
     _assert_formal_current_and_history(index, records, clock, result.record)
     later = replace(current, sequence=2, observed_at=clock.now())
     assert (
@@ -82,19 +85,19 @@ def test_production_rank_checkpoint_freeze_and_history_keep_identity(
         ).record
         == result.record
     )
-    restored = UnifiedDecisionIndex()
+    restored = UnifiedFreezeIndex()
     assert (
-        _coordinator(restored, SQLiteDecisionRecords(path), clock, strategy).restore(now.date()).record == result.record
+        _coordinator(restored, SQLiteFreezeRecords(path), clock, strategy).restore(now.date()).record == result.record
     )
-    assert restored.snapshot(strategy).current == result.record.decision
+    assert restored.snapshot(strategy).current == result.record.freeze
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_production_rank_close_fallback_is_first_wins_and_preview_remains_ephemeral(tmp_path: Path, strategy: Strategy):
     clock = _Clock(_at(15, 10))
-    records = SQLiteDecisionRecords(tmp_path / "decisions.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
     records.initialize()
-    index = UnifiedDecisionIndex()
+    index = UnifiedFreezeIndex()
     coordinator = _coordinator(index, records, clock, strategy)
     source = _production(strategy)
     preview = replace(
@@ -109,7 +112,7 @@ def test_production_rank_close_fallback_is_first_wins_and_preview_remains_epheme
         == "preview_only"
     )
     with pytest.raises(ValueError, match="preview"):
-        FormalScoredDecision(preview)
+        FormalScoredFreeze(preview)
     assert records.list_dates(strategy) == ()
     result = coordinator.freeze_close_fallback(
         source, recovery_path="close_rebuild", official_close_version="official-close:fixture"
@@ -122,16 +125,16 @@ def test_production_rank_close_fallback_is_first_wins_and_preview_remains_epheme
     assert len(targets) == 1
     assert targets[0].snapshot_id == result.record.version
     assert targets[0].strategy is strategy
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), records, clock)
-    services = UnifiedWebServices(queries, UnifiedDecisionEventStream(), lambda: {}, profile_id="v1")
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), records, clock)
+    services = UnifiedWebServices(queries, UnifiedFreezeEventStream(), lambda: {}, profile_id="v1")
     client = CreateApp(services=services).test_client()
     for suffix in ("current", f"history?date={source.trade_date}"):
-        response = client.get(f"/api/decisions/{strategy.value}/{suffix}")
+        response = client.get(f"/api/freezes/{strategy.value}/{suffix}")
         assert response.status_code == 200
         payload = response.get_json()
         assert payload["frozen"] is True and payload["freeze_kind"] == "close_fallback"
         assert payload["scoring_profile"] == "v1"
-        assert payload["input_versions"] == dict(result.record.decision.input_versions)
+        assert payload["input_versions"] == dict(result.record.freeze.input_versions)
         assert payload["items"][0]["scores"]["final"] == 99.5
         assert payload["items"][0]["scores"]["local"] == 88.0
 

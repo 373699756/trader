@@ -1,4 +1,4 @@
-"""Immutable score explanation and explicit persisted decision schema."""
+"""Immutable score explanation and explicit persisted freeze schema."""
 
 from __future__ import annotations
 

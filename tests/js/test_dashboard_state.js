@@ -62,7 +62,7 @@ vm.runInNewContext(fs.readFileSync(errorDrawerPath, "utf8"), sandbox, { filename
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
-vm.runInNewContext(source.replace(suffix, "\n  window.TraderDashboardTest = Object.freeze({ normalizeDecisionPayload, configuredScoringProfile });\n})();"), sandbox, { filename: dashboardPath });
+vm.runInNewContext(source.replace(suffix, "\n  window.TraderDashboardTest = Object.freeze({ normalizeFreezePayload, configuredScoringProfile });\n})();"), sandbox, { filename: dashboardPath });
 const missingPatchSandbox = {
   URLSearchParams,
   console,
@@ -89,7 +89,7 @@ const state = {
   formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
   inputPipelineDetails: sandbox.window.TraderStatusView.inputPipelineDetails,
   pipelineFunnelSummary: sandbox.window.TraderStatusView.pipelineFunnelSummary,
-  decisionPipelineDetails: sandbox.window.TraderStatusView.decisionPipelineDetails,
+  freezePipelineDetails: sandbox.window.TraderStatusView.freezePipelineDetails,
   healthView: sandbox.window.TraderStatusView.healthView,
   quoteAvailabilitySummary: sandbox.window.TraderStatusView.quoteAvailabilitySummary,
   renderInputQuality: sandbox.window.TraderStatusView.renderInputQuality,
@@ -99,7 +99,7 @@ const state = {
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   updateQuoteAge: sandbox.window.TraderStatusView.updateQuoteAge,
-  decisionPayloadCompatibility: sandbox.window.TraderReleaseContract.decisionPayloadCompatibility,
+  freezePayloadCompatibility: sandbox.window.TraderReleaseContract.freezePayloadCompatibility,
   statusPayloadCompatibility: sandbox.window.TraderReleaseContract.statusPayloadCompatibility,
   tableColumnCount: sandbox.window.TraderRender.tableColumnCount,
   tableRows: sandbox.window.TraderRender.tableRows,
@@ -311,14 +311,14 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
     schema_version: "runtime_status",
     release: {
-      decision_view_schema: "decision_view",
+      freeze_view_schema: "freeze_view",
     },
   }))),
   { compatible: true, reason: "" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.decisionPayloadCompatibility({ schema_version: "decision_view_unsupported" }))),
-  { compatible: false, reason: "decision_schema_mismatch" },
+  JSON.parse(JSON.stringify(state.freezePayloadCompatibility({ schema_version: "freeze_view_unsupported" }))),
+  { compatible: false, reason: "freeze_schema_mismatch" },
 );
 assert(patchesSource.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
 assert(
@@ -327,7 +327,7 @@ assert(
 );
 assert(
   streamSource.includes("applyRecommendationPatch(payload)"),
-  "decision SSE must render its replacement patch without an unconditional snapshot GET",
+  "freeze SSE must render its replacement patch without an unconditional snapshot GET",
 );
 assert.strictEqual(state.formatDurationHms(0), "0秒");
 assert.strictEqual(state.formatDurationHms(-1), "0秒");
@@ -500,12 +500,12 @@ const pipelineFixture = {
     ] : [], reason_counts: [] })),
 };
 const publishedPayload = { status: "ready", strategy: "tomorrow", trade_date: "2026-08-14",
-  decision_version: "decision:tomorrow:immutable", content_hash: "hash-a",
+  freeze_version: "freeze:tomorrow:immutable", content_hash: "hash-a",
   coverage: { evaluated_count: 370 }, items: [], pipeline: pipelineFixture };
 const matchingReceipt = { operation: "formal_write", strategy: "tomorrow", trade_date: "2026-08-14",
   state: "failed", input_count: 1, output_count: 0, rejected_count: 0, pending_count: 0, failed_count: 1,
   latency_ms: 125, reasons: [{ code: "io_oserror", count: 1 }],
-  decision_version: "decision:tomorrow:immutable", content_hash: "hash-a",
+  freeze_version: "freeze:tomorrow:immutable", content_hash: "hash-a",
   source_health: { state: "unavailable", age_seconds: 20 } };
 const canonicalObservationElements = summaryFixture();
 const renderPublished = (receipts, extra = {}) => state.renderSummary(
@@ -524,7 +524,7 @@ assert(canonicalObservationElements.observationStageList.innerHTML.includes('dat
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="checkpoint_consume"'));
 assert.match(canonicalObservationElements.observationStageList.innerHTML,
   /<button class="observation-stage-toggle"[^>]*aria-expanded="false"/);
-renderPublished([{ ...matchingReceipt, decision_version: "old-round" }]);
+renderPublished([{ ...matchingReceipt, freeze_version: "old-round" }]);
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
 renderPublished([{ ...matchingReceipt, trade_date: "2026-08-13" }]);
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
@@ -536,7 +536,7 @@ assert(canonicalObservationElements.funnelStages.textContent.includes("新输入
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("未入选 364"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("文件或数据库读写失败"));
 
-// Closing time must not remove the chain when no decision has been published.
+// Closing time must not remove the chain when no freeze has been published.
 const pendingClosePayload = {
   status: "not_ready", strategy: "tomorrow", trade_date: "2026-08-14", frozen: false,
   coverage: {}, items: [],
@@ -620,7 +620,7 @@ assert.strictEqual(state.pipelineFunnelSummary(stageSnapshots, 3, 2),
   "荐股链路 5289→4000→4000→390→380→370→370→370→6→6→6 · 正式 3 · 观察 2");
 assert.strictEqual(state.pipelineFunnelSummary([{ state: "not_ready", output_count: 0 }], 0, "已关闭"), null);
 assert(state.inputPipelineDetails(pipelineFixture).includes("模型过滤 380→370"));
-assert(state.decisionPipelineDetails(pipelineFixture).includes("固定评分前六 370→6"));
+assert(state.freezePipelineDetails(pipelineFixture).includes("固定评分前六 370→6"));
 assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("<script>alert(1)</script>"), "原因说明暂未提供");
 const legacyElements = summaryFixture();
 state.renderObservationStages(legacyElements, [{ stage: "data_source", output_count: 800 }], null, false, []);
@@ -641,7 +641,7 @@ state.renderSummary(
   [
     {
       code: "600002", name: "观察股票", industry: "证券", action: "observe",
-      price: null, pct_change: null, source: "decision", source_time: "2026-08-14T09:59:00+08:00",
+      price: null, pct_change: null, source: "freeze", source_time: "2026-08-14T09:59:00+08:00",
       scores: { final_score: 75 },
     },
     {
@@ -1011,6 +1011,17 @@ assert.strictEqual(runtimeRows.includes("活动中"), true);
 const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
 assert.strictEqual(normalHealth.primary, null);
+for (const [stage, message, label] of [
+  ["freeze", "策略结果暂时无法构建", "策略构建"],
+  ["seal", "正式快照冻结失败", "快照冻结"],
+]) {
+  const failure = state.healthView({
+    recent_errors: [{ code: `${stage}:freeze_unavailable`, stage, severity: "error",
+      strategy: "tomorrow", recovery_status: "active", count: 1 }],
+  }, []);
+  assert.strictEqual(failure.primary.message, message);
+  assert(failure.primary.meta.includes(label));
+}
 const healthElements = {
   errorDetailsButton: { hidden: false, disabled: false, dataset: {}, title: "" },
   healthBadge: { textContent: "" },
@@ -1445,7 +1456,7 @@ const getItem = {
     estimated_cost_pct: 0.2, predicted_net_excess_pct: 1.25, model_disagreement_pct: 0.1,
   },
 };
-const getPayload = sandbox.window.TraderDashboardTest.normalizeDecisionPayload(
+const getPayload = sandbox.window.TraderDashboardTest.normalizeFreezePayload(
   { strategy: "tomorrow", status: "ready", trade_date: "2026-07-23", items: [getItem], top_scores: [getItem] },
   "tomorrow", "", "current",
 );
@@ -1456,7 +1467,7 @@ const patchItem = {
   research_coverage: { evidence_count: 3, structured_risk_fact_count: 1, review_eligible: true,
     components: { financial: "known_clear", announcements: "stale", pledge: "unknown", unlock: "known_risk" } },
   price: 11, pct_change: 1, amount: 10000000, turnover_rate: 2, market_cap: 1000000000,
-  anchor_price: 10, quote_status: "decision_anchor",
+  anchor_price: 10, quote_status: "freeze_anchor",
   risks: [{ risk_code: "unlock_risk", origin: "deepseek", veto_applied: true }],
   scores: {
     local_score: 80, final_score: 80, deepseek_score: null, deepseek_risk_penalty: 0,
@@ -1681,7 +1692,7 @@ const payload = {
 };
 const patch = {
   patch_schema_version: 4,
-  schema_version: "decision_event",
+  schema_version: "freeze_event",
   publication_id: "tomorrow-next",
   base_projection_version: "tomorrow-base",
   projection_version: "tomorrow-next",
@@ -1704,7 +1715,7 @@ const patch = {
 
 assert.strictEqual(state.patchVersionValid(patch), true);
 assert.strictEqual(
-  state.recommendationPatchDecision(patch, payload, "tomorrow-base", "tomorrow", "live"),
+  state.recommendationPatchFreeze(patch, payload, "tomorrow-base", "tomorrow", "live"),
   "apply",
 );
 const coveragePatch = {
@@ -1719,7 +1730,7 @@ const coveragePatch = {
   },
 };
 assert.strictEqual(
-  state.recommendationPatchDecision(coveragePatch, payload, "tomorrow-base", "tomorrow", "live"),
+  state.recommendationPatchFreeze(coveragePatch, payload, "tomorrow-base", "tomorrow", "live"),
   "apply",
 );
 const replacementPayload = state.replacementPayload(payload, coveragePatch, []);
@@ -1742,15 +1753,15 @@ state.renderSummary(
 );
 assert.strictEqual(replacementSummary.funnelStatus.textContent, "阶段观测不可用");
 assert.strictEqual(
-  state.recommendationPatchDecision(patch, payload, "tomorrow-base", "tomorrow", "current"),
+  state.recommendationPatchFreeze(patch, payload, "tomorrow-base", "tomorrow", "current"),
   "apply",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, coverage: null }, payload, "tomorrow-base", "tomorrow", "current"),
+  state.recommendationPatchFreeze({ ...patch, coverage: null }, payload, "tomorrow-base", "tomorrow", "current"),
   "schema_mismatch",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision(
+  state.recommendationPatchFreeze(
     { ...patch, view: "official", frozen: true },
     payload,
     "tomorrow-base",
@@ -1760,19 +1771,19 @@ assert.strictEqual(
   "apply",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, schema_version: "decision_event_unsupported" }, payload, "tomorrow-base", "tomorrow", "live"),
+  state.recommendationPatchFreeze({ ...patch, schema_version: "freeze_event_unsupported" }, payload, "tomorrow-base", "tomorrow", "live"),
   "schema_mismatch",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, publication_id: "other-publication" }, payload, "tomorrow-base", "tomorrow", "live"),
+  state.recommendationPatchFreeze({ ...patch, publication_id: "other-publication" }, payload, "tomorrow-base", "tomorrow", "live"),
   "schema_mismatch",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision({ ...patch, trade_date: "2026-07-22" }, payload, "tomorrow-base", "tomorrow", "live"),
+  state.recommendationPatchFreeze({ ...patch, trade_date: "2026-07-22" }, payload, "tomorrow-base", "tomorrow", "live"),
   "identity_mismatch",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision(
+  state.recommendationPatchFreeze(
     { ...patch, base_projection_version: "unknown" },
     payload,
     "tomorrow-base",
@@ -1782,7 +1793,7 @@ assert.strictEqual(
   "base_mismatch",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision(
+  state.recommendationPatchFreeze(
     patch,
     { ...payload, snapshot_id: "frozen", projection_version: "frozen", frozen: true, view: "official" },
     "frozen",
@@ -1792,7 +1803,7 @@ assert.strictEqual(
   "ignore_late_draft",
 );
 assert.strictEqual(
-  state.recommendationPatchDecision(
+  state.recommendationPatchFreeze(
     patch,
     { ...payload, snapshot_id: "frozen", projection_version: "frozen", frozen: true, view: "official" },
     "frozen",
@@ -1803,18 +1814,18 @@ assert.strictEqual(
 );
 const overlay = {
   patch_schema_version: 4,
-  schema_version: "decision_event",
-  publication_id: "tomorrow-decision",
+  schema_version: "freeze_event",
+  publication_id: "tomorrow-freeze",
   projection_version: "tomorrow-next",
-  snapshot_id: "tomorrow-decision",
+  snapshot_id: "tomorrow-freeze",
   strategy: "tomorrow",
   trade_date: "2026-07-23",
   quotes: [],
 };
-const current = { ...payload, snapshot_id: "tomorrow-decision", projection_version: "tomorrow-current" };
-assert.strictEqual(state.overlayPatchDecision(overlay, current, "tomorrow-current", "tomorrow"), "apply");
+const current = { ...payload, snapshot_id: "tomorrow-freeze", projection_version: "tomorrow-current" };
+assert.strictEqual(state.overlayPatchFreeze(overlay, current, "tomorrow-current", "tomorrow"), "apply");
 assert.strictEqual(
-  state.overlayPatchDecision(
+  state.overlayPatchFreeze(
     { ...overlay, publication_id: "wrong", projection_version: "wrong", snapshot_id: "wrong" },
     current,
     "tomorrow-next",
@@ -1827,7 +1838,7 @@ assert.strictEqual(state.eventMatchesCurrent({ strategy: "d25", trade_date: "202
 assert.strictEqual(state.eventMatchesCurrent({ strategy: "tomorrow", trade_date: "2026-07-22" }, "tomorrow", "2026-07-23"), false);
 assert(
   streamSource.includes("if (!state.date && eventMatchesCurrent(payload) && applyRecommendationPatch(payload))"),
-  "unrelated strategy events must not apply decision patches",
+  "unrelated strategy events must not apply freeze patches",
 );
 assert(
   source.includes("current.projection_version === state.payload.projection_version"),

@@ -6,8 +6,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 StatusProvider = Callable[[], dict[str, object]]
@@ -21,8 +21,8 @@ class WebApiConfig:
 
 @dataclass(frozen=True)
 class UnifiedWebServices:
-    queries: UnifiedDecisionQueries
-    events: UnifiedDecisionEventStream
+    queries: UnifiedFreezeQueries
+    events: UnifiedFreezeEventStream
     status_provider: StatusProvider
     config: WebApiConfig = WebApiConfig()
     profile_id: str = "v2"

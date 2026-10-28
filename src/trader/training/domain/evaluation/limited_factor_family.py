@@ -14,7 +14,7 @@ from trader.training.domain.evaluation.paired_statistics import (
     PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
-    PreregisteredHolmDecision,
+    PreregisteredHolmFreeze,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
@@ -196,7 +196,7 @@ class LimitedFactorCandidateEvidence:
     candidate_id: str
     bootstrap_20bp: PreregisteredBootstrapResult
     bootstrap_50bp: PreregisteredBootstrapResult
-    holm: PreregisteredHolmDecision
+    holm: PreregisteredHolmFreeze
     mean_increment_20bp: float
     mean_increment_50bp: float
     mean_increment_100bp: float
@@ -385,7 +385,7 @@ def _candidate_evidence(
     spec: LimitedFactorFamilySpec,
     series: FactorFamilyCandidateSeries,
     bootstrap_20bp: PreregisteredBootstrapResult,
-    holm: PreregisteredHolmDecision,
+    holm: PreregisteredHolmFreeze,
 ) -> LimitedFactorCandidateEvidence:
     confirmation = _confirmation_series(spec, series)
     bootstrap_50bp = _bootstrap(spec, series.candidate_id, "50bp", confirmation.paired_increment_50bp)
@@ -420,7 +420,7 @@ def _gate_failures(
     series: FactorFamilyCandidateSeries,
     bootstrap_20bp: PreregisteredBootstrapResult,
     bootstrap_50bp: PreregisteredBootstrapResult,
-    holm: PreregisteredHolmDecision,
+    holm: PreregisteredHolmFreeze,
 ) -> tuple[str, ...]:
     failures: list[str] = []
     if min(series.overall_coverage, *series.board_coverages) < spec.minimum_coverage:

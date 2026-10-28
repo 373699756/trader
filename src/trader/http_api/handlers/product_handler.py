@@ -9,14 +9,14 @@ from functools import partial
 
 from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
-from trader.http_api.decision_sse import DecisionEventResponse
-from trader.http_api.response.decision_projection import SerializeDecisionView, SerializeError
+from trader.http_api.freeze_sse import FreezeEventResponse
+from trader.http_api.response.freeze_projection import SerializeError, SerializeFreezeView
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebServices
 from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedSubscriberLimitError
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
-    DECISION_VIEW_SCHEMA_VERSION,
-    DecisionView,
+    FREEZE_VIEW_SCHEMA_VERSION,
+    FreezeView,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
@@ -48,18 +48,18 @@ def _create_product_blueprint(services: WebServices | None) -> Blueprint:
     blueprint = Blueprint("product", __name__)
     blueprint.add_url_rule("/", "root", partial(_root, services))
     blueprint.add_url_rule(
-        "/api/decisions/<strategy_name>/current",
-        "decision_current",
+        "/api/freezes/<strategy_name>/current",
+        "freeze_current",
         partial(_current, services),
     )
     blueprint.add_url_rule(
-        "/api/decisions/<strategy_name>/history",
-        "decision_history",
+        "/api/freezes/<strategy_name>/history",
+        "freeze_history",
         partial(_history, services),
     )
     blueprint.add_url_rule(
-        "/api/decisions/<strategy_name>/dates",
-        "decision_dates",
+        "/api/freezes/<strategy_name>/dates",
+        "freeze_dates",
         partial(_dates, services),
     )
     blueprint.add_url_rule("/api/status", "status", partial(_status, services))
@@ -139,7 +139,7 @@ def _dates(services: WebServices | None, strategy_name: str) -> RouteResponse:
     profile_id, lane = selected
     return jsonify(
         {
-            "schema_version": "decision_dates",
+            "schema_version": "freeze_dates",
             "strategy": strategy.value,
             "scoring_profile": profile_id,
             "dates": [value.isoformat() for value in lane.queries.dates(strategy)],
@@ -199,7 +199,7 @@ def _status(services: WebServices | None) -> RouteResponse:
         {
             "schema_version": STATUS_SCHEMA_VERSION,
             "release": {
-                "decision_view_schema": DECISION_VIEW_SCHEMA_VERSION,
+                "freeze_view_schema": FREEZE_VIEW_SCHEMA_VERSION,
             },
             "status": str(runtime.get("status", "running")),
             "phase": runtime.get("phase"),
@@ -268,19 +268,19 @@ def _events(services: WebServices | None) -> RouteResponse:
         subscription = lane.events.open_subscription(cursor)
     except UnifiedSubscriberLimitError:
         return _error("stream_capacity", "event stream connection limit reached", 503)
-    return DecisionEventResponse(
+    return FreezeEventResponse(
         lane.events,
         subscription,
         heartbeat_seconds=lane.config.heartbeat_seconds,
     )
 
 
-def _view_response(view: DecisionView, *, profile_id: str | None = None) -> Response:
+def _view_response(view: FreezeView, *, profile_id: str | None = None) -> Response:
     if view.etag is not None and request.if_none_match.contains(view.etag):
         response = Response(status=304)
         response.set_etag(view.etag)
         return response
-    payload = SerializeDecisionView(view)
+    payload = SerializeFreezeView(view)
     if profile_id is not None:
         payload["scoring_profile"] = profile_id
     response = jsonify(payload)
@@ -323,12 +323,12 @@ def _invalid_profile_response(services: WebServices | None) -> RouteResponse | N
     return _error("invalid_profile", f"profile must be one of {', '.join(services.profiles)}", 400)
 
 
-def _strategy_status(view: DecisionView) -> dict[str, object]:
+def _strategy_status(view: FreezeView) -> dict[str, object]:
     return {
         "status": view.status,
         "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
-        "decision_version": view.decision_version,
-        "projection_version": view.projection_version if view.decision_version is not None else None,
+        "freeze_version": view.freeze_version,
+        "projection_version": view.projection_version if view.freeze_version is not None else None,
         "data_age_seconds": view.data_age_seconds,
         "stage": view.stage,
         "score_status": view.score_status,
@@ -674,7 +674,7 @@ def _model_computation(raw: Mapping[str, object]) -> dict[str, object]:
             "request_count",
             "cache_hit_count",
             "predictor_batch_count",
-            "decision_age_ms",
+            "freeze_age_ms",
             "deadline_abandon_reason",
         )
         if field in raw and (_json_scalar(raw[field]) or raw[field] is None)
@@ -908,7 +908,7 @@ def _cursor(raw: str | None) -> int | None:
 
 
 def _not_ready() -> tuple[Response, int]:
-    return _error("decision_not_ready", "Read services are not ready", 503)
+    return _error("freeze_not_ready", "Read services are not ready", 503)
 
 
 def _error(code: str, message: str, status_code: int) -> tuple[Response, int]:

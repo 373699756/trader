@@ -14,7 +14,7 @@ from tests.helpers.module_boundaries import (
     SourceImportTargets,
 )
 from tests.helpers.python_source import source_tree
-from trader.recommendation.application.ports.runtime import DecisionBuilderPort
+from trader.recommendation.application.ports.runtime import FreezeBuilderPort
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
@@ -196,7 +196,7 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
 def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific_injection() -> None:
     port = SOURCE_ROOT / "recommendation/application/ports/loaded_profile.py"
     router = SOURCE_ROOT / "recommendation/application/pipeline/local_score/model_router.py"
-    projection = (SOURCE_ROOT / "recommendation/application/pipeline/final_selection/decision_projection.py").read_text(
+    projection = (SOURCE_ROOT / "recommendation/application/pipeline/final_selection/freeze_projection.py").read_text(
         encoding="utf-8"
     )
     input_runtime = (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").read_text(
@@ -281,7 +281,6 @@ def test_old_production_chain_has_no_source_files() -> None:
         "application/publisher.py",
         "application/queries.py",
         "application/recommendation_replay.py",
-        "application/ports/decision_freezes.py",
         "application/today_scheduler_runtime.py",
         "application/tomorrow_scheduler_runtime.py",
         "application/tomorrow_shadow.py",
@@ -309,17 +308,17 @@ def test_web_surface_and_fixed_long_tabs_use_unified_routes() -> None:
     web = SOURCE_ROOT / "web"
     api = SOURCE_ROOT / "http_api"
     assert {"route_services.py"} <= {path.name for path in api.glob("*.py")}
-    assert (api / "response" / "decision_projection.py").is_file()
+    assert (api / "response" / "freeze_projection.py").is_file()
     assert (api / "handlers" / "product_handler.py").is_file()
     assert (api / "routes" / "page_routes.py").is_file()
     assert not any((web / "api").glob("*.py"))
     assert not any(
         (web / name).exists()
-        for name in ("routes.py", "routes_v2.py", "route_services.py", "decision_serializers.py", "decision_sse.py")
+        for name in ("routes.py", "routes_v2.py", "route_services.py", "freeze_serializers.py", "freeze_sse.py")
     )
     dashboard = (web / "static/dashboard.js").read_text(encoding="utf-8")
     groups = (web / "static/long_groups.js").read_text(encoding="utf-8")
-    assert "/api/decisions/" in dashboard
+    assert "/api/freezes/" in dashboard
     assert "/api/v2/" not in dashboard
     assert "/api/recommendations/" not in dashboard
     assert '"chokepoint"' in groups
@@ -357,7 +356,7 @@ def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
 
 def test_bootstrap_wires_overlay_events_into_the_unified_scheduler() -> None:
     source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
-    assert "def publish_overlay_event(overlay: DecisionOverlay)" in source
+    assert "def publish_overlay_event(overlay: FreezeOverlay)" in source
     assert "parent_version=current.version" in source
     assert "publish_overlay=publish_overlay_event" in source
 
@@ -366,7 +365,7 @@ def test_overlay_publisher_and_input_quality_are_required_typed_runtime_boundari
     publisher = next(field for field in fields(RuntimeDependencies) if field.name == "publish_overlay")
 
     assert publisher.default is MISSING
-    assert "input_quality_status" in DecisionBuilderPort.__dict__
+    assert "input_quality_status" in FreezeBuilderPort.__dict__
 
 
 def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> None:
@@ -410,8 +409,8 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
 
 
 def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> None:
-    identity = (SOURCE_ROOT / "recommendation/domain/publication/decision_identity.py").read_text(encoding="utf-8")
-    codec = (SOURCE_ROOT / "recommendation/infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
+    identity = (SOURCE_ROOT / "recommendation/domain/publication/freeze_identity.py").read_text(encoding="utf-8")
+    codec = (SOURCE_ROOT / "recommendation/infra/persistence/freeze_record_codec.py").read_text(encoding="utf-8")
     audit = (SOURCE_ROOT / "training/application/research_audit.py").read_text(encoding="utf-8")
     columnar = (SOURCE_ROOT / "recommendation/infra/normalization/columnar.py").read_text(encoding="utf-8")
 
@@ -419,12 +418,12 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
     assert "CommittedRecordIdentityPayload(record)" in codec
     for duplicate in (
         "def _record_payload(",
-        "def _decision_payload(",
-        "def _decision_item_payload(",
+        "def _freeze_payload(",
+        "def _freeze_item_payload(",
         "def _downside_payload(",
         "def _research_coverage_payload(",
         "def _selection_diagnostics_payload(",
-        "def _decision_quote_payload(",
+        "def _freeze_quote_payload(",
     ):
         assert duplicate not in codec
     assert ".__dict__" not in audit
@@ -452,7 +451,7 @@ def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
     input_runtime = (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").read_text(
         encoding="utf-8"
     )
-    decision_adapters = (
+    freeze_adapters = (
         SOURCE_ROOT / "recommendation/application/pipeline/freeze_publish/runtime_adapters.py"
     ).read_text(encoding="utf-8")
     runtime = (SOURCE_ROOT / "recommendation/application/runtime/scheduler_runtime.py").read_text(encoding="utf-8")
@@ -460,8 +459,8 @@ def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
 
     assert "class DeepSeekAdapter" not in input_runtime
     assert "class FreezeAdapter" not in input_runtime
-    assert "class DeepSeekAdapter" in decision_adapters
-    assert "class FreezeAdapter" in decision_adapters
+    assert "class DeepSeekAdapter" in freeze_adapters
+    assert "class FreezeAdapter" in freeze_adapters
     assert "class RuntimeIssueIndex" not in runtime
     assert "class RuntimeIssueIndex" in issues
 

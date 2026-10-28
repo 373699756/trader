@@ -84,8 +84,8 @@ def test_quote_fact_identity_accepts_untrusted_supplier_version() -> None:
         _quote(is_st=True, source="来源 with spaces", data_version="版本 " * 200),
         observed_at=OBSERVED_AT,
     )
-    decision = ResolveIssuerEligibility(facts, "600001", OBSERVED_AT)
-    assert decision.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED
+    freeze = ResolveIssuerEligibility(facts, "600001", OBSERVED_AT)
+    assert freeze.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED
     assert len(facts[0].evidence_id) < 80
 
 
@@ -111,7 +111,7 @@ def test_retired_historical_loss_fact_is_auditable_but_not_a_permanent_exclusion
         evidence_hash="b" * 64,
     )
 
-    decision = ResolveIssuerEligibility((legacy,), "600001", OBSERVED_AT)
+    freeze = ResolveIssuerEligibility((legacy,), "600001", OBSERVED_AT)
 
-    assert decision.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
-    assert decision.reason is None
+    assert freeze.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
+    assert freeze.reason is None

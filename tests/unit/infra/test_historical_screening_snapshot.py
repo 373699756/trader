@@ -75,7 +75,7 @@ def test_historical_screening_archive_manifest_detects_bar_payload_tampering(tmp
 
     database = tmp_path / "experiments" / HISTORICAL_SCREENING_SPEC.research_identity / "samples.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE bars SET close_price = 10.7 WHERE code = '600001'")
+        connection.run("UPDATE screening_price SET close = 10.7 WHERE code = '600001'")
 
     with pytest.raises(HistoricalScreeningSnapshotConflictError, match="bar payload"):
         archive.manifest(HISTORICAL_SCREENING_SPEC)

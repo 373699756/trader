@@ -203,7 +203,7 @@ def _sample(
     number: int,
     *,
     funnel: Mapping[str, object] | None = None,
-    decision_status: str = "ready",
+    freeze_status: str = "ready",
     quality_status: str | None = None,
     empty_reason: str | None = "risk_or_execution_blocked",
     projection_version: str = "projection-1",
@@ -227,14 +227,14 @@ def _sample(
     population_count: int = 5500,
     model_industry_source: tuple[int, int, int, str | None] = (5300, 0, 0, None),
     include_input_quality: bool = True,
-    decision_pipeline: Mapping[str, object] | None = None,
+    freeze_pipeline: Mapping[str, object] | None = None,
 ) -> WebSample:
     quality = (
         {
-            "status": quality_status or decision_status,
-            "publishable": (quality_status or decision_status) in {"ready", "business_empty"},
+            "status": quality_status or freeze_status,
+            "publishable": (quality_status or freeze_status) in {"ready", "business_empty"},
             "primary_blocker": primary_blocker
-            or ("ready" if decision_status == "ready" else "history_coverage_incomplete"),
+            or ("ready" if freeze_status == "ready" else "history_coverage_incomplete"),
             "population_count": population_count,
             "history_required_sessions": 61,
             "population_filter_reason_counts": dict(population_filter_reason_counts or {"stale_quote": 5571}),
@@ -252,12 +252,12 @@ def _sample(
                 "highest_final_score": highest_final_score,
             },
         }
-        if include_input_quality and (funnel is not None or decision_status != "not_ready")
+        if include_input_quality and (funnel is not None or freeze_status != "not_ready")
         else None
     )
     status: dict[str, object] = {
         "schema_version": "runtime_status",
-        "release": {"decision_view_schema": "decision_view"},
+        "release": {"freeze_view_schema": "freeze_view"},
         "status": "running",
         "runtime_started": True,
         "runtime_version": "runtime-test",
@@ -341,13 +341,13 @@ def _sample(
         "scheduler": {"input_quality": {_STRATEGY: quality} if quality is not None else {}},
         "strategies": {
             _STRATEGY: {
-                "status": decision_status,
+                "status": freeze_status,
                 "trade_date": _TRADE_DATE,
                 "projection_version": projection_version,
                 "coverage": {
-                    "candidate_count": 360 if decision_status == "ready" else 0,
-                    "evaluated_count": evaluated_count if decision_status == "ready" else 0,
-                    "rejected_count": 295 if decision_status == "ready" else 0,
+                    "candidate_count": 360 if freeze_status == "ready" else 0,
+                    "evaluated_count": evaluated_count if freeze_status == "ready" else 0,
+                    "rejected_count": 295 if freeze_status == "ready" else 0,
                     "selected_count": 0,
                 },
             }
@@ -355,18 +355,18 @@ def _sample(
         "events": {"sequence": event_sequence if event_sequence is not None else number},
         "recent_errors": recent_errors or [],
     }
-    decision: dict[str, object] = {
-        "schema_version": "decision_view",
-        "status": decision_status,
+    freeze: dict[str, object] = {
+        "schema_version": "freeze_view",
+        "status": freeze_status,
         "strategy": _STRATEGY,
         "trade_date": _TRADE_DATE,
         "projection_version": projection_version,
         "degraded_reasons": list(degraded_reasons),
         **({"frozen": frozen} if frozen is not None else {}),
         "coverage": {
-            "candidate_count": 360 if decision_status == "ready" else 0,
-            "evaluated_count": evaluated_count if decision_status == "ready" else 0,
-            "rejected_count": 295 if decision_status == "ready" else 0,
+            "candidate_count": 360 if freeze_status == "ready" else 0,
+            "evaluated_count": evaluated_count if freeze_status == "ready" else 0,
+            "rejected_count": 295 if freeze_status == "ready" else 0,
             "selected_count": 0,
         },
         "selection_diagnostics": (
@@ -382,21 +382,21 @@ def _sample(
             else []
         ),
         "items": items or [],
-        "pipeline": dict(decision_pipeline) if decision_pipeline is not None else None,
+        "pipeline": dict(freeze_pipeline) if freeze_pipeline is not None else None,
     }
     return parse_web_sample(
         number,
         f"2026-08-25T10:00:0{number}+08:00",
         status_payload=status,
-        decision_payloads={_STRATEGY: decision},
+        freeze_payloads={_STRATEGY: freeze},
     )
 
 
-def test_restarted_frozen_decision_reports_its_persisted_pipeline_without_runtime_input_quality() -> None:
+def test_restarted_freeze_record_reports_its_persisted_pipeline_without_runtime_input_quality() -> None:
     sample = _sample(
         1,
         include_input_quality=False,
-        decision_pipeline=_funnel(),
+        freeze_pipeline=_funnel(),
         frozen=True,
         phase="after_close",
     )
@@ -431,7 +431,7 @@ def test_repeated_input_supersession_with_missed_checkpoint_is_reported() -> Non
                 "resolved_at": "2026-08-25T15:00:19+08:00",
             },
             {
-                "code": "checkpoint:no_eligible_decision",
+                "code": "checkpoint:no_eligible_freeze",
                 "severity": "error",
                 "strategy": _STRATEGY,
                 "stage": "checkpoint",
@@ -507,7 +507,7 @@ def test_persistent_zero_scoring_with_populated_quote_cache_is_reported() -> Non
         action_unavailable=0,
     )
     samples = tuple(
-        _sample(number, funnel=stalled, decision_status="not_ready", empty_reason=None) for number in range(1, 4)
+        _sample(number, funnel=stalled, freeze_status="not_ready", empty_reason=None) for number in range(1, 4)
     )
 
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
@@ -540,7 +540,7 @@ def test_persistent_model_input_zero_is_checked_against_its_direct_upstream_stag
         _sample(
             index,
             funnel=stalled,
-            decision_status="not_ready",
+            freeze_status="not_ready",
             quality_status="business_empty",
             empty_reason=None,
             event_sequence=index,
@@ -571,7 +571,7 @@ def test_dominant_stale_market_population_is_reported_at_the_first_broken_stage(
     sample = _sample(
         1,
         funnel=stalled,
-        decision_status="not_ready",
+        freeze_status="not_ready",
         quality_status="transient_invalid_empty",
         empty_reason=None,
         evaluated_count=0,
@@ -604,7 +604,7 @@ def test_dominant_missing_market_liquidity_history_is_reported_at_the_first_brok
     sample = _sample(
         1,
         funnel=stalled,
-        decision_status="not_ready",
+        freeze_status="not_ready",
         quality_status="transient_invalid_empty",
         empty_reason=None,
         evaluated_count=0,
@@ -642,7 +642,7 @@ def test_model_input_gap_is_reported_at_the_first_broken_stage() -> None:
     sample = _sample(
         1,
         funnel=stalled,
-        decision_status="not_ready",
+        freeze_status="not_ready",
         quality_status="business_empty",
         empty_reason=None,
         evaluated_count=0,
@@ -679,7 +679,7 @@ def test_model_input_gap_identifies_an_empty_current_industry_reference() -> Non
     sample = _sample(
         1,
         funnel=stalled,
-        decision_status="not_ready",
+        freeze_status="not_ready",
         quality_status="business_empty",
         empty_reason=None,
         evaluated_count=0,
@@ -762,7 +762,7 @@ def test_legacy_global_history_gate_blocking_existing_scores_is_reported() -> No
     sample = _sample(
         1,
         funnel=_funnel(history=73, full_scored=46),
-        decision_status="not_ready",
+        freeze_status="not_ready",
         quality_status="not_ready",
         empty_reason=None,
     )
@@ -780,7 +780,7 @@ def test_legacy_global_history_gate_blocking_existing_scores_is_reported() -> No
 def test_input_quality_disappearing_during_scoring_is_reported() -> None:
     samples = (
         _sample(1, funnel=_funnel(), event_sequence=10),
-        _sample(2, funnel=None, decision_status="not_ready", empty_reason=None, event_sequence=11),
+        _sample(2, funnel=None, freeze_status="not_ready", empty_reason=None, event_sequence=11),
     )
 
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=2)
@@ -790,8 +790,8 @@ def test_input_quality_disappearing_during_scoring_is_reported() -> None:
 
 def test_status_and_current_projection_mismatch_is_reported() -> None:
     sample = _sample(1)
-    decision = replace(sample.decisions[_STRATEGY], projection_version="different-projection")
-    mismatched = replace(sample, decisions={_STRATEGY: decision})
+    freeze = replace(sample.freezes[_STRATEGY], projection_version="different-projection")
+    mismatched = replace(sample, freezes={_STRATEGY: freeze})
 
     findings = analyze_samples((mismatched,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
 
@@ -802,13 +802,13 @@ def test_status_and_current_projection_mismatch_is_reported() -> None:
 
 def test_status_and_current_coverage_mismatch_is_reported() -> None:
     sample = _sample(1)
-    decision = sample.decisions[_STRATEGY]
-    mismatched_decision = replace(
-        decision,
-        coverage=replace(decision.coverage, selected_count=1),
+    freeze = sample.freezes[_STRATEGY]
+    mismatched_freeze = replace(
+        freeze,
+        coverage=replace(freeze.coverage, selected_count=1),
         item_count=1,
     )
-    mismatched = replace(sample, decisions={_STRATEGY: mismatched_decision})
+    mismatched = replace(sample, freezes={_STRATEGY: mismatched_freeze})
 
     findings = analyze_samples((mismatched,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
 
@@ -818,9 +818,9 @@ def test_status_and_current_coverage_mismatch_is_reported() -> None:
 @pytest.mark.parametrize("selected_count,action_count,mismatch", ((0, 0, False), (2, 2, False), (3, 2, True)))
 def test_six_display_slots_count_only_selected_rows(selected_count, action_count, mismatch) -> None:
     sample = _sample(1, items=[{"selected": True}] * action_count + [{"selected": False}] * (6 - action_count))
-    decision = sample.decisions[_STRATEGY]
-    decision = replace(decision, coverage=replace(decision.coverage, selected_count=selected_count))
-    sample = replace(sample, decisions={_STRATEGY: decision})
+    freeze = sample.freezes[_STRATEGY]
+    freeze = replace(freeze, coverage=replace(freeze.coverage, selected_count=selected_count))
+    sample = replace(sample, freezes={_STRATEGY: freeze})
 
     findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
 
@@ -1055,9 +1055,9 @@ def test_scoring_regression_is_ignored_after_strategy_freezes() -> None:
 def test_runtime_restart_splits_persistent_zero_window() -> None:
     stalled = _funnel(security_master=0, history=0, full_scored=0)
     samples = (
-        _sample(1, funnel=stalled, decision_status="not_ready", empty_reason=None, event_sequence=9),
-        _sample(2, funnel=stalled, decision_status="not_ready", empty_reason=None, event_sequence=10),
-        _sample(3, funnel=stalled, decision_status="not_ready", empty_reason=None, event_sequence=1),
+        _sample(1, funnel=stalled, freeze_status="not_ready", empty_reason=None, event_sequence=9),
+        _sample(2, funnel=stalled, freeze_status="not_ready", empty_reason=None, event_sequence=10),
+        _sample(3, funnel=stalled, freeze_status="not_ready", empty_reason=None, event_sequence=1),
     )
 
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
@@ -1161,7 +1161,7 @@ def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(faul
     elif fault == "population":
         stages[9]["failed_count"] = 1
     committed = {**_funnel(), "stage_snapshots": stages}
-    sample = _sample(1, decision_pipeline=committed, frozen=True, phase="after_close")
+    sample = _sample(1, freeze_pipeline=committed, frozen=True, phase="after_close")
     findings = analyze_samples((sample,), strategies=(_STRATEGY,))
     assert ("committed_pipeline_audit_invalid" in {finding.code for finding in findings}) == (fault is not None)
     report = build_report("http://127.0.0.1:5000", (sample,), (), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
@@ -1179,7 +1179,7 @@ def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(faul
 
 
 def test_missing_committed_audit_is_not_reconstructed_from_live_input() -> None:
-    sample = _sample(1, decision_pipeline=_funnel())
+    sample = _sample(1, freeze_pipeline=_funnel())
     report = build_report("http://127.0.0.1:5000", (sample,), (), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
     audit = report["samples"][0]["strategies"][_STRATEGY]["committed_pipeline"]["stage_audit"]
     assert audit == {"observed": False, "stage_count": 0, "continuous": None, "invalid_fields": [], "stages": []}
