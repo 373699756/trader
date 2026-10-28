@@ -1712,9 +1712,7 @@ def _company_resume_details(
                 "free_bytes",
                 "announcement_records",
                 "extracted_bodies",
-                "body_characters",
-                "published_stocks",
-                "published_at",
+                "retained_bodies",
                 "pending_ranges",
                 "pending_documents",
                 "stored_retry_cooling",
@@ -1727,6 +1725,15 @@ def _company_resume_details(
             for row in (tables[:64] if isinstance(tables, list) else [])
             if isinstance(row, dict)
         ]
+        formal = _mapping(storage.get("formal"))
+        projected_formal = {key: formal.get(key) for key in ("available", "database_bytes", "stocks")}
+        formal_tables = formal.get("table_bytes")
+        projected_formal["table_bytes"] = [
+            {"name": row.get("name"), "bytes": row.get("bytes")}
+            for row in (formal_tables[:64] if isinstance(formal_tables, list) else [])
+            if isinstance(row, dict)
+        ]
+        projected_storage["formal"] = projected_formal
         for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
             rows = storage.get(name)
             projected_storage[name] = [

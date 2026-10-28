@@ -20,7 +20,7 @@
 | 参考合并、冻结库、DeepSeek文件化 | 待实施 | 分别由B/C/D包接续；不因公司代码已落地而标记完成 |
 | 样本/列式、全链演练与全量重建 | 待实施 | F/G/H包；性能、真实数据、模型、收益及发布资格分别验收 |
 
-公司阶段281的剩余工作继续沿用原编号和原负责人，不拆到新阶段；本次只合并文档、重排命名与依赖，不关闭281或接管213。
+公司阶段281的剩余工作继续沿用原编号和原负责人，不拆到新阶段；合并本文不关闭281或接管213。后续实施记录从[阶段282](3_工程实施.md#阶段282数据库方案a包基线与字段映射)接续，不能将上表固定快照当作最新状态。
 
 ## 1. 已确定的范围与目标
 
@@ -40,7 +40,7 @@
 | 冻结库 | 原decisions.sqlite3统一改为freeze.sqlite3，活动代码不保留旧文件名别名或双读 |
 | DeepSeek固定参数 | 继续使用config/deepseek.json，不建立DeepSeek数据库 |
 | DeepSeek运行状态 | 内存维护，使用runtime_dir/deepseek/state.json临时文件保存预算和必要恢复状态；默认.runtime/trader/deepseek/state.json |
-| 本次文档交付 | 合并公司方案、补进度基线并重新规划命名；不执行删库、下载、训练、服务切换或发布 |
+| 执行前提 | 用户已自行清空data；按A→各实现包→G/H推进。清空目录不等于新schema、下载、模型或运行已验收 |
 
 全面改名用于可读性和可维护性；批量读取、减少重复扫描、减少对象转换和短事务用于提速。两类验收分开，不能把改名或SQL条数减少直接写成性能收益。
 
@@ -238,7 +238,7 @@ NULL用于未知、缺失或不适用，0只表示已确认的零；空字符串
 
 ### 3.3 跨库命名清单与消费者
 
-下表复审当前源码字段及原方案候选名，明确保留或改名；第12、13节另按每个公司字段逐行映射。旧候选不是已实现名称。全量实库清单、类型、单位、索引和全部SQL消费者由A包补齐后再进入对应实现，不允许运行时按两种列名猜测。
+下表复审当前源码字段及原方案候选名，明确保留或改名；第12、13节另按每个公司字段逐行映射，第15节补齐其余持久表和动态特征。旧候选不是已实现名称。data已清空，当前清单来自源码建表与codec，不能冒充已删除实库的探测结果；实现包按清单切换全部消费者，不允许运行时按两种列名猜测。
 
 | 范围 | 当前字段或旧候选 | 目标字段 | 决定与理由 | 工作包；owner及消费者 |
 | --- | --- | --- | --- | --- |
@@ -499,7 +499,7 @@ Polars已在pyproject.toml依赖中；本轮无需新增分析引擎。技术能
 
 | 包 | 范围及消费者切换 | 出口 |
 | --- | --- | --- |
-| A 基线与映射 | 固定基线、盘点实际库/代码定义库，按第3节及第12、13节补齐逐字段映射；扩展既有诊断并适配公司新owner | 映射覆盖无遗漏；五类历史负载、启动、训练和连续评分有可比较基线；不改活动数据 |
+| A 基线与映射 | 固定源码基线、盘点现存路径及代码定义库，补齐第12、13、15节映射；扩展既有诊断并适配公司新owner | 源码持久表及动态列有去向；五类历史负载、联合/单项同步与启动输入有五轮隔离基线；真实数据缺失项明确登记，不改活动数据 |
 | B 参考合并、历史与短窗 | 按第2.4节完成st_company.sqlite3及catalog版本引用；保留清楚的现有文件名，按第3节调整表、字段和类型；全部下载、训练、推荐、结算及诊断消费者切换 | 参考原子发布与版本隔离、新格式fixture、修订/配对/断点通过；旧JSON、独立ST库和旧活动SQL路径删除，性能对照通过 |
 | C 冻结与研究 | freeze.sqlite3、publication_state、V1目录、收益/追踪及研究表命名；全部消费者和公开只读投影接线 | 冻结/SSE/结算/序号回归通过；空置data-plane和退役检查点活动代码删除 |
 | D DeepSeek文件 | 共享预算/批次/熔断服务改为类型对象和临时JSON；配置、组合根、状态及诊断原子切换 | 第5节矩阵通过；旧DeepSeek数据库创建/访问/路径全部删除；本地降级保持 |
@@ -516,6 +516,8 @@ B、C、D各包内必须同时切换新owner、全部消费者并删除旧活动
 
 A先完成当前基线及命名清单，B/C/D/F各自依赖A；E依赖281完整交付及A的映射，涉及新参考接线时再依赖B。G依赖B/C/D/E/F，H依赖G及对应数据切换授权。A/B/C/D/F的独立工作不因281未完成而混改其记录；共享文件先明确各自改动范围。
 
+用户已自行删除data内历史数据及模型，无法再获取原活动库、真实模型启动、训练和连续评分的原样基线。A保留可复现的固定fixture和源码身份，明确测量范围；后续每个性能实现包仍须使用同输入的新旧源码交替对照。G使用同一份新下载的隔离输入补全真实训练、模型与评分测量，H另验活动重建；缺少旧真实数据的比较明确记为不可获得，不能拿合成结果补签真实验收。阶段281的全市场公司/启动未完成项继续保留原归属。
+
 现有用户配置和模型修改不得混入本批代码/文档提交，实际文件范围以交付时git status为准；重训模型作为重建结果按各档双头完整工件另批交付。
 
 每包先核对Afuture及上游、共享工作树和暂存区，只暂存自己的文件/改动。Python命令使用python3或.venv/bin/python3，手工修改使用apply_patch，不amend、不改写分支历史。
@@ -525,6 +527,8 @@ A先完成当前基线及命名清单，B/C/D/F各自依赖A；E依赖281完整�
 ### 9.1 阶段281公司专项重建
 
 用户已明确要求删除之前company下载的数据后全部重跑。这是阶段281已有范围的后续执行步骤，只清理受管company文件，保留market/reference、行情、模型及冻结记录。合并本文不扩大授权，也不表示已经删除或重建；后续全库目标若改变schema，在H包按最终格式另验重建，不能复用旧格式。
+
+以上是原公司专项的授权范围。用户随后自行清空整个data后，旧参考、行情和模型的保留前提已不成立；续作必须重新核对前置输入，缺失就记待重建，不执行重复删除、不从Git恢复旧模型，也不能直接用公司单项同步代替全库重建。
 
 1. 先完成隔离验证并列出受管理文件的明确清单，检查真实解析路径及符号链接，避免清理扩散到其它数据目录。
 2. 正常停止当前同步和持有company文件的推荐进程，等待线程、事务和文件锁释放；核实不存在仍在写入的句柄。保留市场、训练和冻结推荐数据。
@@ -537,9 +541,9 @@ A先完成当前基线及命名清单，B/C/D/F各自依赖A；E依赖281完整�
 
 ### 9.2 全库目标重建与新日起运行
 
-用户已选择不迁入旧业务数据。代码实现和隔离演练可以先完成；活动数据删除/切换与发布按AGENTS.md核对授权范围，已获同范围明确授权的动作不重复询问，未覆盖的动作在可检查结果形成后再取得授权。本次仅编写计划，不执行这些动作。
+用户已选择不迁入旧业务数据并自行清空data。代码实现和隔离演练先完成；后续活动数据切换与发布按AGENTS.md核对授权范围，已获同范围明确授权的动作不重复询问，未覆盖的动作在可检查结果形成后再取得授权。已缺失的旧库、模型和回退副本如实记录，不伪造备份，也不以清空状态跳过实现与隔离门禁。
 
-1. 固定旧版源码、配置合同、最后正式交易日和DeepSeek最后物理调用的上海日期，用于新日边界核验。实验输出只放显式仓库外目录，物理I/O测量不得落在本机tmpfs的/tmp。
+1. 固定旧版源码、配置合同、最后正式交易日和DeepSeek最后物理调用的上海日期，用于新日边界核验；数据已删除而日期无法核实的，登记未知并按第5节关闭当日外部复核，不把未知当成从未调用。实验输出只放显式仓库外目录，物理I/O测量禁止tmpfs/ramfs；以报告实际文件系统为准，不能仅凭/tmp目录名判定内存盘。
 2. 在新仓库外工作区验证全部新schema、字段映射、原子文件及完整流程；真实供应商与合成fixture报告分开，先闭合G包。
 3. 形成精确删除清单：旧SQLite及WAL/SHM/journal、inputs.json、historical_st.sqlite3及旧ST锁、其他离线参考快照、样本、模型、推荐/研究数据和DeepSeek临时状态；新目标不存在、软链接和路径归属须核实。配置、凭据、代码、无关用户文件不进入清单。配置来源的人工黑名单等业务输入不能因清库丢失。
 4. 选定维护窗口，停止sync、train、服务及所有writer，等待退出并确认句柄释放。保留符合回退要求的完整旧release及匹配数据副本，副本不被新程序读取；不在活动库现场改表。旧活动数据随后按清单删除，不做历史导入。
@@ -1075,3 +1079,243 @@ raw中不再有published、publication或company_facts的第二份正式表。�
 若大量股票确有多个有效事件或待核实事项，必须如实保存，不能为了体积删除必要事实。正式库若仍达到数百MiB，应逐表检查是否错误纳入全量公告、重复证据、长文本或已失效过程状态。
 
 验收分别报告正式库、raw采集索引、内存附件峰值、压缩正文、WAL/SHM和目录总量，列出行数、dbstat表及索引空间、空闲页和每股平均正式占用。目录仍可能因原始资料较大而增长，关键是启动只依赖轻量正式库。VACUUM只能回收已空闲页面，不能替代本次结构重构。
+
+<a id="all-schema"></a>
+
+## 15. 全库源码清单与字段去向
+
+本节固定于基线0ae8ce75的活动源码：20个建表文件、92个持久表定义；同名表按所属库分别计数，动态行业表分别展开，样本动态特征另列。公司12张正式表和23张采集表已由第12、13节覆盖，以下列出其余57张。临时查询表、SQLite内部表、索引及按年度/档位生成的多份物理文件不重复计数。用户已清空data，因此这是源码清单，不是实库行数或运行状态；当前进度与测量只记工程台账。
+
+### 15.1 读法、类型和身份
+
+每个建表来源给出当前owner、目标owner、消费者及必删职责。表中按源码顺序穷举当前列；类型后“?”表示允许NULL，PK单列或组合键另列。目标说明未点名的列保留名称及含义；“删除”指新格式不再建立，不是对已删除实库执行迁移。目标日期统一采用第11.2节的日期codec，时刻采用UTC微秒INTEGER，明确的raw供应商查询证据保留ISO TEXT边界。计数和序号INTEGER，有限价格/量额/收益/特征REAL；SHA-256为32字节BLOB，普通ID仍为TEXT。可空性沿用业务合同，不因重命名将缺失填0。
+
+价格单位为元/股，volume为股、amount为人民币元，change_pct/turnover_pct为百分数；raw/qfq两侧存在性及缺失配对保持。研究价格的adjustment列继续区分口径，不能去掉它后只剩含义不明的open/close。样本特征和标签依各档固定定义，不能因为都是REAL就互换尺度。每个原摘要的逻辑输入和规范字节保持，不对新SQL列名重新计算模型/决策身份。
+
+下列PK来自建表定义；所有已有外键、UNIQUE、CHECK和查询索引在原子切换时对应改名。年度库继续支持(code,trade_date,first_seen_sequence,revision_id)、(trade_date,board,code,first_seen_sequence,revision_id)、观察序号及缺口条件索引；样本保留(industry,trade_date,code)读取索引。逐表原约束和索引以链接源码为准，不能仅复制下表列名重建无约束表。目标实现完成时按第10.3节更新实际结构字典。
+
+### 15.2 当前持久表及完整列清单
+
+**[download/infra/history_control_index.py](../src/trader/download/infra/history_control_index.py)**
+
+B；download保持owner，catalog结构化。消费者：history_sync_runner、history_download_flow、history_snapshot_publication/reader/inspection、published_history_snapshot、训练历史输入、推荐共享预读及诊断。旧bound_references整包JSON、immutable_records通用表和旧SQL在B删除。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| bound_references；PK(content_hash) | content_hash TEXT；payload_json TEXT | reference_binding；content_hash→reference_hash BLOB；payload_json删除，改为第2.4节publication_id及版本引用；保留跨库发布校验，不复制证券/ST/日历。 |
+| metadata；PK(singleton) | singleton INTEGER；schema_identity TEXT | store_contract；schema_identity→schema_id TEXT；singleton保留；增加schema_version INTEGER。 |
+| immutable_records；PK(kind,record_key) | kind TEXT；record_key TEXT；content_hash TEXT；payload_json TEXT | 按kind拆为source_version、calendar_binding、universe_version、sync_checkpoint、history_snapshot；kind由表名表达；record_key→各实体id；content_hash保留为BLOB；payload_json按HistorySourceIdentity/HistoryCalendarIdentity/HistoryUniverseIdentity/HistorySyncCheckpoint/HistoryActiveSnapshot拆为具名列及成员表，不能改名后继续存整包JSON。 |
+| active_snapshot；PK(singleton) | singleton INTEGER；snapshot_hash TEXT；sequence INTEGER | active_snapshot；sequence→sync_sequence INTEGER；snapshot_hash→同名BLOB；singleton保留。 |
+
+**[download/infra/history_download_index.py](../src/trader/download/infra/history_download_index.py)**
+
+B；download保持owner。消费者：history_download_flow、history_sync_runner、续传规划/补缺及统一诊断。删除dates_json和旧任务SQL，完整任务确认仍在价格提交之后。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| download_batch；PK(singleton) | singleton INTEGER；sequence INTEGER；source_hash TEXT；calendar_hash TEXT；universe_hash TEXT；cutoff TEXT | download_batch；sequence→sync_sequence INTEGER；cutoff→cutoff_date；source_hash/calendar_hash/universe_hash→同名BLOB；singleton保留。 |
+| download_tasks；PK(code) | code TEXT；dates_json TEXT；tencent_done INTEGER；attempts INTEGER；failure TEXT? | download_tasks及download_task_dates；dates_json→download_task_dates(code,trade_date)复合主键行；code/tencent_done/attempts/failure保留，tencent_done仅表示腾讯阶段完成，failure仍为采集失败详情。 |
+| download_gaps；PK(code,trade_date) | code TEXT；trade_date TEXT | download_gaps；全部保留。 |
+| download_qfq_unusable；PK(code,trade_date) | code TEXT；trade_date TEXT；checked_cutoff TEXT | download_qfq_unusable；checked_cutoff→cutoff_date；表示核验所针对的历史截止日，code/trade_date保留。 |
+
+**[download/infra/history_prices.py](../src/trader/download/infra/history_prices.py)**
+
+B；download保持owner。消费者：history_direct_prices、history_partition_repack、history_snapshot_reader/inspection、published_history_snapshot、训练历史输入、推荐共享预读及结算。删除旧两表与旧价格列codec，不修改领域价格口径。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| metadata；PK(singleton) | singleton INTEGER；schema_identity TEXT；calendar_year INTEGER | store_contract；schema_identity→schema_id；singleton/calendar_year保留；增加schema_version INTEGER。 |
+| daily_records；PK(trade_date,code,revision_id) | trade_date TEXT；code TEXT；revision_id TEXT；first_seen_sequence INTEGER；board TEXT；status TEXT?；raw_present INTEGER?；raw_open BLOB?；raw_high BLOB?；raw_low BLOB?；raw_close BLOB?；raw_volume BLOB?；raw_amount BLOB?；raw_preclose BLOB?；raw_pct_change BLOB?；raw_turnover BLOB?；raw_trading_status TEXT?；qfq_present INTEGER?；qfq_open BLOB?；qfq_high BLOB?；qfq_low BLOB?；qfq_close BLOB?；qfq_volume BLOB?；qfq_amount BLOB?；qfq_preclose BLOB?；qfq_pct_change BLOB?；qfq_turnover BLOB?；qfq_trading_status TEXT?；content_hash TEXT | daily_price_revision；四个百分数列按第3.3节改名；所有价格、量额及百分数从声明BLOB改为REAL；content_hash→同名BLOB；其它列保留。 |
+| daily_observations；PK(trade_date,code,sync_sequence) | trade_date TEXT；code TEXT；sync_sequence INTEGER；revision_id TEXT | daily_price_observation；全部保留；外键切到daily_price_revision。 |
+
+**[download/infra/history_reference_codec.py](../src/trader/download/infra/history_reference_codec.py)**
+
+B；download保持owner。消费者：history_st_source、history_st_merge、reference_publication、PrepareReference、history/market/company共用准备、训练/推荐PublishedReferences和诊断。旧独立ST读写codec、inputs.json发布owner及路径同批删除；第2.4节定义新参考关系。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| st_evidence；PK(code) | code TEXT；checked_on TEXT；status TEXT | security_st_evidence及security_st_current；checked_on→checked_date；status→st_status；code保留；新增版本st_id和content_hash，采集当前指针与发布成员分离。实际供应商核验日与本轮PreparedReference.checked_on不得互相覆盖。 |
+
+**[download/infra/qfq_sqlite.py](../src/trader/download/infra/qfq_sqlite.py)**
+
+B；download保持owner。消费者：qfq_update_runner、短窗只读输入、推荐历史/价格适配、训练补窗及诊断。保留同库双档发布事务，删除旧SQL及路径猜测。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| bars；PK(code,day) | code TEXT；day TEXT；status TEXT?；raw_present INTEGER?；raw_open BLOB?；raw_high BLOB?；raw_low BLOB?；raw_close BLOB?；raw_volume BLOB?；raw_amount BLOB?；raw_preclose BLOB?；raw_pct_change BLOB?；raw_turnover BLOB?；raw_trading_status TEXT?；qfq_present INTEGER?；qfq_open BLOB?；qfq_high BLOB?；qfq_low BLOB?；qfq_close BLOB?；qfq_volume BLOB?；qfq_amount BLOB?；qfq_preclose BLOB?；qfq_pct_change BLOB?；qfq_turnover BLOB?；qfq_trading_status TEXT? | daily_price；day→trade_date；价格列沿用年度库映射和REAL类型；其余保留，不能按profile复制价格事实。 |
+| identities；PK(profile,code) | profile TEXT；code TEXT；digest TEXT；source TEXT；first_day TEXT；cutoff TEXT | window_binding；digest→content_hash BLOB；first_day→start_date；cutoff→end_date；profile/code/source保留。 |
+| calendars；PK(profile,day) | profile TEXT；day TEXT | window_calendar；day→trade_date；profile保留。 |
+| completions；PK(code) | code TEXT；day TEXT；source TEXT | window_completion；day→cutoff_date；code/source保留；来自context.calendar.open_dates[-1]，表示完成的窗口截止交易日，不是执行核查日。 |
+| publications；PK(profile) | profile TEXT；identity TEXT | window_publication；identity→publication_id TEXT；profile保留，不能仅按字符串外观将发布ID转SHA-256。 |
+
+**[infra/dated_query_cache.py](../src/trader/infra/dated_query_cache.py)**
+
+B；业务事实仍归download。当前通用primitive却创建两张行业表；目标将行业建表/SQL放入download的唯一行业adapter，infra仅留跨业务SQLite primitive。消费者：history_industry_cache、current_industry_publication、参考发布及诊断；删除dated_query_cache旧活动实现。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| queries；PK(day) | day TEXT；source TEXT；observed_on TEXT；payload TEXT；digest TEXT | industry_query；day→anchor_date；observed_on→checked_date；digest→content_hash BLOB；source保留；payload→members_json TEXT，仅保留供应商查询证据codec，不充当可修改证券总体。 |
+| current_industry_queries；PK(day) | day TEXT；source TEXT；observed_on TEXT；payload TEXT；digest TEXT | current_industry_query；day→as_of_date；observed_on→checked_date；digest→content_hash BLOB；source/payload映射同上，当前查询不得覆盖历史锚点。 |
+
+**[recommendation/infra/persistence/data_plane_sqlite.py](../src/trader/recommendation/infra/persistence/data_plane_sqlite.py)**
+
+C；recommendation保持序号owner。消费者：publication_sequence、组合根及运行发布/SSE。其余data-plane接口只剩实现/端口/测试，切换前再次搜索全部调用；删除data_plane/sqlite/codec中空置参考读写、端口与相关测试，不误删训练研究快照。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| schema_meta；PK(key) | key TEXT；value TEXT | store_contract；旧key/value通用表删除；新publication_state.sqlite3只保留schema_id/schema_version固定合同。 |
+| security_master_recent；PK(code) | code TEXT；observed_at TEXT；source_time TEXT；source TEXT；data_version TEXT；schema_version TEXT；payload_hash TEXT；payload TEXT；status TEXT；error TEXT；recovery_payload BLOB?；recovery_sha256 TEXT | 删除；全部列删除；证券参考读取download发布，不能将旧recent数据迁入新参考。 |
+| security_master_formal；PK(freeze_id,code) | freeze_id TEXT；code TEXT；observed_at TEXT；source_time TEXT；source TEXT；data_version TEXT；schema_version TEXT；payload_hash TEXT；payload TEXT；status TEXT；error TEXT；recovery_payload BLOB?；recovery_sha256 TEXT | 删除；全部列删除；旧freeze_id参考副本不进入新freeze库。 |
+| source_cursor_recent；PK(cursor_name) | cursor_name TEXT；observed_at TEXT；source_time TEXT；source TEXT；data_version TEXT；schema_version TEXT；payload_hash TEXT；payload TEXT；cursor_value TEXT；status TEXT；error TEXT；recovery_payload BLOB?；recovery_sha256 TEXT | 删除；全部列删除；没有生产写入消费者，删除对应端口/codec。 |
+| source_cursor_formal；PK(freeze_id,cursor_name) | freeze_id TEXT；cursor_name TEXT；observed_at TEXT；source_time TEXT；source TEXT；data_version TEXT；schema_version TEXT；payload_hash TEXT；payload TEXT；cursor_value TEXT；status TEXT；error TEXT；recovery_payload BLOB?；recovery_sha256 TEXT | 删除；全部列删除；没有生产写入消费者，删除对应端口/codec。 |
+| trading_calendar_recent；PK(calendar_name) | calendar_name TEXT；observed_at TEXT；source_time TEXT；source TEXT；data_version TEXT；schema_version TEXT；payload_hash TEXT；payload TEXT；status TEXT；error TEXT；recovery_payload BLOB?；recovery_sha256 TEXT | 删除；全部列删除；日历从download不可变参考读取。 |
+| trading_calendar_formal；PK(freeze_id,calendar_name) | freeze_id TEXT；calendar_name TEXT；observed_at TEXT；source_time TEXT；source TEXT；data_version TEXT；schema_version TEXT；payload_hash TEXT；payload TEXT；status TEXT；error TEXT；recovery_payload BLOB?；recovery_sha256 TEXT | 删除；全部列删除；不再生成冻结日历副本。 |
+| data_plane_quarantine_audit；PK(audit_key) | audit_key TEXT；record_kind TEXT；record_identity TEXT；reason TEXT；observed_at TEXT | 删除；全部列随空置data-plane删除；正式冻结/事件各自仍保留隔离失败职责。 |
+| publication_sequence；PK(singleton) | singleton INTEGER；reserved_until INTEGER | publication_sequence；singleton/reserved_until全部保留为INTEGER，保留持久预留高水位及单写事务。 |
+
+**[recommendation/infra/persistence/decision_records.py](../src/trader/recommendation/infra/persistence/decision_records.py)**
+
+C；recommendation保持owner。消费者：freeze_coordinator、read_only_queries、recent_news_codes、application_system、结算与追踪、HTTP/SSE只读投影及诊断。删除旧decisions路径、检查点读写与旧schema；新数据不导入旧记录。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| decision_records；PK(strategy,trade_date) | strategy TEXT；trade_date TEXT；version TEXT；payload_hash TEXT；payload_sha256 TEXT；payload BLOB；committed_at TEXT；commit_kind TEXT；status TEXT；error TEXT | frozen_decision；version→decision_id TEXT；payload_hash→decision_hash BLOB；payload_sha256→record_hash BLOB；payload→record_bytes BLOB；error→failure_code TEXT；其余保留，第4节明确规范字节及first-wins约束。 |
+| decision_checkpoints；PK(strategy,trade_date) | strategy TEXT；trade_date TEXT；version TEXT；decision_version TEXT；observed_at TEXT；boundary_at TEXT；payload_sha256 TEXT；payload BLOB；consumed_at TEXT?；error TEXT | 删除；全部列随退役检查点owner删除；新库不建表、不读旧检查点。 |
+
+**[training/infra/research/outcome_evidence_index.py](../src/trader/training/infra/research/outcome_evidence_index.py)**
+
+C；当前实现位于training，目标写入owner归recommendation，training只读。消费者：在线收益结算、研究证据/状态、只读查询、bootstrap及诊断；原实现路径在全部消费者切换后删除。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| benchmark_returns；PK(trade_date) | trade_date TEXT；return_pct REAL；observed_at TEXT；payload_hash TEXT；payload BLOB | benchmark_returns；payload_hash→record_hash BLOB；payload→record_bytes BLOB；trade_date/return_pct/observed_at保留，return_pct为百分数。 |
+| recommendation_outcomes；PK(snapshot_id,strategy,stock_code,horizon) | snapshot_id TEXT；strategy TEXT；recommend_date TEXT；stock_code TEXT；horizon INTEGER；status TEXT；settled_at TEXT；payload_hash TEXT；payload BLOB | recommendation_outcomes；stock_code→code；recommend_date→decision_date；payload_hash→record_hash BLOB；payload→record_bytes BLOB；其余保留，snapshot_id不猜作decision_id。 |
+
+**[training/infra/research/trace_storage.py](../src/trader/training/infra/research/trace_storage.py)**
+
+C；当前实现位于training，目标写入owner归recommendation；training的research_trace_index保留只读研究职责。消费者：事件sink、冻结发布、研究追踪及诊断；原写入路径删除。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| committed_events；PK(decision_version) | decision_version TEXT；strategy TEXT；trade_date TEXT；observed_at TEXT；decision_hash TEXT；schema_version TEXT；payload_hash TEXT；payload BLOB | committed_events；decision_version→decision_id；payload_hash→event_hash BLOB；payload→event_bytes BLOB；decision_hash→同名BLOB；其余保留，原schema_version及规范事件字节不重解释。 |
+| committed_event_quarantine；PK(decision_version) | decision_version TEXT；reason TEXT；payload_hash TEXT；payload BLOB | committed_event_quarantine；decision_version→decision_id；payload_hash→event_hash BLOB；payload→event_bytes BLOB；reason保留原隔离原因。 |
+
+**[training/infra/research/h1_point_in_time_snapshot.py](../src/trader/training/infra/research/h1_point_in_time_snapshot.py)**
+
+C；training保持研究owner。消费者：h1_point_in_time入口及研究资格/样本读取；不混入生产冻结。仅具名表/列codec原子替换，研究身份及算法保持。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| specs；PK(strategy) | strategy TEXT；research_identity TEXT；spec_hash TEXT | h1_spec；research_identity→research_id TEXT；spec_hash→同名BLOB；strategy保留。 |
+| universe；PK(strategy,code) | strategy TEXT；code TEXT；board TEXT；name TEXT；is_st INTEGER；is_suspended INTEGER；payload_hash TEXT | h1_universe；payload_hash→content_hash BLOB；其余保留。 |
+| records；PK(strategy,code,trade_date) | strategy TEXT；code TEXT；trade_date TEXT；observed_at TEXT；open_price REAL；close_price REAL；high_price REAL；low_price REAL；volume REAL；amount REAL；pct_change REAL；turnover_rate REAL?；adjustment TEXT；source TEXT；anchor_price REAL；anchor_volume REAL；anchor_amount REAL；security_state_hash TEXT；sector_hash TEXT；risk_facts_hash TEXT；tail_field_hash TEXT；payload_hash TEXT | h1_price；open_price/close_price/high_price/low_price→open/close/high/low；pct_change→change_pct；turnover_rate→turnover_pct；payload_hash→content_hash BLOB，所有*_hash改BLOB；其余保留，adjustment明确该行口径，anchor_*保留点时锚定含义。 |
+| downloads；PK(strategy,code) | strategy TEXT；code TEXT；status TEXT；record_count INTEGER；content_hash TEXT；error_code TEXT | h1_download；error_code→failure_code；content_hash→同名BLOB；strategy/code/status/record_count保留。 |
+
+**[training/infra/research/historical_screening_snapshot.py](../src/trader/training/infra/research/historical_screening_snapshot.py)**
+
+C；training保持研究owner。消费者：历史筛选/选席研究和资格读取。删除旧表名与行codec，保留研究人口和每个身份隔离。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| specs；PK(research_identity) | research_identity TEXT；spec_hash TEXT | screening_spec；research_identity→research_id TEXT；spec_hash→同名BLOB。 |
+| universe；PK(research_identity,code) | research_identity TEXT；code TEXT；board TEXT；name TEXT；is_st INTEGER；is_suspended INTEGER；payload_hash TEXT | screening_universe；research_identity→research_id；payload_hash→content_hash BLOB；其余保留。 |
+| bars；PK(research_identity,code,trade_date) | research_identity TEXT；code TEXT；trade_date TEXT；open_price REAL；close_price REAL；high_price REAL；low_price REAL；volume REAL；amount REAL；pct_change REAL；turnover_rate REAL?；adjustment TEXT；source TEXT；payload_hash TEXT | screening_price；research_identity→research_id；open_price/close_price/high_price/low_price→open/close/high/low；pct_change→change_pct；turnover_rate→turnover_pct；payload_hash→content_hash BLOB；其余保留。 |
+| downloads；PK(research_identity,code) | research_identity TEXT；code TEXT；status TEXT；bar_count INTEGER；content_hash TEXT；error_code TEXT | screening_download；research_identity→research_id；error_code→failure_code；content_hash→同名BLOB；code/status/bar_count保留。 |
+
+**[training/infra/research/historical_residual_ledger.py](../src/trader/training/infra/research/historical_residual_ledger.py)**
+
+C；training保持研究owner。消费者：historical_residual_ledger用例、研究证据/资格；真实预测与结算保持独立，禁止将回算写成原冻结。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| historical_prediction；PK(identity) | identity TEXT；strategy TEXT；trade_date TEXT；code TEXT；horizon INTEGER；model_hash TEXT；parent_split_hash TEXT；content_hash TEXT；payload TEXT | historical_prediction；identity→prediction_id TEXT；payload→prediction_json TEXT；model_hash/parent_split_hash/content_hash→同名BLOB；strategy/trade_date/code/horizon保留，codec边界继续保存不可变研究证据。 |
+| historical_outcome；PK(identity) | identity TEXT；strategy TEXT；trade_date TEXT；code TEXT；horizon INTEGER；parent_split_hash TEXT；content_hash TEXT；payload TEXT | historical_outcome；identity→outcome_id TEXT；payload→outcome_json TEXT；parent_split_hash/content_hash→同名BLOB；其余保留。 |
+
+**[training/infra/profile/v1/samples.py](../src/trader/training/infra/profile/v1/samples.py)**
+
+F；training保持owner。消费者：V1样本生成、双头training/矩阵读取、资格与诊断。删除features打包列及旧reader，使用下表固定十列，模型内部feature ID不变。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| samples；PK(day,code) | day TEXT；code TEXT；industry TEXT；features BLOB；target_t1 REAL?；target_d25 REAL? | samples；day→trade_date；features→第15.3节十个具名REAL列；code/industry/target_t1/target_d25保留。 |
+
+**[training/infra/sample_index.py](../src/trader/training/infra/sample_index.py)**
+
+F；training保持owner。消费者：sample_builder/cache、engine、selected_training、model_fitting、V3样本索引、V5 batch_cache/fitting及诊断。删除位置列SQL及位置名猜测，读出数组顺序显式绑定head manifest。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| samples；PK(trade_date,code) | trade_date TEXT；code TEXT；board TEXT；industry TEXT；average_amount_20d REAL；动态列（见15.3）；target_t1 REAL?；target_t2 REAL?；target_t3 REAL?；target_t4 REAL?；target_t5 REAL?；target_d25_aggregate REAL? | samples；average_amount_20d→avg_amount_20d；动态f列及sequence_start见第15.3节；其它列保留，标签仍允许NULL且按原合同过滤。 |
+| sample_split_dates；PK(trade_date) | trade_date TEXT；split_name TEXT | sample_split_dates；全部保留，split_name枚举及互斥日期分区不变。 |
+| sample_statistics；PK(trade_date,industry,target) | trade_date TEXT；industry TEXT；target TEXT；rows INTEGER；total REAL；squares REAL | sample_statistics；rows→sample_count INTEGER；total→target_sum REAL；squares→target_sum_squares REAL；trade_date/industry/target保留，汇总仍按原标签单位。 |
+| sample_day_diagnostics；PK(trade_date) | trade_date TEXT；candidates INTEGER；missing_t1 INTEGER；missing_t2 INTEGER；missing_t3 INTEGER；missing_t4 INTEGER；missing_t5 INTEGER | sample_day_diagnostics；candidates→candidate_count INTEGER；其它列保留，missing_t1～missing_t5为计数。 |
+| sample_sequence_blocks；PK(code,block) | code TEXT；block INTEGER；payload BLOB | sample_sequence_blocks；block→block_id INTEGER；payload→sequence_bytes BLOB；code保留，维度与字节序见第15.3节。 |
+
+**[recommendation/infra/deepseek/budget.py](../src/trader/recommendation/infra/deepseek/budget.py)**
+
+D；recommendation统一内存状态及原子文件owner。消费者：预算预留/完成、批次、状态、review编排、bootstrap及统一诊断；全部旧SQL/连接回调/预算库路径删除，字段去向见第15.4节。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| schema_meta；PK(key) | key TEXT；value TEXT | 删除SQL；state.json格式头；key/value删除；schema_version改固定文件字段，不保留通用键值表。 |
+| deepseek_call_reservations；PK(reservation_id) | reservation_id TEXT；trade_date TEXT；strategy TEXT；bucket TEXT；phase TEXT；stage_key TEXT；batch_id TEXT；emergency_reason TEXT；requested_at TEXT；completed_at TEXT?；status TEXT；error TEXT；http_status INTEGER?；latency_ms REAL?；token_count INTEGER；timed_out INTEGER；model_role TEXT；requested_model TEXT?；actual_model TEXT?；reasoning_effort TEXT?；system_fingerprint TEXT?；finish_reason TEXT?；prompt_tokens INTEGER；completion_tokens INTEGER；prompt_cache_hit_tokens INTEGER；prompt_cache_miss_tokens INTEGER | requests；reservation_id→request_id；trade_date→budget_date；error→failure_code；token_count→total_tokens；其余字段按第15.4节映射，仅保存当日计费/恢复所需事实。 |
+| deepseek_calls；PK(call_id) | call_id TEXT；strategy TEXT；phase TEXT；model TEXT；batch_id TEXT；requested_at TEXT；completed_at TEXT?；http_status INTEGER?；prompt_tokens INTEGER?；completion_tokens INTEGER?；latency_ms REAL?；outcome TEXT；error_code TEXT；model_role TEXT；requested_model TEXT?；actual_model TEXT?；reasoning_effort TEXT?；system_fingerprint TEXT?；finish_reason TEXT?；total_tokens INTEGER；prompt_cache_hit_tokens INTEGER；prompt_cache_miss_tokens INTEGER | 并入requests完成结果；call_id仅作旧关联键，由request_id统一；outcome/error_code→status/failure_code；model与requested_model/actual_model去重但保留请求/实际模型区别；其余统计字段归对应request，不另存一份调用表。 |
+| deepseek_review_batches；PK(batch_id) | batch_id TEXT；trade_date TEXT；strategy TEXT；phase TEXT；bucket TEXT；model TEXT；requested_at TEXT；deadline TEXT；completed_at TEXT?；status TEXT；candidate_count INTEGER；cache_hit_count INTEGER；physical_attempts INTEGER；error TEXT | review_batches；trade_date→budget_date；deadline→deadline_at；error→failure_code；其它必要批次字段保留，由第5节限定大小与生命周期。 |
+| deepseek_candidate_results；PK(batch_id,stock_code) | batch_id TEXT；stock_code TEXT；outcome TEXT；completed_at TEXT?；error TEXT | 批次有界结果；stock_code→code；error→failure_code；其余保留在当前批次内存投影，结束后仅保留恢复所需结果/计数，不无限累计股票明细。 |
+
+**[recommendation/infra/deepseek/health_gate.py](../src/trader/recommendation/infra/deepseek/health_gate.py)**
+
+D；recommendation与预算服务共享原子状态，不新增第二文件。消费者：review健康门、半开探测与状态投影；全部旧健康SQL和连接回调删除。
+
+| 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
+| --- | --- | --- |
+| deepseek_health_events；PK(batch_id) | batch_id TEXT；trade_date TEXT；completed_at TEXT；transport_failed INTEGER；schema_failed INTEGER；candidate_count INTEGER；accepted_count INTEGER | health_state有界恢复窗口；trade_date→budget_date；其余字段沿用健康窗口逻辑，过窗事件可丢弃，不能由此删除已计费请求。 |
+| deepseek_health_state；PK(trade_date) | trade_date TEXT；mode TEXT；open_until TEXT?；probe_batch_id TEXT；recovery_successes INTEGER；reason TEXT；updated_at TEXT | health_state；trade_date→budget_date；open_until→open_until_at；其余保留，时刻用于跨进程恢复，实际等待仍使用单调时钟。 |
+
+### 15.3 动态训练特征：位置列到具名列
+
+V1以[固定特征ID](../src/trader/recommendation/domain/market/v1/features.py)及实际样本reader为依据；V2/V3/V5以[特征合同](../src/trader/recommendation/domain/market/feature_contracts.py)、本档head manifest及sample_builder写入后的值为依据。下表仅改变SQLite列名，模型feature ID、计算、排列、dtype、缺失处理和训练身份保持。V2不能误用残差处理前的八项raw manifest替代实际写入的十项head manifest。
+
+| V1 features内位置 | 当前模型特征ID | 目标REAL列 |
+| --- | --- | --- |
+| 0 | completed_return_1d | return_1d |
+| 1 | completed_return_3d | return_3d |
+| 2 | completed_return_5d | return_5d |
+| 3 | completed_return_20d | return_20d |
+| 4 | completed_return_60d | return_60d |
+| 5 | completed_return_120d | return_120d |
+| 6 | completed_return_250d | return_250d |
+| 7 | completed_volatility_20d | volatility_20d |
+| 8 | completed_drawdown_60d | drawdown_60d |
+| 9 | completed_log_average_amount_20d | log_avg_amount_20d |
+
+V1上述字段均基于已完成日线；去掉存储列的completed前缀不准引入当日未完成报价。return/volatility/drawdown保持原定义的小数尺度，log_avg_amount_20d保持原对数变换，不能把对数值当成元或再做一次对数。
+
+| 当前位置列 | 目标REAL列（与实际head特征名一致） | 适用档 |
+| --- | --- | --- |
+| f0 | qfq_return_1d | V2/V3/V5辅助列 |
+| f1 | qfq_return_3d | V2/V3/V5辅助列 |
+| f2 | qfq_return_5d | V2/V3/V5辅助列 |
+| f3 | qfq_residual_momentum_20d_skip5 | V2/V3/V5辅助列 |
+| f4 | qfq_residual_momentum_40d_skip5 | V2/V3/V5辅助列 |
+| f5 | qfq_residual_momentum_60d_skip5 | V2/V3/V5辅助列 |
+| f6 | qfq_residual_momentum_120d_skip5 | V2 |
+| f7 | qfq_residual_momentum_250d_skip5 | V2 |
+| f8 | market_qfq_momentum_120d_skip5 | V2 |
+| f9 | market_qfq_momentum_250d_skip5 | V2 |
+
+残差动量的窗口、skip5及市场项具有不同计算含义，保留必要限定，不能为缩短而统一成momentum。V5不是366个SQLite特征列：六个辅助REAL列加sequence_start INTEGER，60×6序列由sample_sequence_blocks保存重叠块。通道固定open_return、high_return、low_return、close_return、log_volume、log_amount，沿用float64小端字节、既有块行数与偏移校验；payload改名sequence_bytes，不增设360份重复列。V1原features字节列删除，V5有意义的序列BLOB保留，两者不得机械套用同一“全部拆列”规则。
+
+### 15.4 DeepSeek旧列到临时状态
+
+第15.2节穷举七张旧SQL表字段；D包删除这些表，不把它们原样复制成七组JSON记录。第5节的requests是计费和恢复唯一事实，每次物理预留一个request_id，最多168条当日记录；reservation_id/call_id在新格式统一关联到它。strategy、bucket、phase、stage_key、batch_id及emergency_reason保留各自含义，trade_date改budget_date且明确上海自然日；跨档实例身份另外由组合根显式提供，不能由策略名猜档位。
+
+requested_at/completed_at保存请求时点；status/failure_code保存有界类别，http_status、latency_ms、timed_out保存诊断事实。total_tokens、prompt_tokens、completion_tokens、prompt_cache_hit_tokens、prompt_cache_miss_tokens分别保留其口径，不能把缺失token记为0。model_role、requested_model、actual_model、reasoning_effort、system_fingerprint、finish_reason保留必要完成信息，旧model别名合并到明确的请求/实际模型字段，不保存自由文本error或响应正文。计数同一事务从请求推导/校验，禁止单独重建calls副本。
+
+review_batches保留当前恢复需要的batch_id、budget_date、strategy、phase、bucket、model、requested_at、deadline_at、completed_at、status、candidate_count、cache_hit_count、physical_attempts及failure_code；已结束的无HTTP重复批次不持久累积。candidate结果的code/outcome/completed_at/failure_code在有界批次内使用，持久文件只收录确有恢复需求的结果和计数。health事件保留恢复窗口内的batch_id、budget_date、completed_at、transport_failed、schema_failed、candidate_count、accepted_count；health_state保留mode、open_until_at、probe_batch_id、recovery_successes、reason、updated_at。预算用量不能因候选或健康明细过期被回收。
+
+### 15.5 实现时的对照入口
+
+B包从第2.4节新参考关系及history_control领域对象展开旧payload_json：source的来源/数据集/供应商合同/观察时刻，calendar的开市日成员及来源引用，universe的证券版本成员，checkpoint的同步ID/ordinal/state/完成与总量/失败类别，snapshot的同步序号/截止日/源与参考引用/年度分区及月证明。每种对象有独立表和关系，不用通用kind/key/value或一份新JSON替代。绑定缺失和同ID异内容必须失败，跨库发布顺序保持先参考版本、后catalog可见指针。
+
+盘点可复查各链接源码的CREATE TABLE、PRICE_SQL/PRICE_WINDOW_SQL、动态feature_columns以及对应行codec；研究临时查询表和索引另按其实际创建路径核对。实现包开始时重新搜索这些owner的导入和端口调用，再核对tests、scripts、DataPaths、bootstrap、存储配置及只读投影。当前清单证明字段有去向，实际新schema及全部消费者切换仍由B/C/D/E/F交付，不能将本节目标名称标为已经生效。

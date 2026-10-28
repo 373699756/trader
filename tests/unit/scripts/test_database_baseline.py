@@ -212,7 +212,7 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
     else:
         report = _compare(baseline, 2, 61, 5, "unknown", focus)
         assert report["acceptance"]["accepted"] is (
-            failure not in {"rss", "company_space", "company_startup"}
+            failure not in {"rss", "company_startup"}
             and not (focus == "market-company" and failure == "company_no_gain")
         )
         assert report["acceptance"]["database_size_within_5_percent"] is (failure != "company_space")

@@ -245,6 +245,16 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
                 "local_storage": {
                     "read_only": True,
                     "extracted_bodies": 2,
+                    "retained_bodies": 1,
+                    "body_characters": 999,
+                    "published_stocks": 999,
+                    "formal": {
+                        "available": True,
+                        "database_bytes": 4096,
+                        "stocks": 2,
+                        "table_bytes": [{"name": "company_facts", "bytes": 4096, "secret": "must-not-project"}],
+                        "raw_facts": "must-not-project",
+                    },
                     "body": "must-not-project",
                     "document_failures": [{"failure": "no_text", "documents": 1, "private": "must-not-project"}],
                 },
@@ -266,6 +276,15 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
     assert summary["runs"][0]["pages"] == 100 and summary["saved_pages_replayed"] == 0
     assert summary["query_audit"]["pages"][0]["same_issuer"] == 2
     assert summary["local_storage"]["extracted_bodies"] == 2
+    assert summary["local_storage"]["retained_bodies"] == 1
+    assert "body_characters" not in summary["local_storage"]
+    assert "published_stocks" not in summary["local_storage"]
+    assert summary["local_storage"]["formal"] == {
+        "available": True,
+        "database_bytes": 4096,
+        "stocks": 2,
+        "table_bytes": [{"name": "company_facts", "bytes": 4096}],
+    }
     assert summary["local_storage"]["document_failures"] == [{"failure": "no_text", "documents": 1}]
 
 

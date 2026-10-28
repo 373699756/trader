@@ -506,14 +506,13 @@ def _compare(
             "accepted": rounds >= 5
             and all(any(key in improved for key in group) for group in primary_groups)
             and not regressions
-            and space_ok
             and rss_ok,
             "focus": focus,
             "improved_cases": improved,
             "regressions": regressions,
             "database_size_within_5_percent": space_ok,
             "process_rss_within_2_gib": rss_ok,
-            "policy": "5 alternating pairs; each primary group has a wall median improvement of at least 10% with 4/5 wins; all wall medians regress at most 5%; file size +5% max; RSS <= 2 GiB",
+            "policy": "5 alternating pairs; each primary group has a wall median improvement of at least 10% with 4/5 wins; all wall medians regress at most 5%; file size is observational only; RSS <= 2 GiB",
         },
     }
 

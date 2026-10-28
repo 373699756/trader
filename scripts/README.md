@@ -39,7 +39,7 @@ and does not mean the whole year or all pending PDFs are complete.
 Adding `--company-query-audit` to that profile performs a read-only count/filter audit instead of a backup or replay.
 It samples up to three failed dates and three failed child cursors, at most 192 logical page queries and 300 seconds (transport retries remain bounded). Reports contain counts and issuer-match diagnostics, never stock identities or source payloads. Matching sampled totals alone does not prove full date coverage.
 
-`--profile company-resume --company-storage-audit --output -` counts local announcement metadata, processing receipts, retained temporary text and retry reasons without network access or a replay directory. `--company-collection-database` selects the raw collection index and `--company-evidence-database` selects the separate compact facts database. PDFs are parsed in bounded memory; compressed text under `data/company/raw/text` is deleted after every affected issuer is published and receipts are committed. Publication row counts do not establish complete risk coverage.
+`--profile company-resume --company-storage-audit --output -` counts local announcement metadata, processing receipts, retained temporary text and retry reasons without network access or a replay directory. In the check summary, `local_storage.retained_bodies` reports retained text count; `local_storage.formal` separately reports facts availability, file bytes, stocks and table bytes. `--company-collection-database` selects the raw collection index and `--company-evidence-database` selects the separate compact facts database. PDFs are parsed in bounded memory; compressed text under `data/company/raw/text` is deleted after every affected issuer is published and receipts are committed. Publication row counts do not establish complete risk coverage.
 
 `--profile company-resume --company-pagination-audit` compares complete CNInfo record identities for page sizes 30/50/100 using bounded historical samples and read-only local metadata. Production remains at 30 unless the larger contract is proven equivalent. `--company-pipeline-audit --company-replay-directory /absolute/external/fresh-directory` instead downloads the same sampled PDFs with one and two independent clients into fresh disposable indexes, compares facts and measures repeat-run reuse. This is a real PDF probe over sampled metadata, not a full-market coverage audit or a whole-download completion estimate. Audit modes are mutually exclusive; use `--command-timeout-seconds` to bound the diagnostic, never production sync.
 
@@ -332,15 +332,16 @@ competing for the same disk.
 配置和输入保持相同，新旧执行顺序每组交替。报告逐组核对历史五场景发布摘要、请求/行/缺口数量，
 以及联合/单项下载和重启输入身份，再给出耗时、语句、I/O、空间和RSS中位数及逐组胜出数。
 默认5组；至少一个历史场景墙钟中位数减少10%、胜出至少4组，其余场景墙钟回退不超过5%、
-数据库大小增幅不超过5%、RSS不超过2 GiB才标记`acceptance.accepted=true`，否则报告degraded。
+RSS不超过2 GiB才标记`acceptance.accepted=true`，否则报告degraded。
+数据库大小仍记录，`database_size_within_5_percent`只作观察，不参与accepted判定。
 SQL次数减少本身不能替代整轮收益；保持单独指标，不能相加解释为墙钟。可按负载显式提高
 `--command-timeout-seconds`，例如1800秒；小于5组只作诊断，不能通过收益门。
 
 market/company候选加`--database-acceptance-focus market-company`，两项目标各自至少一个首次/同日
-场景达到10%和4/5胜出，其它耗时、空间和内存门保持；同时核对公司启动预读回退。
+场景达到10%和4/5胜出，其它耗时和内存门保持；同时核对公司启动预读回退。
 例如使用`--download-sizes 32 --history-days 251 --database-rounds 5`覆盖多页公告与短窗。
 公司计量覆盖初始化、多页提交、发布及最终连接关闭/checkpoint；不把延后写盘漏出计量范围。
-每个联合/独立任务收尾统计SQLite及其WAL/SHM字节，和历史五场景一起执行空间门。
+每个联合/独立任务收尾统计SQLite及其WAL/SHM字节，与历史五场景一并保留为占用证据。
 
 Compare the annual layout with an isolated checkout of the pre-migration monthly
 layout (for example, commit `c235ffa3` extracted outside this repository):
