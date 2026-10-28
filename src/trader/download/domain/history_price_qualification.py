@@ -11,6 +11,8 @@ from trader.download.domain.published_history import PublishedHistoryCell, Publi
 HISTORY_TAIL_CONTRACT = ("history", "tencent-actual-rows-inferred-suspension")
 HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 
+_RAW_ACTIVITY_REL_TOLERANCE = 0.001
+
 
 def _require_raw_overlap(previous: BaoStockDailyCell, incoming: BaoStockDailyCell) -> None:
     before, after = previous.unadjusted, incoming.unadjusted
@@ -112,21 +114,22 @@ def _require_recovery_anchor(candidate: PublishedHistoryCell, recovery: BaoStock
 def _require_raw_prices(
     left: PublishedHistorySide | BaoStockDailySide, right: PublishedHistorySide | BaoStockDailySide
 ) -> None:
-    for a, b, tolerance in (
-        (left.open_price, right.open_price, 0.0051),
-        (left.high_price, right.high_price, 0.0051),
-        (left.low_price, right.low_price, 0.0051),
-        (left.close_price, right.close_price, 0.0051),
-        (left.volume, right.volume, 100.0),
+    # Prices anchor the daily identity; activity totals may receive small revisions.
+    for a, b, absolute, relative in (
+        (left.open_price, right.open_price, 0.0051, 0.0),
+        (left.high_price, right.high_price, 0.0051, 0.0),
+        (left.low_price, right.low_price, 0.0051, 0.0),
+        (left.close_price, right.close_price, 0.0051, 0.0),
+        (left.volume, right.volume, 100.0, _RAW_ACTIVITY_REL_TOLERANCE),
     ):
-        if a is None or b is None or not isclose(a, b, rel_tol=0.0, abs_tol=tolerance):
+        if a is None or b is None or not isclose(a, b, rel_tol=relative, abs_tol=absolute):
             raise RuntimeError("history_tail_raw_price_conflict")
     if left.amount is None or right.amount is None or not _same_raw_amount(left.amount, right.amount):
         raise RuntimeError("history_tail_raw_price_conflict")
 
 
 def _same_raw_amount(left: float, right: float) -> bool:
-    if isclose(left, right, rel_tol=0.0, abs_tol=100.0):
+    if isclose(left, right, rel_tol=_RAW_ACTIVITY_REL_TOLERANCE, abs_tol=100.0):
         return True
     # Tencent may first publish whole ten-thousand-yuan amounts, then refine them.
     for rounded, precise in ((left, right), (right, left)):

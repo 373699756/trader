@@ -171,7 +171,16 @@ def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reload
     assert summary.pending_codes == 1 and summary.failed_codes == 1
 
 
-def test_rounded_raw_amount_gap_is_completed_without_changing_old_snapshot(tmp_path):
+@pytest.mark.parametrize(
+    "amount, volume, accepted",
+    (
+        (1628277200.0, 1000000.0, True),
+        (1628200000.0, 1000800.0, True),
+        (1628200000.0, 1002000.0, False),
+        (1626000000.0, 1000000.0, False),
+    ),
+)
+def test_activity_revision_fills_gap_without_changing_old_snapshot(tmp_path, amount, volume, accepted):
     days = (date(2026, 10, 21), date(2026, 10, 22), date(2026, 10, 23))
 
     class RefinedPrices(Prices):
@@ -186,8 +195,12 @@ def test_rounded_raw_amount_gap_is_completed_without_changing_old_snapshot(tmp_p
                 if cell.trade_date != days[-1]:
                     cells.append(cell)
                     continue
-                raw = replace(cell.unadjusted, amount=1628277200.0 if self.refined else 1628280000.0)
-                qfq = replace(cell.qfq, amount=1628277200.0) if self.refined else None
+                raw = replace(
+                    cell.unadjusted,
+                    amount=amount if self.refined else 1628280000.0,
+                    volume=volume if self.refined else 1000000.0,
+                )
+                qfq = replace(cell.qfq, amount=amount, volume=volume) if self.refined else None
                 cells.append(
                     replace(cell, unadjusted=raw, qfq=qfq, status="complete" if self.refined else "qfq_missing")
                 )
@@ -207,11 +220,19 @@ def test_rounded_raw_amount_gap_is_completed_without_changing_old_snapshot(tmp_p
     prices.refined = True
     retried = RunHistorySync(config, supplier, clock=lambda: _at(days[-1]))
 
-    assert retried.state == "completed" and retried.unresolved_price_cells == 0
+    assert retried.state == "completed" and retried.unresolved_price_cells == (0 if accepted else 1)
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], original) == old_rows
     latest = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     assert latest is not None
-    assert all(row.cell.status == "complete" for row in HistorySnapshotReader(tmp_path).read_day(days[-1], latest))
+    expected_status = "complete" if accepted else "qfq_missing"
+    rows = HistorySnapshotReader(tmp_path).read_day(days[-1], latest)
+    assert all(row.cell.status == expected_status for row in rows)
+    if accepted:
+        assert all(row.cell.unadjusted.amount == amount and row.cell.unadjusted.volume == volume for row in rows)
+        assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3").gaps_by_code() == {}
+    else:
+        tasks = HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks()
+        assert tasks and all(task.failure == "history_tail_raw_price_conflict" for task in tasks)
 
 
 @pytest.mark.parametrize("mode", ("complete", "missing", "pending", "invalid_qfq_price", "unclassified_failure"))
