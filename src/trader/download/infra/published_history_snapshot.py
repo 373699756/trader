@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import date
 from itertools import groupby
 from pathlib import Path
@@ -21,14 +22,46 @@ class PublishedHistoryReadError(RuntimeError):
     """The requested published snapshot is unavailable or changed identity."""
 
 
+@dataclass(frozen=True)
+class _CatalogSnapshot:
+    archive: ActiveHistorySnapshot
+    stamp: tuple[tuple[int, int, int, int, int] | None, ...]
+
+
 class SQLitePublishedHistorySnapshot:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._reader = HistorySnapshotReader(self._root)
+        self._cached: _CatalogSnapshot | None = None
+
+    def _catalog_stamp(self) -> tuple[tuple[int, int, int, int, int] | None, ...]:
+        values: list[tuple[int, int, int, int, int] | None] = []
+        for name in ("catalog.sqlite3", "catalog.sqlite3-wal"):
+            try:
+                stat = (self._root / name).stat()
+            except FileNotFoundError:
+                values.append(None)
+            else:
+                values.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+        return tuple(values)
+
+    def _load_archive(self, sequence: int) -> ActiveHistorySnapshot:
+        stamp = self._catalog_stamp()
+        cached = self._cached
+        if cached is not None and cached.stamp == stamp and sequence == cached.archive.snapshot.sequence:
+            return cached.archive
+        archive = LoadPublishedHistorySnapshot(self._root, sequence=sequence)
+        if stamp == self._catalog_stamp():
+            self._cached = _CatalogSnapshot(archive, stamp)
+        return archive
 
     def manifest(self) -> PublishedHistoryManifest | None:
         try:
+            # Active pointers must be read anew; a historical pinned load cannot define the latest sequence.
+            stamp = self._catalog_stamp()
             archive = LoadPublishedHistorySnapshot(self._root)
+            if stamp == self._catalog_stamp():
+                self._cached = _CatalogSnapshot(archive, stamp)
         except HistorySnapshotInspectionError as exc:
             if str(exc) == "history_snapshot_unavailable":
                 return None
@@ -98,7 +131,7 @@ class SQLitePublishedHistorySnapshot:
 
     def _matching_snapshot(self, manifest: PublishedHistoryManifest) -> ActiveHistorySnapshot:
         try:
-            archive = LoadPublishedHistorySnapshot(self._root, sequence=manifest.sequence)
+            archive = self._load_archive(manifest.sequence)
         except HistorySnapshotInspectionError as exc:
             raise PublishedHistoryReadError(str(exc)) from exc
         if (

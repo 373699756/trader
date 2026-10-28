@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -29,7 +28,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
-from trader.download.domain.company_facts import CompileCompanyFacts
+from trader.download.domain.company_facts import CompanyFacts, CompileCompanyFacts
 from trader.download.infra.company_disclosure_queries import (
     ActivateDisclosureQueryPolicy,
     CommitDisclosureQueryPage,
@@ -41,6 +40,7 @@ from trader.download.infra.company_disclosure_queries import (
     SeedDisclosureQueries,
     ValidateDisclosureQueryPage,
 )
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_sql import DISCLOSURE_QUERY_SCHEMA, DOCUMENT_RETRY_SCHEMA, SCHEMA
 from trader.download.infra.company_fact_inputs import (
     BuildCompanySnapshot,
@@ -48,13 +48,9 @@ from trader.download.infra.company_fact_inputs import (
     ReadCompanySnapshotRows,
     ReadCompanySnapshotShared,
 )
-from trader.download.infra.company_facts_codec import (
-    COMPANY_FACTS_SCHEMA,
-    PUBLICATION_COLUMNS,
-    CompanyExtractionIdentity,
-    DecodeCompanyPublication,
-    EncodeCompanyPublication,
-)
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
+from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES, DecodeCompanyLabel
 from trader.download.infra.company_pipeline_queries import (
     CheckDisclosureQueryContract,
     EnsureCompanyPipelineQueries,
@@ -62,6 +58,8 @@ from trader.download.infra.company_pipeline_queries import (
     MarkCompanyDirty,
     MarkCompanyMarketDirty,
     PrepareCompanyPublication,
+    ReleaseCompletedCompanyQueryRows,
+    ReleaseUnusedCompanyDisclosures,
     SelectCompanyDocuments,
 )
 from trader.infra.sqlite_connection import (
@@ -82,12 +80,19 @@ class SQLiteCompanyEvidenceIndex:
         self,
         path: Path,
         *,
+        facts_path: Path,
+        documents: CompanyDocumentFiles,
         cancel_requested: Callable[[], bool] | None = None,
         event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY,
         stock_progress: Callable[[CompanyStockProgress], None] | None = None,
         listings: tuple[CompanyListing, ...] = (),
     ) -> None:
         self.path = path
+        if path.resolve() == facts_path.resolve():
+            raise ValueError("company_paths_must_be_separate")
+        self.facts_path = facts_path
+        self._documents = documents
+        self._facts = SQLiteCompanyFactsIndex(facts_path, event_policy=event_policy, cancel_requested=cancel_requested)
         self._cancel_requested = cancel_requested
         self._event_policy = event_policy
         self._stock_progress = stock_progress
@@ -117,6 +122,7 @@ class SQLiteCompanyEvidenceIndex:
 
     def initialize(self) -> None:
         self._check_cancelled()
+        self._facts.initialize()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             if self.path.exists():
@@ -130,6 +136,7 @@ class SQLiteCompanyEvidenceIndex:
                 SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=8, foreign_keys=True),
                 cancel_requested=self._cancel_requested,
             ) as connection:
+                connection.run("PRAGMA auto_vacuum=INCREMENTAL")
                 EnsureSqliteSchema(
                     connection,
                     SCHEMA,
@@ -143,6 +150,7 @@ class SQLiteCompanyEvidenceIndex:
                         connection.run(statement)
                     ActivateDisclosureQueryPolicy(connection)
                     EnsureCompanyPipelineQueries(connection)
+            self._repair_pending_files()
         except sqlite3.Error as exc:
             if str(exc) == "interrupted" and self._cancel_requested is not None and self._cancel_requested():
                 raise InterruptedError("company_sync_cancelled") from exc
@@ -150,15 +158,35 @@ class SQLiteCompanyEvidenceIndex:
 
     @staticmethod
     def _initialize_contract(connection: SqliteConnection) -> None:
-        connection.run("INSERT INTO contract VALUES ('company_facts')")
+        connection.run("INSERT INTO contract VALUES ('company_collection')")
 
     @staticmethod
     def _validate_contract(connection: SqliteConnection) -> None:
         if connection.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='contract'").fetchone() is None:
             raise ValueError("company_evidence_database_contract_mismatch")
         contract = connection.run("SELECT identity FROM contract").fetchall()
-        if [row[0] for row in contract] != ["company_facts"]:
+        if [row[0] for row in contract] != ["company_collection"]:
             raise ValueError("company_evidence_database_contract_mismatch")
+
+    def _repair_pending_files(self) -> None:
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            for row in connection.run("SELECT id,body_hash FROM disclosures WHERE body_retained=1").fetchall():
+                try:
+                    self._documents.read(row[1])
+                except (OSError, ValueError, EOFError):
+                    connection.run(
+                        "UPDATE disclosures SET body_checked=0,body_retained=0,body_hash=NULL WHERE id=?", (row[0],)
+                    )
+                    MarkCompanyDirty(
+                        connection,
+                        tuple(
+                            item[0]
+                            for item in connection.run(
+                                "SELECT code FROM disclosure_codes WHERE disclosure_id=?", (row[0],)
+                            )
+                        ),
+                    )
+        self._release_files()
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
         today = observed_at.date()
@@ -400,6 +428,9 @@ class SQLiteCompanyEvidenceIndex:
                 MarkCompanyDirty(connection, (row["code"],))
         # A completed range changes coverage even for issuers with no announcements.
         MarkCompanyMarketDirty(connection, partition.market)
+        # Rechecks start a fresh generation; completed page membership has no remaining consumer.
+        connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
+        connection.run("DELETE FROM disclosure_query_rows WHERE market=? AND start=? AND end=?", _key(partition))
 
     def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None:
         with self._connect() as connection:
@@ -542,7 +573,7 @@ class SQLiteCompanyEvidenceIndex:
         changes = connection.run_many(
             "INSERT INTO disclosures(source,source_id,kind,title,published_at,url,digest) VALUES(?,?,?,?,?,?,?) "
             "ON CONFLICT(source,source_id) DO UPDATE SET title=excluded.title,published_at=excluded.published_at,"
-            "url=excluded.url,digest=excluded.digest,body='',body_checked=0 WHERE digest<>excluded.digest",
+            "url=excluded.url,digest=excluded.digest,body_hash=NULL,body_retained=0,body_checked=0 WHERE digest<>excluded.digest",
             (
                 (
                     item.source,
@@ -591,7 +622,8 @@ class SQLiteCompanyEvidenceIndex:
             key = item.source, item.identity
             previous = items.get(key)
             items[key] = item if previous is None else replace(previous, codes=(*previous.codes, *item.codes))
-        return tuple(items.values())
+        pending = tuple(items.values())
+        return pending[: self._documents.batch_limit(limit)] if pending and limit is not None else pending
 
     def document_workload(
         self, codes: Sequence[str], observed_at: datetime, policy: str, *, excluded: Sequence[tuple[str, str, str]] = ()
@@ -604,9 +636,10 @@ class SQLiteCompanyEvidenceIndex:
     def commit_document(self, item: Disclosure, text: str) -> bool:
         # A result already accepted by the main thread is drained on cancellation.
         with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
+            digest = self._documents.write(text)
             changed = connection.run(
-                "UPDATE disclosures SET body=?,body_checked=1 WHERE source=? AND source_id=? AND digest=? AND body_checked=0",
-                (text, item.source, item.identity, item.digest),
+                "UPDATE disclosures SET body_hash=?,body_checked=1,body_retained=1 WHERE source=? AND source_id=? AND digest=? AND body_checked=0",
+                (digest, item.source, item.identity, item.digest),
             ).rowcount
             if not changed:
                 return False
@@ -767,7 +800,7 @@ class SQLiteCompanyEvidenceIndex:
             changes = connection.total_changes - before
             MarkCompanyDirty(connection, tuple(item.code for item in page.financials))
             if page.page == page.pages:
-                connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM published")
+                connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM company_population")
                 if page.component != "financial":
                     before = connection.total_changes
                     connection.run(
@@ -839,7 +872,7 @@ class SQLiteCompanyEvidenceIndex:
                 (component, scope, failure),
             )
             if scope == "market":
-                connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM published")
+                connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM company_population")
             else:
                 MarkCompanyDirty(connection, (scope,))
 
@@ -854,77 +887,92 @@ class SQLiteCompanyEvidenceIndex:
 
     def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-            PrepareCompanyPublication(connection, tuple(codes), observed_at)
+            PrepareCompanyPublication(connection, tuple(codes))
+            connection.run(
+                "UPDATE disclosures SET body_checked=0 WHERE body_checked=1 AND body_retained=0 AND EXISTS("
+                "SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
+                "WHERE c.disclosure_id=disclosures.id AND NOT EXISTS(SELECT 1 FROM document_publications p "
+                "WHERE p.disclosure_id=disclosures.id AND p.code=c.code AND p.digest=disclosures.digest AND p.extraction_hash=?))",
+                (self._facts.extraction_hash,),
+            )
+        # A new extraction identity requires fresh source verification, not old receipts.
+        with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True)) as formal:
+            parent = ReadCompanyPublicationIdentity(formal)
+        if parent is not None and parent.extraction_hash != self._facts.extraction_hash:
+            with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                connection.run("DELETE FROM document_publications")
+                connection.run("UPDATE disclosures SET body_checked=0,body_retained=0,body_hash=NULL")
+                connection.run("DELETE FROM partitions")
+                connection.run("DELETE FROM coverage")
+                connection.run("DELETE FROM partition_rows")
+                MarkCompanyDirty(connection, tuple(codes))
+        with self._connect() as connection:
+            prepared = connection.run("SELECT 1 FROM disclosures WHERE body_retained=1 LIMIT 1").fetchone()
+        if prepared is not None:
+            # Drain a recovered batch before any new dispatch consumes temporary capacity.
+            self.publish(codes, observed_at, changed_only=True)
 
     def published_count(self, codes: Sequence[str]) -> int:
-        with self._connect() as connection:
-            existing = {row[0] for row in connection.run("SELECT code FROM published")}
+        with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True)) as connection:
+            existing = {row[0] for row in connection.run("SELECT code FROM company_facts")}
         return len(existing.intersection(codes))
-
-    @staticmethod
-    def _publication_codes(
-        source: SqliteConnection,
-        requested: tuple[str, ...],
-        observed_at: datetime,
-        changed_only: bool,
-        extraction_identity: str,
-    ) -> tuple[tuple[str, ...], bool]:
-        identity = source.run("SELECT extraction_identity,published_at FROM publication WHERE singleton=1").fetchone()
-        rebuild = identity is not None and identity[0] != extraction_identity
-        if rebuild:
-            # Extraction identity belongs to the whole published view, never a subset.
-            requested = tuple(sorted(set(requested) | {row[0] for row in source.run("SELECT code FROM published")}))
-        elif changed_only and identity is not None and datetime.fromisoformat(identity[1]).date() == observed_at.date():
-            dirty = {row[0] for row in source.run("SELECT code FROM company_dirty_codes")}
-            existing = {row[0] for row in source.run("SELECT code FROM published")}
-            requested = tuple(code for code in requested if code in dirty or code not in existing)
-        if len(requested) > 12_000:
-            raise ValueError("company_publication_population_exceeded")
-        return requested, rebuild
 
     def publish(self, codes: Sequence[str], observed_at: datetime, *, changed_only: bool = False) -> int:
         requested = tuple(sorted(set(codes)))
         if len(requested) > 12_000:
             raise ValueError("company_publication_population_exceeded")
-        # TEMP belongs to this connection and disappears on close. It is never a second publication.
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            connection.run_many("INSERT OR IGNORE INTO company_population VALUES(?)", ((code,) for code in requested))
+        prepared: list[CompanyFacts] = []
+        previous_facts: dict[str, CompanyFacts] = {}
+        receipts: list[tuple[object, ...]] = []
+        listing_dates = {item.code: item.listed_on for item in self._listings}
         with (
-            self._connect() as connection,
             SqliteSession(
                 self.path,
                 SqliteConnectionOptions(read_only=True, timeout_seconds=8),
                 cancel_requested=self._cancel_requested,
             ) as source,
+            SqliteSession(
+                self.facts_path,
+                SqliteConnectionOptions(read_only=True, timeout_seconds=8),
+                cancel_requested=self._cancel_requested,
+            ) as formal,
         ):
-            connection.run("PRAGMA temp_store=FILE")
-            connection.run("CREATE TEMP TABLE prepared_publication AS SELECT * FROM published WHERE 0")
             source_version = source.run("PRAGMA data_version").require_one()[0]
-            digest = hashlib.sha256()
-            extraction_identity = CompanyExtractionIdentity(self._event_policy)
-            digest.update(extraction_identity.encode())
-            columns = ",".join(PUBLICATION_COLUMNS)
-            placeholders = ",".join("?" for _ in PUBLICATION_COLUMNS)
-            listing_dates = {item.code: item.listed_on for item in self._listings}
-            with SqliteTransaction(source):
-                requested, rebuild = self._publication_codes(
-                    source, requested, observed_at, changed_only, extraction_identity
-                )
+            with SqliteTransaction(source), SqliteTransaction(formal):
+                parent = ReadCompanyPublicationIdentity(formal)
+                rebuild = parent is not None and parent.extraction_hash != self._facts.extraction_hash
+                existing = {row[0] for row in formal.run("SELECT code FROM company_facts")}
+                if rebuild:
+                    requested = tuple(sorted(set(requested) | existing))
+                elif changed_only and parent is not None and parent.published_at.date() == observed_at.date():
+                    dirty = {row[0] for row in source.run("SELECT code FROM company_dirty_codes")}
+                    requested = tuple(code for code in requested if code in dirty or code not in existing)
                 if not requested:
                     return 0
+                sources: dict[str, str] = {}
+                for row in formal.run("SELECT source,source_key FROM company_evidence_ref"):
+                    self._bind_evidence(sources, row[1], DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]))
                 shared = ReadCompanySnapshotShared(source, observed_at)
                 for offset in range(0, len(requested), 128):
                     batch = requested[offset : offset + 128]
-                    inputs = ReadCompanySnapshotRows(source, batch, observed_at)
-                    previous = {
-                        str(row["code"]): DecodeCompanyPublication(dict(row))
-                        for row in source.run(
-                            f"SELECT {columns} FROM published WHERE code IN ({','.join('?' for _ in batch)})", batch
-                        )
-                    }
-                    values = []
+                    inputs = ReadCompanySnapshotRows(source, batch, observed_at, self._facts.extraction_hash)
+                    previous = {item.code: item for item in ReadCompanyFactRows(formal, batch)}
+                    previous_facts.update(previous)
                     for code in batch:
                         self._check_cancelled()
+                        rows = inputs[code].disclosures
+                        for row in rows:
+                            if row["kind"] == "announcement":
+                                self._bind_evidence(sources, row["source_id"], row["source"])
                         snapshot = BuildCompanySnapshot(
-                            code, observed_at, inputs[code], shared, listed_on=listing_dates.get(code)
+                            code,
+                            observed_at,
+                            inputs[code],
+                            shared,
+                            listed_on=listing_dates.get(code),
+                            read_document=self._documents.read,
                         )
                         facts = CompileCompanyFacts(
                             snapshot, self._event_policy, previous=None if rebuild else previous.get(code)
@@ -932,16 +980,23 @@ class SQLiteCompanyEvidenceIndex:
                         prior = previous.get(code)
                         if prior is not None and replace(facts, published_at=prior.published_at) == prior:
                             facts = prior
-                        row = EncodeCompanyPublication(facts)
-                        values.append(row)
+                        prepared.append(facts)
+                        receipts.extend(
+                            (row["id"], code, row["digest"], self._facts.extraction_hash, observed_at.isoformat())
+                            for row in rows
+                            if row["kind"] == "announcement"
+                            and row["body_checked"]
+                            and row["body_retained"]
+                            and not row["published_for_code"]
+                        )
                         if self._stock_progress is not None:
                             self._stock_progress(
                                 CompanyStockProgress(
                                     code,
-                                    processed=offset + len(values),
+                                    processed=len(prepared),
                                     total=len(requested),
-                                    announcements=len(snapshot.announcements),
-                                    analyzed=sum(item.checked for item in snapshot.announcements),
+                                    announcements=len(rows),
+                                    analyzed=sum(bool(row["body_checked"]) for row in rows),
                                     pending=facts.pending_document_count,
                                     risks=len(facts.risk_events),
                                     positives=len(facts.positive_events),
@@ -958,55 +1013,107 @@ class SQLiteCompanyEvidenceIndex:
                                     review_count=len(facts.review_reasons),
                                 )
                             )
-                    with SqliteTransaction(connection):
-                        connection.run_many(f"INSERT INTO temp.prepared_publication VALUES({placeholders})", values)
             self._check_cancelled()
-            with SqliteTransaction(connection, immediate=True):
-                # This same read handle observes every concurrent commit, including other publications.
+            # Pin the sole collection writer across verification, formal commit and receipt creation.
+            with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 if source.run("PRAGMA data_version").require_one()[0] != source_version:
                     raise RuntimeError("company_publication_source_changed")
-                assignments = ",".join(
-                    f"{column}=excluded.{column}" for column in PUBLICATION_COLUMNS if column != "code"
+                self._facts.publish(
+                    tuple(item for item in prepared if item is not previous_facts.get(item.code)),
+                    sources,
+                    parent,
+                    observed_at,
                 )
-                changes = " OR ".join(
-                    f"published.{column} IS NOT excluded.{column}" for column in PUBLICATION_COLUMNS if column != "code"
-                )
-                connection.run(
-                    f"INSERT INTO published SELECT * FROM temp.prepared_publication WHERE true ON CONFLICT(code) DO UPDATE SET {assignments} WHERE {changes}"
-                )
-                for published_row in connection.run(f"SELECT {columns} FROM published ORDER BY code"):
-                    digest.update(repr(tuple(published_row)).encode())
-                connection.run(
-                    "INSERT OR REPLACE INTO publication VALUES(1,?,?,?,?)",
-                    (digest.hexdigest(), observed_at.isoformat(), COMPANY_FACTS_SCHEMA, extraction_identity),
-                )
-                connection.run(
-                    "DELETE FROM company_dirty_codes WHERE code IN (SELECT code FROM temp.prepared_publication)"
-                )
+                connection.run_many("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)", receipts)
+                connection.run_many("DELETE FROM company_dirty_codes WHERE code=?", ((code,) for code in requested))
+                self._revisit_unlinked(connection, prepared, previous_facts)
+                self._release_published_documents(connection)
+        self._release_files()
         if not changed_only:
             self.finish(observed_at)
         return len(requested)
 
+    @staticmethod
+    def _bind_evidence(sources: dict[str, str], key: str, source: str) -> None:
+        previous = sources.get(key)
+        if previous is not None and previous != source:
+            raise ValueError("company_evidence_source_ambiguous")
+        sources[key] = source
+
+    @staticmethod
+    def _revisit_unlinked(
+        connection: SqliteConnection, facts: Sequence[CompanyFacts], previous: dict[str, CompanyFacts]
+    ) -> None:
+        for item in facts:
+            old = previous.get(item.code)
+            old_events = (
+                ({event.event_id for event in old.risk_events} | {event.event_id for event in old.positive_events})
+                if old
+                else set()
+            )
+            new_events = {event.event_id for event in item.risk_events} | {
+                event.event_id for event in item.positive_events
+            }
+            if not new_events.difference(old_events):
+                continue
+            for review in item.review_reasons:
+                if (
+                    review.reason_code not in {"resolution_unlinked", "progress_unlinked", "cancellation_unlinked"}
+                    or review.evidence_id is None
+                ):
+                    continue
+                for row in connection.run(
+                    "SELECT d.id FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                    "WHERE c.code=? AND d.source_id=?",
+                    (item.code, review.evidence_id),
+                ).fetchall():
+                    connection.run(
+                        "DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], item.code)
+                    )
+                    connection.run("UPDATE disclosures SET body_checked=body_retained WHERE id=?", (row[0],))
+                    MarkCompanyDirty(connection, (item.code,))
+
+    def _release_published_documents(self, connection: SqliteConnection) -> None:
+        connection.run(
+            "UPDATE disclosures SET body_retained=0 WHERE body_retained=1 AND NOT EXISTS("
+            "SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
+            "WHERE c.disclosure_id=disclosures.id AND NOT EXISTS("
+            "SELECT 1 FROM document_publications p WHERE p.disclosure_id=disclosures.id "
+            "AND p.code=c.code AND p.digest=disclosures.digest AND p.extraction_hash=?))",
+            (self._facts.extraction_hash,),
+        )
+        # Commit the receipt before physical deletion; recovery can repeat this idempotently.
+
+    def _release_files(self) -> None:
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            retained = frozenset(
+                row[0]
+                for row in connection.run(
+                    "SELECT DISTINCT body_hash FROM disclosures WHERE body_retained=1 AND body_hash IS NOT NULL"
+                )
+            )
+            self._documents.release(retained)
+            with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True)) as formal:
+                referenced = tuple(
+                    (DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]), row[1])
+                    for row in formal.run("SELECT source,source_key FROM company_evidence_ref")
+                )
+            ReleaseUnusedCompanyDisclosures(connection, referenced)
+
     def finish(self, observed_at: datetime) -> None:
-        # Cleanup is independent of the short publication transaction; failure cannot roll back its pointer.
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             cutoff = (observed_at.date() - timedelta(days=365)).isoformat()
-            connection.run(
-                "DELETE FROM disclosures WHERE ((kind='announcement' AND published_at<?) OR (kind='news' AND published_at<?)) "
-                "AND source_id NOT IN (SELECT ref.value FROM published p, json_each(p.risk_events_json) e, "
-                "json_each(e.value,'$.evidence_ids') ref UNION SELECT ref.value FROM published p, "
-                "json_each(p.positive_events_json) e, json_each(e.value,'$.evidence_ids') ref UNION "
-                "SELECT json_extract(e.value,'$.evidence_id') FROM published p, json_each(p.review_reasons_json) e "
-                "WHERE json_extract(e.value,'$.evidence_id') IS NOT NULL)",
-                (cutoff, (observed_at - timedelta(days=7)).isoformat()),
-            )
+            ReleaseCompletedCompanyQueryRows(connection)
             connection.run("DELETE FROM partitions WHERE end<?", (cutoff,))
             connection.run("DELETE FROM disclosure_query_contracts WHERE end<?", (cutoff,))
-            # Coverage is provenance for the issuer's initial risk state; a rolling window cannot replace it.
             connection.run("DELETE FROM partition_rows WHERE end<?", (cutoff,))
             connection.run(
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
             )
+            self._release_published_documents(connection)
+        self._release_files()
+        with self._connect() as connection:
+            connection.run("PRAGMA incremental_vacuum(256)")
 
 
 def _key(partition: DisclosurePartition) -> tuple[str, str, str]:

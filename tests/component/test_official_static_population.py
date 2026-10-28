@@ -19,16 +19,18 @@ from tests.component.market_data_test_support import (
     _service,
 )
 from tests.reference_fixtures import PreparedFixture
+from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.reference_publication import ReferencePublication
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
 from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, ManualBlacklistFact
+from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.trading_calendar import (
     ChinaTradingCalendar,
     TradingCalendarUnavailableError,
 )
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.status_projection import _stage_snapshot_payload
 
 
@@ -130,7 +132,9 @@ def test_loaded_population_and_age_do_not_depend_on_later_disk_access():
 
 
 def test_non_st_risk_fact_is_deferred_to_second_level_filter(tmp_path):
-    eligibility = SQLiteIssuerEligibilityIndex(tmp_path / "eligibility.sqlite3")
+    eligibility = CompanyEligibility(
+        PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3"))
+    )
     eligibility.record((ManualBlacklistFact("300001", effective_at=NOW, config_hash="fixture"),))
     _, _, history, service = _fixture(quotes=(_quote(), _quote("300001")), eligibility=eligibility)
     batch = service.fetch_market_feature_batch(NOW)
@@ -182,7 +186,9 @@ def test_reference_st_revision_is_adopted_only_on_restart_before_history_reads(t
         history,
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         published_references=restarted,
-        eligibility=SQLiteIssuerEligibilityIndex(tmp_path / "eligibility.sqlite3"),
+        eligibility=CompanyEligibility(
+            PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3"))
+        ),
     )
     batch = service.fetch_market_feature_batch(NOW)
     assert batch.features == () and history.calls == []

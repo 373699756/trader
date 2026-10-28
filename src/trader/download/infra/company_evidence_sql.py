@@ -5,13 +5,15 @@ from trader.infra.sqlite_connection import SqliteSchema
 SCHEMA = SqliteSchema(
     None,
     (
-        "CREATE TABLE IF NOT EXISTS contract(identity TEXT PRIMARY KEY CHECK(identity='company_facts'))",
+        "CREATE TABLE IF NOT EXISTS contract(identity TEXT PRIMARY KEY CHECK(identity='company_collection'))",
         """
         CREATE TABLE IF NOT EXISTS disclosures (
           id INTEGER PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL,
           kind TEXT NOT NULL CHECK(kind IN ('announcement','news')), title TEXT NOT NULL,
           published_at TEXT NOT NULL, url TEXT NOT NULL, digest TEXT NOT NULL,
-          body TEXT NOT NULL DEFAULT '', body_checked INTEGER NOT NULL DEFAULT 0,
+          body_hash BLOB CHECK(body_hash IS NULL OR length(body_hash)=32),
+          body_checked INTEGER NOT NULL DEFAULT 0 CHECK(body_checked IN (0,1)),
+          body_retained INTEGER NOT NULL DEFAULT 0 CHECK(body_retained IN (0,1)),
           UNIQUE(source, source_id)
         )
         """,
@@ -44,6 +46,7 @@ SCHEMA = SqliteSchema(
           PRIMARY KEY(market,start,end)
         ) WITHOUT ROWID
         """,
+        "CREATE INDEX IF NOT EXISTS partition_source_rows ON partition_rows(source_id)",
         """
         CREATE TABLE IF NOT EXISTS financials (
           code TEXT NOT NULL, report_date TEXT NOT NULL, published_at TEXT NOT NULL,
@@ -84,26 +87,13 @@ SCHEMA = SqliteSchema(
           component TEXT PRIMARY KEY, start TEXT NOT NULL, end TEXT NOT NULL, checked_at TEXT NOT NULL
         ) WITHOUT ROWID
         """,
-        """
-        CREATE TABLE IF NOT EXISTS published (
-          code TEXT PRIMARY KEY,
-          financial_report_date TEXT, financial_disclosed_at TEXT, financial_state TEXT NOT NULL,
-          basic_eps REAL, book_value_per_share REAL, revenue_growth_pct REAL, net_profit_growth_pct REAL,
-          core_profit_growth_pct REAL, roe_pct REAL, parent_net_profit REAL, core_net_profit REAL,
-          pledge_ratio_pct REAL, pledge_as_of TEXT, pledge_state TEXT NOT NULL,
-          unlock_schedule_json TEXT NOT NULL, unlock_checked_at TEXT, unlock_coverage_end TEXT, unlock_state TEXT NOT NULL,
-          risk_events_json TEXT NOT NULL, positive_events_json TEXT NOT NULL, review_reasons_json TEXT NOT NULL,
-          pending_document_count INTEGER NOT NULL CHECK(pending_document_count>=0),
-          announcement_coverage_start TEXT, announcement_coverage_end TEXT, announcement_state TEXT NOT NULL,
-          checked_at TEXT NOT NULL, published_at TEXT NOT NULL
-        ) WITHOUT ROWID
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS publication (
-          singleton INTEGER PRIMARY KEY CHECK(singleton=1), version TEXT NOT NULL, published_at TEXT NOT NULL,
-          schema_identity TEXT NOT NULL, extraction_identity TEXT NOT NULL
-        )
-        """,
+        "CREATE TABLE IF NOT EXISTS company_population(code TEXT PRIMARY KEY) WITHOUT ROWID",
+        """CREATE TABLE IF NOT EXISTS document_publications (
+          disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,
+          code TEXT NOT NULL, digest TEXT NOT NULL,
+          extraction_hash BLOB NOT NULL CHECK(length(extraction_hash)=32), published_at TEXT NOT NULL,
+          PRIMARY KEY(disclosure_id,code)
+        ) WITHOUT ROWID""",
     ),
 )
 
@@ -140,6 +130,7 @@ DISCLOSURE_QUERY_SCHEMA = (
       PRIMARY KEY(market,start,end,scope),
       FOREIGN KEY(market,start,end) REFERENCES partitions(market,start,end) ON DELETE CASCADE
     ) WITHOUT ROWID""",
+    "CREATE INDEX IF NOT EXISTS disclosure_query_source_rows ON disclosure_query_rows(source_id)",
 )
 
 __all__ = ["SCHEMA", "DOCUMENT_RETRY_SCHEMA", "DISCLOSURE_QUERY_SCHEMA"]

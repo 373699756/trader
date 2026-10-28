@@ -10,6 +10,7 @@ from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -51,7 +52,12 @@ def test_page_batch_publishes_before_directory_finishes_and_restart_keeps_cursor
             cancelled.set()
 
     source = Source()
-    index = Index(tmp_path / "facts.sqlite3", cancel_requested=cancelled.is_set)
+    index = Index(
+        tmp_path / "facts.sqlite3",
+        facts_path=tmp_path / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles(tmp_path / "text"),
+        cancel_requested=cancelled.is_set,
+    )
     config = replace(fixtures._TEST_COMPANY_CONFIGURATION, directory_batch_pages=1)
     first = fixtures._sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: 0, progress, cancelled.is_set),
@@ -60,7 +66,7 @@ def test_page_batch_publishes_before_directory_finishes_and_restart_keeps_cursor
         configuration=config,
     )
     assert "task:cancelled" in first.failures and calls == [1]
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].risk_events
+    assert SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].risk_events
     cancelled.clear()
     second = fixtures._sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: 0),
@@ -127,7 +133,7 @@ def test_revision_rejects_late_body_and_dirty_publication_retains_other_issuers(
     index = fixtures._index(tmp_path)
     item = _seed(index, 1)[0]
     index.publish(("600001", "600002"), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     previous_other = reader.read(("600002",))[0]
     changed = replace(item, digest="revised")
     partition = DisclosurePartition("sse", NOW.date(), NOW.date())
@@ -146,10 +152,22 @@ def test_rule_change_rebuilds_all_existing_issuers_when_requested_subset(tmp_pat
     index = fixtures._index(tmp_path)
     index.publish(("600001", "600002"), NOW)
     policy = replace(CompanyEventPolicy(), risk_days=366)
-    changed = SQLiteCompanyEvidenceIndex(index.path, event_policy=policy)
+    changed = SQLiteCompanyEvidenceIndex(
+        index.path,
+        facts_path=index.facts_path,
+        documents=CompanyDocumentFiles(index.path.parent / "text"),
+        event_policy=policy,
+    )
     changed.initialize()
     assert changed.publish(("600001",), NOW, changed_only=True) == 2
-    assert len(SQLiteCompanyEvidenceReader(index.path, event_policy=policy).read(("600001", "600002"))) == 2
+    assert (
+        len(
+            SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path, event_policy=policy).read(
+                ("600001", "600002")
+            )
+        )
+        == 2
+    )
 
 
 def test_batch_crossing_midnight_rechecks_clean_requested_stocks(tmp_path):

@@ -630,12 +630,21 @@ class HistoryPricePartition:
         snapshot_sequence: int,
         code: str | None = None,
         check: Callable[[], None] | None = None,
+        annual_range: bool = False,
     ) -> Generator[PublishedHistoryCell, None, None]:
         """Project sealed daily facts without materializing full revision objects."""
         if start > end or snapshot_sequence < 1 or (code is not None and _CODE.fullmatch(code) is None):
             raise ValueError("published daily query range is invalid")
-        start, end = self._clip_range(start, end)
-        query = _PUBLISHED_RANGE_BY_CODE_SQL if code is None else _PUBLISHED_CODE_SQL
+        start, end = (
+            (max(start, date(self._calendar_year, 1, 1)), min(end, date(self._calendar_year, 12, 31)))
+            if annual_range
+            else self._clip_range(start, end)
+        )
+        query = (
+            (_LATEST_RANGE_BY_CODE_SQL if annual_range else _PUBLISHED_RANGE_BY_CODE_SQL)
+            if code is None
+            else _PUBLISHED_CODE_SQL
+        )
         parameters = (
             (start.isoformat(), end.isoformat(), snapshot_sequence)
             if code is None

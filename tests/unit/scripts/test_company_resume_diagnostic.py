@@ -10,10 +10,11 @@ import pytest
 from scripts.diagnose_runtime import DiagnosticResult, _parser, _validate, build_commands, build_report
 from scripts.runtime_diagnostics import company_pagination_audit, company_pipeline_audit
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
-from scripts.runtime_diagnostics.company_resume import Main, _copy, _saved_pages
+from scripts.runtime_diagnostics.company_resume import Main, _compact_storage, _copy, _saved_pages
 from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import DisclosurePage, DisclosureQuery
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
@@ -114,6 +115,8 @@ def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_u
     storage = report["summary"]["local_storage"]
     assert storage["announcement_records"] == storage["pending_documents"] == storage["stored_retry_cooling"] == 1
     assert storage["extracted_bodies"] == 0 and not storage["pdf_archived"]
+    assert storage["free_bytes"] >= 0
+    assert any(row["name"] == "disclosures" and row["bytes"] > 0 for row in storage["table_bytes"])
     assert storage["document_failures"] == [{"failure": "disclosure_document_no_text", "documents": 1}]
     options, _ = _validate(_parser().parse_args(["--profile", "company-resume", "--company-storage-audit"]))
     command = build_commands(options)[0]
@@ -139,6 +142,26 @@ def test_backup_preserves_source_and_is_independently_writable(tmp_path):
     with SqliteSession(replica) as connection, SqliteTransaction(connection):
         connection.run("UPDATE facts SET value=9")
     assert source.read_bytes() == before and stale.samefile(source)
+
+
+def test_company_compaction_retains_failed_range_members_facts_bodies_and_retry_state(tmp_path):
+    index = fixtures._index(tmp_path)
+    complete, pending = index.partitions(("sse",), fixtures.NOW)[:2]
+    index.commit_page(complete, DisclosurePage((fixtures._disclosure("done"),), 1, False), fixtures.NOW)
+    index.commit_page(pending, DisclosurePage((fixtures._disclosure("pending"),), 2, True), fixtures.NOW)
+    index.publish(("600001",), fixtures.NOW)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        # Model the redundant completed members retained by the previous release.
+        connection.run(
+            "INSERT INTO partition_rows VALUES(?,?,?,?,?)",
+            (complete.market, str(complete.start), str(complete.end), "done", "600001"),
+        )
+    before = index.path.read_bytes()
+    report = _compact_storage(index.path, tmp_path / "isolated", budget_seconds=10)
+    assert report["removed_completed_members"] == 1 and report["retained_data_equal"]
+    with SqliteSession(tmp_path / "isolated/company_compacted.sqlite3") as connection:
+        assert connection.run("SELECT source_id FROM partition_rows").require_one()[0] == "pending"
+    assert index.path.read_bytes() == before
 
 
 def test_backup_includes_committed_wal_without_changing_the_source(tmp_path):
@@ -172,7 +195,11 @@ def test_backup_timeout_preserves_previous_replica_and_removes_partial_file(tmp_
 
 
 def test_discovery_response_is_not_counted_as_a_saved_page_replayed_by_parent_verification(tmp_path):
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "evidence.sqlite3")
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "evidence.sqlite3",
+        facts_path=(tmp_path / "evidence.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "evidence.sqlite3").parent / "text"),
+    )
     index.initialize()
     root = index.partitions(("sse",), NOW)[0]
     child = index.split_query(root, (DisclosureQuery("shmb"), DisclosureQuery("shkcp")))[0]

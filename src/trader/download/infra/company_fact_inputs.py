@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Literal, cast
@@ -17,6 +17,7 @@ from trader.download.domain.company_evidence import (
     Disclosure,
     EvidenceMarket,
 )
+from trader.download.infra.company_facts_protocol import REVIEW_REASONS, DecodeCompanyLabel, EncodeCompanyReason
 from trader.infra.sqlite_connection import SqliteConnection
 
 
@@ -69,14 +70,16 @@ def ReadCompanySnapshotShared(connection: SqliteConnection, now: datetime) -> Co
 
 
 def ReadCompanySnapshotRows(
-    connection: SqliteConnection, codes: tuple[str, ...], now: datetime
+    connection: SqliteConnection, codes: tuple[str, ...], now: datetime, extraction_hash: bytes
 ) -> dict[str, CompanySnapshotRows]:
     placeholders = ",".join("?" for _ in codes)
     disclosures = connection.run(
-        "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+        "SELECT d.*,c.code,EXISTS(SELECT 1 FROM document_publications p WHERE p.disclosure_id=d.id "
+        "AND p.code=c.code AND p.digest=d.digest AND p.extraction_hash=?) AS published_for_code "
+        "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
         f"WHERE c.code IN ({placeholders}) AND (d.published_at>=? OR d.kind='announcement') "
         "AND d.published_at<=? ORDER BY d.published_at,d.id",
-        (*codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
+        (extraction_hash, *codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
     )
     documents: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
     for row in disclosures:
@@ -106,14 +109,24 @@ def ReadCompanySnapshotRows(
 
 
 def BuildCompanySnapshot(
-    code: str, now: datetime, inputs: CompanySnapshotRows, shared: CompanySnapshotShared, *, listed_on: date | None
+    code: str,
+    now: datetime,
+    inputs: CompanySnapshotRows,
+    shared: CompanySnapshotShared,
+    *,
+    listed_on: date | None,
+    read_document: Callable[[bytes], str],
 ) -> CompanyEvidenceInput:
     start, end = now.date() - timedelta(days=365), now.date()
     rows = inputs.disclosures
     documents = tuple(
-        CompanyDocument(DecodeCompanyDisclosure(row), row["body"], bool(row["body_checked"]))
+        CompanyDocument(
+            DecodeCompanyDisclosure(row),
+            read_document(row["body_hash"]) if row["body_retained"] else "",
+            bool(row["body_checked"]) and bool(row["body_retained"]),
+        )
         for row in rows
-        if row["kind"] == "announcement"
+        if row["kind"] == "announcement" and not row["published_for_code"]
     )
     ranges = tuple(row for row in shared.coverage if row["market"] == EvidenceMarket(code))
     complete = CompanyCoverageComplete(ranges, start, end) and all(
@@ -150,6 +163,15 @@ def BuildCompanySnapshot(
     complete = complete and not partition_errors
     if not complete:
         failures += ("announcements:window_incomplete",)
+    failures = tuple(
+        sorted(
+            {
+                f"{scope}:{DecodeCompanyLabel(REVIEW_REASONS, EncodeCompanyReason(reason))}"
+                for failure in failures
+                for scope, _, reason in (failure.partition(":"),)
+            }
+        )
+    )
     news = tuple(
         DecodeCompanyDisclosure(row)
         for row in rows

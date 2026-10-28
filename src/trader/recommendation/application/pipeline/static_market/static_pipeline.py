@@ -154,7 +154,6 @@ class StaticMarketPipeline:
         population = frozenset(item.code for item in source.records)
         started = self._monotonic()
         self._record_static_eligibility(source.records, observed_at)
-        self._refresh_eligibility_if_due(observed_at)
         exclusions = tuple(
             item
             for item in self.eligibility.exclusions(observed_at)
@@ -231,14 +230,6 @@ class StaticMarketPipeline:
             self.eligibility.record(facts)
         except RuntimeError:
             return
-
-    def _refresh_eligibility_if_due(self, observed_at: datetime) -> None:
-        if not self.eligibility.refresh_due(observed_at):
-            return
-        try:
-            self.eligibility.refresh_snapshot(observed_at, source="full_market")
-        except (OSError, RuntimeError, ValueError) as exc:
-            self.eligibility.refresh_failed(observed_at, f"eligibility_refresh_failed:{type(exc).__name__.lower()}")
 
     def dynamic_snapshot(
         self,

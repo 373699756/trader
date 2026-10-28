@@ -340,6 +340,7 @@ def _sqlite_adapter_cases(
     from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
     from trader.download.domain.company_evidence import Disclosure, DisclosurePage
     from trader.download.domain.history_revision import HistoryRevision
+    from trader.download.infra.company_document_files import CompanyDocumentFiles
     from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
     from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
     from trader.download.infra.history_prices import HistoryPricePartition
@@ -399,7 +400,11 @@ def _sqlite_adapter_cases(
     measure("training_sample_write", build_samples)
     measure("training_sample_read", read_samples)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
-    company = SQLiteCompanyEvidenceIndex(root / "company.sqlite3")
+    company = SQLiteCompanyEvidenceIndex(
+        root / "company.sqlite3",
+        facts_path=root / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles(root / "text"),
+    )
     company.initialize()
     disclosure_partition = company.partitions(("sse",), now)[0]
     disclosures = tuple(
@@ -412,7 +417,7 @@ def _sqlite_adapter_cases(
         lambda: company.commit_page(disclosure_partition, DisclosurePage(disclosures, len(disclosures), False), now),
     )
     measure("company_publish", lambda: company.publish(codes, now))
-    reader = SQLiteCompanyEvidenceReader(company.path)
+    reader = SQLiteCompanyEvidenceReader(company.facts_path, raw_path=company.path)
     expected = reader.read(codes)
 
     def read_company() -> None:

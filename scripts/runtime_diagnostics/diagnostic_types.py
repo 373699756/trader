@@ -90,6 +90,7 @@ class DiagnosticOptions:
     long_watchlist: Path = PROJECT_ROOT / "config/long_watchlist.json"
     long_evidence_output: Path | None = None
     company_evidence_database: Path | None = None
+    company_collection_database: Path | None = None
     company_replay_directory: Path | None = None
     company_query_audit: bool = False
     company_storage_audit: bool = False
@@ -112,6 +113,7 @@ class DiagnosticOptions:
     output_format: str = "json"
     cpu_profile_dir: Path | None = None
     cpu_profile_mode: str = "functions"
+    history_preload_audit: bool = False
     baseline_checkout: Path | None = None
     training_signal_date: date | None = None
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS

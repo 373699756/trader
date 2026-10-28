@@ -36,7 +36,7 @@ def InspectDataStorage(
         ("daily_window", paths.daily_window),
         ("reference", paths.reference),
         ("company", paths.company),
-        ("eligibility", paths.eligibility),
+        ("company_collection", paths.company_collection),
         ("budget", paths.budget),
     ]
     for profile in ("v1", "v2", "v3", "v5"):

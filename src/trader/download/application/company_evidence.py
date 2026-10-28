@@ -13,6 +13,7 @@ from typing import Literal, Protocol
 from trader.download.domain.company_evidence import (
     CompanyDateProgress,
     CompanyDocumentWorkload,
+    CompanyEvidenceRequest,
     CompanyEvidenceSyncResult,
     CompanySourceFailure,
     CompanyStockProgress,
@@ -151,12 +152,14 @@ class _SourceCircuit:
 
 def SyncCompanyEvidence(
     dependencies: CompanyEvidenceDependencies,
-    codes: Sequence[str],
-    observed_at: datetime,
-    *,
-    configuration: CompanySyncConfiguration,
-    news_codes: Sequence[str] = (),
+    request: CompanyEvidenceRequest,
 ) -> CompanyEvidenceSyncResult:
+    codes, observed_at, configuration, news_codes = (
+        request.codes,
+        request.observed_at,
+        request.configuration,
+        request.news_codes,
+    )
     if observed_at.utcoffset() is None:
         raise ValueError("company evidence requires an aware time")
     started = dependencies.monotonic()
@@ -250,9 +253,20 @@ def _publish_batch(
 ) -> int | None:
     _report(dependencies, "facts", state, len(population), completed=0)
     if not _cancelled(dependencies):
-        updated = dependencies.index.publish(
-            population, observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started)), changed_only=True
-        )
+        for attempt in range(3):
+            try:
+                updated = dependencies.index.publish(
+                    population,
+                    observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started)),
+                    changed_only=True,
+                )
+                break
+            except RuntimeError as exc:
+                if attempt == 2 or str(exc) not in {
+                    "company_publication_source_changed",
+                    "company_publication_parent_changed",
+                }:
+                    raise
         published = dependencies.index.published_count(population)
         _report(dependencies, "publish", state, 0, completed=updated, status="complete")
         return published

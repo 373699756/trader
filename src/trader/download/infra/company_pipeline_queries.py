@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import Disclosure, DisclosurePartition, EvidenceMarket, Market
-from trader.download.infra.company_facts_codec import COMPANY_EXTRACTION_IDENTITY
+from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
 from trader.infra.sqlite_connection import SqliteConnection
 
 
@@ -38,7 +38,7 @@ def EnsureCompanyPipelineQueries(connection: SqliteConnection) -> None:
             "INSERT INTO company_document_requirements VALUES(?)",
             ((row[0],) for row in batch if CompanyDocumentNeedsReview(row[1])),
         )
-    connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM published")
+    connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM company_population")
     connection.run("INSERT OR REPLACE INTO company_work_policy VALUES(1,?)", (COMPANY_EXTRACTION_IDENTITY,))
 
 
@@ -62,10 +62,38 @@ def MarkCompanyDirty(connection: SqliteConnection, codes: Sequence[str]) -> None
     connection.run_many("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", ((code,) for code in codes))
 
 
+def ReleaseCompletedCompanyQueryRows(connection: SqliteConnection) -> None:
+    """Completed parent coverage owns the proof; only pending ranges need page members."""
+    for table in ("partition_rows", "disclosure_query_rows"):
+        connection.run(
+            f"DELETE FROM {table} WHERE EXISTS(SELECT 1 FROM partitions p "
+            f"WHERE p.market={table}.market AND p.start={table}.start AND p.end={table}.end AND p.complete=1)"
+        )
+
+
+def ReleaseUnusedCompanyDisclosures(connection: SqliteConnection, referenced: tuple[tuple[str, str], ...]) -> None:
+    """Release irrelevant directory rows, preserving formal evidence and pending page proofs."""
+    connection.run(
+        "CREATE TEMP TABLE retained_evidence(source TEXT,source_key TEXT,PRIMARY KEY(source,source_key)) WITHOUT ROWID"
+    )
+    connection.run_many("INSERT INTO retained_evidence VALUES(?,?)", referenced)
+    connection.run(
+        "DELETE FROM disclosures WHERE kind='announcement' AND body_retained=0 AND NOT EXISTS("
+        "SELECT 1 FROM company_document_requirements r WHERE r.disclosure_id=disclosures.id) "
+        "AND NOT EXISTS(SELECT 1 FROM retained_evidence r WHERE r.source=disclosures.source AND r.source_key=disclosures.source_id) "
+        "AND NOT EXISTS(SELECT 1 FROM partition_rows p WHERE p.source_id=disclosures.source_id) "
+        "AND NOT EXISTS(SELECT 1 FROM disclosure_query_rows q WHERE q.source_id=disclosures.source_id)"
+    )
+
+
 def MarkCompanyMarketDirty(connection: SqliteConnection, market: Market) -> None:
     MarkCompanyDirty(
         connection,
-        tuple(str(row[0]) for row in connection.run("SELECT code FROM published") if EvidenceMarket(row[0]) == market),
+        tuple(
+            str(row[0])
+            for row in connection.run("SELECT code FROM company_population")
+            if EvidenceMarket(row[0]) == market
+        ),
     )
 
 
@@ -88,13 +116,9 @@ def IndexCompanyDocument(connection: SqliteConnection, rows: Sequence[Disclosure
     )
 
 
-def PrepareCompanyPublication(connection: SqliteConnection, codes: tuple[str, ...], at: datetime) -> None:
-    publication = connection.run("SELECT published_at FROM publication WHERE singleton=1").fetchone()
-    if publication is None or datetime.fromisoformat(publication[0]).date() != at.date():
-        MarkCompanyDirty(connection, codes)
-    else:
-        existing = {str(row[0]) for row in connection.run("SELECT code FROM published")}
-        MarkCompanyDirty(connection, tuple(code for code in codes if code not in existing))
+def PrepareCompanyPublication(connection: SqliteConnection, codes: tuple[str, ...]) -> None:
+    connection.run_many("INSERT OR IGNORE INTO company_population VALUES(?)", ((code,) for code in codes))
+    MarkCompanyDirty(connection, codes)
 
 
 def SelectCompanyDocuments(
@@ -125,6 +149,8 @@ __all__ = [
     "EnsureCompanyPipelineQueries",
     "CheckDisclosureQueryContract",
     "MarkCompanyDirty",
+    "ReleaseCompletedCompanyQueryRows",
+    "ReleaseUnusedCompanyDisclosures",
     "MarkCompanyMarketDirty",
     "IndexCompanyDocument",
     "PrepareCompanyPublication",

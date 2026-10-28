@@ -144,7 +144,6 @@ MIGRATED_DATA_PLANE_PATHS = (
     "recommendation/application/ports/decision_records.py",
     "recommendation/application/pipeline/freeze_publish/freeze_coordinator.py",
     "recommendation/infra/persistence/decision_records.py",
-    "recommendation/infra/persistence/issuer_eligibility.py",
     "recommendation/domain/market/eligibility.py",
     "recommendation/application/ports/eligibility.py",
 )

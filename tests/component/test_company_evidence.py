@@ -14,6 +14,7 @@ from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
+    CompanyEvidenceRequest,
     CompanyListing,
     CompanyRatio,
     CompanySourceFailure,
@@ -25,6 +26,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
@@ -52,10 +54,7 @@ def _sync_company_evidence(
 ):
     return SyncCompanyEvidence(
         dependencies,
-        codes,
-        observed_at,
-        configuration=configuration,
-        news_codes=news_codes,
+        CompanyEvidenceRequest(tuple(codes), observed_at, configuration, tuple(news_codes)),
     )
 
 
@@ -89,6 +88,8 @@ class Sources:
 def _index(tmp_path):
     index = SQLiteCompanyEvidenceIndex(
         tmp_path / "company_evidence.sqlite3",
+        facts_path=(tmp_path / "company_evidence.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "company_evidence.sqlite3").parent / "text"),
         listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),),
     )
     index.initialize()
@@ -111,7 +112,7 @@ def test_second_run_reuses_baseline_without_redownloading(tmp_path):
     assert second.fetched_pages == second.changed_rows == 0
     assert not source.calls
     assert second.published_codes == 1
-    snapshot = SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0]
+    snapshot = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
     assert snapshot.announcement_state is CompanyDataState.COMPLETE
     assert snapshot.announcement_coverage_start == NOW.date() - timedelta(days=365)
 
@@ -125,11 +126,13 @@ def test_compact_reader_binds_rule_identity_and_links_remain_issuer_scoped(tmp_p
     index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
     index.commit_document(item, "本公司收到证监会立案告知书。")
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     assert reader.document_links("600002", ("notice",)) == ()
     assert reader.document_links("600001", ("notice",))[0].body_checked
     assert reader.read(("600001",))[0].risk_events[0].risk_level == 4
-    changed_policy = SQLiteCompanyEvidenceReader(index.path, event_policy=replace(CompanyEventPolicy(), risk_days=366))
+    changed_policy = SQLiteCompanyEvidenceReader(
+        index.facts_path, raw_path=index.path, event_policy=replace(CompanyEventPolicy(), risk_days=366)
+    )
     with pytest.raises(ValueError, match="identity_mismatch"):
         changed_policy.read(("600001",))
     with pytest.raises(ValueError, match="identity_mismatch"):
@@ -145,7 +148,9 @@ def test_compact_reader_cancels_before_decoding_and_delivers_no_partial_rows(tmp
     index.publish(("600001",), NOW)
     observed = []
     with pytest.raises(InterruptedError, match="company_preload_cancelled"):
-        SQLiteCompanyEvidenceReader(index.path).visit(("600001",), observed.append, cancel_requested=lambda: True)
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).visit(
+            ("600001",), observed.append, cancel_requested=lambda: True
+        )
     assert observed == []
 
 
@@ -168,7 +173,7 @@ def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp
     index = _index(tmp_path)
     source = Sources()
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     previous = reader.publication_version()
     cancelled = phase == "before_start"
     publications = []
@@ -263,7 +268,9 @@ def test_restart_resumes_first_uncommitted_page(tmp_path):
     index = _index(tmp_path)
     partition = index.partitions(("sse",), NOW)[0]
     index.commit_page(partition, DisclosurePage((_disclosure(),), 2, True), NOW)
-    resumed = SQLiteCompanyEvidenceIndex(index.path).partitions(("sse",), NOW)
+    resumed = SQLiteCompanyEvidenceIndex(
+        index.path, facts_path=index.facts_path, documents=CompanyDocumentFiles(index.path.parent / "text")
+    ).partitions(("sse",), NOW)
     current = next(item for item in resumed if (item.start, item.end) == (partition.start, partition.end))
     assert (current.page, current.received_rows, current.expected_rows) == (2, 1, 2)
     index.commit_page(current, DisclosurePage((_disclosure("second"),), 2, False), NOW)
@@ -316,11 +323,16 @@ def test_unchanged_announcement_does_not_rewrite_document(tmp_path):
     index.commit_document(item, "verified body")
     assert index.commit_page(partition, DisclosurePage((item,), 1, False), NOW) == 0
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        assert tuple(connection.run("SELECT body,body_checked FROM disclosures").fetchone()) == ("verified body", 1)
+        digest, checked = connection.run("SELECT body_hash,body_checked FROM disclosures").require_one()
+        assert checked == 1 and index._documents.read(digest) == "verified body"
     changed = replace(item, title="更正公告", digest="b")
     assert index.commit_page(partition, DisclosurePage((changed,), 1, False), NOW) == 1
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        assert tuple(connection.run("SELECT body,body_checked FROM disclosures").fetchone()) == ("", 0)
+        assert tuple(connection.run("SELECT body_hash,body_checked,body_retained FROM disclosures").require_one()) == (
+            None,
+            0,
+            0,
+        )
 
 
 def test_page_batch_rolls_back_partial_links_and_preserves_change_counts(tmp_path):
@@ -370,13 +382,13 @@ def test_publication_isolated_from_unpublished_changes_and_failure(tmp_path):
     partition = index.partitions(("sse",), NOW)[0]
     index.commit_page(partition, DisclosurePage((_disclosure(),), 1, False), NOW)
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     before = reader.read(("600001",))
     index.commit_page(partition, DisclosurePage((_disclosure(title="收到立案告知书", digest="b"),), 1, False), NOW)
     assert reader.read(("600001",)) == before
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run(
-            "CREATE TRIGGER refuse_publication BEFORE UPDATE ON published BEGIN SELECT RAISE(ABORT,'fixture'); END"
+            "CREATE TRIGGER refuse_publication BEFORE INSERT ON company_facts BEGIN SELECT RAISE(ABORT,'fixture'); END"
         )
     with pytest.raises(RuntimeError, match="persistence_unavailable"):
         index.publish(("600001",), NOW)
@@ -400,28 +412,28 @@ def test_company_publication_build_allows_writes_and_rejects_a_changed_source(tm
     partition = index.partitions(("sse",), NOW)[0]
     index.commit_page(partition, DisclosurePage((_disclosure(),), 1, False), NOW)
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     before = reader.read(("600001",))
     identity = reader.publication_version()
-    encode = publication.EncodeCompanyPublication
+    encode = publication.CompileCompanyFacts
     changed = False
 
-    def concurrent_change(snapshot):
+    def concurrent_change(snapshot, *args, **kwargs):
         nonlocal changed
         if not changed:
             changed = True
             index.commit_page(partition, DisclosurePage((_disclosure(title="更正", digest="b"),), 1, False), NOW)
-        return encode(snapshot)
+        return encode(snapshot, *args, **kwargs)
 
-    monkeypatch.setattr(publication, "EncodeCompanyPublication", concurrent_change)
+    monkeypatch.setattr(publication, "CompileCompanyFacts", concurrent_change)
     with pytest.raises(RuntimeError, match="source_changed"):
         index.publish(("600001",), NOW)
     assert changed and reader.publication_version() == identity and reader.read(("600001",)) == before
-    monkeypatch.setattr(publication, "EncodeCompanyPublication", encode)
+    monkeypatch.setattr(publication, "CompileCompanyFacts", encode)
     index.publish(("600001",), NOW)
     assert reader.publication_version() == identity  # Ordinary title changes do not alter compact risk facts.
     with SqliteSession(index.path, SqliteConnectionOptions(read_only=True)) as connection:
-        assert connection.run("SELECT title FROM disclosures").require_one()[0] == "更正"
+        assert connection.run("SELECT COUNT(*) FROM disclosures").require_one()[0] == 0
     assert not reader.read(("600001",))[0].risk_events
 
 
@@ -429,7 +441,7 @@ def test_reader_releases_transaction_before_consumers_and_pins_all_requested_row
     index = _index(tmp_path)
     codes = ("600002", "600001")
     index.publish(codes, NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     before = reader.read(codes)
     observed = []
 
@@ -453,7 +465,7 @@ def test_company_inputs_require_restart_to_adopt_manual_publication(tmp_path):
     source = Sources()
     _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     research = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(index.path),
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path),
         wall_clock=lambda: NOW,
         open_dates=lambda: PreparedFixture(NOW).open_dates,
         monotonic=time.monotonic,
@@ -472,7 +484,7 @@ def test_company_inputs_require_restart_to_adopt_manual_publication(tmp_path):
     assert not research.status().restart_required
     assert research.status().disk_identity == research.status().loaded_identity
     restarted = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(index.path),
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path),
         wall_clock=lambda: NOW,
         open_dates=lambda: PreparedFixture(NOW).open_dates,
         monotonic=time.monotonic,
@@ -485,7 +497,7 @@ def test_fixed_company_inputs_leave_missing_codes_uncovered_after_later_publicat
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
     research = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(index.path),
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path),
         wall_clock=lambda: NOW,
         open_dates=lambda: PreparedFixture(NOW).open_dates,
         monotonic=time.monotonic,
@@ -502,7 +514,7 @@ def test_fixed_company_inputs_leave_missing_codes_uncovered_after_later_publicat
 def test_company_reads_do_not_revisit_disk_after_preload(tmp_path, monkeypatch):
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     research = PublishedCompanyResearch(
         reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
     )
@@ -529,7 +541,7 @@ def test_reader_and_candidate_load_never_invoke_background_download(tmp_path):
         raise AssertionError("hot path network")
 
     research = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(index.path),
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path),
         wall_clock=lambda: NOW,
         open_dates=lambda: PreparedFixture(NOW).open_dates,
         monotonic=time.monotonic,
@@ -546,7 +558,11 @@ def test_old_database_is_rejected_without_mutation(tmp_path):
         connection.run("CREATE TABLE risk_evidence_recent(payload TEXT)")
     before = path.read_bytes()
     with pytest.raises(ValueError, match="contract_mismatch"):
-        SQLiteCompanyEvidenceIndex(path).initialize()
+        SQLiteCompanyEvidenceIndex(
+            path,
+            facts_path=(path).parent / "company_facts.sqlite3",
+            documents=CompanyDocumentFiles((path).parent / "text"),
+        ).initialize()
     assert path.read_bytes() == before
 
 
@@ -554,7 +570,11 @@ def test_corrupt_database_initialization_reports_the_business_error(tmp_path):
     path = tmp_path / "company_evidence.sqlite3"
     path.write_bytes(b"not a SQLite database")
     with pytest.raises(RuntimeError, match="company_evidence_persistence_unavailable") as error:
-        SQLiteCompanyEvidenceIndex(path).initialize()
+        SQLiteCompanyEvidenceIndex(
+            path,
+            facts_path=(path).parent / "company_facts.sqlite3",
+            documents=CompanyDocumentFiles((path).parent / "text"),
+        ).initialize()
     assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
 
 
@@ -636,11 +656,11 @@ def test_unchanged_publication_does_not_rewrite_rows_or_change_version(tmp_path)
     index = _index(tmp_path)
     source = Sources()
     _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     before = reader.read(("600001",))
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run(
-            "CREATE TRIGGER no_rewrite BEFORE UPDATE ON published BEGIN SELECT RAISE(ABORT,'unexpected rewrite'); END"
+            "CREATE TRIGGER no_rewrite BEFORE DELETE ON company_facts BEGIN SELECT RAISE(ABORT,'unexpected rewrite'); END"
         )
     index.publish(("600001",), NOW + timedelta(minutes=1))
     assert reader.read(("600001",)) == before
@@ -671,15 +691,16 @@ def test_ratio_snapshot_retraction_and_failed_page_preserve_last_complete_snapsh
 def test_corrupt_read_model_is_rejected_and_previous_memory_is_retained(tmp_path):
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     research = PublishedCompanyResearch(
         reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
     )
     research.initialize(("600001", "600002"), cancelled=lambda: False)
     before = research.load(("600001",), NOW, include_structured=True)
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE published SET announcement_state='unexpected'")
-    with pytest.raises(ValueError, match="CompanyDataState"):
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        connection.run("PRAGMA ignore_check_constraints=ON")
+        connection.run("UPDATE company_facts SET announcement_state=999")
+    with pytest.raises(ValueError, match="enum_unknown"):
         reader.read(("600001",))
     assert research.load(("600001",), NOW, include_structured=True) == before
     restarted = PublishedCompanyResearch(
@@ -696,7 +717,7 @@ def test_corrupt_read_model_is_rejected_and_previous_memory_is_retained(tmp_path
 def test_missing_pledge_record_becomes_zero_only_after_full_snapshot(tmp_path):
     index = _index(tmp_path)
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     assert reader.read(("600001",))[0].pledge is None
     index.commit_structured(
         StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), StructuredCompanyPage("pledge", 1, 1, 0), NOW
@@ -709,7 +730,7 @@ def test_cached_snapshot_ages_without_network_or_another_database_read(tmp_path,
     index = _index(tmp_path)
     source = Sources()
     _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     research = PublishedCompanyResearch(
         reader, wall_clock=lambda: NOW, open_dates=lambda: PreparedFixture(NOW).open_dates, monotonic=time.monotonic
     )
@@ -735,15 +756,15 @@ def test_content_removed_without_publication_change_preserves_loaded_memory(tmp_
     source = Sources()
     _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
     research = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(index.path),
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path),
         wall_clock=lambda: NOW,
         open_dates=lambda: PreparedFixture(NOW).open_dates,
         monotonic=time.monotonic,
     )
     research.initialize(("600001", "600002"), cancelled=lambda: False)
     assert research.load(("600001",), NOW, include_structured=True)["600001"].corporate_risk_window_complete
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("DELETE FROM published")
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        connection.run("DELETE FROM company_facts")
     research.initialize(("600001", "600002"), cancelled=lambda: False)
     retained = research.cached(("600001",), include_structured=True)["600001"]
     assert retained.corporate_risk_window_complete
@@ -840,7 +861,10 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
         next(event for event in events if event.component == component).status == "reused"
         for component in ("financial", "pledge", "unlock")
     )
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
+    assert (
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is CompanyDataState.COMPLETE
+    )
 
 
 def test_document_failure_counts_unique_pending_documents_and_retries_only_unfinished_bodies(tmp_path):
@@ -920,7 +944,8 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
     assert first.pending_documents == 1
     assert first.failures == ("risk_documents:disclosure_document_parse_timeout", "risk_documents:pending")
     assert (
-        SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is not CompanyDataState.COMPLETE
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is not CompanyDataState.COMPLETE
     )
     with SqliteSession(index.path) as connection:
         checked = connection.run("SELECT source_id,body_checked FROM disclosures ORDER BY source_id").fetchall()
@@ -931,7 +956,10 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
     resumed = _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(seconds=1))
     assert source.document_calls == ["slow"]
     assert resumed.pending_documents == 0 and not resumed.needs_retry
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
+    assert (
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is CompanyDataState.COMPLETE
+    )
 
 
 def test_document_parse_timeout_keeps_later_bodies_running_after_long_elapsed_time(tmp_path):
@@ -1062,4 +1090,7 @@ def test_cninfo_recovers_same_uncommitted_page_without_replaying_saved_prefix(tm
     assert not result.needs_retry and result.pending_partitions == 0
     assert pages == [1] + [2] * (failures_before_success + 1)
     assert events[-1].status == "complete" and not events[-1].failure
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
+    assert (
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is CompanyDataState.COMPLETE
+    )

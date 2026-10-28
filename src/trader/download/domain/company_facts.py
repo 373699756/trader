@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 
+from trader.download.domain.company_descriptions import (
+    CompanyPositiveDescription,
+    CompanyReviewDescription,
+    CompanyRiskDescription,
+)
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, ExtractCompanyEvents
 from trader.download.domain.company_events import (
     CompanyDataState,
@@ -72,6 +77,7 @@ def CompileCompanyFacts(
         policy,
         previous_risks=previous.risk_events if previous else (),
         previous_positives=previous.positive_events if previous else (),
+        previous_reviews=previous.review_reasons if previous else (),
     )
     financials = tuple(
         item for item in source.financials if item.published_at <= now and item.report_date <= now.date()
@@ -118,8 +124,8 @@ def CompileCompanyFacts(
                     (
                         old
                         for old in previous.review_reasons
-                        if (old.scope, old.reason_code, old.evidence_id, old.summary)
-                        == (item.scope, item.reason_code, item.evidence_id, item.summary)
+                        if (old.scope, old.reason_code, old.evidence_id)
+                        == (item.scope, item.reason_code, item.evidence_id)
                     ),
                     None,
                 )
@@ -154,9 +160,22 @@ def CompileCompanyFacts(
         else CompanyDataState.PARTIAL
         if source.unlocks
         else CompanyDataState.UNAVAILABLE,
-        tuple(item for item in extraction.risks if item.expires_at is None or item.expires_at > now),
-        tuple(item for item in extraction.positives if item.last_disclosed_at.date() >= source.window_start),
-        tuple(reviews),
+        tuple(
+            replace(item, summary=CompanyRiskDescription(item.risk_type))
+            for item in extraction.risks
+            if item.expires_at is None or item.expires_at > now
+        ),
+        tuple(
+            replace(item, summary=CompanyPositiveDescription(item.event_type))
+            for item in extraction.positives
+            if item.last_disclosed_at.date() >= source.window_start
+        ),
+        tuple(
+            sorted(
+                {replace(item, summary=CompanyReviewDescription(item.reason_code)) for item in reviews},
+                key=lambda item: (item.scope, item.evidence_id or "", item.reason_code),
+            )
+        ),
         pending,
         source.window_start,
         source.window_end,

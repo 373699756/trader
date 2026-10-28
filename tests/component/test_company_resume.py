@@ -10,6 +10,7 @@ from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -38,7 +39,17 @@ def test_document_inventory_switches_progress_before_reading_after_announcement_
 
     source = Source()
     result = fixtures._sync_company_evidence(
-        CompanyEvidenceDependencies(Index(tmp_path / "company.sqlite3"), source, source, lambda: 0, events.append),
+        CompanyEvidenceDependencies(
+            Index(
+                tmp_path / "company.sqlite3",
+                facts_path=tmp_path / "company_facts.sqlite3",
+                documents=CompanyDocumentFiles(tmp_path / "text"),
+            ),
+            source,
+            source,
+            lambda: 0,
+            events.append,
+        ),
         ("600001",),
         NOW,
     )
@@ -96,8 +107,13 @@ def test_old_overlapping_parent_and_child_cursors_are_consumed_once(tmp_path):
     requests = Counter((p.start, p.end, p.page) for p in source.calls if isinstance(p, DisclosurePartition))
     assert requests[(child.start, child.end, 2)] == 1
     assert not result.needs_retry
-    assert not SQLiteCompanyEvidenceIndex(index.path).partitions(("sse",), NOW)
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
+    assert not SQLiteCompanyEvidenceIndex(
+        index.path, facts_path=index.facts_path, documents=CompanyDocumentFiles(index.path.parent / "text")
+    ).partitions(("sse",), NOW)
+    assert (
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is CompanyDataState.COMPLETE
+    )
 
 
 def test_split_descendants_survive_restarts_and_old_month_audits(tmp_path):
@@ -105,7 +121,9 @@ def test_split_descendants_survive_restarts_and_old_month_audits(tmp_path):
     original = next(p for p in index.partitions(("sse",), NOW) if p.start < p.end)
     children = index.split_partition(original, NOW)
     index.commit_page(children[0], DisclosurePage((fixtures._disclosure(),), 2, True), NOW)
-    restarted = SQLiteCompanyEvidenceIndex(index.path)
+    restarted = SQLiteCompanyEvidenceIndex(
+        index.path, facts_path=index.facts_path, documents=CompanyDocumentFiles(index.path.parent / "text")
+    )
     restarted.initialize()
     for later in (NOW, NOW + timedelta(days=1), NOW + timedelta(days=20)):
         resumed = restarted.partitions(("sse",), later)
@@ -158,7 +176,8 @@ def test_already_deferred_child_is_not_retried_when_parent_splits(tmp_path):
     assert len(requests) == 1 and requests[0].page == 2
     assert result.pending_partitions == 1
     assert (
-        SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is not CompanyDataState.COMPLETE
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is not CompanyDataState.COMPLETE
     )
 
 
@@ -190,9 +209,9 @@ def test_partial_recheck_cannot_borrow_old_complete_coverage(tmp_path):
     pending = index.partitions(("sse",), later)
     index.commit_page(pending[0], DisclosurePage((fixtures._disclosure(when=later),), 2, True), later)
     index.publish(("600001",), later)
-    snapshot = SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0]
+    snapshot = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
     assert snapshot.announcement_state is not CompanyDataState.COMPLETE
-    assert any(item.scope == "risk" and item.reason_code == "pending" for item in snapshot.review_reasons)
+    assert any(item.scope == "risk" and item.reason_code == "source_task_pending" for item in snapshot.review_reasons)
     assert snapshot.announcement_coverage_end == later.date()
 
 
@@ -216,7 +235,10 @@ def test_oldest_calendar_day_risk_body_is_queued_and_published(tmp_path):
         CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW
     )
     assert result.pending_documents == 0 and not result.needs_retry
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
+    assert (
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is CompanyDataState.COMPLETE
+    )
 
 
 @pytest.mark.parametrize("recovery", ["expiry", "digest", "configuration"])
@@ -244,7 +266,10 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     deps = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
     first = fixtures._sync_company_evidence(deps, ("600001",), NOW, configuration=configuration)
     index = SQLiteCompanyEvidenceIndex(
-        index.path, listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),)
+        index.path,
+        facts_path=index.facts_path,
+        documents=CompanyDocumentFiles(index.path.parent / "text"),
+        listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),),
     )
     deps = replace(deps, index=index)
     second = fixtures._sync_company_evidence(deps, ("600001",), NOW, configuration=configuration)
@@ -252,7 +277,8 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     final_body = [event for event in events if event.component == "risk_documents"][-1]
     assert final_body.deferred_documents == 1 and final_body.attempted_documents == 0
     assert (
-        SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is not CompanyDataState.COMPLETE
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is not CompanyDataState.COMPLETE
     )
     now = NOW
     if recovery == "expiry":
@@ -264,7 +290,10 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     source.blocked = False
     third = fixtures._sync_company_evidence(deps, ("600001",), now, configuration=configuration)
     assert source.attempts == 2 and not third.needs_retry
-    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_state is CompanyDataState.COMPLETE
+    assert (
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+        is CompanyDataState.COMPLETE
+    )
 
 
 def test_retry_schema_extension_preserves_old_cursors_and_publication(tmp_path):
@@ -272,7 +301,7 @@ def test_retry_schema_extension_preserves_old_cursors_and_publication(tmp_path):
     part = index.partitions(("sse",), NOW)[0]
     index.commit_page(part, DisclosurePage((fixtures._disclosure(),), 2, True), NOW)
     index.publish(("600001",), NOW)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     before = reader.read(("600001",))
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("DROP TABLE document_retries")  # Original deployed schema, isolated fixture only.

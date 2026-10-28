@@ -28,6 +28,7 @@ from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
@@ -159,7 +160,11 @@ class _SyncFixture:
 
         def publish() -> CompanyEvidenceSyncResult:
             started = time.monotonic()
-            index = SQLiteCompanyEvidenceIndex(self.paths.company)
+            index = SQLiteCompanyEvidenceIndex(
+                self.paths.company_collection,
+                facts_path=self.paths.company,
+                documents=CompanyDocumentFiles(self.paths.company_documents),
+            )
             index.initialize()
             codes = tuple(item.code for item in reference.eligible_universe)
             rows = tuple(

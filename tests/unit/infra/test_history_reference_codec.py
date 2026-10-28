@@ -25,6 +25,7 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_st_source import HistoryStNameSource, ParseNameHistorySt
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.download.infra.published_history_snapshot import PublishedHistoryReadError, SQLitePublishedHistorySnapshot
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
@@ -267,6 +268,36 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
         connection.run("DELETE FROM bound_references WHERE content_hash=?", (source.supplier_contract[12:76],))
     with pytest.raises(HistorySnapshotReadError, match="history_reference_unavailable"):
         tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, {"600001"}))
+
+
+def test_pinned_history_reuses_verified_catalog_and_rejects_reference_changes_in_wal(tmp_path, monkeypatch):
+    import trader.download.infra.published_history_snapshot as publication
+
+    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    config = HistorySyncConfiguration(
+        tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
+    )
+    assert RunHistorySync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
+    loads = []
+    load = publication.LoadPublishedHistorySnapshot
+
+    def observed(*args, **kwargs):
+        loads.append(True)
+        return load(*args, **kwargs)
+
+    monkeypatch.setattr(publication, "LoadPublishedHistorySnapshot", observed)
+    reader = SQLitePublishedHistorySnapshot(tmp_path)
+    manifest = reader.manifest()
+    assert manifest is not None
+    first = reader.read_windows(manifest, ("600001",), sessions=2)
+    assert first and first == reader.read_windows(manifest, ("600001",), sessions=2)
+    assert len(loads) == 1
+    with SqliteSession(tmp_path / "catalog.sqlite3") as writer:
+        with SqliteTransaction(writer):
+            writer.run("UPDATE bound_references SET payload_json='{}'")
+        with pytest.raises(PublishedHistoryReadError, match="history_reference_unavailable"):
+            reader.read_windows(manifest, ("600001",), sessions=2)
+    assert len(loads) == 2
 
 
 def test_tencent_missing_dates_publish_sparse_rows_for_every_stock(tmp_path):

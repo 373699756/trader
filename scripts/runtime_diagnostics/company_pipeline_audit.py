@@ -15,6 +15,7 @@ from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import (
+    CompanyEvidenceRequest,
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
@@ -23,6 +24,7 @@ from trader.download.domain.company_evidence import (
     Market,
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -74,7 +76,11 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
         database = directory / f"pipeline-{count}.sqlite3"
         if database.exists():
             raise ValueError("company_probe_requires_fresh_directory")
-        index = _SampleIndex(database)
+        index = _SampleIndex(
+            database,
+            facts_path=directory / f"facts-{count}.sqlite3",
+            documents=CompanyDocumentFiles(directory / f"text-{count}"),
+        )
         index.initialize()
         for market, day in sorted({(EvidenceMarket(item.codes[0]), item.published_at.date()) for item in items}):
             # This is explicitly a sampled input fixture, never a coverage certificate.
@@ -125,15 +131,15 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                 document_executor=workers,
             )
             result = SyncCompanyEvidence(
-                dependencies, codes, now, configuration=replace(configuration, document_workers=count)
+                dependencies, CompanyEvidenceRequest(codes, now, replace(configuration, document_workers=count))
             )
             elapsed = time.monotonic() - started
             first_attempts = attempts
             attempts = 0
             resumed = SyncCompanyEvidence(
-                dependencies, codes, now, configuration=replace(configuration, document_workers=count)
+                dependencies, CompanyEvidenceRequest(codes, now, replace(configuration, document_workers=count))
             )
-        facts = SQLiteCompanyEvidenceReader(database).read(codes)
+        facts = SQLiteCompanyEvidenceReader(index.facts_path).read(codes)
         # Compare business facts; observation timestamps naturally differ by worker count.
         comparable = tuple(
             replace(

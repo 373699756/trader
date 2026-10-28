@@ -97,12 +97,16 @@ def ExtractCompanyEvents(
     *,
     previous_risks: tuple[CompanyRiskEvent, ...] = (),
     previous_positives: tuple[CompanyPositiveEvent, ...] = (),
+    previous_reviews: tuple[CompanyReviewReason, ...] = (),
 ) -> CompanyExtractedEvents:
     if observed_at.utcoffset() is None:
         raise ValueError("company_event_observation_requires_timezone")
     risks = list(previous_risks)
     positives = list(previous_positives)
-    reviews: list[CompanyReviewReason] = []
+    observed_evidence = {item.disclosure.identity for item in documents}
+    reviews = [
+        item for item in previous_reviews if item.evidence_id is not None and item.evidence_id not in observed_evidence
+    ]
     checked = 0
     for document in sorted(documents, key=lambda item: (item.disclosure.published_at, item.disclosure.identity)):
         item = document.disclosure

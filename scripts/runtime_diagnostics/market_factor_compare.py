@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.bootstrap import FetchExternalHttp, OpenExternalHttp
+from trader.bootstrap import CreateCompanyEligibilityReader, FetchExternalHttp, OpenExternalHttp
 from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
     FetchSseListings,
@@ -46,7 +46,6 @@ from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient, TencentFullMarketSource
 from trader.recommendation.infra.normalization.merge import MergeMarketObservations, ObservationFromQuote
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 
 from .market_factor_audit import (
     DERIVABLE_QUOTE_FIELDS,
@@ -914,7 +913,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
     reference_gateway.update_reference_observations((*base_references.observations, *official))
     official = tuple(reference_gateway.reference_observations(tuple(item.subject_key for item in official)))
     official_codes = SelectCodes(official, 0)
-    eligibility_index = SQLiteIssuerEligibilityIndex(settings.data_paths.eligibility, read_only=True)
+    eligibility_index = CreateCompanyEligibilityReader(settings.data_paths.company)
     eligibility_status = eligibility_index.status()
     if not eligibility_status.integrity_ok:
         raise RuntimeError("issuer eligibility snapshot integrity failed")

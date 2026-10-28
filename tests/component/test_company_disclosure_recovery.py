@@ -14,6 +14,7 @@ from trader.download.domain.company_evidence import (
     DisclosureQuery,
     DisclosureSecurity,
 )
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpTimeout
 from trader.infra.sqlite_connection import SqliteSession
@@ -179,7 +180,10 @@ def test_oversized_day_completes_only_after_all_board_queries_and_parent_reconci
             == 1
         )
         assert c.run("SELECT count(*) FROM coverage").require_one()[0] == 1
-        assert c.run("SELECT count(*) FROM partition_rows").require_one()[0] == 3001
+        # Ordinary titles are released after the complete coverage proof is committed.
+        assert c.run("SELECT count(*) FROM disclosures").require_one()[0] == 0
+        assert c.run("SELECT count(*) FROM partition_rows").require_one()[0] == 0
+        assert c.run("SELECT count(*) FROM disclosure_query_rows").require_one()[0] == 0
 
 
 def test_child_cursor_resume_does_not_replay_parent_or_completed_sibling(tmp_path, monkeypatch):
@@ -189,7 +193,9 @@ def test_child_cursor_resume_does_not_replay_parent_or_completed_sibling(tmp_pat
     item = fixtures._disclosure("prefix")
     index.commit_page(first, DisclosurePage((item,), 2, True), NOW)
     index.commit_page(second, DisclosurePage((), 0, False), NOW)
-    resumed = SQLiteCompanyEvidenceIndex(index.path)
+    resumed = SQLiteCompanyEvidenceIndex(
+        index.path, facts_path=index.facts_path, documents=CompanyDocumentFiles(index.path.parent / "text")
+    )
     resumed.initialize()
     children = resumed.disclosure_queries(target)
     assert len(children) == 1 and children[0].page == 2
@@ -246,7 +252,9 @@ def test_alias_query_overlap_is_accepted_only_when_exact_union_matches_parent(tm
     index.commit_query_coverage(target, DisclosurePage(rows[:1], 2, True), NOW)
     with SqliteSession(index.path) as c:
         assert c.run("SELECT count(*) FROM coverage").require_one()[0] == 1
-        assert c.run("SELECT count(*) FROM partition_rows").require_one()[0] == 2
+        assert c.run("SELECT count(*) FROM disclosures").require_one()[0] == 2
+        assert c.run("SELECT count(*) FROM partition_rows").require_one()[0] == 0
+        assert c.run("SELECT count(*) FROM disclosure_query_rows").require_one()[0] == 0
 
 
 def test_missing_historical_issuer_is_added_without_redownloading_completed_queries(tmp_path, monkeypatch):
@@ -410,12 +418,12 @@ def test_query_group_members_and_progress_survive_reopen_without_mutating_public
     target = DisclosurePartition("sse", NOW.date(), NOW.date())
     query = DisclosureQuery("shmb", (DisclosureSecurity("600001", "official"),))
     index.split_query(target, (query,))
-    with SqliteSession(index.path) as c:
-        before = [tuple(row) for row in c.run("SELECT * FROM published")]
+    with SqliteSession(index.facts_path) as c:
+        before = [tuple(row) for row in c.run("SELECT * FROM company_facts")]
     index.initialize()
     assert index.disclosure_queries(target)[0].query == query
-    with SqliteSession(index.path) as c:
-        assert [tuple(row) for row in c.run("SELECT * FROM published")] == before
+    with SqliteSession(index.facts_path) as c:
+        assert [tuple(row) for row in c.run("SELECT * FROM company_facts")] == before
 
 
 def test_successful_slice_resets_consecutive_failures_and_validation_failures_have_their_own_limit(

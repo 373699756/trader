@@ -8,6 +8,7 @@ from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import Session
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.infra.http_contracts import HttpCancelled
@@ -15,7 +16,12 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 def test_cancellation_before_initialization_does_not_create_database(tmp_path):
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "evidence.sqlite3", cancel_requested=lambda: True)
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "evidence.sqlite3",
+        facts_path=(tmp_path / "evidence.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "evidence.sqlite3").parent / "text"),
+        cancel_requested=lambda: True,
+    )
     with pytest.raises(InterruptedError, match="company_sync_cancelled"):
         index.initialize()
     assert not index.path.exists()
@@ -23,7 +29,12 @@ def test_cancellation_before_initialization_does_not_create_database(tmp_path):
 
 def test_long_query_cancellation_rolls_back_only_uncommitted_changes(tmp_path):
     cancelled = Event()
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "evidence.sqlite3", cancel_requested=cancelled.is_set)
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "evidence.sqlite3",
+        facts_path=(tmp_path / "evidence.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "evidence.sqlite3").parent / "text"),
+        cancel_requested=cancelled.is_set,
+    )
     index.initialize()
     day = fixtures.NOW.date()
     partition = DisclosurePartition("sse", day, day)
@@ -54,24 +65,29 @@ def test_cancelled_publication_keeps_previous_projection(tmp_path, monkeypatch):
     from trader.download.infra import company_evidence_index as publication
 
     cancelled = Event()
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "evidence.sqlite3", cancel_requested=cancelled.is_set)
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "evidence.sqlite3",
+        facts_path=(tmp_path / "evidence.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "evidence.sqlite3").parent / "text"),
+        cancel_requested=cancelled.is_set,
+    )
     index.initialize()
     index.publish(("600001",), fixtures.NOW)
-    with SqliteSession(index.path) as connection:
-        before = tuple(connection.run("SELECT * FROM publication").require_one())
-    encode = publication.EncodeCompanyPublication
+    with SqliteSession(index.facts_path) as connection:
+        before = tuple(connection.run("SELECT * FROM company_publication").require_one())
+    encode = publication.CompileCompanyFacts
 
-    def cancel_during_build(snapshot):
-        result = encode(snapshot)
+    def cancel_during_build(snapshot, *args, **kwargs):
+        result = encode(snapshot, *args, **kwargs)
         cancelled.set()
         return result
 
-    monkeypatch.setattr(publication, "EncodeCompanyPublication", cancel_during_build)
+    monkeypatch.setattr(publication, "CompileCompanyFacts", cancel_during_build)
     with pytest.raises(InterruptedError, match="company_sync_cancelled"):
         index.publish(("600001", "600002"), fixtures.NOW)
-    with SqliteSession(index.path) as connection:
-        assert tuple(connection.run("SELECT * FROM publication").require_one()) == before
-        assert connection.run("SELECT count(*) FROM published").require_one()[0] == 1
+    with SqliteSession(index.facts_path) as connection:
+        assert tuple(connection.run("SELECT * FROM company_publication").require_one()) == before
+        assert connection.run("SELECT count(*) FROM company_facts").require_one()[0] == 1
 
 
 @pytest.mark.parametrize("during_request", (False, True))

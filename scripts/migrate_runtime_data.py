@@ -20,7 +20,6 @@ from scripts.runtime_migration import (  # noqa: E402
     CopyFile,
     FileDigest,
     ImportDecisions,
-    ImportEligibility,
     ImportSequence,
     ImportSt,
     ImportTraces,
@@ -118,7 +117,6 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
         ImportSt(data / "reference/historical_st.json", paths.reference / "historical_st.sqlite3")
         MergeDatabase(data / "reference/industry_queries.sqlite3", paths.reference / "industry.sqlite3")
         # Company facts require a fresh extraction; legacy evidence is never copied into the new contract.
-        ImportEligibility(data / "reference", runtime / "issuer-eligibility.sqlite3", paths.eligibility)
         # All existing budget histories contribute. Duplicate request identities must agree.
         runtime_roots = (runtime, runtime / "profiles/v2", runtime / "profiles/v3")
         for root in (runtime / "shared", *runtime_roots):

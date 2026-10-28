@@ -17,7 +17,6 @@ from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadSt
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
 
 
@@ -276,11 +275,13 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
 
 
 def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int:
+    from trader.bootstrap import CreateCompanyEligibilityReader
+
     observed_at = datetime.fromisoformat(as_of) if as_of else datetime.now(ZoneInfo("Asia/Shanghai"))
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise SystemExit("--as-of must include a timezone offset")
     observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
-    eligibility_index = SQLiteIssuerEligibilityIndex(runtime.data_paths.eligibility, read_only=True)
+    eligibility_index = CreateCompanyEligibilityReader(runtime.data_paths.company)
     facts = tuple(fact for fact in eligibility_index.facts() if fact.effective_at <= observed_at)
     status = eligibility_index.status()
     print(

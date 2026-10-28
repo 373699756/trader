@@ -16,8 +16,8 @@ from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra.company_facts_codec import DecodeCompanyPublication
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
@@ -32,7 +32,10 @@ def _measure(root: Path) -> dict[str, float | int]:
     usage_before = resource.getrusage(resource.RUSAGE_SELF)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
     codes = tuple(str(600000 + offset) for offset in range(4402))
-    index = SQLiteCompanyEvidenceIndex(root / "company.sqlite3")
+    documents = CompanyDocumentFiles(root / "text")
+    index = SQLiteCompanyEvidenceIndex(
+        root / "collection.sqlite3", facts_path=root / "company_facts.sqlite3", documents=documents
+    )
     index.initialize()
     partition = index.partitions(("sse",), now)[0]
     rows = tuple(
@@ -45,12 +48,12 @@ def _measure(root: Path) -> dict[str, float | int]:
     # Same bounded synthetic official body for both implementations; no activity database is opened.
     body = "本公司收到证监会立案告知书。" + "本段为隔离性能样本的事实说明。" * 160
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE disclosures SET body=?,body_checked=1", (body,))
+        connection.run("UPDATE disclosures SET body_hash=?,body_checked=1,body_retained=1", (documents.write(body),))
     write = time.monotonic() - started
     started = time.monotonic()
     index.publish(codes, now)
     publish = time.monotonic() - started
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     started = time.monotonic()
     cold = reader.read(codes)
     cold_read = time.monotonic() - started
@@ -61,14 +64,12 @@ def _measure(root: Path) -> dict[str, float | int]:
     index.publish(codes, now + timedelta(minutes=1))
     repeat_publish = time.monotonic() - started
     assert len(reader.read(codes)) == len(cold)
-    with SqliteSession(index.path, SqliteConnectionOptions(read_only=True)) as connection:
-        payloads = tuple(dict(row) for row in connection.run("SELECT * FROM published ORDER BY code"))
-    publication_bytes = sum(len(json.dumps(row, ensure_ascii=False).encode()) for row in payloads)
+    with SqliteSession(index.facts_path, SqliteConnectionOptions(read_only=True)) as connection:
+        publication_bytes = connection.run("SELECT SUM(pgsize) FROM dbstat").require_one()[0]
     started = time.monotonic()
-    for payload in payloads:
-        DecodeCompanyPublication(payload)
+    reader.read(codes)
     decode = time.monotonic() - started
-    del cold, payloads
+    del cold
     research = PublishedCompanyResearch(
         reader,
         wall_clock=lambda: now + timedelta(minutes=1),

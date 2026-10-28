@@ -369,15 +369,19 @@ def test_only_permanent_startup_facts_are_filtered_before_current_quotes() -> No
 
 
 def test_new_quote_st_risk_is_dynamic_and_remains_excluded_after_name_recovers(tmp_path):
+    from trader.download.application.company_exclusions import PublishCompanyExclusions
+    from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
     from trader.recommendation.domain.candidate.filters import HardFilter
-    from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
+    from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 
     gateway = StaticGateway((_quote(),))
     service = _service(
         gateway,
         CountingHistoryClient(_history_bars()),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        eligibility=SQLiteIssuerEligibilityIndex(tmp_path / "eligibility.sqlite3"),
+        eligibility=CompanyEligibility(
+            PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3"))
+        ),
     )
     initial = service.fetch_market_feature_batch(NOW)
     at = NOW + timedelta(seconds=10)
@@ -458,11 +462,15 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
 
 
 def test_future_permanent_fact_takes_effect_dynamically_without_rebuilding_static_snapshot(tmp_path):
+    from trader.download.application.company_exclusions import PublishCompanyExclusions
+    from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
     from trader.recommendation.domain.candidate.filters import HardFilter
     from trader.recommendation.domain.market.eligibility import ManualBlacklistFact
-    from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
+    from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 
-    eligibility = SQLiteIssuerEligibilityIndex(tmp_path / "eligibility.sqlite3")
+    eligibility = CompanyEligibility(
+        PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3"))
+    )
     effective = NOW + timedelta(seconds=10)
     eligibility.record((ManualBlacklistFact("600001", effective_at=effective, config_hash="future"),))
     service = _service(

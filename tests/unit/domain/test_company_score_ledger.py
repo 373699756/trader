@@ -1,21 +1,19 @@
 """Money-independent score arithmetic, event verification and temporal boundaries."""
 
-import json
 from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.download.domain.company_descriptions import CompanyPositiveDescription, CompanyRiskDescription
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, CompanySubject
 from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, CompanyRatio, Disclosure
 from trader.download.domain.company_facts import CompanyFacts
-from trader.download.infra.company_facts_codec import (
-    PUBLICATION_COLUMNS,
-    DecodeCompanyPublication,
-    EncodeCompanyPublication,
-)
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.evidence.review import RiskFact
 from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmentItem, ScoreLedgerPayload
 from trader.recommendation.domain.scoring.company import (
@@ -268,7 +266,7 @@ def test_reduction_deadline_and_completion_tail_do_not_extend_on_repeated_closur
     assert repeated.risks[0].expires_at == resolved.risks[0].expires_at
 
 
-def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_inconsistent_risk():
+def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_inconsistent_risk(tmp_path):
     facts = _facts(
         (
             _document("warning", "关于收到警示函的公告", "本公司收到证监会出具警示函的决定。"),
@@ -282,20 +280,32 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
             ),
         )
     )
-    row = dict(zip(PUBLICATION_COLUMNS, EncodeCompanyPublication(facts), strict=True))
-    restored = DecodeCompanyPublication(row)
-    assert restored == facts
+    index = SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3")
+    index.initialize()
+    sources = {key: "cninfo" for event in (*facts.risk_events, *facts.positive_events) for key in event.evidence_ids}
+    index.publish((facts,), sources, None, AT)
+    reader = SQLiteCompanyEvidenceReader(index.path)
+    restored = reader.read((facts.code,))[0]
+    assert restored == replace(
+        facts,
+        risk_events=tuple(replace(item, summary=CompanyRiskDescription(item.risk_type)) for item in facts.risk_events),
+        positive_events=tuple(
+            replace(item, summary=CompanyPositiveDescription(item.event_type)) for item in facts.positive_events
+        ),
+    )
     assert {item.event_type.value for item in restored.positive_events} == {
         "share_repurchase",
         "shareholder_increase",
         "operating_contract",
     }
     assert {item.positive_level for item in restored.positive_events} == {2, 3}
-    assert "payload" not in row and "version" not in row and "body" not in row
-    risk = json.loads(row["risk_events_json"])
-    risk[0]["risk_level"] = 4
-    with pytest.raises(ValueError, match="severity_mismatch"):
-        DecodeCompanyPublication({**row, "risk_events_json": json.dumps(risk)})
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        columns = {row[1] for row in connection.run("PRAGMA table_info(company_facts)")}
+        assert not columns.intersection({"payload", "body", "risk_events_json", "positive_events_json"})
+        connection.run("PRAGMA ignore_check_constraints=ON")
+        connection.run("UPDATE company_risk_event SET risk_level=4 WHERE risk_type<=3")
+    with pytest.raises(ValueError, match="type_level_mismatch"):
+        reader.read((facts.code,))
 
 
 def test_other_subject_negation_does_not_erase_controlling_shareholder_investigation():

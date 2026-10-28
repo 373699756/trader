@@ -20,6 +20,7 @@ from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries,
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import (
+    CompanyEvidenceRequest,
     CompanySyncConfiguration,
     Disclosure,
     DisclosurePage,
@@ -27,18 +28,20 @@ from trader.download.domain.company_evidence import (
     Market,
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_pipeline_queries import ReleaseCompletedCompanyQueryRows
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpTransport
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 _ROOT = Path(__file__).resolve().parents[2]
 
 
 class _ReplayIndex(SQLiteCompanyEvidenceIndex):
-    def __init__(self, path: Path, selection: frozenset[tuple[str, str, str]]) -> None:
-        super().__init__(path)
+    def __init__(self, path: Path, selection: frozenset[tuple[str, str, str]], *, facts_path: Path) -> None:
+        super().__init__(path, facts_path=facts_path, documents=CompanyDocumentFiles(path.parent / "text"))
         self._selection = selection
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
@@ -134,9 +137,68 @@ def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]]) -> set
     return saved
 
 
+def _retained_digest(path: Path, deadline: float) -> str:
+    digest = hashlib.sha256()
+    with (
+        SqliteSession(
+            path, SqliteConnectionOptions(read_only=True), cancel_requested=lambda: time.monotonic() >= deadline
+        ) as connection,
+        SqliteTransaction(connection),
+    ):
+        tables = tuple(
+            row[0]
+            for row in connection.run(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' "
+                "AND name NOT IN ('partition_rows','disclosure_query_rows') ORDER BY name"
+            )
+        )
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            columns = tuple(connection.run(f"PRAGMA table_info({quoted})"))
+            keys = tuple(row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5])
+            order = ",".join('"' + key.replace('"', '""') + '"' for key in keys) or "rowid"
+            digest.update(table.encode())
+            for row in connection.run(f"SELECT * FROM {quoted} ORDER BY {order}"):
+                digest.update(repr(tuple(row)).encode())
+    return digest.hexdigest()
+
+
+def _compact_storage(source: Path, directory: Path, *, budget_seconds: float) -> dict[str, object]:
+    if not directory.is_absolute() or directory == _ROOT or _ROOT in directory.parents:
+        raise ValueError("external absolute directory required")
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "company_compacted.sqlite3"
+    if target.exists():
+        raise ValueError("company_compaction_target_exists")
+    deadline = time.monotonic() + budget_seconds
+    _copy(source, target, deadline=deadline)
+    before_digest = _retained_digest(target, deadline)
+    before_bytes = target.stat().st_size
+    with SqliteSession(target, cancel_requested=lambda: time.monotonic() >= deadline) as connection:
+        with SqliteTransaction(connection, immediate=True):
+            ReleaseCompletedCompanyQueryRows(connection)
+            removed = connection.total_changes
+        connection.run("VACUUM")
+        if connection.run("PRAGMA integrity_check").require_one()[0] != "ok":
+            raise RuntimeError("company_compaction_integrity_failed")
+        if connection.run("PRAGMA foreign_key_check").fetchone() is not None:
+            raise RuntimeError("company_compaction_foreign_key_failed")
+    preserved = before_digest == _retained_digest(target, deadline)
+    if not preserved:
+        raise RuntimeError("company_compaction_retained_data_changed")
+    return {
+        "isolated_copy": True,
+        "before_bytes": before_bytes,
+        "after_bytes": target.stat().st_size,
+        "removed_completed_members": removed,
+        "retained_data_equal": preserved,
+    }
+
+
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", required=True, type=Path)
+    parser.add_argument("--facts-database", type=Path)
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--budget-seconds", required=True, type=float)
     audit = parser.add_mutually_exclusive_group()
@@ -160,8 +222,18 @@ def Main() -> int:
         parser.error("budget within 30..10800 seconds required")
     if args.storage_only:
         report = AuditCompanyStorage(
-            source_path, now=datetime.now(ZoneInfo("Asia/Shanghai")), budget_seconds=min(30.0, args.budget_seconds)
+            source_path,
+            now=datetime.now(ZoneInfo("Asia/Shanghai")),
+            budget_seconds=min(180.0, args.budget_seconds),
+            facts_path=args.facts_database,
         )
+        if args.directory is not None:
+            summary = report["summary"]
+            if not isinstance(summary, dict):
+                raise ValueError("company_storage_summary_invalid")
+            summary["compaction"] = _compact_storage(
+                source_path, args.directory.resolve(), budget_seconds=args.budget_seconds
+            )
         print(json.dumps(report, ensure_ascii=False))
         return 0
     if args.pagination_only:
@@ -196,7 +268,7 @@ def Main() -> int:
         _copy(source_path, destination, deadline=started + args.budget_seconds)
     selection_path = directory / "selection.json"
     with SqliteSession(destination, SqliteConnectionOptions(read_only=True)) as c:
-        codes = tuple(row[0] for row in c.run("SELECT code FROM published ORDER BY code"))
+        codes = tuple(row[0] for row in c.run("SELECT code FROM company_population ORDER BY code"))
         if selection_path.exists():
             selection = _selection(json.loads(selection_path.read_text(encoding="utf-8")))
         else:
@@ -209,7 +281,12 @@ def Main() -> int:
             selection_path.write_text(json.dumps(sorted(selection)), encoding="utf-8")
     if not selection or not codes:
         parser.error("backup needs failed slices and a published population")
-    index = _ReplayIndex(destination, selection)
+    if args.facts_database is None:
+        parser.error("replay requires --facts-database")
+    facts_path = directory / "company_facts.sqlite3"
+    if not facts_path.exists():
+        _copy(args.facts_database, facts_path, deadline=started + args.budget_seconds)
+    index = _ReplayIndex(destination, selection, facts_path=facts_path)
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     configuration = replace(LoadCompanySyncConfiguration(_ROOT), document_workers=1)
     runs = []
@@ -235,9 +312,7 @@ def Main() -> int:
                     time.monotonic,
                     cancel_requested=interrupt,
                 ),
-                codes,
-                now,
-                configuration=configuration,
+                CompanyEvidenceRequest(codes, now, configuration),
             )
             if number == 0:
                 saved = _saved_pages(destination, source.pages)

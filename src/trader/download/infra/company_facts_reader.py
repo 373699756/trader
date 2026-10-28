@@ -9,12 +9,9 @@ from pathlib import Path
 
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyEvidenceLink
 from trader.download.domain.company_facts import CompanyFacts
-from trader.download.infra.company_facts_codec import (
-    COMPANY_FACTS_SCHEMA,
-    PUBLICATION_COLUMNS,
-    CompanyExtractionIdentity,
-    DecodeCompanyPublication,
-)
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_protocol import CompanyExtractionHash
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 _DEFAULT_EVENT_POLICY = CompanyEventPolicy()
@@ -23,27 +20,32 @@ _DEFAULT_EVENT_POLICY = CompanyEventPolicy()
 class SQLiteCompanyEvidenceReader:
     """Only the published, indexed projection is visible to recommendation."""
 
-    def __init__(self, path: Path, *, event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY) -> None:
+    def __init__(
+        self, path: Path, *, raw_path: Path | None = None, event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY
+    ) -> None:
         self.path = path
-        self._extraction_identity = CompanyExtractionIdentity(event_policy)
+        self._raw_path = raw_path
+        self._extraction_hash = CompanyExtractionHash(event_policy)
 
     def _publication_version(self, connection: SqliteConnection) -> str:
-        row = connection.run(
-            "SELECT version,schema_identity,extraction_identity FROM publication WHERE singleton=1"
-        ).fetchone()
-        if row is None:
+        identity = ReadCompanyPublicationIdentity(connection)
+        if identity is None:
             return ""
-        if row[1] != COMPANY_FACTS_SCHEMA or row[2] != self._extraction_identity:
+        if identity.extraction_hash != self._extraction_hash:
             raise ValueError("company_publication_identity_mismatch")
-        return str(row[0])
+        return identity.content_hash.hex()
 
     def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyEvidenceLink, ...]:
-        if not evidence_ids or not self.path.exists():
+        if not evidence_ids:
             return ()
         if len(evidence_ids) > 32 or len(code) != 6 or not code.isascii() or not code.isdigit():
             raise ValueError("company_document_query_invalid")
+        if self._raw_path is None or not self._raw_path.exists():
+            raise RuntimeError("company_evidence_links_unavailable")
         try:
-            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2)) as connection:
+            with SqliteSession(
+                self._raw_path, SqliteConnectionOptions(read_only=True, timeout_seconds=2)
+            ) as connection:
                 rows = connection.run(
                     "SELECT d.source_id,d.title,d.url,d.published_at,d.body_checked FROM disclosures d "
                     "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE c.code=? AND d.kind='announcement' "
@@ -86,23 +88,13 @@ class SQLiteCompanyEvidenceReader:
                 self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2), cancel_requested=cancel_requested
             ) as connection:
                 with SqliteTransaction(connection):
-                    contract = connection.run("SELECT identity FROM contract").fetchall()
-                    if [tuple(row) for row in contract] != [("company_facts",)]:
-                        raise ValueError("company_snapshot_contract_mismatch")
                     if not self._publication_version(connection):
                         return
                     for offset in range(0, len(codes), 512):
                         if cancel_requested is not None and cancel_requested():
                             raise InterruptedError("company_preload_cancelled")
                         batch = tuple(codes[offset : offset + 512])
-                        placeholders = ",".join("?" for _ in batch)
-                        captured.extend(
-                            DecodeCompanyPublication(dict(row))
-                            for row in connection.run(
-                                f"SELECT {','.join(PUBLICATION_COLUMNS)} FROM published WHERE code IN ({placeholders})",
-                                batch,
-                            ).fetchall()
-                        )
+                        captured.extend(ReadCompanyFactRows(connection, batch))
         except sqlite3.Error as exc:
             if cancel_requested is not None and cancel_requested():
                 raise InterruptedError("company_preload_cancelled") from exc

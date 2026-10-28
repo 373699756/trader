@@ -6,24 +6,28 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from trader.download.application.company_exclusions import PublishCompanyExclusions
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.entrypoints import cli
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
+from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 
 
 def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path, monkeypatch, capsys) -> None:
     observed_at = datetime(2026, 9, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-    eligibility_index = SQLiteIssuerEligibilityIndex(DataPaths(tmp_path / "data").eligibility)
+    eligibility_index = CompanyEligibility(
+        PublishCompanyExclusions(SQLiteCompanyFactsIndex(DataPaths(tmp_path / "data").company))
+    )
     eligibility_index.record(
         (
             IssuerEligibilityFact(
                 "600001",
-                IssuerEligibilityReason.HISTORICAL_ST,
+                IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
                 observed_at,
                 "quote:600001:fixture",
-                "eastmoney_market",
+                "market_quote",
                 "a" * 64,
             ),
         )
@@ -58,7 +62,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
             "effective_at": observed_at.isoformat(),
             "evidence_hash": "a" * 64,
             "evidence_id": "quote:600001:fixture",
-            "reason": "historical_st",
-            "source": "eastmoney_market",
+            "reason": "historical_delisting_warning",
+            "source": "market_quote",
         }
     ]

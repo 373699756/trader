@@ -20,7 +20,6 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 from trader.training.infra.research.trace_codec import PersistedPayloadBytes
 from trader.training.infra.research.trace_storage import InitializeDatabase
@@ -234,7 +233,7 @@ def test_existing_target_and_repository_paths_are_rejected(tmp_path):
         migrate(Path(__file__).resolve().parents[3], tmp_path / "other", default_profile="v2")
 
 
-def test_eligibility_facts_blacklist_and_refresh_identity_survive_migration(tmp_path):
+def test_legacy_company_exclusions_are_not_imported(tmp_path):
     source = _source(tmp_path)
     reference = source / "data/reference"
     snapshot = reference / "snapshots/fixture"
@@ -277,10 +276,5 @@ def test_eligibility_facts_blacklist_and_refresh_identity_survive_migration(tmp_
     )
     target = tmp_path / "candidate"
     migrate(source, target, default_profile="v2")
-    index = SQLiteIssuerEligibilityIndex(target / "company/eligibility.sqlite3", read_only=True)
-    assert index.facts() == facts
-    assert index.filter_codes(("600001", "600002", "600003"), NOW + timedelta(days=100)) == ("600003",)
-    status = index.status()
-    assert status.integrity_ok and status.manifest_hash == digest
-    assert status.refresh_state == "failed" and status.refresh_failure_count == 3
-    assert status.last_refresh_at == NOW and status.next_refresh_at == NOW + timedelta(hours=1)
+    assert not (target / "company/eligibility.sqlite3").exists()
+    assert not (target / "company/company_facts.sqlite3").exists()

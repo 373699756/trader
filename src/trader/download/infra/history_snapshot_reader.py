@@ -10,6 +10,7 @@ from collections.abc import Callable, Collection, Generator, Iterator
 from contextlib import ExitStack, closing
 from dataclasses import dataclass, replace
 from datetime import date
+from itertools import groupby
 from pathlib import Path
 from typing import Literal, cast
 
@@ -392,15 +393,33 @@ class HistorySnapshotReader:
         references = tuple(self._reference(snapshot, year, month) for year, month in RouteHistoryMonths(start, end))
         with ExitStack() as stack:
             streams = []
-            for reference in references:
-                partition = self._partition_with_trust(
-                    reference, None, required_level=None, establish_level="logical", check=check
+            for _identity, group in groupby(
+                references, key=lambda reference: (reference.relative_path, reference.sequence)
+            ):
+                annual = tuple(group)
+                for reference in annual:
+                    partition = self._partition_with_trust(
+                        reference, None, required_level=None, establish_level="logical", check=check
+                    )
+                first, last = annual[0], annual[-1]
+                lower = max(start, date(first.calendar_year, first.calendar_month, 1))
+                upper = min(
+                    end,
+                    date(
+                        last.calendar_year,
+                        last.calendar_month,
+                        calendar.monthrange(last.calendar_year, last.calendar_month)[1],
+                    ),
                 )
                 streams.append(
                     stack.enter_context(
                         closing(
                             partition.iter_published_cells(
-                                start, end, snapshot_sequence=reference.sequence, check=check
+                                lower,
+                                upper,
+                                snapshot_sequence=reference.sequence,
+                                check=check,
+                                annual_range=len(annual) > 1,
                             )
                         )
                     )

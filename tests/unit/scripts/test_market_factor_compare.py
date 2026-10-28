@@ -314,7 +314,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     )
     monkeypatch.setattr(
         comparison,
-        "SQLiteIssuerEligibilityIndex",
+        "CreateCompanyEligibilityReader",
         lambda *args, **kwargs: SimpleNamespace(
             status=lambda: SimpleNamespace(
                 schema_version="fixture",

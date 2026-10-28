@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from tests.reference_fixtures import PreparedFixture
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
@@ -15,7 +16,11 @@ from trader.recommendation.infra.market_data.published_company_research import P
 def test_company_projection_is_incremental_and_reads_full_population_without_network(tmp_path):
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
     codes = tuple(f"{600000 + offset:06d}" for offset in range(4402))
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "company_evidence.sqlite3")
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "company_evidence.sqlite3",
+        facts_path=(tmp_path / "company_evidence.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "company_evidence.sqlite3").parent / "text"),
+    )
     index.initialize()
     partition = index.partitions(("sse",), now)[0]
     rows = tuple(
@@ -30,7 +35,7 @@ def test_company_projection_is_incremental_and_reads_full_population_without_net
     assert index.publish(codes, now) == len(codes)
     publish_seconds = time.monotonic() - started
     reader = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(index.path),
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path),
         wall_clock=lambda: now,
         open_dates=lambda: PreparedFixture(now).open_dates,
         monotonic=time.monotonic,

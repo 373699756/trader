@@ -174,7 +174,9 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
     }
 
 
-def AuditCompanyStorage(path: Path, *, now: datetime, budget_seconds: float) -> dict[str, object]:
+def AuditCompanyStorage(
+    path: Path, *, now: datetime, budget_seconds: float, facts_path: Path | None = None
+) -> dict[str, object]:
     """Count local records and persisted retry reasons without reading bodies into the report."""
     deadline = time.monotonic() + budget_seconds
     cutoff = (now.date() - timedelta(days=365)).isoformat()
@@ -188,11 +190,15 @@ def AuditCompanyStorage(path: Path, *, now: datetime, budget_seconds: float) -> 
         ) as connection,
         SqliteTransaction(connection),
     ):
+        page_size = connection.run("PRAGMA page_size").require_one()[0]
+        free_pages = connection.run("PRAGMA freelist_count").require_one()[0]
+        table_bytes = [
+            {"name": row[0], "bytes": row[1]}
+            for row in connection.run("SELECT name,SUM(pgsize) FROM dbstat GROUP BY name ORDER BY SUM(pgsize) DESC")
+        ]
         totals = connection.run(
-            "SELECT COUNT(*),SUM(body_checked=1),COALESCE(SUM(length(body)),0) FROM disclosures WHERE kind='announcement'"
+            "SELECT COUNT(*),SUM(body_checked=1),COALESCE(SUM(body_retained=1),0) FROM disclosures WHERE kind='announcement'"
         ).require_one()
-        publication = connection.run("SELECT published_at FROM publication WHERE singleton=1").fetchone()
-        stocks = connection.run("SELECT COUNT(*) FROM published").require_one()[0]
         partitions = connection.run(
             "SELECT COUNT(*) FROM partitions WHERE complete=0 AND end>=?", (cutoff,)
         ).require_one()[0]
@@ -207,7 +213,7 @@ def AuditCompanyStorage(path: Path, *, now: datetime, budget_seconds: float) -> 
             "SELECT d.title,r.failure,r.retry_after FROM disclosures d LEFT JOIN document_retries r "
             "ON r.disclosure_id=d.id AND r.digest=d.digest WHERE d.kind='announcement' AND d.body_checked=0 "
             "AND d.published_at>=? AND d.published_at<=? AND EXISTS(SELECT 1 FROM disclosure_codes c "
-            "JOIN published p ON p.code=c.code WHERE c.disclosure_id=d.id)",
+            "JOIN company_population p ON p.code=c.code WHERE c.disclosure_id=d.id)",
             (cutoff, now.isoformat()),
         ):
             if not CompanyDocumentNeedsReview(row[0]):
@@ -219,6 +225,20 @@ def AuditCompanyStorage(path: Path, *, now: datetime, budget_seconds: float) -> 
                 cooling += 1
             else:
                 ready += 1
+    formal: dict[str, object] = {"available": False}
+    if facts_path is not None and facts_path.exists():
+        with SqliteSession(facts_path, SqliteConnectionOptions(read_only=True)) as connection:
+            formal = {
+                "available": True,
+                "database_bytes": facts_path.stat().st_size,
+                "stocks": connection.run("SELECT COUNT(*) FROM company_facts").require_one()[0],
+                "table_bytes": [
+                    {"name": row[0], "bytes": row[1]}
+                    for row in connection.run(
+                        "SELECT name,SUM(pgsize) FROM dbstat GROUP BY name ORDER BY SUM(pgsize) DESC"
+                    )
+                ],
+            }
     return {
         "schema_version": "company-resume",
         "status": "degraded" if partitions or pending else "passed",
@@ -227,11 +247,12 @@ def AuditCompanyStorage(path: Path, *, now: datetime, budget_seconds: float) -> 
                 "read_only": True,
                 "pdf_archived": False,
                 "database_bytes": path.stat().st_size,
+                "free_bytes": page_size * free_pages,
+                "table_bytes": table_bytes,
                 "announcement_records": totals[0],
                 "extracted_bodies": totals[1] or 0,
-                "body_characters": totals[2],
-                "published_stocks": stocks,
-                "published_at": publication[0] if publication else None,
+                "retained_bodies": totals[2],
+                "formal": formal,
                 "pending_ranges": partitions,
                 "pending_documents": pending,
                 "stored_retry_cooling": cooling,

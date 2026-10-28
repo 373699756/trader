@@ -115,6 +115,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--company-pagination-audit", action="store_true", help="read-only CNInfo page-size comparison")
+    parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup CPU profile")
     parser.add_argument(
         "--company-pipeline-audit", action="store_true", help="isolated same-PDF serial/parallel comparison"
     )
@@ -289,6 +290,9 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="published company evidence database (read-only)",
+    )
+    parser.add_argument(
+        "--company-collection-database", type=Path, default=None, help="raw company collection index (read-only source)"
     )
     parser.add_argument(
         "--eligibility-evidence",
@@ -502,9 +506,11 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             long_watchlist=args.long_watchlist,
             long_evidence_output=long_evidence_output,
             company_evidence_database=args.company_evidence_database,
+            company_collection_database=args.company_collection_database,
             company_replay_directory=company_replay_directory,
             company_query_audit=args.company_query_audit,
             company_storage_audit=args.company_storage_audit,
+            history_preload_audit=args.history_preload_audit,
             company_pagination_audit=args.company_pagination_audit,
             company_pipeline_audit=args.company_pipeline_audit,
             v5_kernel_probe=args.v5_kernel_probe,
@@ -586,6 +592,7 @@ def build_commands(
             history_root=options.history_root or paths.history,
             qfq_database=options.qfq_database or paths.daily_window,
             company_evidence_database=options.company_evidence_database or paths.company,
+            company_collection_database=options.company_collection_database or paths.company_collection,
         )
     if options.profile == "training-performance":
         from scripts.runtime_diagnostics.training_performance import BuildTrainingBenchmarkCommands
@@ -880,6 +887,7 @@ def build_commands(
                 str(options.sqlite_revision_write_sample_count),
                 "--resume-samples",
                 str(options.history_resume_samples),
+                *(("--preload-audit",) if options.history_preload_audit else ()),
             ),
             common_timeout,
         ),
@@ -982,6 +990,8 @@ def build_commands(
                 "-m",
                 "scripts.runtime_diagnostics.company_resume",
                 "--database",
+                str(options.company_collection_database),
+                "--facts-database",
                 str(options.company_evidence_database),
                 *(("--directory", str(options.company_replay_directory)) if options.company_replay_directory else ()),
                 "--budget-seconds",
@@ -1680,6 +1690,18 @@ def _company_resume_details(
             ],
         }
     storage = _mapping(summary.get("local_storage"))
+    compaction = _mapping(summary.get("compaction"))
+    if compaction:
+        selected["compaction"] = {
+            key: compaction.get(key)
+            for key in (
+                "isolated_copy",
+                "before_bytes",
+                "after_bytes",
+                "removed_completed_members",
+                "retained_data_equal",
+            )
+        }
     if storage:
         projected_storage = {
             key: storage.get(key)
@@ -1687,6 +1709,7 @@ def _company_resume_details(
                 "read_only",
                 "pdf_archived",
                 "database_bytes",
+                "free_bytes",
                 "announcement_records",
                 "extracted_bodies",
                 "body_characters",
@@ -1698,6 +1721,12 @@ def _company_resume_details(
                 "stored_retry_ready",
             )
         }
+        tables = storage.get("table_bytes")
+        projected_storage["table_bytes"] = [
+            {"name": row.get("name"), "bytes": row.get("bytes")}
+            for row in (tables[:64] if isinstance(tables, list) else [])
+            if isinstance(row, dict)
+        ]
         for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
             rows = storage.get(name)
             projected_storage[name] = [

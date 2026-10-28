@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import cProfile
 import json
 import os
+import pstats
 import resource
 import sqlite3
 import statistics
@@ -19,14 +21,18 @@ from datetime import date
 from itertools import islice
 from pathlib import Path
 
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 
 from .reporting import emit_report
 
@@ -76,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--inventory-only", action="store_true")
+    parser.add_argument("--preload-audit", action="store_true")
     parser.add_argument("--resume-samples", type=int, default=0)
     parser.add_argument("--page-sample-count", type=int, default=1)
     parser.add_argument("--query-rounds", type=int, default=3)
@@ -85,6 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.preload_audit:
+        return _measure_preload(args.history_root.resolve())
     if args.resume_samples:
         try:
             return _measure_resume_reads(args.history_root.resolve(), args.resume_samples)
@@ -152,6 +161,68 @@ def main() -> int:
         },
     }
     emit_report(payload)
+    return 0
+
+
+def _measure_preload(root: Path) -> int:
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(root))
+    manifest = history.manifest()
+    calendar_dates = manifest.calendar_dates if manifest else ()
+    owner = SharedHistoryProjection(history, monotonic=time.monotonic)
+    profiles = tuple(
+        PublishedHistoryCache(
+            history,
+            lookback_sessions=sessions,
+            learned_rank_inputs=rank,
+            projection_owner=owner,
+            open_dates=lambda: calendar_dates,
+            monotonic=time.monotonic,
+        )
+        for sessions, rank in ((251, True), (251, False), (61, False))
+    )
+    started = time.monotonic()
+    profiler = cProfile.Profile()
+    profiling = False
+
+    def cancelled() -> bool:
+        nonlocal profiling
+        if owner.window_count and not profiling:
+            profiler.enable()
+            profiling = True
+        return time.monotonic() - started >= 290
+
+    owner.initialize(cancelled)
+    profiler.disable()
+    stats = pstats.Stats(profiler).get_stats_profile()
+    functions = [
+        {
+            "function": name,
+            "module": Path(value.file_name).name,
+            "calls": value.ncalls,
+            "self_seconds": value.tottime,
+            "cumulative_seconds": value.cumtime,
+        }
+        for name, value in sorted(stats.func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:25]
+    ]
+    states = [profile.status() for profile in profiles]
+    passed = all(state.state == "active" for state in states)
+    emit_report(
+        {
+            "schema_version": "history_sqlite_performance",
+            "status": "passed" if passed else "degraded",
+            "summary": {
+                "read_only": True,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "scan_count": owner.scan_count,
+                "window_count": owner.window_count,
+                "profiles": [
+                    {"sessions": profile.history_sessions, "entries": state.entries, "reason": state.maintenance_reason}
+                    for profile, state in zip(profiles, states, strict=True)
+                ],
+                "functions": functions,
+            },
+        }
+    )
     return 0
 
 

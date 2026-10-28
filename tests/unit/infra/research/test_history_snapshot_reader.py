@@ -465,3 +465,29 @@ def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp
     with pytest.raises(HistorySnapshotReadError):
         reader.read_published_code_window("600001", (day,), invalid)
     assert len(calls) == 3
+
+
+def test_annual_published_stream_keeps_each_months_sequence_and_ignores_unpublished_revisions(tmp_path):
+    first, second, third = date(2026, 7, 1), date(2026, 8, 1), date(2026, 9, 1)
+    rows = tuple(_revision("600001", day) for day in (first, second, third))
+    snapshot = _build_snapshot(tmp_path, rows)
+    # The last month has its own sequence; it must not change the earlier group's visibility.
+    revisions = tuple(
+        replace(
+            row,
+            first_seen_sequence=2,
+            cell=replace(row.cell, qfq=replace(row.cell.qfq, close_price=row.cell.qfq.close_price + 0.1)),
+        )
+        for row in (rows[0], rows[2])
+    )
+    partition = HistoryPricePartition(tmp_path / snapshot.partitions[0].relative_path, 2026, 9)
+    partition.save_revisions(revisions)
+    latest = partition.seal(2)
+    snapshot = replace(snapshot, sequence=2, partitions=(*snapshot.partitions[:2], latest))
+    reader = HistorySnapshotReader(tmp_path)
+    expected = (
+        ProjectHistoryCell(rows[0].cell),
+        ProjectHistoryCell(rows[1].cell),
+        ProjectHistoryCell(revisions[1].cell),
+    )
+    assert tuple(reader.iter_published_range_by_code(first, third, snapshot)) == expected

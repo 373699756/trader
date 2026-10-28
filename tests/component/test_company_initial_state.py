@@ -7,6 +7,7 @@ import pytest
 
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, Disclosure, DisclosurePage, DisclosurePartition
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -36,12 +37,17 @@ def _old_document(index, body):
 
 def test_first_publication_retains_old_active_case_and_exposes_unverified_initial_state(tmp_path):
     listed = _AT.date() - timedelta(days=1000)
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "facts.sqlite3", listings=(CompanyListing("600001", listed),))
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "facts.sqlite3",
+        facts_path=(tmp_path / "facts.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "facts.sqlite3").parent / "text"),
+        listings=(CompanyListing("600001", listed),),
+    )
     index.initialize()
     old = _old_document(index, "本公司收到证监会立案告知书〔2025〕调查1号，仍在调查中。")
     _coverage(index, _AT.date() - timedelta(days=365))
     index.publish(("600001",), _AT)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     first = reader.read(("600001",))[0]
     assert len(first.risk_events) == 1 and first.risk_events[0].risk_level == 4
     assert first.risk_events[0].first_disclosed_at == old
@@ -64,11 +70,16 @@ def test_first_publication_retains_old_active_case_and_exposes_unverified_initia
 )
 def test_old_pending_or_ambiguous_document_survives_pruning_and_blocks_complete_coverage(tmp_path, body):
     listed = _AT.date() - timedelta(days=1000)
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "facts.sqlite3", listings=(CompanyListing("600001", listed),))
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "facts.sqlite3",
+        facts_path=(tmp_path / "facts.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "facts.sqlite3").parent / "text"),
+        listings=(CompanyListing("600001", listed),),
+    )
     index.initialize()
     _old_document(index, body)
     _coverage(index, listed)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     for minute in (0, 1):
         index.publish(("600001",), _AT + timedelta(minutes=minute))
         facts = reader.read(("600001",))[0]
@@ -80,11 +91,16 @@ def test_old_pending_or_ambiguous_document_survives_pruning_and_blocks_complete_
 @pytest.mark.parametrize("known_listing", (False, True))
 def test_missing_listing_is_unknown_while_coverage_since_recent_listing_is_provable(tmp_path, known_listing):
     listings = (CompanyListing("600001", _AT.date() - timedelta(days=30)),) if known_listing else ()
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "facts.sqlite3", listings=listings)
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "facts.sqlite3",
+        facts_path=(tmp_path / "facts.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "facts.sqlite3").parent / "text"),
+        listings=listings,
+    )
     index.initialize()
     _coverage(index, _AT.date() - timedelta(days=365))
     index.publish(("600001",), _AT)
-    facts = SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0]
+    facts = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
     assert (facts.announcement_state is CompanyDataState.COMPLETE) is known_listing
     assert (
         any(item.reason_code == "initial_risk_state_unverified" for item in facts.review_reasons) is not known_listing
@@ -92,32 +108,41 @@ def test_missing_listing_is_unknown_while_coverage_since_recent_listing_is_prova
 
 
 def test_old_extraction_identity_cannot_be_silently_loaded_under_new_rules(tmp_path):
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "facts.sqlite3")
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "facts.sqlite3",
+        facts_path=(tmp_path / "facts.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "facts.sqlite3").parent / "text"),
+    )
     index.initialize()
     index.publish(("600001",), _AT)
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE publication SET extraction_identity='official_company_events:previous-rules'")
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE company_publication SET extraction_hash=?", (b"0" * 32,))
     with pytest.raises(ValueError, match="company_publication_identity_mismatch"):
-        SQLiteCompanyEvidenceReader(index.path).read(("600001",))
+        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))
 
 
 def test_extraction_upgrade_rebuilds_case_status_and_does_not_stamp_unprocessed_rows(tmp_path):
     listed = _AT.date() - timedelta(days=1000)
-    index = SQLiteCompanyEvidenceIndex(tmp_path / "facts.sqlite3", listings=(CompanyListing("600001", listed),))
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "facts.sqlite3",
+        facts_path=(tmp_path / "facts.sqlite3").parent / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles((tmp_path / "facts.sqlite3").parent / "text"),
+        listings=(CompanyListing("600001", listed),),
+    )
     index.initialize()
     _old_document(index, "本公司收到证监会立案告知书〔2025〕调查1号，仍在调查中。")
     _coverage(index, listed)
     index.publish(("600001", "600002"), _AT)
     # Simulate a previous extractor having wrongly closed the still-active case.
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run(
-            "UPDATE published SET risk_events_json=json_set(risk_events_json,'$[0].status','resolved',"
-            "'$[0].resolved_at',?,'$[0].expires_at',?) WHERE code='600001'",
-            (_AT.isoformat(), _AT.isoformat()),
+            "UPDATE company_risk_event SET status=2,resolved_at=last_disclosed_at,expires_at=last_disclosed_at WHERE code='600001'",
         )
-        connection.run("UPDATE publication SET extraction_identity='official_company_events:previous-rules'")
+        connection.run("UPDATE company_publication SET extraction_hash=?", (b"0" * 32,))
+    index.prepare_publication(("600001", "600002"), _AT)
+    _old_document(index, "本公司收到证监会立案告知书〔2025〕调查1号，仍在调查中。")
     index.publish(("600001",), _AT + timedelta(minutes=1))
-    facts = SQLiteCompanyEvidenceReader(index.path).read(("600001", "600002"))
+    facts = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001", "600002"))
     assert tuple(item.code for item in facts) == ("600001", "600002")
     assert facts[1].published_at == _AT + timedelta(minutes=1)
     assert facts[0].risk_events[0].status.value == "active"

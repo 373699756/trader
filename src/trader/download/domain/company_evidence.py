@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.domain.prepared_reference import PreparedReference
 
 Market = Literal["sse", "szse", "bse"]
 Component = Literal["announcements", "financial", "pledge", "unlock", "news"]
@@ -100,6 +101,27 @@ class CompanyEvidenceRequest:
     stock_names: tuple[tuple[str, str], ...] = ()
     event_policy: CompanyEventPolicy = CompanyEventPolicy()
     listings: tuple[CompanyListing, ...] = ()
+
+    @classmethod
+    def from_reference(
+        cls,
+        reference: PreparedReference,
+        observed_at: datetime,
+        configuration: CompanySyncConfiguration,
+        event_policy: CompanyEventPolicy,
+        *,
+        news_codes: tuple[str, ...] = (),
+    ) -> CompanyEvidenceRequest:
+        population = reference.eligible_universe
+        return cls(
+            tuple(item.code for item in population),
+            observed_at,
+            configuration,
+            news_codes,
+            tuple((item.code, item.name) for item in population),
+            event_policy,
+            tuple(CompanyListing(item.code, item.listed_on) for item in population),
+        )
 
     def __post_init__(self) -> None:
         if self.observed_at.utcoffset() is None:

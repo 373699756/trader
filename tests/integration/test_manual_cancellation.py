@@ -11,6 +11,7 @@ from threading import Event
 
 import pytest
 
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.infra.process_lock import ProcessLock
 from trader.infra.signal_cancellation import ManualCancellation
@@ -85,7 +86,12 @@ def _child_main():
     root = Path(directory)
     with ManualCancellation(timeout_seconds=0.8 if scenario == "deadline" else 30) as cancelled:
         with ProcessLock(root / "evidence.lock"):
-            index = SQLiteCompanyEvidenceIndex(root / "evidence.sqlite3", cancel_requested=cancelled.is_set)
+            index = SQLiteCompanyEvidenceIndex(
+                root / "evidence.sqlite3",
+                facts_path=(root / "evidence.sqlite3").parent / "company_facts.sqlite3",
+                documents=CompanyDocumentFiles((root / "evidence.sqlite3").parent / "text"),
+                cancel_requested=cancelled.is_set,
+            )
             index.initialize()
             with index._connect() as connection, SqliteTransaction(connection):
                 connection.run(

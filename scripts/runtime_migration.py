@@ -21,15 +21,9 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 from trader.recommendation.application.ports.decision_records import DecisionCheckpoint
-from trader.recommendation.domain.market.eligibility import (
-    IssuerEligibilityFact,
-    IssuerEligibilityFactHash,
-    IssuerEligibilityReason,
-)
 from trader.recommendation.infra.persistence import data_plane_sqlite
 from trader.recommendation.infra.persistence.decision_record_codec import CommittedRecordFromBytes
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.training.infra.research.trace_codec import DEFAULT_DECODED_PAYLOAD_BYTES, DecodedPayloadBytes
 from trader.training.infra.research.trace_storage import InitializeDatabase
 
@@ -198,60 +192,6 @@ def _verified_payload(root: Path, row: sqlite3.Row) -> bytes:
     return payload
 
 
-def ImportEligibility(reference: Path, legacy: Path, target: Path) -> None:
-    manifest_path = reference / "active-manifest.json"
-    manifest: dict[str, object] | None = None
-    databases: tuple[Path, ...] = ()
-    if manifest_path.exists():
-        raw = json.loads(manifest_path.read_text())
-        if not isinstance(raw, dict) or raw.get("schema_version") != "issuer_eligibility_snapshot":
-            raise ValueError("migration_eligibility_manifest_invalid")
-        manifest = raw
-        snapshot = str(raw["snapshot_id"])
-        if Path(snapshot).name != snapshot or snapshot in (".", ".."):
-            raise ValueError("migration_eligibility_snapshot_invalid")
-        databases = tuple(sorted((reference / "snapshots" / snapshot).glob("*.sqlite3")))
-        if not databases and raw.get("fact_count") != 0:
-            raise ValueError("migration_eligibility_snapshot_missing")
-    if legacy.is_file():
-        databases += (legacy,)
-    facts: dict[tuple[str, IssuerEligibilityReason, str], IssuerEligibilityFact] = {}
-    for database in databases:
-        ValidateDatabase(database)
-        with SqliteSession(database, _READ) as connection:
-            for row in connection.run(
-                "SELECT code,reason,effective_at,evidence_id,source,evidence_hash,content_hash FROM issuer_eligibility_facts"
-            ):
-                fact = IssuerEligibilityFact(
-                    row[0], IssuerEligibilityReason(row[1]), datetime.fromisoformat(row[2]), row[3], row[4], row[5]
-                )
-                if IssuerEligibilityFactHash(fact) != row[6] or facts.setdefault(fact.identity, fact) != fact:
-                    raise ValueError("migration_eligibility_fact_conflict")
-    ordered = tuple(sorted(facts.values()))
-    digest = hashlib.sha256("\n".join(IssuerEligibilityFactHash(fact) for fact in ordered).encode("ascii")).hexdigest()
-    if manifest is not None and (manifest.get("fact_count"), manifest.get("manifest_hash")) != (len(ordered), digest):
-        raise ValueError("migration_eligibility_publication_conflict")
-    if not ordered and manifest is None:
-        return
-    index = SQLiteIssuerEligibilityIndex(target)
-    index.initialize()
-    index.record(ordered)
-    if index.facts() != ordered or index.status().manifest_hash != digest:
-        raise ValueError("migration_eligibility_verification_failed")
-    if manifest is not None:
-        with SqliteSession(target) as connection, SqliteTransaction(connection, immediate=True):
-            connection.run(
-                "UPDATE publication SET refresh_state=?,last_refresh_at=?,next_refresh_at=?,refresh_failure_count=?,last_source=? WHERE singleton=1",
-                (
-                    manifest.get("refresh_state", "not_ready"),
-                    manifest.get("last_refresh_at"),
-                    manifest.get("next_refresh_at"),
-                    manifest.get("refresh_failure_count", 0),
-                    manifest.get("last_source", "incremental"),
-                ),
-            )
-
-
 def ImportSt(source: Path, target: Path) -> None:
     if not source.is_file():
         return
@@ -316,7 +256,6 @@ __all__ = [
     "ValidateDatabase",
     "MergeDatabase",
     "ImportDecisions",
-    "ImportEligibility",
     "ImportSt",
     "ImportSequence",
     "ImportTraces",

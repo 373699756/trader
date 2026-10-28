@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
@@ -16,6 +16,7 @@ from uuid import uuid4
 from flask import Flask
 
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
+from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage
@@ -30,12 +31,13 @@ from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.entrypoints import company_evidence_progress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+from trader.download.infra import company_document_files, company_facts_reader
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadHistorySyncConfiguration
@@ -112,6 +114,7 @@ from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolic
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.market_data import market_feature_service
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
+from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
@@ -129,7 +132,6 @@ from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import InitializeReferenceDataPlane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 from trader.recommendation.infra.runtime import composition_inputs
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem, RuntimeWorkerResources
@@ -197,15 +199,14 @@ def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False
 ) -> SyncResult:
     settings = LoadRuntimeSettings(config_path)
+    paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
     progress = company_evidence_progress.CompanyEvidenceProgress()
     history_progress = StderrHistorySyncProgress()
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
     return SyncData(
-        prepare=lambda: _prepare_reference(
-            settings.data_paths.reference, clock.now(), progress, cancel_requested=cancel_requested
-        ),
+        prepare=lambda: _prepare_reference(paths.reference, clock.now(), progress, cancel_requested=cancel_requested),
         history=lambda reference: ExecuteHistoryDownload(
             configuration,
             reference=reference,
@@ -213,27 +214,21 @@ def ExecuteSync(
             cancel_requested=cancel_requested,
             storage_overrides=settings.storage_overrides,
         ),
-        market=lambda reference: ExecuteQfqDownload(
-            settings.data_paths, reference=reference, cancel_requested=cancel_requested
-        ),
+        market=lambda reference: ExecuteQfqDownload(paths, reference=reference, cancel_requested=cancel_requested),
         company=lambda reference: _sync_company_evidence(
-            settings.data_paths.company,
+            settings.data_paths,
             progress,
-            company_evidence.CompanyEvidenceRequest(
-                tuple(item.code for item in reference.eligible_universe),
+            company_evidence.CompanyEvidenceRequest.from_reference(
+                reference,
                 clock.now(),
+                company_configuration,
+                LoadStrategySettings(settings.strategy_config_path).company_scoring.events,
                 news_codes=RecentPublishedNewsCodes(
                     tuple(
                         SQLiteDecisionRecords(settings.data_paths.recommendation(profile) / "decisions.sqlite3")
                         for profile in ("v2", "v3")
                     ),
                     clock.now(),
-                ),
-                configuration=company_configuration,
-                stock_names=tuple((item.code, item.name) for item in reference.eligible_universe),
-                event_policy=LoadStrategySettings(settings.strategy_config_path).company_scoring.events,
-                listings=tuple(
-                    company_evidence.CompanyListing(item.code, item.listed_on) for item in reference.eligible_universe
                 ),
             ),
             cancel_requested=cancel_requested,
@@ -242,15 +237,19 @@ def ExecuteSync(
     ).execute(target)
 
 
+def CreateCompanyEligibilityReader(path: Path) -> CompanyEligibility:
+    return CompanyEligibility(PublishCompanyExclusions(SQLiteCompanyFactsIndex(path)), read_only=True)
+
+
 def _sync_company_evidence(
-    database_path: Path,
+    paths: DataPaths,
     progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
     request: company_evidence.CompanyEvidenceRequest,
     *,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> company_evidence.CompanyEvidenceSyncResult:
     with ExitStack() as resources:
-        resources.enter_context(ProcessLock(database_path.parent / "evidence.lock", label="sync company"))
+        resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
         heartbeat = resources.enter_context(ProgressHeartbeat(progress))
         configuration = request.configuration
         source_factory = partial(
@@ -279,7 +278,11 @@ def _sync_company_evidence(
         resources.callback(workers.stop, wait=True, cancel_futures=True)
         dependencies = CompanyEvidenceDependencies(
             SQLiteCompanyEvidenceIndex(
-                database_path,
+                paths.company_collection,
+                facts_path=paths.company,
+                documents=company_document_files.CompanyDocumentFiles(
+                    paths.company_documents, max_text_characters=configuration.document_limits.max_text_characters
+                ),
                 cancel_requested=cancel_requested,
                 event_policy=request.event_policy,
                 listings=request.listings,
@@ -294,13 +297,7 @@ def _sync_company_evidence(
             document_sources=documents,
             document_executor=workers,
         )
-        return SyncCompanyEvidence(
-            dependencies,
-            request.codes,
-            request.observed_at,
-            configuration=configuration,
-            news_codes=request.news_codes,
-        )
+        return SyncCompanyEvidence(dependencies, request)
 
 
 def _prepare_reference(
@@ -1034,18 +1031,22 @@ def _build_market_data(
             schema_version="market_snapshot",
             wall_clock=now,
         )
-        eligibility_index = SQLiteIssuerEligibilityIndex(paths.eligibility, read_only=not context.owns_shared_runtime)
+        eligibility_index = CompanyEligibility(
+            PublishCompanyExclusions(
+                SQLiteCompanyFactsIndex(paths.company, event_policy=strategy.company_scoring.events)
+            ),
+            read_only=not context.owns_shared_runtime,
+        )
         if context.owns_shared_runtime:
-            try:
+            with suppress(RuntimeError):
                 eligibility_index.record_manual_blacklist(
                     strategy.hard_filters.blacklist_codes, now(), context.effective_config_version
                 )
-            except RuntimeError:
-                # The typed index retains any facts it could verify; persistence degradation stays observable.
-                pass
         eligibility: IssuerEligibilityPort = eligibility_index
         research = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(paths.company, event_policy=strategy.company_scoring.events),
+            company_facts_reader.SQLiteCompanyEvidenceReader(
+                paths.company, raw_path=paths.company_collection, event_policy=strategy.company_scoring.events
+            ),
             wall_clock=now,
             open_dates=calendar.open_dates,
             monotonic=time.monotonic,
