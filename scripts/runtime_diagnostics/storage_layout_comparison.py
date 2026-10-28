@@ -15,13 +15,14 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 
@@ -379,7 +380,7 @@ def _sqlite_adapter_cases(
         split = BuildTrainingDateSplit(split_days, parent_manifest_hash="a" * 64)
     else:
         # Only the isolated historical checkout owns this retired API.
-        from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
+        from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit  # type: ignore[attr-defined]  # Historical checkout only.
 
         split = BuildBaostockTrainingSplit(split_days, parent_manifest_hash="a" * 64)
     samples = tuple(
@@ -387,20 +388,25 @@ def _sqlite_adapter_cases(
         for code in codes
         for day in split.model_fit_dates[:20]
     )
+    from trader.training.infra.sample_index import TrainingIndustryData
+
     sample_path = root / "samples.sqlite3"
+    named = (checkout / "src/trader/training/infra/sample_schema.py").is_file()
+    features = TOMORROW_HEAD_CONTRACT.feature_manifest.names if named else 6
 
     def build_samples() -> None:
-        with SQLiteTrainingSampleIndex(sample_path, 6) as index:
+        with SQLiteTrainingSampleIndex(sample_path, features) as index:  # type: ignore[arg-type]  # Historical checkout only.
             index.add_final(samples)
             index.prepare_for_model_fitting(split)
 
     def read_samples() -> None:
-        with SQLiteTrainingSampleIndex(sample_path, 6, prepared_split_hash=split.content_hash) as index:
+        with SQLiteTrainingSampleIndex(sample_path, features, prepared_split_hash=split.content_hash) as index:  # type: ignore[arg-type]
             counts = index.industry_counts(TOMORROW_HEAD_CONTRACT)
             assert len(counts) == 1
-            matrix = index.industry_data(counts[0], TOMORROW_HEAD_CONTRACT)
-            assert matrix.training.features.shape == (size * 20, 6)
-            assert abs(float(matrix.training.labels.sum()) - size * 20 * 0.02) < 1e-6
+            data = index.industry_data(counts[0], TOMORROW_HEAD_CONTRACT)
+            with data if named else nullcontext(cast(TrainingIndustryData, data)) as matrix:
+                assert matrix.training.features.shape == (size * 20, 6)
+                assert abs(float(matrix.training.labels.sum()) - size * 20 * 0.02) < 1e-6
 
     measure("training_sample_write", build_samples)
     measure("training_sample_read", read_samples)
@@ -501,7 +507,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
         root = Path(scratch)
         history = root / "history"
         if layout == "monthly":
-            config = HistorySyncConfiguration(
+            config = HistorySyncConfiguration(  # type: ignore[call-arg]  # Historical checkout only.
                 history,
                 reference_root=root / "reference",
                 training_root=root / "models",

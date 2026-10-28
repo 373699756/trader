@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -62,6 +63,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent-history-window": ("tencent_history_window",),
     "v5-training": ("v5_training",),
     "v5-samples": ("v5_samples",),
+    "training-samples": ("training_samples",),
     "v5-lite": ("v5_lite",),
     "training-alignment": ("training_alignment",),
     "training-coverage": ("training_coverage",),
@@ -436,10 +438,11 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         "download-performance",
         "database-baseline",
         "training-performance",
+        "training-samples",
     }:
         raise ValueError(
             "--baseline-checkout is only available for history-write, download-performance, database-baseline "
-            "or training-performance"
+            "or training-performance/training-samples"
         )
     if args.cpu_profile_dir is not None:
         if args.profile not in {"market-factor-compare", "performance"}:
@@ -452,7 +455,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--v5-kernel-probe requires --profile v5-training")
     if args.profile == "v5-training" and not args.v5_kernel_probe and args.v5_probe_directory is None:
         raise ValueError("v5-training requires --v5-probe-directory")
-    if args.profile in {"v5-samples", "v5-lite"} and args.training_probe_directory is None:
+    if args.profile == "training-samples" and args.baseline_checkout is None:
+        raise ValueError("training-samples requires --baseline-checkout")
+    if args.profile in {"v5-samples", "v5-lite", "training-samples"} and args.training_probe_directory is None:
         raise ValueError(f"{args.profile} requires --training-probe-directory")
     if args.wide_sample_source is not None and args.profile != "v5-samples":
         raise ValueError("--wide-sample-source requires --profile v5-samples")
@@ -577,6 +582,7 @@ def build_commands(
         "storage",
         "v5-samples",
         "v5-lite",
+        "training-samples",
         "local",
         "research",
         "performance",
@@ -600,6 +606,13 @@ def build_commands(
         return BuildTrainingBenchmarkCommands(options, python_executable)
     cli = (python_executable, "-m", "trader.entrypoints.cli", "--config", str(options.runtime_config))
     commands: dict[str, DiagnosticCommand] = {
+        "training_samples": DiagnosticCommand(
+            "training_samples",
+            (python_executable, "-m", "scripts.runtime_diagnostics.training_samples",
+             "--work-root", str(options.training_probe_directory), "--baseline-checkout", str(options.baseline_checkout),
+             "--config", str(options.runtime_config)),
+            common_timeout,
+        ),
         "v5_lite": DiagnosticCommand(
             "v5_lite",
             (
@@ -1170,6 +1183,8 @@ def execute_command(command: DiagnosticCommand) -> DiagnosticResult:
             if command.name in {"history_write_benchmark", "database_baseline"}:
                 argv += ("--storage-kind", location.storage_kind)
             completed = RunDatabaseProbe(argv, timeout=command.timeout_seconds, environment=environment)
+        elif command.name == "training_samples":
+            completed = RunDatabaseProbe(argv, timeout=command.timeout_seconds, environment=dict(os.environ))
         else:
             completed = subprocess.run(
                 argv,
@@ -1864,6 +1879,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tencent_history_window": _security_master_details,
     "v5_training": _security_master_details,
     "training_alignment": _security_master_details,
+    "training_samples": _history_sqlite_performance_details,
     "training_coverage": _security_master_details,
     "model_inputs": _security_master_details,
     "qfq_sqlite_audit": _security_master_details,

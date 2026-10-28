@@ -1,4 +1,4 @@
-"""Read-only coverage audit, including caches produced before persisted sample statistics."""
+"""Read-only coverage audit of the current named sample format."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from trader.infra.settings import LoadRuntimeSettings
+from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
@@ -20,55 +21,36 @@ def _audit(path: Path) -> dict[str, object]:
     with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=10, cache_kib=8192)) as connection:
         connection.run("PRAGMA query_only=ON")
         connection.run("PRAGMA cache_size=-8192")
-        tables = {str(row[0]) for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
-        if {"sample_statistics", "sample_day_diagnostics"}.issubset(tables):
-            return _audit_statistics(connection)
-        days = connection.run("SELECT trade_date,split_name FROM sample_split_dates ORDER BY trade_date").fetchall()
-        missing: list[dict[str, object]] = []
-        for day, partition in days:
-            present = connection.run(
-                "SELECT target_t1,target_d25_aggregate FROM samples WHERE trade_date=? LIMIT 1", (day,)
-            ).fetchone()
-            if present is not None and all(value is not None for value in present):
-                continue
-            counts = connection.run(
-                "SELECT COUNT(*),COUNT(target_t1),COUNT(target_d25_aggregate) FROM samples WHERE trade_date=?",
-                (day,),
-            ).require_one()
-            if counts[1] == 0 or counts[2] == 0:
-                missing.append(
-                    {
-                        "date": day,
-                        "partition": partition,
-                        "sample_rows": counts[0],
-                        "t1_rows": counts[1],
-                        "d25_rows": counts[2],
-                    }
-                )
-        return {"expected_dates": len(days), "missing": missing}
+        _require_sample_format(connection)
+        return _audit_statistics(connection)
+
+
+def _require_sample_format(connection: SqliteConnection) -> None:
+    if connection.run("PRAGMA user_version").require_one()[0] != 2:
+        raise ValueError("training_sample_format_requires_rebuild")
 
 
 def _audit_statistics(connection: SqliteConnection) -> dict[str, object]:
     rows = connection.run(
         "SELECT d.trade_date,d.split_name,"
-        "COALESCE(SUM(CASE WHEN s.target='rows' THEN s.rows END),0),"
-        "COALESCE(SUM(CASE WHEN s.target='target_t1' THEN s.rows END),0),"
-        "COALESCE(SUM(CASE WHEN s.target='target_d25_aggregate' THEN s.rows END),0) "
+        "COALESCE(SUM(CASE WHEN s.target='rows' THEN s.sample_count END),0),"
+        "COALESCE(SUM(CASE WHEN s.target='target_t1' THEN s.sample_count END),0),"
+        "COALESCE(SUM(CASE WHEN s.target='target_d25_aggregate' THEN s.sample_count END),0) "
         "FROM sample_split_dates d LEFT JOIN sample_statistics s ON s.trade_date=d.trade_date "
         "GROUP BY d.trade_date ORDER BY d.trade_date"
     ).fetchall()
     missing = [
-        {"date": day, "partition": partition, "sample_rows": samples, "t1_rows": t1, "d25_rows": d25}
+        {"date": DecodeDate(day).isoformat(), "partition": partition, "sample_rows": samples, "t1_rows": t1, "d25_rows": d25}
         for day, partition, samples, t1, d25 in rows
         if not t1 or not d25
     ]
     projected = []
     for partition, expected, diagnosed, t1_dates, d25_dates, t1_rows, d25_rows in connection.run(
         "SELECT d.split_name,COUNT(*),COUNT(g.trade_date),"
-        "SUM(CASE WHEN g.candidates>g.missing_t1 THEN 1 ELSE 0 END),"
-        "SUM(CASE WHEN g.candidates>g.missing_t2+g.missing_t3+g.missing_t4+g.missing_t5 THEN 1 ELSE 0 END),"
-        "SUM(MAX(0,COALESCE(g.candidates-g.missing_t1,0))),"
-        "SUM(MAX(0,COALESCE(g.candidates-g.missing_t2-g.missing_t3-g.missing_t4-g.missing_t5,0))) "
+        "SUM(CASE WHEN g.candidate_count>g.missing_t1 THEN 1 ELSE 0 END),"
+        "SUM(CASE WHEN g.candidate_count>g.missing_t2+g.missing_t3+g.missing_t4+g.missing_t5 THEN 1 ELSE 0 END),"
+        "SUM(MAX(0,COALESCE(g.candidate_count-g.missing_t1,0))),"
+        "SUM(MAX(0,COALESCE(g.candidate_count-g.missing_t2-g.missing_t3-g.missing_t4-g.missing_t5,0))) "
         "FROM sample_split_dates d LEFT JOIN sample_day_diagnostics g ON g.trade_date=d.trade_date "
         "GROUP BY d.split_name ORDER BY MIN(d.trade_date)"
     ):
@@ -93,22 +75,23 @@ def _audit_statistics(connection: SqliteConnection) -> dict[str, object]:
 
 
 def _trace_labels(history: Path, path: Path, signal: date) -> dict[str, object]:
-    archive = SQLiteHistoryTrainingInputSnapshot.open(history)
-    calendar = archive.snapshot.calendar.open_dates
+    source = SQLiteHistoryTrainingInputSnapshot.open(history)
+    calendar = source.snapshot.calendar.open_dates
     position = calendar.index(signal)
     future = calendar[position + 1 : position + 6]
     if len(future) != 5:
         raise ValueError("training_label_probe_requires_mature_signal")
     with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=10, cache_kib=8192)) as connection:
+        _require_sample_format(connection)
         codes = frozenset(
             str(row[0])
             for row in connection.run(
-                "SELECT code FROM samples WHERE trade_date=? AND target_t1 IS NOT NULL", (signal.isoformat(),)
+                "SELECT code FROM samples WHERE trade_date=? AND target_t1 IS NOT NULL", (EncodeDate(signal),)
             )
         )
     if not codes:
         raise ValueError("training_label_probe_requires_observed_t1_population")
-    records = tuple(row for row in archive.iter_training_rows(frozenset(future)) if row.code in codes)
+    records = tuple(row for row in source.iter_training_rows(frozenset(future)) if row.code in codes)
     horizons = []
     for horizon, day in enumerate(future, 1):
         rows = tuple(row for row in records if row.trade_date == day)

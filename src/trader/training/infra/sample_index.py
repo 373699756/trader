@@ -3,37 +3,35 @@
 from __future__ import annotations
 
 import math
+import mmap
 from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date
 from itertools import groupby
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal, cast
 
 import numpy as np
 
+from trader.infra.sqlite_codec import DecodeDate, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
+    SqliteConnection,
     SqliteConnectionOptions,
-    SqliteSchema,
     SqliteTransaction,
 )
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_sequences import SampleSequenceLayout, SampleSequenceReader, SampleSequenceWriter
+from trader.training.infra.sample_schema import SAMPLE_TARGET_COLUMNS, SampleFeatureHash, TrainingSampleSchema
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation", "holdout"]
 TRAINING_SAMPLE_CACHE_MIB = 32
 TRAINING_SAMPLE_MMAP_BYTES = 0
-_TARGET_COLUMNS = (
-    "target_t1",
-    "target_t2",
-    "target_t3",
-    "target_t4",
-    "target_t5",
-    "target_d25_aggregate",
-)
+TRAINING_MATRIX_BYTES = 256 * 1024**2
 
 
 @dataclass(frozen=True)
@@ -113,24 +111,20 @@ class SQLiteTrainingSampleIndex:
     def __init__(
         self,
         path: Path,
-        feature_count: int,
+        feature_names: tuple[str, ...],
         *,
         prepared_split_hash: str | None = None,
         sequence_layout: SampleSequenceLayout | None = None,
     ) -> None:
-        if feature_count < 1:
-            raise ValueError("training sample feature count is invalid")
+        self._feature_hash = SampleFeatureHash(feature_names, sequence_layout)
         self._path = path
-        self._feature_count = feature_count
+        self._feature_names = feature_names
+        self._feature_count = len(feature_names)
         self._sequence_layout = sequence_layout
-        if (
-            sequence_layout
-            and feature_count != sequence_layout.auxiliary + sequence_layout.steps * sequence_layout.channels
-        ):
-            raise ValueError("training sequence feature count is invalid")
-        self._column_features = sequence_layout.auxiliary if sequence_layout else feature_count
+        self._column_features = sequence_layout.auxiliary if sequence_layout else len(feature_names)
         self._prepared_split_hash = prepared_split_hash
         self._counts_by_target: dict[str, tuple[TrainingIndustryCounts, ...]] = {}
+        self._date_values: dict[int, date] = {}
         self._connection = OpenSqliteConnection(
             path,
             SqliteConnectionOptions(
@@ -151,56 +145,36 @@ class SQLiteTrainingSampleIndex:
             raise
 
     def _initialize(self) -> None:
-        if self._prepared_split_hash is not None:
-            return
-        feature_columns = ", ".join(f"f{position} REAL NOT NULL" for position in range(self._column_features))
-        if self._sequence_layout:
-            feature_columns += ", sequence_start INTEGER NOT NULL CHECK(sequence_start>=0)"
-        schema_sql = f"""
-            CREATE TABLE samples (
-                trade_date TEXT NOT NULL,
-                code TEXT NOT NULL,
-                board TEXT NOT NULL,
-                industry TEXT NOT NULL,
-                average_amount_20d REAL NOT NULL,
-                {feature_columns},
-                target_t1 REAL,
-                target_t2 REAL,
-                target_t3 REAL,
-                target_t4 REAL,
-                target_t5 REAL,
-                target_d25_aggregate REAL,
-                PRIMARY KEY (trade_date, code)
-            ) WITHOUT ROWID;
-            CREATE TABLE sample_split_dates (
-                trade_date TEXT PRIMARY KEY,
-                split_name TEXT NOT NULL CHECK (
-                    split_name IN ('training', 'early_stopping', 'calibration', 'validation', 'holdout')
-                )
-            ) WITHOUT ROWID;
-            CREATE TABLE sample_statistics (
-                trade_date TEXT NOT NULL, industry TEXT NOT NULL, target TEXT NOT NULL,
-                rows INTEGER NOT NULL, total REAL NOT NULL, squares REAL NOT NULL,
-                PRIMARY KEY (trade_date, industry, target)
-            ) WITHOUT ROWID;
-            CREATE TABLE sample_day_diagnostics (
-                trade_date TEXT PRIMARY KEY, candidates INTEGER NOT NULL,
-                missing_t1 INTEGER NOT NULL, missing_t2 INTEGER NOT NULL,
-                missing_t3 INTEGER NOT NULL, missing_t4 INTEGER NOT NULL, missing_t5 INTEGER NOT NULL
-            ) WITHOUT ROWID;
-            """
-        if self._sequence_layout:
-            schema_sql += """
-                CREATE TABLE sample_sequence_blocks (
-                    code TEXT NOT NULL, block INTEGER NOT NULL, payload BLOB NOT NULL,
-                    PRIMARY KEY(code,block)
-                );
-                """
-        schema = SqliteSchema(
-            None, tuple(statement.strip() for statement in schema_sql.split(";") if statement.strip())
+        EnsureSqliteSchema(
+            self._connection,
+            TrainingSampleSchema(self._feature_names, self._sequence_layout),
+            allow_create=self._prepared_split_hash is None,
+            initialize=self._initialize_contract,
+            validate=self._validate_contract,
         )
-        EnsureSqliteSchema(self._connection, schema, allow_create=True)
-        self._transaction.begin()
+        if self._prepared_split_hash is None:
+            self._transaction.begin()
+
+    def _initialize_contract(self, connection: SqliteConnection) -> None:
+        connection.run("INSERT INTO sample_contract VALUES(1,2,?,NULL)", (self._feature_hash,))
+
+    def _validate_contract(self, connection: SqliteConnection) -> None:
+        row = connection.run("SELECT schema_version,feature_hash,split_hash FROM sample_contract WHERE singleton=1").require_one()
+        if row[0] != 2 or row[1] != self._feature_hash:
+            raise ValueError("training_sample_feature_contract_mismatch")
+        expected = EncodeHash(self._prepared_split_hash) if self._prepared_split_hash is not None else None
+        if row[2] != expected:
+            raise ValueError("training_sample_split_contract_mismatch")
+
+    def _feature_columns(self, contract: TrainedHeadContract) -> tuple[str, ...]:
+        if not contract.feature_positions or any(
+            position < 0 or position >= self._feature_count for position in contract.feature_positions
+        ):
+            raise ValueError("training_sample_feature_contract_mismatch")
+        names = tuple(self._feature_names[position] for position in contract.feature_positions)
+        if names != contract.feature_manifest.names:
+            raise ValueError("training_sample_feature_contract_mismatch")
+        return names
 
     def close(self) -> None:
         try:
@@ -218,7 +192,7 @@ class SQLiteTrainingSampleIndex:
         self._counts_by_target.clear()
         values = tuple(samples)
         column_width = self._column_features + int(self._sequence_layout is not None)
-        placeholders = ", ".join("?" for _ in range(5 + column_width + len(_TARGET_COLUMNS)))
+        placeholders = ", ".join("?" for _ in range(5 + column_width + len(SAMPLE_TARGET_COLUMNS)))
         self._connection.run_many(
             f"INSERT INTO samples VALUES ({placeholders})",  # noqa: S608
             (self._encode(sample) for sample in values),
@@ -228,12 +202,12 @@ class SQLiteTrainingSampleIndex:
             key=lambda item: (item.trade_date, item.industry),
         ):
             population = tuple(group)
-            statistics = [(day.isoformat(), industry, "rows", len(population), 0.0, 0.0)]
-            for position, target in enumerate(_TARGET_COLUMNS):
+            statistics = [(EncodeDate(day), industry, "rows", len(population), 0.0, 0.0)]
+            for position, target in enumerate(SAMPLE_TARGET_COLUMNS):
                 labels = tuple(item.targets[position] for item in population if item.targets[position] is not None)
                 statistics.append(
                     (
-                        day.isoformat(),
+                        EncodeDate(day),
                         industry,
                         target,
                         len(labels),
@@ -244,7 +218,8 @@ class SQLiteTrainingSampleIndex:
             self._connection.run_many(
                 "INSERT INTO sample_statistics VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(trade_date,industry,target) DO UPDATE SET "
-                "rows=rows+excluded.rows,total=total+excluded.total,squares=squares+excluded.squares",
+                "sample_count=sample_count+excluded.sample_count,target_sum=target_sum+excluded.target_sum,"
+                "target_sum_squares=target_sum_squares+excluded.target_sum_squares",
                 statistics,
             )
 
@@ -252,7 +227,7 @@ class SQLiteTrainingSampleIndex:
         if len(missing) != 5:
             raise ValueError("sample diagnostics require five horizons")
         self._connection.run(
-            "INSERT INTO sample_day_diagnostics VALUES (?, ?, ?, ?, ?, ?, ?)", (day.isoformat(), candidates, *missing)
+            "INSERT INTO sample_day_diagnostics VALUES (?, ?, ?, ?, ?, ?, ?)", (EncodeDate(day), candidates, *missing)
         )
 
     def prepare_for_model_fitting(self, split: TrainingDateSplit) -> None:
@@ -260,16 +235,17 @@ class SQLiteTrainingSampleIndex:
             raise RuntimeError("training sample split is already prepared")
         self._counts_by_target.clear()
         split_dates = (
-            *((day.isoformat(), "training") for day in split.model_fit_dates),
-            *((day.isoformat(), "early_stopping") for day in split.early_stopping_dates),
-            *((day.isoformat(), "calibration") for day in split.calibration_dates),
-            *((day.isoformat(), "validation") for day in split.confirmation_dates),
-            *((day.isoformat(), "holdout") for day in split.daily_proxy_holdout_dates),
+            *((EncodeDate(day), "training") for day in split.model_fit_dates),
+            *((EncodeDate(day), "early_stopping") for day in split.early_stopping_dates),
+            *((EncodeDate(day), "calibration") for day in split.calibration_dates),
+            *((EncodeDate(day), "validation") for day in split.confirmation_dates),
+            *((EncodeDate(day), "holdout") for day in split.daily_proxy_holdout_dates),
         )
         self._connection.run_many("INSERT INTO sample_split_dates VALUES (?, ?)", split_dates)
         if self._sequence_writer is not None:
             self._sequence_writer.finish()
         self._connection.run("CREATE INDEX samples_industry_date ON samples(industry, trade_date, code)")
+        self._connection.run("UPDATE sample_contract SET split_hash=? WHERE singleton=1", (EncodeHash(split.content_hash),))
         self._transaction.commit()
         self._prepared_split_hash = split.content_hash
 
@@ -316,10 +292,11 @@ class SQLiteTrainingSampleIndex:
         if split_name == "holdout":
             raise ValueError("training_holdout_is_sealed")
         target = _require_target_column(contract.target_column)
+        self._feature_columns(contract)
         if self._sequence_layout is not None:
-            columns = ",".join(f"s.f{i}" for i in range(self._column_features)) + ",s.sequence_start"
+            columns = ",".join(f's."{name}"' for name in self._feature_names[:self._column_features]) + ",s.sequence_start"
         else:
-            columns = ",".join(f"s.f{i}" for i in contract.feature_positions)
+            columns = ",".join(f's."{name}"' for name in self._feature_columns(contract))
         selected = "AND s.industry=? " if industry is not None else ""
         rows = self._connection.run(
             f"SELECT s.trade_date,s.code,s.industry,{columns},s.{target} FROM samples s "
@@ -338,31 +315,40 @@ class SQLiteTrainingSampleIndex:
         ):
             feature_selection = slice(positions[0], positions[-1] + 1)
         try:
-            while batch := rows.fetchmany(batch_size):
+            while batch := rows.fetch_values(batch_size):
                 codes = tuple(str(row[1]) for row in batch)
                 if decoder is None:
                     matrix = np.asarray([row[3:] for row in batch], dtype=np.float64)
                     features, labels = matrix[:, :-1], matrix[:, -1]
                 else:
-                    auxiliary = np.asarray([row[3 : 3 + self._column_features] for row in batch], dtype=np.float64)
-                    sequence = decoder.read(tuple((str(row[1]), int(row[-2])) for row in batch))
-                    features = np.concatenate((auxiliary, sequence), axis=1)[:, feature_selection]
+                    features = np.empty((len(batch), self._feature_count), dtype=np.float64)
+                    features[:, :self._column_features] = [row[3 : 3 + self._column_features] for row in batch]
+                    decoder.read(
+                        cast(tuple[tuple[str, int], ...], tuple((str(row[1]), row[-2]) for row in batch)),
+                        output=features[:, self._column_features:],
+                    )
+                    features = features[:, feature_selection]
                     labels = np.asarray([row[-1] for row in batch], dtype=np.float64)
                 yield TrainingSampleBatch(
                     features,
                     labels,
-                    tuple(date.fromisoformat(str(row[0])) for row in batch),
+                    self._decode_dates(cast(tuple[int, ...], tuple(row[0] for row in batch))),
                     codes,
                     tuple(str(row[2]) for row in batch),
                 )
         finally:
             rows.close()
 
+    def _decode_dates(self, values: tuple[int, ...]) -> tuple[date, ...]:
+        missing = set(values).difference(self._date_values)
+        self._date_values.update((value, DecodeDate(value)) for value in missing)
+        return tuple(self._date_values[value] for value in values)
+
     def _prepare_industry_counts(self) -> None:
         aggregates = ",".join(
-            f"SUM(CASE WHEN target='{target}' THEN rows ELSE 0 END),"
-            f"COUNT(DISTINCT CASE WHEN target='{target}' AND rows>0 THEN samples.trade_date END)"
-            for target in _TARGET_COLUMNS
+            f"SUM(CASE WHEN target='{target}' THEN sample_count ELSE 0 END),"
+            f"COUNT(DISTINCT CASE WHEN target='{target}' AND sample_count>0 THEN samples.trade_date END)"
+            for target in SAMPLE_TARGET_COLUMNS
         )
         rows = self._connection.run(
             f"SELECT samples.industry, splits.split_name, {aggregates} FROM sample_statistics samples "  # noqa: S608
@@ -370,10 +356,10 @@ class SQLiteTrainingSampleIndex:
             "GROUP BY samples.industry, splits.split_name ORDER BY samples.industry, splits.split_name"
         )
         grouped: dict[str, dict[str, dict[TrainingSplitName, tuple[int, int]]]] = {
-            target: {} for target in _TARGET_COLUMNS
+            target: {} for target in SAMPLE_TARGET_COLUMNS
         }
         for industry, split_name, *counts in rows:
-            for index, target in enumerate(_TARGET_COLUMNS):
+            for index, target in enumerate(SAMPLE_TARGET_COLUMNS):
                 count, dates = counts[index * 2 : index * 2 + 2]
                 if count:
                     grouped[target].setdefault(str(industry), {})[cast(TrainingSplitName, split_name)] = (
@@ -394,17 +380,31 @@ class SQLiteTrainingSampleIndex:
                 for industry, values in industries.items()
             )
 
+    @contextmanager
     def industry_data(
         self,
         counts: TrainingIndustryCounts,
         contract: TrainedHeadContract,
-    ) -> TrainingIndustryData:
+    ) -> Iterator[TrainingIndustryData]:
         width = len(contract.feature_positions)
-        matrices = {
-            "training": _empty_matrix(counts.training, width),
-            "early_stopping": _empty_matrix(counts.early_stopping, width),
-            "calibration": _empty_matrix(counts.calibration, width),
-        }
+        self._feature_columns(contract)
+        size = (counts.training + counts.early_stopping + counts.calibration) * (width + 1) * 8
+        with ExitStack() as resources:
+            directory = (
+                Path(resources.enter_context(TemporaryDirectory(prefix="sample-fit-", dir=self.workspace)))
+                if size > TRAINING_MATRIX_BYTES else None
+            )
+            matrices = {
+                name: _empty_matrix(count, width, name, directory, resources)
+                for name, count in (("training", counts.training), ("early_stopping", counts.early_stopping),
+                                    ("calibration", counts.calibration))
+            }
+            yield self._read_industry_data(counts, contract, matrices)
+
+    def _read_industry_data(
+        self, counts: TrainingIndustryCounts, contract: TrainedHeadContract,
+        matrices: dict[str, TrainingSampleMatrix],
+    ) -> TrainingIndustryData:
         positions: dict[TrainingSplitName, int] = {
             "training": 0,
             "early_stopping": 0,
@@ -430,7 +430,7 @@ class SQLiteTrainingSampleIndex:
                 counts.validation,
                 tuple(calibration_dates),
             )
-        feature_sql = ", ".join(f"samples.f{position}" for position in contract.feature_positions)
+        feature_sql = ", ".join(f'samples."{name}"' for name in self._feature_columns(contract))
         target = _require_target_column(contract.target_column)
         cursor = self._connection.run(
             f"SELECT splits.split_name, samples.trade_date, {feature_sql}, samples.{target} FROM samples "  # noqa: S608
@@ -440,21 +440,24 @@ class SQLiteTrainingSampleIndex:
             "ORDER BY samples.trade_date, samples.code",
             (counts.industry,),
         )
-        while rows := cursor.fetchmany(4_096):
-            for name, group in groupby(rows, key=lambda row: row[0]):
-                split_name = cast(TrainingSplitName, name)
-                split_rows = tuple(group)
-                position = positions[split_name]
-                end = position + len(split_rows)
-                matrix = matrices[split_name]
-                if end > len(matrix.labels):
-                    raise RuntimeError("training sample split count changed during its read")
-                values = np.asarray([row[2:] for row in split_rows], dtype=np.float64)
-                matrix.features[position:end] = values[:, :-1]
-                matrix.labels[position:end] = values[:, -1]
-                positions[split_name] = end
-                if split_name == "calibration":
-                    calibration_dates.extend(date.fromisoformat(str(row[1])) for row in split_rows)
+        try:
+            while rows := cursor.fetch_values(4_096):
+                for name, group in groupby(rows, key=lambda row: row[0]):
+                    split_name = cast(TrainingSplitName, name)
+                    split_rows = tuple(group)
+                    position = positions[split_name]
+                    end = position + len(split_rows)
+                    matrix = matrices[split_name]
+                    if end > len(matrix.labels):
+                        raise RuntimeError("training sample split count changed during its read")
+                    values = np.asarray([row[2:] for row in split_rows], dtype=np.float64)
+                    matrix.features[position:end] = values[:, :-1]
+                    matrix.labels[position:end] = values[:, -1]
+                    positions[split_name] = end
+                    if split_name == "calibration":
+                        calibration_dates.extend(self._decode_dates(cast(tuple[int, ...], tuple(row[1] for row in split_rows))))
+        finally:
+            cursor.close()
         expected = {
             "training": counts.training,
             "early_stopping": counts.early_stopping,
@@ -473,7 +476,7 @@ class SQLiteTrainingSampleIndex:
     def split_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:
         target = _require_target_column(contract.target_column)
         row = self._connection.run(
-            "SELECT COALESCE(SUM(samples.rows),0) FROM sample_statistics samples JOIN sample_split_dates AS splits "
+            "SELECT COALESCE(SUM(samples.sample_count),0) FROM sample_statistics samples JOIN sample_split_dates AS splits "
             "ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.target=?",
             (split_name, target),
         ).fetchone()
@@ -484,7 +487,7 @@ class SQLiteTrainingSampleIndex:
         row = self._connection.run(
             "SELECT COUNT(DISTINCT samples.trade_date) FROM sample_statistics samples "
             "JOIN sample_split_dates AS splits "
-            "ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.target=? AND samples.rows>0",
+            "ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.target=? AND samples.sample_count>0",
             (split_name, target),
         ).fetchone()
         return int(row[0]) if row is not None else 0
@@ -492,10 +495,10 @@ class SQLiteTrainingSampleIndex:
     def validation_target_metrics(self) -> tuple[TargetMetric, ...]:
         metrics: list[TargetMetric] = []
         rows = self._connection.run(
-            "SELECT target,COALESCE(SUM(rows),0),SUM(total),SUM(squares) FROM sample_statistics s "
+            "SELECT target,COALESCE(SUM(sample_count),0),SUM(target_sum),SUM(target_sum_squares) FROM sample_statistics s "
             "JOIN sample_split_dates d ON d.trade_date=s.trade_date WHERE d.split_name='validation' GROUP BY target"
         ).fetchall()
-        for target in _TARGET_COLUMNS:
+        for target in SAMPLE_TARGET_COLUMNS:
             row = next((tuple(value)[1:] for value in rows if value[0] == target), (0, 0.0, 0.0))
             count = int(row[0])
             mean = float(row[1]) / count if count else None
@@ -505,16 +508,16 @@ class SQLiteTrainingSampleIndex:
         return tuple(metrics)
 
     def count(self) -> int:
-        row = self._connection.run("SELECT COALESCE(SUM(rows),0) FROM sample_statistics WHERE target='rows'").fetchone()
+        row = self._connection.run("SELECT COALESCE(SUM(sample_count),0) FROM sample_statistics WHERE target='rows'").fetchone()
         return int(row[0]) if row is not None else 0
 
     def coverage(self, contract: TrainedHeadContract) -> tuple[SampleCoverage, ...]:
         result: list[SampleCoverage] = []
         for partition in ("training", "early_stopping", "calibration", "validation", "holdout"):
             rows = self._connection.run(
-                "SELECT d.trade_date,COALESCE(SUM(CASE WHEN s.target='rows' THEN s.rows END),0),"
-                "COALESCE(SUM(CASE WHEN s.target=? THEN s.rows END),0),"
-                "COALESCE(g.candidates,0),g.missing_t1,g.missing_t2,g.missing_t3,g.missing_t4,g.missing_t5 "
+                "SELECT d.trade_date,COALESCE(SUM(CASE WHEN s.target='rows' THEN s.sample_count END),0),"
+                "COALESCE(SUM(CASE WHEN s.target=? THEN s.sample_count END),0),"
+                "COALESCE(g.candidate_count,0),g.missing_t1,g.missing_t2,g.missing_t3,g.missing_t4,g.missing_t5 "
                 "FROM sample_split_dates d LEFT JOIN sample_statistics s ON s.trade_date=d.trade_date "
                 "LEFT JOIN sample_day_diagnostics g ON g.trade_date=d.trade_date "
                 "WHERE d.split_name=? GROUP BY d.trade_date ORDER BY d.trade_date",
@@ -522,7 +525,7 @@ class SQLiteTrainingSampleIndex:
             ).fetchall()
             gaps = tuple(
                 SampleDateGap(
-                    date.fromisoformat(str(row[0])),
+                    DecodeDate(row[0]),
                     int(row[1]),
                     int(row[3]),
                     tuple(int(value or 0) for value in row[4:]),
@@ -559,7 +562,7 @@ class SQLiteTrainingSampleIndex:
             start = self._sequence_writer.append(sample.code, sample.features[self._column_features :])
             encoded_features = (*sample.features[: self._column_features], start)
         return (
-            sample.trade_date.isoformat(),
+            EncodeDate(sample.trade_date),
             sample.code,
             sample.board,
             sample.industry,
@@ -570,13 +573,25 @@ class SQLiteTrainingSampleIndex:
 
 
 def _require_target_column(value: str) -> str:
-    if value not in _TARGET_COLUMNS:
+    if value not in SAMPLE_TARGET_COLUMNS:
         raise ValueError("training target column is invalid")
     return value
 
 
-def _empty_matrix(row_count: int, width: int) -> TrainingSampleMatrix:
-    return TrainingSampleMatrix(np.empty((row_count, width), dtype=np.float64), np.empty(row_count, dtype=np.float64))
+def _empty_matrix(
+    row_count: int, width: int, name: str, directory: Path | None, resources: ExitStack,
+) -> TrainingSampleMatrix:
+    if directory is None or row_count == 0:
+        return TrainingSampleMatrix(np.empty((row_count, width), dtype=np.float64), np.empty(row_count, dtype=np.float64))
+    arrays = []
+    for suffix, shape in (("features", (row_count, width)), ("labels", (row_count,))):
+        size = math.prod(shape) * 8
+        with (directory / f"{name}-{suffix}.bin").open("w+b") as handle:
+            handle.truncate(size)
+            buffer = mmap.mmap(handle.fileno(), size)
+        resources.callback(buffer.close)
+        arrays.append(np.ndarray(shape, dtype=np.float64, buffer=buffer))
+    return TrainingSampleMatrix(arrays[0], arrays[1])
 
 
 __all__ = [

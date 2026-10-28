@@ -1,4 +1,5 @@
 from dataclasses import replace
+from contextlib import ExitStack
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -29,6 +30,31 @@ def _sample(
     return V3TrainingSample(code, day, "main", industry, 1_000_000.0, (0.1,) * 6, typed_targets)
 
 
+@pytest.mark.parametrize("failure", (None, RuntimeError, InterruptedError))
+def test_large_matrices_release_mappings_and_files_on_every_exit(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr("trader.training.infra.sample_index.TRAINING_MATRIX_BYTES", 1)
+    split = BuildTrainingDateSplit(
+        tuple(date(2021, 1, 1) + timedelta(days=i) for i in range(1600)), parent_manifest_hash="a" * 64
+    )
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as index:
+        index.add_final((_sample("600001", split.model_fit_dates[0]),))
+        index.prepare_for_model_fitting(split)
+        counts = index.industry_counts(TOMORROW_HEAD_CONTRACT)[0]
+        buffers = []
+        try:
+            with index.industry_data(counts, TOMORROW_HEAD_CONTRACT) as data:
+                buffers.extend((data.training.features.base, data.training.labels.base))
+                assert data.training.features.flags.c_contiguous
+                assert data.training.features.tolist() == [[0.1] * 6]
+                assert tuple(tmp_path.glob("sample-fit-*"))
+                if failure is not None:
+                    raise failure("fixture exit")
+        except (RuntimeError, InterruptedError) as exc:
+            assert failure is not None and type(exc) is failure
+        assert all(buffer.closed for buffer in buffers)
+        assert not tuple(tmp_path.glob("sample-fit-*"))
+
+
 def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
@@ -36,7 +62,7 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
     early_day = split.early_stopping_dates[0]
     calibration_day = split.calibration_dates[0]
     validation_day = split.confirmation_dates[0]
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository, ExitStack() as resources:
         assert tuple(repository._connection.run("PRAGMA cache_size").fetchone()) == (-32768,)
         assert repository.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
         repository.add_final(
@@ -63,8 +89,8 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
         d25 = next(item for item in repository.industry_counts(D25_HEAD_CONTRACT) if item.industry == "银行")
         repository._connection.observe_statements(None)
         assert len(statements) == 1 and "FROM sample_statistics samples" in statements[0]
-        tomorrow_data = repository.industry_data(tomorrow, TOMORROW_HEAD_CONTRACT)
-        d25_data = repository.industry_data(d25, D25_HEAD_CONTRACT)
+        tomorrow_data = resources.enter_context(repository.industry_data(tomorrow, TOMORROW_HEAD_CONTRACT))
+        d25_data = resources.enter_context(repository.industry_data(d25, D25_HEAD_CONTRACT))
 
         assert tomorrow.training == d25.training == 2
         assert (tomorrow.early_stopping, tomorrow.calibration, tomorrow.validation) == (1, 1, 1)
@@ -93,7 +119,7 @@ def test_sample_index_has_only_the_shared_tables_and_one_build_transaction(tmp_p
             str(row[0])
             for row in repository._connection.run("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         }
-        assert tables == {"sample_split_dates", "samples", "sample_statistics", "sample_day_diagnostics"}
+        assert tables == {"sample_contract", "sample_split_dates", "samples", "sample_statistics", "sample_day_diagnostics"}
         assert repository._connection.in_transaction is True
         assert repository.count() == 1_000
 
@@ -115,11 +141,11 @@ def test_industry_matrices_preserve_order_and_split_boundaries_across_read_batch
         )
         for number, day in enumerate(sample_dates)
     ) + (_sample("650000", split.model_fit_dates[0], targets=(0.9, None, None, None, None, None)),)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository, ExitStack() as resources:
         repository.add_final(reversed(samples))
         repository.prepare_for_model_fitting(split)
         counts = repository.industry_counts(contract)[0]
-        data = repository.industry_data(counts, contract)
+        data = resources.enter_context(repository.industry_data(counts, contract))
         for selected_dates, matrix in (
             (split.model_fit_dates, data.training),
             (split.early_stopping_dates, data.early_stopping),
@@ -141,7 +167,8 @@ def test_industry_matrices_preserve_order_and_split_boundaries_across_read_batch
         assert data.calibration_dates == (split.calibration_dates[0],) * 2 + (split.calibration_dates[1],) * 3
         for delta in (-1, 1):
             with pytest.raises(RuntimeError, match="split count changed"):
-                repository.industry_data(replace(counts, training=counts.training + delta), contract)
+                with repository.industry_data(replace(counts, training=counts.training + delta), contract):
+                    pass
 
 
 def test_validation_statistics_use_one_scan_and_include_validation_only_industries(tmp_path: Path) -> None:

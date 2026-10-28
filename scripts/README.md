@@ -13,8 +13,11 @@ unknown结果附带实际runtime配置文件、`storage.overrides`字段和修�
 
 `--profile v5-samples --training-probe-directory /absolute/new/external/directory`
 隔离比较V5宽表与float64紧凑序列块的大小、构建、封存及双头批量读取，逐值检查顺序和标签。
-默认使用8192条合成样本；附加`--wide-sample-source /absolute/samples.sqlite3`可只读抽取旧缓存一个行业前4096行、最多500个日期，源查询限30秒。
+默认使用8192条合成样本；附加`--wide-sample-source /absolute/samples.sqlite3`可只读抽取格式2具名宽表一个行业前4096行、最多500个日期，源查询限30秒。
 源文件不写入，输出目录必须为仓库外新路径；不拟合模型，不把子集和未控制操作系统缓存的时延当成完整训练成绩。
+
+`--profile training-samples --training-probe-directory /absolute/new/external/directory --baseline-checkout /absolute/isolated/checkout --command-timeout-seconds 900`
+进行五组交替、独立进程对照：四档双头样本写入/读取、float64字节摘要、RSS，以及已发布SQLite历史与具名Parquet的首次生成、重复准备、单月增量更新加对齐。默认64股、750个拟合日期，另含早停、校准与确认分区；不拟合模型、不下载真实数据。必须使用仓库外非内存文件系统；报告标注磁盘类型和热操作系统缓存。Parquet候选仅位于诊断模块，月份文件绑定来源、版本、行数和摘要，未发布修订不可见，manifest失败保留旧发布；未达计划门槛不得接入生产。
 
 `--profile download-performance` runs three rounds on disposable synthetic SQLite databases outside the repository.
 It reports company write/publication/cold and warm reads, unchanged publication, and equivalent per-stock versus batch gap queries.
@@ -43,7 +46,7 @@ It samples up to three failed dates and three failed child cursors, at most 192 
 
 `--profile company-resume --company-pagination-audit` compares complete CNInfo record identities for page sizes 30/50/100 using bounded historical samples and read-only local metadata. Production remains at 30 unless the larger contract is proven equivalent. `--company-pipeline-audit --company-replay-directory /absolute/external/fresh-directory` instead downloads the same sampled PDFs with one and two independent clients into fresh disposable indexes, compares facts and measures repeat-run reuse. This is a real PDF probe over sampled metadata, not a full-market coverage audit or a whole-download completion estimate. Audit modes are mutually exclusive; use `--command-timeout-seconds` to bound the diagnostic, never production sync.
 
-`--profile training-coverage` audits cached training dates read-only, including older caches without statistics tables. Current caches use their narrow date statistics instead of scanning wide sample rows. `observed_label_projection` reports the per-horizon observed-return rule's T+1 coverage and a conservative D25 lower bound from missing-return counts; it does not refit, rewrite the cache, or certify a trained model.
+`--profile training-coverage` audits format-2 sample caches read-only through named statistics. Older formats require an explicit rebuild; no legacy wide-row fallback is retained. `observed_label_projection` reports the per-horizon observed-return rule's T+1 coverage and a conservative D25 lower bound from missing-return counts; it does not refit, rewrite the cache, or certify a trained model.
 Add `--training-signal-date YYYY-MM-DD` to inspect the five future price horizons of a V5 signal with observed T+1 samples.
 The report contains population counts, missing dates and source status counts; it does not repair data or generate labels.
 `--profile training-alignment --history-root /external/history --training-probe-directory /external/new-output`

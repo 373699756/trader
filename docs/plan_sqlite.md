@@ -1239,7 +1239,7 @@ F；training保持owner。消费者：V1样本生成、双头training/矩阵读�
 
 | 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
 | --- | --- | --- |
-| samples；PK(day,code) | day TEXT；code TEXT；industry TEXT；features BLOB；target_t1 REAL?；target_d25 REAL? | samples；day→trade_date；features→第15.3节十个具名REAL列；code/industry/target_t1/target_d25保留。 |
+| samples；PK(day,code) | day TEXT；code TEXT；industry TEXT；features BLOB；target_t1 REAL?；target_d25 REAL? | samples；day→trade_date INTEGER；features→第15.3节十个具名REAL列及zero_signs INTEGER；code/industry/target_t1/target_d25保留。 |
 
 **[training/infra/sample_index.py](../src/trader/training/infra/sample_index.py)**
 
@@ -1247,10 +1247,10 @@ F；training保持owner。消费者：sample_builder/cache、engine、selected_t
 
 | 当前表 / 主键 | 当前字段与声明类型 | 目标表及字段处理 |
 | --- | --- | --- |
-| samples；PK(trade_date,code) | trade_date TEXT；code TEXT；board TEXT；industry TEXT；average_amount_20d REAL；动态列（见15.3）；target_t1 REAL?；target_t2 REAL?；target_t3 REAL?；target_t4 REAL?；target_t5 REAL?；target_d25_aggregate REAL? | samples；average_amount_20d→avg_amount_20d；动态f列及sequence_start见第15.3节；其它列保留，标签仍允许NULL且按原合同过滤。 |
-| sample_split_dates；PK(trade_date) | trade_date TEXT；split_name TEXT | sample_split_dates；全部保留，split_name枚举及互斥日期分区不变。 |
-| sample_statistics；PK(trade_date,industry,target) | trade_date TEXT；industry TEXT；target TEXT；rows INTEGER；total REAL；squares REAL | sample_statistics；rows→sample_count INTEGER；total→target_sum REAL；squares→target_sum_squares REAL；trade_date/industry/target保留，汇总仍按原标签单位。 |
-| sample_day_diagnostics；PK(trade_date) | trade_date TEXT；candidates INTEGER；missing_t1 INTEGER；missing_t2 INTEGER；missing_t3 INTEGER；missing_t4 INTEGER；missing_t5 INTEGER | sample_day_diagnostics；candidates→candidate_count INTEGER；其它列保留，missing_t1～missing_t5为计数。 |
+| samples；PK(trade_date,code) | trade_date TEXT；code TEXT；board TEXT；industry TEXT；average_amount_20d REAL；动态列（见15.3）；target_t1 REAL?；target_t2 REAL?；target_t3 REAL?；target_t4 REAL?；target_t5 REAL?；target_d25_aggregate REAL? | samples；trade_date→INTEGER；average_amount_20d→avg_amount_20d；动态f列及sequence_start见第15.3节；其它列保留，标签仍允许NULL且按原合同过滤。 |
+| sample_split_dates；PK(trade_date) | trade_date TEXT；split_name TEXT | sample_split_dates；trade_date→INTEGER，其余保留，split_name枚举及互斥日期分区不变。 |
+| sample_statistics；PK(trade_date,industry,target) | trade_date TEXT；industry TEXT；target TEXT；rows INTEGER；total REAL；squares REAL | sample_statistics；trade_date→INTEGER；rows→sample_count INTEGER；total→target_sum REAL；squares→target_sum_squares REAL；trade_date/industry/target保留，汇总仍按原标签单位。 |
+| sample_day_diagnostics；PK(trade_date) | trade_date TEXT；candidates INTEGER；missing_t1 INTEGER；missing_t2 INTEGER；missing_t3 INTEGER；missing_t4 INTEGER；missing_t5 INTEGER | sample_day_diagnostics；trade_date→INTEGER；candidates→candidate_count INTEGER；其它列保留，missing_t1～missing_t5为计数。 |
 | sample_sequence_blocks；PK(code,block) | code TEXT；block INTEGER；payload BLOB | sample_sequence_blocks；block→block_id INTEGER；payload→sequence_bytes BLOB；code保留，维度与字节序见第15.3节。 |
 
 **[recommendation/infra/deepseek/budget.py](../src/trader/recommendation/infra/deepseek/budget.py)**
@@ -1291,7 +1291,9 @@ V1以[固定特征ID](../src/trader/recommendation/domain/market/v1/features.py)
 | 8 | completed_drawdown_60d | drawdown_60d |
 | 9 | completed_log_average_amount_20d | log_avg_amount_20d |
 
-V1上述字段均基于已完成日线；去掉存储列的completed前缀不准引入当日未完成报价。return/volatility/drawdown保持原定义的小数尺度，log_avg_amount_20d保持原对数变换，不能把对数值当成元或再做一次对数。
+样本格式固定为2，所有trade_date为INTEGER天数。V1增加singleton/feature_hash身份表，V2/V3/V5的sample_contract保存singleton、schema_version、feature_hash及完成准备后的split_hash；摘要均为32字节BLOB，旧格式与错误身份不复用。
+
+V1另有zero_signs INTEGER十位负零位图（0～1023），只保留SQLite REAL会丢失的负零符号；置位的特征必须为0，读回为-0.0，不允许改变其它数值。V1上述字段均基于已完成日线；去掉存储列的completed前缀不准引入当日未完成报价。return/volatility/drawdown保持原定义的小数尺度，log_avg_amount_20d保持原对数变换，不能把对数值当成元或再做一次对数。
 
 | 当前位置列 | 目标REAL列（与实际head特征名一致） | 适用档 |
 | --- | --- | --- |

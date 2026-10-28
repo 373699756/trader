@@ -86,6 +86,13 @@ class PerformanceMemorySettings:
 
 
 @dataclass(frozen=True)
+class DatabasePerformanceSettings:
+    sqlite_improvement_percent: float
+    parquet_improvement_percent: float
+    minimum_wins: int
+
+
+@dataclass(frozen=True)
 class PerformanceBudgetSettings:
     workload: PerformanceWorkloadSettings
     rounds: PerformanceRoundSettings
@@ -93,6 +100,7 @@ class PerformanceBudgetSettings:
     data_age_p95_seconds: Mapping[str, float]
     memory: PerformanceMemorySettings
     relative_regression_percent: float
+    database: DatabasePerformanceSettings
 
 
 @dataclass(frozen=True)

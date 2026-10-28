@@ -14,7 +14,8 @@ from typing import Literal
 
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
-from trader.training.infra.sample_sequences import SEQUENCE_STORAGE_CONTRACT, SampleSequenceLayout
+from trader.training.infra.sample_sequences import SampleSequenceLayout
+from trader.training.infra.sample_schema import SampleStorageId
 
 _LOGGER = logging.getLogger(__name__)
 SampleCachePhase = Literal["checking", "sealing"]
@@ -28,7 +29,7 @@ class TrainingSampleCache:
         self,
         root: Path,
         identity: str,
-        feature_count: int,
+        feature_names: tuple[str, ...],
         split_hash: str,
         checkpoint: Callable[[], None] | None = None,
         *,
@@ -39,17 +40,17 @@ class TrainingSampleCache:
         self.path = self.root / "samples.sqlite3"
         self.manifest = self.root / "complete.json"
         self.identity = identity
-        self.feature_count = feature_count
+        self.feature_names = feature_names
         self.split_hash = split_hash
         self.sequence_layout = sequence_layout
-        self.storage_contract = (
-            f"{SEQUENCE_STORAGE_CONTRACT}:{sequence_layout.auxiliary}:{sequence_layout.steps}:{sequence_layout.channels}"
-            if sequence_layout
-            else "column_samples_v1"
-        )
+        self.storage_contract = SampleStorageId(feature_names, sequence_layout)
         self.reused = False
         self._checkpoint = checkpoint
         self._progress = progress
+
+    @property
+    def feature_count(self) -> int:
+        return len(self.feature_names)
 
     def inspect(self) -> bool:
         if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
@@ -67,7 +68,7 @@ class TrainingSampleCache:
             self.root.mkdir(parents=True, exist_ok=True)
         return SQLiteTrainingSampleIndex(
             self.path,
-            self.feature_count,
+            self.feature_names,
             prepared_split_hash=self.split_hash if self.reused else None,
             sequence_layout=self.sequence_layout,
         )
@@ -80,7 +81,9 @@ class TrainingSampleCache:
         with self.path.open("rb") as handle:
             os.fsync(handle.fileno())
         digest = _digest(self.path, self._checkpoint, self._report_bytes("sealing"))
-        AtomicWriteJson(self.manifest, {"identity": self.identity, "sha256": digest, "storage": self.storage_contract})
+        AtomicWriteJson(self.manifest, {
+            "identity": self.identity, "sha256": digest, "storage": self.storage_contract, "split_hash": self.split_hash
+        })
         if self._progress:
             self._progress("sealing", "completed", size, size)
 
@@ -100,6 +103,7 @@ class TrainingSampleCache:
                 not isinstance(value, dict)
                 or value.get("identity") != self.identity
                 or value.get("storage") != self.storage_contract
+                or value.get("split_hash") != self.split_hash
             ):
                 return False
             size = self.path.stat().st_size

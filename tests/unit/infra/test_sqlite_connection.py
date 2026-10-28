@@ -14,6 +14,17 @@ from trader.infra.sqlite_connection import (
 )
 
 
+def test_positional_batches_preserve_types_and_restore_named_row_reads(tmp_path):
+    with SqliteSession(tmp_path / "values.sqlite3") as connection:
+        result = connection.run("SELECT 1 AS n, 0.0 AS value, NULL AS missing, x'00' AS bytes UNION ALL SELECT 2,1.5,NULL,x'01'")
+        with pytest.raises(ValueError, match="batch_size"):
+            result.fetch_values(0)
+        values = result.fetch_values(1)
+        assert values == [(1, 0.0, None, b"\x00")] and type(values[0]) is tuple
+        assert result.require_one()["n"] == 2
+        assert connection.run("SELECT 3 AS n").require_one()["n"] == 3
+
+
 def test_schema_installation_is_atomic_and_driver_api_is_hidden(tmp_path):
     with SqliteSession(tmp_path / "index.sqlite3") as connection:
         assert not hasattr(connection, "execute")

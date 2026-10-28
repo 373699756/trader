@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from trader.infra.cache_contracts import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
 from trader.infra.settings.models import (
+    DatabasePerformanceSettings,
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
     PerformanceRoundSettings,
@@ -208,6 +209,7 @@ def ParsePerformanceBudgets(raw: Mapping[str, object]) -> PerformanceBudgetSetti
             "data_age_p95_seconds",
             "memory",
             "relative_regression_percent",
+            "database",
         },
         "performance_budgets",
     )
@@ -277,7 +279,19 @@ def ParsePerformanceBudgets(raw: Mapping[str, object]) -> PerformanceBudgetSetti
     relative = Number(raw, "relative_regression_percent", minimum=0.000001)
     if relative != 5.0:
         raise ConfigurationError("relative_regression_percent must remain fixed at 5")
-    return PerformanceBudgetSettings(workload, rounds, latency, data_age, memory, relative)
+    database_raw = RequireMapping(raw, "database")
+    RequireExactKeys(
+        database_raw, {"sqlite_improvement_percent", "parquet_improvement_percent", "minimum_wins"},
+        "performance_budgets.database",
+    )
+    database = DatabasePerformanceSettings(
+        Number(database_raw, "sqlite_improvement_percent", minimum=0.000001),
+        Number(database_raw, "parquet_improvement_percent", minimum=0.000001),
+        Integer(database_raw, "minimum_wins", minimum=1),
+    )
+    if database != DatabasePerformanceSettings(10.0, 15.0, 4):
+        raise ConfigurationError("database performance gates must remain fixed at 10%, 15% and four wins")
+    return PerformanceBudgetSettings(workload, rounds, latency, data_age, memory, relative, database)
 
 
 def _fixed_positive_number_mapping(

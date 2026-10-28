@@ -27,6 +27,7 @@ Profile = Literal[
     "tencent-history-window",
     "v5-training",
     "v5-samples",
+    "training-samples",
     "v5-lite",
     "training-alignment",
     "training-coverage",

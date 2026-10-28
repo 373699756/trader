@@ -18,7 +18,7 @@ def test_cache_reads_two_partitions_once_and_preserves_batches(tmp_path, monkeyp
     width = max(contract.feature_positions) + 1
     dates = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2000))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, fit_dates=750, history_sessions=62)
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", width) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", contract.feature_manifest.names) as samples:
         samples.add_final(
             TrainingSample(f"{i:06d}", day, "main", "bank", 1e8, tuple(float(j + i) for j in range(width)), (0.01,) * 6)
             for day in (split.model_fit_dates[0], split.early_stopping_dates[0])

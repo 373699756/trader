@@ -46,8 +46,8 @@ def test_compact_samples_match_all_head_partitions_statistics_and_order(tmp_path
         *split.daily_proxy_holdout_dates[:2],
     )
     with (
-        SQLiteTrainingSampleIndex(tmp_path / "wide.sqlite3", 366) as wide,
-        SQLiteTrainingSampleIndex(tmp_path / "compact.sqlite3", 366, sequence_layout=LAYOUT) as compact,
+        SQLiteTrainingSampleIndex(tmp_path / "wide.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names) as wide,
+        SQLiteTrainingSampleIndex(tmp_path / "compact.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as compact,
     ):
         for batch in _samples(days):
             wide.add_final(batch)
@@ -56,9 +56,16 @@ def test_compact_samples_match_all_head_partitions_statistics_and_order(tmp_path
             samples.prepare_for_model_fitting(split)
         assert wide.count() == compact.count()
         assert wide.validation_target_metrics() == compact.validation_target_metrics()
+        selected = (365, 2, 0, 4)
+        manifest = V5_TRAINING_PROFILE.heads[0].feature_manifest
+        reordered = replace(
+            manifest, feature_ids=tuple(manifest.feature_ids[i] for i in selected),
+            units=tuple(manifest.units[i] for i in selected),
+            missing_policies=tuple(manifest.missing_policies[i] for i in selected),
+        )
         contracts = (
             *V5_TRAINING_PROFILE.heads,
-            replace(V5_TRAINING_PROFILE.heads[0], feature_positions=(365, 2, 0, 4)),
+            replace(V5_TRAINING_PROFILE.heads[0], feature_positions=selected, feature_manifest=reordered),
         )
         for contract in contracts:
             assert wide.industry_counts(contract) == compact.industry_counts(contract)
@@ -74,10 +81,8 @@ def test_compact_samples_match_all_head_partitions_statistics_and_order(tmp_path
                         assert left.trade_dates == right.trade_dates and left.codes == right.codes
                         assert left.industries == right.industries and right.features.dtype == np.float64
             count = compact.industry_counts(contract)[0]
-            np.testing.assert_array_equal(
-                wide.industry_data(count, contract).training.features,
-                compact.industry_data(count, contract).training.features,
-            )
+            with wide.industry_data(count, contract) as before, compact.industry_data(count, contract) as after:
+                np.testing.assert_array_equal(before.training.features, after.training.features)
             with pytest.raises(ValueError, match="holdout_is_sealed"):
                 tuple(compact.iter_batches("industry0", contract, "holdout"))
             expected = tuple(wide.iter_validation_batches(contract))
@@ -94,7 +99,7 @@ def test_eviction_partial_blocks_and_large_batch_keep_exact_values(tmp_path, mon
     split = _split()
     all_samples = tuple(item for batch in _samples(split.model_fit_dates[:70]) for item in batch)
     contract = V5_TRAINING_PROFILE.heads[0]
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", 366, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
         samples.add_final(all_samples)
         samples.prepare_for_model_fitting(split)
         queries = []
@@ -108,11 +113,11 @@ def test_eviction_partial_blocks_and_large_batch_keep_exact_values(tmp_path, mon
 
 
 @pytest.mark.parametrize(
-    "corruption", ["DELETE FROM sample_sequence_blocks", "UPDATE sample_sequence_blocks SET payload=x'00'"]
+    "corruption", ["DELETE FROM sample_sequence_blocks", "UPDATE sample_sequence_blocks SET sequence_bytes=x'00'"]
 )
 def test_missing_or_truncated_blocks_are_rejected(tmp_path, corruption):
     split = _split()
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", 366, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
         samples.add_final(next(_samples(split.model_fit_dates[:1])))
         samples.prepare_for_model_fitting(split)
         samples._connection.run(corruption)
@@ -122,7 +127,7 @@ def test_missing_or_truncated_blocks_are_rejected(tmp_path, corruption):
 
 def test_reused_sequence_blocks_are_immutable_and_keep_the_cache_byte_limit(tmp_path, monkeypatch):
     split = _split()
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", 366, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
         samples.add_final(item for batch in _samples(split.model_fit_dates[:6]) for item in batch)
         samples.prepare_for_model_fitting(split)
         reader = sample_sequences.SampleSequenceReader(samples._connection, LAYOUT)
@@ -147,7 +152,7 @@ def test_reused_sequence_blocks_are_immutable_and_keep_the_cache_byte_limit(tmp_
 
 def test_compact_cache_reopens_and_layout_change_rebuilds_with_same_input_identity(tmp_path):
     split = _split()
-    cache = TrainingSampleCache(tmp_path, "same", 366, split.content_hash, sequence_layout=LAYOUT)
+    cache = TrainingSampleCache(tmp_path, "same", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, split.content_hash, sequence_layout=LAYOUT)
     with cache.open() as samples:
         samples.add_final(next(_samples(split.model_fit_dates[:1])))
         samples.prepare_for_model_fitting(split)
@@ -158,7 +163,7 @@ def test_compact_cache_reopens_and_layout_change_rebuilds_with_same_input_identi
             2,
             366,
         )
-    columns = TrainingSampleCache(tmp_path, "same", 366, split.content_hash)
+    columns = TrainingSampleCache(tmp_path, "same", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, split.content_hash)
     with columns.open() as samples:
         assert not columns.reused and samples.count() == 0
 
@@ -167,7 +172,7 @@ def test_nonfinite_sequence_is_rejected_before_sealing(tmp_path):
     split = _split()
     sample = next(_samples(split.model_fit_dates[:1]))[0]
     invalid = replace(sample, features=(*sample.features[:-1], float("nan")))
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", 366, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
         with pytest.raises(ValueError, match="values are invalid"):
             samples.add_final((invalid,))
 
@@ -175,7 +180,7 @@ def test_nonfinite_sequence_is_rejected_before_sealing(tmp_path):
 def test_full_batch_reads_two_blocks_per_code_with_portable_parameter_bound(tmp_path):
     split = _split()
     values = np.random.default_rng(7).normal(size=(256, 65, 6))
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", 366, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
         for offset, day in enumerate(split.model_fit_dates[:6]):
             samples.add_final(
                 tuple(

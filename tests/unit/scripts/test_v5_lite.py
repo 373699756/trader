@@ -7,7 +7,9 @@ from scripts.diagnose_runtime import _parser, _validate, build_commands
 from scripts.runtime_diagnostics.v5_lite import QualityPassed, _prepare
 from trader.infra.atomic_files.json import AtomicWriteJson
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
-from trader.training.infra.sample_sequences import SEQUENCE_STORAGE_CONTRACT
+from trader.training.infra.sample_sequences import SampleSequenceLayout
+from trader.training.infra.sample_schema import SampleStorageId
+from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 
 
 def test_lite_quality_limits_and_missing_values_fail_closed():
@@ -46,15 +48,17 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
     database = source / "samples.sqlite3"
     options = SqliteConnectionOptions(timeout_seconds=1)
     with SqliteSession(database, options) as connection, SqliteTransaction(connection):
-        connection.run("CREATE TABLE sample_split_dates (split_name TEXT, trade_date TEXT)")
+        connection.run("CREATE TABLE sample_contract(singleton INTEGER PRIMARY KEY,split_hash BLOB)")
+        connection.run("INSERT INTO sample_contract VALUES(1,?)", (b"a" * 32,))
+        connection.run("CREATE TABLE sample_split_dates (split_name TEXT, trade_date INTEGER)")
         for index in range(750):
-            connection.run("INSERT INTO sample_split_dates VALUES (?, ?)", ("training", f"{index:04}"))
-        connection.run("INSERT INTO sample_split_dates VALUES ('validation', '0800')")
+            connection.run("INSERT INTO sample_split_dates VALUES (?, ?)", ("training", index))
+        connection.run("INSERT INTO sample_split_dates VALUES ('validation', 800)")
     original = database.read_bytes()
     AtomicWriteJson(
         source / "complete.json",
         {
-            "storage": f"{SEQUENCE_STORAGE_CONTRACT}:6:60:6",
+            "storage": SampleStorageId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)),
             "sha256": hashlib.sha256(original).hexdigest(),
         },
     )
@@ -65,19 +69,19 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
             connection.run(
                 "SELECT COUNT(*), MIN(trade_date), MAX(trade_date) FROM sample_split_dates WHERE split_name='training'"
             ).fetchone()
-        ) == (250, "0500", "0749")
+        ) == (250, 500, 749)
         assert [
             tuple(row)
             for row in connection.run(
                 "SELECT trade_date FROM sample_split_dates WHERE split_name='validation'"
             ).fetchall()
-        ] == [("0800",)]
+        ] == [(800,)]
     invalid = tmp_path / "invalid"
     invalid.mkdir()
     AtomicWriteJson(
         source / "complete.json",
         {
-            "storage": f"{SEQUENCE_STORAGE_CONTRACT}:6:60:6",
+            "storage": SampleStorageId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)),
             "sha256": "0" * 64,
         },
     )

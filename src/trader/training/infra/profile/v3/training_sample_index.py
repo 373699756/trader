@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
+
 from trader.training.infra.sample_index import (
     TRAINING_SAMPLE_CACHE_MIB as V3_SAMPLE_CACHE_MIB,
 )
@@ -33,7 +35,7 @@ from trader.training.infra.sample_index import (
 
 class SQLiteV3TrainingSampleIndex(SQLiteTrainingSampleIndex):
     def __init__(self, path: Path) -> None:
-        super().__init__(path, 6)
+        super().__init__(path, TOMORROW_HEAD_CONTRACT.feature_manifest.names)
 
 
 __all__ = [

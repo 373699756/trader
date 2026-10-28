@@ -53,7 +53,7 @@ class SampleSequenceWriter:
                 previous_code, previous = self._tails.popitem(last=False)
                 self._flush(previous_code, previous)
             row = self._connection.run(
-                "SELECT MAX(block) FROM sample_sequence_blocks WHERE code=?", (code,)
+                "SELECT MAX(block_id) FROM sample_sequence_blocks WHERE code=?", (code,)
             ).require_one()
             tail = _SequenceTail((int(row[0]) + 1) * _BLOCK_STEPS if row[0] is not None else 0)
         self._tails[code] = tail
@@ -108,9 +108,12 @@ class SampleSequenceReader:
         self._blocks: OrderedDict[tuple[str, int], np.ndarray] = OrderedDict()
         self._bytes = 0
 
-    def read(self, windows: Sequence[tuple[str, int]]) -> np.ndarray:
+    def read(self, windows: Sequence[tuple[str, int]], *, output: np.ndarray | None = None) -> np.ndarray:
         if len(windows) > 256 or any(start < 0 for _, start in windows):
             raise ValueError("sample sequence batch exceeds bounds")
+        shape = (len(windows), self._layout.steps * self._layout.channels)
+        if output is not None and (output.shape != shape or output.dtype != np.float64 or not output.flags.writeable):
+            raise ValueError("sample_sequence_output_invalid")
         keys = tuple(
             dict.fromkeys(
                 (code, block)
@@ -124,9 +127,9 @@ class SampleSequenceReader:
             selected = missing[offset : offset + 400]
             placeholders = ",".join("(?,?)" for _ in selected)
             rows = self._connection.run(
-                f"WITH wanted(code,block) AS (VALUES {placeholders}) "
-                "SELECT s.code,s.block,s.payload FROM wanted w JOIN sample_sequence_blocks s "
-                "ON s.code=w.code AND s.block=w.block",
+                f"WITH wanted(code,block_id) AS (VALUES {placeholders}) "
+                "SELECT s.code,s.block_id,s.sequence_bytes FROM wanted w JOIN sample_sequence_blocks s "
+                "ON s.code=w.code AND s.block_id=w.block_id",
                 tuple(value for key in selected for value in key),
             ).fetchall()
             for code, block, payload in rows:
@@ -137,7 +140,7 @@ class SampleSequenceReader:
                 self._bytes += vector.nbytes
         if any(key not in self._blocks for key in keys):
             raise ValueError("sample sequence block is missing")
-        values: np.ndarray = np.empty((len(windows), self._layout.steps * self._layout.channels), dtype=np.float64)
+        values = np.empty(shape, dtype=np.float64) if output is None else output
         for index, (code, start) in enumerate(windows):
             position = 0
             for block in range(start // _BLOCK_STEPS, (start + self._layout.steps - 1) // _BLOCK_STEPS + 1):

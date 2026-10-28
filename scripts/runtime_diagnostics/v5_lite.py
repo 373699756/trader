@@ -24,7 +24,8 @@ from trader.training.infra.model_fitting import IndustryCoverageFailure
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.profile.v5.settings import TcnArchitecture, TcnFittingParameters
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
-from trader.training.infra.sample_sequences import SEQUENCE_STORAGE_CONTRACT, SampleSequenceLayout
+from trader.training.infra.sample_sequences import SampleSequenceLayout
+from trader.training.infra.sample_schema import SampleStorageId
 
 
 def ProbeLiteKernels() -> dict[str, object]:
@@ -93,7 +94,7 @@ def _check(deadline: float) -> None:
 
 def _prepare(source: Path, work: Path, deadline: float) -> tuple[Path, Path]:
     manifest = AtomicReadJson(source / "complete.json")
-    if not isinstance(manifest, dict) or manifest.get("storage") != f"{SEQUENCE_STORAGE_CONTRACT}:6:60:6":
+    if not isinstance(manifest, dict) or manifest.get("storage") != SampleStorageId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)):
         raise ValueError("V5 comparison requires a sealed compact sample cache")
     database = source / "samples.sqlite3"
     identity = database.stat()
@@ -119,6 +120,9 @@ def _prepare(source: Path, work: Path, deadline: float) -> tuple[Path, Path]:
             connection.run(
                 "DELETE FROM sample_split_dates WHERE split_name='training' AND trade_date<?", (days[-250][0],)
             )
+            previous = connection.run("SELECT split_hash FROM sample_contract WHERE singleton=1").require_one()[0]
+            diagnostic_hash = hashlib.sha256(previous + b"diagnostic_tail_250").digest()
+            connection.run("UPDATE sample_contract SET split_hash=? WHERE singleton=1", (diagnostic_hash,))
     return baseline, candidate
 
 
@@ -159,12 +163,17 @@ def _quality(source: Path, work: Path, deadline: float) -> dict[str, object]:
             AtomicWriteJson(work / "progress.json", asdict(detail))
             last_report = time.monotonic()
 
+    split_hashes = []
+    for path in paths:
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+            split_hashes.append(connection.run("SELECT split_hash FROM sample_contract WHERE singleton=1").require_one()[0].hex())
+    feature_names = V5_TRAINING_PROFILE.heads[0].feature_manifest.names
     with (
         SQLiteTrainingSampleIndex(
-            paths[0], 366, prepared_split_hash="diagnostic-reference", sequence_layout=SampleSequenceLayout(6, 60, 6)
+            paths[0], feature_names, prepared_split_hash=split_hashes[0], sequence_layout=SampleSequenceLayout(6, 60, 6)
         ) as old,
         SQLiteTrainingSampleIndex(
-            paths[1], 366, prepared_split_hash="diagnostic-candidate", sequence_layout=SampleSequenceLayout(6, 60, 6)
+            paths[1], feature_names, prepared_split_hash=split_hashes[1], sequence_layout=SampleSequenceLayout(6, 60, 6)
         ) as new,
     ):
         by_head = [{count.industry: count for count in new.industry_counts(head)} for head in V5_TRAINING_PROFILE.heads]

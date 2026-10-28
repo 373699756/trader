@@ -44,6 +44,17 @@ class SqliteResult:
             raise ValueError("sqlite_batch_size_invalid")
         return self._cursor.fetchmany(size)
 
+    def fetch_values(self, size: int) -> list[tuple[SqliteParameter, ...]]:
+        """Read positional values without constructing per-row name lookup wrappers."""
+        if size < 1:
+            raise ValueError("sqlite_batch_size_invalid")
+        factory = self._cursor.row_factory
+        self._cursor.row_factory = None
+        try:
+            return cast(list[tuple[SqliteParameter, ...]], self._cursor.fetchmany(size))
+        finally:
+            self._cursor.row_factory = factory
+
     def __iter__(self) -> Iterator[sqlite3.Row]:
         yield from self._cursor
 

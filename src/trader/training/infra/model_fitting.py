@@ -256,46 +256,46 @@ def _fit_industry(
     parameters: LightGBMFittingParameters | RidgeFittingParameters,
     heartbeat: Callable[[], None],
 ) -> FittedIndustryModel:
-    data = samples.industry_data(counts, contract)
-    train = data.training
-    means = train.features.mean(axis=0)
-    deviations = train.features.std(axis=0)
-    scales = np.where(deviations > _MINIMUM_FEATURE_DEVIATION, deviations, 1.0)
-    normalized = train.features
-    normalized -= means
-    normalized /= scales
-    calibration_features = data.calibration.features
-    calibration_features -= means
-    calibration_features /= scales
-    if isinstance(parameters, LightGBMFittingParameters):
-        early_features = data.early_stopping.features
-        early_features -= means
-        early_features /= scales
-        booster = _fit_lightgbm(train, data.early_stopping, parameters, heartbeat)
-        predicted = np.asarray(
-            booster.predict(calibration_features, num_iteration=booster.best_iteration, num_threads=2)
+    with samples.industry_data(counts, contract) as data:
+        train = data.training
+        means = train.features.mean(axis=0)
+        deviations = train.features.std(axis=0)
+        scales = np.where(deviations > _MINIMUM_FEATURE_DEVIATION, deviations, 1.0)
+        normalized = train.features
+        normalized -= means
+        normalized /= scales
+        calibration_features = data.calibration.features
+        calibration_features -= means
+        calibration_features /= scales
+        if isinstance(parameters, LightGBMFittingParameters):
+            early_features = data.early_stopping.features
+            early_features -= means
+            early_features /= scales
+            booster = _fit_lightgbm(train, data.early_stopping, parameters, heartbeat)
+            predicted = np.asarray(
+                booster.predict(calibration_features, num_iteration=booster.best_iteration, num_threads=2)
+            )
+        else:
+            coefficients = _ridge_coefficients(normalized, train.labels, parameters.penalty)
+            predicted = PredictRidgeBatch(calibration_features, coefficients[1:], intercept=float(coefficients[0]))
+        calibration = CalibrationAccumulator()
+        calibration.add(predicted, data.calibration.labels, data.calibration_dates)
+        calibrated = calibration.finish()
+        common = (
+            tuple(float(value) for value in means),
+            tuple(float(value) for value in scales),
+            calibrated.intercept,
+            calibrated.slope,
         )
-    else:
-        coefficients = _ridge_coefficients(normalized, train.labels, parameters.penalty)
-        predicted = PredictRidgeBatch(calibration_features, coefficients[1:], intercept=float(coefficients[0]))
-    calibration = CalibrationAccumulator()
-    calibration.add(predicted, data.calibration.labels, data.calibration_dates)
-    calibrated = calibration.finish()
-    common = (
-        tuple(float(value) for value in means),
-        tuple(float(value) for value in scales),
-        calibrated.intercept,
-        calibrated.slope,
-    )
-    if isinstance(parameters, LightGBMFittingParameters):
-        model: FittedModelSnapshot = TrainedLightGBMModelSnapshot(
-            *common, booster.model_to_string(num_iteration=booster.best_iteration), int(booster.best_iteration)
-        )
-    else:
-        model = TrainedRidgeModelSnapshot(
-            *common, float(coefficients[0]), tuple(float(value) for value in coefficients[1:])
-        )
-    return FittedIndustryModel(counts.industry, model, counts.training, calibrated)
+        if isinstance(parameters, LightGBMFittingParameters):
+            model: FittedModelSnapshot = TrainedLightGBMModelSnapshot(
+                *common, booster.model_to_string(num_iteration=booster.best_iteration), int(booster.best_iteration)
+            )
+        else:
+            model = TrainedRidgeModelSnapshot(
+                *common, float(coefficients[0]), tuple(float(value) for value in coefficients[1:])
+            )
+        return FittedIndustryModel(counts.industry, model, counts.training, calibrated)
 
 
 class _ValidationPredictor:

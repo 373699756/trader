@@ -4,21 +4,23 @@ from __future__ import annotations
 
 import math
 import mmap
-import struct
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from itertools import repeat
 from typing import Literal, Protocol, cast
 
 import numpy as np
 
 from trader.download.domain.history_revision import HistoryTrainingRow
+from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
+    SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
     SqliteTransaction,
@@ -34,8 +36,23 @@ from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.domain.v1.learned_rank import LearnedRankDateSplit
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
+from trader.training.infra.sample_schema import SampleFeatureHash
 
-_FEATURE_BYTES = struct.Struct(f"<{len(LEARNED_RANK_FEATURE_IDS)}d")
+LEARNED_RANK_SAMPLE_COLUMNS = (
+    "return_1d", "return_3d", "return_5d", "return_20d", "return_60d",
+    "return_120d", "return_250d", "volatility_20d", "drawdown_60d", "log_avg_amount_20d",
+)
+_SAMPLE_SCHEMA = SqliteSchema(
+    2,
+    (
+        "CREATE TABLE sample_contract (singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
+        "feature_hash BLOB NOT NULL CHECK(length(feature_hash)=32))",
+        "CREATE TABLE samples (trade_date INTEGER NOT NULL,code TEXT NOT NULL,industry TEXT NOT NULL,"
+        + ",".join(f"{name} REAL NOT NULL" for name in LEARNED_RANK_SAMPLE_COLUMNS)
+        + ",zero_signs INTEGER NOT NULL CHECK(zero_signs BETWEEN 0 AND 1023),"
+        "target_t1 REAL,target_d25 REAL,PRIMARY KEY(trade_date,code)) WITHOUT ROWID",
+    ),
+)
 
 
 class LearnedRankInputPort(Protocol):
@@ -73,6 +90,41 @@ class LearnedRankMatrix:
     dates: tuple[date, ...]
     industries: tuple[str, ...]
     groups: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class LearnedRankMatrixRequest:
+    dates: tuple[date, ...]
+    strategy: Strategy
+
+    def __post_init__(self) -> None:
+        if (
+            self.strategy not in {Strategy.TOMORROW, Strategy.D25}
+            or not self.dates or self.dates != tuple(sorted(set(self.dates)))
+        ):
+            raise ValueError("learned-rank matrix requires one scored strategy and date partition")
+
+
+@dataclass
+class _MatrixOutput:
+    features: np.ndarray
+    targets: np.ndarray
+    codes: list[str] = field(default_factory=list)
+    dates: list[date] = field(default_factory=list)
+    industries: list[str] = field(default_factory=list)
+    groups: list[int] = field(default_factory=list)
+
+
+def _empty_output(rows: int, directory: Path, resources: ExitStack) -> _MatrixOutput:
+    directory.mkdir(parents=True, exist_ok=True)
+    arrays = []
+    for name, shape in (("features", (rows, len(LEARNED_RANK_SAMPLE_COLUMNS))), ("targets", (rows,))):
+        with (directory / f"{name}.bin").open("w+b") as handle:
+            handle.truncate(math.prod(shape) * 8)
+            buffer = mmap.mmap(handle.fileno(), math.prod(shape) * 8)
+        resources.callback(buffer.close)
+        arrays.append(np.ndarray(shape, dtype=np.float64, buffer=buffer))
+    return _MatrixOutput(arrays[0], arrays[1])
 
 
 @dataclass(frozen=True)
@@ -119,24 +171,27 @@ class LearnedRankSampleIndex:
                 cache_kib=16384,
             ),
         )
-        if read_only:
-            return
         try:
             EnsureSqliteSchema(
                 self._connection,
-                SqliteSchema(
-                    None,
-                    (
-                        "CREATE TABLE samples (day TEXT NOT NULL, code TEXT NOT NULL, industry TEXT NOT NULL, "
-                        "features BLOB NOT NULL, target_t1 REAL, target_d25 REAL, "
-                        "PRIMARY KEY(day, code)) WITHOUT ROWID",
-                    ),
-                ),
-                allow_create=True,
+                _SAMPLE_SCHEMA,
+                allow_create=not read_only,
+                initialize=self._initialize_contract,
+                validate=self._validate_contract,
             )
         except BaseException:
             self._connection.close()
             raise
+
+    @staticmethod
+    def _initialize_contract(connection: SqliteConnection) -> None:
+        connection.run("INSERT INTO sample_contract VALUES(1,?)", (SampleFeatureHash(LEARNED_RANK_FEATURE_IDS, None),))
+
+    @staticmethod
+    def _validate_contract(connection: SqliteConnection) -> None:
+        row = connection.run("SELECT feature_hash FROM sample_contract WHERE singleton=1").require_one()
+        if row[0] != SampleFeatureHash(LEARNED_RANK_FEATURE_IDS, None):
+            raise ValueError("learned_rank_sample_feature_contract_mismatch")
 
     def close(self) -> None:
         self._connection.close()
@@ -145,6 +200,7 @@ class LearnedRankSampleIndex:
         candidates = tuple(pending.candidates.values())
         benchmarks = tuple(ObservedTrainingBenchmark(item.future[index] for item in candidates) for index in range(5))
         converted = missing_t1 = missing_d25 = 0
+        rows: list[tuple[object, ...]] = []
         with SqliteTransaction(self._connection):
             for item in candidates:
                 excess = tuple(
@@ -161,27 +217,26 @@ class LearnedRankSampleIndex:
                 missing_d25 += d25 is None
                 if t1 is None and d25 is None:
                     continue
-                self._connection.run(
-                    "INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        pending.trade_date.isoformat(),
-                        item.code,
-                        item.industry,
-                        _FEATURE_BYTES.pack(*item.features),
-                        t1,
-                        d25,
-                    ),
+                if len(item.features) != len(LEARNED_RANK_SAMPLE_COLUMNS) or not all(map(math.isfinite, item.features)):
+                    raise ValueError("learned_rank_sample_features_invalid")
+                flags = sum(
+                    1 << position for position, value in enumerate(item.features)
+                    if value == 0.0 and math.copysign(1.0, value) < 0
                 )
+                rows.append((EncodeDate(pending.trade_date), item.code, item.industry, *item.features, flags, t1, d25))
                 converted += 1
+            self._connection.run_many(
+                "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(16)) + ")", rows
+            )
         return converted, missing_t1, missing_d25
 
     def coverage(
         self, splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit]
     ) -> tuple[LearnedRankPartitionCoverage, ...]:
         counts = {
-            date.fromisoformat(str(day)): (int(t1_rows), int(d25_rows))
+            DecodeDate(day): (int(t1_rows), int(d25_rows))
             for day, t1_rows, d25_rows in self._connection.run(
-                "SELECT day, COUNT(target_t1), COUNT(target_d25) FROM samples GROUP BY day"
+                "SELECT trade_date, COUNT(target_t1), COUNT(target_d25) FROM samples GROUP BY trade_date"
             )
         }
         result: list[LearnedRankPartitionCoverage] = []
@@ -201,71 +256,96 @@ class LearnedRankSampleIndex:
                 )
         return tuple(result)
 
-    def matrix(
-        self, dates: tuple[date, ...], strategy: Strategy, directory: Path, resources: ExitStack
-    ) -> LearnedRankMatrix:
-        column = "target_t1" if strategy is Strategy.TOMORROW else "target_d25"
-        if strategy not in {Strategy.TOMORROW, Strategy.D25} or not dates:
-            raise ValueError("learned-rank matrix requires one scored strategy and date partition")
-        rows = int(
-            self._connection.run(
-                f"SELECT COUNT(*) FROM samples WHERE day BETWEEN ? AND ? AND {column} IS NOT NULL",
-                (dates[0].isoformat(), dates[-1].isoformat()),
-            ).require_one()[0]
+    def read_matrices(
+        self,
+        requests: tuple[LearnedRankMatrixRequest, ...],
+        directory: Path,
+        resources: ExitStack,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[LearnedRankMatrix, ...]:
+        """Decode one ordered SQLite stream into independent head/partition matrices."""
+        if not requests or len(requests) > 8:
+            raise ValueError("learned_rank_matrix_requests_invalid")
+        dates_by_request = tuple(frozenset(request.dates) for request in requests)
+        date_values = {EncodeDate(day): day for request in requests for day in request.dates}
+        start, end = min(date_values), max(date_values)
+        counts = tuple(
+            (DecodeDate(row[0]), int(row[1]), int(row[2])) for row in self._connection.run(
+                "SELECT trade_date,COUNT(target_t1),COUNT(target_d25) FROM samples "
+                "WHERE trade_date BETWEEN ? AND ? GROUP BY trade_date", (start, end),
+            )
         )
-        if rows == 0:
-            raise ValueError("learned_rank_sample_partition_empty")
-        directory.mkdir(parents=True, exist_ok=True)
-        buffers: list[mmap.mmap] = []
-        for name, size in (("features", rows * _FEATURE_BYTES.size), ("targets", rows * 8)):
-            with (directory / f"{name}.bin").open("w+b") as handle:
-                handle.truncate(size)
-                buffers.append(mmap.mmap(handle.fileno(), size))
-                resources.callback(buffers[-1].close)
-        features = np.ndarray((rows, len(LEARNED_RANK_FEATURE_IDS)), dtype=np.float64, buffer=buffers[0])
-        targets = np.ndarray((rows,), dtype=np.float64, buffer=buffers[1])
-        codes: list[str] = []
-        sample_dates: list[date] = []
-        industries: list[str] = []
-        groups: list[int] = []
-        allowed_dates = frozenset(dates)
+        outputs = []
+        for number, request in enumerate(requests):
+            target = 1 if request.strategy is Strategy.TOMORROW else 2
+            if any(request.dates[0] <= row[0] <= request.dates[-1]
+                   and row[0] not in dates_by_request[number] and cast(int, row[target]) > 0 for row in counts):
+                raise ValueError("learned-rank sample crossed a date partition")
+            rows = sum(cast(int, row[target]) for row in counts if row[0] in dates_by_request[number])
+            if rows == 0:
+                raise ValueError("learned_rank_sample_partition_empty")
+            outputs.append(_empty_output(rows, directory / str(number), resources))
         code_values: dict[str, str] = {}
         industry_values: dict[str, str] = {}
-        date_values = {day.isoformat(): day for day in dates}
-        with closing(
-            self._connection.run(
-                f"SELECT day, code, industry, features, {column} FROM samples "
-                f"WHERE day BETWEEN ? AND ? AND {column} IS NOT NULL ORDER BY day, code",
-                (dates[0].isoformat(), dates[-1].isoformat()),
-            )
-        ) as cursor:
-            position = 0
-            while batch := cursor.fetchmany(4_096):
-                blobs: list[bytes] = []
-                labels: list[float] = []
-                for raw in batch:
-                    day_text, code, industry, blob, target = cast(tuple[str, str, str, bytes, float], raw)
-                    day = date_values.get(day_text)
-                    if day not in allowed_dates:
-                        raise ValueError("learned-rank sample crossed a date partition")
-                    assert day is not None
-                    if len(blob) != _FEATURE_BYTES.size:
-                        raise struct.error(f"unpack requires a buffer of {_FEATURE_BYTES.size} bytes")
-                    blobs.append(blob)
-                    labels.append(target)
-                    if not sample_dates or day != sample_dates[-1]:
-                        groups.append(0)
-                    groups[-1] += 1
-                    codes.append(code_values.setdefault(code, code))
-                    sample_dates.append(day)
-                    industries.append(industry_values.setdefault(industry, industry))
-                end = position + len(batch)
-                features[position:end] = np.frombuffer(b"".join(blobs), dtype="<f8").reshape(
-                    len(batch), len(LEARNED_RANK_FEATURE_IDS)
-                )
-                targets[position:end] = labels
-                position = end
-        return LearnedRankMatrix(features, targets, tuple(codes), tuple(sample_dates), tuple(industries), tuple(groups))
+        width = len(LEARNED_RANK_SAMPLE_COLUMNS)
+        with closing(self._connection.run(
+            f"SELECT trade_date,code,industry,{','.join(LEARNED_RANK_SAMPLE_COLUMNS)},"
+            "zero_signs,target_t1,target_d25 FROM samples WHERE trade_date BETWEEN ? AND ? "
+            "ORDER BY trade_date,code", (start, end),
+        )) as cursor:
+            while batch := cursor.fetch_values(4096):
+                CheckV1Cancellation(cancel_requested)
+                columns = tuple(zip(*batch, strict=True))
+                values = np.asarray(columns[3:], dtype=np.float64).T
+                flags = values[:, width].astype(np.int64)
+                if (
+                    not np.isfinite(values[:, :width + 1]).all()
+                    or np.isinf(values[:, width + 1:]).any()
+                    or np.any((flags < 0) | (flags > 1023) | (flags != values[:, width]))
+                ):
+                    raise ValueError("learned_rank_sample_features_invalid")
+                for position in range(width):
+                    negative = (flags & (1 << position)) != 0
+                    if np.any(values[negative, position] != 0.0):
+                        raise ValueError("learned_rank_sample_zero_signs_invalid")
+                    values[negative, position] = -0.0
+                day_numbers = np.asarray(columns[0], dtype=np.int64)
+                batch_codes = cast(tuple[str, ...], columns[1])
+                batch_industries = cast(tuple[str, ...], columns[2])
+                codes = np.asarray(tuple(map(code_values.setdefault, batch_codes, batch_codes)), dtype=object)
+                industries = np.asarray(tuple(map(industry_values.setdefault, batch_industries, batch_industries)), dtype=object)
+                for request, output in zip(requests, outputs, strict=True):
+                    target = width + (1 if request.strategy is Strategy.TOMORROW else 2)
+                    selected = np.flatnonzero(
+                        (day_numbers >= EncodeDate(request.dates[0]))
+                        & (day_numbers <= EncodeDate(request.dates[-1]))
+                        & ~np.isnan(values[:, target])
+                    )
+                    if not len(selected):
+                        continue
+                    first = len(output.codes)
+                    last = first + len(selected)
+                    output.features[first:last] = values[selected, :width]
+                    output.targets[first:last] = values[selected, target]
+                    output.codes.extend(codes[selected].tolist())
+                    output.industries.extend(industries[selected].tolist())
+                    days, group_counts = np.unique(day_numbers[selected], return_counts=True)
+                    for day_number, group_count in zip(days, group_counts, strict=True):
+                        day = date_values[int(day_number)]
+                        count = int(group_count)
+                        if not output.dates or output.dates[-1] != day:
+                            output.groups.append(0)
+                        output.groups[-1] += count
+                        output.dates.extend(repeat(day, count))
+        if any(len(output.codes) != len(output.targets) for output in outputs):
+            raise RuntimeError("learned_rank_sample_count_changed")
+        return tuple(
+            LearnedRankMatrix(
+                output.features, output.targets, tuple(output.codes), tuple(output.dates),
+                tuple(output.industries), tuple(output.groups),
+            ) for output in outputs
+        )
 
 
 @dataclass(frozen=True)
@@ -393,9 +473,11 @@ def _complete_point(row: HistoryTrainingRow) -> LearnedRankDailyPoint | None:
 
 
 __all__ = [
+    "LEARNED_RANK_SAMPLE_COLUMNS",
     "BuildLearnedRankSamples",
     "CheckV1Cancellation",
     "LearnedRankMatrix",
+    "LearnedRankMatrixRequest",
     "LearnedRankInputPort",
     "LearnedRankPartitionCoverage",
     "LearnedRankSampleCounts",

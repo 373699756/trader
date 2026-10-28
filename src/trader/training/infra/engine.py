@@ -73,6 +73,7 @@ from trader.training.infra.sample_builder import (
     TrainingSampleBuildRequest,
 )
 from trader.training.infra.sample_cache import PruneEmptySampleDirectories, SampleCacheBytes, TrainingSampleCache
+from trader.training.infra.sample_schema import TrainingFeatureNames
 from trader.training.infra.sample_index import (
     TRAINING_SAMPLE_CACHE_MIB,
     TRAINING_SAMPLE_MMAP_BYTES,
@@ -375,7 +376,7 @@ def _run_locked(
         with (
             SQLiteTrainingSampleIndex(
                 cache.path,
-                cache.feature_count,
+                cache.feature_names,
                 prepared_split_hash=split.content_hash,
                 sequence_layout=cache.sequence_layout,
             ) as samples,
@@ -466,7 +467,8 @@ def _sample_cache_for(
     split: TrainingDateSplit,
     request: ProfileTrainingRequest,
 ) -> TrainingSampleCache:
-    feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
+    feature_names = TrainingFeatureNames(request.profile.heads)
+    feature_count = len(feature_names)
     sequence_layout = SampleSequenceLayout(6, 60, 6) if request.profile.algorithm == "tcn" else None
     cache_identity = ContentHash(
         (
@@ -493,7 +495,7 @@ def _sample_cache_for(
     return TrainingSampleCache(
         request.sample_root,
         cache_identity,
-        feature_count,
+        feature_names,
         split.content_hash,
         sequence_layout=sequence_layout,
         progress=lambda phase, state, done, total: _publish(

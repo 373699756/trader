@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from trader.infra.settings import LoadRuntimeSettings
+from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.infra.storage_probe import StorageProbe
 from trader.infra.storage_types import StorageOverride
@@ -72,7 +73,8 @@ def ProbeV5Samples(
     with ExitStack() as scope:
         for name, layout in (("wide", None), ("compact", SampleSequenceLayout(6, 60, 6))):
             cache = TrainingSampleCache(
-                work / name, "synthetic-v5-samples", 366, split.content_hash, sequence_layout=layout
+                work / name, "synthetic-v5-samples", V5_TRAINING_PROFILE.heads[0].feature_manifest.names,
+                split.content_hash, sequence_layout=layout
             )
             measurements.append(_Measurement(name, cache, scope.enter_context(cache.open())))
         for index, batch in enumerate(source_batches):
@@ -178,9 +180,9 @@ def _read_wide_samples(path: Path) -> tuple[TrainingSample, ...]:
     with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=1.0)) as connection:
         connection.observe_progress(lambda: int(time.monotonic() >= deadline), 1000)
         industry = connection.run("SELECT industry FROM samples ORDER BY trade_date,code LIMIT 1").require_one()[0]
-        fields = ",".join(f"f{i}" for i in range(366))
+        fields = ",".join(V5_TRAINING_PROFILE.heads[0].feature_manifest.names)
         rows = connection.run(
-            f"SELECT trade_date,code,board,industry,average_amount_20d,{fields},"
+            f"SELECT trade_date,code,board,industry,avg_amount_20d,{fields},"
             "target_t1,target_t2,target_t3,target_t4,target_t5,target_d25_aggregate "
             "FROM samples INDEXED BY samples_industry_date WHERE industry=? ORDER BY trade_date,code LIMIT 4096",
             (industry,),
@@ -189,7 +191,7 @@ def _read_wide_samples(path: Path) -> tuple[TrainingSample, ...]:
             for row in rows:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("wide_sample_read_deadline")
-                day = date.fromisoformat(str(row[0]))
+                day = DecodeDate(row[0])
                 dates.add(day)
                 if len(dates) > 500:
                     break

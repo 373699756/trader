@@ -494,11 +494,11 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
         row = index._connection.run(
             "SELECT trade_date, target_t1, target_t2, target_t3, target_t4, target_t5, target_d25_aggregate "
             "FROM samples WHERE trade_date=?",
-            (dates[60].isoformat(),),
+            ((dates[60] - date(1970, 1, 1)).days,),
         ).fetchone()
 
         assert row is not None
-        assert row[0] == dates[60].isoformat()
+        assert row[0] == (dates[60] - date(1970, 1, 1)).days
         assert row[1:] == pytest.approx((0.0,) * 6)
         assert "raw_samples" not in {
             item[0] for item in index._connection.run("SELECT name FROM sqlite_master WHERE type='table'")

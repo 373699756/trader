@@ -37,7 +37,7 @@ from trader.training.infra.profile.v1.models import (
     PublishLearnedRankPair,
     ReadLearnedRankPair,
 )
-from trader.training.infra.profile.v1.samples import BuildLearnedRankSamples, LearnedRankSampleIndex
+from trader.training.infra.profile.v1.samples import BuildLearnedRankSamples, LearnedRankMatrixRequest, LearnedRankSampleIndex
 from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training
 
 
@@ -215,7 +215,7 @@ def test_v1_cache_inspection_propagates_cancellation_and_publication_busy(tmp_pa
         InspectV1Training(_History(), model_root, _settings())
 
 
-def test_v1_releases_each_head_memory_before_publishing(tmp_path, monkeypatch):
+def test_v1_reserves_shared_matrices_and_releases_memory_before_publishing(tmp_path, monkeypatch):
     import trader.training.infra.profile.v1.training as training
 
     leases = []
@@ -253,7 +253,7 @@ def test_v1_releases_each_head_memory_before_publishing(tmp_path, monkeypatch):
         settings=_settings(),
         memory_admission=Budget(),
     )
-    assert result.status == "engineering_ready" and len(leases) == 2 and not reserved_leases
+    assert result.status == "engineering_ready" and len(leases) == 1 and not reserved_leases
 
 
 def test_recent_split_matures_labels_and_never_overlaps_partitions() -> None:
@@ -284,7 +284,7 @@ def test_training_samples_use_prior_completed_sessions_and_explicit_missing_labe
     with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
         counts = BuildLearnedRankSamples(history, (splits[0], splits[1]), index)
         with ExitStack() as resources:
-            matrix = index.matrix(splits[0].fitting, Strategy.TOMORROW, tmp_path / "matrix", resources)
+            matrix = index.read_matrices((LearnedRankMatrixRequest(splits[0].fitting, Strategy.TOMORROW),), tmp_path / "matrix", resources)[0]
             position = history.dates.index(matrix.dates[0])
             expected = CalculateLearnedRankFeatures(
                 tuple(history.point(day, 0) for day in range(position - 251, position))
@@ -313,8 +313,10 @@ def test_v1_missing_t1_keeps_d25_and_fixed_calendar_partitions(tmp_path: Path) -
     with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
         counts = BuildLearnedRankSamples(MissingHistory(), (splits[0], splits[1]), index)
         with ExitStack() as resources:
-            tomorrow = index.matrix((anchor, missing_day), Strategy.TOMORROW, tmp_path / "t1", resources)
-            d25 = index.matrix((anchor, missing_day), Strategy.D25, tmp_path / "d25", resources)
+            tomorrow, d25 = index.read_matrices(
+                tuple(LearnedRankMatrixRequest((anchor, missing_day), strategy) for strategy in (Strategy.TOMORROW, Strategy.D25)),
+                tmp_path / "matrices", resources,
+            )
             assert tomorrow.dates.count(anchor) == len(history.codes) - 1 and missing_day in tomorrow.dates
             assert all(
                 code != history.codes[0]

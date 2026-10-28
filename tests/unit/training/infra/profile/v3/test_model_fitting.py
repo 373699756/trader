@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -34,13 +35,13 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
     settings = LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id)
 
     feature_count = max(contract.feature_positions) + 1
-    cache = TrainingSampleCache(tmp_path, contract.model_id, feature_count, split.content_hash)
-    with cache.open() as repository:
+    cache = TrainingSampleCache(tmp_path, contract.model_id, profile.heads[0].feature_manifest.names, split.content_hash)
+    with cache.open() as repository, ExitStack() as resources:
         for day_position, day in enumerate(usable_dates):
             repository.add_final(_samples_for_day(day, day_position, feature_count))
         repository.prepare_for_model_fitting(split)
         counts = repository.industry_counts(contract)[0]
-        data = repository.industry_data(counts, contract)
+        data = resources.enter_context(repository.industry_data(counts, contract))
         means = data.training.features.mean(axis=0)
         deviations = data.training.features.std(axis=0)
         scales = np.where(deviations > 1e-12, deviations, 1.0)
@@ -59,7 +60,7 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
         first = FitIndustryModels(repository, split, contract, settings.fitting)
         cache.seal(repository)
 
-    with cache.open() as repository:
+    with cache.open() as repository, ExitStack() as resources:
         assert cache.reused
         second = FitIndustryModels(repository, split, contract, settings.fitting)
 

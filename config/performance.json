@@ -8,6 +8,11 @@
       "warmup": 1,
       "measurement": 5
     },
+    "database": {
+      "sqlite_improvement_percent": 10,
+      "parquet_improvement_percent": 15,
+      "minimum_wins": 4
+    },
     "latency_p95_ms": {
       "market_normalization": 250,
       "market_merge": 600,

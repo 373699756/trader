@@ -41,6 +41,7 @@ from trader.training.infra.profile.v1.samples import (
     BuildLearnedRankSamples,
     CheckV1Cancellation,
     LearnedRankInputPort,
+    LearnedRankMatrixRequest,
     LearnedRankPartitionCoverage,
     LearnedRankSampleCounts,
     LearnedRankSampleIndex,
@@ -173,38 +174,35 @@ def RunV1Training(
                         return V1TrainingResult(
                             "failed", run_id, input_hash, peak_bytes, (), counts, failures, coverage
                         )
-                with closing(LearnedRankSampleIndex(sample_path, read_only=True)) as index:
-                    for strategy, split in zip((Strategy.TOMORROW, Strategy.D25), splits, strict=True):
+                strategies = (Strategy.TOMORROW, Strategy.D25)
+                # Both raw mapped heads plus one native fit fit within the existing
+                # 512-byte-per-row reservation; no second simultaneous fitter.
+                required_bytes = max(
+                    sum(item.rows for item in coverage if item.strategy is strategy) for strategy in strategies
+                ) * 512 + 256 * 1024**2
+                with (
+                    closing(LearnedRankSampleIndex(sample_path, read_only=True)) as index,
+                    memory_admission.reserve(required_bytes, lambda: CheckV1Cancellation(cancel_requested))
+                    if memory_admission is not None else nullcontext(),
+                    ExitStack() as resources,
+                ):
+                    requests = tuple(
+                        LearnedRankMatrixRequest(dates, strategy)
+                        for strategy, split in zip(strategies, splits, strict=True)
+                        for dates in (split.fitting, split.early_stopping, split.calibration, split.validation)
+                    )
+                    matrices = index.read_matrices(
+                        requests, directory / "matrices", resources, cancel_requested=cancel_requested
+                    )
+                    for number, (strategy, split) in enumerate(zip(strategies, splits, strict=True)):
                         CheckV1Cancellation(cancel_requested)
                         _progress(progress, "model_fit", "started", strategy)
-                        required_bytes = (
-                            sum(item.rows for item in coverage if item.strategy is strategy) * 512 + 256 * 1024**2
+                        heads.append(
+                            FitLearnedRankHead(
+                                strategy, split, LearnedRankPartitions(*matrices[number * 4:number * 4 + 4]),
+                                settings, cancel_requested=cancel_requested,
+                            )
                         )
-                        with (
-                            memory_admission.reserve(required_bytes, lambda: CheckV1Cancellation(cancel_requested))
-                            if memory_admission is not None
-                            else nullcontext(),
-                            ExitStack() as resources,
-                        ):
-                            matrices = tuple(
-                                index.matrix(dates, strategy, directory / strategy.value / name, resources)
-                                for name, dates in (
-                                    ("fitting", split.fitting),
-                                    ("early_stopping", split.early_stopping),
-                                    ("calibration", split.calibration),
-                                    ("validation", split.validation),
-                                )
-                            )
-                            heads.append(
-                                FitLearnedRankHead(
-                                    strategy,
-                                    split,
-                                    LearnedRankPartitions(*matrices),
-                                    settings,
-                                    cancel_requested=cancel_requested,
-                                )
-                            )
-                            del matrices
                         _progress(progress, "model_fit", "completed", strategy)
                 _progress(progress, "artifact_publish", "started", None)
                 pair = LearnedRankPair(
