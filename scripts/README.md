@@ -98,7 +98,7 @@ set external `--history-root`, `--train-root` and `--output`.
 .venv/bin/python3 scripts/check_refactor_quality.py --format write scripts/example.py
 ```
 
-格式规则：函数定义/调用5项及以上逐行（含self/cls，展开项各算一项，分隔符不算）；0–4项允许收拢，长行和注释仍可多行。静态`__all__`两项及以上逐行；动态导出拒绝猜测。Ruff统一120字符目标行宽、四空格、双引号与LF。实际新规则只在显式工具入口生效，存量代码尚未转换。完整命名规则见[Python工程规范](../.agents/skills/python-engineering-guide/references/coding-standard.md#3-命名格式与可读性)。
+格式规则：函数定义/调用5项及以上逐行（含self/cls，展开项各算一项，分隔符不算）；0–4项允许收拢，长行和注释仍可多行。f-string插值内部表达式交给Ruff，避免跨Python版本修改字符串内部语法；外部真实调用仍应用参数规则。静态`__all__`两项及以上逐行；动态导出拒绝猜测。Ruff统一120字符目标行宽、四空格、双引号与LF。实际新规则只在显式工具入口生效，存量代码尚未转换。完整命名规则见[Python工程规范](../.agents/skills/python-engineering-guide/references/coding-standard.md#3-命名格式与可读性)。
 
 审计输出NAME001–NAME011：合法标识符、禁词、内置遮蔽、易混淆字符、单字母语义、含糊职责、双下划线、命名形态、丢弃值用途、私有导出、未授权档位目录。error与review分开；review不会自动变成改名指令。`active`按词段禁用，不误报`inactive`；字符串及第三方原始导入不按项目定义检查，第三方别名属于项目定义。没有引用不等于私有；第三方覆盖或动态边界需要人工确认，工具不能证明所有可见性关系。
 

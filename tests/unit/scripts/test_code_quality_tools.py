@@ -53,6 +53,31 @@ def test_complex_syntax_preserves_ast_and_comments(source: str) -> None:
     assert ast.dump(ast.parse(result)) == ast.dump(ast.parse(source))
 
 
+@pytest.mark.parametrize("tail", ["", "Check()\n", "Check(first, second, third, fourth, fifth)\n"])
+def test_fstring_calls_do_not_borrow_later_parentheses(tail: str) -> None:
+    source = 'print(f"added: {sorted((actual - expected).elements())}")\n' + tail
+    result = _format(source)
+    assert ast.dump(ast.parse(result)) == ast.dump(ast.parse(source))
+    if "fifth" in tail:
+        assert "Check(\n" in result
+
+
+def test_fstring_interpolation_and_real_nested_calls_stay_separate() -> None:
+    source = '结果 = f"{Render(a, b, c, d, e):{Width(value)}}"\nFactory()(a, b, c, d, e)\n'
+    result = _format(source)
+    assert ast.dump(ast.parse(result)) == ast.dump(ast.parse(source))
+    assert "Factory()(\n" in result
+
+
+def test_full_format_check_with_fstring_is_read_only(workspace: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = workspace / "scripts/example.py"
+    path.write_text('text=f"{sorted(values)}"\nCheck()\n', encoding="utf-8")
+    before = path.read_bytes()
+    assert Main(["--format", "check", "--all"], root=workspace) == 1
+    assert "would change: scripts/example.py" in capsys.readouterr().out
+    assert path.read_bytes() == before
+
+
 def test_dynamic_exports_and_long_files_refused() -> None:
     with pytest.raises(ValueError, match="dynamic __all__"):
         _format("__all__ = BuildExports()\n")
