@@ -17,7 +17,7 @@ from typing import Literal, Protocol, cast
 
 from lightgbm.basic import LightGBMError
 
-from trader.download.domain.history_control import HistoryActiveSnapshot
+from trader.download.domain.history_control import HistorySnapshot
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import (
     HistoryMaintenanceAlreadyRunningError,
@@ -25,7 +25,7 @@ from trader.download.infra.history_control_index import (
 )
 from trader.download.infra.history_partition_repack import (
     HistoryPartitionRepackFenceError,
-    RequireHistoryPartitionRepackInactive,
+    RequireHistoryRepackIdle,
 )
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
@@ -91,10 +91,10 @@ class _TrainingInputSnapshot(TrainingHistorySource, Protocol):
     ) -> tuple[tuple[str, int], ...]: ...
 
     @property
-    def archive_root(self) -> Path: ...
+    def history_root(self) -> Path: ...
 
     @property
-    def active_snapshot(self) -> HistoryActiveSnapshot: ...
+    def published_snapshot(self) -> HistorySnapshot: ...
 
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
 
@@ -230,7 +230,7 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
     _publish(request.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
     _publish(request.progress, TomorrowTrainingProgress("input_read", "started", 0, 1))
     try:
-        archive = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
+        history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         heads = tuple(_unavailable_result(item, _reason(exc)) for item in request.contracts)
         return TrainingRunResult(None, "", 0, heads)
@@ -242,41 +242,41 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
         # bound even though the published snapshot itself is immutable.
         training_lock = request.train_root.parent / f".{request.profile.profile_id}.training.lock"
         with (
-            HistoryMaintenanceLock(archive.archive_root.with_name(".history.lock")),
+            HistoryMaintenanceLock(history.history_root.with_name(".history.lock")),
             HistoryMaintenanceLock(training_lock),
         ):
-            archive = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
+            history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
             try:
-                RequireHistoryPartitionRepackInactive(archive.archive_root)
+                RequireHistoryRepackIdle(history.history_root)
             except HistoryPartitionRepackFenceError:
-                if request.expected_history_snapshot_hash != archive.snapshot.active_snapshot_hash:
+                if request.expected_history_snapshot_hash != history.snapshot.snapshot_hash:
                     raise
-            return _run_locked(archive, request)
+            return _run_locked(history, request)
     except HistoryMaintenanceAlreadyRunningError:
         heads = tuple(
-            _blocked_from_snapshot(item, archive.snapshot, "history_maintenance_running") for item in request.contracts
+            _blocked_from_snapshot(item, history.snapshot, "history_maintenance_running") for item in request.contracts
         )
-        return TrainingRunResult(None, archive.snapshot.active_snapshot_hash, 0, heads)
+        return TrainingRunResult(None, history.snapshot.snapshot_hash, 0, heads)
     except HistoryPartitionRepackFenceError:
         heads = tuple(
-            _blocked_from_snapshot(item, archive.snapshot, "history_archive_repack_activation_pending")
+            _blocked_from_snapshot(item, history.snapshot, "history_archive_repack_activation_pending")
             for item in request.contracts
         )
-        return TrainingRunResult(None, archive.snapshot.active_snapshot_hash, 0, heads)
+        return TrainingRunResult(None, history.snapshot.snapshot_hash, 0, heads)
 
 
 def FitSelectedProfile(
-    archive: _TrainingInputSnapshot,
+    history: _TrainingInputSnapshot,
     request: ProfileTrainingRequest,
     cache: TrainingSampleCache,
     aligned_rows: Iterator[HistoryTrainingRow],
 ) -> TrainingRunResult:
     """Caller owns history/profile locks; connections belong exclusively to this worker."""
-    return _run_locked(archive, request, prepared_cache=cache, aligned_rows=aligned_rows)
+    return _run_locked(history, request, prepared_cache=cache, aligned_rows=aligned_rows)
 
 
 def InspectSelectedProfile(
-    archive: _TrainingInputSnapshot,
+    history: _TrainingInputSnapshot,
     request: ProfileTrainingRequest,
 ) -> tuple[ProfileTrainingRequest, TrainingSampleCache, frozenset[date], TrainingRunResult | None]:
     request = replace(
@@ -284,46 +284,46 @@ def InspectSelectedProfile(
         train_root=request.train_root / request.profile.output_directory,
         sample_root=request.sample_root / request.profile.output_directory,
     )
-    split, reason = _prepare_locked_split(archive.snapshot, request.profile, request.settings)
+    split, reason = _prepare_locked_split(history.snapshot, request.profile, request.settings)
     if split is None:
         raise ValueError(reason)
-    cache = _sample_cache_for(archive.snapshot, split, request)
-    reused = _reuse_profile(archive.snapshot, request)
+    cache = _sample_cache_for(history.snapshot, split, request)
+    reused = _reuse_profile(history.snapshot, request)
     dates = frozenset() if reused is not None or cache.inspect() else TomorrowTrainingWindow(split).readable_dates
     return request, cache, dates, reused
 
 
 def _run_locked(
-    archive: _TrainingInputSnapshot,
+    history: _TrainingInputSnapshot,
     request: ProfileTrainingRequest,
     *,
     prepared_cache: TrainingSampleCache | None = None,
     aligned_rows: Iterator[HistoryTrainingRow] | None = None,
 ) -> TrainingRunResult:
-    archive, target_matches = _reopen_expected_snapshot(archive, request.expected_history_snapshot_hash)
+    history, target_matches = _reopen_expected_snapshot(history, request.expected_history_snapshot_hash)
     if not target_matches:
         heads = tuple(
-            _blocked_from_snapshot(item, archive.snapshot, "history_archive_repack_target_mismatch")
+            _blocked_from_snapshot(item, history.snapshot, "history_archive_repack_target_mismatch")
             for item in request.contracts
         )
-        return TrainingRunResult(None, archive.snapshot.active_snapshot_hash, 0, heads)
-    snapshot = archive.snapshot
+        return TrainingRunResult(None, history.snapshot.snapshot_hash, 0, heads)
+    snapshot = history.snapshot
     split, preparation_failure = _prepare_locked_split(snapshot, request.profile, request.settings)
     if split is None:
         heads = tuple(_blocked_from_snapshot(item, snapshot, preparation_failure) for item in request.contracts)
-        return TrainingRunResult(None, snapshot.active_snapshot_hash, 0, heads)
+        return TrainingRunResult(None, snapshot.snapshot_hash, 0, heads)
     plans, completed = _build_head_plans(snapshot, request)
     if not plans:
         ordered = _ordered_results(request.contracts, completed)
-        return TrainingRunResult(None, snapshot.active_snapshot_hash, 0, ordered)
-    preflight_result = _preflight_failure_result(archive, snapshot, plans, request.contracts, completed)
+        return TrainingRunResult(None, snapshot.snapshot_hash, 0, ordered)
+    preflight_result = _preflight_failure_result(history, snapshot, plans, request.contracts, completed)
     if preflight_result is not None:
         return preflight_result
     _publish(request.progress, TomorrowTrainingProgress("training_preparation", "completed", 1, 1))
     run_id = ContentHash(
         (
             request.profile.profile_id,
-            snapshot.active_snapshot_hash,
+            snapshot.snapshot_hash,
             split.content_hash,
             tuple((item.contract.strategy.value, item.training_contract_hash) for item in plans),
         )
@@ -333,7 +333,7 @@ def _run_locked(
     coverage: tuple[SampleCoverage, ...] = ()
     try:
         training_window = _require_industry_coverage(
-            archive,
+            history,
             split,
             request.profile.algorithm,
             request.settings.fitting.minimum_industry_training_rows,
@@ -346,7 +346,7 @@ def _run_locked(
             _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
             metrics = _prepare_samples(
                 TrainingSampleBuildRequest(
-                    archive, snapshot.training_codes, training_window, samples, request.profile, request.progress
+                    history, snapshot.training_codes, training_window, samples, request.profile, request.progress
                 ),
                 cache,
                 aligned_rows=aligned_rows,
@@ -455,7 +455,7 @@ def _run_locked(
                     )
                 )
     ordered = _ordered_results(request.contracts, completed)
-    return TrainingRunResult(run_id, snapshot.active_snapshot_hash, peak_bytes, ordered)
+    return TrainingRunResult(run_id, snapshot.snapshot_hash, peak_bytes, ordered)
 
 
 def _sample_cache_for(
@@ -468,7 +468,7 @@ def _sample_cache_for(
     cache_identity = ContentHash(
         (
             TrainingImplementationIdentity(),
-            snapshot.active_snapshot_hash,
+            snapshot.snapshot_hash,
             snapshot.input_descriptor_hash,
             request.profile.profile_id,
             split.content_hash,
@@ -510,25 +510,25 @@ def _prepare_samples(
 ) -> tuple[TargetMetric, ...]:
     if not cache.reused:
         BuildTrainingSamples(request, aligned_rows=aligned_rows)
-    if request.repository.count() == 0:
+    if request.index.count() == 0:
         raise ValueError("profile_training_rows_empty")
     if not cache.reused:
-        cache.seal(request.repository)
+        cache.seal(request.index)
     _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
-    metrics = request.repository.validation_target_metrics()
+    metrics = request.index.validation_target_metrics()
     _publish(request.progress, TomorrowTrainingProgress("target_statistics", "completed", 1, 1))
     return metrics
 
 
 def _require_industry_coverage(
-    archive: _TrainingInputSnapshot,
+    history: _TrainingInputSnapshot,
     split: TrainingDateSplit,
     algorithm: Literal["lightgbm", "ridge", "tcn"],
     minimum_training_rows: int,
 ) -> TomorrowTrainingWindow:
     window = TomorrowTrainingWindow(split)
     # Calendar continuity is checked by the aligner; these are signal-fact bounds.
-    if not archive.has_industry_window(window.readable_dates, 1):
+    if not history.has_industry_window(window.readable_dates, 1):
         raise ValueError("history_industry_coverage_insufficient")
     for anchors in (
         split.model_fit_dates,
@@ -537,22 +537,22 @@ def _require_industry_coverage(
         split.confirmation_dates,
         split.daily_proxy_holdout_dates,
     ):
-        if not archive.has_industry_window(window.readable_dates, 1, anchor_dates=frozenset(anchors)):
+        if not history.has_industry_window(window.readable_dates, 1, anchor_dates=frozenset(anchors)):
             raise ValueError("history_industry_split_coverage_insufficient")
-    bounds = archive.industry_sample_upper_bounds(window.readable_dates, 1, frozenset(split.model_fit_dates))
+    bounds = history.industry_sample_upper_bounds(window.readable_dates, 1, frozenset(split.model_fit_dates))
     if not any(count >= minimum_training_rows for _, count in bounds):
         raise ValueError("history_industry_training_rows_insufficient")
     return window
 
 
 def _reopen_expected_snapshot(
-    archive: _TrainingInputSnapshot,
+    history: _TrainingInputSnapshot,
     expected_snapshot_hash: str | None,
 ) -> tuple[_TrainingInputSnapshot, bool]:
     if expected_snapshot_hash is None:
-        return archive, True
-    reopened = SQLiteHistoryTrainingInputSnapshot.open(archive.archive_root)
-    return reopened, reopened.snapshot.active_snapshot_hash == expected_snapshot_hash
+        return history, True
+    reopened = SQLiteHistoryTrainingInputSnapshot.open(history.history_root)
+    return reopened, reopened.snapshot.snapshot_hash == expected_snapshot_hash
 
 
 def _prepare_locked_split(
@@ -563,7 +563,7 @@ def _prepare_locked_split(
     try:
         split = BuildTrainingDateSplit(
             snapshot.calendar.open_dates,
-            parent_manifest_hash=snapshot.active_snapshot_hash,
+            parent_manifest_hash=snapshot.snapshot_hash,
             fit_dates=settings.fit_dates,
             annual_fit=profile.profile_id == "v5",
             early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
@@ -591,15 +591,15 @@ def _build_head_plans(
 
 
 def _preflight_failure_result(
-    archive: _TrainingInputSnapshot,
+    history: _TrainingInputSnapshot,
     snapshot: HistoryTrainingInputSnapshot,
     plans: list[_HeadPlan],
     contracts: tuple[TrainedHeadContract, ...],
     completed: list[HeadTrainingResult],
 ) -> TrainingRunResult | None:
     failures = EvaluateTomorrowTrainingInput(
-        archive.describe_frozen_daily_input(),
-        expected_manifest_hash=snapshot.active_snapshot_hash,
+        history.describe_frozen_daily_input(),
+        expected_manifest_hash=snapshot.snapshot_hash,
         expected_source_cutoff=snapshot.source_cutoff,
     ).failure_reasons
     if not failures:
@@ -613,7 +613,7 @@ def _preflight_failure_result(
     )
     return TrainingRunResult(
         None,
-        snapshot.active_snapshot_hash,
+        snapshot.snapshot_hash,
         0,
         _ordered_results(contracts, completed),
     )
@@ -671,7 +671,7 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
                 "rejected",
                 snapshot.input_scope,
                 request.run_id,
-                snapshot.active_snapshot_hash,
+                snapshot.snapshot_hash,
                 len(snapshot.training_codes),
                 snapshot.universe_count,
                 report_hash,
@@ -697,7 +697,7 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
             "engineering_ready",
             snapshot.input_scope,
             request.run_id,
-            snapshot.active_snapshot_hash,
+            snapshot.snapshot_hash,
             len(snapshot.training_codes),
             snapshot.universe_count,
             report_hash,
@@ -815,7 +815,7 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
         "profile_id": profile.profile_id,
         "strategy_head": contract.strategy.value,
         "training_input_scope": snapshot.input_scope,
-        "training_input_hash": snapshot.active_snapshot_hash,
+        "training_input_hash": snapshot.snapshot_hash,
         "training_run_hash": context.training_run_hash,
         "label_cutoff": context.label_cutoff.isoformat(),
         "source_identity_hash": snapshot.source_identity_hash,
@@ -842,7 +842,7 @@ def _common_document(context: _TrainingRunContext) -> dict[str, object]:
     snapshot = context.snapshot
     return {
         "training_input_scope": snapshot.input_scope,
-        "training_input_hash": snapshot.active_snapshot_hash,
+        "training_input_hash": snapshot.snapshot_hash,
         "training_run_hash": context.training_run_hash,
         "label_cutoff": context.label_cutoff.isoformat(),
         "source_identity_hash": snapshot.source_identity_hash,
@@ -866,7 +866,7 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
     heads: list[HeadTrainingResult] = []
     for bundle, contract in zip(bundles, request.contracts, strict=True):
         if (
-            bundle.training_input_hash != snapshot.active_snapshot_hash
+            bundle.training_input_hash != snapshot.snapshot_hash
             or bundle.label_cutoff != _mature_label_cutoff(snapshot, contract)
             or bundle.training_contract_hash != _training_contract_hash(request.profile, contract, request.settings)
         ):
@@ -890,7 +890,7 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
                 bundle.label_cutoff,
             )
         )
-    return TrainingRunResult(bundles[0].training_run_hash, snapshot.active_snapshot_hash, 0, tuple(heads), reused=True)
+    return TrainingRunResult(bundles[0].training_run_hash, snapshot.snapshot_hash, 0, tuple(heads), reused=True)
 
 
 def _training_contract_hash(
@@ -993,7 +993,7 @@ def _base_result(
         status,
         snapshot.input_scope,
         None,
-        snapshot.active_snapshot_hash,
+        snapshot.snapshot_hash,
         len(snapshot.training_codes),
         snapshot.universe_count,
         "",

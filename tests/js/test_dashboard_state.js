@@ -115,7 +115,7 @@ assert.strictEqual(state.descriptions.long, "长期研究 · 名单资格待核�
 const historyLoadingStatus = { market_data: {
   published_history_state: "unavailable",
   history_maintenance_state: "loading",
-  history_maintenance_stage: "reading_active_snapshot",
+  history_maintenance_stage: "reading_published_snapshot",
 } };
 const historyLoadingPayload = { strategy: "tomorrow", status: "not_ready", trade_date: "2026-10-08" };
 for (const strategy of ["tomorrow", "d25"]) {
@@ -155,7 +155,7 @@ for (const payload of [
 }
 assert.notStrictEqual(
   sandbox.window.TraderStatusView.recommendationReadinessStatus(historyLoadingPayload, {
-    market_data: { ...historyLoadingStatus.market_data, published_history_state: "active" },
+    market_data: { ...historyLoadingStatus.market_data, published_history_state: "published" },
   })?.primary_blocker,
   "history_projection_loading",
 );

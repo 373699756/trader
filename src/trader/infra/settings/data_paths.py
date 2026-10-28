@@ -21,6 +21,10 @@ class DataPaths:
         return self.root / "market/reference"
 
     @property
+    def reference_database(self) -> Path:
+        return self.reference / "company_st.sqlite3"
+
+    @property
     def company(self) -> Path:
         return self.root / "company/company_facts.sqlite3"
 

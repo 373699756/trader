@@ -1,4 +1,4 @@
-"""Read-only historical-industry qualification over the active monthly archive."""
+"""Read-only historical-industry qualification over the published monthly history."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.infra.history_snapshot_inspection import (
     HistorySnapshotInspectionError,
     LoadPublishedHistorySnapshot,
-    VerifyActiveHistorySnapshot,
+    VerifyPublishedHistorySnapshot,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.training.domain.evaluation.historical_industry_facts import (
@@ -32,20 +32,20 @@ def AuditPublishedHistoricalIndustryFacts(
     required_sample_codes: int = 300,
     tushare_access_points: int = 0,
 ) -> HistoricalIndustryDatasetReport:
-    """Audit the immutable active snapshot without changing its partitions."""
+    """Audit the immutable published snapshot without changing its partitions."""
 
-    archive = LoadPublishedHistorySnapshot(history_root)
-    VerifyActiveHistorySnapshot(archive)
-    reference = HistorySnapshotReader(archive.root).reference_index(archive.snapshot).reference
-    facts = _industry_facts(reference, archive.snapshot.content_hash)
+    history = LoadPublishedHistorySnapshot(history_root)
+    VerifyPublishedHistorySnapshot(history)
+    reference = HistorySnapshotReader(history.root).reference_index(history.snapshot).reference
+    facts = _industry_facts(reference, history.snapshot.content_hash)
     windows = tuple(
-        _stock_window(item.code, item.board, item.listed_on, item.delisted_on, archive.calendar.open_dates)
-        for item in archive.universe.securities
+        _stock_window(item.code, item.board, item.listed_on, item.delisted_on, history.calendar.open_dates)
+        for item in history.universe.securities
     )
     baostock = BuildHistoricalIndustrySourceAudit(
         HistoricalIndustrySourceContract(
             "baostock_archived_industry",
-            archive.snapshot.content_hash,
+            history.snapshot.content_hash,
             code_available=True,
             industry_available=True,
             classification_available=True,
@@ -81,7 +81,7 @@ def AuditPublishedHistoricalIndustryFacts(
         required_sample_codes=required_sample_codes,
     )
     return BuildHistoricalIndustryDatasetReport(
-        archive.snapshot.content_hash,
+        history.snapshot.content_hash,
         (baostock, tushare),
         MergeHistoricalIndustryFacts(facts),
     )

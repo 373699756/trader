@@ -20,7 +20,7 @@ class ReferencePreparationDependencies:
     st_evidence: Callable[[tuple[BaoStockSecurity, ...], date], tuple[HistoryStEvidence, ...]]
     calendar: Callable[[], tuple[date, ...]]
     industries: Callable[[datetime], tuple[IndustryVersionPort, ...]]
-    publish: Callable[[PreparedReference], object]
+    publish: Callable[[PreparedReference, tuple[HistoryStEvidence, ...]], object]
     cancelled: Callable[[], bool]
 
 
@@ -31,9 +31,8 @@ def PrepareReference(
 ) -> PreparedReference:
     if dependencies.cancelled():
         raise RuntimeError("reference_preparation_cancelled")
-    evidence = tuple(
-        replace(item, checked_on=observed_at.date()) for item in dependencies.st_evidence(universe, observed_at.date())
-    )
+    source_evidence = dependencies.st_evidence(universe, observed_at.date())
+    evidence = tuple(replace(item, checked_on=observed_at.date()) for item in source_evidence)
     calendar = dependencies.calendar()
     try:
         industries = dependencies.industries(observed_at)
@@ -48,7 +47,7 @@ def PrepareReference(
     )
     if dependencies.cancelled():
         raise RuntimeError("reference_preparation_cancelled")
-    dependencies.publish(reference)
+    dependencies.publish(reference, source_evidence)
     return reference
 
 

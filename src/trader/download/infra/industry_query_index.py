@@ -1,4 +1,4 @@
-"""SQLite primitive for dated, digest-verified JSON query evidence."""
+"""Download-owned, digest-verified supplier industry queries."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.infra.sqlite_codec import DecodeHash, EncodeHash
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
-    SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
     SqliteSession,
@@ -19,17 +19,18 @@ from trader.infra.sqlite_connection import (
 )
 
 _SCHEMA = SqliteSchema(
-    None,
+    1,
     tuple(
-        f"CREATE TABLE IF NOT EXISTS {table} (day TEXT PRIMARY KEY, source TEXT NOT NULL, "
-        "observed_on TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID"
-        for table in ("queries", "current_industry_queries")
+        f"CREATE TABLE {table} ({date_column} TEXT PRIMARY KEY, source TEXT NOT NULL, "
+        "checked_date TEXT NOT NULL, members_json TEXT NOT NULL, "
+        "content_hash BLOB NOT NULL CHECK(length(content_hash)=32)) WITHOUT ROWID"
+        for table, date_column in (("industry_query", "anchor_date"), ("current_industry_query", "as_of_date"))
     ),
 )
 
 
 @dataclass(frozen=True)
-class DatedQuery:
+class IndustryQuery:
     day: date
     source: str
     observed_on: date
@@ -38,18 +39,22 @@ class DatedQuery:
 
 
 @dataclass(frozen=True)
-class SQLiteDatedQueryCache:
+class SQLiteIndustryQueryIndex:
     path: Path
     contract: str
-    table: str = "queries"
+    table: str = "industry_query"
 
     def __post_init__(self) -> None:
-        if self.table not in {"queries", "current_industry_queries"}:
-            raise ValueError("dated_query_cache_table_invalid")
+        if self.table not in {"industry_query", "current_industry_query"}:
+            raise ValueError("industry_query_table_invalid")
+
+    @property
+    def _date_column(self) -> str:
+        return "anchor_date" if self.table == "industry_query" else "as_of_date"
 
     def prepare(self) -> None:
         if self.path.is_symlink() or self.path.parent.is_symlink():
-            raise ValueError("dated_query_cache_path_unsafe")
+            raise ValueError("industry_query_path_unsafe")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with SqliteSession(self.path, SqliteConnectionOptions(timeout_seconds=5)) as connection:
@@ -57,36 +62,36 @@ class SQLiteDatedQueryCache:
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
 
-    def read(self, day: date, as_of: date, *, source: str | None = None) -> DatedQuery | None:
-        return self._query("day=?", (day.isoformat(),), as_of, source)
+    def read(self, day: date, as_of: date, *, source: str | None = None) -> IndustryQuery | None:
+        return self._query(f"{self._date_column}=?", (day.isoformat(),), as_of, source)
 
-    def latest(self, as_of: date) -> DatedQuery | None:
+    def latest(self, as_of: date) -> IndustryQuery | None:
         if not self.path.is_file():
             return None
         try:
             with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
-                if not self._table_exists(connection):
-                    return None
+                EnsureSqliteSchema(connection, _SCHEMA)
                 rows = connection.run(
-                    f"SELECT day,source,observed_on,payload,digest FROM {self.table} "
-                    "WHERE day<=? AND observed_on<=? ORDER BY day DESC LIMIT 256",
+                    f"SELECT {self._date_column},source,checked_date,members_json,content_hash FROM {self.table} "
+                    f"WHERE {self._date_column}<=? AND checked_date<=? ORDER BY {self._date_column} DESC LIMIT 256",
                     (as_of.isoformat(), as_of.isoformat()),
                 ).fetchall()
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
         return next((query for row in rows if (query := self._verified(row, as_of)) is not None), None)
 
-    def _query(self, predicate: str, parameters: tuple[str, ...], as_of: date, source: str | None) -> DatedQuery | None:
+    def _query(
+        self, predicate: str, parameters: tuple[str, ...], as_of: date, source: str | None
+    ) -> IndustryQuery | None:
         if not self.path.is_file():
             return None
         try:
             with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
-                if not self._table_exists(connection):
-                    return None
+                EnsureSqliteSchema(connection, _SCHEMA)
                 row = connection.run(
-                    f"SELECT day,source,observed_on,payload,digest FROM {self.table} WHERE "
+                    f"SELECT {self._date_column},source,checked_date,members_json,content_hash FROM {self.table} WHERE "
                     + predicate
-                    + " ORDER BY day DESC LIMIT 1",
+                    + f" ORDER BY {self._date_column} DESC LIMIT 1",
                     parameters,
                 ).fetchone()
         except sqlite3.Error as exc:
@@ -95,15 +100,11 @@ class SQLiteDatedQueryCache:
             return None
         return self._verified(row, as_of)
 
-    def _table_exists(self, connection: SqliteConnection) -> bool:
-        return (
-            connection.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (self.table,)).fetchone()
-            is not None
-        )
-
-    def _verified(self, row: sqlite3.Row, as_of: date) -> DatedQuery | None:
+    def _verified(self, row: sqlite3.Row, as_of: date) -> IndustryQuery | None:
         try:
-            query = DatedQuery(date.fromisoformat(row[0]), row[1], date.fromisoformat(row[2]), row[3], row[4])
+            query = IndustryQuery(
+                date.fromisoformat(row[0]), row[1], date.fromisoformat(row[2]), row[3], DecodeHash(row[4])
+            )
             if not query.day <= query.observed_on <= as_of:
                 return None
             if query.digest != self._digest(query.source, query.day, query.observed_on, query.payload):
@@ -128,7 +129,7 @@ class SQLiteDatedQueryCache:
                         source,
                         observed_on.isoformat(),
                         payload,
-                        self._digest(source, day, observed_on, payload),
+                        EncodeHash(self._digest(source, day, observed_on, payload)),
                     ),
                 )
         except sqlite3.Error as exc:
@@ -140,4 +141,4 @@ class SQLiteDatedQueryCache:
         ).hexdigest()
 
 
-__all__ = ["DatedQuery", "SQLiteDatedQueryCache"]
+__all__ = ["IndustryQuery", "SQLiteIndustryQueryIndex"]

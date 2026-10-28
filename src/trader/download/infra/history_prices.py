@@ -27,6 +27,7 @@ from trader.download.infra.history_revision_codec import (
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_sqlite_read_connection import OpenHistoryPriceReader, WatchHistoryRead
 from trader.download.infra.price_columns import PRICE_COLUMNS, PRICE_SQL, PriceValues
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
@@ -42,49 +43,52 @@ _CODE = re.compile(r"^[0-9]{6}$")
 HistoryPartitionVerificationPhase = Literal["hash", "integrity", "row_count", "logical"]
 HistoryPartitionVerificationProgress = Callable[[int, int, HistoryPartitionVerificationPhase], None]
 _SCHEMA_SQL = f"""
-CREATE TABLE IF NOT EXISTS metadata (
+CREATE TABLE IF NOT EXISTS schema_contract (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_identity TEXT NOT NULL,
-    calendar_year INTEGER NOT NULL
+    schema_id TEXT NOT NULL,
+    calendar_year INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL CHECK(schema_version=2)
 );
-CREATE TABLE IF NOT EXISTS daily_records (
-    trade_date TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS daily_price_revision (
+    trade_date INTEGER NOT NULL,
     code TEXT NOT NULL,
     revision_id TEXT NOT NULL,
     first_seen_sequence INTEGER NOT NULL CHECK(first_seen_sequence > 0),
     board TEXT NOT NULL,
     {PRICE_SQL},
-    content_hash TEXT NOT NULL,
+    content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
     PRIMARY KEY (trade_date, code, revision_id)
 ) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS daily_observations (
-    trade_date TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS daily_price_observation (
+    trade_date INTEGER NOT NULL,
     code TEXT NOT NULL,
     sync_sequence INTEGER NOT NULL CHECK(sync_sequence > 0),
     revision_id TEXT NOT NULL,
     PRIMARY KEY (trade_date, code, sync_sequence),
     FOREIGN KEY (trade_date, code, revision_id)
-        REFERENCES daily_records(trade_date, code, revision_id)
+        REFERENCES daily_price_revision(trade_date, code, revision_id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS history_price_code_date_idx
-ON daily_records(code, trade_date, first_seen_sequence DESC, revision_id);
+ON daily_price_revision(code, trade_date, first_seen_sequence DESC, revision_id);
 CREATE INDEX IF NOT EXISTS history_price_date_board_code_idx
-ON daily_records(trade_date, board, code, first_seen_sequence DESC, revision_id);
+ON daily_price_revision(trade_date, board, code, first_seen_sequence DESC, revision_id);
 CREATE INDEX IF NOT EXISTS history_price_observation_code_date_idx
-ON daily_observations(code, trade_date, sync_sequence DESC, revision_id);
-CREATE INDEX IF NOT EXISTS history_price_sequence_idx ON daily_observations(sync_sequence);
+ON daily_price_observation(code, trade_date, sync_sequence DESC, revision_id);
+CREATE INDEX IF NOT EXISTS history_price_sequence_idx ON daily_price_observation(sync_sequence);
 CREATE INDEX IF NOT EXISTS history_price_price_gap_idx
-ON daily_records(code, trade_date, revision_id)
+ON daily_price_revision(code, trade_date, revision_id)
 WHERE status IN ('unknown_missing','qfq_missing','unadjusted_missing');
 """
-_SCHEMA = SqliteSchema(1, tuple(statement.strip() for statement in _SCHEMA_SQL.split(";") if statement.strip()))
+_SCHEMA = SqliteSchema(2, tuple(statement.strip() for statement in _SCHEMA_SQL.split(";") if statement.strip()))
 _PRICE_SELECT = ", ".join(f"records.{name}" for name in PRICE_COLUMNS)
 _REVISION_COLUMNS = (
     "records.trade_date, records.code, records.revision_id, records.first_seen_sequence, records.board, "
     + _PRICE_SELECT
     + ", records.content_hash"
 )
-_INSERT_RECORD = "INSERT INTO daily_records VALUES (" + ",".join("?" for _ in range(29)) + ")"
+_INSERT_RECORD = (
+    "INSERT INTO daily_price_revision VALUES (" + ",".join("?" for _ in range(6 + len(PRICE_COLUMNS))) + ")"
+)
 _LATEST_WINDOW = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
@@ -92,13 +96,13 @@ WITH latest AS (
                PARTITION BY trade_date, code
                ORDER BY sync_sequence DESC
            ) AS revision_rank
-    FROM daily_observations
+    FROM daily_price_observation
     WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ?
 {observation_filter}
 )
 SELECT {columns}
 FROM latest
-JOIN daily_records AS records
+JOIN daily_price_revision AS records
   ON records.trade_date = latest.trade_date
  AND records.code = latest.code
  AND records.revision_id = latest.revision_id
@@ -109,11 +113,11 @@ ORDER BY records.trade_date, records.code
 _LATEST_RANGE_SQL = _LATEST_WINDOW.format(columns=_REVISION_COLUMNS, observation_filter="", record_filter="")
 _RANGE_BY_CODE = """
 SELECT {columns}
-FROM daily_records AS records INDEXED BY {index}
+FROM daily_price_revision AS records INDEXED BY {index}
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
       SELECT observed.revision_id
-      FROM daily_observations AS observed INDEXED BY {observation_index}
+      FROM daily_price_observation AS observed INDEXED BY {observation_index}
       WHERE observed.code = records.code AND observed.trade_date = records.trade_date
         AND observed.sync_sequence <= ?
       ORDER BY observed.sync_sequence DESC
@@ -129,8 +133,8 @@ _LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
 # Published month windows must seek dates in the annual file, then sort only the requested rows.
 _PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
     columns=_REVISION_COLUMNS,
-    index="sqlite_autoindex_daily_records_1",
-    observation_index="sqlite_autoindex_daily_observations_1",
+    index="sqlite_autoindex_daily_price_revision_1",
+    observation_index="sqlite_autoindex_daily_price_observation_1",
 )
 _LATEST_SHADOW_SQL = """
 WITH latest AS (
@@ -139,14 +143,14 @@ WITH latest AS (
                PARTITION BY trade_date, code
                ORDER BY sync_sequence DESC
            ) AS revision_rank
-    FROM daily_observations
+    FROM daily_price_observation
     WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ?
 )
 SELECT records.trade_date, records.code,
        records.raw_present,
        records.qfq_present
 FROM latest
-JOIN daily_records AS records
+JOIN daily_price_revision AS records
   ON records.trade_date = latest.trade_date
  AND records.code = latest.code
  AND records.revision_id = latest.revision_id
@@ -184,11 +188,11 @@ SELECT records.trade_date,
        records.qfq_high,
        records.qfq_low,
        records.raw_volume
-FROM daily_records AS records
+FROM daily_price_revision AS records
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
       SELECT observed.revision_id
-      FROM daily_observations AS observed INDEXED BY sqlite_autoindex_daily_observations_1
+      FROM daily_price_observation AS observed INDEXED BY sqlite_autoindex_daily_price_observation_1
       WHERE observed.code = records.code AND observed.trade_date = records.trade_date
         AND observed.sync_sequence <= ?
       ORDER BY observed.sync_sequence DESC
@@ -197,13 +201,13 @@ WHERE records.trade_date BETWEEN ? AND ?
 ORDER BY records.trade_date, records.code
 """
 _COUNT_CODE_BATCH_SIZE = 500
-_ALL_REVISION_SCAN_SQL = "SELECT " + _REVISION_COLUMNS + " FROM daily_records AS records"
+_ALL_REVISION_SCAN_SQL = "SELECT " + _REVISION_COLUMNS + " FROM daily_price_revision AS records"
 _EXISTING_OBSERVATIONS_SQL = """
 SELECT observations.trade_date, observations.code, observations.sync_sequence, observations.revision_id,
        records.status
 FROM requested_history_revisions AS requested
-CROSS JOIN daily_observations AS observations
-LEFT JOIN daily_records AS records
+CROSS JOIN daily_price_observation AS observations
+LEFT JOIN daily_price_revision AS records
   ON records.trade_date=observations.trade_date
  AND records.code=observations.code
  AND records.revision_id=observations.revision_id
@@ -215,7 +219,7 @@ _EXISTING_REVISIONS_SQL = f"""
 SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
        {_PRICE_SELECT}, records.content_hash
 FROM requested_history_revisions AS requested
-CROSS JOIN daily_records AS records
+CROSS JOIN daily_price_revision AS records
 WHERE records.trade_date=requested.trade_date
   AND records.code=requested.code
   AND records.revision_id=requested.revision_id
@@ -223,7 +227,7 @@ WHERE records.trade_date=requested.trade_date
 _LATEST_SEQUENCES_SQL = """
 SELECT requested.trade_date, requested.code, MAX(observations.sync_sequence)
 FROM requested_history_revisions AS requested
-CROSS JOIN daily_observations AS observations
+CROSS JOIN daily_price_observation AS observations
 WHERE observations.trade_date=requested.trade_date
   AND observations.code=requested.code
 GROUP BY requested.trade_date, requested.code
@@ -233,15 +237,15 @@ GROUP BY requested.trade_date, requested.code
 @dataclass(frozen=True)
 class _EncodedRevision:
     value: HistoryRevision
-    trade_date: str
+    trade_date: int
     price_values: PriceValues
 
     @property
-    def observation_key(self) -> tuple[str, str, int]:
+    def observation_key(self) -> tuple[int, str, int]:
         return self.trade_date, self.value.code, self.value.first_seen_sequence
 
     @property
-    def revision_key(self) -> tuple[str, str, str]:
+    def revision_key(self) -> tuple[int, str, str]:
         return self.trade_date, self.value.code, self.value.revision_id
 
 
@@ -271,14 +275,14 @@ class HistoryPricePartition:
         self._statement_trace = statement_trace
         self._activity = activity
 
-    def _month_bounds(self) -> tuple[str, str]:
+    def _month_bounds(self) -> tuple[int, int]:
         start = date(self._calendar_year, self._calendar_month, 1)
         end = date(self._calendar_year + (self._calendar_month == 12), self._calendar_month % 12 + 1, 1)
-        return start.isoformat(), end.isoformat()
+        return EncodeDate(start), EncodeDate(end)
 
     def _clip_range(self, start: date, end: date) -> tuple[date, date]:
         first, after = self._month_bounds()
-        return max(start, date.fromisoformat(first)), min(end, date.fromisoformat(after) - timedelta(days=1))
+        return max(start, DecodeDate(first)), min(end, DecodeDate(after) - timedelta(days=1))
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -291,7 +295,7 @@ class HistoryPricePartition:
 
                 def initialize_metadata(connection: SqliteConnection) -> None:
                     connection.run(
-                        "INSERT OR IGNORE INTO metadata(singleton,schema_identity,calendar_year) VALUES(1,?,?)",
+                        "INSERT OR IGNORE INTO schema_contract(singleton,schema_id,calendar_year,schema_version) VALUES(1,?,?,2)",
                         (_SCHEMA_IDENTITY, self._calendar_year),
                     )
 
@@ -319,7 +323,7 @@ class HistoryPricePartition:
         with closing(self._read_connection()) as connection:
             return (
                 connection.run(
-                    "SELECT 1 FROM daily_observations WHERE sync_sequence>? AND trade_date>=? AND trade_date<? LIMIT 1",
+                    "SELECT 1 FROM daily_price_observation WHERE sync_sequence>? AND trade_date>=? AND trade_date<? LIMIT 1",
                     (sequence, *self._month_bounds()),
                 ).fetchone()
                 is not None
@@ -335,11 +339,11 @@ class HistoryPricePartition:
                 placeholders = ",".join("(?,?,?)" for _ in batch)
                 rows = connection.run(
                     "WITH requested(day,code,sequence) AS (VALUES " + placeholders + ") "
-                    "SELECT (SELECT o.revision_id FROM daily_observations o "
+                    "SELECT (SELECT o.revision_id FROM daily_price_observation o "
                     "WHERE o.trade_date=r.day AND o.code=r.code AND o.sync_sequence<=r.sequence "
                     "ORDER BY o.sync_sequence DESC LIMIT 1) FROM requested r",
                     tuple(
-                        v for item in batch for v in (item.trade_date.isoformat(), item.code, item.first_seen_sequence)
+                        v for item in batch for v in (EncodeDate(item.trade_date), item.code, item.first_seen_sequence)
                     ),
                 ).fetchall()
                 changed = tuple(item for item, row in zip(batch, rows, strict=True) if item.revision_id != row[0])
@@ -382,7 +386,7 @@ class HistoryPricePartition:
             for code in sorted({code for code, _day in keys}):
                 if (
                     connection.run(
-                        "SELECT 1 FROM daily_records INDEXED BY history_price_code_date_idx WHERE code=? LIMIT 1",
+                        "SELECT 1 FROM daily_price_revision INDEXED BY history_price_code_date_idx WHERE code=? LIMIT 1",
                         (code,),
                     ).fetchone()
                     is not None
@@ -401,15 +405,15 @@ class HistoryPricePartition:
                     + values
                     + ") SELECT "
                     + _REVISION_COLUMNS
-                    + " FROM requested AS k CROSS JOIN daily_records AS records "
+                    + " FROM requested AS k CROSS JOIN daily_price_revision AS records "
                     "WHERE records.trade_date=k.day AND records.code=k.code AND records.revision_id=("
-                    "SELECT o.revision_id FROM daily_observations o WHERE o.trade_date=k.day AND o.code=k.code "
+                    "SELECT o.revision_id FROM daily_price_observation o WHERE o.trade_date=k.day AND o.code=k.code "
                     "AND o.sync_sequence<=? ORDER BY o.sync_sequence DESC LIMIT 1)"
                 )
                 result.extend(
                     _decode_row(tuple(row))
                     for row in connection.run(
-                        sql, (*tuple(value for code, day in batch for value in (code, day.isoformat())), sequence)
+                        sql, (*tuple(value for code, day in batch for value in (code, EncodeDate(day))), sequence)
                     )
                 )
         return tuple(result)
@@ -458,15 +462,15 @@ class HistoryPricePartition:
         ):
             self._require_metadata(connection)
             rows = connection.run(
-                "SELECT r.code,r.trade_date FROM daily_records r INDEXED BY history_price_price_gap_idx "
+                "SELECT r.code,r.trade_date FROM daily_price_revision r INDEXED BY history_price_price_gap_idx "
                 "WHERE r.trade_date>=? AND r.trade_date<? AND r.status IN "
                 "('unknown_missing','qfq_missing','unadjusted_missing') "
-                "AND r.revision_id=(SELECT o.revision_id FROM daily_observations o "
+                "AND r.revision_id=(SELECT o.revision_id FROM daily_price_observation o "
                 "WHERE o.code=r.code AND o.trade_date=r.trade_date AND o.sync_sequence<=? "
                 "ORDER BY o.sync_sequence DESC LIMIT 1) ORDER BY r.code,r.trade_date",
                 (*self._month_bounds(), snapshot_sequence),
             ).fetchall()
-        return tuple((str(code), date.fromisoformat(str(day))) for code, day in rows)
+        return tuple((str(code), DecodeDate(day)) for code, day in rows)
 
     def missing_price_counts(self, snapshot_sequence: int, codes: Collection[str]) -> dict[str, int]:
         """Count unresolved latest observations by recovery code."""
@@ -483,12 +487,12 @@ class HistoryPricePartition:
                 batch = ordered_codes[offset : offset + _COUNT_CODE_BATCH_SIZE]
                 placeholders = ",".join("?" for _code in batch)
                 rows = connection.run(
-                    "SELECT records.code, COUNT(*) FROM daily_records AS records "
+                    "SELECT records.code, COUNT(*) FROM daily_price_revision AS records "
                     "INDEXED BY history_price_price_gap_idx "
                     "WHERE records.code IN (" + placeholders + ") "
                     "AND records.trade_date>=? AND records.trade_date<? AND records.status IN "
                     "('unknown_missing','qfq_missing','unadjusted_missing') "
-                    "AND records.revision_id=(SELECT observations.revision_id FROM daily_observations AS observations "
+                    "AND records.revision_id=(SELECT observations.revision_id FROM daily_price_observation AS observations "
                     "WHERE observations.code=records.code AND observations.trade_date=records.trade_date "
                     "AND observations.sync_sequence<=? ORDER BY observations.sync_sequence DESC LIMIT 1) "
                     "GROUP BY records.code",
@@ -523,11 +527,11 @@ class HistoryPricePartition:
                     placeholders = ",".join("?" for _code in batch)
                     row = connection.run(
                         "SELECT COUNT(*) FROM ("
-                        "SELECT trade_date, code FROM daily_observations "
+                        "SELECT trade_date, code FROM daily_price_observation "
                         "WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ? "
                         f"AND code IN ({placeholders}) GROUP BY trade_date, code"
                         ")",
-                        (snapshot_sequence, start.isoformat(), end.isoformat(), *batch),
+                        (snapshot_sequence, EncodeDate(start), EncodeDate(end), *batch),
                     ).fetchone()
                     if row is None:
                         raise HistoryPricePartitionError("history month count is unavailable")
@@ -558,7 +562,7 @@ class HistoryPricePartition:
                 query, filters = _latest_query(code, board)
                 cursor = connection.run(
                     query,
-                    (snapshot_sequence, start.isoformat(), end.isoformat(), *filters),
+                    (snapshot_sequence, EncodeDate(start), EncodeDate(end), *filters),
                 )
                 while rows := cursor.fetchmany(512):
                     for row in rows:
@@ -585,7 +589,7 @@ class HistoryPricePartition:
                 self._require_metadata(connection)
                 cursor = connection.run(
                     _LATEST_RANGE_BY_CODE_SQL,
-                    (start.isoformat(), end.isoformat(), snapshot_sequence),
+                    (EncodeDate(start), EncodeDate(end), snapshot_sequence),
                 )
                 while rows := cursor.fetchmany(512):
                     for row in rows:
@@ -612,7 +616,7 @@ class HistoryPricePartition:
                 self._require_metadata(connection)
                 cursor = connection.run(
                     _TRAINING_RANGE_SQL,
-                    (start.isoformat(), end.isoformat(), snapshot_sequence),
+                    (EncodeDate(start), EncodeDate(end), snapshot_sequence),
                 )
                 while rows := cursor.fetchmany(4_096):
                     for row in rows:
@@ -646,9 +650,9 @@ class HistoryPricePartition:
             else _PUBLISHED_CODE_SQL
         )
         parameters = (
-            (start.isoformat(), end.isoformat(), snapshot_sequence)
+            (EncodeDate(start), EncodeDate(end), snapshot_sequence)
             if code is None
-            else (snapshot_sequence, start.isoformat(), end.isoformat(), code)
+            else (snapshot_sequence, EncodeDate(start), EncodeDate(end), code)
         )
         try:
             with closing(self._read_connection()) as connection, WatchHistoryRead(connection, check):
@@ -678,11 +682,11 @@ class HistoryPricePartition:
                 self._require_metadata(connection)
                 cursor = connection.run(
                     _LATEST_SHADOW_SQL,
-                    (snapshot_sequence, start.isoformat(), end.isoformat()),
+                    (snapshot_sequence, EncodeDate(start), EncodeDate(end)),
                 )
                 while rows := cursor.fetchmany(2048):
                     for trade_date, code, raw_present, qfq_present in rows:
-                        yield str(code), date.fromisoformat(str(trade_date)), bool(raw_present), bool(qfq_present)
+                        yield str(code), DecodeDate(trade_date), bool(raw_present), bool(qfq_present)
         except HistoryPricePartitionError:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
@@ -700,7 +704,7 @@ class HistoryPricePartition:
                 self._require_schema(connection)
                 if sequence is None:
                     sequence = connection.run(
-                        "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_observations"
+                        "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_price_observation"
                     ).require_one()[0]
                 proof = CalculateHistoryProof(
                     connection,
@@ -771,14 +775,14 @@ class HistoryPricePartition:
     def _prepare_revisions(self, revisions: Iterable[HistoryRevision]) -> tuple[_EncodedRevision, ...]:
         prepared: list[_EncodedRevision] = []
         previous_key: tuple[date, str, int, str] | None = None
-        observations: dict[tuple[str, str, int], str] = {}
+        observations: dict[tuple[int, str, int], str] = {}
         for value in revisions:
             if value.trade_date.year != self._calendar_year:
                 raise ValueError("history revision does not belong to the target year")
             key = (value.trade_date, value.code, value.first_seen_sequence, value.revision_id)
             if previous_key is not None and key < previous_key:
                 raise ValueError("history month revisions must be written in deterministic order")
-            encoded = _EncodedRevision(value, value.trade_date.isoformat(), RevisionColumnValues(value))
+            encoded = _EncodedRevision(value, EncodeDate(value.trade_date), RevisionColumnValues(value))
             observed_revision = observations.setdefault(encoded.observation_key, value.revision_id)
             if observed_revision != value.revision_id:
                 raise HistoryPricePartitionConflictError("history monthly revision sequence conflicts")
@@ -799,13 +803,13 @@ class HistoryPricePartition:
                     item.value.first_seen_sequence,
                     item.value.board,
                     *item.price_values,
-                    item.value.content_hash,
+                    EncodeHash(item.value.content_hash),
                 )
                 for item in prepared
             ),
         )
         connection.run_many(
-            "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO daily_price_observation(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
 
@@ -824,9 +828,9 @@ class HistoryPricePartition:
             placeholders = ",".join("?" for _ in batch)
             if (
                 connection.run(
-                    "SELECT 1 FROM daily_records INDEXED BY history_price_code_date_idx "
+                    "SELECT 1 FROM daily_price_revision INDEXED BY history_price_code_date_idx "
                     f"WHERE code IN ({placeholders}) UNION ALL "
-                    "SELECT 1 FROM daily_observations INDEXED BY history_price_observation_code_date_idx "
+                    "SELECT 1 FROM daily_price_observation INDEXED BY history_price_observation_code_date_idx "
                     f"WHERE code IN ({placeholders}) LIMIT 1",
                     (*batch, *batch),
                 ).fetchone()
@@ -844,7 +848,7 @@ class HistoryPricePartition:
     ) -> None:
         connection.run(
             "CREATE TEMP TABLE requested_history_revisions ("
-            "trade_date TEXT NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
+            "trade_date INTEGER NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
             "revision_id TEXT NOT NULL, PRIMARY KEY (trade_date, code, sync_sequence, revision_id)"
             ") WITHOUT ROWID"
         )
@@ -853,23 +857,23 @@ class HistoryPricePartition:
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
         existing_observations = {
-            (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): cast(tuple[str, BaoStockCellStatus], row[3:])
+            (cast(int, row[0]), cast(str, row[1]), cast(int, row[2])): cast(tuple[str, BaoStockCellStatus], row[3:])
             for row in connection.run(_EXISTING_OBSERVATIONS_SQL)
         }
         existing_revisions = {
-            (cast(str, row[0]), cast(str, row[1]), cast(str, row[2])): (
+            (cast(int, row[0]), cast(str, row[1]), cast(str, row[2])): (
                 cast(int, row[3]),
                 cast(PriceValues, row[4:-1]),
-                cast(str, row[-1]),
+                DecodeHash(row[-1]),
             )
             for row in connection.run(_EXISTING_REVISIONS_SQL)
         }
         latest_sequences = {
-            (cast(str, row[0]), cast(str, row[1])): cast(int, row[2]) for row in connection.run(_LATEST_SEQUENCES_SQL)
+            (cast(int, row[0]), cast(str, row[1])): cast(int, row[2]) for row in connection.run(_LATEST_SEQUENCES_SQL)
         }
         new_records: list[tuple[object, ...]] = []
         new_observations: list[tuple[object, ...]] = []
-        corrected_observations: list[tuple[str, str, str, int]] = []
+        corrected_observations: list[tuple[str, int, str, int]] = []
         for item in prepared:
             value = item.value
             observation_key = item.observation_key
@@ -901,7 +905,7 @@ class HistoryPricePartition:
                         value.first_seen_sequence,
                         value.board,
                         *item.price_values,
-                        value.content_hash,
+                        EncodeHash(value.content_hash),
                     )
                 )
             else:
@@ -915,11 +919,11 @@ class HistoryPricePartition:
             new_records,
         )
         connection.run_many(
-            "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO daily_price_observation(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
             new_observations,
         )
         connection.run_many(
-            "UPDATE daily_observations SET revision_id=? WHERE trade_date=? AND code=? AND sync_sequence=?",
+            "UPDATE daily_price_observation SET revision_id=? WHERE trade_date=? AND code=? AND sync_sequence=?",
             corrected_observations,
         )
 
@@ -937,7 +941,7 @@ class HistoryPricePartition:
         if observed_status not in {"qfq_missing", "unadjusted_missing"}:
             return
         previous_row = connection.run(
-            f"SELECT {_REVISION_COLUMNS} FROM daily_records AS records "
+            f"SELECT {_REVISION_COLUMNS} FROM daily_price_revision AS records "
             "WHERE records.trade_date=? AND records.code=? AND records.revision_id=?",
             (item.trade_date, value.code, observed_revision),
         ).fetchone()
@@ -948,8 +952,10 @@ class HistoryPricePartition:
             raise HistoryPricePartitionConflictError("history monthly retained price conflicts")
 
     def _require_metadata(self, connection: SqliteConnection) -> None:
-        metadata = connection.run("SELECT schema_identity, calendar_year FROM metadata WHERE singleton=1").fetchone()
-        if metadata is None or tuple(metadata) != (_SCHEMA_IDENTITY, self._calendar_year):
+        metadata = connection.run(
+            "SELECT schema_id, calendar_year, schema_version FROM schema_contract WHERE singleton=1"
+        ).fetchone()
+        if metadata is None or tuple(metadata) != (_SCHEMA_IDENTITY, self._calendar_year, 2):
             raise HistoryPricePartitionError("history month metadata conflicts")
 
     def _require_schema(self, connection: SqliteConnection) -> None:
@@ -978,7 +984,7 @@ class HistoryPricePartition:
             columns = tuple(row[2] for row in connection.run(f"PRAGMA index_info('{name}')"))
             if columns != expected:
                 raise HistoryPricePartitionError("history month index contract is invalid")
-        for table_name in ("daily_records", "daily_observations"):
+        for table_name in ("daily_price_revision", "daily_price_observation"):
             table_sql_row = connection.run(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
                 (table_name,),
@@ -1095,7 +1101,7 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
         raw_volume,
     ) = row
     if (
-        not isinstance(trade_date_value, str)
+        type(trade_date_value) is not int
         or not isinstance(code, str)
         or not isinstance(board, str)
         or cell_status
@@ -1111,7 +1117,7 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
         or qfq_status not in {None, "trading", "suspended"}
     ):
         raise HistoryPricePartitionError("history month training row fields are invalid")
-    trade_date = date.fromisoformat(trade_date_value)
+    trade_date = DecodeDate(trade_date_value)
     point = (
         HistoryTrainingPoint(
             trade_date,

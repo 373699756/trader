@@ -8,6 +8,7 @@ from datetime import date, datetime
 import pytest
 
 from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _plain_feedback, _updater, _window
+from tests.helpers.history import RunHistoryFixture
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_sync import NOW, ProgressRecorder
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _at, _current_universe, _router
@@ -20,7 +21,6 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-from trader.download.infra.history_sync_runner import RunHistorySync
 
 
 @pytest.mark.parametrize("recovers", (False, True))
@@ -43,7 +43,7 @@ def test_history_retries_failed_stock_once_after_first_summary(tmp_path, capsys,
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
     with ThreadPoolExecutor(max_workers=2) as workers, ThreadPoolExecutor(max_workers=1) as writer:
-        result = RunHistorySync(
+        result = RunHistoryFixture(
             config,
             _router(Baseline(days), prices, _current_universe("600001", "600002")),
             clock=lambda: _at(days[-1]),
@@ -83,7 +83,7 @@ def test_history_retry_upgrades_a_partial_price_pair_before_publication(tmp_path
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
-    result = RunHistorySync(
+    result = RunHistoryFixture(
         config,
         _router(Baseline(days), prices, _current_universe("600001")),
         clock=lambda: _at(days[-1]),
@@ -91,9 +91,9 @@ def test_history_retry_upgrades_a_partial_price_pair_before_publication(tmp_path
 
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert len(prices.calls) == 2
-    active = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
-    assert active is not None
-    first_day = HistorySnapshotReader(tmp_path).read_day(days[0], active)
+    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    assert current_snapshot is not None
+    first_day = HistorySnapshotReader(tmp_path).read_day(days[0], current_snapshot)
     assert len(first_day) == 1 and first_day[0].cell.status == "complete"
 
 
@@ -116,7 +116,7 @@ def test_history_retry_excludes_deferred_qfq_dates(tmp_path):
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
-    result = RunHistorySync(
+    result = RunHistoryFixture(
         config,
         _router(Baseline(days), prices, _current_universe("600001")),
         clock=lambda: _at(days[-1]),
@@ -152,7 +152,7 @@ def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reload
         raise RuntimeError("fixture_publication_failed")
 
     monkeypatch.setattr(history_sync_runner, "PublishHistorySnapshot", interrupted)
-    assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "failed"
+    assert RunHistoryFixture(config, supplier, clock=lambda: NOW).state == "failed"
     monkeypatch.setattr(history_sync_runner, "PublishHistorySnapshot", publish)
 
     def no_full_reload(*args):
@@ -160,7 +160,7 @@ def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reload
 
     monkeypatch.setattr(HistoryDirectPrices, "read_for_download", no_full_reload)
     progress = ProgressRecorder()
-    result = RunHistorySync(config, supplier, clock=lambda: NOW, progress=progress)
+    result = RunHistoryFixture(config, supplier, clock=lambda: NOW, progress=progress)
     assert result.state == "completed", result.reason
     assert result.reason == "history_price_gaps_remaining" and result.unresolved_price_cells == 1
     index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
@@ -211,18 +211,18 @@ def test_activity_revision_fills_gap_without_changing_old_snapshot(tmp_path, amo
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
-    first = RunHistorySync(config, supplier, clock=lambda: _at(days[-1]))
+    first = RunHistoryFixture(config, supplier, clock=lambda: _at(days[-1]))
     assert first.unresolved_price_cells == 1
-    original = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
+    original = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     assert original is not None
     old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], original)
 
     prices.refined = True
-    retried = RunHistorySync(config, supplier, clock=lambda: _at(days[-1]))
+    retried = RunHistoryFixture(config, supplier, clock=lambda: _at(days[-1]))
 
     assert retried.state == "completed" and retried.unresolved_price_cells == (0 if accepted else 1)
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], original) == old_rows
-    latest = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
+    latest = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     assert latest is not None
     expected_status = "complete" if accepted else "qfq_missing"
     rows = HistorySnapshotReader(tmp_path).read_day(days[-1], latest)
@@ -259,7 +259,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
-    result = RunHistorySync(
+    result = RunHistoryFixture(
         config, _router(baseline, PartialPrices()), clock=lambda: _at(days[-1]), progress=StderrHistorySyncProgress()
     )
     assert result.state == "completed"
@@ -278,11 +278,11 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
             assert "其中待重试 2 股" in logs
     else:
         assert "完整 2 股" in logs if mode == "complete" else "失败 2 股" in logs
-    previous = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
+    previous = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
     baseline.calls.clear()
     retry_prices = Prices()
-    retried = RunHistorySync(config, _router(baseline, retry_prices), clock=lambda: _at(days[-1]))
+    retried = RunHistoryFixture(config, _router(baseline, retry_prices), clock=lambda: _at(days[-1]))
     assert retried.unresolved_price_cells == (2 if mode == "invalid_qfq_price" else 0)
     assert baseline.calls == []
     if mode in {"missing", "pending"}:
@@ -326,11 +326,11 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
-    first = RunHistorySync(config, supplier, clock=lambda: NOW)
+    first = RunHistoryFixture(config, supplier, clock=lambda: NOW)
     assert first.state == "completed" and first.unresolved_price_cells == 3
     control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
     index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
-    previous = control.load_state().active_snapshot
+    previous = control.load_state().published_snapshot
     assert previous is not None
     reader = HistorySnapshotReader(tmp_path)
     old_rows = reader.read_day(days[0], previous)
@@ -344,14 +344,14 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
 
         with monkeypatch.context() as patch:
             patch.setattr(history_sync_runner, "PublishHistorySnapshot", fail_publication)
-            interrupted = RunHistorySync(config, supplier, clock=lambda: NOW)
+            interrupted = RunHistoryFixture(config, supplier, clock=lambda: NOW)
         assert interrupted.state == "failed"
         assert interrupted.reason == "fixture_publication_failed"
-        assert control.load_state().active_snapshot == previous
+        assert control.load_state().published_snapshot == previous
         assert index.pending(previous.sequence) is not None
 
     progress = StderrHistorySyncProgress()
-    result = RunHistorySync(config, supplier, clock=lambda: NOW, progress=progress)
+    result = RunHistoryFixture(config, supplier, clock=lambda: NOW, progress=progress)
     progress.publish_result(result)
 
     assert result.state == "completed", result.reason
@@ -361,11 +361,11 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
     assert baseline.calls == []
     assert index.gaps_by_code().get("600002", ()) == (days[0],)
     assert index.gaps_by_code(days).get("600002", ()) == ()
-    active = control.load_state().active_snapshot
-    assert active is not None and active.sequence == previous.sequence + 1
-    assert index.pending(active.sequence) is None
+    current_snapshot = control.load_state().published_snapshot
+    assert current_snapshot is not None and current_snapshot.sequence == previous.sequence + 1
+    assert index.pending(current_snapshot.sequence) is None
     assert reader.read_day(days[0], previous) == old_rows
-    rows = reader.read_day(days[0], active)
+    rows = reader.read_day(days[0], current_snapshot)
     assert next(row.cell.status for row in rows if row.cell.code == "600002") == "qfq_missing"
     expected_status = "complete" if repair_retryable else "qfq_missing"
     assert all(row.cell.status == expected_status for row in rows if row.cell.code in {"600003", "600004"})

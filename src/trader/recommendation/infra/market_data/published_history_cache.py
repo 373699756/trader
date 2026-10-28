@@ -318,7 +318,7 @@ class PublishedHistoryCache:
             self.record_maintenance(
                 state,
                 self._maintenance_reason,
-                stage="reading_active_snapshot",
+                stage="reading_published_snapshot",
                 completed_units=self._maintenance_completed_units,
                 total_units=self._maintenance_total_units,
             )
@@ -591,7 +591,7 @@ class PublishedHistoryCache:
         with self._lock:
             manifest = self._manifest
             return PublishedHistoryStatus(
-                state="active" if manifest is not None else "unavailable",
+                state="published" if manifest is not None else "unavailable",
                 snapshot_hash=manifest.snapshot_hash if manifest is not None else None,
                 data_cutoff=manifest.data_cutoff if manifest is not None else None,
                 entries=len(self._entries),

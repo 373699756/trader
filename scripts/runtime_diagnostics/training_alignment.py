@@ -91,7 +91,7 @@ def _probe(
     if work.exists() or history.is_relative_to(work) or work.is_relative_to(history):
         raise ValueError("training_alignment_requires_new_separate_output")
     source = SQLiteHistoryTrainingInputSnapshot.open(history)
-    identity = source.snapshot.active_snapshot_hash
+    identity = source.snapshot.snapshot_hash
     work.mkdir(parents=True)
     started = time.monotonic()
     profiles = SCORING_PROFILE_IDS if profiles is None else profiles
@@ -106,7 +106,7 @@ def _probe(
     ConfigureTrainingResources()
     initial = _train_once(runtime, history, work, profiles)
     repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
-    unchanged = SQLiteHistoryTrainingInputSnapshot.open(history).snapshot.active_snapshot_hash == identity
+    unchanged = SQLiteHistoryTrainingInputSnapshot.open(history).snapshot.snapshot_hash == identity
     complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged)
     equal = repeat is not None and initial["numeric_fingerprints"] == repeat["numeric_fingerprints"]
     return {

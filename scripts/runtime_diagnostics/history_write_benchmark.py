@@ -34,6 +34,7 @@ from trader.download.domain.history_sync import (
     HistorySyncConfiguration,
     HistorySyncProgress,
 )
+from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_sync_runner import RunHistorySync
@@ -41,6 +42,7 @@ from trader.download.infra.history_write_tuning import (
     HistoryWriteTuning,
 )
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
@@ -60,6 +62,7 @@ class HistoryFixtureSupplier:
     size: int
     requests: list[int] = field(default_factory=list)
     varying_prices: bool = field(default=False, kw_only=True)
+    reference_id: str | None = field(default=None, kw_only=True)
 
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         universe = tuple(
@@ -74,7 +77,19 @@ class HistoryFixtureSupplier:
             if self.varying_prices
             else (),
             tuple(HistoryStEvidence(item.code, as_of, "clear") for item in universe),
+            self.reference_id,
         )
+
+    def publish_reference(self, path: Path, as_of: date, sessions: int) -> None:
+        context = self.load_context(as_of, sessions)
+        reference = PreparedReference(
+            context.universe,
+            context.st_evidence,
+            datetime.combine(as_of, daytime(20, 30), ZoneInfo("Asia/Shanghai")),
+            self.days,
+        )
+        SQLiteReferenceIndex(path).publish(reference, reference.st_evidence)
+        self.reference_id = reference.identity
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         self.requests.append(len(dates))
@@ -210,25 +225,26 @@ def _measure_case(
 ) -> dict[str, object]:
     supplier.requests.clear()
     now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
+    supplier.publish_reference(config.reference_root / "company_st.sqlite3", now.date(), config.sessions)
     started, written = time.monotonic(), _write_bytes()
     stage_times = _StageTimes()
-    with DatabaseMeasurement(config.archive_root) as measurement:
+    with DatabaseMeasurement(config.history_root) as measurement:
         result = RunHistorySync(
             config,
             supplier,
             clock=_clock(now),
             write_tuning=tuning,
             progress=stage_times,
-            storage_kind=storage_kind or StorageProbe().inspect(config.archive_root).kind,
+            storage_kind=storage_kind or StorageProbe().inspect(config.history_root).kind,
         )
     rows = 0
-    for path in config.archive_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
+    for path in config.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
         with (
             SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
             SqliteTransaction(connection),
         ):
-            rows += connection.run("SELECT COUNT(*) FROM daily_records").require_one()[0]
-    manifest = SQLitePublishedHistorySnapshot(config.archive_root).manifest()
+            rows += connection.run("SELECT COUNT(*) FROM daily_price_revision").require_one()[0]
+    manifest = SQLitePublishedHistorySnapshot(config.history_root).manifest()
     return {
         "case": name,
         "seconds": round(time.monotonic() - started, 3),
@@ -240,7 +256,7 @@ def _measure_case(
         "rows": rows,
         "publication_hash": manifest.snapshot_hash if manifest is not None else None,
         "gaps": result.unresolved_price_cells,
-        "files_bytes": sum(path.stat().st_size for path in config.archive_root.rglob("*") if path.is_file()),
+        "files_bytes": sum(path.stat().st_size for path in config.history_root.rglob("*") if path.is_file()),
         "phase_seconds": stage_times.summary(),
         "database": measurement.result,
     }
@@ -257,7 +273,7 @@ def MeasureHistoryWrites(
         project_root = Path(__file__).resolve().parents[2]
         config = replace(
             LoadHistorySyncConfiguration(project_root, DataPaths(Path(scratch) / "data")),
-            archive_root=root,
+            history_root=root,
             sessions=sessions,
             reread_sessions=min(5, sessions),
             minimum_free_bytes=0,
@@ -268,9 +284,10 @@ def MeasureHistoryWrites(
             results.append(_measure_case(name, config, supplier, tuning, storage_kind))
         # Seed committed annual rows without publishing the first snapshot.
         # The measured restart includes disjoint stocks, unlike an empty-file write probe.
-        resume_config = replace(config, archive_root=Path(scratch) / "resume")
+        resume_config = replace(config, history_root=Path(scratch) / "resume")
         interrupted = _StageTimes(cancel_after=max(1, size // 2))
         now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
+        supplier.publish_reference(config.reference_root / "company_st.sqlite3", now.date(), config.sessions)
         seeded = RunHistorySync(
             resume_config,
             supplier,
@@ -278,7 +295,7 @@ def MeasureHistoryWrites(
             cancel_requested=lambda: interrupted.cancelled,
             write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions),
             progress=interrupted,
-            storage_kind=storage_kind or StorageProbe().inspect(resume_config.archive_root).kind,
+            storage_kind=storage_kind or StorageProbe().inspect(resume_config.history_root).kind,
         )
         if seeded.state != "cancelled":
             raise RuntimeError("history_write_resume_seed_failed")

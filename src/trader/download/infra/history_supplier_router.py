@@ -52,6 +52,7 @@ class HistorySupplierRouter:
         return replace(
             context,
             st_evidence=self._reference.st_evidence,
+            reference_id=self._reference.identity,
             source_versions=replace(
                 versions,
                 sdk_version=f"{versions.sdk_version}+tencent-history",

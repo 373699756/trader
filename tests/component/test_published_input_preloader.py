@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from tests.component.test_candidate_history_tail import NOW, _Archive
+from tests.component.test_candidate_history_tail import NOW, HistoryInput
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
@@ -23,7 +23,7 @@ def _cache(source, *, outcomes=None, monotonic=time.monotonic):
 
 
 def test_preloader_finishes_after_one_read_and_new_process_adopts_changed_identity(monkeypatch):
-    source = _Archive(61, 1, ("600001",))
+    source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     ready = threading.Event()
 
@@ -60,7 +60,7 @@ def test_preloader_finishes_after_one_read_and_new_process_adopts_changed_identi
 
 
 def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_active_io(monkeypatch):
-    source = _Archive(61, 1, ("600001",))
+    source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     entered, release = threading.Event(), threading.Event()
     windows = source.iter_windows
@@ -86,7 +86,7 @@ def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_active_io
 
 
 def test_preload_retries_changed_identity_and_restart_adopts_new_publication(monkeypatch):
-    source = _Archive(61, 1, ("600001",))
+    source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     windows = source.iter_windows
     reads = []
@@ -110,7 +110,7 @@ def test_preload_retries_changed_identity_and_restart_adopts_new_publication(mon
 
 @pytest.mark.parametrize("cancelled", (False, True))
 def test_preload_cancel_or_monotonic_deadline_never_accepts_partial_projection(cancelled):
-    source = _Archive(61, 1, ("600001", "600002"))
+    source = HistoryInput(61, 1, ("600001", "600002"))
     ticks = iter((0.0, 0.0, 301.0, 302.0, 303.0, 304.0))
     history = _cache(source, monotonic=lambda: next(ticks))
     history.initialize(cancelled=lambda: cancelled)
@@ -119,7 +119,7 @@ def test_preload_cancel_or_monotonic_deadline_never_accepts_partial_projection(c
 
 
 def test_preload_exceeding_old_thirty_second_limit_publishes_complete_projection():
-    source = _Archive(61, 1, ("600001", "600002"))
+    source = HistoryInput(61, 1, ("600001", "600002"))
     ticks = iter((0.0, 0.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0))
     history = _cache(source, monotonic=lambda: next(ticks))
     history.initialize(cancelled=lambda: False)
@@ -129,7 +129,7 @@ def test_preload_exceeding_old_thirty_second_limit_publishes_complete_projection
 
 
 def test_missing_outcome_history_does_not_close_online_gate():
-    source = _Archive(61, 1, ("600001",))
+    source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     history.initialize(cancelled=lambda: False)
     assert history.cached(("600001",))
@@ -137,7 +137,7 @@ def test_missing_outcome_history_does_not_close_online_gate():
 
 
 def test_missing_short_window_does_not_hide_independent_outcomes(monkeypatch):
-    short, full = _Archive(61, 1, ("600001",)), _Archive(61, 1, ("600001",))
+    short, full = HistoryInput(61, 1, ("600001",)), HistoryInput(61, 1, ("600001",))
     monkeypatch.setattr(short, "manifest", lambda: None)
     history = _cache(short, outcomes=full)
     history.initialize(cancelled=lambda: False)
@@ -146,7 +146,7 @@ def test_missing_short_window_does_not_hide_independent_outcomes(monkeypatch):
 
 
 def test_finished_preload_keeps_loaded_history_when_disk_becomes_unreadable(monkeypatch):
-    source = _Archive(61, 1, ("600001",))
+    source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     history.initialize(cancelled=lambda: False)
     before = history.entries()
@@ -163,7 +163,7 @@ def test_finished_preload_keeps_loaded_history_when_disk_becomes_unreadable(monk
 
 
 def test_preload_failure_is_recorded_once_and_thread_finishes():
-    history = _cache(_Archive(61, 1, ("600001",)))
+    history = _cache(HistoryInput(61, 1, ("600001",)))
     calls = []
 
     def unavailable(cancelled):

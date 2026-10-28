@@ -18,7 +18,7 @@ def _status() -> HistoryMaintenanceStatus:
     )
 
 
-class _Archive:
+class _HistoryInput:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
@@ -42,12 +42,12 @@ class _Publication:
 
 
 def test_history_use_cases_delegate_to_their_single_port(tmp_path) -> None:
-    archive = _Archive()
-    configuration = HistorySyncConfiguration(archive_root=tmp_path / "history", reference_root=tmp_path / "reference")
+    history = _HistoryInput()
+    configuration = HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference")
     supplier = object()
 
-    assert DownloadHistoryUseCase(archive).execute(configuration, supplier) is not None  # type: ignore[arg-type]
-    assert archive.calls == ["download"]
+    assert DownloadHistoryUseCase(history).execute(configuration, supplier) is not None  # type: ignore[arg-type]
+    assert history.calls == ["download"]
     assert ReadPublishedHistoryUseCase(_Publication()).manifest() is None
 
 

@@ -23,7 +23,7 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
 )
-from tests.component.test_candidate_history_tail import _Archive
+from tests.component.test_candidate_history_tail import HistoryInput
 from tests.reference_fixtures import PreparedFixture
 from tests.unit.infra.test_history_supplier_router import _current_universe
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -63,7 +63,7 @@ def test_startup_binds_published_security_facts_before_preview_quotes_are_merged
         wall_clock=lambda: observed,
     )
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(_Archive(62, 0, ("600001",))),
+        ReadPublishedHistoryUseCase(HistoryInput(62, 0, ("600001",))),
         lookback_sessions=61,
         monotonic=lambda: 0.0,
         require_input_binding=True,
@@ -96,7 +96,7 @@ def test_startup_does_not_open_refresh_before_static_eligibility_finishes(fail_s
             return super().fetch_market(**kwargs)
 
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(_Archive(62, 0, ("600001",))),
+        ReadPublishedHistoryUseCase(HistoryInput(62, 0, ("600001",))),
         lookback_sessions=61,
         monotonic=lambda: 0.0,
         require_input_binding=True,

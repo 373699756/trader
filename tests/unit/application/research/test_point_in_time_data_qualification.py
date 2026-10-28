@@ -35,7 +35,7 @@ def _industry_report():
 def test_current_archive_and_free_source_evidence_project_explicit_three_gate_blockers() -> None:
     archive = HistorySnapshotStatus(
         state="invalid",
-        active_snapshot_hash="a" * 64,
+        snapshot_hash="a" * 64,
         data_cutoff=date(2026, 9, 10),
         label_cutoff=date(2026, 9, 9),
         calendar_sessions=2000,
@@ -62,8 +62,8 @@ def test_current_archive_and_free_source_evidence_project_explicit_three_gate_bl
 
 def test_daily_archive_count_mismatch_is_reported_instead_of_becoming_an_invalid_report() -> None:
     archive = HistorySnapshotStatus(
-        state="active",
-        active_snapshot_hash="a" * 64,
+        state="published",
+        snapshot_hash="a" * 64,
         data_cutoff=date(2026, 9, 10),
         label_cutoff=date(2026, 9, 9),
         calendar_sessions=1999,

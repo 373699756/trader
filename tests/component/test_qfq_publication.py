@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from dataclasses import replace
 from datetime import date, timedelta
@@ -45,7 +46,7 @@ def test_batched_reads_scan_publication_contents_once(tmp_path, monkeypatch):
     original = SqliteConnection.run
 
     def observed(connection, sql, parameters=()):
-        if sql.startswith("SELECT code,digest,source,first_day,cutoff FROM identities"):
+        if sql.startswith("SELECT code,content_hash,source,start_date,end_date FROM window_binding"):
             scans.append(sql)
         return original(connection, sql, parameters)
 
@@ -65,7 +66,7 @@ def test_publication_failure_rolls_back_prices_both_profiles_and_checkpoint(tmp_
     original = SqliteConnection.run
 
     def interrupted(connection, sql, parameters=()):
-        if sql.startswith("INSERT INTO publications") and parameters[0] == "v3":
+        if sql.startswith("INSERT INTO window_publication") and parameters[0] == "v3":
             raise sqlite3.OperationalError("fixture publication interrupted")
         return original(connection, sql, parameters)
 
@@ -78,6 +79,28 @@ def test_publication_failure_rolls_back_prices_both_profiles_and_checkpoint(tmp_
     assert primary.read_code("600001") == peer.read_code("600001") == _window("600001")
     assert primary.completed(_DAYS[-1], "600001", "old")
     assert not primary.completed(_DAYS[-1], "600001", "new")
+
+
+def test_numeric_types_and_negative_zero_keep_window_identity_after_restart(tmp_path):
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    original = _window("600001")
+    first = original.cells[0]
+    raw = replace(first.unadjusted, open_price=10, volume=100, pct_change=-0.0)
+    window = replace(original, cells=(replace(first, unadjusted=raw), *original.cells[1:]))
+    primary.replace_paired_windows(peer, (window,), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    manifest = primary.manifest()
+    fresh = SQLiteQfqWindowCache(primary.path, "v2")
+    assert fresh.manifest() == manifest
+    decoded = fresh.read_code(window.code).cells[0].unadjusted
+    assert type(decoded.open_price) is int
+    assert math.copysign(1, decoded.pct_change) == -1
+    fresh.replace_paired_windows(peer, (window,), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    assert fresh.manifest() == manifest
+    with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE daily_price SET number_flags=0")
+    with pytest.raises(RuntimeError, match="identity_mismatch"):
+        fresh.read_code(window.code)
 
 
 @pytest.mark.parametrize("change", ("source", "calendar", "remove"))
@@ -109,10 +132,10 @@ def test_old_publication_is_rejected_after_each_identity_change(tmp_path, change
 @pytest.mark.parametrize(
     "mutation",
     (
-        "UPDATE identities SET digest='corrupt' WHERE profile='v2'",
-        "DELETE FROM calendars WHERE profile='v2'",
-        "UPDATE publications SET identity='corrupt' WHERE profile='v2'",
-        "DELETE FROM publications WHERE profile='v2'",
+        "UPDATE window_binding SET content_hash=zeroblob(32) WHERE profile='v2'",
+        "DELETE FROM window_calendar WHERE profile='v2'",
+        "UPDATE window_publication SET publication_id='corrupt' WHERE profile='v2'",
+        "DELETE FROM window_publication WHERE profile='v2'",
     ),
 )
 def test_cold_manifest_rejects_unpublished_or_corrupt_metadata(tmp_path, mutation):
@@ -148,7 +171,7 @@ def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     primary.replace_paired_windows(peer, (_window("600001"),), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
     with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
-        connection.run("DROP TABLE publications")
+        connection.run("DROP TABLE window_publication")
         connection.run("PRAGMA user_version=1")
     before = primary.path.read_bytes()
     with pytest.raises(RuntimeError, match="qfq_manifest_unavailable"):

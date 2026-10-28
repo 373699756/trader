@@ -8,11 +8,15 @@ from typing import TypeAlias, cast
 
 from trader.download.domain.baostock_daily import BaoStockAdjustment, BaoStockCellStatus, BaoStockTradingStatus
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
+from trader.infra.sqlite_codec import DecodeDate
 
 PriceValues: TypeAlias = tuple[str | float | int | None, ...]
-_FIELDS = ("open", "high", "low", "close", "volume", "amount", "preclose", "pct_change", "turnover")
-PRICE_COLUMNS = ("status",) + tuple(
-    f"{side}_{field}" for side in ("raw", "qfq") for field in ("present", *_FIELDS, "trading_status")
+_FIELDS = ("open", "high", "low", "close", "volume", "amount", "preclose", "change_pct", "turnover_pct")
+_NUMBER_POSITIONS = (*range(2, 11), *range(13, 22))
+PRICE_COLUMNS = (
+    ("status",)
+    + tuple(f"{side}_{field}" for side in ("raw", "qfq") for field in ("present", *_FIELDS, "trading_status"))
+    + ("number_flags",)
 )
 
 
@@ -20,13 +24,15 @@ def _price_sql(*, database_checks: bool) -> str:
     return ",".join(
         f"{name} "
         + (
-            "TEXT"
+            "INTEGER NOT NULL CHECK(number_flags>=0 AND number_flags<68719476736)"
+            if name == "number_flags"
+            else "TEXT"
             if name == "status" or name.endswith("trading_status")
             else "INTEGER"
             if name.endswith("present")
-            else f"BLOB CHECK(typeof({name}) IN ('integer','real','null'))"
+            else f"REAL CHECK(typeof({name}) IN ('real','null'))"
             if database_checks
-            else "BLOB"
+            else "REAL"
         )
         for name in PRICE_COLUMNS
     )
@@ -38,13 +44,24 @@ PRICE_WINDOW_SQL = _price_sql(database_checks=False)
 
 
 def PriceColumnValues(cell: PublishedHistoryCell) -> PriceValues:
-    return (cell.status, *_side_values(cell.unadjusted), *_side_values(cell.qfq))
+    values = (cell.status, *_side_values(cell.unadjusted), *_side_values(cell.qfq))
+    flags = 0
+    for bit, position in enumerate(_NUMBER_POSITIONS):
+        value = values[position]
+        if type(value) is int:
+            if int(float(value)) != value:
+                raise ValueError("price_integer_precision_invalid")
+            flags |= 1 << bit
+        elif type(value) is float and value == 0 and math.copysign(1, value) < 0:
+            flags |= 1 << (bit + 18)
+    return (*values, flags)
 
 
-def PriceCellFromColumns(code: str, day: str, values: PriceValues) -> PublishedHistoryCell:
+def PriceCellFromColumns(code: str, day: int, values: PriceValues) -> PublishedHistoryCell:
     if len(values) != len(PRICE_COLUMNS) or not isinstance(values[0], str):
         raise ValueError("price_columns_invalid")
-    trade_date = date.fromisoformat(day)
+    trade_date = DecodeDate(day)
+    values = DecodePriceValues(values)
     return PublishedHistoryCell(
         code,
         trade_date,
@@ -52,6 +69,30 @@ def PriceCellFromColumns(code: str, day: str, values: PriceValues) -> PublishedH
         _side(code, trade_date, "unadjusted", values[1:12]),
         _side(code, trade_date, "qfq", values[12:23]),
     )
+
+
+def DecodePriceValues(values: PriceValues) -> PriceValues:
+    """Keep original integer types and negative zero across SQLite REAL affinity."""
+    if len(values) != len(PRICE_COLUMNS) or type(values[-1]) is not int:
+        raise ValueError("price_number_flags_invalid")
+    flags = values[-1]
+    if not 0 <= flags < 1 << 36 or flags & (flags >> 18):
+        raise ValueError("price_number_flags_invalid")
+    if flags == 0:
+        return values[:-1]
+    decoded = list(values[:-1])
+    while flags:
+        lowest = flags & -flags
+        bit = lowest.bit_length() - 1
+        flags ^= lowest
+        position = _NUMBER_POSITIONS[bit % 18]
+        value = decoded[position]
+        if type(value) not in (float, int) or not math.isfinite(value) or int(value) != value:
+            raise ValueError("price_number_flags_invalid")
+        if bit >= 18 and value != 0:
+            raise ValueError("price_number_flags_invalid")
+        decoded[position] = int(value) if bit < 18 else -0.0
+    return tuple(decoded)
 
 
 def _side_values(side: PublishedHistorySide | None) -> PriceValues:
@@ -101,4 +142,12 @@ def _side(code: str, day: date, adjustment: BaoStockAdjustment, values: PriceVal
     )
 
 
-__all__ = ["PRICE_COLUMNS", "PRICE_SQL", "PRICE_WINDOW_SQL", "PriceValues", "PriceColumnValues", "PriceCellFromColumns"]
+__all__ = [
+    "PRICE_COLUMNS",
+    "PRICE_SQL",
+    "PRICE_WINDOW_SQL",
+    "PriceValues",
+    "PriceColumnValues",
+    "PriceCellFromColumns",
+    "DecodePriceValues",
+]

@@ -35,7 +35,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_routing": "下载来源",
     "tencent_history": "Tencent下载",
     "history_st_reference": "历史ST名单",
-    "history_active_gaps": "活动历史缺口",
+    "history_published_gaps": "活动历史缺口",
     "history_gap_resume": "旧断点恢复",
     "history_gap_inventory": "统计历史缺口",
     "persisting_partitions": "正式月库提交",
@@ -64,7 +64,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "tencent_history": "股票",
     "persisting_partitions": "月份",
     "sealing_partitions": "月份",
-    "history_active_gaps": "月份",
+    "history_published_gaps": "月份",
     "history_gap_resume": "处理项",
 }
 _RESULT_LABELS = {
@@ -78,7 +78,7 @@ _RESULT_LABELS = {
 _COUNT_STAGES = frozenset(
     {
         "history_st_reference",
-        "history_active_gaps",
+        "history_published_gaps",
         "history_gap_resume",
         "downloading_codes",
         "tencent_history",
@@ -93,7 +93,7 @@ _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplie
 
 def _suppress_transient(progress: HistorySyncProgress) -> bool:
     return progress.state in {"started", "waiting"} and not (
-        progress.stage in {"history_active_gaps", "history_gap_resume", "sealing_partitions", "preparing_partitions"}
+        progress.stage in {"history_published_gaps", "history_gap_resume", "sealing_partitions", "preparing_partitions"}
         or progress.stage in {"tencent_history", "persisting_prices"}
         and progress.state == "waiting"
     )
@@ -209,7 +209,7 @@ class StderrHistorySyncProgress:
 
     def _publish(self, progress: HistorySyncProgress) -> None:
         now = self._monotonic()
-        monthly = progress.stage in {"persisting_partitions", "sealing_partitions", "history_active_gaps"}
+        monthly = progress.stage in {"persisting_partitions", "sealing_partitions", "history_published_gaps"}
         phase_key = (progress.stage, progress.current_item if monthly else None)
         if progress.stage == "sealing_partitions" and progress.state == "started":
             self._phase_started[phase_key] = now

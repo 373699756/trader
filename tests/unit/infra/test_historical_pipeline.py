@@ -298,15 +298,15 @@ def test_historical_audit_cannot_enter_active_pipeline_builders():
         replace(active, stage_snapshots=historical.stage_snapshots)
     with pytest.raises(ValueError, match="active snapshot"):
         PipelineStageOutput((object(),), historical.stage_snapshots[0])
-    active_snapshot = stage_snapshots()[0]
+    published_snapshot = stage_snapshots()[0]
     for field in ("state", "source_health", "reasons"):
         with pytest.raises(ValueError, match="active .* types"):
-            replace(active_snapshot, **{field: getattr(historical.stage_snapshots[0], field)})
+            replace(published_snapshot, **{field: getattr(historical.stage_snapshots[0], field)})
     for field in ("metric_ranges", "facets", "reason_counts"):
         with pytest.raises(ValueError, match="active evidence types"):
             replace(active.stages[0], **{field: getattr(historical.stages[0], field)})
     with pytest.raises(ValueError, match="active state type"):
-        replace(active_snapshot.source_health, state=historical.stage_snapshots[0].source_health.state)
+        replace(published_snapshot.source_health, state=historical.stage_snapshots[0].source_health.state)
     with pytest.raises(ValueError, match="active severity type"):
         active_pipeline.StageReasonAggregate(
             "source_partial", "来源不足", 1, historical.stage_snapshots[0].reasons[0].severity

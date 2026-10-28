@@ -1,11 +1,14 @@
 """Explicit offline published inputs for download and recommendation contracts."""
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.prepared_reference import PreparedReference
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 
 
 def PreparedFixture(
@@ -37,4 +40,24 @@ def PreparedFixture(
     )
 
 
-__all__ = ["PreparedFixture"]
+def PublishHistoryReferenceFixture(
+    path: Path,
+    reference: HistoryReferenceSnapshot,
+    *,
+    securities: tuple[BaoStockSecurity, ...] | None = None,
+    open_dates: tuple[date, ...] | None = None,
+) -> str:
+    day = max(item.checked_on for item in reference.st_evidence)
+    observed_at = datetime.combine(day, datetime.min.time(), ZoneInfo("Asia/Shanghai"))
+    population = securities or tuple(
+        BaoStockSecurity(item.code, "fixture", "main", date(1990, 1, 1), None, "fixture")
+        for item in reference.st_evidence
+    )
+    prepared = replace(
+        PreparedFixture(observed_at, population, open_dates=open_dates), st_evidence=reference.st_evidence
+    )
+    SQLiteReferenceIndex(path).publish(prepared, reference.st_evidence)
+    return prepared.identity
+
+
+__all__ = ["PreparedFixture", "PublishHistoryReferenceFixture"]

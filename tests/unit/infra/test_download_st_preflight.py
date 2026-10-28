@@ -18,7 +18,7 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-from trader.download.infra.history_reference_codec import ReadStEvidence, WriteStEvidence
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
@@ -87,8 +87,7 @@ def st_sources(monkeypatch):
 
 
 def _seed_st(path):
-    WriteStEvidence(
-        path,
+    SQLiteReferenceIndex(path).merge_st(
         (
             HistoryStEvidence("600001", NOW.date(), "clear"),
             HistoryStEvidence("600002", NOW.date(), "clear"),
@@ -110,7 +109,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
         data_paths=DataPaths(tmp_path / "data"),
     )
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
-    evidence_path = settings.data_paths.reference / "historical_st.sqlite3"
+    evidence_path = settings.data_paths.reference / "company_st.sqlite3"
     if existing_cache:
         _seed_st(evidence_path)
     events = []
@@ -137,7 +136,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     assert result.tasks[0].company.requested_codes == 3
     assert events == ["business_download"]
     assert set(calls) == expected_queries
-    assert {item.code for item in ReadStEvidence(evidence_path) if item.status == "ever_st"} == {
+    assert {item.code for item in SQLiteReferenceIndex(evidence_path).read_st() if item.status == "ever_st"} == {
         "600002",
         "600003",
         "600006",
@@ -151,7 +150,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
 def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, monkeypatch, st_sources, command):
     calls, sessions = st_sources
     reference_root = DataPaths(tmp_path / "data").reference
-    _seed_st(reference_root / "historical_st.sqlite3")
+    _seed_st(reference_root / "company_st.sqlite3")
     downloaded = []
 
     class Prices(TencentQfqSupplier):
@@ -202,7 +201,7 @@ def test_corrupt_st_cache_stops_risk_commands_before_business_requests(tmp_path,
         data_paths=DataPaths(tmp_path / "data"),
     )
     settings.data_paths.reference.mkdir(parents=True)
-    (settings.data_paths.reference / "historical_st.sqlite3").write_text("[]", encoding="utf-8")
+    (settings.data_paths.reference / "company_st.sqlite3").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
 
     def forbidden(*_args, **_kwargs):

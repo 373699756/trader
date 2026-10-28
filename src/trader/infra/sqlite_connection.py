@@ -302,11 +302,12 @@ def _validate_unversioned_schema(connection: SqliteConnection, schema: SqliteSch
             raise sqlite3.DatabaseError("sqlite_schema_unsupported")
 
 
-def _schema_exists(
+def HasSqliteSchema(
     connection: SqliteConnection,
     schema: SqliteSchema,
-    validate: Callable[[SqliteConnection], None] | None,
+    validate: Callable[[SqliteConnection], None] | None = None,
 ) -> bool:
+    """Return false only for an uninitialized database; reject incompatible schemas."""
     # Read both facts in one SQLite statement so a concurrent initializer cannot
     # make us combine the old version with its newly committed tables.
     version, populated = connection.run(
@@ -337,22 +338,34 @@ def EnsureSqliteSchema(
     initialize: Callable[[SqliteConnection], None] | None = None,
     validate: Callable[[SqliteConnection], None] | None = None,
 ) -> None:
-    """Validate a format or atomically initialize an empty database; never migrate one."""
-    if _schema_exists(connection, schema, validate):
+    """Validate or initialize an empty database inside the caller's transaction when supplied."""
+    if HasSqliteSchema(connection, schema, validate):
         return
     if not allow_create:
         raise sqlite3.DatabaseError("sqlite_schema_unsupported")
+    if connection.in_transaction:
+        _initialize_schema(connection, schema, initialize, validate)
+        return
     with SqliteTransaction(connection, immediate=True):
-        if _schema_exists(connection, schema, validate):
-            return
-        for statement in schema.statements:
-            connection.run(statement)
-        if initialize is not None:
-            initialize(connection)
-        if schema.version is not None:
-            connection.run(f"PRAGMA user_version={schema.version}")
-        if validate is not None:
-            validate(connection)
+        _initialize_schema(connection, schema, initialize, validate)
+
+
+def _initialize_schema(
+    connection: SqliteConnection,
+    schema: SqliteSchema,
+    initialize: Callable[[SqliteConnection], None] | None,
+    validate: Callable[[SqliteConnection], None] | None,
+) -> None:
+    if HasSqliteSchema(connection, schema, validate):
+        return
+    for statement in schema.statements:
+        connection.run(statement)
+    if initialize is not None:
+        initialize(connection)
+    if schema.version is not None:
+        connection.run(f"PRAGMA user_version={schema.version}")
+    if validate is not None:
+        validate(connection)
 
 
 def CheckSqliteIntegrity(connection: SqliteConnection) -> None:
@@ -364,6 +377,7 @@ def CheckSqliteIntegrity(connection: SqliteConnection) -> None:
 __all__ = [
     "CheckSqliteIntegrity",
     "EnsureSqliteSchema",
+    "HasSqliteSchema",
     "OpenSqliteConnection",
     "SqliteConnection",
     "SqliteConnectionOptions",

@@ -1535,7 +1535,7 @@ def _baostock_qfq_shadow_details(
 ) -> None:
     payload["production_eligible"] = source.get("production_eligible") is True
     payload["summary"] = {
-        "active_snapshot": _mapping(source.get("active_snapshot")),
+        "published_snapshot": _mapping(source.get("published_snapshot")),
         "target_window": _mapping(source.get("target_window")),
         "raw_qfq_integrity": _mapping(source.get("raw_qfq_integrity")),
         "request_baseline": _mapping(source.get("request_baseline")),
@@ -1586,7 +1586,7 @@ def _research_details(result: DiagnosticResult, source: Mapping[str, object], pa
         },
         "history_archive": {
             "state": history.get("state"),
-            "active_snapshot_hash": history.get("active_snapshot_hash"),
+            "snapshot_hash": history.get("snapshot_hash"),
             "data_cutoff": history.get("data_cutoff"),
             "label_cutoff": history.get("label_cutoff"),
             "calendar_sessions": history.get("calendar_sessions"),

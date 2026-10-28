@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
     SqliteSchema,
@@ -84,25 +84,33 @@ HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
     (
         """
         CREATE TABLE IF NOT EXISTS download_batch (
-            singleton INTEGER PRIMARY KEY CHECK(singleton=1), sequence INTEGER NOT NULL,
-            source_hash TEXT NOT NULL, calendar_hash TEXT NOT NULL, universe_hash TEXT NOT NULL,
-            cutoff TEXT NOT NULL
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), sync_sequence INTEGER NOT NULL,
+            source_hash BLOB NOT NULL CHECK(length(source_hash)=32),
+            calendar_hash BLOB NOT NULL CHECK(length(calendar_hash)=32),
+            universe_hash BLOB NOT NULL CHECK(length(universe_hash)=32),
+            cutoff_date INTEGER NOT NULL
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS download_tasks (
-            code TEXT PRIMARY KEY, dates_json TEXT NOT NULL, tencent_done INTEGER NOT NULL DEFAULT 0,
+            code TEXT PRIMARY KEY, tencent_done INTEGER NOT NULL DEFAULT 0 CHECK(tencent_done IN (0,1)),
             attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3), failure TEXT
         ) WITHOUT ROWID
         """,
         """
+        CREATE TABLE IF NOT EXISTS download_task_dates (
+            code TEXT NOT NULL REFERENCES download_tasks(code) ON DELETE CASCADE,
+            trade_date INTEGER NOT NULL, PRIMARY KEY(code,trade_date)
+        ) WITHOUT ROWID
+        """,
+        """
         CREATE TABLE IF NOT EXISTS download_gaps (
-            code TEXT NOT NULL, trade_date TEXT NOT NULL, PRIMARY KEY(code,trade_date)
+            code TEXT NOT NULL, trade_date INTEGER NOT NULL, PRIMARY KEY(code,trade_date)
         ) WITHOUT ROWID
         """,
         """
         CREATE TABLE IF NOT EXISTS download_qfq_unusable (
-            code TEXT NOT NULL, trade_date TEXT NOT NULL, checked_cutoff TEXT NOT NULL,
+            code TEXT NOT NULL, trade_date INTEGER NOT NULL, cutoff_date INTEGER NOT NULL,
             PRIMARY KEY(code,trade_date)
         ) WITHOUT ROWID
         """,
@@ -115,42 +123,55 @@ class HistoryDownloadIndex:
         self._path = path
 
     def pending(self, published_sequence: int) -> HistoryDownloadBatch | None:
-        with SqliteSession(self._path) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection:
             row = connection.run(
-                "SELECT sequence,source_hash,calendar_hash,universe_hash,cutoff FROM download_batch"
+                "SELECT sync_sequence,source_hash,calendar_hash,universe_hash,cutoff_date FROM download_batch"
             ).fetchone()
         if row is None or row[0] <= published_sequence:
             return None
-        return HistoryDownloadBatch(row[0], row[1], row[2], row[3], date.fromisoformat(row[4]))
+        return HistoryDownloadBatch(
+            row[0], DecodeHash(row[1]), DecodeHash(row[2]), DecodeHash(row[3]), DecodeDate(row[4])
+        )
 
     def begin(self, batch: HistoryDownloadBatch, tasks: tuple[HistoryDownloadTask, ...]) -> None:
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
+        with (
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             connection.run("DELETE FROM download_tasks")
             connection.run(
                 "INSERT OR REPLACE INTO download_batch VALUES(1,?,?,?,?,?)",
                 (
                     batch.sequence,
-                    batch.source_hash,
-                    batch.calendar_hash,
-                    batch.universe_hash,
-                    batch.cutoff.isoformat(),
+                    EncodeHash(batch.source_hash),
+                    EncodeHash(batch.calendar_hash),
+                    EncodeHash(batch.universe_hash),
+                    EncodeDate(batch.cutoff),
                 ),
             )
             connection.run_many(
-                "INSERT INTO download_tasks(code,dates_json) VALUES(?,?)",
-                ((task.code, json.dumps([day.isoformat() for day in task.dates])) for task in tasks),
+                "INSERT INTO download_tasks(code) VALUES(?)",
+                ((task.code,) for task in tasks),
+            )
+            connection.run_many(
+                "INSERT INTO download_task_dates VALUES(?,?)",
+                ((task.code, EncodeDate(day)) for task in tasks for day in task.dates),
             )
 
     def tasks(self) -> tuple[HistoryDownloadTask, ...]:
-        with SqliteSession(self._path) as connection:
+        with (
+            SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteTransaction(connection),
+        ):
             rows = connection.run(
-                "SELECT code,dates_json,tencent_done,attempts,failure FROM download_tasks ORDER BY code"
+                "SELECT code,tencent_done,attempts,failure FROM download_tasks ORDER BY code"
             ).fetchall()
+            dates: dict[str, list[date]] = {}
+            for code, day in connection.run("SELECT code,trade_date FROM download_task_dates ORDER BY code,trade_date"):
+                dates.setdefault(code, []).append(DecodeDate(day))
         return tuple(
-            HistoryDownloadTask(
-                code, tuple(date.fromisoformat(day) for day in json.loads(dates)), bool(done), attempts, failure
-            )
-            for code, dates, done, attempts, failure in rows
+            HistoryDownloadTask(code, tuple(dates.get(code, ())), bool(done), attempts, failure)
+            for code, done, attempts, failure in rows
         )
 
     def rebind_context(
@@ -163,21 +184,24 @@ class HistoryDownloadIndex:
         """Replace only an unpublished batch's parents, preserving all durable progress."""
         if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
             raise ValueError("history_download_identity_conflict")
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
+        with (
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             updated = connection.run(
                 """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?
-                   WHERE singleton=1 AND sequence=? AND cutoff=?
+                   WHERE singleton=1 AND sync_sequence=? AND cutoff_date=?
                      AND source_hash=? AND calendar_hash=? AND universe_hash=?
-                     AND NOT EXISTS (SELECT 1 FROM active_snapshot WHERE sequence>=?)""",
+                     AND NOT EXISTS (SELECT 1 FROM published_snapshot WHERE sync_sequence>=?)""",
                 (
-                    current.source_hash,
-                    current.calendar_hash,
-                    current.universe_hash,
+                    EncodeHash(current.source_hash),
+                    EncodeHash(current.calendar_hash),
+                    EncodeHash(current.universe_hash),
                     previous.sequence,
-                    previous.cutoff.isoformat(),
-                    previous.source_hash,
-                    previous.calendar_hash,
-                    previous.universe_hash,
+                    EncodeDate(previous.cutoff),
+                    EncodeHash(previous.source_hash),
+                    EncodeHash(previous.calendar_hash),
+                    EncodeHash(previous.universe_hash),
                     previous.sequence,
                 ),
             )
@@ -190,13 +214,17 @@ class HistoryDownloadIndex:
                     "DELETE FROM download_tasks WHERE code=?", ((code,) for code in existing if code not in codes)
                 )
                 connection.run_many(
-                    "INSERT OR IGNORE INTO download_tasks(code,dates_json) VALUES(?,?)",
-                    ((task.code, json.dumps([day.isoformat() for day in task.dates])) for task in tasks),
+                    "INSERT OR IGNORE INTO download_tasks(code) VALUES(?)",
+                    ((task.code,) for task in tasks),
+                )
+                connection.run_many(
+                    "INSERT INTO download_task_dates VALUES(?,?)",
+                    ((task.code, EncodeDate(day)) for task in tasks if task.code not in existing for day in task.dates),
                 )
 
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""
-        with SqliteSession(self._path) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection:
             return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM download_gaps"))
 
     def gaps_by_code(self, calendar_dates: tuple[date, ...] | None = None) -> dict[str, tuple[date, ...]]:
@@ -208,7 +236,7 @@ class HistoryDownloadIndex:
         grouped: dict[str, list[date]] = {}
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
             for code, day, checked in connection.run(
-                "SELECT g.code,g.trade_date,u.checked_cutoff FROM download_gaps g "
+                "SELECT g.code,g.trade_date,u.cutoff_date FROM download_gaps g "
                 "LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
                 "ORDER BY g.code,g.trade_date"
             ):
@@ -216,20 +244,23 @@ class HistoryDownloadIndex:
                     calendar_dates is not None
                     and checked is not None
                     and (
-                        last - positions.get(date.fromisoformat(checked), -_QFQ_UNUSABLE_RECHECK_SESSIONS)
+                        last - positions.get(DecodeDate(checked), -_QFQ_UNUSABLE_RECHECK_SESSIONS)
                         < _QFQ_UNUSABLE_RECHECK_SESSIONS
                     )
                 ):
                     continue
-                grouped.setdefault(code, []).append(date.fromisoformat(day))
+                grouped.setdefault(code, []).append(DecodeDate(day))
         return {code: tuple(days) for code, days in grouped.items()}
 
     def finish(self, completions: tuple[HistoryDownloadCompletion, ...]) -> None:
         """Advance one durable batch only after all of its monthly price commits succeed."""
         if not completions or len({item.task.code for item in completions}) != len(completions):
             raise ValueError("history_download_completions_invalid")
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
-            cutoff_row = connection.run("SELECT cutoff FROM download_batch WHERE singleton=1").fetchone()
+        with (
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
+            cutoff_row = connection.run("SELECT cutoff_date FROM download_batch WHERE singleton=1").fetchone()
             if cutoff_row is None:
                 raise ValueError("history_download_batch_missing")
             checked_cutoff = cutoff_row[0]
@@ -246,20 +277,20 @@ class HistoryDownloadIndex:
                 task = completion.task
                 connection.run_many(
                     "DELETE FROM download_qfq_unusable WHERE code=? AND trade_date=?",
-                    ((task.code, day.isoformat()) for day in task.dates),
+                    ((task.code, EncodeDate(day)) for day in task.dates),
                 )
                 connection.run_many(
                     "INSERT INTO download_qfq_unusable VALUES(?,?,?)",
-                    ((task.code, day.isoformat(), checked_cutoff) for day in completion.unusable_qfq_dates),
+                    ((task.code, EncodeDate(day), checked_cutoff) for day in completion.unusable_qfq_dates),
                 )
                 if task.code in gap_codes:
                     connection.run_many(
                         "DELETE FROM download_gaps WHERE code=? AND trade_date=?",
-                        ((task.code, day.isoformat()) for day in task.dates),
+                        ((task.code, EncodeDate(day)) for day in task.dates),
                     )
                 connection.run_many(
                     "INSERT OR IGNORE INTO download_gaps VALUES(?,?)",
-                    ((task.code, day.isoformat()) for day in completion.missing),
+                    ((task.code, EncodeDate(day)) for day in completion.missing),
                 )
                 connection.run(
                     "UPDATE download_tasks SET tencent_done=1,failure=? WHERE code=?",
@@ -267,7 +298,10 @@ class HistoryDownloadIndex:
                 )
 
     def begin_attempt(self, code: str) -> int:
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection, immediate=True):
+        with (
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
             connection.run("UPDATE download_tasks SET attempts=attempts+1 WHERE code=? AND attempts<3", (code,))
             return int(connection.run("SELECT attempts FROM download_tasks WHERE code=?", (code,)).require_one()[0])
 
@@ -288,7 +322,7 @@ class HistoryDownloadIndex:
                 if code in selected:
                     stocks.add(code)
                     reasons[reason] = reasons.get(reason, 0) + count
-                    dates.extend((date.fromisoformat(first), date.fromisoformat(last)))
+                    dates.extend((DecodeDate(first), DecodeDate(last)))
         return HistoryPriceGapSummary(
             len(stocks),
             sum(reasons.values()),

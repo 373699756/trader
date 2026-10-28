@@ -26,9 +26,10 @@ from trader.download.domain.published_history import ProjectHistoryCell, Publish
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_reference_codec import ReadBoundHistoryReference
+from trader.download.infra.history_reference_index import ReadBoundHistoryReference
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
@@ -65,6 +66,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
     state = HistoryControlIndex(root / "catalog.sqlite3").load_published_state()
     if state is None:
         raise ValueError("comparison_requires_published_calendar")
+    published = HistoryControlIndex(root / "catalog.sqlite3").read_universe_reference(state.universe.content_hash)
     reference = ReadBoundHistoryReference(root, state.source.supplier_contract)
     selected = tuple(item for item in state.universe.securities if item.code in codes)
     if {item.code for item in selected} != set(codes):
@@ -84,7 +86,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
             project_root = Path(__file__).resolve().parents[2]
             config = replace(
                 LoadHistorySyncConfiguration(project_root, DataPaths(work / "data")),
-                archive_root=work / "history",
+                history_root=work / "history",
                 sessions=sessions,
                 reread_sessions=min(5, sessions),
                 history_workers=workers,
@@ -110,12 +112,15 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
                 tuple(item for item in reference.industry_intervals if item.code in codes),
                 tuple(item for item in reference.st_evidence if item.code in codes),
             )
+            subset = replace(published, official_universe=universe, st_evidence=context.st_evidence)
+            SQLiteReferenceIndex(config.reference_root / "company_st.sqlite3").publish(subset, subset.st_evidence)
+            context = replace(context, reference_id=subset.identity)
             started = time.monotonic()
             result = RunHistorySync(
                 config,
                 _ComparisonSupplier(context, baseline, prices, tencent_first),
                 worker_pool=pool,
-                storage_kind=StorageProbe().inspect(config.archive_root).kind,
+                storage_kind=StorageProbe().inspect(config.history_root).kind,
                 clock=lambda: datetime.combine(dates[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai")),
             )
             results.append(
@@ -125,7 +130,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
                     "state": result.state,
                     "reason": result.reason,
                     "unresolved_price_cells": result.unresolved_price_cells,
-                    "published": result.active_snapshot_hash is not None,
+                    "published": result.snapshot_hash is not None,
                     "temporary_bytes": sum(path.stat().st_size for path in work.rglob("*") if path.is_file()),
                 }
             )

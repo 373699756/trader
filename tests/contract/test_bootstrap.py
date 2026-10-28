@@ -222,7 +222,7 @@ def test_deepseek_toggle_rebuilds_with_new_configuration_identity_and_readable_s
     assert not (tmp_path / "data/recommendation").exists()
 
 
-def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_path) -> None:
+def test_decision_index_initializes_only_under_the_freeze_directory(tmp_path) -> None:
     system = BuildSystem(_config(tmp_path))
 
     system.records.initialize()
@@ -232,7 +232,7 @@ def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_pat
     assert not (tmp_path / "runtime" / "decisions").exists()
 
 
-def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None:
+def test_build_system_reads_the_same_history_owned_by_download(tmp_path) -> None:
     from trader.download.infra.download_settings import LoadHistorySyncConfiguration
     from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
@@ -243,7 +243,7 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     assert system.input_preloader._profiles[0][0] is native_data._market.history  # noqa: SLF001
     configuration = LoadHistorySyncConfiguration(system.settings.project_root, system.settings.data_paths)
     assert native_data._market.history._history.publication._root == system.settings.data_paths.history  # noqa: SLF001
-    assert native_data._market.history._outcome_history.publication._root == configuration.archive_root  # noqa: SLF001
+    assert native_data._market.history._outcome_history.publication._root == configuration.history_root  # noqa: SLF001
 
 
 @pytest.mark.parametrize("hour,minute", ((8, 0), (10, 0), (12, 0), (14, 59), (15, 10), (20, 30)))

@@ -322,7 +322,7 @@ def _sample(
             "history_covered_rows": warmup[1],
             "history_coverage_ratio": warmup[1] / 360,
             "history_error_count": warmup[2] + warmup_timeout_count,
-            "published_history_state": "active",
+            "published_history_state": "published",
             "published_history_snapshot_hash": "b" * 64,
             "published_history_data_cutoff": _TRADE_DATE,
             "history_maintenance_state": "running" if warmup[3] else "already_current",
@@ -1099,7 +1099,7 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert report["schema_version"] == "web_recommendation_health"
     assert report["status"] == "passed"
     assert report["samples"][0]["market"]["history_archive"]["maintenance_total_units"] == 20
-    assert report["samples"][0]["market"]["history_archive"]["state"] == "active"
+    assert report["samples"][0]["market"]["history_archive"]["state"] == "published"
     assert report["samples"][0]["market"]["candidate_quote_age"] == {
         "p50_seconds": 1.0,
         "p95_seconds": 2.0,

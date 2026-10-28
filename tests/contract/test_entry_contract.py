@@ -520,7 +520,7 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     assert payload["production_authority"] is False
     assert payload["validation_mode"] == "historical_only"
     assert payload["history_archive"] == {
-        "active_snapshot_hash": None,
+        "snapshot_hash": None,
         "calendar_sessions": 0,
         "data_cutoff": None,
         "label_cutoff": None,

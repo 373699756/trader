@@ -44,6 +44,7 @@ from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, T
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 from trader.entrypoints import cli
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
@@ -166,7 +167,7 @@ def test_pair_failure_rolls_back_prices_both_identities_and_checkpoint(tmp_path,
     original = SqliteConnection.run
 
     def fail(self, sql, parameters=()):
-        if sql.startswith("INSERT OR REPLACE INTO identities") and parameters[0] == "v3":
+        if sql.startswith("INSERT OR REPLACE INTO window_binding") and parameters[0] == "v3":
             raise sqlite3.OperationalError("fixture interrupted")
         return original(self, sql, parameters)
 
@@ -203,7 +204,7 @@ def test_corrupt_prices_fail_closed(tmp_path, corrupt_price):
     cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     publish_windows(cache, (_window(),), "fixture")
     with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE bars SET qfq_close=? WHERE code='600001'", (corrupt_price,))
+        connection.run("UPDATE daily_price SET qfq_close=? WHERE code='600001'", (corrupt_price,))
     with pytest.raises(RuntimeError, match="identity_mismatch"):
         cache.read_code("600001")
 
@@ -494,7 +495,14 @@ def test_unpaired_only_window_does_not_report_no_trade_data_or_success(tmp_path)
 
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
-@pytest.mark.parametrize("field,value", (("digest", "broken"), ("first_day", "2099-01-01"), ("cutoff", "2000-01-01")))
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("content_hash", bytes(32)),
+        ("start_date", EncodeDate(date(2099, 1, 1))),
+        ("end_date", EncodeDate(date(2000, 1, 1))),
+    ),
+)
 def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, profile, field, value):
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
@@ -502,7 +510,7 @@ def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, pr
     assert updater.execute(observed).completed_codes == 1
     cache = updater.v2 if profile == "v2" else updater.v3
     with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
-        connection.run(f"UPDATE identities SET {field}=? WHERE code=? AND profile=?", (value, "600001", profile))
+        connection.run(f"UPDATE window_binding SET {field}=? WHERE code=? AND profile=?", (value, "600001", profile))
     assert not cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 0
@@ -916,7 +924,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
             return replace(context, universe=universe)
 
     def st_source(path, *_args, **_kwargs):
-        assert path == tmp_path / "data/market/reference/historical_st.sqlite3"
+        assert path.path == tmp_path / "data/market/reference/company_st.sqlite3"
         return StSource()
 
     _install_download_config(tmp_path)
@@ -970,9 +978,9 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
+    from tests.helpers.history import RunHistoryFixture
     from tests.unit.infra.research.test_history_sync import FakeSupplier, _configuration
     from trader import bootstrap
-    from trader.download.infra.history_sync_runner import RunHistorySync
 
     barrier = threading.Barrier(2)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
@@ -999,10 +1007,10 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
             report=lambda _message: None,
             now=lambda: observed,
         )
-        history_result = RunHistorySync(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
+        history_result = RunHistoryFixture(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
         qfq_result = pending.result(timeout=15)
 
-    assert history_result.state == "completed" and history_result.active_snapshot_hash is not None
+    assert history_result.state == "completed" and history_result.snapshot_hash is not None
     assert qfq_result.failure_reason is None and qfq_result.completed_codes == 1
     assert qfq_result.pending_codes == 0
     assert (root / "catalog.sqlite3").exists()
@@ -1048,7 +1056,7 @@ def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repa
     write = SqliteConnection.run
 
     def fail(connection, sql, parameters=()):
-        if sql.startswith("INSERT OR REPLACE INTO identities") and parameters[0] == "v3":
+        if sql.startswith("INSERT OR REPLACE INTO window_binding") and parameters[0] == "v3":
             raise RuntimeError("interrupted second profile")
         return write(connection, sql, parameters)
 
@@ -1060,6 +1068,15 @@ def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repa
     assert not updater.v2.completed(DAYS[-1], "600001", source)
     assert updater.v2.read_code("600001").cells == ()
     assert updater.v3.read_code("600001").cells == ()
+    restarted = SQLiteQfqWindowCache(updater.v2.path, "v2")
+    restarted.verify_integrity()
+    assert restarted.manifest() is None
+    assert restarted.codes() == frozenset()
+    assert restarted.source_identity("600001") is None
+    assert restarted.inspect_windows(frozenset({"600001"})).states == ()
+    with SqliteSession(restarted.path) as connection:
+        assert connection.run("PRAGMA user_version").require_one()[0] == 0
+        assert connection.run("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
     monkeypatch.setattr(SqliteConnection, "run", write)
     result = updater.execute(observed)
     assert result.pending_codes == 0 and result.completed_codes == 1
@@ -1074,7 +1091,7 @@ def test_source_migration_ignores_legacy_checkpoint_and_refetches_full_window(tm
     source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
     # Even a valid same-day code checkpoint cannot relabel old-source rows.
     with SqliteSession(updater.v2.path) as connection, SqliteTransaction(connection):
-        connection.run("INSERT INTO completions VALUES(?,?,?)", ("600001", DAYS[-1].isoformat(), source))
+        connection.run("INSERT INTO window_completion VALUES(?,?,?)", ("600001", EncodeDate(DAYS[-1]), source))
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.completed_codes == 1 and result.skipped_codes == 0
     assert supplier.calls == [("600001", DAYS[-251:])]
@@ -1387,15 +1404,15 @@ def test_latest_day_missing_retries_only_when_the_batch_gap_is_widespread() -> N
 
 
 def test_online_projection_matches_full_history_and_keeps_settlement_independent(tmp_path) -> None:
-    from tests.component.test_candidate_history_tail import CALENDAR, NOW, _Archive
+    from tests.component.test_candidate_history_tail import CALENDAR, NOW, HistoryInput
 
-    class MissingTailArchive(_Archive):
+    class MissingTailHistoryInput(HistoryInput):
         @staticmethod
         def window(code, dates):
-            window = _Archive.window(code, dates)
+            window = HistoryInput.window(code, dates)
             return replace(window, cells=window.cells[:-2]) if code == "600002" else window
 
-    full = MissingTailArchive(251, 0, ("600001", "600002"))
+    full = MissingTailHistoryInput(251, 0, ("600001", "600002"))
     reader = ReadPublishedHistoryUseCase(full)
     calendar_calls = 0
 
@@ -1435,9 +1452,9 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
 
 
 def test_runner_lock_blocks_network_and_local_seeding_is_resumable(tmp_path) -> None:
-    from tests.component.test_candidate_history_tail import NOW, _Archive
+    from tests.component.test_candidate_history_tail import NOW, HistoryInput
 
-    history = _Archive(251, 0, ("600001", "600002"))
+    history = HistoryInput(251, 0, ("600001", "600002"))
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
     runner = QfqUpdateRunner(

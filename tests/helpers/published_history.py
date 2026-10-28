@@ -11,11 +11,12 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from tests.reference_fixtures import PublishHistoryReferenceFixture
 from trader.download.domain.baostock_daily import BaoStockDailyCell
 from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistorySecurityIdentity,
+    HistorySnapshot,
     HistorySnapshotPartition,
     HistorySourceIdentity,
     HistoryUniverseIdentity,
@@ -32,7 +33,7 @@ def publish_history_fixture(
     context: HistorySupplierContext,
     cells: tuple[BaoStockDailyCell, ...],
     observed_at: datetime,
-) -> HistoryActiveSnapshot:
+) -> HistorySnapshot:
     """Publish one complete, isolated fixture through real persistence boundaries."""
     assert not root.exists(), "fixture publication must not overwrite an existing history"
     securities = {item.code: item for item in context.universe}
@@ -60,15 +61,23 @@ def publish_history_fixture(
         prices.initialize()
         prices.save_revisions(tuple(revisions))
         partitions.append(prices.seal())
-    control = HistoryControlIndex(root / "catalog.sqlite3")
+    reference_path = root.parent / "reference" / "company_st.sqlite3"
+    publication_id = PublishHistoryReferenceFixture(
+        reference_path,
+        reference,
+        securities=context.universe,
+        open_dates=tuple(sorted({*context.calendar.open_dates, observed_at.date()})),
+    )
+    control = HistoryControlIndex(root / "catalog.sqlite3", reference_path=reference_path)
     control.initialize()
     control.save_source(source)
-    control.save_calendar(calendar)
-    control.save_universe(universe)
-    snapshot = HistoryActiveSnapshot(
+    control.save_reference(reference, publication_id)
+    control.save_calendar(calendar, publication_id)
+    control.save_universe(universe, publication_id)
+    snapshot = HistorySnapshot(
         1,
         calendar.open_dates[-1],
-        calendar.open_dates[-2] if len(calendar.open_dates) > 1 else None,
+        calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1],
         calendar.content_hash,
         universe.content_hash,
         source.content_hash,

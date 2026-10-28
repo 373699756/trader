@@ -24,7 +24,7 @@ from tests.component.market_data_test_support import (
     _service,
     _tail_minute_bars,
 )
-from tests.component.test_candidate_history_tail import CALENDAR, NOW, _Archive
+from tests.component.test_candidate_history_tail import CALENDAR, NOW, HistoryInput
 from tests.unit.application.scoring_helpers import profile_for
 from tests.unit.application.test_tomorrow_production_model import _model_feature
 from tests.unit.application.test_v5_model_filtering import _SequencePredictor
@@ -167,7 +167,7 @@ def test_service_prepares_shared_preview_collection_and_feature_builder(applicat
         circuit_breaker_seconds=60,
         wall_clock=lambda: observed,
     )
-    source = _Archive(252, 0, (quote.code,))
+    source = HistoryInput(252, 0, (quote.code,))
     source.current = replace(
         source.current, data_cutoff=NOW.date(), calendar_dates=tuple(day for day in CALENDAR if day <= NOW.date())
     )
@@ -311,7 +311,7 @@ def test_preview_v5_does_not_admit_a_sequence_including_its_signal_day(applicati
     "sessions,rank,sequence", ((251, True, False), (251, False, False), (61, False, False), (62, False, True))
 )
 def test_preview_history_uses_signal_day_for_all_profiles(sessions, rank, sequence):
-    source = _Archive(252, 0, ("600001",))
+    source = HistoryInput(252, 0, ("600001",))
     source.current = replace(
         source.current, data_cutoff=NOW.date(), calendar_dates=tuple(day for day in CALENDAR if day <= NOW.date())
     )

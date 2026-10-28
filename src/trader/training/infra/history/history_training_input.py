@@ -14,8 +14,8 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
 )
 from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
     HistorySecurityIdentity,
+    HistorySnapshot,
 )
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import (
@@ -35,7 +35,7 @@ from trader.training.domain.tomorrow_training_input import (
 @dataclass(frozen=True)
 class HistoryTrainingInputSnapshot:
     input_scope: Literal["complete_manifest"]
-    active_snapshot_hash: str
+    snapshot_hash: str
     source_identity_hash: str
     calendar_hash: str
     source_cutoff: date
@@ -47,7 +47,7 @@ class HistoryTrainingInputSnapshot:
 
     def __post_init__(self) -> None:
         hashes = (
-            self.active_snapshot_hash,
+            self.snapshot_hash,
             self.source_identity_hash,
             self.calendar_hash,
             self.input_descriptor_hash,
@@ -76,51 +76,51 @@ class HistoryTrainingInputSnapshot:
 
 
 class HistoryTrainingInputError(RuntimeError):
-    """The active monthly snapshot cannot be used as a complete input."""
+    """The published monthly snapshot cannot be used as a complete input."""
 
 
 class SQLiteHistoryTrainingInputSnapshot:
-    """Expose one verified active snapshot through the V3 training row contract."""
+    """Expose one verified published snapshot through the V3 training row contract."""
 
     def __init__(
         self,
         root: Path,
-        active: HistoryActiveSnapshot,
+        current_snapshot: HistorySnapshot,
         calendar: BaoStockCalendar,
         universe: tuple[BaoStockSecurity, ...],
         descriptor: FrozenDailyInputDescriptor,
     ) -> None:
         self._root = root
-        self._active = active
+        self._published_snapshot = current_snapshot
         self._calendar = calendar
         self._universe = universe
-        self._archive = HistorySnapshotReader(root)
+        self._history = HistorySnapshotReader(root)
         self._codes = frozenset(item.code for item in universe)
         self._descriptor = descriptor
         self.snapshot = replace(
-            _snapshot_for_training(active, calendar, self._codes, descriptor),
+            _snapshot_for_training(current_snapshot, calendar, self._codes, descriptor),
             listing_intervals=tuple((item.code, item.listed_on, item.delisted_on) for item in universe),
         )
 
     @classmethod
     def open(cls, root: Path) -> SQLiteHistoryTrainingInputSnapshot:
-        archive_root = root
-        control = HistoryControlIndex(archive_root / "catalog.sqlite3")
+        history_root = root
+        control = HistoryControlIndex(history_root / "catalog.sqlite3")
         try:
             state = control.load_published_state()
         except HistoryControlError as exc:
             raise HistoryTrainingInputError("history_manifest_unavailable") from exc
         if state is None:
             raise HistoryTrainingInputError("history_manifest_unavailable")
-        active = state.snapshot
+        current_snapshot = state.snapshot
         calendar_identity = state.calendar
         universe_identity = state.universe
         calendar = BaoStockCalendar(calendar_identity.open_dates)
         universe = tuple(_security(item) for item in universe_identity.securities)
         descriptor = FrozenDailyInputDescriptor(
-            manifest_hash=active.content_hash,
+            manifest_hash=current_snapshot.content_hash,
             source_identity=BAOSTOCK_RESEARCH_IDENTITY,
-            source_cutoff=active.data_cutoff,
+            source_cutoff=current_snapshot.data_cutoff,
             requested_sessions=len(calendar.open_dates),
             primary_key=("code", "trade_date"),
             fields=REQUIRED_DAILY_FIELDS,
@@ -129,14 +129,14 @@ class SQLiteHistoryTrainingInputSnapshot:
             frozen=True,
             production_authority=False,
         )
-        return cls(archive_root, active, calendar, universe, descriptor)
+        return cls(history_root, current_snapshot, calendar, universe, descriptor)
 
     @property
-    def active_snapshot(self) -> HistoryActiveSnapshot:
-        return self._active
+    def published_snapshot(self) -> HistorySnapshot:
+        return self._published_snapshot
 
     @property
-    def archive_root(self) -> Path:
+    def history_root(self) -> Path:
         return self._root
 
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
@@ -146,10 +146,10 @@ class SQLiteHistoryTrainingInputSnapshot:
         if not allowed_dates:
             return 0
         try:
-            return self._archive.row_count_upper_bound(
+            return self._history.row_count_upper_bound(
                 min(allowed_dates),
                 max(allowed_dates),
-                self._active,
+                self._published_snapshot,
             )
         except (HistorySnapshotReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
@@ -159,7 +159,7 @@ class SQLiteHistoryTrainingInputSnapshot:
     ) -> tuple[tuple[str, int], ...]:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         try:
-            return self._archive.reference_index(self._active).industry_sample_upper_bounds(
+            return self._history.reference_index(self._published_snapshot).industry_sample_upper_bounds(
                 self._codes, dates, required_sessions, anchors
             )
         except (HistorySnapshotReadError, OSError, ValueError) as exc:
@@ -172,7 +172,7 @@ class SQLiteHistoryTrainingInputSnapshot:
         if not dates or frozenset(dates) != allowed_dates:
             raise HistoryTrainingInputError("history_training_dates_invalid")
         try:
-            return self._archive.reference_index(self._active).has_industry_window(
+            return self._history.reference_index(self._published_snapshot).has_industry_window(
                 self._codes,
                 dates,
                 required_sessions,
@@ -190,8 +190,8 @@ class SQLiteHistoryTrainingInputSnapshot:
         if not dates or frozenset(dates) != allowed_dates:
             raise HistoryTrainingInputError("history_training_dates_invalid")
         try:
-            yield from self._archive.iter_training_rows(
-                self._active,
+            yield from self._history.iter_training_rows(
+                self._published_snapshot,
                 dates,
                 self._codes,
                 progress,
@@ -212,18 +212,18 @@ def _security(value: HistorySecurityIdentity) -> BaoStockSecurity:
 
 
 def _snapshot_for_training(
-    active: HistoryActiveSnapshot,
+    current_snapshot: HistorySnapshot,
     calendar: BaoStockCalendar,
     codes: frozenset[str],
     descriptor: FrozenDailyInputDescriptor,
 ) -> HistoryTrainingInputSnapshot:
     return HistoryTrainingInputSnapshot(
         "complete_manifest",
-        active.content_hash,
-        active.source_identity_hash,
-        active.calendar_hash,
-        active.data_cutoff,
-        active.label_cutoff,
+        current_snapshot.content_hash,
+        current_snapshot.source_identity_hash,
+        current_snapshot.calendar_hash,
+        current_snapshot.data_cutoff,
+        current_snapshot.label_cutoff,
         calendar,
         tuple(sorted(codes)),
         descriptor.content_hash,

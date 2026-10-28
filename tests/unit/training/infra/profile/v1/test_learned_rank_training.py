@@ -143,7 +143,7 @@ def test_matching_v1_pair_reuses_without_scanning_fitting_or_republishing(tmp_pa
     "changed",
     (
         "settings",
-        "active_snapshot_hash",
+        "snapshot_hash",
         "source_identity_hash",
         "calendar_hash",
         "input_descriptor_hash",
@@ -165,7 +165,7 @@ def test_v1_reuse_rejects_any_changed_identity_or_invalid_head(tmp_path, monkeyp
     history, settings = _History(), _settings()
     if changed == "settings":
         settings = replace(settings, boosting_rounds=settings.boosting_rounds + 1)
-    elif changed in {"active_snapshot_hash", "source_identity_hash", "calendar_hash", "input_descriptor_hash"}:
+    elif changed in {"snapshot_hash", "source_identity_hash", "calendar_hash", "input_descriptor_hash"}:
         history.snapshot = replace(history.snapshot, **{changed: "e" * 64})
     elif changed == "training_codes":
         history.snapshot = replace(history.snapshot, training_codes=history.codes[:-1])

@@ -86,7 +86,7 @@ def run_tomorrow_training(history_root: Path, train_root: Path, **kwargs):
     )
 
 
-def _cadence_archive(archive_root: Path) -> SimpleNamespace:
+def _cadence_history(history_root: Path) -> SimpleNamespace:
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2_000))
     snapshot = HistoryTrainingInputSnapshot(
         "complete_manifest",
@@ -100,7 +100,7 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
         "4" * 64,
     )
     descriptor = FrozenDailyInputDescriptor(
-        manifest_hash=snapshot.active_snapshot_hash,
+        manifest_hash=snapshot.snapshot_hash,
         source_identity="baostock_daily_core",
         source_cutoff=snapshot.source_cutoff,
         requested_sessions=2_000,
@@ -112,8 +112,8 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
     )
     return SimpleNamespace(
         snapshot=snapshot,
-        archive_root=archive_root,
-        active_snapshot=SimpleNamespace(partitions=(object(), object())),
+        history_root=history_root,
+        published_snapshot=SimpleNamespace(partitions=(object(), object())),
         describe_frozen_daily_input=lambda: descriptor,
         training_row_upper_bound=lambda _dates: 0,
         has_industry_window=lambda _dates, _sessions, **_kwargs: True,
@@ -121,10 +121,10 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
     )
 
 
-def _patch_archive(monkeypatch: pytest.MonkeyPatch, archive: SimpleNamespace) -> None:
+def _patch_history(monkeypatch: pytest.MonkeyPatch, history: SimpleNamespace) -> None:
     monkeypatch.setattr(
         "trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open",
-        lambda _path: archive,
+        lambda _path: history,
     )
 
 
@@ -138,16 +138,16 @@ def _populate_samples(request: TrainingSampleBuildRequest) -> None:
         + split.daily_proxy_holdout_dates
     )
     width = max(max(head.feature_positions) for head in request.profile.heads) + 1
-    request.repository.add_final(
+    request.index.add_final(
         V3TrainingSample("600000", day, "main", "银行", 1.0, (0.0,) * width, (0.01, 0.02, 0.03, 0.04, 0.05, 0.035))
         for day in days
     )
-    request.repository.prepare_for_model_fitting(split)
+    request.index.prepare_for_model_fitting(split)
 
 
 def test_manual_training_does_not_compare_revisions_or_cadence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
     monkeypatch.setattr(
         "trader.training.infra.history.history_training_due.EvaluateHistoryTrainingDue",
         lambda *_args, **_kwargs: pytest.fail("manual training must not evaluate cadence or revisions"),
@@ -167,8 +167,8 @@ def test_manual_training_does_not_compare_revisions_or_cadence(tmp_path: Path, m
 def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples",
         lambda *_args, **_kwargs: None,
@@ -183,8 +183,8 @@ def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
 
 @pytest.mark.parametrize("run_training", (run_v2_training, run_v3_training))
 def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, monkeypatch, run_training):
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
 
     def fail_samples(_request, *, aligned_rows=None):
         raise sqlite3.OperationalError("fixture disk full with private supplier details")
@@ -203,9 +203,9 @@ def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, m
 
 
 def test_missing_industry_in_fit_split_blocks_before_history_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    archive = _cadence_archive(tmp_path / "history")
-    archive.has_industry_window = lambda _dates, _sessions, **kwargs: kwargs.get("anchor_dates") is None
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    history.has_industry_window = lambda _dates, _sessions, **kwargs: kwargs.get("anchor_dates") is None
+    _patch_history(monkeypatch, history)
     result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
     assert result.status == "blocked"
     assert result.failure_reasons == ("history_industry_split_coverage_insufficient",)
@@ -215,8 +215,8 @@ def test_missing_industry_in_fit_split_blocks_before_history_scan(tmp_path: Path
 def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeypatch, failure):
     run_training = run_v3_training
     profile = "v3"
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
     builds = 0
 
     def build_samples(request, *, aligned_rows=None):
@@ -251,9 +251,9 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
 
 
 def test_provably_insufficient_industry_rows_fail_before_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    archive.industry_sample_upper_bounds = lambda *_args: (("银行", 19999),)
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    history.industry_sample_upper_bounds = lambda *_args: (("银行", 19999),)
+    _patch_history(monkeypatch, history)
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples", lambda *_args: pytest.fail("must fail early")
     )
@@ -265,9 +265,9 @@ def test_provably_insufficient_industry_rows_fail_before_build(tmp_path: Path, m
 def test_training_rejects_insufficient_industry_history_before_sample_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    archive.has_industry_window = lambda _dates, _sessions: False
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    history.has_industry_window = lambda _dates, _sessions: False
+    _patch_history(monkeypatch, history)
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples",
         lambda *_args, **_kwargs: pytest.fail("industry preflight must precede the history scan"),
@@ -283,7 +283,7 @@ def test_training_rejects_insufficient_industry_history_before_sample_scan(
 def test_v2_2000_day_budget_reaches_sample_scan_with_full_fit_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_archive(monkeypatch, _cadence_archive(tmp_path / "history"))
+    _patch_history(monkeypatch, _cadence_history(tmp_path / "history"))
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("scan reached")),
@@ -298,8 +298,8 @@ def test_v2_2000_day_budget_reaches_sample_scan_with_full_fit_window(
 def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
     scan_calls = 0
 
     def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None) -> None:
@@ -355,7 +355,7 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
 
 
 def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_path: Path) -> None:
-    snapshot = _cadence_archive(tmp_path / "history").snapshot
+    snapshot = _cadence_history(tmp_path / "history").snapshot
 
     assert _mature_label_cutoff(snapshot, TOMORROW_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, D25_HEAD_CONTRACT) == snapshot.calendar.open_dates[-6]
@@ -368,8 +368,8 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
 
 
 def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
 
     def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None) -> None:
         _populate_samples(request)
@@ -394,8 +394,8 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
 def test_training_reports_both_heads_when_the_shared_scan_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("forced failure")),
@@ -407,20 +407,20 @@ def test_training_reports_both_heads_when_the_shared_scan_fails(
     assert all(head.status == "blocked" for head in result.heads)
     assert all(head.failure_reasons == ("profile_training_failed",) for head in result.heads)
     assert [head.label_cutoff for head in result.heads] == [
-        archive.snapshot.calendar.open_dates[-2],
-        archive.snapshot.calendar.open_dates[-6],
+        history.snapshot.calendar.open_dates[-2],
+        history.snapshot.calendar.open_dates[-6],
     ]
 
 
 def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history")
+    history = _cadence_history(tmp_path / "history")
     open_calls: list[Path] = []
 
-    def open_archive(path: Path) -> SimpleNamespace:
+    def open_history(path: Path) -> SimpleNamespace:
         open_calls.append(path)
-        return archive
+        return history
 
     class BusyMaintenanceLock:
         def __init__(self, path: Path) -> None:
@@ -433,7 +433,7 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
         def __exit__(self, *_args: object) -> None:
             pass
 
-    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", open_archive)
+    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", open_history)
     monkeypatch.setattr("trader.training.infra.engine.HistoryMaintenanceLock", BusyMaintenanceLock)
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
@@ -443,10 +443,10 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
 
 
 def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive = _cadence_archive(tmp_path / "history")
-    _patch_archive(monkeypatch, archive)
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
     monkeypatch.setattr(
-        "trader.training.infra.engine.RequireHistoryPartitionRepackInactive",
+        "trader.training.infra.engine.RequireHistoryRepackIdle",
         lambda _root: (_ for _ in ()).throw(HistoryPartitionRepackFenceError("fenced")),
     )
 
@@ -476,7 +476,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
     rows = tuple(_training_point(day, 10.0 + index) for index, day in enumerate(dates[:66]))
 
-    class Archive:
+    class HistoryInput:
         snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates), listing_intervals=())
 
         @staticmethod
@@ -489,9 +489,9 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
                 yield HistoryTrainingRow("600000", point.trade_date, "main", "银行", point)
             progress(66)
 
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository:
-        BuildTrainingSamples(Archive(), ("600000",), TomorrowTrainingWindow(split), repository)  # type: ignore[arg-type]
-        row = repository._connection.run(
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as index:
+        BuildTrainingSamples(HistoryInput(), ("600000",), TomorrowTrainingWindow(split), index)  # type: ignore[arg-type]
+        row = index._connection.run(
             "SELECT trade_date, target_t1, target_t2, target_t3, target_t4, target_t5, target_d25_aggregate "
             "FROM samples WHERE trade_date=?",
             (dates[60].isoformat(),),
@@ -501,7 +501,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
         assert row[0] == dates[60].isoformat()
         assert row[1:] == pytest.approx((0.0,) * 6)
         assert "raw_samples" not in {
-            item[0] for item in repository._connection.run("SELECT name FROM sqlite_master WHERE type='table'")
+            item[0] for item in index._connection.run("SELECT name FROM sqlite_master WHERE type='table'")
         }
 
 

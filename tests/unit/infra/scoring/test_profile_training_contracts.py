@@ -141,9 +141,7 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
     )
 
     class HistorySourceFixture:
-        snapshot = SimpleNamespace(
-            calendar=BaoStockCalendar(dates), active_snapshot_hash="a" * 64, listing_intervals=()
-        )
+        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates), snapshot_hash="a" * 64, listing_intervals=())
 
         def __init__(self) -> None:
             self.scans = 0

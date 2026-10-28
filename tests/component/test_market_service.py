@@ -78,7 +78,7 @@ def test_initial_history_projection_defers_market_io(tmp_path, monkeypatch) -> N
         lookback_sessions=61,
         monotonic=time.monotonic,
     )
-    history.record_maintenance("loading", stage="reading_active_snapshot")
+    history.record_maintenance("loading", stage="reading_published_snapshot")
     service = _service(
         gateway,
         StaticHistoryClient(),

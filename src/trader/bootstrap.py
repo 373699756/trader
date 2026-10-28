@@ -44,14 +44,13 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_reference_codec import HistoryStEvidencePath
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_gateway import HistorySyncGateway
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
-from trader.download.infra.reference_publication import ReferencePublication
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier, TencentSessionPool
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
@@ -317,14 +316,14 @@ def _prepare_reference(
     resources = ExitStack()
     try:
         sessions = TencentSessionPool(tuple(resources.enter_context(OpenExternalHttp()) for _ in range(8)))
+        publication = SQLiteReferenceIndex(reference_root / "company_st.sqlite3")
         source = HistoryStNameSource(
-            HistoryStEvidencePath(reference_root),
+            publication,
             sessions.borrow,
             workers,
             lambda: cancel_requested() or not workers.is_running(),
             report=partial(company_evidence_progress.ReportStPreparation, progress),
         )
-        publication = ReferencePublication(reference_root)
         calendar = partial(
             FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
         )
@@ -416,7 +415,7 @@ def ExecuteHistoryDownload(
     cancel_requested: Callable[[], bool] = lambda: False,
     storage_overrides: tuple[StorageOverride, ...] = (),
 ) -> HistoryMaintenanceStatus:
-    storage_kind = StorageProbe(storage_overrides).inspect(configuration.archive_root).kind
+    storage_kind = StorageProbe(storage_overrides).inspect(configuration.history_root).kind
     if reference is None:
         reference = _prepare_reference(
             configuration.reference_root,
@@ -449,9 +448,7 @@ def ExecuteHistoryDownload(
                     baseline,
                     prices,
                     reference,
-                    industry_cache=HistoryIndustryQueryCache(
-                        HistoryStEvidencePath(configuration.reference_root).with_name("industry.sqlite3")
-                    ),
+                    industry_cache=HistoryIndustryQueryCache(configuration.reference_root / "industry.sqlite3"),
                 ),
                 clock=clock,
                 progress=progress,
@@ -618,7 +615,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         workers,
         owns_shared_runtime,
     )
-    reference_publication = ReferencePublication(paths.reference)
+    reference_publication = SQLiteReferenceIndex(paths.reference_database)
     references = (
         shared_inputs.market.references
         if shared_inputs

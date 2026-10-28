@@ -1,4 +1,4 @@
-"""Verified read adapter for one download-owned active history snapshot."""
+"""Verified read adapter for one download-owned published history snapshot."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ from pathlib import Path
 
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
+from trader.download.infra.history_reference_index import ReferenceFileStamp
 from trader.download.infra.history_snapshot_inspection import (
-    ActiveHistorySnapshot,
     HistorySnapshotInspectionError,
     LoadPublishedHistorySnapshot,
+    PublishedHistorySnapshot,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader, HistorySnapshotReadError
 
@@ -24,8 +26,10 @@ class PublishedHistoryReadError(RuntimeError):
 
 @dataclass(frozen=True)
 class _CatalogSnapshot:
-    archive: ActiveHistorySnapshot
+    history: PublishedHistorySnapshot
+    reference_path: Path
     stamp: tuple[tuple[int, int, int, int, int] | None, ...]
+    is_current: bool
 
 
 class SQLitePublishedHistorySnapshot:
@@ -34,46 +38,56 @@ class SQLitePublishedHistorySnapshot:
         self._reader = HistorySnapshotReader(self._root)
         self._cached: _CatalogSnapshot | None = None
 
-    def _catalog_stamp(self) -> tuple[tuple[int, int, int, int, int] | None, ...]:
-        values: list[tuple[int, int, int, int, int] | None] = []
-        for name in ("catalog.sqlite3", "catalog.sqlite3-wal"):
-            try:
-                stat = (self._root / name).stat()
-            except FileNotFoundError:
-                values.append(None)
-            else:
-                values.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
-        return tuple(values)
+    def _catalog_stamp(self, reference_path: Path) -> tuple[tuple[int, int, int, int, int] | None, ...]:
+        return ReferenceFileStamp(self._root / "catalog.sqlite3", reference_path)
 
-    def _load_archive(self, sequence: int) -> ActiveHistorySnapshot:
-        stamp = self._catalog_stamp()
+    def _reference_path(self) -> Path:
+        try:
+            return HistoryControlIndex(self._root / "catalog.sqlite3").reference_path()
+        except (HistoryControlError, OSError, ValueError) as exc:
+            raise HistorySnapshotInspectionError("history_reference_unavailable") from exc
+
+    def _load_snapshot(self, sequence: int) -> PublishedHistorySnapshot:
         cached = self._cached
-        if cached is not None and cached.stamp == stamp and sequence == cached.archive.snapshot.sequence:
-            return cached.archive
-        archive = LoadPublishedHistorySnapshot(self._root, sequence=sequence)
-        if stamp == self._catalog_stamp():
-            self._cached = _CatalogSnapshot(archive, stamp)
-        return archive
+        if (
+            cached is not None
+            and cached.stamp == self._catalog_stamp(cached.reference_path)
+            and sequence == cached.history.snapshot.sequence
+        ):
+            return cached.history
+        reference_path = self._reference_path()
+        stamp = self._catalog_stamp(reference_path)
+        history = LoadPublishedHistorySnapshot(self._root, sequence=sequence)
+        if stamp == self._catalog_stamp(reference_path):
+            self._cached = _CatalogSnapshot(history, reference_path, stamp, False)
+        return history
 
     def manifest(self) -> PublishedHistoryManifest | None:
+        if not (self._root / "catalog.sqlite3").is_file():
+            return None
         try:
-            # Active pointers must be read anew; a historical pinned load cannot define the latest sequence.
-            stamp = self._catalog_stamp()
-            archive = LoadPublishedHistorySnapshot(self._root)
-            if stamp == self._catalog_stamp():
-                self._cached = _CatalogSnapshot(archive, stamp)
+            cached = self._cached
+            if cached is not None and cached.is_current and cached.stamp == self._catalog_stamp(cached.reference_path):
+                history = cached.history
+            else:
+                # A historical pinned load cannot define the latest sequence.
+                reference_path = self._reference_path()
+                stamp = self._catalog_stamp(reference_path)
+                history = LoadPublishedHistorySnapshot(self._root)
+                if stamp == self._catalog_stamp(reference_path):
+                    self._cached = _CatalogSnapshot(history, reference_path, stamp, True)
         except HistorySnapshotInspectionError as exc:
             if str(exc) == "history_snapshot_unavailable":
                 return None
             raise PublishedHistoryReadError(str(exc)) from exc
         return PublishedHistoryManifest(
-            snapshot_hash=archive.snapshot.content_hash,
-            sequence=archive.snapshot.sequence,
-            data_cutoff=archive.snapshot.data_cutoff,
-            calendar_dates=archive.calendar.open_dates,
-            universe_codes=tuple(item.code for item in archive.universe.securities),
+            snapshot_hash=history.snapshot.content_hash,
+            sequence=history.snapshot.sequence,
+            data_cutoff=history.snapshot.data_cutoff,
+            calendar_dates=history.calendar.open_dates,
+            universe_codes=tuple(item.code for item in history.universe.securities),
             listing_intervals=tuple(
-                (item.code, item.listed_on, item.delisted_on) for item in archive.universe.securities
+                (item.code, item.listed_on, item.delisted_on) for item in history.universe.securities
             ),
         )
 
@@ -86,12 +100,12 @@ class SQLitePublishedHistorySnapshot:
     ) -> Iterator[PublishedHistoryWindow]:
         if check is not None:
             check()
-        archive = self._matching_snapshot(manifest)
+        history = self._matching_snapshot(manifest)
         dates = _session_dates(manifest, sessions)
         allowed_codes = frozenset(manifest.universe_codes)
         seen_dates: set[date] = set()
         try:
-            cells = self._reader.iter_published_range_by_code(dates[0], dates[-1], archive.snapshot, check=check)
+            cells = self._reader.iter_published_range_by_code(dates[0], dates[-1], history.snapshot, check=check)
             for code, group in groupby(cells, key=lambda row: row.code):
                 if code in allowed_codes:
                     window = PublishedHistoryWindow(code, tuple(group))
@@ -113,7 +127,7 @@ class SQLitePublishedHistorySnapshot:
     ) -> tuple[PublishedHistoryWindow, ...]:
         if check is not None:
             check()
-        archive = self._matching_snapshot(manifest)
+        history = self._matching_snapshot(manifest)
         dates = _session_dates(manifest, sessions)
         windows: list[PublishedHistoryWindow] = []
         allowed_codes = frozenset(manifest.universe_codes)
@@ -121,7 +135,7 @@ class SQLitePublishedHistorySnapshot:
             for code in tuple(dict.fromkeys(codes)):
                 if code not in allowed_codes:
                     continue
-                rows = self._reader.read_published_code_window(code, dates, archive.snapshot, check=check)
+                rows = self._reader.read_published_code_window(code, dates, history.snapshot, check=check)
                 if rows:
                     windows.append(PublishedHistoryWindow(code, rows))
             self._matching_snapshot(manifest)
@@ -129,21 +143,21 @@ class SQLitePublishedHistorySnapshot:
             raise PublishedHistoryReadError("history_snapshot_partition_invalid") from exc
         return tuple(windows)
 
-    def _matching_snapshot(self, manifest: PublishedHistoryManifest) -> ActiveHistorySnapshot:
+    def _matching_snapshot(self, manifest: PublishedHistoryManifest) -> PublishedHistorySnapshot:
         try:
-            archive = self._load_archive(manifest.sequence)
+            history = self._load_snapshot(manifest.sequence)
         except HistorySnapshotInspectionError as exc:
             raise PublishedHistoryReadError(str(exc)) from exc
         if (
-            archive.snapshot.content_hash != manifest.snapshot_hash
-            or archive.calendar.open_dates != manifest.calendar_dates
-            or tuple(item.code for item in archive.universe.securities) != manifest.universe_codes
-            or tuple((item.code, item.listed_on, item.delisted_on) for item in archive.universe.securities)
+            history.snapshot.content_hash != manifest.snapshot_hash
+            or history.calendar.open_dates != manifest.calendar_dates
+            or tuple(item.code for item in history.universe.securities) != manifest.universe_codes
+            or tuple((item.code, item.listed_on, item.delisted_on) for item in history.universe.securities)
             != manifest.listing_intervals
-            or archive.snapshot.data_cutoff != manifest.data_cutoff
+            or history.snapshot.data_cutoff != manifest.data_cutoff
         ):
             raise PublishedHistoryReadError("history_snapshot_identity_conflict")
-        return archive
+        return history
 
 
 def _session_dates(manifest: PublishedHistoryManifest, sessions: int) -> tuple[date, ...]:

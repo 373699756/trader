@@ -31,27 +31,27 @@ ROOT = Path(__file__).resolve().parents[6]
 def test_missing_future_label_reports_exact_partition_without_discarding_other_head(tmp_path, monkeypatch):
     from trader.training.domain.training_dates import BuildTrainingDateSplit
 
-    archive = _archive(tmp_path / "history")
+    history = _history(tmp_path / "history")
     settings = LoadProfileTrainingSettings(ROOT, "v5")
     split = BuildTrainingDateSplit(
-        archive.snapshot.calendar.open_dates,
+        history.snapshot.calendar.open_dates,
         parent_manifest_hash="a" * 64,
         fit_dates=settings.fit_dates,
         annual_fit=True,
         history_sessions=62,
     )
     signal = split.model_fit_dates[100]
-    absent = archive.snapshot.calendar.open_dates[archive.snapshot.calendar.open_dates.index(signal) + 2]
-    original = archive.iter_training_rows
+    absent = history.snapshot.calendar.open_dates[history.snapshot.calendar.open_dates.index(signal) + 2]
+    original = history.iter_training_rows
 
     def rows(allowed, progress=None):
         for row in original(allowed, progress):
             yield (replace(row, point=None, cell_status="unknown_missing") if row.trade_date == absent else row)
 
-    archive.iter_training_rows = rows
-    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: archive)
+    history.iter_training_rows = rows
+    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: history)
     result = RunV5Training(
-        archive.archive_root, tmp_path / "models", sample_root=tmp_path / "samples", settings=settings
+        history.history_root, tmp_path / "models", sample_root=tmp_path / "samples", settings=settings
     )
     assert result.status == "blocked"
     d25 = next(head for head in result.heads if head.strategy is Strategy.D25)
@@ -71,7 +71,7 @@ def _point(day: date, position: int, stock: int) -> HistoryTrainingPoint:
     )
 
 
-def _archive(root: Path) -> SimpleNamespace:
+def _history(root: Path) -> SimpleNamespace:
     root.mkdir()
     dates = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2000))
     codes = tuple(f"60000{i}" for i in range(6))
@@ -87,7 +87,7 @@ def _archive(root: Path) -> SimpleNamespace:
         "d" * 64,
     )
     descriptor = FrozenDailyInputDescriptor(
-        manifest_hash=snapshot.active_snapshot_hash,
+        manifest_hash=snapshot.snapshot_hash,
         source_identity=BAOSTOCK_RESEARCH_IDENTITY,
         source_cutoff=dates[-1],
         requested_sessions=2000,
@@ -106,8 +106,8 @@ def _archive(root: Path) -> SimpleNamespace:
 
     return SimpleNamespace(
         snapshot=snapshot,
-        archive_root=root,
-        active_snapshot=SimpleNamespace(partitions=(object(), object())),
+        history_root=root,
+        published_snapshot=SimpleNamespace(partitions=(object(), object())),
         describe_frozen_daily_input=lambda: descriptor,
         training_row_upper_bound=lambda allowed: len(allowed) * len(codes),
         has_industry_window=lambda *_args, **_kwargs: True,
@@ -121,8 +121,8 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
     from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
 
     ConfigureTcnRuntime(training=True)
-    archive = _archive(tmp_path / "history")
-    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: archive)
+    history = _history(tmp_path / "history")
+    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: history)
     settings = replace(
         LoadProfileTrainingSettings(ROOT, "v5"),
         fit_dates=250,
@@ -143,7 +143,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
             updates.append(update)
 
     result = RunV5Training(
-        archive.archive_root, models, sample_root=tmp_path / "samples", settings=settings, progress=Progress()
+        history.history_root, models, sample_root=tmp_path / "samples", settings=settings, progress=Progress()
     )
     assert result.status == "engineering_ready", result.heads
     assert {h.strategy for h in result.heads} == {Strategy.TOMORROW, Strategy.D25}
@@ -174,7 +174,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
     ]
     assert not (tmp_path / "samples").exists()
     loaded = LoadScoringProfile("v5", training_root=models)
-    dates = archive.snapshot.calendar.open_dates[:61]
+    dates = history.snapshot.calendar.open_dates[:61]
     points = tuple(_point(d, i, 0) for i, d in enumerate(dates))
     sequence = CalculatePriceVolumeSequence(
         "600000",
@@ -196,7 +196,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
             loaded.heads[strategy].predictor.predict((ModelInput("600000", (0.1,) * width, "bank"),))
     original = {p: p.read_bytes() for p in models.rglob("*.json")}
     rejected = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=1000000))
-    failed = RunV5Training(archive.archive_root, models, sample_root=tmp_path / "samples", settings=rejected)
+    failed = RunV5Training(history.history_root, models, sample_root=tmp_path / "samples", settings=rejected)
     assert failed.status != "engineering_ready"
     assert all(p.read_bytes() == before for p, before in original.items())
 
@@ -208,7 +208,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
 
     with pytest.raises(InterruptedError):
         RunV5Training(
-            archive.archive_root,
+            history.history_root,
             models,
             sample_root=tmp_path / "samples",
             settings=replace(settings, fitting=replace(settings.fitting, seed=1)),

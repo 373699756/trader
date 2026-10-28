@@ -15,7 +15,7 @@ from trader.download.domain.history_sync import HistorySyncConfiguration, Histor
 class DownloadHistoryUseCase:
     """Request a complete archive build without invoking training or recommendations."""
 
-    archive: HistorySyncPort
+    history: HistorySyncPort
 
     def execute(
         self,
@@ -26,7 +26,7 @@ class DownloadHistoryUseCase:
         clock: Callable[[], datetime] | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> HistoryMaintenanceStatus:
-        return self.archive.download(
+        return self.history.download(
             configuration,
             supplier,
             progress=progress,
@@ -36,7 +36,7 @@ class DownloadHistoryUseCase:
 
 
 def DownloadHistory(
-    archive: HistorySyncPort,
+    history: HistorySyncPort,
     configuration: HistorySyncConfiguration,
     supplier: HistorySupplierPort,
     *,
@@ -46,7 +46,7 @@ def DownloadHistory(
 ) -> HistoryMaintenanceStatus:
     """Functional entry point kept thin so callers can inject an archive port."""
 
-    return DownloadHistoryUseCase(archive).execute(
+    return DownloadHistoryUseCase(history).execute(
         configuration,
         supplier,
         progress=progress,

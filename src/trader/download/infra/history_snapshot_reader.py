@@ -1,4 +1,4 @@
-"""Date-routed reader for an active set of monthly history partitions."""
+"""Date-routed reader for an published set of monthly history partitions."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
-from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_control import HistorySnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import (
     MAX_HISTORY_TRAINING_WINDOW_SESSIONS,
     HistoryRevision,
@@ -28,9 +28,10 @@ from trader.download.infra.history_prices import (
     HistoryPricePartition,
     HistoryPricePartitionError,
 )
-from trader.download.infra.history_reference_codec import (
+from trader.download.infra.history_reference_index import (
     HistoryReferenceIndex,
     ReadBoundHistoryReference,
+    ReferenceFileStamp,
 )
 from trader.download.infra.history_sqlite_read_connection import PrefetchHistoryPricePages
 
@@ -38,7 +39,7 @@ _CODE = re.compile(r"^[0-9]{6}$")
 
 
 class HistorySnapshotReadError(RuntimeError):
-    """The active monthly history view is incomplete or inconsistent."""
+    """The published monthly history view is incomplete or inconsistent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +92,7 @@ def _with_training_industry(row: HistoryTrainingRow, index: HistoryReferenceInde
     return replace(row, industry=industry.industry if index.eligible(row.code) and industry is not None else None)
 
 
-def _training_months(snapshot: HistoryActiveSnapshot, dates: tuple[date, ...]) -> tuple[tuple[int, int], ...]:
+def _training_months(snapshot: HistorySnapshot, dates: tuple[date, ...]) -> tuple[tuple[int, int], ...]:
     if (
         not dates
         or len(dates) > BAOSTOCK_MAX_SESSIONS
@@ -102,7 +103,7 @@ def _training_months(snapshot: HistoryActiveSnapshot, dates: tuple[date, ...]) -
     expected = RouteHistoryMonths(dates[0], dates[-1])
     available = tuple(_reference_month(item) for item in snapshot.partitions if _reference_month(item) in expected)
     if available != expected:
-        raise HistorySnapshotReadError("history snapshot does not cover the active calendar")
+        raise HistorySnapshotReadError("history snapshot does not cover the published calendar")
     return expected
 
 
@@ -122,14 +123,21 @@ def RouteHistoryMonths(start: date, end: date) -> tuple[tuple[int, int], ...]:
     return tuple(routed)
 
 
+@dataclass(frozen=True)
+class _ReferenceVersion:
+    index: HistoryReferenceIndex
+    path: Path
+    stamp: tuple[tuple[int, int, int, int, int] | None, ...]
+
+
 class HistorySnapshotReader:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._verified: dict[tuple[str, int], _VerifiedPartition] = {}
         self._verification_lock = threading.Lock()
-        self._references: dict[str, HistoryReferenceIndex] = {}
+        self._references: dict[str, _ReferenceVersion] = {}
 
-    def reference_index(self, snapshot: HistoryActiveSnapshot) -> HistoryReferenceIndex:
+    def reference_index(self, snapshot: HistorySnapshot) -> HistoryReferenceIndex:
         try:
             source = HistoryControlIndex(self._root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
         except HistoryControlError as exc:
@@ -141,18 +149,22 @@ class HistorySnapshotReader:
             raise HistorySnapshotReadError("history_reference_unavailable")
         try:
             cached = self._references.get(digest)
-            if cached is not None:
-                return cached
+            catalog = self._root / "catalog.sqlite3"
+            if cached is not None and cached.stamp == ReferenceFileStamp(catalog, cached.path):
+                return cached.index
+            path = HistoryControlIndex(catalog).reference_path()
+            stamp = ReferenceFileStamp(catalog, path)
             reference = ReadBoundHistoryReference(self._root, source.supplier_contract)
             index = HistoryReferenceIndex(reference)
-            self._references[digest] = index
+            if stamp == ReferenceFileStamp(catalog, path):
+                self._references[digest] = _ReferenceVersion(index, path, stamp)
             return index
-        except (OSError, ValueError) as exc:
+        except (HistoryControlError, OSError, ValueError) as exc:
             raise HistorySnapshotReadError("history_reference_unavailable") from exc
 
     def verify_snapshot(
         self,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> None:
         self.reference_index(snapshot)
@@ -169,7 +181,7 @@ class HistorySnapshotReader:
 
     def verify_published_snapshot(
         self,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> None:
         """Verify sequence-bound content identities without a second payload decode pass."""
@@ -190,7 +202,7 @@ class HistorySnapshotReader:
         self,
         start: date,
         end: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         *,
         codes: Collection[str],
     ) -> int:
@@ -214,7 +226,7 @@ class HistorySnapshotReader:
         self,
         start: date,
         end: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
     ) -> int:
         """Return the sealed row-count bound without opening partition files."""
 
@@ -225,7 +237,7 @@ class HistorySnapshotReader:
     def read_day(
         self,
         trade_date: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         *,
         board: str | None = None,
     ) -> tuple[HistoryRevision, ...]:
@@ -244,7 +256,7 @@ class HistorySnapshotReader:
         self,
         code: str,
         session_dates: tuple[date, ...],
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
     ) -> tuple[HistoryRevision, ...]:
         dates = tuple(session_dates)
         if _CODE.fullmatch(code) is None:
@@ -276,7 +288,7 @@ class HistorySnapshotReader:
             index.apply(row) for row in sorted(rows, key=lambda row: row.trade_date) if index.eligible(row.code)
         )
 
-    def iter_snapshot_revisions(self, snapshot: HistoryActiveSnapshot) -> Iterator[HistoryRevision]:
+    def iter_snapshot_revisions(self, snapshot: HistorySnapshot) -> Iterator[HistoryRevision]:
         reference_index = self.reference_index(snapshot)
         for reference in snapshot.partitions:
             year, month = _reference_month(reference)
@@ -296,7 +308,7 @@ class HistorySnapshotReader:
         self,
         start: date,
         end: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
     ) -> Iterator[HistoryRevision]:
         """Stream only the months intersecting an inclusive date range."""
 
@@ -309,9 +321,7 @@ class HistorySnapshotReader:
             if reference_index.eligible(row.code)
         )
 
-    def _iter_price_revisions(
-        self, start: date, end: date, snapshot: HistoryActiveSnapshot
-    ) -> Iterator[HistoryRevision]:
+    def _iter_price_revisions(self, start: date, end: date, snapshot: HistorySnapshot) -> Iterator[HistoryRevision]:
         for year, month in RouteHistoryMonths(start, end):
             partition = self._verified_partition(self._reference(snapshot, year, month))
             yield from partition.iter_range(
@@ -322,7 +332,7 @@ class HistorySnapshotReader:
         self,
         start: date,
         end: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
     ) -> Iterator[HistoryRevision]:
         """Merge code/date ordered month streams without retaining a market-wide window."""
 
@@ -347,7 +357,7 @@ class HistorySnapshotReader:
         self,
         code: str,
         session_dates: tuple[date, ...],
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         *,
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryCell, ...]:
@@ -384,7 +394,7 @@ class HistorySnapshotReader:
         self,
         start: date,
         end: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         *,
         check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryCell]:
@@ -437,7 +447,7 @@ class HistorySnapshotReader:
         self,
         start: date,
         end: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
     ) -> Iterator[tuple[str, date, bool, bool]]:
         """Stream raw/qfq presence facts without materializing history revisions."""
         if start > end or end > snapshot.data_cutoff:
@@ -481,7 +491,7 @@ class HistorySnapshotReader:
         code: str,
         start: date,
         end: date,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
     ) -> Iterator[HistoryRevision]:
         """Stream one code across only the months that cover its date range."""
 
@@ -499,7 +509,7 @@ class HistorySnapshotReader:
 
     def iter_training_rows(
         self,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         calendar_dates: tuple[date, ...],
         codes: Collection[str],
         progress: Callable[[int], None] | None = None,
@@ -528,7 +538,7 @@ class HistorySnapshotReader:
                             continue
                         processed_rows += 1
                         if row.trade_date not in allowed_dates:
-                            raise HistorySnapshotReadError("history training row is outside the active calendar")
+                            raise HistorySnapshotReadError("history training row is outside the published calendar")
                         yield _with_training_industry(row, reference_index)
                         if progress is not None and processed_rows % 512 == 0:
                             progress(processed_rows)
@@ -549,7 +559,7 @@ class HistorySnapshotReader:
 
     def _reference(
         self,
-        snapshot: HistoryActiveSnapshot,
+        snapshot: HistorySnapshot,
         year: int,
         month: int,
     ) -> HistorySnapshotPartition:

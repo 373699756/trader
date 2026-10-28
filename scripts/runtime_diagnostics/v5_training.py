@@ -21,16 +21,17 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_control import HistoryActiveSnapshot
+from trader.download.domain.history_control import HistorySnapshot
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
-from trader.download.infra.history_reference_codec import ReadBoundHistoryReference
+from trader.download.infra.history_reference_index import ReadBoundHistoryReference
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.storage_probe import StorageProbe
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
@@ -44,7 +45,7 @@ from .reporting import emit_report
 
 
 class _FrozenSubsetSupplier:
-    def __init__(self, source: Path, snapshot: HistoryActiveSnapshot, context: HistorySupplierContext) -> None:
+    def __init__(self, source: Path, snapshot: HistorySnapshot, context: HistorySupplierContext) -> None:
         self._context = context
         if len(context.universe) > 40 or len(context.calendar.open_dates) > 2000:
             raise ValueError("V5 isolated export exceeds its bounded input")
@@ -99,6 +100,7 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
     state = HistoryControlIndex(source / "catalog.sqlite3").load_published_state()
     if state is None:
         raise ValueError("V5 probe requires a published history")
+    published = HistoryControlIndex(source / "catalog.sqlite3").read_universe_reference(state.universe.content_hash)
     reference = ReadBoundHistoryReference(source, state.source.supplier_contract)
     groups: dict[str, set[str]] = defaultdict(set)
     for interval in reference.industry_intervals:
@@ -132,20 +134,23 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
     )
     configuration = replace(
         LoadHistorySyncConfiguration(project, DataPaths(work)),
-        archive_root=history_root,
+        history_root=history_root,
         history_workers=1,
         minimum_free_bytes=0,
     )
+    subset = replace(published, official_universe=universe, st_evidence=context.st_evidence)
+    SQLiteReferenceIndex(configuration.reference_root / "company_st.sqlite3").publish(subset, subset.st_evidence)
+    context = replace(context, reference_id=subset.identity)
     export_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as workers:
         exported = RunHistorySync(
             configuration,
             _FrozenSubsetSupplier(source, state.snapshot, context),
             worker_pool=workers,
-            storage_kind=StorageProbe().inspect(configuration.archive_root).kind,
+            storage_kind=StorageProbe().inspect(configuration.history_root).kind,
             clock=lambda: datetime.combine(state.snapshot.data_cutoff, daytime(20, 30), ZoneInfo("Asia/Shanghai")),
         )
-    if exported.active_snapshot_hash is None:
+    if exported.snapshot_hash is None:
         raise ValueError("V5 isolated source export did not publish")
     export_seconds = time.monotonic() - export_started
     ConfigureTcnRuntime(training=True, compute_threads=fitting.compute_threads)

@@ -5,7 +5,7 @@ from datetime import timedelta
 
 import pytest
 
-from tests.component.test_candidate_history_tail import CALENDAR, NOW, _Archive
+from tests.component.test_candidate_history_tail import CALENDAR, NOW, HistoryInput
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.infra.shutdown import ShutdownDeadline
@@ -28,7 +28,7 @@ def _cache(source, sessions, owner=None, rank=False, sequence=False, calendar=No
 
 
 def test_shared_scan_matches_independent_profile_projections_and_reuses_retained_bars():
-    source = _Archive(252, 0, ("600001", "600002"))
+    source = HistoryInput(252, 0, ("600001", "600002"))
     reservations = []
     owner = SharedHistoryProjection(
         ReadPublishedHistoryUseCase(source),
@@ -58,7 +58,7 @@ def test_shared_scan_matches_independent_profile_projections_and_reuses_retained
 
 
 def test_batch_model_quality_reads_calendar_once_and_keeps_date_failures():
-    source = _Archive(252, 0, ("600001", "600002"))
+    source = HistoryInput(252, 0, ("600001", "600002"))
     calls = []
 
     def calendar():
@@ -75,7 +75,7 @@ def test_batch_model_quality_reads_calendar_once_and_keeps_date_failures():
 
 
 def test_missing_history_does_not_require_a_ready_calendar_for_quality_projection():
-    source = _Archive(252, 0, ("600001",))
+    source = HistoryInput(252, 0, ("600001",))
 
     def unavailable_calendar():
         raise AssertionError("unavailable history must not read calendar")
@@ -85,7 +85,7 @@ def test_missing_history_does_not_require_a_ready_calendar_for_quality_projectio
 
 
 def test_cancelled_shared_preload_publishes_no_partial_profile():
-    source = _Archive(252, 0, ("600001", "600002"))
+    source = HistoryInput(252, 0, ("600001", "600002"))
     owner = SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0)
     first, second = _cache(source, 251, owner), _cache(source, 61, owner)
     first.initialize(cancelled=lambda: True)
@@ -98,7 +98,7 @@ def test_cancelled_shared_preload_publishes_no_partial_profile():
 def test_deadline_before_first_window_becomes_terminal_without_publishing_partial_inputs():
     ticks = [0.0]
 
-    class SlowHistory(_Archive):
+    class SlowHistory(HistoryInput):
         def iter_windows(self, manifest, *, sessions, check=None):
             ticks[0] = 301.0
             assert check is not None
@@ -111,7 +111,7 @@ def test_deadline_before_first_window_becomes_terminal_without_publishing_partia
     cache = PublishedHistoryCache(
         history, lookback_sessions=251, require_input_binding=True, projection_owner=owner, monotonic=lambda: ticks[0]
     )
-    cache.record_maintenance("loading", stage="reading_active_snapshot")
+    cache.record_maintenance("loading", stage="reading_published_snapshot")
     with pytest.raises(MarketDataPendingError):
         cache.require_projection()
     cache.initialize(cancelled=lambda: False)
@@ -124,7 +124,7 @@ def test_deadline_before_first_window_becomes_terminal_without_publishing_partia
 
 
 def test_manifest_change_retries_entire_shared_scan_without_mixing_profiles():
-    class History(_Archive):
+    class History(HistoryInput):
         def manifest(self):
             self.calls = getattr(self, "calls", 0) + 1
             if self.calls == 2:
@@ -140,7 +140,7 @@ def test_manifest_change_retries_entire_shared_scan_without_mixing_profiles():
 
 
 def test_seed_extension_stops_when_the_original_history_window_is_complete():
-    class History(_Archive):
+    class History(HistoryInput):
         def __init__(self):
             super().__init__(62, 0, ("600001",))
             dates = tuple(
@@ -184,7 +184,7 @@ def test_seed_extension_stops_when_the_original_history_window_is_complete():
 
 
 def test_one_preloader_runs_all_profile_callbacks_and_stops_its_thread():
-    source = _Archive(252, 0, ("600001",))
+    source = HistoryInput(252, 0, ("600001",))
     owner = SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0)
     first, second = _cache(source, 251, owner), _cache(source, 61, owner)
     calls = []
@@ -205,7 +205,7 @@ def test_one_preloader_runs_all_profile_callbacks_and_stops_its_thread():
 
 
 def test_one_profile_capacity_failure_does_not_discard_other_valid_projection():
-    source = _Archive(252, 0, ("600001",))
+    source = HistoryInput(252, 0, ("600001",))
     history = ReadPublishedHistoryUseCase(source)
     owner = SharedHistoryProjection(history, monotonic=lambda: 0.0, reserve_bytes=lambda _size: True)
     first = PublishedHistoryCache(
@@ -221,7 +221,7 @@ def test_one_profile_capacity_failure_does_not_discard_other_valid_projection():
 
 @pytest.mark.parametrize("cancel_after_reserve", (False, True))
 def test_all_failed_profiles_release_shared_bars_reservation(cancel_after_reserve):
-    source = _Archive(252, 0, ("600001",))
+    source = HistoryInput(252, 0, ("600001",))
     history = ReadPublishedHistoryUseCase(source)
     reservations = []
     cancelled = [False]
@@ -241,7 +241,7 @@ def test_all_failed_profiles_release_shared_bars_reservation(cancel_after_reserv
 
 
 def test_same_source_outcomes_remain_readable_when_online_projection_exceeds_capacity():
-    source = _Archive(252, 0, ("600001",))
+    source = HistoryInput(252, 0, ("600001",))
     history = ReadPublishedHistoryUseCase(source)
     cache = PublishedHistoryCache(
         history, outcome_history=history, lookback_sessions=61, monotonic=lambda: 0.0, reserve_bytes=lambda _size: False

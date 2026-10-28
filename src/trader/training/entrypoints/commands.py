@@ -210,7 +210,7 @@ def RunResearchCommand(
 def _project_history_snapshot_status(status: HistorySnapshotStatus) -> dict[str, object]:
     return {
         "state": status.state,
-        "active_snapshot_hash": status.active_snapshot_hash,
+        "snapshot_hash": status.snapshot_hash,
         "data_cutoff": status.data_cutoff.isoformat() if status.data_cutoff is not None else None,
         "label_cutoff": status.label_cutoff.isoformat() if status.label_cutoff is not None else None,
         "calendar_sessions": status.calendar_sessions,

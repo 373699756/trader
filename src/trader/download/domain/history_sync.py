@@ -32,7 +32,7 @@ HistorySyncProgressStage = Literal[
     "supplier_routing",
     "tencent_history",
     "history_st_reference",
-    "history_active_gaps",
+    "history_published_gaps",
     "history_gap_inventory",
     "history_gap_resume",
     "persisting_partitions",
@@ -53,7 +53,7 @@ BAOSTOCK_PREPARATION_INTERVAL_SECONDS = 2.0
 
 @dataclass(frozen=True)
 class HistorySyncConfiguration:
-    archive_root: Path
+    history_root: Path
     reference_root: Path
     sessions: int = 2000
     reread_sessions: int = 5
@@ -89,6 +89,7 @@ class HistorySupplierContext:
     source_versions: BaoStockSourceVersions
     industry_intervals: tuple[BaoStockIndustryInterval, ...] = ()
     st_evidence: tuple[HistoryStEvidence, ...] = ()
+    reference_id: str | None = None
 
     def __post_init__(self) -> None:
         universe = tuple(sorted(self.universe, key=lambda item: item.code))

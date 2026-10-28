@@ -28,6 +28,22 @@ def test_schema_installation_is_atomic_and_driver_api_is_hidden(tmp_path):
         assert connection.run("PRAGMA user_version").require_one()[0] == 1
 
 
+def test_schema_and_first_publication_share_the_callers_transaction(tmp_path):
+    schema = SqliteSchema(1, ("CREATE TABLE facts(value INTEGER NOT NULL)",))
+    with SqliteSession(tmp_path / "facts.sqlite3") as connection:
+        with pytest.raises(ValueError, match="interrupted"):
+            with SqliteTransaction(connection, immediate=True):
+                EnsureSqliteSchema(connection, schema, allow_create=True)
+                connection.run("INSERT INTO facts VALUES(1)")
+                raise ValueError("interrupted")
+        assert connection.run("PRAGMA user_version").require_one()[0] == 0
+        assert connection.run("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
+        with SqliteTransaction(connection, immediate=True):
+            EnsureSqliteSchema(connection, schema, allow_create=True)
+            connection.run("INSERT INTO facts VALUES(2)")
+        assert connection.run("SELECT value FROM facts").require_one()[0] == 2
+
+
 def test_schema_rejects_nonempty_unversioned_database(tmp_path):
     with SqliteSession(tmp_path / "index.sqlite3") as connection:
         connection.run("CREATE TABLE legacy(value INTEGER)")

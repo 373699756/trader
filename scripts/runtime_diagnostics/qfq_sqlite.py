@@ -42,22 +42,22 @@ def AuditActiveQfq(path: Path) -> dict[str, object]:
         mode = str(connection.run("PRAGMA journal_mode").require_one()[0]).lower()
         missing = int(
             connection.run(
-                "SELECT COUNT(*) FROM identities a LEFT JOIN identities b ON a.code=b.code AND a.profile<>b.profile "
-                "WHERE b.code IS NULL OR a.source<>b.source OR a.cutoff<>b.cutoff"
+                "SELECT COUNT(*) FROM window_binding a LEFT JOIN window_binding b ON a.code=b.code AND a.profile<>b.profile "
+                "WHERE b.code IS NULL OR a.source<>b.source OR a.end_date<>b.end_date"
             ).require_one()[0]
         )
         unpaired = int(
             connection.run(
-                "SELECT COUNT(*) FROM completions c WHERE NOT EXISTS "
-                "(SELECT 1 FROM identities a JOIN identities b ON a.code=b.code "
+                "SELECT COUNT(*) FROM window_completion c WHERE NOT EXISTS "
+                "(SELECT 1 FROM window_binding a JOIN window_binding b ON a.code=b.code "
                 "WHERE a.profile='v2' AND b.profile='v3' AND a.code=c.code "
-                "AND a.source=c.source AND b.source=c.source AND a.cutoff=c.day AND b.cutoff=c.day)"
+                "AND a.source=c.source AND b.source=c.source AND a.end_date=c.cutoff_date AND b.end_date=c.cutoff_date)"
             ).require_one()[0]
         )
         unconfirmed = int(
             connection.run(
-                "SELECT COUNT(*) FROM identities a WHERE a.profile='v2' AND NOT EXISTS "
-                "(SELECT 1 FROM completions c WHERE c.code=a.code AND c.source=a.source AND c.day=a.cutoff)"
+                "SELECT COUNT(*) FROM window_binding a WHERE a.profile='v2' AND NOT EXISTS "
+                "(SELECT 1 FROM window_completion c WHERE c.code=a.code AND c.source=a.source AND c.cutoff_date=a.end_date)"
             ).require_one()[0]
         )
     if tuple(cache.manifest() for cache in caches) != before:

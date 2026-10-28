@@ -7,10 +7,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryControlState,
     HistorySecurityIdentity,
+    HistorySnapshot,
     HistorySnapshotPartition,
     HistorySourceIdentity,
     HistorySyncCheckpoint,
@@ -82,8 +82,8 @@ def _snapshot(
     source: HistorySourceIdentity,
     calendar: HistoryCalendarIdentity,
     universe: HistoryUniverseIdentity,
-) -> HistoryActiveSnapshot:
-    return HistoryActiveSnapshot(
+) -> HistorySnapshot:
+    return HistorySnapshot(
         sequence=1,
         data_cutoff=date(2026, 9, 10),
         label_cutoff=date(2026, 9, 9),
@@ -116,14 +116,14 @@ def test_history_control_values_are_immutable_and_hash_bound() -> None:
 
     assert due.training_due is True
     assert maintenance.due_states == (due,)
-    assert state.active_snapshot == snapshot
+    assert state.published_snapshot == snapshot
     assert len({source.content_hash, calendar.content_hash, universe.content_hash, snapshot.content_hash}) == 4
     with pytest.raises(FrozenInstanceError):
         snapshot.sequence = 2  # type: ignore[misc]
     with pytest.raises(ValueError, match="Shanghai"):
         replace(source, observed_at=NOW.replace(tzinfo=None))
-    with pytest.raises(ValueError, match="active snapshot"):
-        replace(state, active_snapshot_hash="b" * 64)
+    with pytest.raises(ValueError, match="published snapshot"):
+        replace(state, snapshot_hash="b" * 64)
 
 
 def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> None:
@@ -133,7 +133,7 @@ def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> N
     calendar = _calendar(source)
     universe = _universe(source)
     with pytest.raises(ValueError, match="snapshot"):
-        HistoryActiveSnapshot(
+        HistorySnapshot(
             1,
             date(2026, 9, 10),
             date(2026, 9, 9),
@@ -179,7 +179,7 @@ def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
 
     assert state.sources == (source,)
     assert state.calendars == (calendar,)
-    assert state.active_snapshot is None
+    assert state.published_snapshot is None
 
 
 def test_training_due_counts_matured_exchange_sessions_not_calendar_days() -> None:

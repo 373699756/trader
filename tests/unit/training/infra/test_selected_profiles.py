@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from tests.unit.training.infra.profile.v1.test_learned_rank_training import _settings
-from tests.unit.training.infra.profile.v5.test_v5_training import _archive
+from tests.unit.training.infra.profile.v5.test_v5_training import _history
 from trader.infra.settings import LoadRuntimeSettings
 from trader.training.application.selected_training import TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
@@ -22,10 +22,10 @@ class _Progress:
 
 
 def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path, monkeypatch):
-    archive = _archive(tmp_path / "history")
-    original = archive.iter_training_rows
+    history = _history(tmp_path / "history")
+    original = history.iter_training_rows
     scans = []
-    missing_day = archive.snapshot.calendar.open_dates[-10]
+    missing_day = history.snapshot.calendar.open_dates[-10]
 
     def rows(dates, progress=None):
         scans.append(dates)
@@ -36,9 +36,9 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
                 else row
             )
 
-    archive.iter_training_rows = rows
+    history.iter_training_rows = rows
     monkeypatch.setattr(
-        "trader.training.infra.selected_training.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: archive
+        "trader.training.infra.selected_training.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: history
     )
     monkeypatch.setattr("trader.training.infra.selected_training.LoadV1TrainingSettings", lambda _p: _settings())
 
@@ -58,7 +58,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
         tuple(_Progress() for _ in range(4)),
         lambda: False,
         TrainingMemoryBudget(3 * 1024**3),
-        TrainingLocations(archive.archive_root, tmp_path / "models", tmp_path / "samples"),
+        TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples"),
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
         result = TrainSelectedProfiles(request, executor)

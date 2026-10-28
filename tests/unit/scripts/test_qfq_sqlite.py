@@ -49,7 +49,7 @@ def test_audit_reports_checkpoint_source_conflict(tmp_path):
     path = tmp_path / "daily_window.sqlite3"
     _seed(path)
     with SqliteSession(path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE completions SET source='other'")
+        connection.run("UPDATE window_completion SET source='other'")
     report = AuditActiveQfq(path)
     assert report["status"] == "degraded"
     assert report["summary"]["checkpoint_not_paired"] == 1

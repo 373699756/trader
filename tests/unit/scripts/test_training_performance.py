@@ -282,7 +282,7 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
     from trader.training.entrypoints import commands
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
-    source = SimpleNamespace(snapshot=SimpleNamespace(active_snapshot_hash="a" * 64, training_codes=("600001",)))
+    source = SimpleNamespace(snapshot=SimpleNamespace(snapshot_hash="a" * 64, training_codes=("600001",)))
     monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", lambda _path: source)
     monkeypatch.setattr(
         settings, "LoadRuntimeSettings", lambda _path: SimpleNamespace(project_root=Path(__file__).resolve().parents[3])

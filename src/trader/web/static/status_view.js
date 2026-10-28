@@ -784,7 +784,7 @@
         && payload.strategy !== "long" && market
         && market.published_history_state === "unavailable") {
       if (market.history_maintenance_state === "loading"
-          && market.history_maintenance_stage === "reading_active_snapshot") {
+          && market.history_maintenance_stage === "reading_published_snapshot") {
         return { primary_blocker: "history_projection_loading" };
       }
       if (["failed", "unavailable"].includes(market.history_maintenance_state)) {

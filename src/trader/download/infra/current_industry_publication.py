@@ -9,12 +9,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.baostock_industry import BaoStockIndustryClient
-from trader.infra.dated_query_cache import DatedQuery, SQLiteDatedQueryCache
+from trader.download.infra.industry_query_index import IndustryQuery, SQLiteIndustryQueryIndex
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.domain.market.models import ModelIndustryReference
 
 _CONTRACT = "baostock_dated_industry_queries"
-_CURRENT_TABLE = "current_industry_queries"
+_CURRENT_TABLE = "current_industry_query"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _REFRESH_DAYS = 7
 
@@ -43,7 +43,7 @@ class CurrentIndustryPublication:
         if len(rows) < self.minimum_rows:
             raise ValueError("industry_reference_snapshot_incomplete")
         day = observed_at.astimezone(_SHANGHAI).date()
-        SQLiteDatedQueryCache(self.path, _CONTRACT, _CURRENT_TABLE).save(
+        SQLiteIndustryQueryIndex(self.path, _CONTRACT, _CURRENT_TABLE).save(
             "baostock_current_industry",
             day,
             day,
@@ -61,12 +61,12 @@ class CurrentIndustryCache:
         query = self.latest(observed_at)
         return _query_observations(query) if query is not None else ()
 
-    def latest(self, observed_at: datetime) -> DatedQuery | None:
+    def latest(self, observed_at: datetime) -> IndustryQuery | None:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("industry query time must be timezone-aware")
-        return self._latest_valid_query(SQLiteDatedQueryCache(self.path, _CONTRACT, _CURRENT_TABLE), observed_at)
+        return self._latest_valid_query(SQLiteIndustryQueryIndex(self.path, _CONTRACT, _CURRENT_TABLE), observed_at)
 
-    def _latest_valid_query(self, cache: SQLiteDatedQueryCache, observed_at: datetime) -> DatedQuery | None:
+    def _latest_valid_query(self, cache: SQLiteIndustryQueryIndex, observed_at: datetime) -> IndustryQuery | None:
         cursor = observed_at.astimezone(_SHANGHAI).date()
         for _ in range(64):
             query = cache.latest(cursor)
@@ -84,7 +84,7 @@ class CurrentIndustryCache:
         return None
 
 
-def _query_observations(query: DatedQuery) -> tuple[SourceObservation, ...]:
+def _query_observations(query: IndustryQuery) -> tuple[SourceObservation, ...]:
     values = json.loads(query.payload)
     if not isinstance(values, list) or len(values) > 20_000:
         raise ValueError("industry query payload is invalid")

@@ -11,7 +11,7 @@ from threading import get_ident
 from typing import Literal
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
-from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_control import HistorySnapshot, HistorySnapshotPartition
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_price_qualification import QualifyHistoryPairs, QualifyPriceOverlap
 from trader.download.domain.history_revision import HistoryRevision
@@ -42,7 +42,7 @@ class HistoryDirectPrices:
         self,
         root: Path,
         sequence: int,
-        active: HistoryActiveSnapshot | None,
+        current_snapshot: HistorySnapshot | None,
         activity: HistorySqliteActivity,
         *,
         fresh: bool = False,
@@ -60,7 +60,9 @@ class HistoryDirectPrices:
             for month in range(1, 13)
         )
         self._previous = (
-            {(item.calendar_year, item.calendar_month): item for item in active.partitions} if active else {}
+            {(item.calendar_year, item.calendar_month): item for item in current_snapshot.partitions}
+            if current_snapshot
+            else {}
         )
 
     def _month(self, year: int, month: int) -> HistoryPricePartition:

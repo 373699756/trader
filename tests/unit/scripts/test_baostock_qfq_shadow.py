@@ -68,7 +68,7 @@ def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch
     assert report["raw_qfq_integrity"]["pair_complete_rate"] == 0.0
 
 
-def test_missing_active_snapshot_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_published_snapshot_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     def unavailable(_root: object) -> None:
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
 

@@ -22,7 +22,7 @@ from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
-from trader.download.infra.reference_publication import ReferencePublication
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
 from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, ManualBlacklistFact
 from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
@@ -239,18 +239,16 @@ def test_concurrent_initializers_wait_for_one_complete_reference():
 
 
 def test_reference_publication_round_trip_and_corruption_fail_closed(tmp_path):
-    import json
+    from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
-    publication = ReferencePublication(tmp_path)
+    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
     reference = PreparedFixture(NOW)
     assert publication.read() is None
-    publication.publish(reference)
+    publication.publish(reference, reference.st_evidence)
     assert publication.read() == reference
     assert publication.identity() == reference.identity
-    path = tmp_path / "inputs.json"
-    payload = json.loads(path.read_text())
-    payload["official_universe"][0][1] = "篡改名称"
-    path.write_text(json.dumps(payload))
+    with SqliteSession(publication.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE security SET name='篡改名称'")
     with pytest.raises(ValueError, match="hash_conflict"):
         publication.read()
 

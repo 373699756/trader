@@ -101,7 +101,7 @@ def test_corrupt_cached_payload_requeries_only_that_date_and_source_change_inval
     sdk = _IndustrySdk()
     original = _fetch(sdk, cache)
     with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE queries SET payload='[]' WHERE day=?", (str(DATES[1]),))
+        connection.run("UPDATE industry_query SET members_json='[]' WHERE anchor_date=?", (str(DATES[1]),))
     sdk.calls.clear()
     assert _fetch(sdk, cache) == original
     assert sdk.calls == [str(DATES[1])]

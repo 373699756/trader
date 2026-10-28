@@ -194,8 +194,8 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload == {
-        "active_snapshot_hash": "a" * 64,
-        "archive_root": "data/history",
+        "snapshot_hash": "a" * 64,
+        "history_root": "data/history",
         "data_cutoff": "2026-09-10",
         "efficient_daily_source": None,
         "label_cutoff": "2026-09-09",
@@ -329,7 +329,7 @@ def test_download_contract_exposes_an_immutable_typed_status() -> None:
 
     assert status.state == "already_current"
     assert status.reason is None
-    assert status.archive_root == Path("data/history")
+    assert status.history_root == Path("data/history")
     assert status.published and not status.needs_retry
     with pytest.raises(ValueError, match="must not be negative"):
         replace(status, unresolved_price_cells=-1)

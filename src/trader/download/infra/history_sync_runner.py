@@ -12,10 +12,10 @@ from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryDiskRequirement,
     HistorySecurityIdentity,
+    HistorySnapshot,
     HistorySourceIdentity,
     HistorySyncCheckpoint,
     HistoryUniverseIdentity,
@@ -47,7 +47,7 @@ from trader.download.infra.history_control_index import (
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_flow import HistoryDownloadFlow, HistoryDownloadResources
 from trader.download.infra.history_download_index import HistoryDownloadBatch, HistoryDownloadIndex, HistoryDownloadTask
-from trader.download.infra.history_reference_codec import (
+from trader.download.infra.history_reference_index import (
     ReadBoundHistoryReference,
 )
 from trader.download.infra.history_snapshot_publication import HistoryPublication, PublishHistorySnapshot
@@ -101,27 +101,25 @@ class _HistorySync:
     def execute(self) -> HistoryMaintenanceStatus:
         published = False
         while True:
-            active = self.control.load_state().active_snapshot
-            if not _has_sufficient_disk(self.configuration.archive_root, self.configuration.minimum_free_bytes):
-                return _status("blocked", "disk_space_insufficient", self.configuration, active)
-            pending = self.index.pending(active.sequence if active else 0)
+            state = self.control.load_published_state()
+            current_snapshot = state.snapshot if state is not None else None
+            previous = frozenset(item.code for item in state.universe.securities) if state is not None else frozenset()
+            if not _has_sufficient_disk(self.configuration.history_root, self.configuration.minimum_free_bytes):
+                return _status("blocked", "disk_space_insufficient", self.configuration, current_snapshot)
+            pending = self.index.pending(current_snapshot.sequence if current_snapshot else 0)
             target = pending.cutoff if pending else CompletedDailyCutoff(self.observed_at)
-            inputs = self._prepare(active, pending, target)
+            inputs = self._prepare(current_snapshot, pending, target, previous)
             if inputs is None:
-                unresolved = (
-                    self.index.gap_summary(tuple(_active_universe(self.control, active)))
-                    if active is not None
-                    else None
-                )
+                unresolved = self.index.gap_summary(tuple(previous)) if current_snapshot is not None else None
                 return _status(
                     "completed" if published else "already_current",
                     "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
                     self.configuration,
-                    active,
+                    current_snapshot,
                     unresolved_price_cells=unresolved.cells if unresolved else 0,
                     price_gap_summary=unresolved,
                 )
-            snapshot = self._download(inputs, active)
+            snapshot = self._download(inputs, current_snapshot)
             published = True
             if pending is not None and target < CompletedDailyCutoff(self.observed_at):
                 continue
@@ -137,50 +135,53 @@ class _HistorySync:
 
     def _prepare(
         self,
-        active: HistoryActiveSnapshot | None,
+        current_snapshot: HistorySnapshot | None,
         pending: HistoryDownloadBatch | None,
         target: date,
+        previous: frozenset[str],
     ) -> _BatchInput | None:
         _publish_progress(self.progress, "loading_context", "started")
         context = self.supplier.load_context(target, self.configuration.sessions)
-        _validate_context(context, self.configuration.sessions)
+        publication_id = _validate_context(context, self.configuration.sessions)
         _publish_progress(self.progress, "loading_context", "completed", (1, 1))
         if self.cancel():
             raise KeyboardInterrupt
         if (
-            not _active_universe(self.control, active).issubset(item.code for item in context.universe)
+            not previous.issubset(item.code for item in context.universe)
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
         ):
             raise RuntimeError("supplier_universe_regressed")
         if pending is not None:
-            return self._resume(context, active, pending)
+            return self._resume(context, current_snapshot, pending, publication_id)
         source, calendar, universe = _control_identities(context)
         reference = HistoryReferenceSnapshot(
             tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
         )
-        tasks = _download_tasks(context, self.control, active, self.index, self.configuration.reread_sessions)
-        if active and not any(task.dates for task in tasks) and active.source_identity_hash == source.content_hash:
-            self._repair_reference(source, reference)
+        tasks = _download_tasks(context, current_snapshot, previous, self.index, self.configuration.reread_sessions)
+        if (
+            current_snapshot
+            and not any(task.dates for task in tasks)
+            and current_snapshot.source_identity_hash == source.content_hash
+        ):
+            self._repair_reference(source, reference, publication_id)
             return None
-        self.control.save_source(source)
-        self.control.save_calendar(calendar)
-        self.control.save_universe(universe)
-        self.control.save_reference(reference)
+        self.control.save_inputs((source, calendar, universe), reference, publication_id)
         batch = HistoryDownloadBatch(
-            active.sequence + 1 if active else 1,
+            current_snapshot.sequence + 1 if current_snapshot else 1,
             source.content_hash,
             calendar.content_hash,
             universe.content_hash,
             calendar.open_dates[-1],
         )
         self.index.begin(batch, tasks)
-        return _BatchInput(context, source, calendar, universe, reference, batch, active is None)
+        return _BatchInput(context, source, calendar, universe, reference, batch, current_snapshot is None)
 
     def _resume(
         self,
         context: HistorySupplierContext,
-        active: HistoryActiveSnapshot | None,
+        current_snapshot: HistorySnapshot | None,
         pending: HistoryDownloadBatch,
+        publication_id: str,
     ) -> _BatchInput:
         state = self.control.load_state()
         source = next((item for item in state.sources if item.content_hash == pending.source_hash), None)
@@ -190,7 +191,7 @@ class _HistorySync:
             source is None
             or calendar is None
             or universe is None
-            or pending.sequence != (active.sequence + 1 if active else 1)
+            or pending.sequence != (current_snapshot.sequence + 1 if current_snapshot else 1)
         ):
             raise RuntimeError("history_download_identity_conflict")
         current_source, current_calendar, current_universe = _control_identities(context)
@@ -211,7 +212,7 @@ class _HistorySync:
                 raise RuntimeError("history_resume_security_changed")
         if (source.source, source.dataset) != (current_source.source, current_source.dataset):
             raise RuntimeError("history_resume_source_changed")
-        reference = ReadBoundHistoryReference(self.configuration.archive_root, source.supplier_contract)
+        reference = ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract)
         if (
             source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
             or universe.securities != current_universe.securities
@@ -221,10 +222,7 @@ class _HistorySync:
             reference = HistoryReferenceSnapshot(
                 tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
             )
-            self.control.save_source(current_source)
-            self.control.save_calendar(current_calendar)
-            self.control.save_universe(current_universe)
-            self.control.save_reference(reference)
+            self.control.save_inputs((current_source, current_calendar, current_universe), reference, publication_id)
             current = HistoryDownloadBatch(
                 pending.sequence,
                 current_source.content_hash,
@@ -246,19 +244,21 @@ class _HistorySync:
             return _BatchInput(context, current_source, current_calendar, current_universe, reference, current, False)
         return _BatchInput(context, source, calendar, universe, reference, pending, False)
 
-    def _repair_reference(self, source: HistorySourceIdentity, reference: HistoryReferenceSnapshot) -> None:
+    def _repair_reference(
+        self, source: HistorySourceIdentity, reference: HistoryReferenceSnapshot, publication_id: str
+    ) -> None:
         try:
-            ReadBoundHistoryReference(self.configuration.archive_root, source.supplier_contract)
+            ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract)
         except (OSError, ValueError):
-            self.control.save_reference(reference)
+            self.control.save_reference(reference, publication_id)
 
-    def _download(self, inputs: _BatchInput, active: HistoryActiveSnapshot | None) -> HistoryActiveSnapshot:
-        root = self.configuration.archive_root
+    def _download(self, inputs: _BatchInput, current_snapshot: HistorySnapshot | None) -> HistorySnapshot:
+        root = self.configuration.history_root
         activity = HistorySqliteActivity(
             lambda: _publish_progress(self.progress, "persisting_partitions", "waiting"),
             self.cancel,
         )
-        prices = HistoryDirectPrices(root, inputs.batch.sequence, active, activity, fresh=inputs.fresh)
+        prices = HistoryDirectPrices(root, inputs.batch.sequence, current_snapshot, activity, fresh=inputs.fresh)
         flow = HistoryDownloadFlow(
             HistoryDownloadResources(
                 self.configuration,
@@ -268,7 +268,7 @@ class _HistorySync:
                 self.index,
                 self.executor,
                 self.writer,
-                self.write_tuning or ChooseHistoryWriteTuning(self.storage_kind, fresh=active is None),
+                self.write_tuning or ChooseHistoryWriteTuning(self.storage_kind, fresh=current_snapshot is None),
                 self.cancel,
                 self.progress,
             )
@@ -287,7 +287,7 @@ class _HistorySync:
             ),
         )
         calendar, batch = inputs.calendar, inputs.batch
-        snapshot = HistoryActiveSnapshot(
+        snapshot = HistorySnapshot(
             batch.sequence,
             batch.cutoff,
             calendar.open_dates[-2] if len(calendar.open_dates) > 1 else batch.cutoff,
@@ -301,8 +301,6 @@ class _HistorySync:
         PublishHistorySnapshot(
             self.control,
             HistoryPublication(
-                root,
-                (inputs.source, calendar, inputs.universe),
                 snapshot,
                 HistorySyncCheckpoint(
                     f"direct-{batch.sequence}-{batch.cutoff.isoformat()}",
@@ -337,17 +335,20 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
         raise ValueError("history synchronization clock must be timezone-aware")
     observed_at = observed_at.astimezone(_SHANGHAI)
     cancel = cancel_requested or (lambda: False)
-    control = HistoryControlIndex(configuration.archive_root / "catalog.sqlite3")
-    index = HistoryDownloadIndex(configuration.archive_root / "catalog.sqlite3")
+    control = HistoryControlIndex(
+        configuration.history_root / "catalog.sqlite3",
+        reference_path=configuration.reference_root / "company_st.sqlite3",
+    )
+    index = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3")
     _publish_progress(progress, "initializing", "started")
     try:
-        with HistoryMaintenanceLock(configuration.archive_root.with_name(".history.lock")):
+        with HistoryMaintenanceLock(configuration.history_root.with_name(".history.lock")):
             _publish_progress(progress, "storage_profile", "completed", current_item=storage_kind)
-            if (configuration.archive_root / "control.sqlite3").exists() or (
-                not (configuration.archive_root / "catalog.sqlite3").exists()
+            if (configuration.history_root / "control.sqlite3").exists() or (
+                not (configuration.history_root / "catalog.sqlite3").exists()
                 and (
-                    (configuration.archive_root / "partitions").exists()
-                    or any(configuration.archive_root.glob("prices_*.sqlite3"))
+                    (configuration.history_root / "partitions").exists()
+                    or any(configuration.history_root.glob("prices_*.sqlite3"))
                 )
             ):
                 raise RuntimeError("history_format_requires_rebuild")
@@ -366,9 +367,9 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 write_tuning,
             ).execute()
     except KeyboardInterrupt:
-        return _status("cancelled", "cancelled", configuration, _safe_active(control))
+        return _status("cancelled", "cancelled", configuration, _safe_snapshot(control))
     except HistoryMaintenanceAlreadyRunningError:
-        return _status("already_running", "history_maintenance_running", configuration, _safe_active(control))
+        return _status("already_running", "history_maintenance_running", configuration, _safe_snapshot(control))
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
         reason = HistoryFailureCode(exc)
         detail = HistoryFailureDetail(exc)
@@ -389,27 +390,30 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 pass
         else:
             _LOGGER.error("history_sync_failure reason=%s diagnostic=%s", reason, detail)
-        return _status("failed", reason, configuration, _safe_active(control))
+        return _status("failed", reason, configuration, _safe_snapshot(control))
 
 
 def _download_tasks(
     context: HistorySupplierContext,
-    control: HistoryControlIndex,
-    active: HistoryActiveSnapshot | None,
+    current_snapshot: HistorySnapshot | None,
+    previous: frozenset[str],
     index: HistoryDownloadIndex,
     reread: int,
 ) -> tuple[HistoryDownloadTask, ...]:
-    previous = _active_universe(control, active)
     retryable = index.gaps_by_code(context.calendar.open_dates)
     tasks = []
     for security in context.universe:
         expected = context.calendar.expected_dates(security)
-        if active is None or security.code not in previous:
+        if current_snapshot is None or security.code not in previous:
             dates = expected
         else:
             missing = {day for day in retryable.get(security.code, ()) if day <= context.calendar.open_dates[-1]}
-            new = {day for day in expected if day > active.data_cutoff}
-            anchors = tuple(day for day in expected if day <= active.data_cutoff)[-reread:] if new or missing else ()
+            new = {day for day in expected if day > current_snapshot.data_cutoff}
+            anchors = (
+                tuple(day for day in expected if day <= current_snapshot.data_cutoff)[-reread:]
+                if new or missing
+                else ()
+            )
             dates = tuple(sorted(missing | new | set(anchors)))
         tasks.append(HistoryDownloadTask(security.code, dates))
     return tuple(tasks)
@@ -440,35 +444,18 @@ def _control_identities(
     return source, calendar, universe
 
 
-def _validate_context(context: HistorySupplierContext, sessions: int) -> None:
+def _validate_context(context: HistorySupplierContext, sessions: int) -> str:
     if len(context.calendar.open_dates) != sessions:
         raise RuntimeError("supplier_calendar_incomplete")
+    if context.reference_id is None:
+        raise RuntimeError("history_reference_publication_missing")
+    return context.reference_id
 
 
-def _is_current(
-    active: HistoryActiveSnapshot | None,
-    calendar: HistoryCalendarIdentity,
-    universe: HistoryUniverseIdentity,
-) -> bool:
-    return bool(
-        active is not None
-        and active.data_cutoff == calendar.open_dates[-1]
-        and active.calendar_hash == calendar.content_hash
-        and active.universe_hash == universe.content_hash
-    )
-
-
-def _active_universe(control: HistoryControlIndex, active: HistoryActiveSnapshot | None) -> frozenset[str]:
-    if active is None:
-        return frozenset()
-    state = control.load_state()
-    universe = next(item for item in state.universes if item.content_hash == active.universe_hash)
-    return frozenset(item.code for item in universe.securities)
-
-
-def _safe_active(control: HistoryControlIndex) -> HistoryActiveSnapshot | None:
+def _safe_snapshot(control: HistoryControlIndex) -> HistorySnapshot | None:
     try:
-        return control.load_state().active_snapshot
+        state = control.load_published_state()
+        return state.snapshot if state is not None else None
     except HistoryControlError:
         return None
 
@@ -496,19 +483,19 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     state: HistoryMaintenanceState,
     reason: str | None,
     configuration: HistorySyncConfiguration,
-    snapshot: HistoryActiveSnapshot | None,
+    snapshot: HistorySnapshot | None,
     *,
     unresolved_price_cells: int = 0,
     price_gap_summary: HistoryPriceGapSummary | None = None,
 ) -> HistoryMaintenanceStatus:
-    root = configuration.archive_root
+    root = configuration.history_root
     return HistoryMaintenanceStatus(
         state=state,
         reason=reason,
-        archive_root=root,
+        history_root=root,
         selected_baseline_source="tencent_with_baostock_reference",
         efficient_daily_source="tencent",
-        active_snapshot_hash=snapshot.content_hash if snapshot is not None else None,
+        snapshot_hash=snapshot.content_hash if snapshot is not None else None,
         data_cutoff=snapshot.data_cutoff if snapshot is not None else None,
         label_cutoff=snapshot.label_cutoff if snapshot is not None else None,
         unresolved_price_cells=unresolved_price_cells,

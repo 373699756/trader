@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.infra.current_industry_publication import CurrentIndustryCache
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.download.infra.reference_publication import ReferencePublication
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
@@ -78,7 +78,7 @@ class FactorInputs:
 def ReadReferences(reference_root: Path, at: datetime) -> FixedReferences:
     """Read the same fixed publications as recommendation, without supplier clients."""
     started = time.monotonic()
-    publication = ReferencePublication(reference_root)
+    publication = SQLiteReferenceIndex(reference_root / "company_st.sqlite3")
     references = PublishedReferences(
         publication.read,
         publication.identity,

@@ -79,7 +79,7 @@ def test_qfq_projection_uses_actual_raw_volume_with_adjusted_prices() -> None:
     assert bars[0].turnover_rate == cell.unadjusted.turnover == 1.0
 
 
-class _Archive:
+class HistoryInput:
     def __init__(self, sessions: int, gap: int, codes: tuple[str, ...]) -> None:
         dates = tuple(day for day in CALENDAR if day < NOW.date())
         cutoff = dates[-gap - 1] if gap else dates[-1]
@@ -142,10 +142,10 @@ class _Supplier:
 
 
 def _cache(sessions=61, gap=3, codes=("600001",), supplier=None, *, clock=None, cancelled=None, max_batch_size=120):
-    archive = _Archive(sessions, gap, codes)
+    published = HistoryInput(sessions, gap, codes)
     supplier = supplier or _Supplier()
     clock = clock if clock is not None else [0.0]
-    reader = ReadPublishedHistoryUseCase(archive)
+    reader = ReadPublishedHistoryUseCase(published)
     tail = CandidateHistoryTailRecovery(
         HistoryTailDependencies(
             reader,
@@ -161,14 +161,14 @@ def _cache(sessions=61, gap=3, codes=("600001",), supplier=None, *, clock=None, 
         reader, lookback_sessions=sessions, tail_recovery=tail, outcome_history=reader, monotonic=time.monotonic
     )
     history.initialize(cancelled=lambda: False)
-    return history, archive, supplier, tail, clock
+    return history, published, supplier, tail, clock
 
 
 @pytest.mark.parametrize("sessions", (61, 251))
 @pytest.mark.parametrize("gap", (1, 3, 5))
-def test_weekly_history_tail_recomputes_the_full_profile_without_writing_archive(sessions, gap):
-    history, archive, supplier, _, _ = _cache(sessions, gap)
-    original_manifest = archive.current
+def test_weekly_history_tail_recomputes_the_full_profile_without_writing_history(sessions, gap):
+    history, published, supplier, _, _ = _cache(sessions, gap)
+    original_manifest = published.current
     original_entries = history.entries()
     recall = history.load(("600001",), observed_at=NOW, recover_tail=False)
     assert supplier.calls == []
@@ -179,10 +179,10 @@ def test_weekly_history_tail_recomputes_the_full_profile_without_writing_archive
     assert len(supplier.calls[0].dates) == gap + 3
     assert supplier.calls[0].dates[-1] < NOW.date()
     completed = tuple(day for day in CALENDAR if day < NOW.date())[-sessions:]
-    expected = BuildHistoryContext(QfqBars(archive.window("600001", completed)), lookback_sessions=sessions)
+    expected = BuildHistoryContext(QfqBars(published.window("600001", completed)), lookback_sessions=sessions)
     assert history.summaries(loaded, NOW)["600001"] == expected
     assert history.summaries(loaded, NOW)["600001"] != original_entries["600001"].context
-    assert archive.current == original_manifest
+    assert published.current == original_manifest
     assert history.entries() == original_entries
     assert (
         history.read_outcome_bars(("600001",), NOW)["600001"][-1].trade_date
@@ -250,14 +250,14 @@ def test_candidate_refresh_exposes_updated_features_and_isolates_one_conflicting
 
 
 def test_tail_cache_expires_by_time_and_session_but_keeps_startup_snapshot():
-    history, archive, supplier, _, clock = _cache()
+    history, published, supplier, _, clock = _cache()
     history.load(("600001",), observed_at=NOW)
     clock[0] = 901.0
     assert history.cached(("600001",), observed_at=NOW, fresh_only=True) == {}
     history.load(("600001",), observed_at=NOW)
     assert len(supplier.calls) == 2
     assert history.cached(("600001",), observed_at=NOW + timedelta(days=1), fresh_only=True) == {}
-    archive.current = replace(archive.current, snapshot_hash="b" * 64)
+    published.current = replace(published.current, snapshot_hash="b" * 64)
     history.initialize(cancelled=lambda: False)
     history.load(("600001",), observed_at=NOW)
     assert len(supplier.calls) == 2
@@ -265,10 +265,10 @@ def test_tail_cache_expires_by_time_and_session_but_keeps_startup_snapshot():
 
 
 @pytest.mark.parametrize("cancelled", (False, True))
-def test_expired_deadline_or_cancellation_never_reads_archive_or_starts_supplier(cancelled):
-    history, archive, supplier, _, _ = _cache(cancelled=lambda: cancelled)
+def test_expired_deadline_or_cancellation_never_reads_history_or_starts_supplier(cancelled):
+    history, published, supplier, _, _ = _cache(cancelled=lambda: cancelled)
     assert history.load(("600001",), observed_at=NOW, deadline=NOW if not cancelled else None) == {}
-    assert archive.reads == []
+    assert published.reads == []
     assert supplier.calls == []
 
 
@@ -333,15 +333,15 @@ def test_cached_candidate_reads_never_fetch_calendar_or_supplier(monkeypatch):
 
 
 def test_incomplete_base_cannot_acquire_model_eligibility_from_a_valid_tail():
-    history, archive, supplier, _, _ = _cache()
-    original_read = archive.read_windows
+    history, published, supplier, _, _ = _cache()
+    original_read = published.read_windows
 
     def incomplete_base(manifest, codes, *, sessions, check=None):
         return tuple(
             replace(window, cells=window.cells[4:]) for window in original_read(manifest, codes, sessions=sessions)
         )
 
-    archive.read_windows = incomplete_base
+    published.read_windows = incomplete_base
     assert history.load(("600001",), observed_at=NOW) == {}
     assert len(supplier.calls) == 1
     assert dict(history.status().tail.quality_counts)[HistoryQuality.HISTORY_UNAVAILABLE] == 1
@@ -349,47 +349,47 @@ def test_incomplete_base_cannot_acquire_model_eligibility_from_a_valid_tail():
 
 @pytest.mark.parametrize("sessions", (61, 251))
 def test_tail_expiry_reuses_verified_startup_base_after_disk_snapshot_change(sessions):
-    history, archive, supplier, _, clock = _cache(sessions=sessions)
+    history, published, supplier, _, clock = _cache(sessions=sessions)
     first = history.load(("600001",), observed_at=NOW)
-    assert len(archive.reads) == 1
+    assert len(published.reads) == 1
     clock[0] = 901.0
     assert history.load(("600001",), observed_at=NOW) == first
     assert len(supplier.calls) == 2
-    assert len(archive.reads) == 1
-    archive.current = replace(archive.current, snapshot_hash="b" * 64)
+    assert len(published.reads) == 1
+    published.current = replace(published.current, snapshot_hash="b" * 64)
     history.initialize(cancelled=lambda: False)
     assert history.load(("600001",), observed_at=NOW) == first
-    assert len(archive.reads) == 1
+    assert len(published.reads) == 1
     assert len(supplier.calls) == 2
     assert not history.status().restart_required
 
 
 def test_base_window_cache_is_bounded_and_profile_specific():
-    _, archive, _, tail, _ = _cache()
-    short = tail._base_window("600001", archive.current, 61)
-    long = tail._base_window("600001", archive.current, 251)
+    _, published, _, tail, _ = _cache()
+    short = tail._base_window("600001", published.current, 61)
+    long = tail._base_window("600001", published.current, 251)
     assert len(short.cells) == 61
     assert len(long.cells) == 251
     for offset in range(481):
-        tail._base_window(str(600001 + offset), archive.current, 61)
+        tail._base_window(str(600001 + offset), published.current, 61)
     assert len(tail._base_windows) == 480
-    before = len(archive.reads)
-    tail._base_window("600001", archive.current, 61)
-    assert len(archive.reads) == before + 1
+    before = len(published.reads)
+    tail._base_window("600001", published.current, 61)
+    assert len(published.reads) == before + 1
 
 
-def test_cached_base_cannot_admit_tail_across_an_active_snapshot_switch():
-    history, archive, supplier, _, clock = _cache()
+def test_cached_base_cannot_admit_tail_across_an_published_snapshot_switch():
+    history, published, supplier, _, clock = _cache()
     history.load(("600001",), observed_at=NOW)
     clock[0] = 901.0
     fetch = supplier.fetch
 
     def switched(request, *, deadline):
         result = fetch(request, deadline=deadline)
-        archive.current = replace(archive.current, snapshot_hash="b" * 64)
+        published.current = replace(published.current, snapshot_hash="b" * 64)
         return result
 
     supplier.fetch = switched
     assert history.load(("600001",), observed_at=NOW) == {}
-    assert len(archive.reads) == 1
+    assert len(published.reads) == 1
     assert history.cached(("600001",), observed_at=NOW, fresh_only=True) == {}

@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import date
 from pathlib import Path
 from typing import TypeAlias
@@ -19,13 +19,16 @@ from trader.download.infra.history_sqlite_read_connection import WatchHistoryRea
 from trader.download.infra.price_columns import (
     PRICE_COLUMNS,
     PRICE_WINDOW_SQL,
+    DecodePriceValues,
     PriceCellFromColumns,
     PriceColumnValues,
     PriceValues,
 )
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     EnsureSqliteSchema,
+    HasSqliteSchema,
     OpenSqliteConnection,
     SqliteConnection,
     SqliteConnectionOptions,
@@ -33,22 +36,22 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 
-_Rows: TypeAlias = tuple[tuple[str, PriceValues], ...]
+_Rows: TypeAlias = tuple[tuple[int, PriceValues], ...]
 _SELECT = ",".join(PRICE_COLUMNS)
 _BAR_ROW_PARAMETERS = len(PRICE_COLUMNS) + 2
-# 39 structured rows use 975 parameters, below SQLite's older 999-parameter limit.
-_INSERT_ROWS_PER_STATEMENT = 39
+# 38 structured rows use 988 parameters, below SQLite's older 999-parameter limit.
+_INSERT_ROWS_PER_STATEMENT = 38
 _INSERT_ROW_PLACEHOLDERS = "(" + ",".join("?" for _ in range(_BAR_ROW_PARAMETERS)) + ")"
 _SCHEMA = SqliteSchema(
-    version=2,
+    version=3,
     statements=(
-        f"CREATE TABLE bars(code TEXT NOT NULL, day TEXT NOT NULL, {PRICE_WINDOW_SQL}, PRIMARY KEY(code,day)) WITHOUT ROWID",
-        "CREATE TABLE identities(profile TEXT NOT NULL, code TEXT NOT NULL, digest TEXT NOT NULL, "
-        "source TEXT NOT NULL, first_day TEXT NOT NULL, cutoff TEXT NOT NULL, "
+        f"CREATE TABLE daily_price(code TEXT NOT NULL, trade_date INTEGER NOT NULL, {PRICE_WINDOW_SQL}, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
+        "CREATE TABLE window_binding(profile TEXT NOT NULL, code TEXT NOT NULL, content_hash BLOB NOT NULL CHECK(length(content_hash)=32), "
+        "source TEXT NOT NULL, start_date INTEGER NOT NULL, end_date INTEGER NOT NULL, "
         "PRIMARY KEY(profile,code)) WITHOUT ROWID",
-        "CREATE TABLE calendars(profile TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY(profile,day)) WITHOUT ROWID",
-        "CREATE TABLE completions(code TEXT PRIMARY KEY, day TEXT NOT NULL, source TEXT NOT NULL) WITHOUT ROWID",
-        "CREATE TABLE publications(profile TEXT PRIMARY KEY, identity TEXT NOT NULL) WITHOUT ROWID",
+        "CREATE TABLE window_calendar(profile TEXT NOT NULL, trade_date INTEGER NOT NULL, PRIMARY KEY(profile,trade_date)) WITHOUT ROWID",
+        "CREATE TABLE window_completion(code TEXT PRIMARY KEY, cutoff_date INTEGER NOT NULL, source TEXT NOT NULL) WITHOUT ROWID",
+        "CREATE TABLE window_publication(profile TEXT PRIMARY KEY, publication_id TEXT NOT NULL) WITHOUT ROWID",
     ),
 )
 
@@ -67,7 +70,8 @@ def _validate_code(code: str) -> None:
 
 def _digest(rows: _Rows) -> str:
     try:
-        payload = json.dumps(rows, separators=(",", ":"), allow_nan=False).encode("ascii")
+        canonical = tuple((DecodeDate(day).isoformat(), DecodePriceValues(values)) for day, values in rows)
+        payload = json.dumps(canonical, separators=(",", ":"), allow_nan=False).encode("ascii")
     except (TypeError, ValueError) as exc:
         raise RuntimeError("qfq_code_identity_mismatch") from exc
     return hashlib.sha256(payload).hexdigest()
@@ -95,72 +99,85 @@ class SQLiteQfqWindowCache:
                 journal_mode="WAL" if write else None,
             ),
         )
-        try:
-            EnsureSqliteSchema(connection, _SCHEMA, allow_create=write)
-            return connection
-        except BaseException:
-            connection.close()
-            raise
+        return connection
+
+    @contextmanager
+    def _read_connection(self) -> Iterator[SqliteConnection | None]:
+        if not self.path.exists():
+            yield None
+            return
+        with closing(self._connection()) as connection:
+            # A rolled-back first publication has no schema or visible windows.
+            # Any populated or versioned incompatible database still fails closed.
+            yield connection if HasSqliteSchema(connection, _SCHEMA) else None
+
+    @contextmanager
+    def _write_connection(self) -> Iterator[SqliteConnection]:
+        with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
+            EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+            yield connection
 
     def verify_integrity(self) -> None:
-        if self.path.is_file():
-            with closing(self._connection(write=True)) as connection:
+        with self._read_connection() as connection:
+            if connection is not None:
                 CheckSqliteIntegrity(connection)
 
     def codes(self) -> frozenset[str]:
-        if not self.path.exists():
-            return frozenset()
-        with closing(self._connection()) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return frozenset()
             return frozenset(
-                row[0] for row in connection.run("SELECT code FROM identities WHERE profile=?", (self.profile,))
+                row[0] for row in connection.run("SELECT code FROM window_binding WHERE profile=?", (self.profile,))
             )
 
     def completed(self, day: date, code: str, source: str) -> bool:
-        if not self.path.exists():
-            return False
-        with closing(self._connection()) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return False
             return (
                 connection.run(
-                    "SELECT 1 FROM completions WHERE code=? AND day=? AND source=?", (code, day.isoformat(), source)
+                    "SELECT 1 FROM window_completion WHERE code=? AND cutoff_date=? AND source=?",
+                    (code, EncodeDate(day), source),
                 ).fetchone()
                 is not None
             )
 
     def _rows(self, connection: SqliteConnection, code: str) -> _Rows:
         identity = connection.run(
-            "SELECT digest,first_day,cutoff FROM identities WHERE profile=? AND code=?", (self.profile, code)
+            "SELECT content_hash,start_date,end_date FROM window_binding WHERE profile=? AND code=?",
+            (self.profile, code),
         ).fetchone()
         if identity is None:
             return ()
         rows = tuple(
             (row[0], tuple(row[1:]))
             for row in connection.run(
-                f"SELECT day,{_SELECT} FROM bars WHERE code=? AND day BETWEEN ? AND ? ORDER BY day",
+                f"SELECT trade_date,{_SELECT} FROM daily_price WHERE code=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date",
                 (code, identity[1], identity[2]),
             )
         )
-        if len(rows) > self.sessions or _digest(rows) != identity[0]:
+        if len(rows) > self.sessions or _digest(rows) != DecodeHash(identity[0]):
             raise RuntimeError("qfq_code_identity_mismatch")
         return rows
 
     def _batch_rows(self, connection: SqliteConnection, codes: tuple[str, ...]) -> tuple[tuple[str, _Rows], ...]:
         placeholders = ",".join("?" for _ in codes)
         identities = {
-            str(code): str(digest)
+            str(code): DecodeHash(digest)
             for code, digest in connection.run(
-                f"SELECT code,digest FROM identities WHERE profile=? AND code IN ({placeholders})",
+                f"SELECT code,content_hash FROM window_binding WHERE profile=? AND code IN ({placeholders})",
                 (self.profile, *codes),
             )
         }
-        grouped: dict[str, list[tuple[str, PriceValues]]] = {code: [] for code in identities}
+        grouped: dict[str, list[tuple[int, PriceValues]]] = {code: [] for code in identities}
         for code, day, *values in connection.run(
-            f"SELECT bars.code,bars.day,{_SELECT} FROM identities AS identity "
-            "JOIN bars ON bars.code=identity.code "
-            "AND bars.day BETWEEN identity.first_day AND identity.cutoff "
-            f"WHERE identity.profile=? AND identity.code IN ({placeholders}) ORDER BY bars.code,bars.day",
+            f"SELECT daily_price.code,daily_price.trade_date,{_SELECT} FROM window_binding AS identity "
+            "JOIN daily_price ON daily_price.code=identity.code "
+            "AND daily_price.trade_date BETWEEN identity.start_date AND identity.end_date "
+            f"WHERE identity.profile=? AND identity.code IN ({placeholders}) ORDER BY daily_price.code,daily_price.trade_date",
             (self.profile, *codes),
         ):
-            grouped[str(code)].append((str(day), tuple(values)))
+            grouped[str(code)].append((day, tuple(values)))
         result = []
         for code in codes:
             rows = tuple(grouped.get(code, ()))
@@ -177,11 +194,11 @@ class SQLiteQfqWindowCache:
         requested = tuple(sorted(set(codes)))
         for code in requested:
             _validate_code(code)
-        if not self.path.exists():
-            return tuple(PublishedHistoryWindow(code, ()) for code in requested)
         result: list[PublishedHistoryWindow] = []
         try:
-            with closing(self._connection()) as connection:
+            with self._read_connection() as connection:
+                if connection is None:
+                    return tuple(PublishedHistoryWindow(code, ()) for code in requested)
                 for start in range(0, len(requested), 32):
                     batch = requested[start : start + 32]
                     with SqliteTransaction(connection):
@@ -197,12 +214,12 @@ class SQLiteQfqWindowCache:
         return tuple(result)
 
     def inspect_windows(self, allowed_codes: frozenset[str]) -> QfqWindowSnapshot:
-        if not self.path.exists():
-            return QfqWindowSnapshot(())
         states: list[QfqWindowState] = []
-        with closing(self._connection()) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return QfqWindowSnapshot(())
             identities = connection.run(
-                "SELECT code,source FROM identities WHERE profile=? ORDER BY code", (self.profile,)
+                "SELECT code,source FROM window_binding WHERE profile=? ORDER BY code", (self.profile,)
             ).fetchall()
             for code, source in identities:
                 if code not in allowed_codes:
@@ -210,17 +227,17 @@ class SQLiteQfqWindowCache:
                 try:
                     with SqliteTransaction(connection):
                         rows = self._rows(connection, code)
-                    states.append(QfqWindowState(code, source, tuple(date.fromisoformat(day) for day, _ in rows), True))
+                    states.append(QfqWindowState(code, source, tuple(DecodeDate(day) for day, _ in rows), True))
                 except (RuntimeError, ValueError):
                     states.append(QfqWindowState(code, source, (), False))
         return QfqWindowSnapshot(tuple(states))
 
     def source_identity(self, code: str) -> str | None:
-        if not self.path.exists():
-            return None
-        with closing(self._connection()) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return None
             row = connection.run(
-                "SELECT source FROM identities WHERE profile=? AND code=?", (self.profile, code)
+                "SELECT source FROM window_binding WHERE profile=? AND code=?", (self.profile, code)
             ).fetchone()
         return str(row[0]) if row else None
 
@@ -230,12 +247,14 @@ class SQLiteQfqWindowCache:
         excluded = self.codes() - allowed_codes
         if not excluded:
             return (), 0
-        with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
+        with self._write_connection() as connection:
             connection.run_many(
-                "DELETE FROM identities WHERE profile=? AND code=?", ((self.profile, code) for code in excluded)
+                "DELETE FROM window_binding WHERE profile=? AND code=?", ((self.profile, code) for code in excluded)
             )
-            connection.run_many("DELETE FROM completions WHERE code=?", ((code,) for code in excluded))
-            deleted = connection.run("DELETE FROM bars WHERE code NOT IN (SELECT code FROM identities)").rowcount
+            connection.run_many("DELETE FROM window_completion WHERE code=?", ((code,) for code in excluded))
+            deleted = connection.run(
+                "DELETE FROM daily_price WHERE code NOT IN (SELECT code FROM window_binding)"
+            ).rowcount
             self._publish_identity(connection)
         return (self.path.name,), deleted
 
@@ -247,48 +266,52 @@ class SQLiteQfqWindowCache:
         calendar: tuple[date, ...],
         completed_day: date | None,
     ) -> bool:
-        if not self.path.is_file():
-            return False
-        with closing(self._connection()) as connection, SqliteTransaction(connection):
-            for code, target in targets:
-                actual = tuple(
-                    (row[0], tuple(row[1:]))
-                    for row in connection.run(f"SELECT day,{_SELECT} FROM bars WHERE code=? ORDER BY day", (code,))
-                )
-                if actual != target:
-                    return False
-            for cache in (self, peer):
-                days = calendar[-cache.sessions :]
-                if tuple(
-                    row[0]
-                    for row in connection.run(
-                        "SELECT day FROM calendars WHERE profile=? ORDER BY day", (cache.profile,)
-                    )
-                ) != tuple(day.isoformat() for day in days):
-                    return False
+        with self._read_connection() as connection:
+            if connection is None:
+                return False
+            with SqliteTransaction(connection):
                 for code, target in targets:
-                    rows = tuple((day, values) for day, values in target if day >= days[0].isoformat())
-                    identity = connection.run(
-                        "SELECT digest,source,first_day,cutoff FROM identities WHERE profile=? AND code=?",
-                        (cache.profile, code),
-                    ).fetchone()
-                    if identity is None or tuple(identity) != (
-                        _digest(rows),
-                        source,
-                        days[0].isoformat(),
-                        days[-1].isoformat(),
-                    ):
+                    actual = tuple(
+                        (row[0], tuple(row[1:]))
+                        for row in connection.run(
+                            f"SELECT trade_date,{_SELECT} FROM daily_price WHERE code=? ORDER BY trade_date", (code,)
+                        )
+                    )
+                    if actual != target:
                         return False
-            if completed_day is not None:
-                for code, _rows in targets:
-                    if (
-                        connection.run(
-                            "SELECT 1 FROM completions WHERE code=? AND day=? AND source=?",
-                            (code, completed_day.isoformat(), source),
+                for cache in (self, peer):
+                    days = calendar[-cache.sessions :]
+                    if tuple(
+                        row[0]
+                        for row in connection.run(
+                            "SELECT trade_date FROM window_calendar WHERE profile=? ORDER BY trade_date",
+                            (cache.profile,),
+                        )
+                    ) != tuple(EncodeDate(day) for day in days):
+                        return False
+                    for code, target in targets:
+                        rows = tuple((day, values) for day, values in target if day >= EncodeDate(days[0]))
+                        identity = connection.run(
+                            "SELECT content_hash,source,start_date,end_date FROM window_binding WHERE profile=? AND code=?",
+                            (cache.profile, code),
                         ).fetchone()
-                        is None
-                    ):
-                        return False
+                        if identity is None or tuple(identity) != (
+                            EncodeHash(_digest(rows)),
+                            source,
+                            EncodeDate(days[0]),
+                            EncodeDate(days[-1]),
+                        ):
+                            return False
+                if completed_day is not None:
+                    for code, _rows in targets:
+                        if (
+                            connection.run(
+                                "SELECT 1 FROM window_completion WHERE code=? AND cutoff_date=? AND source=?",
+                                (code, EncodeDate(completed_day), source),
+                            ).fetchone()
+                            is None
+                        ):
+                            return False
         return True
 
     def replace_paired_windows(
@@ -321,7 +344,7 @@ class SQLiteQfqWindowCache:
                 (
                     window.code,
                     tuple(
-                        (cell.trade_date.isoformat(), PriceColumnValues(cell))
+                        (EncodeDate(cell.trade_date), PriceColumnValues(cell))
                         for cell in window.cells
                         if cell.status == "complete"
                     ),
@@ -330,22 +353,28 @@ class SQLiteQfqWindowCache:
             )
             if self._matches_windows(peer, targets, source_identity, calendar, completed_day):
                 return (), 0
-            with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
+            with self._write_connection() as connection:
                 for code, target in targets:
                     old = tuple(
                         (row[0], tuple(row[1:]))
-                        for row in connection.run(f"SELECT day,{_SELECT} FROM bars WHERE code=? ORDER BY day", (code,))
+                        for row in connection.run(
+                            f"SELECT trade_date,{_SELECT} FROM daily_price WHERE code=? ORDER BY trade_date", (code,)
+                        )
                     )
                     before, after = dict(old), dict(target)
                     count += sum(before.get(day) != after.get(day) for day in before.keys() | after.keys())
                     if old != target:
                         changed = True
                         connection.run_many(
-                            "DELETE FROM bars WHERE code=? AND day=?",
+                            "DELETE FROM daily_price WHERE code=? AND trade_date=?",
                             ((code, day) for day in before.keys() - after.keys()),
                         )
                         inserts = tuple((day, values) for day, values in target if before.get(day) != values)
-                        insert_command = "INSERT OR REPLACE INTO bars VALUES " if before else "INSERT INTO bars VALUES "
+                        insert_command = (
+                            "INSERT OR REPLACE INTO daily_price VALUES "
+                            if before
+                            else "INSERT INTO daily_price VALUES "
+                        )
                         for start in range(0, len(inserts), _INSERT_ROWS_PER_STATEMENT):
                             batch = inserts[start : start + _INSERT_ROWS_PER_STATEMENT]
                             connection.run(
@@ -354,37 +383,43 @@ class SQLiteQfqWindowCache:
                             )
                     for cache in (self, peer):
                         days = calendar[-cache.sessions :]
-                        rows = tuple((day, values) for day, values in target if day >= days[0].isoformat())
-                        identity = (_digest(rows), source_identity, days[0].isoformat(), days[-1].isoformat())
+                        rows = tuple((day, values) for day, values in target if day >= EncodeDate(days[0]))
+                        identity = (
+                            EncodeHash(_digest(rows)),
+                            source_identity,
+                            EncodeDate(days[0]),
+                            EncodeDate(days[-1]),
+                        )
                         previous = connection.run(
-                            "SELECT digest,source,first_day,cutoff FROM identities WHERE profile=? AND code=?",
+                            "SELECT content_hash,source,start_date,end_date FROM window_binding WHERE profile=? AND code=?",
                             (cache.profile, code),
                         ).fetchone()
                         if previous is None or tuple(previous) != identity:
                             changed = True
                             connection.run(
-                                "INSERT OR REPLACE INTO identities VALUES (?,?,?,?,?,?)",
+                                "INSERT OR REPLACE INTO window_binding VALUES (?,?,?,?,?,?)",
                                 (cache.profile, code, *identity),
                             )
                     if completed_day is not None:
                         cursor = connection.run(
-                            "INSERT INTO completions VALUES (?,?,?) ON CONFLICT(code) DO UPDATE SET day=excluded.day,source=excluded.source WHERE day<>excluded.day OR source<>excluded.source",
-                            (code, completed_day.isoformat(), source_identity),
+                            "INSERT INTO window_completion VALUES (?,?,?) ON CONFLICT(code) DO UPDATE SET cutoff_date=excluded.cutoff_date,source=excluded.source WHERE cutoff_date<>excluded.cutoff_date OR source<>excluded.source",
+                            (code, EncodeDate(completed_day), source_identity),
                         )
                         changed = changed or cursor.rowcount > 0
                 for cache in (self, peer):
-                    day_texts = tuple(day.isoformat() for day in calendar[-cache.sessions :])
+                    encoded_days = tuple(EncodeDate(day) for day in calendar[-cache.sessions :])
                     previous_days = tuple(
                         row[0]
                         for row in connection.run(
-                            "SELECT day FROM calendars WHERE profile=? ORDER BY day", (cache.profile,)
+                            "SELECT trade_date FROM window_calendar WHERE profile=? ORDER BY trade_date",
+                            (cache.profile,),
                         )
                     )
-                    if day_texts != previous_days:
+                    if encoded_days != previous_days:
                         changed = True
-                        connection.run("DELETE FROM calendars WHERE profile=?", (cache.profile,))
+                        connection.run("DELETE FROM window_calendar WHERE profile=?", (cache.profile,))
                         connection.run_many(
-                            "INSERT INTO calendars VALUES (?,?)", ((cache.profile, day) for day in day_texts)
+                            "INSERT INTO window_calendar VALUES (?,?)", ((cache.profile, day) for day in encoded_days)
                         )
                 if changed:
                     for cache in (self, peer):
@@ -400,25 +435,28 @@ class SQLiteQfqWindowCache:
         return ((self.path.name,) if changed else ()), count
 
     def manifest(self) -> PublishedHistoryManifest | None:
-        if not self.path.exists():
-            return None
         try:
-            with closing(self._connection()) as connection, SqliteTransaction(connection):
-                return self._calculate_manifest(connection)
+            with self._read_connection() as connection:
+                if connection is None:
+                    return None
+                with SqliteTransaction(connection):
+                    return self._calculate_manifest(connection)
         except (sqlite3.Error, OSError, ValueError) as exc:
             raise RuntimeError("qfq_manifest_unavailable") from exc
 
     def _calculate_manifest(self, connection: SqliteConnection) -> PublishedHistoryManifest | None:
         identities = tuple(
-            tuple(row)
+            (row[0], DecodeHash(row[1]), row[2], DecodeDate(row[3]).isoformat(), DecodeDate(row[4]).isoformat())
             for row in connection.run(
-                "SELECT code,digest,source,first_day,cutoff FROM identities WHERE profile=? ORDER BY code",
+                "SELECT code,content_hash,source,start_date,end_date FROM window_binding WHERE profile=? ORDER BY code",
                 (self.profile,),
             )
         )
         calendar = tuple(
-            date.fromisoformat(row[0])
-            for row in connection.run("SELECT day FROM calendars WHERE profile=? ORDER BY day", (self.profile,))
+            DecodeDate(row[0])
+            for row in connection.run(
+                "SELECT trade_date FROM window_calendar WHERE profile=? ORDER BY trade_date", (self.profile,)
+            )
         )
         publication_id = self._publication_id(connection)
         if not identities:
@@ -437,16 +475,18 @@ class SQLiteQfqWindowCache:
         )
 
     def _publish_identity(self, connection: SqliteConnection) -> None:
-        if connection.run("SELECT 1 FROM identities WHERE profile=? LIMIT 1", (self.profile,)).fetchone() is None:
-            connection.run("DELETE FROM publications WHERE profile=?", (self.profile,))
+        if connection.run("SELECT 1 FROM window_binding WHERE profile=? LIMIT 1", (self.profile,)).fetchone() is None:
+            connection.run("DELETE FROM window_publication WHERE profile=?", (self.profile,))
         else:
             connection.run(
-                "INSERT INTO publications VALUES (?,?) ON CONFLICT(profile) DO UPDATE SET identity=excluded.identity",
+                "INSERT INTO window_publication VALUES (?,?) ON CONFLICT(profile) DO UPDATE SET publication_id=excluded.publication_id",
                 (self.profile, uuid4().hex),
             )
 
     def _publication_id(self, connection: SqliteConnection) -> str | None:
-        row = connection.run("SELECT identity FROM publications WHERE profile=?", (self.profile,)).fetchone()
+        row = connection.run(
+            "SELECT publication_id FROM window_publication WHERE profile=?", (self.profile,)
+        ).fetchone()
         if row is None:
             return None
         identity = row[0]
@@ -501,25 +541,28 @@ class SQLiteQfqWindowCache:
         first = manifest.calendar_dates[-min(sessions, len(manifest.calendar_dates))]
         windows: list[PublishedHistoryWindow] = []
         try:
-            with closing(self._connection()) as connection, WatchHistoryRead(connection, check):
-                self._require_publication(connection, manifest)
-                for start in range(0, len(requested), 32):
-                    if check is not None:
-                        check()
-                    with SqliteTransaction(connection):
-                        rows = self._batch_rows(connection, requested[start : start + 32])
-                    windows.extend(
-                        PublishedHistoryWindow(
-                            code,
-                            tuple(
-                                cell
-                                for day, values in cells
-                                if (cell := PriceCellFromColumns(code, day, values)).trade_date >= first
-                            ),
+            with self._read_connection() as connection:
+                if connection is None:
+                    raise RuntimeError("qfq_publication_changed")
+                with WatchHistoryRead(connection, check):
+                    self._require_publication(connection, manifest)
+                    for start in range(0, len(requested), 32):
+                        if check is not None:
+                            check()
+                        with SqliteTransaction(connection):
+                            rows = self._batch_rows(connection, requested[start : start + 32])
+                        windows.extend(
+                            PublishedHistoryWindow(
+                                code,
+                                tuple(
+                                    cell
+                                    for day, values in cells
+                                    if (cell := PriceCellFromColumns(code, day, values)).trade_date >= first
+                                ),
+                            )
+                            for code, cells in rows
                         )
-                        for code, cells in rows
-                    )
-                self._require_publication(connection, manifest)
+                    self._require_publication(connection, manifest)
         except (sqlite3.Error, OSError) as exc:
             raise RuntimeError("qfq_read_failed") from exc
         return tuple(windows)

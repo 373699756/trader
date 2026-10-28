@@ -17,7 +17,7 @@ from trader.infra.workers import WorkerExecutor
 class HistorySyncGateway:
     """Route initial and incremental downloads to the atomic synchronizer.
 
-    The synchronizer derives the operation from the active snapshot: absence
+    The synchronizer derives the operation from the published snapshot: absence
     creates the complete 2000-session archive, while an existing snapshot only
     downloads missing or reread data.  Keeping that decision in one owner
     prevents two writers from evolving different publication semantics.

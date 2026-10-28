@@ -1399,7 +1399,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
         lookback_sessions=61,
         monotonic=time.monotonic,
     )
-    history.record_maintenance("loading", stage="reading_active_snapshot")
+    history.record_maintenance("loading", stage="reading_published_snapshot")
 
     class FailingOnceCloseData(DataRefresh):
         def refresh_task(self, request) -> RefreshOutcome:

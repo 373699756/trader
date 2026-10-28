@@ -21,7 +21,6 @@ from scripts.runtime_migration import (  # noqa: E402
     FileDigest,
     ImportDecisions,
     ImportSequence,
-    ImportSt,
     ImportTraces,
     MergeDatabase,
     ValidateDatabase,
@@ -114,8 +113,6 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
         staging.mkdir(parents=True)
         paths = DataPaths(staging)
         data, runtime = source / "data", source / ".runtime/trader"
-        ImportSt(data / "reference/historical_st.json", paths.reference / "historical_st.sqlite3")
-        MergeDatabase(data / "reference/industry_queries.sqlite3", paths.reference / "industry.sqlite3")
         # Company facts require a fresh extraction; legacy evidence is never copied into the new contract.
         # All existing budget histories contribute. Duplicate request identities must agree.
         runtime_roots = (runtime, runtime / "profiles/v2", runtime / "profiles/v3")
@@ -143,8 +140,6 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
             )
             if profile == default_profile:
                 ImportDecisions(data / "freeze/freeze.sqlite3", profile_root / "decisions.sqlite3")
-        # Calendar caches are regenerable; select the freshest valid canonical document.
-        _calendar(runtime_roots, paths.reference / "trading_calendar.json")
         after, _count, _size = _fingerprint(source, validate=True)
         if after != before:
             raise MigrationError("migration_source_changed")
@@ -159,7 +154,15 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
             digest,
             count,
             size,
-            ("market_history", "daily_window", "models", "training_samples", "company_facts"),
+            (
+                "market_reference",
+                "industry_reference",
+                "market_history",
+                "daily_window",
+                "models",
+                "training_samples",
+                "company_facts",
+            ),
             cleanup,
         )
         (staging / MANIFEST_NAME).write_text(json.dumps(ProjectManifest(manifest), sort_keys=True, indent=2) + "\n")
@@ -203,21 +206,6 @@ def _copy_tree(source: Path, target: Path) -> None:
             MergeDatabase(path, destination)
         else:
             CopyFile(path, destination)
-
-
-def _calendar(roots: tuple[Path, ...], target: Path) -> None:
-    candidates: list[tuple[str, Path]] = []
-    for root in roots:
-        path = root / "calendar.json"
-        if path.exists():
-            payload = json.loads(path.read_text())
-            dates = payload.get("dates")
-            if not isinstance(dates, list) or not dates or not all(isinstance(day, str) for day in dates):
-                raise MigrationError("migration_calendar_invalid")
-            candidates.append((max(dates), path))
-    if candidates:
-        chosen = max(candidates, key=lambda item: (item[0], item[1].stat().st_mtime_ns))[1]
-        CopyFile(chosen, target)
 
 
 def inspect_layout(source: Path) -> MigrationManifest:

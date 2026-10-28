@@ -231,7 +231,12 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
 
     def observed(connection, sql, parameters=()):  # type: ignore[no-untyped-def]
         nonlocal scans
-        if sql.startswith("SELECT code,digest,source,first_day,cutoff FROM identities"):
+        if sql.startswith(
+            (
+                "SELECT code,content_hash,source,start_date,end_date FROM window_binding",
+                "SELECT code,digest,source,first_day,cutoff FROM identities",
+            )
+        ):
             scans += 1
         return original(connection, sql, parameters)
 
@@ -529,6 +534,8 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
                 at = datetime.combine(supplier.days[-1], datetime.min.time(), ZoneInfo("Asia/Shanghai")).replace(
                     hour=20
                 )
+                if layout == "annual":
+                    supplier.publish_reference(config.reference_root / "company_st.sqlite3", at.date(), config.sessions)
                 result = RunHistorySync(config, supplier, clock=lambda: at)
                 if result.state not in ("completed", "already_current") or result.unresolved_price_cells:
                     raise RuntimeError(f"fixture synchronization failed: {result.state}/{result.reason}")
@@ -536,9 +543,12 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
 
             measure("history_initial_write", sync)
             index = HistoryControlIndex(history / ("catalog.sqlite3" if layout == "annual" else "control.sqlite3"))
-            snapshot = index.load_state().active_snapshot
-            assert snapshot is not None
             publication = SQLitePublishedHistorySnapshot(history)
+            manifest = publication.manifest()
+            assert manifest is not None
+            snapshot = next(
+                item for item in index.load_state().snapshots if item.content_hash == manifest.snapshot_hash
+            )
 
             def load() -> object:
                 manifest = publication.manifest()

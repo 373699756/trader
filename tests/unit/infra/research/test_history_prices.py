@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from contextlib import closing
 from dataclasses import replace
 from datetime import date
@@ -15,6 +16,7 @@ from trader.download.infra.history_prices import (
     HistoryPricePartitionConflictError,
     HistoryPricePartitionError,
 )
+from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
@@ -49,6 +51,28 @@ def _revision(day: date, sequence: int, close: float) -> HistoryRevision:
     )
 
 
+def test_real_price_columns_preserve_mixed_numeric_types_and_revision_hash(tmp_path: Path) -> None:
+    path = tmp_path / "prices_2026.sqlite3"
+    month = HistoryPricePartition(path, 2026, 9)
+    month.initialize()
+    day = date(2026, 9, 10)
+    revision = _revision(day, 1, 10.0)
+    raw = replace(revision.cell.unadjusted, open_price=10, volume=100, amount=1000.0, pct_change=-0.0)
+    mixed = replace(revision, cell=replace(revision.cell, unadjusted=raw))
+    month.save_revisions((mixed,))
+    decoded = month.read_day(day, snapshot_sequence=1)[0]
+    assert type(decoded.cell.unadjusted.open_price) is int
+    assert type(decoded.cell.unadjusted.amount) is float
+    assert math.copysign(1, decoded.cell.unadjusted.pct_change) == -1
+    assert decoded.content_hash == mixed.content_hash
+    with SqliteSession(path) as connection:
+        assert tuple(
+            connection.run(
+                "SELECT typeof(raw_open),typeof(raw_volume),typeof(content_hash) FROM daily_price_revision"
+            ).require_one()
+        ) == ("real", "real", "blob")
+
+
 def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> None:
     statements: list[str] = []
     month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)
@@ -60,17 +84,17 @@ def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> Non
 @pytest.mark.parametrize("consumer", ("published", "training"))
 def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision(tmp_path: Path, consumer: str) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
     day = date(2026, 9, 10)
-    repository.save_revisions((_revision(date(2026, 1, 10), 1, 8.0), _revision(day, 1, 10.0)))
-    repository.save_revisions((_revision(day, 2, 12.0),))
+    index.save_revisions((_revision(date(2026, 1, 10), 1, 8.0), _revision(day, 1, 10.0)))
+    index.save_revisions((_revision(day, 2, 12.0),))
     query = (
         partition_module._PUBLISHED_RANGE_BY_CODE_SQL
         if consumer == "published"
         else partition_module._TRAINING_RANGE_SQL
     )
-    with closing(repository._read_connection()) as connection:
+    with closing(index._read_connection()) as connection:
         plan = tuple(
             str(row[3])
             for row in connection.run(
@@ -81,7 +105,7 @@ def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision
     assert any("SEARCH records" in item and "trade_date>? AND trade_date<?" in item for item in plan)
     assert not any("SCAN records" in item for item in plan)
     assert any("SEARCH observed USING PRIMARY KEY (trade_date=? AND code=?" in item for item in plan)
-    read = repository.iter_published_cells if consumer == "published" else repository.iter_training_rows
+    read = index.iter_published_cells if consumer == "published" else index.iter_training_rows
     before = tuple(read(day, day, snapshot_sequence=1))
     after = tuple(read(day, day, snapshot_sequence=2))
     assert len(before) == len(after) == 1
@@ -94,8 +118,8 @@ def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision
 @pytest.mark.parametrize("operation", ("proof", "cells"))
 def test_published_history_read_checks_budget_inside_sqlite(tmp_path: Path, operation: str) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
     revisions = []
     for number in range(500):
         original = _revision(date(2026, 9, 10), 1, 10.0)
@@ -111,8 +135,8 @@ def test_published_history_read_checks_budget_inside_sqlite(tmp_path: Path, oper
                 ),
             )
         )
-    repository.save_revisions(revisions)
-    reference = repository.seal(1)
+    index.save_revisions(revisions)
+    reference = index.seal(1)
     calls = 0
 
     def deadline():
@@ -125,13 +149,9 @@ def test_published_history_read_checks_budget_inside_sqlite(tmp_path: Path, oper
         if operation == "proof":
             HistoryPricePartition.verify_logical_content(path, reference, check=deadline)
         else:
-            tuple(
-                repository.iter_published_cells(
-                    date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1, check=deadline
-                )
-            )
+            tuple(index.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1, check=deadline))
     HistoryPricePartition.verify_logical_content(path, reference)
-    assert len(tuple(repository.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 500
+    assert len(tuple(index.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 500
 
 
 def test_resume_read_skips_absent_stocks_and_preserves_partial_and_sequence_views(tmp_path: Path) -> None:
@@ -202,7 +222,7 @@ def test_resumed_writer_does_not_assume_orphaned_records_are_absent(tmp_path: Pa
     original = _revision(date(2026, 9, 10), 1, 10.0)
     month.save_revisions((original,))
     with SqliteSession(month._path) as connection, SqliteTransaction(connection):
-        connection.run("DELETE FROM daily_observations")
+        connection.run("DELETE FROM daily_price_observation")
     with closing(month.open_write_session(pending_sequence=1)) as session:
         session.save_revision_batches((original,))
     assert month.read_day(original.trade_date, snapshot_sequence=1) == (original,)
@@ -305,22 +325,22 @@ def test_pending_completion_preserves_the_existing_price_side(tmp_path: Path, st
 
 def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("PRAGMA page_size").fetchone()) == (8192,)
     original = _revision(date(2026, 9, 10), 1, 10.0)
     revised = _revision(date(2026, 9, 10), 3, 11.0)
 
-    repository.save_revisions((original, original))
-    repository.save_revisions((replace(original, first_seen_sequence=2),))
-    repository.save_revisions((revised,))
+    index.save_revisions((original, original))
+    index.save_revisions((replace(original, first_seen_sequence=2),))
+    index.save_revisions((revised,))
 
-    assert repository.read_day(date(2026, 9, 10), snapshot_sequence=1) == (original,)
-    assert repository.read_day(date(2026, 9, 10), snapshot_sequence=2) == (original,)
-    assert repository.read_day(date(2026, 9, 10), snapshot_sequence=3) == (revised,)
-    assert repository.read_day(date(2026, 9, 10), snapshot_sequence=3, board="star") == ()
-    assert repository.read_code("600001", date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=3) == (revised,)
+    assert index.read_day(date(2026, 9, 10), snapshot_sequence=1) == (original,)
+    assert index.read_day(date(2026, 9, 10), snapshot_sequence=2) == (original,)
+    assert index.read_day(date(2026, 9, 10), snapshot_sequence=3) == (revised,)
+    assert index.read_day(date(2026, 9, 10), snapshot_sequence=3, board="star") == ()
+    assert index.read_code("600001", date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=3) == (revised,)
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         indexes = {
             name: tuple(row[2] for row in connection.run(f"PRAGMA index_info('{name}')"))
@@ -335,26 +355,26 @@ def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> N
     )
 
     reverted = _revision(date(2026, 9, 10), 4, 10.0)
-    repository.save_revisions((reverted,))
-    assert repository.read_day(date(2026, 9, 10), snapshot_sequence=4) == (original,)
+    index.save_revisions((reverted,))
+    assert index.read_day(date(2026, 9, 10), snapshot_sequence=4) == (original,)
 
 
 def test_month_partition_batches_revision_context_and_uses_specialized_latest_sql(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     statements: list[str] = []
-    repository = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index.initialize()
     statements.clear()
     revisions = tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16))
 
-    repository.save_revisions(revisions)
+    index.save_revisions(revisions)
 
     selects = tuple(statement for statement in statements if statement.lstrip().upper().startswith("SELECT"))
     assert len(selects) == 4  # metadata plus three set-based conflict/context reads
     assert sum(statement.lstrip().upper().startswith("BEGIN IMMEDIATE") for statement in statements) == 1
     statements.clear()
 
-    assert len(tuple(repository.iter_range(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 15
+    assert len(tuple(index.iter_range(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 15
     latest_sql = next(statement for statement in statements if statement.lstrip().startswith("WITH latest AS"))
     assert "ROW_NUMBER" in latest_sql
     assert "NOT EXISTS" not in latest_sql
@@ -363,21 +383,21 @@ def test_month_partition_batches_revision_context_and_uses_specialized_latest_sq
 
 def test_month_partition_batch_context_uses_requested_keys_as_the_outer_query(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
     revision = _revision(date(2026, 9, 10), 1, 10.0)
-    repository.save_revisions((revision,))
+    index.save_revisions((revision,))
 
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run(
             "CREATE TEMP TABLE requested_history_revisions ("
-            "trade_date TEXT NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
+            "trade_date INTEGER NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
             "revision_id TEXT NOT NULL, PRIMARY KEY (trade_date, code, sync_sequence, revision_id)"
             ") WITHOUT ROWID"
         )
         connection.run(
             "INSERT INTO requested_history_revisions VALUES (?, ?, ?, ?)",
-            (revision.trade_date.isoformat(), revision.code, revision.first_seen_sequence, revision.revision_id),
+            (EncodeDate(revision.trade_date), revision.code, revision.first_seen_sequence, revision.revision_id),
         )
         plans = {
             "observations": tuple(
@@ -405,8 +425,8 @@ def test_month_partition_bounds_write_cache_without_evicting_hot_index_pages(
 ) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     statements: list[str] = []
-    repository = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index.initialize()
     statements.clear()
     monkeypatch.setattr(
         partition_module,
@@ -414,7 +434,7 @@ def test_month_partition_bounds_write_cache_without_evicting_hot_index_pages(
         lambda _path: pytest.fail("committed hot index pages were evicted"),
     )
 
-    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
 
     assert "PRAGMA cache_size=-8192" in statements
     assert "PRAGMA mmap_size=0" in statements
@@ -422,9 +442,9 @@ def test_month_partition_bounds_write_cache_without_evicting_hot_index_pages(
 
 def test_month_partition_seal_scans_rows_without_a_temporary_sort(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
-    repository.save_revisions(tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16)))
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
+    index.save_revisions(tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16)))
 
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         plan = tuple(
@@ -437,12 +457,12 @@ def test_month_partition_seal_scans_rows_without_a_temporary_sort(tmp_path: Path
 def test_month_partition_seal_checkpoints_before_bounded_mmap_verification(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     statements: list[str] = []
-    repository = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
-    repository.initialize()
-    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index.initialize()
+    index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
     statements.clear()
 
-    repository.seal()
+    index.seal()
 
     assert "PRAGMA wal_checkpoint(TRUNCATE)" not in statements
     assert "PRAGMA quick_check" not in statements  # Incremental month proof avoids an annual full scan.
@@ -456,8 +476,8 @@ def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
 ) -> None:
     path = tmp_path / "09.sqlite3"
     statements: list[str] = []
-    repository = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index.initialize()
     original = _revision(date(2026, 9, 10), 1, 10.0)
     other = replace(
         original,
@@ -468,17 +488,17 @@ def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
             qfq=replace(original.cell.qfq, code="600002"),
         ),
     )
-    repository.save_revisions((original, other, _revision(date(2026, 9, 11), 1, 12.0)))
-    repository.save_revisions((_revision(original.trade_date, 2, 11.0),))
-    repository.save_revisions((_revision(original.trade_date, 3, 10.0),))
-    repository.save_revisions((_revision(date(2026, 9, 9), 4, 9.0),))
+    index.save_revisions((original, other, _revision(date(2026, 9, 11), 1, 12.0)))
+    index.save_revisions((_revision(original.trade_date, 2, 11.0),))
+    index.save_revisions((_revision(original.trade_date, 3, 10.0),))
+    index.save_revisions((_revision(date(2026, 9, 9), 4, 9.0),))
     start, end = date(2026, 9, 10), date(2026, 9, 11)
     expected = sorted(
-        repository.iter_range(start, end, snapshot_sequence=sequence), key=lambda row: (row.code, row.trade_date)
+        index.iter_range(start, end, snapshot_sequence=sequence), key=lambda row: (row.code, row.trade_date)
     )
     statements.clear()
 
-    assert tuple(repository.iter_range_by_code(start, end, snapshot_sequence=sequence)) == tuple(expected)
+    assert tuple(index.iter_range_by_code(start, end, snapshot_sequence=sequence)) == tuple(expected)
 
     query = next(value for value in statements if value.lstrip().startswith("SELECT records.trade_date"))
     with SqliteSession(path) as connection, SqliteTransaction(connection):
@@ -489,14 +509,14 @@ def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
 def test_training_stream_projects_latest_points_without_revision_hashes_or_temporary_sort(tmp_path: Path) -> None:
     path = tmp_path / "09.sqlite3"
     statements: list[str] = []
-    repository = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
-    repository.initialize()
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index.initialize()
     day = date(2026, 9, 10)
-    repository.save_revisions((_revision(day, 1, 10.0), _revision(day, 2, 11.0)))
+    index.save_revisions((_revision(day, 1, 10.0), _revision(day, 2, 11.0)))
     statements.clear()
 
-    original = tuple(repository.iter_training_rows(day, day, snapshot_sequence=1))
-    revised = tuple(repository.iter_training_rows(day, day, snapshot_sequence=2))
+    original = tuple(index.iter_training_rows(day, day, snapshot_sequence=1))
+    revised = tuple(index.iter_training_rows(day, day, snapshot_sequence=2))
 
     assert original[0].point is not None
     assert revised[0].point is not None
@@ -510,18 +530,18 @@ def test_training_stream_projects_latest_points_without_revision_hashes_or_tempo
 
 
 def test_month_partition_batch_preserves_a_to_b_to_a_snapshot_replay(tmp_path: Path) -> None:
-    repository = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9)
-    repository.initialize()
+    index = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9)
+    index.initialize()
     day = date(2026, 9, 10)
     original = _revision(day, 1, 10.0)
     revised = _revision(day, 2, 11.0)
     reverted = _revision(day, 3, 10.0)
 
-    repository.save_revisions((original, revised, reverted))
+    index.save_revisions((original, revised, reverted))
 
-    assert repository.read_day(day, snapshot_sequence=1) == (original,)
-    assert repository.read_day(day, snapshot_sequence=2) == (revised,)
-    assert repository.read_day(day, snapshot_sequence=3) == (original,)
+    assert index.read_day(day, snapshot_sequence=1) == (original,)
+    assert index.read_day(day, snapshot_sequence=2) == (revised,)
+    assert index.read_day(day, snapshot_sequence=3) == (original,)
 
 
 def test_existing_month_partition_keeps_its_physical_page_size(tmp_path: Path) -> None:
@@ -540,25 +560,25 @@ def test_existing_month_partition_keeps_its_physical_page_size(tmp_path: Path) -
 
 
 def test_month_partition_rejects_backdating_conflicts_and_wrong_month(tmp_path: Path) -> None:
-    repository = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9)
-    repository.initialize()
+    index = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9)
+    index.initialize()
     original = _revision(date(2026, 9, 10), 2, 10.0)
-    repository.save_revisions((original,))
+    index.save_revisions((original,))
 
     with pytest.raises(HistoryPricePartitionConflictError, match="backdate"):
-        repository.save_revisions((replace(original, first_seen_sequence=1),))
+        index.save_revisions((replace(original, first_seen_sequence=1),))
     with pytest.raises(HistoryPricePartitionConflictError, match="sequence"):
-        repository.save_revisions((_revision(date(2026, 9, 10), 2, 11.0),))
+        index.save_revisions((_revision(date(2026, 9, 10), 2, 11.0),))
     with pytest.raises(HistoryPricePartitionConflictError, match="backdate"):
-        repository.save_revisions(
+        index.save_revisions(
             (
                 _revision(date(2026, 9, 9), 1, 9.0),
                 _revision(date(2026, 9, 10), 1, 11.0),
             )
         )
-    assert repository.read_day(date(2026, 9, 9), snapshot_sequence=1) == ()
+    assert index.read_day(date(2026, 9, 9), snapshot_sequence=1) == ()
     with pytest.raises(ValueError, match="year"):
-        repository.save_revisions((_revision(date(2027, 1, 1), 3, 12.0),))
+        index.save_revisions((_revision(date(2027, 1, 1), 3, 12.0),))
 
     empty = HistoryPricePartition(tmp_path / "ordered.sqlite3", 2026, 9)
     empty.initialize()
@@ -570,18 +590,18 @@ def test_month_partition_rejects_backdating_conflicts_and_wrong_month(tmp_path: 
 
 def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
-    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
+    index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
 
-    reference = repository.seal()
+    reference = index.seal()
 
     assert reference.relative_path == "prices_2026.sqlite3"
     assert reference.row_count == 1
     sealed_path = tmp_path / reference.relative_path
     HistoryPricePartition.verify(sealed_path, reference)
     with SqliteSession(sealed_path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
+        connection.run("UPDATE daily_price_revision SET content_hash=?", (bytes(32),))
     with pytest.raises(HistoryPricePartitionError, match="logical"):
         HistoryPricePartition.verify(sealed_path, reference)
 
@@ -591,9 +611,9 @@ def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_ren
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
-    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
+    index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
 
     monkeypatch.setattr(
         HistoryPricePartition,
@@ -601,17 +621,17 @@ def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_ren
         classmethod(lambda _cls, _path, _reference, _progress=None: pytest.fail("duplicate verification")),
     )
 
-    reference = repository.seal()
+    reference = index.seal()
 
     assert reference.row_count == 1
 
 
 def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
-    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
-    reference = repository.seal()
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
+    index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    reference = index.seal()
     calls: list[int] = []
     monkeypatch.setattr(
         partition_module.os,
@@ -622,7 +642,7 @@ def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, mon
     HistoryPricePartition.verify(tmp_path / reference.relative_path, reference)
 
     assert not calls  # Verification reads logical SQLite rows, not the entire file.
-    with closing(repository._read_connection()) as connection:
+    with closing(index._read_connection()) as connection:
         assert tuple(connection.run("PRAGMA cache_size").fetchone()) == (-8192,)
         assert tuple(connection.run("PRAGMA mmap_size").fetchone()) == (0,)
         assert tuple(connection.run("PRAGMA temp_store").fetchone()) == (1,)
@@ -630,11 +650,11 @@ def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, mon
 
 def test_month_partition_rejects_invalid_payload_and_changed_observation(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    repository = HistoryPricePartition(path, 2026, 9)
-    repository.initialize()
-    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
-    reference = repository.seal()
+    index = HistoryPricePartition(path, 2026, 9)
+    index.initialize()
+    index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    reference = index.seal()
     with SqliteSession(path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE daily_records SET qfq_close=999")
+        connection.run("UPDATE daily_price_revision SET qfq_close=999")
     with pytest.raises(HistoryPricePartitionError):
         HistoryPricePartition.verify(path, reference)

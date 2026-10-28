@@ -6,9 +6,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistorySecurityIdentity,
+    HistorySnapshot,
     HistorySnapshotPartition,
     HistorySourceIdentity,
     HistoryUniverseIdentity,
@@ -36,7 +36,7 @@ def _control_state(
         (HistorySecurityIdentity("600001", "浦发银行", "main", date(1999, 11, 10), None),),
         source.content_hash,
     )
-    snapshot = HistoryActiveSnapshot(
+    snapshot = HistorySnapshot(
         1,
         date(2026, 9, 10),
         date(2026, 9, 10),
@@ -63,14 +63,14 @@ def _control_state(
 
 
 def test_due_projection_uses_only_persisted_state_and_tracks_daily_reminder_phase() -> None:
-    pending = DeriveTrainingReminderStatus(_control_state(), NOW, archive_root=Path("data/market/history"))
+    pending = DeriveTrainingReminderStatus(_control_state(), NOW, history_root=Path("data/market/history"))
     claim = TrainingReminderClaim("due-20260910", NOW.date(), NOW)
     claimed = DeriveTrainingReminderStatus(
-        _control_state(claims=(claim,)), NOW, archive_root=Path("data/market/history")
+        _control_state(claims=(claim,)), NOW, history_root=Path("data/market/history")
     )
     reminder = TrainingReminderState("due-20260910", NOW.date(), "sent", NOW, None)
     sent = DeriveTrainingReminderStatus(
-        _control_state(claims=(claim,), reminders=(reminder,)), NOW, archive_root=Path("data/market/history")
+        _control_state(claims=(claim,), reminders=(reminder,)), NOW, history_root=Path("data/market/history")
     )
 
     assert pending.training_due is True
@@ -88,7 +88,7 @@ def test_unresolved_due_becomes_pending_again_on_the_next_shanghai_date() -> Non
     status = DeriveTrainingReminderStatus(
         _control_state(claims=(claim,), reminders=(reminder,)),
         NOW.replace(day=11),
-        archive_root=Path("data/market/history"),
+        history_root=Path("data/market/history"),
     )
 
     assert status.reminder_date == date(2026, 9, 11)
@@ -104,7 +104,7 @@ def test_changed_training_contract_remains_visible_as_a_pending_reminder() -> No
         matured_label_days_since_training=1,
     )
     status = DeriveTrainingReminderStatus(
-        replace(control, due_states=(due,)), NOW, archive_root=Path("data/market/history")
+        replace(control, due_states=(due,)), NOW, history_root=Path("data/market/history")
     )
 
     assert status.state == "ready"
@@ -115,7 +115,7 @@ def test_changed_training_contract_remains_visible_as_a_pending_reminder() -> No
 
 
 def test_missing_control_state_fails_closed_without_fabricating_due_count() -> None:
-    status = DeriveTrainingReminderStatus(None, NOW, archive_root=Path("data/market/history"))
+    status = DeriveTrainingReminderStatus(None, NOW, history_root=Path("data/market/history"))
 
     assert status.state == "data_incomplete"
     assert status.reason == "history_control_unavailable"

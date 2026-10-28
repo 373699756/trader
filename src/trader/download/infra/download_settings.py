@@ -53,7 +53,7 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
     if windows != QFQ_WINDOWS:
         raise ConfigurationError("online qfq windows must match the active feature contracts")
     return HistorySyncConfiguration(
-        archive_root=paths.history,
+        history_root=paths.history,
         reference_root=paths.reference,
         sessions=Integer(history, "requested_sessions", minimum=1, maximum=2000),
         reread_sessions=Integer(history, "reread_sessions", minimum=1),

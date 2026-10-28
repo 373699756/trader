@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from tests.component.test_candidate_history_tail import NOW, _Archive
+from tests.component.test_candidate_history_tail import NOW, HistoryInput
 from tests.unit.infra.test_shared_history_projection import _cache
 
 
@@ -13,7 +13,7 @@ from tests.unit.infra.test_shared_history_projection import _cache
 def test_v5_eligibility_uses_sixty_one_completed_days_with_either_history_cutoff(
     completed_sessions, includes_signal_day
 ):
-    source = _Archive(62, 0, ("600001",))
+    source = HistoryInput(62, 0, ("600001",))
     listed_on = source.current.calendar_dates[-completed_sessions]
     source.current = replace(source.current, listing_intervals=(("600001", listed_on, None),))
     if includes_signal_day:
@@ -39,7 +39,7 @@ def test_v5_eligibility_uses_sixty_one_completed_days_with_either_history_cutoff
 
 
 def test_v3_completed_history_minimum_does_not_change_for_v5_read_window():
-    source = _Archive(61, 0, ("600001",))
+    source = HistoryInput(61, 0, ("600001",))
     source.current = replace(source.current, listing_intervals=(("600001", source.current.calendar_dates[-60], None),))
     cache = _cache(source, 61)
     cache.initialize(cancelled=lambda: False)

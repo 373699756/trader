@@ -387,7 +387,7 @@ def test_completed_result_keeps_machine_json_out_of_the_progress_stream(capsys) 
     completed = HistoryMaintenanceStatus(
         "completed",
         None,
-        completed.archive_root,
+        completed.history_root,
         completed.selected_baseline_source,
         None,
         "a" * 64,

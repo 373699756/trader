@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from trader.download.infra.history_revision_codec import RevisionFromColumns
 from trader.download.infra.price_columns import PRICE_COLUMNS
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash
 from trader.infra.sqlite_connection import SqliteConnection
 
 
@@ -23,7 +24,7 @@ def CalculateHistoryProof(
     sequence: int,
     *,
     validate_payloads: bool,
-    dates: tuple[str, str],
+    dates: tuple[int, int],
     heartbeat: Callable[[int], None] = lambda count: None,
     check: Callable[[], None] | None = None,
 ) -> HistoryLogicalProof:
@@ -33,9 +34,9 @@ def CalculateHistoryProof(
         "SELECT r.trade_date,r.code,r.revision_id,r.first_seen_sequence,r.board"
         + payload
         + ",r.content_hash"
-        + " FROM daily_records r INDEXED BY sqlite_autoindex_daily_records_1 "
+        + " FROM daily_price_revision r INDEXED BY sqlite_autoindex_daily_price_revision_1 "
         "WHERE r.trade_date>=? AND r.trade_date<? AND r.revision_id=(SELECT i.revision_id "
-        "FROM daily_observations i INDEXED BY sqlite_autoindex_daily_observations_1 "
+        "FROM daily_price_observation i INDEXED BY sqlite_autoindex_daily_price_observation_1 "
         "WHERE i.trade_date=r.trade_date AND i.code=r.code AND i.sync_sequence<=? "
         "ORDER BY i.sync_sequence DESC LIMIT 1) ORDER BY r.trade_date,r.code",
         (*dates, sequence),
@@ -46,7 +47,7 @@ def CalculateHistoryProof(
     for row in rows:
         if validate_payloads:
             RevisionFromColumns(tuple(row))
-        digest.update(encoder.encode((*row[:5], row[-1])).encode("ascii"))
+        digest.update(encoder.encode((DecodeDate(row[0]).isoformat(), *row[1:5], DecodeHash(row[-1]))).encode("ascii"))
         digest.update(b"\n")
         count += 1
         if count % 4096 == 0:

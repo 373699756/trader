@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
-from trader.infra.dated_query_cache import SQLiteDatedQueryCache
+from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
 
 _LOGGER = logging.getLogger(__name__)
 _CONTRACT = "baostock_dated_industry_queries"
@@ -24,10 +24,10 @@ class HistoryIndustryQueryCache:
     def prepare(self, source: str, dates: tuple[date, ...]) -> None:
         if not source or not dates or len(dates) > 64 or len(set(dates)) != len(dates):
             raise ValueError("industry_cache_dates_invalid")
-        SQLiteDatedQueryCache(self.path, _CONTRACT).prepare()
+        SQLiteIndustryQueryIndex(self.path, _CONTRACT).prepare()
 
     def read(self, source: str, day: date, as_of: date) -> tuple[BaoStockIndustryInterval, ...] | None:
-        query = SQLiteDatedQueryCache(self.path, _CONTRACT).read(day, as_of, source=source)
+        query = SQLiteIndustryQueryIndex(self.path, _CONTRACT).read(day, as_of, source=source)
         if query is None:
             return None
         try:
@@ -47,7 +47,7 @@ class HistoryIndustryQueryCache:
         _decode(payload, day)
         if as_of < day:
             raise ValueError("industry_cache_observation_invalid")
-        SQLiteDatedQueryCache(self.path, _CONTRACT).save(source, day, as_of, payload)
+        SQLiteIndustryQueryIndex(self.path, _CONTRACT).save(source, day, as_of, payload)
 
 
 def _decode(payload: str, day: date) -> tuple[BaoStockIndustryInterval, ...]:

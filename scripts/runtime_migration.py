@@ -9,10 +9,7 @@ import shutil
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal, cast
 
-from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.infra.history_reference_codec import WriteStEvidence
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     SqliteConnection,
@@ -192,24 +189,6 @@ def _verified_payload(root: Path, row: sqlite3.Row) -> bytes:
     return payload
 
 
-def ImportSt(source: Path, target: Path) -> None:
-    if not source.is_file():
-        return
-    raw = json.loads(source.read_text())
-    if not isinstance(raw, dict):
-        raise ValueError("migration_st_invalid")
-    evidence: list[HistoryStEvidence] = []
-    for code, value in raw.items():
-        if not isinstance(value, list) or len(value) != 2 or value[1] not in ("clear", "unknown", "ever_st"):
-            raise ValueError("migration_st_row_invalid")
-        evidence.append(
-            HistoryStEvidence(
-                code, date.fromisoformat(value[0]), cast(Literal["clear", "unknown", "ever_st"], value[1])
-            )
-        )
-    WriteStEvidence(target, tuple(evidence))
-
-
 def ImportSequence(source: Path, target: Path) -> None:
     if not source.is_file():
         return
@@ -256,7 +235,6 @@ __all__ = [
     "ValidateDatabase",
     "MergeDatabase",
     "ImportDecisions",
-    "ImportSt",
     "ImportSequence",
     "ImportTraces",
 ]

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.download.domain.history_control import HistoryActiveSnapshot
+from trader.download.domain.history_control import HistorySnapshot
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.training.domain.training_due import TrainingDueReason, TrainingDueState
 
@@ -74,7 +74,7 @@ class TrainingReminderState:
 class TrainingMaintenanceState:
     """Bounded persisted state required by unattended synchronization status."""
 
-    active_snapshot: HistoryActiveSnapshot | None
+    published_snapshot: HistorySnapshot | None
     due_states: tuple[TrainingDueState, ...]
     reminders: tuple[TrainingReminderState, ...]
     reminder_claims: tuple[TrainingReminderClaim, ...]
@@ -108,8 +108,8 @@ TrainingReminderPhase = Literal["not_due", "pending", "claimed", "sent", "notifi
 class TrainingReminderStatus:
     state: TrainingReminderStatusState
     reason: str | None
-    archive_root: Path
-    active_snapshot_hash: str | None
+    history_root: Path
+    snapshot_hash: str | None
     data_cutoff: date | None
     label_cutoff: date | None
     due_identity: str | None
@@ -141,7 +141,7 @@ def DeriveTrainingReminderStatus(
     control: TrainingMaintenanceState | None,
     observed_at: datetime,
     *,
-    archive_root: Path,
+    history_root: Path,
 ) -> TrainingReminderStatus:
     """Project the already-persisted due/reminder state without recalculation."""
 
@@ -149,17 +149,17 @@ def DeriveTrainingReminderStatus(
         raise ValueError("history automation observation must use Asia/Shanghai")
     reminder_date = observed_at.date()
     if control is None:
-        return _incomplete_status(archive_root, reminder_date, "history_control_unavailable")
-    if control.active_snapshot is None:
-        return _incomplete_status(archive_root, reminder_date, "history_snapshot_unavailable")
-    active = control.active_snapshot
-    matching = tuple(item for item in control.due_states if item.current_label_cutoff == active.label_cutoff)
+        return _incomplete_status(history_root, reminder_date, "history_control_unavailable")
+    if control.published_snapshot is None:
+        return _incomplete_status(history_root, reminder_date, "history_snapshot_unavailable")
+    current_snapshot = control.published_snapshot
+    matching = tuple(item for item in control.due_states if item.current_label_cutoff == current_snapshot.label_cutoff)
     if not matching:
         return _incomplete_status(
-            archive_root,
+            history_root,
             reminder_date,
             "history_due_state_unavailable",
-            active,
+            current_snapshot,
         )
     due = max(matching, key=lambda item: (item.observed_at, item.due_identity))
     reminder = next(
@@ -189,10 +189,10 @@ def DeriveTrainingReminderStatus(
     return TrainingReminderStatus(
         "data_incomplete" if due.reason == "data_incomplete" else "ready",
         "history_data_incomplete" if due.reason == "data_incomplete" else None,
-        archive_root,
-        active.content_hash,
-        active.data_cutoff,
-        active.label_cutoff,
+        history_root,
+        current_snapshot.content_hash,
+        current_snapshot.data_cutoff,
+        current_snapshot.label_cutoff,
         due.due_identity,
         due.matured_label_days_since_training,
         due.training_due,
@@ -205,18 +205,18 @@ def DeriveTrainingReminderStatus(
 
 
 def _incomplete_status(
-    archive_root: Path,
+    history_root: Path,
     reminder_date: date,
     reason: str,
-    active: HistoryActiveSnapshot | None = None,
+    current_snapshot: HistorySnapshot | None = None,
 ) -> TrainingReminderStatus:
     return TrainingReminderStatus(
         "data_incomplete",
         reason,
-        archive_root,
-        active.content_hash if active is not None else None,
-        active.data_cutoff if active is not None else None,
-        active.label_cutoff if active is not None else None,
+        history_root,
+        current_snapshot.content_hash if current_snapshot is not None else None,
+        current_snapshot.data_cutoff if current_snapshot is not None else None,
+        current_snapshot.label_cutoff if current_snapshot is not None else None,
         None,
         0,
         False,

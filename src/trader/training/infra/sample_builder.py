@@ -56,10 +56,10 @@ class TrainingHistorySource(Protocol):
 
 @dataclass(frozen=True)
 class TrainingSampleBuildRequest:
-    archive: TrainingHistorySource
+    history: TrainingHistorySource
     codes: tuple[str, ...]
     window: TomorrowTrainingWindow
-    repository: SQLiteTrainingSampleIndex
+    index: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
     progress: TomorrowTrainingProgressPort | None = None
 
@@ -92,7 +92,7 @@ class _RollingCodeState:
 
 @dataclass
 class _SampleBuildState:
-    repository: SQLiteTrainingSampleIndex
+    index: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
     progress: TomorrowTrainingProgressPort | None
     total_rows: int
@@ -184,7 +184,7 @@ class _SampleBuildState:
     def flush_matured(self, last_position: int, *, all_days: bool = False) -> None:
         while self.pending_days and (all_days or last_position - self.pending_days[0].calendar_position >= 5):
             pending = self.pending_days.pop(0)
-            self.repository.record_day(
+            self.index.record_day(
                 pending.trade_date,
                 len(pending.samples),
                 tuple(
@@ -196,7 +196,7 @@ class _SampleBuildState:
             self.missing_labels += len(pending.samples) - len(finalized)
             self.missing_t1 += len(pending.samples) - sum(item.targets[0] is not None for item in finalized)
             self.missing_d25 += len(pending.samples) - sum(item.targets[-1] is not None for item in finalized)
-            self.repository.add_final(finalized)
+            self.index.add_final(finalized)
             self.converted_samples += len(finalized)
             _publish(
                 self.progress,
@@ -220,14 +220,14 @@ def BuildTrainingSamples(
     _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows))
     _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows))
 
-    read_dates = AlignmentReadDates(request.archive.snapshot.calendar.open_dates, request.window.readable_dates)
+    read_dates = AlignmentReadDates(request.history.snapshot.calendar.open_dates, request.window.readable_dates)
     rows = (
         aligned_rows
         if aligned_rows is not None
         else AlignTrainingRows(
-            request.archive.iter_training_rows(read_dates, state.report_scanned),
+            request.history.iter_training_rows(read_dates, state.report_scanned),
             tuple(sorted(read_dates)),
-            request.archive.snapshot.listing_intervals,
+            request.history.snapshot.listing_intervals,
         )
     )
     for row in rows:
@@ -242,12 +242,12 @@ def BuildTrainingSamples(
 
 
 def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
-    calendar = request.archive.snapshot.calendar.open_dates
+    calendar = request.history.snapshot.calendar.open_dates
     return _SampleBuildState(
-        request.repository,
+        request.index,
         request.profile,
         request.progress,
-        request.archive.training_row_upper_bound(AlignmentReadDates(calendar, request.window.readable_dates)),
+        request.history.training_row_upper_bound(AlignmentReadDates(calendar, request.window.readable_dates)),
         {day: position for position, day in enumerate(calendar)},
         request.window.readable_dates,
         frozenset(request.codes),
@@ -288,7 +288,7 @@ def _complete_sample_state(state: _SampleBuildState, request: TrainingSampleBuil
         ),
     )
     _publish(request.progress, TomorrowTrainingProgress("sample_index", "started", 0, 1))
-    request.repository.prepare_for_model_fitting(request.window.split)
+    request.index.prepare_for_model_fitting(request.window.split)
     _publish(request.progress, TomorrowTrainingProgress("sample_index", "completed", 1, 1))
 
 

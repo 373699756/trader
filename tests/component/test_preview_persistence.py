@@ -54,11 +54,11 @@ def test_preview_research_trace_rejects_before_initialization_or_audit_materiali
     event = BuildDecisionCommitted(preview_decision())
     if not with_projection:
         event = replace(event, projection=None)
-    archive_root = tmp_path / "archive"
-    archive = SQLiteResearchTraceIndex(archive_root)
+    history_root = tmp_path / "history"
+    history = SQLiteResearchTraceIndex(history_root)
     with pytest.raises(ValueError, match="preview"):
-        archive.record(DecisionObservation(event, None))
-    assert not archive_root.exists()
+        history.record(DecisionObservation(event, None))
+    assert not history_root.exists()
 
 
 def test_preview_freeze_and_restore_do_not_read_or_write_formal_storage(tmp_path) -> None:

@@ -94,7 +94,7 @@ def build_shadow_report(root: Path) -> dict[str, object]:
         "status": "degraded",
         "production_eligible": False,
         "production_eligibility_reason": "no_verified_adjustment_factor_or_corporate_action_source",
-        "active_snapshot": {
+        "published_snapshot": {
             "sequence": archive.snapshot.sequence,
             "content_hash": archive.snapshot.content_hash,
             "data_cutoff": cutoff.isoformat(),

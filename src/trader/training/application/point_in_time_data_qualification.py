@@ -1,4 +1,4 @@
-"""Assemble current archive and source evidence into one qualification report."""
+"""Assemble current history and source evidence into one qualification report."""
 
 from __future__ import annotations
 
@@ -34,35 +34,35 @@ class QualifyPointInTimeData:
         self._probe = probe
 
     def execute(self, *, code: str, historical_anchor_date: date) -> PointInTimeDataQualificationReport:
-        archive = self._history()
+        history = self._history()
         industry = self._industry.audit(required_sample_codes=300, tushare_access_points=0)
         sources = self._probe.run(code=code, historical_anchor_date=historical_anchor_date)
-        return AssemblePointInTimeDataQualification(archive, sources, industry)
+        return AssemblePointInTimeDataQualification(history, sources, industry)
 
 
 def AssemblePointInTimeDataQualification(
-    archive: HistorySnapshotStatus,
+    history: HistorySnapshotStatus,
     source_capability: H1CapabilityAuditReport,
     industry_report: HistoricalIndustryDatasetReport,
 ) -> PointInTimeDataQualificationReport:
     daily_reasons: list[str] = []
-    if archive.calendar_sessions != 2000:
+    if history.calendar_sessions != 2000:
         daily_reasons.append("daily_archive_sessions_below_2000")
-    if archive.state != "active":
+    if history.state != "published":
         daily_reasons.append("daily_archive_coverage_incomplete")
-    if archive.active_snapshot_hash is None:
+    if history.snapshot_hash is None:
         daily_reasons.append("daily_archive_manifest_missing")
-    if archive.universe_count == 0:
+    if history.universe_count == 0:
         daily_reasons.append("daily_archive_code_coverage_incomplete")
-    completed_codes = archive.universe_count if archive.state == "active" else 0
+    completed_codes = history.universe_count if history.state == "published" else 0
     coverage_status = "coverage_ready" if not daily_reasons else "historical_data_insufficient"
     daily = DailyHistoryQualification(
-        archive.calendar_sessions,
-        archive.universe_count,
+        history.calendar_sessions,
+        history.universe_count,
         completed_codes,
         0,
         coverage_status,
-        archive.active_snapshot_hash or "",
+        history.snapshot_hash or "",
         "qualified" if not daily_reasons else "historical_data_insufficient",
         tuple(daily_reasons),
     )

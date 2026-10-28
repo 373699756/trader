@@ -168,7 +168,7 @@ class HistorySnapshotPartition:
 
 
 @dataclass(frozen=True)
-class HistoryActiveSnapshot:
+class HistorySnapshot:
     sequence: int
     data_cutoff: date
     label_cutoff: date
@@ -194,7 +194,7 @@ class HistoryActiveSnapshot:
             or len(set(months)) != len(months)
             or any(item.sequence > self.sequence for item in partitions)
         ):
-            raise ValueError("history active snapshot is invalid")
+            raise ValueError("history published snapshot is invalid")
         object.__setattr__(self, "partitions", partitions)
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
@@ -237,9 +237,9 @@ class HistoryDiskRequirement:
 
 @dataclass(frozen=True, slots=True)
 class HistoryPublishedControlState:
-    """Only the active publication and its immutable parent identities."""
+    """Only the published snapshot and its immutable parent identities."""
 
-    snapshot: HistoryActiveSnapshot
+    snapshot: HistorySnapshot
     source: HistorySourceIdentity
     calendar: HistoryCalendarIdentity
     universe: HistoryUniverseIdentity
@@ -263,8 +263,8 @@ class HistoryControlState:
     calendars: tuple[HistoryCalendarIdentity, ...]
     universes: tuple[HistoryUniverseIdentity, ...]
     checkpoints: tuple[HistorySyncCheckpoint, ...]
-    snapshots: tuple[HistoryActiveSnapshot, ...]
-    active_snapshot_hash: str | None
+    snapshots: tuple[HistorySnapshot, ...]
+    snapshot_hash: str | None
 
     def __post_init__(self) -> None:
         sources = tuple(sorted(self.sources, key=lambda item: item.content_hash))
@@ -272,11 +272,11 @@ class HistoryControlState:
         universes = tuple(sorted(self.universes, key=lambda item: item.content_hash))
         checkpoints = tuple(sorted(self.checkpoints, key=lambda item: (item.sync_identity, item.ordinal)))
         snapshots = tuple(sorted(self.snapshots, key=lambda item: item.sequence))
-        if self.active_snapshot_hash is not None:
-            _require_hash(self.active_snapshot_hash, "active snapshot")
-        active = next((item for item in snapshots if item.content_hash == self.active_snapshot_hash), None)
-        if self.active_snapshot_hash is not None and active is None:
-            raise ValueError("history active snapshot identity is invalid")
+        if self.snapshot_hash is not None:
+            _require_hash(self.snapshot_hash, "published snapshot")
+        current_snapshot = next((item for item in snapshots if item.content_hash == self.snapshot_hash), None)
+        if self.snapshot_hash is not None and current_snapshot is None:
+            raise ValueError("history published snapshot identity is invalid")
         for values, identities in (
             (sources, tuple(item.content_hash for item in sources)),
             (calendars, tuple(item.content_hash for item in calendars)),
@@ -307,12 +307,12 @@ class HistoryControlState:
         object.__setattr__(self, "snapshots", snapshots)
 
     @property
-    def active_snapshot(self) -> HistoryActiveSnapshot | None:
-        return next((item for item in self.snapshots if item.content_hash == self.active_snapshot_hash), None)
+    def published_snapshot(self) -> HistorySnapshot | None:
+        return next((item for item in self.snapshots if item.content_hash == self.snapshot_hash), None)
 
 
 __all__ = [
-    "HistoryActiveSnapshot",
+    "HistorySnapshot",
     "HistoryCalendarIdentity",
     "HistoryControlState",
     "HistoryPublishedControlState",

@@ -21,8 +21,9 @@ from tests.component.market_data_test_support import (
     _service,
     _tail_minute_bars,
 )
+from tests.component.test_candidate_history_tail import NOW, HistoryInput
 from tests.component.test_company_startup import _AT, _DATES, _Reader, _snapshot
-from tests.component.test_published_input_preloader import NOW, _Archive, _cache
+from tests.component.test_published_input_preloader import _cache
 from tests.contract.test_cold_start import _empty_config
 from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -104,7 +105,7 @@ def test_company_preload_is_single_and_waits_for_the_complete_publication():
 
 
 def test_daily_inputs_bind_references_company_model_and_config_without_reloading():
-    source = _Archive(61, 1, ("600001",))
+    source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     history.initialize(cancelled=lambda: False)
     loaded = history.loaded_identity
@@ -124,7 +125,7 @@ def test_daily_inputs_bind_references_company_model_and_config_without_reloading
     bars = history.cached(("600001",))
     assert history.summaries(bars, NOW)
     for key in versions:
-        changed = _cache(_Archive(61, 1, ("600001",)))
+        changed = _cache(HistoryInput(61, 1, ("600001",)))
         changed.initialize(cancelled=lambda: False)
         changed.bind_inputs(NOW, versions={**versions, key: f"other-{key}"}, config_version="config")
         assert changed.input_identity != first
@@ -138,7 +139,7 @@ def test_history_binding_capacity_failure_keeps_all_resident_bytes_and_blocks_sc
         return len(reservations) == 1
 
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(_Archive(61, 1, ("600001",))),
+        ReadPublishedHistoryUseCase(HistoryInput(61, 1, ("600001",))),
         lookback_sessions=61,
         monotonic=time.monotonic,
         reserve_bytes=reserve,

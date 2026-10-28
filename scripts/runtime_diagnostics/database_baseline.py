@@ -36,7 +36,7 @@ from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
-from trader.download.infra.reference_publication import ReferencePublication
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.storage_types import StorageKind
@@ -113,7 +113,8 @@ class _SyncFixture:
     def prepare(self) -> PreparedReference:
         def publish() -> PreparedReference:
             self.preparations += 1
-            ReferencePublication(self.paths.reference).publish(self.reference)
+            SQLiteReferenceIndex(self.paths.reference_database).publish(self.reference, self.reference.st_evidence)
+            self.supplier.reference_id = self.reference.identity
             return self.reference
 
         return self._measure("prepare", publish)
@@ -213,7 +214,7 @@ class _SyncFixture:
         }
 
     def startup(self) -> _Startup:
-        publication = ReferencePublication(self.paths.reference)
+        publication = SQLiteReferenceIndex(self.paths.reference_database)
         references = PublishedReferences(publication.read, publication.identity, lambda _now: (), max_age_seconds=86400)
         self._measure("startup_reference", references.initialize)
         history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history))
@@ -394,7 +395,7 @@ def _run_worker(checkout: Path, size: int, sessions: int, storage_kind: StorageK
             "--expected-product-root",
             str(checkout),
         ],
-        cwd=PROJECT_ROOT,
+        cwd=checkout,
         env={**os.environ, "PYTHONPATH": str(checkout / "src"), "PYTHONHASHSEED": "0"},
         capture_output=True,
         text=True,

@@ -36,10 +36,10 @@ class HistoryPriceGapSummary:
 class HistoryMaintenanceStatus:
     state: HistoryMaintenanceState
     reason: str | None
-    archive_root: Path
+    history_root: Path
     selected_baseline_source: str
     efficient_daily_source: str | None
-    active_snapshot_hash: str | None
+    snapshot_hash: str | None
     data_cutoff: date | None
     label_cutoff: date | None
     unresolved_price_cells: int = 0
@@ -51,7 +51,7 @@ class HistoryMaintenanceStatus:
 
     @property
     def published(self) -> bool:
-        return self.state in {"completed", "already_current"} and self.active_snapshot_hash is not None
+        return self.state in {"completed", "already_current"} and self.snapshot_hash is not None
 
     @property
     def needs_retry(self) -> bool:

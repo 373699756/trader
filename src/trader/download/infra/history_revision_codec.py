@@ -10,6 +10,7 @@ from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryCell, PublishedHistorySide
 from trader.download.infra.price_columns import PriceCellFromColumns, PriceColumnValues, PriceValues
 from trader.infra.serialization.canonical_codec import CanonicalJsonText, CanonicalValue
+from trader.infra.sqlite_codec import DecodeHash
 
 
 def RevisionColumnValues(value: HistoryRevision) -> PriceValues:
@@ -65,18 +66,19 @@ def _side_payload(side: PublishedHistorySide | None) -> CanonicalValue:
 
 
 def _columns(row: tuple[object, ...]) -> tuple[PublishedHistoryCell, int, BaoStockBoard, str, str]:
-    if len(row) != 29:
+    if len(row) != 30:
         raise ValueError("history_revision_column_count_invalid")
     day, code, revision_id, sequence, board = row[:5]
     if (
-        not all(isinstance(value, str) for value in (day, code, revision_id, board, row[-1]))
+        not all(isinstance(value, str) for value in (code, revision_id, board))
+        or type(day) is not int
         or type(sequence) is not int
         or sequence < 1
         or board not in {"main", "chinext", "star"}
     ):
         raise ValueError("history_revision_fields_invalid")
-    prices = PriceCellFromColumns(cast(str, code), cast(str, day), cast(PriceValues, row[5:-1]))
-    return prices, sequence, board, cast(str, revision_id), cast(str, row[-1])
+    prices = PriceCellFromColumns(cast(str, code), day, cast(PriceValues, row[5:-1]))
+    return prices, sequence, board, cast(str, revision_id), DecodeHash(row[-1])
 
 
 def _side(value: PublishedHistorySide | None) -> BaoStockDailySide | None:

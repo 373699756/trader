@@ -1,4 +1,4 @@
-"""Read-only physical layout summary for the active monthly history SQLite databases."""
+"""Read-only physical layout summary for the published monthly history SQLite databases."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from itertools import islice
 from pathlib import Path
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_control import HistorySnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
@@ -30,6 +30,7 @@ from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
@@ -205,7 +206,7 @@ def _measure_preload(root: Path) -> int:
         for name, value in sorted(stats.func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:25]
     ]
     states = [profile.status() for profile in profiles]
-    passed = all(state.state == "active" for state in states)
+    passed = all(state.state == "published" for state in states)
     emit_report(
         {
             "schema_version": "history_sqlite_performance",
@@ -321,16 +322,16 @@ def inspect_history_space(root: Path) -> dict[str, object]:
 
 def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalSummary:
     state = HistoryControlIndex(root / "catalog.sqlite3").load_state()
-    active = state.active_snapshot
-    if active is None:
-        raise RuntimeError("history SQLite has no active snapshot")
+    current_snapshot = state.published_snapshot
+    if current_snapshot is None:
+        raise RuntimeError("history SQLite has no published snapshot")
     total_bytes = 0
     page_count = 0
     free_pages = 0
     overflow_bytes = 0
     index_bytes = 0
     page_sizes: set[int] = set()
-    physical_paths = tuple(sorted({item.relative_path for item in active.partitions}))
+    physical_paths = tuple(sorted({item.relative_path for item in current_snapshot.partitions}))
     sampled = _sampled_positions(len(physical_paths), page_sample_count)
     for position, relative_path in enumerate(physical_paths):
         path = root / relative_path
@@ -374,16 +375,18 @@ def inspect_history_sqlite_performance(
     revision_write_sample_count: int = 512,
 ) -> _HistorySQLitePerformanceReport:
     control = HistoryControlIndex(root / "catalog.sqlite3").load_state()
-    active = control.active_snapshot
-    if active is None:
-        raise RuntimeError("history SQLite has no active snapshot")
-    calendar_identity = next((item for item in control.calendars if item.content_hash == active.calendar_hash), None)
+    current_snapshot = control.published_snapshot
+    if current_snapshot is None:
+        raise RuntimeError("history SQLite has no published snapshot")
+    calendar_identity = next(
+        (item for item in control.calendars if item.content_hash == current_snapshot.calendar_hash), None
+    )
     if calendar_identity is None:
         raise RuntimeError("history SQLite calendar is unavailable")
     physical = inspect_history_sqlite(root, page_sample_count)
     queries, sample = _measure_queries(
         root,
-        active,
+        current_snapshot,
         calendar_identity.open_dates,
         query_rounds,
         revision_write_sample_count,
@@ -394,29 +397,29 @@ def inspect_history_sqlite_performance(
 
 def _measure_queries(
     root: Path,
-    active: HistoryActiveSnapshot,
+    current_snapshot: HistorySnapshot,
     open_dates: tuple[date, ...],
     rounds: int,
     revision_sample_count: int,
 ) -> tuple[tuple[_QueryMeasurement, ...], tuple[HistoryRevision, ...]]:
-    reference = active.partitions[-1]
-    path, repository = _partition_repository(root, reference)
+    reference = current_snapshot.partitions[-1]
+    path, partition = _price_partition(root, reference)
     year, month = _partition_identity(reference)
     month_start = date(year, month, 1)
-    month_end = min(active.data_cutoff, date(year, month, calendar.monthrange(year, month)[1]))
+    month_end = min(current_snapshot.data_cutoff, date(year, month, calendar.monthrange(year, month)[1]))
     with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
         seed = connection.run(
-            "SELECT trade_date, code, board FROM daily_records ORDER BY trade_date DESC, code LIMIT 1"
+            "SELECT trade_date, code, board FROM daily_price_revision ORDER BY trade_date DESC, code LIMIT 1"
         ).fetchone()
     if seed is None:
         raise RuntimeError("history SQLite query sample is empty")
-    sample_day, code, board = date.fromisoformat(str(seed[0])), str(seed[1]), str(seed[2])
+    sample_day, code, board = DecodeDate(seed[0]), str(seed[1]), str(seed[2])
     code_dates = tuple(day for day in open_dates if day <= sample_day)[-61:]
     if len(code_dates) != 61:
         raise RuntimeError("history SQLite code query window is unavailable")
     code_paths = tuple(
         root / item.relative_path
-        for item in active.partitions
+        for item in current_snapshot.partitions
         if code_dates[0] <= _partition_end(item) and _partition_start(item) <= code_dates[-1]
     )
     trace: list[str] = []
@@ -430,36 +433,50 @@ def _measure_queries(
         (
             "startup_month_by_code",
             lambda: sum(
-                1 for _ in repository.iter_range_by_code(month_start, month_end, snapshot_sequence=active.sequence)
+                1
+                for _ in partition.iter_range_by_code(
+                    month_start, month_end, snapshot_sequence=current_snapshot.sequence
+                )
             ),
         ),
         (
             "latest_month",
-            lambda: sum(1 for _ in repository.iter_range(month_start, month_end, snapshot_sequence=active.sequence)),
+            lambda: sum(
+                1 for _ in partition.iter_range(month_start, month_end, snapshot_sequence=current_snapshot.sequence)
+            ),
         ),
         (
             "single_code_window",
-            lambda: _count_code_window(root, active, code_dates[0], code_dates[-1], code),
+            lambda: _count_code_window(root, current_snapshot, code_dates[0], code_dates[-1], code),
         ),
         (
             "single_day_board",
-            lambda: len(repository.read_day(sample_day, snapshot_sequence=active.sequence, board=board)),
+            lambda: len(partition.read_day(sample_day, snapshot_sequence=current_snapshot.sequence, board=board)),
         ),
         (
             "training_projection",
             lambda: sum(
-                1 for _ in repository.iter_training_rows(month_start, month_end, snapshot_sequence=active.sequence)
+                1
+                for _ in partition.iter_training_rows(
+                    month_start, month_end, snapshot_sequence=current_snapshot.sequence
+                )
             ),
         ),
-        ("active_price_gaps", lambda: len(repository.missing_price_dates(active.sequence))),
+        ("published_price_gaps", lambda: len(partition.missing_price_dates(current_snapshot.sequence))),
     )
     traced_workloads: tuple[Callable[[], int], ...] = (
-        lambda: sum(1 for _ in traced.iter_range_by_code(month_start, month_end, snapshot_sequence=active.sequence)),
-        lambda: sum(1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=active.sequence)),
-        lambda: sum(1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=active.sequence, code=code)),
-        lambda: len(traced.read_day(sample_day, snapshot_sequence=active.sequence, board=board)),
-        lambda: sum(1 for _ in traced.iter_training_rows(month_start, month_end, snapshot_sequence=active.sequence)),
-        lambda: len(traced.missing_price_dates(active.sequence)),
+        lambda: sum(
+            1 for _ in traced.iter_range_by_code(month_start, month_end, snapshot_sequence=current_snapshot.sequence)
+        ),
+        lambda: sum(1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=current_snapshot.sequence)),
+        lambda: sum(
+            1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=current_snapshot.sequence, code=code)
+        ),
+        lambda: len(traced.read_day(sample_day, snapshot_sequence=current_snapshot.sequence, board=board)),
+        lambda: sum(
+            1 for _ in traced.iter_training_rows(month_start, month_end, snapshot_sequence=current_snapshot.sequence)
+        ),
+        lambda: len(traced.missing_price_dates(current_snapshot.sequence)),
     )
     measurements: list[_QueryMeasurement] = []
     for (name, workload), traced_workload in zip(workloads, traced_workloads, strict=True):
@@ -487,7 +504,7 @@ def _measure_queries(
         )
     sample = tuple(
         islice(
-            repository.iter_range(month_start, month_end, snapshot_sequence=active.sequence),
+            partition.iter_range(month_start, month_end, snapshot_sequence=current_snapshot.sequence),
             revision_sample_count,
         )
     )
@@ -527,8 +544,8 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
     statements: list[str] = []
     with tempfile.TemporaryDirectory(prefix="trader-history-write-probe-") as directory:
         path = Path(directory) / f"prices_{year:04d}.sqlite3"
-        repository = HistoryPricePartition(path, year, month)
-        repository.initialize()
+        partition = HistoryPricePartition(path, year, month)
+        partition.initialize()
         before = _database_bytes(path)
         traced = HistoryPricePartition(path, year, month, statement_trace=statements.append)
         started = time.perf_counter()
@@ -536,7 +553,7 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
         elapsed = time.perf_counter() - started
         growth = _database_bytes(path) - before
         seal_started = time.perf_counter()
-        repository.seal()
+        partition.seal()
         seal_ms = (time.perf_counter() - seal_started) * 1000.0
     statement_count = sum(not value.lstrip().upper().startswith("PRAGMA") for value in statements)
     transaction_count = sum(value.lstrip().upper().startswith("BEGIN IMMEDIATE") for value in statements)
@@ -551,7 +568,7 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
     )
 
 
-def _partition_repository(
+def _price_partition(
     root: Path,
     reference: HistorySnapshotPartition,
 ) -> tuple[Path, HistoryPricePartition]:
@@ -576,22 +593,22 @@ def _partition_end(reference: HistorySnapshotPartition) -> date:
 
 def _count_code_window(
     root: Path,
-    active: HistoryActiveSnapshot,
+    current_snapshot: HistorySnapshot,
     start: date,
     end: date,
     code: str,
 ) -> int:
     total = 0
-    for reference in active.partitions:
+    for reference in current_snapshot.partitions:
         if end < _partition_start(reference) or _partition_end(reference) < start:
             continue
-        _path, repository = _partition_repository(root, reference)
+        _path, partition = _price_partition(root, reference)
         total += sum(
             1
-            for _ in repository.iter_range(
+            for _ in partition.iter_range(
                 max(start, _partition_start(reference)),
                 min(end, _partition_end(reference)),
-                snapshot_sequence=active.sequence,
+                snapshot_sequence=current_snapshot.sequence,
                 code=code,
             )
         )

@@ -23,7 +23,7 @@ With `--baseline-checkout /absolute/isolated/checkout`, it alternates five basel
 
 `--profile company-ledger` renders the production score column and drawer using isolated V1/V2/legacy fixtures in headless Chrome. It checks actual score text, model/local separation, evidence controls and layout overflow. `TRADER_DIAGNOSTIC_CHROME` can select an installed Chrome executable. The probe does not read the active database or contact suppliers; it does not replace a live recommendation acceptance run.
 
-The isolated layout migration also leaves `company_facts` for a fresh download; it never imports legacy company evidence into the new publication schema.
+The isolated layout migration leaves company facts and market/industry references for a fresh download. It imports neither legacy company evidence nor the old ST database, reference JSON or industry-query layout. Fresh reference preparation publishes `market/reference/company_st.sqlite3`; history catalogs bind its immutable publication identities.
 
 `--profile company-resume --company-replay-directory /absolute/external/path`
 backs up `--company-evidence-database` through SQLite, then resumes the failed
@@ -328,9 +328,11 @@ competing for the same disk.
 其结果不能仅凭目录名认定为磁盘性能。活动数据目录和已存在的目标目录均被拒绝。
 
 `database-baseline`可再加`--baseline-checkout /absolute/external/baseline`做新旧对照。
-两边运行当前同一套fixture和插桩，只通过子进程`PYTHONPATH`选择产品源码，并校验实际导入位置；
+每个worker从对应checkout加载产品与同版本诊断代码，先核对固定输入的逻辑发布身份，再比较测量结果；结构升级后不能用新fixture调用旧接口，或将不同输入的结果称为对照。
+两边使用相同的固定输入与插桩口径，通过子进程工作目录和`PYTHONPATH`选择相应版本，并校验实际导入位置；
 配置和输入保持相同，新旧执行顺序每组交替。报告逐组核对历史五场景发布摘要、请求/行/缺口数量，
 以及联合/单项下载和重启输入身份，再给出耗时、语句、I/O、空间和RSS中位数及逐组胜出数。
+`history.cases`测量准备好参考输入后的历史同步；`sync.targets`的首次及同日总耗时包含公共参考准备，不能用前者替代后者的整轮成本。
 默认5组；至少一个历史场景墙钟中位数减少10%、胜出至少4组，其余场景墙钟回退不超过5%、
 RSS不超过2 GiB才标记`acceptance.accepted=true`，否则报告degraded。
 数据库大小仍记录，`database_size_within_5_percent`只作观察，不参与accepted判定。
@@ -386,9 +388,9 @@ and `.runtime/trader/`:
 
 The default profile must reflect the old unscoped runtime's actual identity.
 Conflicting duplicate identities stop the candidate. Frozen payloads/checkpoints,
-permanent eligibility, budget request histories, reserved publication coordinates,
-outcomes and valid research evidence are preserved. History, short windows, models
-and samples are declared for regeneration; old caches remain cleanup candidates.
+budget request histories, reserved publication coordinates, outcomes and valid
+research evidence are preserved. References, company facts, history, short windows,
+models and samples are declared for regeneration; old caches remain cleanup candidates.
 The source is fingerprinted before and after; failures retain staging. Active
 switching, deletion, scheduler installation and bulk downloading require separate
 authorization. The old qfq shard conversion tool has been removed.

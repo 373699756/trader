@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader  # noqa: E402
-from trader.download.infra.reference_publication import ReferencePublication  # noqa: E402
+from trader.download.infra.reference_index import SQLiteReferenceIndex  # noqa: E402
 from trader.infra.settings.loading import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings  # noqa: E402
 from trader.infra.sqlite_connection import SqliteConnectionOptions  # noqa: E402
 from trader.recommendation.domain.market.eligibility import (  # noqa: E402
@@ -172,7 +172,7 @@ def main() -> int:
     watchlist = LoadLongWatchlist(args.watchlist)
     policy = LoadStrategySettings(args.strategy).long_research
     exclusions = historical_exclusions(tuple(args.eligibility_evidence), observed_at)
-    reference = ReferencePublication(LoadRuntimeSettings(args.runtime_config).data_paths.reference).read()
+    reference = SQLiteReferenceIndex(LoadRuntimeSettings(args.runtime_config).data_paths.reference_database).read()
     open_dates = reference.open_dates if reference else ()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = tuple(

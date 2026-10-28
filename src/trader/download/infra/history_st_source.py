@@ -9,14 +9,12 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import AbstractContextManager
 from datetime import date
-from pathlib import Path
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.security_eligibility import IsStSecurityName
-from trader.download.infra.history_reference_codec import ReadStEvidence
-from trader.download.infra.history_st_merge import MergeStEvidence
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor
 
@@ -42,7 +40,7 @@ def ParseNameHistorySt(code: str, current_name: str, checked_on: date, text: str
 class HistoryStNameSource:
     def __init__(  # noqa: PLR0913 - explicit supplier and cancellation boundaries
         self,
-        path: Path,
+        index: SQLiteReferenceIndex,
         session_factory: Callable[[], AbstractContextManager[HttpTransport]],
         executor: WorkerExecutor,
         cancel_requested: Callable[[], bool],
@@ -52,7 +50,7 @@ class HistoryStNameSource:
     ) -> None:
         if batch_size < 1:
             raise ValueError("history ST worker batch size must be positive")
-        self._path = path
+        self._index = index
         self._session_factory = session_factory
         self._executor = executor
         self._cancel_requested = cancel_requested
@@ -61,7 +59,7 @@ class HistoryStNameSource:
         self._observed: tuple[HistoryStEvidence, ...] = ()
 
     def fetch(self, universe: tuple[BaoStockSecurity, ...], as_of: date) -> tuple[HistoryStEvidence, ...]:
-        self._observed = ReadStEvidence(self._path)
+        self._observed = self._index.read_st()
         evidence = {item.code: item for item in self._observed}
         for security in universe:
             previous = evidence.get(security.code)
@@ -148,9 +146,7 @@ class HistoryStNameSource:
         return len(done)
 
     def _write(self, evidence: dict[str, HistoryStEvidence]) -> None:
-        merged = MergeStEvidence(
-            self._path, tuple(sorted(evidence.values(), key=lambda item: item.code)), self._observed
-        )
+        merged = self._index.merge_st(tuple(sorted(evidence.values(), key=lambda item: item.code)), self._observed)
         self._observed = merged
         evidence.update((item.code, item) for item in merged)
 

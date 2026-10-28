@@ -14,7 +14,7 @@ from trader.training.infra.sample_builder import BuildTrainingSamples as _build_
 
 
 def BuildTrainingSamples(
-    archive: TrainingHistorySource,
+    history: TrainingHistorySource,
     codes: tuple[str, ...],
     window: TomorrowTrainingWindow,
     partition: SQLiteV3TrainingSampleIndex,
@@ -23,7 +23,7 @@ def BuildTrainingSamples(
 ) -> None:
     return _build_training_samples(
         TrainingSampleBuildRequest(
-            archive,
+            history,
             codes,
             window,
             partition,

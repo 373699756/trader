@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.history import RunHistoryFixture
 from tests.reference_fixtures import PreparedFixture
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier, _download
@@ -24,7 +25,6 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow, HistorySupplierRouter
-from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.research.historical_industry_evidence import AuditPublishedHistoricalIndustryFacts
@@ -213,7 +213,7 @@ def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) ->
     assert context.calendar.open_dates == dates
     assert context.universe == universe
     assert context.industry_intervals == ()
-    result = RunHistorySync(
+    result = RunHistoryFixture(
         HistorySyncConfiguration(
             tmp_path,
             sessions=len(dates),
@@ -259,12 +259,14 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
-    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
-    before = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
+    assert (
+        RunHistoryFixture(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
+    )
+    before = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], before)
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline = Baseline(new_dates)
-    result = RunHistorySync(
+    result = RunHistoryFixture(
         config,
         _router(baseline, Prices(shift=1.0, missing=incoming == "missing", conflict=incoming == "raw")),
         clock=lambda: _at(new_dates[-1]),
@@ -275,13 +277,13 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
         assert HistorySnapshotReader(tmp_path).read_day(dates[-1], before) == rows
         return
     assert result.state == "completed" and result.unresolved_price_cells == (2 if incoming == "missing" else 0)
-    assert state.active_snapshot != before
+    assert state.published_snapshot != before
     assert not any(code == "raw" for code, _dates in baseline.calls)
     assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
     current = HistorySnapshotReader(tmp_path)
-    assert current.read_day(dates[-1], state.active_snapshot)[0].cell == rows[0].cell
-    tail = current.read_day(new_dates[-1], state.active_snapshot)[0].cell
+    assert current.read_day(dates[-1], state.published_snapshot)[0].cell == rows[0].cell
+    tail = current.read_day(new_dates[-1], state.published_snapshot)[0].cell
     if incoming == "missing":
         assert tail.status == "qfq_missing" and tail.qfq is None
     else:
@@ -290,6 +292,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
 
 def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypatch):
     from trader.bootstrap import ExecuteHistoryDownload
+    from trader.download.infra.reference_index import SQLiteReferenceIndex
 
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     baseline = Baseline(dates)
@@ -315,6 +318,8 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         "trader.bootstrap.LoadCurrentAShareUniverse",
         lambda *_args: _current_universe("600001", "600002"),
     )
+    reference = replace(_prepared(_current_universe("600001", "600002"), dates), industry_version="fixture")
+    SQLiteReferenceIndex(tmp_path.parent / "reference" / "company_st.sqlite3").publish(reference, reference.st_evidence)
     result = ExecuteHistoryDownload(
         HistorySyncConfiguration(
             tmp_path,
@@ -323,7 +328,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
             minimum_free_bytes=0,
             reference_root=(tmp_path).parent / "reference",
         ),
-        reference=replace(_prepared(_current_universe("600001", "600002"), dates), industry_version="fixture"),
+        reference=reference,
         clock=lambda: _at(dates[-1]),
     )
     assert result.state == "completed"
@@ -331,7 +336,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
     assert supplier_settings["configuration"].supplier_retries == 2
     assert "price_policy" not in supplier_settings
-    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     assert snapshot is not None
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
     assert rows[0].is_st is False
@@ -343,14 +348,16 @@ def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
-    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
+    assert (
+        RunHistoryFixture(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
+    )
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline, prices = Baseline(new_dates), Prices()
-    result = RunHistorySync(config, _router(baseline, prices), clock=lambda: _at(new_dates[-1]))
+    result = RunHistoryFixture(config, _router(baseline, prices), clock=lambda: _at(new_dates[-1]))
     assert result.state == "completed"
     assert prices.calls == [new_dates, new_dates]
     assert baseline.calls == []
-    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     assert snapshot.sequence == 2
     assert len(HistorySnapshotReader(tmp_path).read_day(new_dates[-1], snapshot)) == 2
 
@@ -366,37 +373,37 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     )
     full = _current_universe("600001", "600002")
     assert (
-        RunHistorySync(
+        RunHistoryFixture(
             config, _router(Baseline(dates, industry="银行"), Prices(), full), clock=lambda: _at(dates[-1])
         ).state
         == "completed"
     )
 
     current = _current_universe("600001")
-    result = RunHistorySync(
+    result = RunHistoryFixture(
         config, _router(Baseline(dates, industry="银行"), Prices(), current), clock=lambda: _at(dates[-1])
     )
 
     assert result.state == "completed"
-    archive = SQLitePublishedHistorySnapshot(config.archive_root)
-    manifest = archive.manifest()
+    history = SQLitePublishedHistorySnapshot(config.history_root)
+    manifest = history.manifest()
     assert manifest is not None
     assert manifest.universe_codes == ("600001",)
-    assert tuple(window.code for window in archive.iter_windows(manifest, sessions=61)) == ("600001",)
-    assert tuple(window.code for window in archive.read_windows(manifest, ("600001", "600002"), sessions=61)) == (
+    assert tuple(window.code for window in history.iter_windows(manifest, sessions=61)) == ("600001",)
+    assert tuple(window.code for window in history.read_windows(manifest, ("600001", "600002"), sessions=61)) == (
         "600001",
     )
-    snapshot = HistoryControlIndex(config.archive_root / "catalog.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot
     assert snapshot is not None
-    assert tuple(row.code for row in HistorySnapshotReader(config.archive_root).read_day(dates[-1], snapshot)) == (
+    assert tuple(row.code for row in HistorySnapshotReader(config.history_root).read_day(dates[-1], snapshot)) == (
         "600001",
     )
-    training = SQLiteHistoryTrainingInputSnapshot.open(config.archive_root)
+    training = SQLiteHistoryTrainingInputSnapshot.open(config.history_root)
     assert training.snapshot.training_codes == ("600001",)
     training_rows = tuple(training.iter_training_rows(frozenset(dates)))
     assert len(training_rows) == len(dates)
     assert {row.code for row in training_rows} == {"600001"}
-    industry_report = AuditPublishedHistoricalIndustryFacts(config.archive_root)
+    industry_report = AuditPublishedHistoricalIndustryFacts(config.history_root)
     assert industry_report.sources[0].sampled_codes == 1
     assert len(industry_report.merged_fact_hashes) == 1
 
@@ -406,14 +413,14 @@ def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
-    assert RunHistorySync(config, Baseline(dates), clock=lambda: _at(dates[-1])).state == "completed"
+    assert RunHistoryFixture(config, Baseline(dates), clock=lambda: _at(dates[-1])).state == "completed"
 
     class Regressed(Baseline):
         def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
             context = super().load_context(as_of, sessions, universe=universe)
             return replace(context, universe=(context.universe[0],))
 
-    result = RunHistorySync(config, Regressed(dates), clock=lambda: _at(dates[-1]))
+    result = RunHistoryFixture(config, Regressed(dates), clock=lambda: _at(dates[-1]))
 
     assert result.state == "failed"
     assert result.reason == "supplier_universe_regressed"
@@ -432,7 +439,7 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
     control.initialize()
     index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
-    tasks = _download_tasks(context, control, None, index, 5)
+    tasks = _download_tasks(context, None, frozenset(), index, 5)
     assert tasks[0].dates == dates
     assert tasks[1].dates == dates[-639:]
     assert router.fetch_tencent_window(context.universe[0], dates).cells
@@ -445,11 +452,11 @@ def test_gap_longer_than_reread_window_includes_published_qfq_anchor(tmp_path):
     config = HistorySyncConfiguration(
         tmp_path, sessions=10, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
-    first = RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1]))
+    first = RunHistoryFixture(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1]))
     assert first.state == "completed"
     shifted = tuple(day + timedelta(days=6) for day in dates)
     prices = Prices()
-    result = RunHistorySync(config, _router(Baseline(shifted), prices), clock=lambda: _at(shifted[-1]))
+    result = RunHistoryFixture(config, _router(Baseline(shifted), prices), clock=lambda: _at(shifted[-1]))
     assert result.state == "completed"
     assert prices.calls == [shifted[-8:], shifted[-8:]]
 
@@ -576,8 +583,8 @@ def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
 def test_active_gap_scan_prints_the_month_before_the_query_starts(capsys):
     progress = StderrHistorySyncProgress(monotonic=lambda: 0)
 
-    progress.publish(HistorySyncProgress("history_active_gaps", "started", 88, 100, "2025-11"))
-    progress.publish(HistorySyncProgress("history_active_gaps", "completed", 89, 100, "2025-11"))
+    progress.publish(HistorySyncProgress("history_published_gaps", "started", 88, 100, "2025-11"))
+    progress.publish(HistorySyncProgress("history_published_gaps", "completed", 89, 100, "2025-11"))
 
     assert _compact_log(capsys.readouterr().err).splitlines() == [
         "00:00:00 | 活动历史缺口 | 开始 | 88/100 (88.00%) | 月份 2025-11 | 本月耗时 00:00:00",

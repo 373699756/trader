@@ -747,7 +747,7 @@ def test_research_status_projects_target_selection_separately_from_previous_rese
                     "schema_version": "research_readiness",
                     "history_archive": {
                         "state": "invalid",
-                        "active_snapshot_hash": "a" * 64,
+                        "snapshot_hash": "a" * 64,
                         "calendar_sessions": 2000,
                         "universe_count": 5453,
                         "partition_count": 100,
@@ -788,7 +788,7 @@ def test_research_status_projects_target_selection_separately_from_previous_rese
     summary = report["checks"][0]["summary"]
     assert summary["history_archive"] == {
         "state": "invalid",
-        "active_snapshot_hash": "a" * 64,
+        "snapshot_hash": "a" * 64,
         "calendar_sessions": 2000,
         "universe_count": 5453,
         "partition_count": 100,

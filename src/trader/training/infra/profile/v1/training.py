@@ -16,7 +16,7 @@ from lightgbm.basic import LightGBMError
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
-from trader.download.infra.history_partition_repack import RequireHistoryPartitionRepackInactive
+from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.resources import TrainingMemoryAdmission
@@ -89,7 +89,7 @@ def InspectV1Training(
         pair = ReadLearnedRankPair(model_root)
         if (
             pair.training_identity_hash != identity
-            or pair.training_input_hash != snapshot.active_snapshot_hash
+            or pair.training_input_hash != snapshot.snapshot_hash
             or pair.source_identity_hash != snapshot.source_identity_hash
             or pair.calendar_hash != snapshot.calendar_hash
             or pair.source_cutoff != snapshot.source_cutoff
@@ -109,7 +109,7 @@ def InspectV1Training(
     except (OSError, ValueError, LightGBMError):
         return None
     CheckV1Cancellation(cancel_requested)
-    return V1TrainingResult("engineering_ready", identity, snapshot.active_snapshot_hash, 0, pair.heads, reused=True)
+    return V1TrainingResult("engineering_ready", identity, snapshot.snapshot_hash, 0, pair.heads, reused=True)
 
 
 def RunV1Training(
@@ -137,10 +137,10 @@ def RunV1Training(
             HistoryMaintenanceLock(model_root / ".v1.training.lock") if aligned_rows is None else nullcontext(),
         ):
             CheckV1Cancellation(cancel_requested)
-            RequireHistoryPartitionRepackInactive(history_root)
+            RequireHistoryRepackIdle(history_root)
             source = input_factory()
             snapshot = source.snapshot
-            input_hash = snapshot.active_snapshot_hash
+            input_hash = snapshot.snapshot_hash
             run_id = _training_identity(snapshot, settings)
             reused = InspectV1Training(source, model_root, settings, cancel_requested=cancel_requested)
             if reused is not None:
@@ -208,7 +208,7 @@ def RunV1Training(
                         _progress(progress, "model_fit", "completed", strategy)
                 _progress(progress, "artifact_publish", "started", None)
                 pair = LearnedRankPair(
-                    snapshot.active_snapshot_hash,
+                    snapshot.snapshot_hash,
                     snapshot.source_identity_hash,
                     snapshot.calendar_hash,
                     snapshot.source_cutoff,

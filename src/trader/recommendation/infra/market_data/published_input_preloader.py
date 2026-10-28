@@ -39,7 +39,7 @@ class PublishedInputPreloader:
                 return False
             self._started = True
             for history, _initialize in self._profiles:
-                history.record_maintenance("loading", stage="reading_active_snapshot")
+                history.record_maintenance("loading", stage="reading_published_snapshot")
             self._thread = threading.Thread(target=self._run, name="published-input-preloader", daemon=False)
             self._thread.start()
             return True

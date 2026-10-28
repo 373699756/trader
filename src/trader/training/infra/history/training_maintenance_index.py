@@ -1,16 +1,17 @@
-"""Training-owned due and reminder records in the existing history catalog."""
+"""Training-owned relational due, claim and reminder records in the history catalog."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
-from datetime import date, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Literal, cast
-from zoneinfo import ZoneInfo
 
-from trader.download.domain.history_control import HistoryActiveSnapshot
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.download.domain.history_control import HistorySnapshot
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash, DecodeTime, EncodeDate, EncodeHash, EncodeTime
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.training.domain.training_due import TrainingDueReason, TrainingDueState
 from trader.training.domain.training_reminder import (
     TrainingMaintenanceState,
@@ -21,7 +22,20 @@ from trader.training.domain.training_reminder import (
 
 MaintenanceKind = Literal["due", "reminder_claim", "reminder"]
 MaintenanceRecord = TrainingDueState | TrainingReminderClaim | TrainingReminderState
-_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_TABLES = {"due": "training_due", "reminder_claim": "training_reminder_claim", "reminder": "training_reminder"}
+_SCHEMA = (
+    "CREATE TABLE training_due(due_id TEXT PRIMARY KEY, reason TEXT NOT NULL, baseline_date INTEGER, "
+    "cutoff_date INTEGER, matured_days INTEGER NOT NULL CHECK(matured_days>=0), "
+    "input_revision INTEGER NOT NULL CHECK(input_revision IN (0,1)), observed_at INTEGER NOT NULL, "
+    "content_hash BLOB NOT NULL CHECK(length(content_hash)=32)) WITHOUT ROWID",
+    "CREATE TABLE training_reminder_claim(due_id TEXT NOT NULL REFERENCES training_due(due_id), "
+    "reminder_date INTEGER NOT NULL, claimed_at INTEGER NOT NULL, "
+    "content_hash BLOB NOT NULL CHECK(length(content_hash)=32), PRIMARY KEY(due_id,reminder_date)) WITHOUT ROWID",
+    "CREATE TABLE training_reminder(due_id TEXT NOT NULL REFERENCES training_due(due_id), "
+    "reminder_date INTEGER NOT NULL, outcome TEXT NOT NULL CHECK(outcome IN ('sent','notification_degraded')), "
+    "attempted_at INTEGER NOT NULL, failure_code TEXT, content_hash BLOB NOT NULL CHECK(length(content_hash)=32), "
+    "PRIMARY KEY(due_id,reminder_date)) WITHOUT ROWID",
+)
 
 
 class TrainingMaintenanceError(RuntimeError):
@@ -33,263 +47,174 @@ class TrainingMaintenanceConflictError(TrainingMaintenanceError):
 
 
 class TrainingMaintenanceIndex:
-    """Own only training records; history publication and schema stay with download."""
+    """Own training tables and records; history publication stays with download."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def save_due_state(self, value: TrainingDueState) -> None:
-        self._save("due", value.due_identity, value.content_hash, _due_payload(value))
-
-    def read_due_state(self, identity: str, *, latest: bool = False) -> TrainingDueState | None:
-        try:
-            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
-                row = connection.run(
-                    "SELECT content_hash,payload_json FROM immutable_records WHERE kind='due' "
-                    "AND (record_key=? OR record_key LIKE ?) "
-                    "ORDER BY json_extract(payload_json,'$.observed_at') DESC LIMIT 1",
-                    (identity, identity + ":%" if latest else identity),
-                ).fetchone()
-                if row is None:
-                    return None
-                value = _decode_record("due", row[1])
-                if not isinstance(value, TrainingDueState) or value.content_hash != row[0]:
-                    raise TrainingMaintenanceError("history due observation is invalid")
-                return value
-        except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise TrainingMaintenanceError("history due observation read failed") from exc
-
-    def claim_reminder(self, value: TrainingReminderClaim) -> bool:
-        """Atomically claim one due identity on one Shanghai date.
-
-        The claim is durable before the external desktop-notification side effect.
-        A process restart or a concurrent scheduled trigger therefore observes the
-        existing identity and does not emit the same reminder again.
-        """
-
-        key = f"{value.due_identity}:{value.reminder_date.isoformat()}"
-        payload_json = json.dumps(
-            _reminder_claim_payload(value),
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+    @contextmanager
+    def _connection(self, *, write: bool = False) -> Iterator[SqliteConnection]:
         try:
             with (
-                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
-                SqliteTransaction(connection, immediate=True),
+                SqliteSession(
+                    self._path, SqliteConnectionOptions(read_only=not write, foreign_keys=True)
+                ) as connection,
+                SqliteTransaction(connection, immediate=write),
             ):
-                existing = connection.run(
-                    "SELECT 1 FROM immutable_records WHERE kind=? AND record_key=?",
-                    ("reminder_claim", key),
+                contract = connection.run(
+                    "SELECT schema_id,schema_version FROM schema_contract WHERE singleton=1"
                 ).fetchone()
-                if existing is not None:
-                    return False
+                if contract is None or tuple(contract) != ("history_catalog", 2):
+                    raise TrainingMaintenanceError("training maintenance catalog identity is invalid")
+                existing = {
+                    row[0]
+                    for row in connection.run(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                        "('training_due','training_reminder_claim','training_reminder')"
+                    )
+                }
+                if existing and existing != set(_TABLES.values()):
+                    raise TrainingMaintenanceError("training maintenance schema is incomplete")
+                if write and not existing:
+                    for statement in _SCHEMA:
+                        connection.run(statement)
+                yield connection
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise TrainingMaintenanceError("training maintenance database unavailable") from exc
+
+    def save_due_state(self, value: TrainingDueState) -> None:
+        self._save("due", value)
+
+    def read_due_state(self, identity: str, *, latest: bool = False) -> TrainingDueState | None:
+        with self._connection() as connection:
+            if not _initialized(connection):
+                return None
+            row = connection.run(
+                "SELECT * FROM training_due WHERE due_id=? OR due_id LIKE ? ORDER BY observed_at DESC,due_id DESC LIMIT 1",
+                (identity, identity + ":%" if latest else identity),
+            ).fetchone()
+            return cast(TrainingDueState, _decode("due", row)) if row is not None else None
+
+    def claim_reminder(self, value: TrainingReminderClaim) -> bool:
+        """Commit a first-wins daily claim before the desktop notification side effect."""
+        with self._connection(write=True) as connection:
+            if (
                 connection.run(
-                    "INSERT INTO immutable_records(kind, record_key, content_hash, payload_json) VALUES (?, ?, ?, ?)",
-                    ("reminder_claim", key, value.content_hash, payload_json),
-                )
-        except sqlite3.Error as exc:
-            raise TrainingMaintenanceError("history reminder claim write failed") from exc
+                    "SELECT 1 FROM training_reminder_claim WHERE due_id=? AND reminder_date=?",
+                    (value.due_identity, EncodeDate(value.reminder_date)),
+                ).fetchone()
+                is not None
+            ):
+                return False
+            connection.run("INSERT INTO training_reminder_claim VALUES(?,?,?,?)", _columns(value))
         return True
 
     def save_reminder(self, value: TrainingReminderState) -> None:
-        key = f"{value.due_identity}:{value.reminder_date.isoformat()}"
-        self._save("reminder", key, value.content_hash, _reminder_payload(value))
+        self._save("reminder", value)
 
-    def load_state(self, *, active_snapshot: HistoryActiveSnapshot | None = None) -> TrainingMaintenanceState:
-        try:
-            with (
-                SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection,
-                SqliteTransaction(connection),
-            ):
-                identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
-                if identity is None or tuple(identity) != ("history_catalog",):
-                    raise TrainingMaintenanceError("training maintenance catalog identity is invalid")
-                rows = connection.run(
-                    "SELECT kind, content_hash, payload_json FROM immutable_records "
-                    "WHERE kind IN ('due', 'reminder_claim', 'reminder') ORDER BY kind, record_key"
-                ).fetchall()
-            decoded: dict[str, list[MaintenanceRecord]] = {"due": [], "reminder_claim": [], "reminder": []}
-            for kind, content_hash, payload in rows:
-                value = _decode_record(cast(MaintenanceKind, kind), payload)
-                if value.content_hash != content_hash:
-                    raise TrainingMaintenanceError("training maintenance record hash is invalid")
-                decoded[kind].append(value)
-            return TrainingMaintenanceState(
-                active_snapshot,
-                cast(tuple[TrainingDueState, ...], tuple(decoded["due"])),
-                cast(tuple[TrainingReminderState, ...], tuple(decoded["reminder"])),
-                cast(tuple[TrainingReminderClaim, ...], tuple(decoded["reminder_claim"])),
+    def load_state(self, *, published_snapshot: HistorySnapshot | None = None) -> TrainingMaintenanceState:
+        with self._connection() as connection:
+            if not _initialized(connection):
+                return TrainingMaintenanceState(published_snapshot, (), (), ())
+            due = tuple(
+                cast(TrainingDueState, _decode("due", row))
+                for row in connection.run("SELECT * FROM training_due ORDER BY due_id").fetchall()
             )
-        except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise TrainingMaintenanceError("training maintenance state read failed") from exc
+            claims = tuple(
+                cast(TrainingReminderClaim, _decode("reminder_claim", row))
+                for row in connection.run(
+                    "SELECT * FROM training_reminder_claim ORDER BY due_id,reminder_date"
+                ).fetchall()
+            )
+            reminders = tuple(
+                cast(TrainingReminderState, _decode("reminder", row))
+                for row in connection.run("SELECT * FROM training_reminder ORDER BY due_id,reminder_date").fetchall()
+            )
+            return TrainingMaintenanceState(published_snapshot, due, reminders, claims)
 
-    def restore_state(self, state: TrainingMaintenanceState) -> None:
-        """Restore verified records into an isolated catalog before its atomic replacement."""
+    def copy_state(self, state: TrainingMaintenanceState) -> None:
+        """Copy verified records to an isolated catalog before atomic replacement."""
         for value in state.due_states:
             self.save_due_state(value)
         for claim in state.reminder_claims:
             self.claim_reminder(claim)
         for reminder in state.reminders:
             self.save_reminder(reminder)
-        if self.load_state(active_snapshot=state.active_snapshot) != state:
-            raise TrainingMaintenanceError("restored training maintenance state differs")
+        if self.load_state(published_snapshot=state.published_snapshot) != state:
+            raise TrainingMaintenanceError("copied training maintenance state differs")
 
-    def _save(self, kind: MaintenanceKind, key: str, content_hash: str, payload: dict[str, object]) -> None:
-        payload_json = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        try:
-            with (
-                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
-                SqliteTransaction(connection, immediate=True),
-            ):
-                existing = connection.run(
-                    "SELECT content_hash, payload_json FROM immutable_records WHERE kind=? AND record_key=?",
-                    (kind, key),
-                ).fetchone()
-                if existing is not None and tuple(existing) != (content_hash, payload_json):
+    def _save(self, kind: MaintenanceKind, value: MaintenanceRecord) -> None:
+        columns = _columns(value)
+        predicate, key = ("due_id=?", columns[:1]) if kind == "due" else ("due_id=? AND reminder_date=?", columns[:2])
+        with self._connection(write=True) as connection:
+            previous = connection.run(f"SELECT * FROM {_TABLES[kind]} WHERE {predicate}", key).fetchone()
+            if previous is not None:
+                if _decode(kind, previous) != value:
                     raise TrainingMaintenanceConflictError("history immutable control identity conflicts")
-                connection.run(
-                    "INSERT OR IGNORE INTO immutable_records(kind, record_key, content_hash, payload_json) "
-                    "VALUES (?, ?, ?, ?)",
-                    (kind, key, content_hash, payload_json),
-                )
-        except sqlite3.Error as exc:
-            raise TrainingMaintenanceError("history immutable control record write failed") from exc
+                return
+            connection.run(f"INSERT INTO {_TABLES[kind]} VALUES({','.join('?' for _ in columns)})", columns)
 
 
-def _due_payload(value: TrainingDueState) -> dict[str, object]:
-    return {
-        "due_identity": value.due_identity,
-        "reason": value.reason,
-        "baseline_label_cutoff": (
-            value.baseline_label_cutoff.isoformat() if value.baseline_label_cutoff is not None else None
-        ),
-        "current_label_cutoff": (
-            value.current_label_cutoff.isoformat() if value.current_label_cutoff is not None else None
-        ),
-        "matured_label_days_since_training": value.matured_label_days_since_training,
-        "input_revision": value.input_revision,
-        "observed_at": value.observed_at.isoformat(),
-    }
+def _initialized(connection: SqliteConnection) -> bool:
+    return connection.run("SELECT 1 FROM sqlite_master WHERE name='training_due'").fetchone() is not None
 
 
-def _reminder_payload(value: TrainingReminderState) -> dict[str, object]:
-    return {
-        "due_identity": value.due_identity,
-        "reminder_date": value.reminder_date.isoformat(),
-        "outcome": value.outcome,
-        "attempted_at": value.attempted_at.isoformat(),
-        "error_code": value.error_code,
-    }
+def _columns(value: MaintenanceRecord) -> tuple[str | int | bytes | None, ...]:
+    if isinstance(value, TrainingDueState):
+        return (
+            value.due_identity,
+            value.reason,
+            EncodeDate(value.baseline_label_cutoff) if value.baseline_label_cutoff else None,
+            EncodeDate(value.current_label_cutoff) if value.current_label_cutoff else None,
+            value.matured_label_days_since_training,
+            int(value.input_revision),
+            EncodeTime(value.observed_at),
+            EncodeHash(value.content_hash),
+        )
+    if isinstance(value, TrainingReminderClaim):
+        return (
+            value.due_identity,
+            EncodeDate(value.reminder_date),
+            EncodeTime(value.claimed_at),
+            EncodeHash(value.content_hash),
+        )
+    return (
+        value.due_identity,
+        EncodeDate(value.reminder_date),
+        value.outcome,
+        EncodeTime(value.attempted_at),
+        value.error_code,
+        EncodeHash(value.content_hash),
+    )
 
 
-def _reminder_claim_payload(value: TrainingReminderClaim) -> dict[str, object]:
-    return {
-        "due_identity": value.due_identity,
-        "reminder_date": value.reminder_date.isoformat(),
-        "claimed_at": value.claimed_at.isoformat(),
-    }
+def _optional_date(value: object) -> date | None:
+    return DecodeDate(value) if value is not None else None
 
 
-def _decode_record(kind: MaintenanceKind, payload_json: str) -> MaintenanceRecord:
-    try:
-        payload = json.loads(payload_json)
-        if not isinstance(payload, dict):
-            raise TypeError("control payload must be an object")
-        return _decode_payload(kind, cast(dict[str, object], payload))
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise TrainingMaintenanceError("history control payload is invalid") from exc
-
-
-def _decode_payload(kind: MaintenanceKind, payload: dict[str, object]) -> MaintenanceRecord:
+def _decode(kind: MaintenanceKind, row: sqlite3.Row) -> MaintenanceRecord:
     value: MaintenanceRecord
     if kind == "due":
-        _require_keys(
-            payload,
-            {
-                "due_identity",
-                "reason",
-                "baseline_label_cutoff",
-                "current_label_cutoff",
-                "matured_label_days_since_training",
-                "input_revision",
-                "observed_at",
-            },
-        )
+        if type(row[5]) is not int or row[5] not in (0, 1):
+            raise TrainingMaintenanceError("training due revision flag is invalid")
         value = TrainingDueState(
-            _text(payload, "due_identity"),
-            cast(TrainingDueReason, _text(payload, "reason")),
-            _optional_date(payload, "baseline_label_cutoff"),
-            _optional_date(payload, "current_label_cutoff"),
-            _integer(payload, "matured_label_days_since_training"),
-            _boolean(payload, "input_revision"),
-            _shanghai_datetime(payload, "observed_at"),
+            row[0],
+            cast(TrainingDueReason, row[1]),
+            _optional_date(row[2]),
+            _optional_date(row[3]),
+            row[4],
+            bool(row[5]),
+            DecodeTime(row[6]),
         )
     elif kind == "reminder_claim":
-        _require_keys(payload, {"due_identity", "reminder_date", "claimed_at"})
-        value = TrainingReminderClaim(
-            _text(payload, "due_identity"),
-            date.fromisoformat(_text(payload, "reminder_date")),
-            _shanghai_datetime(payload, "claimed_at"),
-        )
-    elif kind == "reminder":
-        _require_keys(payload, {"due_identity", "reminder_date", "outcome", "attempted_at", "error_code"})
-        value = TrainingReminderState(
-            _text(payload, "due_identity"),
-            date.fromisoformat(_text(payload, "reminder_date")),
-            cast(TrainingReminderOutcome, _text(payload, "outcome")),
-            _shanghai_datetime(payload, "attempted_at"),
-            _optional_text(payload, "error_code"),
-        )
+        value = TrainingReminderClaim(row[0], DecodeDate(row[1]), DecodeTime(row[2]))
     else:
-        raise TrainingMaintenanceError("training maintenance record kind is invalid")
+        value = TrainingReminderState(
+            row[0], DecodeDate(row[1]), cast(TrainingReminderOutcome, row[2]), DecodeTime(row[3]), row[4]
+        )
+    if value.content_hash != DecodeHash(row[-1]):
+        raise TrainingMaintenanceError("training maintenance record hash is invalid")
     return value
-
-
-def _require_keys(payload: dict[str, object], expected: set[str]) -> None:
-    if set(payload) != expected:
-        raise ValueError("history control payload fields are invalid")
-
-
-def _text(payload: dict[str, object], key: str) -> str:
-    value = payload[key]
-    if not isinstance(value, str) or not value:
-        raise TypeError(f"history control {key} must be text")
-    return value
-
-
-def _optional_text(payload: dict[str, object], key: str) -> str | None:
-    value = payload[key]
-    if value is not None and not isinstance(value, str):
-        raise TypeError(f"history control {key} must be optional text")
-    return value
-
-
-def _integer(payload: dict[str, object], key: str) -> int:
-    value = payload[key]
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"history control {key} must be integer")
-    return value
-
-
-def _boolean(payload: dict[str, object], key: str) -> bool:
-    value = payload[key]
-    if not isinstance(value, bool):
-        raise TypeError(f"history control {key} must be boolean")
-    return value
-
-
-def _optional_date(payload: dict[str, object], key: str) -> date | None:
-    value = _optional_text(payload, key)
-    return date.fromisoformat(value) if value is not None else None
-
-
-def _shanghai_datetime(payload: dict[str, object], key: str) -> datetime:
-    value = datetime.fromisoformat(_text(payload, key))
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"history control {key} must include timezone")
-    return value.astimezone(_SHANGHAI)
 
 
 __all__ = ["TrainingMaintenanceIndex", "TrainingMaintenanceError", "TrainingMaintenanceConflictError"]

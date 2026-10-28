@@ -12,7 +12,7 @@ from functools import partial
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
-from trader.download.infra.history_partition_repack import RequireHistoryPartitionRepackInactive
+from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.settings import RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingMemoryAdmission
@@ -75,9 +75,9 @@ def TrainSelectedProfiles(
         scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
         for profile in request.profiles:
             scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
-        RequireHistoryPartitionRepackInactive(paths.history)
-        archive = SQLiteHistoryTrainingInputSnapshot.open(paths.history)
-        factory = _TrainingTaskFactory(request, archive)
+        RequireHistoryRepackIdle(paths.history)
+        history = SQLiteHistoryTrainingInputSnapshot.open(paths.history)
+        factory = _TrainingTaskFactory(request, history)
         tasks = tuple(
             factory.prepare(profile, progress)
             for profile, progress in zip(request.profiles, request.progresses, strict=True)
@@ -86,14 +86,14 @@ def TrainSelectedProfiles(
 
         def source_rows(dates: frozenset[date]) -> Iterator[HistoryTrainingRow]:
             nonlocal physical_rows
-            for row in archive.iter_training_rows(dates):
+            for row in history.iter_training_rows(dates):
                 physical_rows += 1
                 yield row
 
         def read_rows(dates: frozenset[date]) -> Iterator[HistoryTrainingRow]:
-            readable = AlignmentReadDates(archive.snapshot.calendar.open_dates, dates)
+            readable = AlignmentReadDates(history.snapshot.calendar.open_dates, dates)
             yield from AlignTrainingRows(
-                source_rows(readable), tuple(sorted(readable)), archive.snapshot.listing_intervals
+                source_rows(readable), tuple(sorted(readable)), history.snapshot.listing_intervals
             )
 
         run = RunSelectedTrainingTasks(tasks, read_rows, executor, request.cancelled, on_outcome=request.on_outcome)
@@ -103,7 +103,7 @@ def TrainSelectedProfiles(
 @dataclass(frozen=True)
 class _TrainingTaskFactory:
     selection: SelectedTrainingRequest
-    archive: SQLiteHistoryTrainingInputSnapshot
+    history: SQLiteHistoryTrainingInputSnapshot
 
     def prepare(
         self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort
@@ -119,9 +119,9 @@ class _TrainingTaskFactory:
     def _v1(self, progress: TomorrowTrainingProgressPort) -> SelectedTrainingTask[SelectedProfileResult]:
         selection = self.selection
         paths = selection.paths
-        calendar = self.archive.snapshot.calendar.open_dates
+        calendar = self.history.snapshot.calendar.open_dates
         settings = LoadV1TrainingSettings(selection.runtime.project_root)
-        reused = InspectV1Training(self.archive, paths.models, settings, cancel_requested=selection.cancelled)
+        reused = InspectV1Training(self.history, paths.models, settings, cancel_requested=selection.cancelled)
         if reused is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
         splits = tuple(BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=h) for h in (1, 5))
@@ -129,7 +129,7 @@ class _TrainingTaskFactory:
         dates = AlignmentReadDates(calendar, frozenset(calendar[first:]))
         execute = partial(
             RunV1Training,
-            lambda: self.archive,
+            lambda: self.history,
             paths.models,
             sample_root=paths.samples,
             history_root=paths.history,
@@ -167,7 +167,7 @@ class _TrainingTaskFactory:
                 settings.fitting.early_stopping_relative_delta,
             )
         request, cache, dates, reused = InspectSelectedProfile(
-            self.archive,
+            self.history,
             ProfileTrainingRequest(
                 paths.history,
                 paths.models,
@@ -181,4 +181,4 @@ class _TrainingTaskFactory:
         )
         if reused is not None:
             return SelectedTrainingTask(profile, dates, partial(_reused, reused))
-        return SelectedTrainingTask(profile, dates, partial(FitSelectedProfile, self.archive, request, cache))
+        return SelectedTrainingTask(profile, dates, partial(FitSelectedProfile, self.history, request, cache))

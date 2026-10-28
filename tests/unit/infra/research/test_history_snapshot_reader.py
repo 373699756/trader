@@ -10,9 +10,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.download.infra.history_prices as partition_module
+from tests.reference_fixtures import PublishHistoryReferenceFixture
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide, BaoStockIndustryInterval
 from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
+    HistorySnapshot,
     HistorySnapshotPartition,
     HistorySourceIdentity,
 )
@@ -28,6 +29,7 @@ from trader.download.infra.history_snapshot_reader import (
     RouteHistoryMonths,
 )
 from trader.download.infra.history_sqlite_read_connection import PrefetchHistoryPricePages
+from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
@@ -118,23 +120,23 @@ def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_p
     snapshot = _build_snapshot(tmp_path, (_revision("600001", day),))
     path = tmp_path / snapshot.partitions[0].relative_path
     with SqliteSession(path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE daily_records SET qfq_trading_status='invalid'")
+        connection.run("UPDATE daily_price_revision SET qfq_trading_status='invalid'")
 
     with pytest.raises(HistorySnapshotReadError, match="history training partition read failed"):
         tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, (day,), ("600001",)))
 
 
-def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryActiveSnapshot:
+def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistorySnapshot:
     grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
     for row in rows:
         grouped[(row.trade_date.year, row.trade_date.month)].append(row)
     references: list[HistorySnapshotPartition] = []
     for (year, month), month_rows in sorted(grouped.items()):
         path = root / f"prices_{year:04d}.sqlite3"
-        repository = HistoryPricePartition(path, year, month)
-        repository.initialize()
-        repository.save_revisions(tuple(month_rows))
-        references.append(repository.seal())
+        index = HistoryPricePartition(path, year, month)
+        index.initialize()
+        index.save_revisions(tuple(month_rows))
+        references.append(index.seal())
     codes = tuple(sorted({row.code for row in rows}))
     reference = HistoryReferenceSnapshot(
         codes,
@@ -147,11 +149,13 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         f"history_ref_{reference.content_hash}_fixture",
         datetime(2026, 10, 10, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
-    control = HistoryControlIndex(root / "catalog.sqlite3")
+    reference_path = root / "company_st.sqlite3"
+    publication_id = PublishHistoryReferenceFixture(reference_path, reference)
+    control = HistoryControlIndex(root / "catalog.sqlite3", reference_path=reference_path)
     control.initialize()
-    control.save_reference(reference)
+    control.save_reference(reference, publication_id)
     control.save_source(source)
-    return HistoryActiveSnapshot(
+    return HistorySnapshot(
         max(row.first_seen_sequence for row in rows),
         max(row.trade_date for row in rows),
         max(row.trade_date for row in rows),
@@ -167,28 +171,28 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
     dates = tuple(date(2026, 8, 1) + timedelta(days=offset) for offset in range(62))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
-    archive = HistorySnapshotReader(root)
+    history = HistorySnapshotReader(root)
 
     assert RouteHistoryMonths(dates[0], dates[-1]) == ((2026, 8), (2026, 9), (2026, 10))
-    assert tuple(row.code for row in archive.read_day(dates[31], snapshot)) == ("600001", "600002")
-    code_rows = archive.read_code_window("600001", dates[-61:], snapshot)
+    assert tuple(row.code for row in history.read_day(dates[31], snapshot)) == ("600001", "600002")
+    code_rows = history.read_code_window("600001", dates[-61:], snapshot)
     assert tuple(row.trade_date for row in code_rows) == dates[-61:]
-    assert tuple(archive.iter_snapshot_revisions(snapshot)) == rows
+    assert tuple(history.iter_snapshot_revisions(snapshot)) == rows
 
-    training_rows = tuple(archive.iter_training_rows(snapshot, dates, {"600001", "600002"}))
+    training_rows = tuple(history.iter_training_rows(snapshot, dates, {"600001", "600002"}))
     assert len(training_rows) == 124
     assert tuple((row.trade_date, row.code) for row in training_rows) == tuple(
         (day, code) for day in dates for code in ("600001", "600002")
     )
-    current_rows = tuple(archive.iter_training_rows(snapshot, dates, {"600001"}))
+    current_rows = tuple(history.iter_training_rows(snapshot, dates, {"600001"}))
     assert len(current_rows) == 62
     assert {row.code for row in current_rows} == {"600001"}
 
     with pytest.raises(ValueError, match="cutoff"):
-        archive.read_day(dates[-1] + timedelta(days=1), snapshot)
+        history.read_day(dates[-1] + timedelta(days=1), snapshot)
     with pytest.raises(HistorySnapshotReadError, match="cover"):
         tuple(
-            archive.iter_training_rows(
+            history.iter_training_rows(
                 replace(snapshot, partitions=snapshot.partitions[:-1]),
                 dates,
                 {"600001", "600002"},
@@ -202,24 +206,24 @@ def test_history_reader_streams_2000_sessions_without_directory_scan_or_unbounde
     dates = tuple(date(2020, 1, 1) + timedelta(days=offset) for offset in range(2000))
     rows = tuple(_revision("600001", day) for day in dates)
     snapshot = _build_snapshot(root, rows)
-    archive = HistorySnapshotReader(root)
+    history = HistorySnapshotReader(root)
 
     descriptor_root = Path("/proc/self/fd")
     baseline_descriptors = len(tuple(descriptor_root.iterdir())) if descriptor_root.is_dir() else None
     peak_descriptors = baseline_descriptors
     replayed_rows: list[HistoryRevision] = []
-    for row in archive.iter_snapshot_revisions(snapshot):
+    for row in history.iter_snapshot_revisions(snapshot):
         replayed_rows.append(row)
         if peak_descriptors is not None:
             peak_descriptors = max(peak_descriptors, len(tuple(descriptor_root.iterdir())))
-    training_rows = tuple(archive.iter_training_rows(snapshot, dates, {"600001"}))
+    training_rows = tuple(history.iter_training_rows(snapshot, dates, {"600001"}))
 
     assert tuple(replayed_rows) == rows
     assert len(snapshot.partitions) == len(RouteHistoryMonths(dates[0], dates[-1]))
     assert len(training_rows) == 2000
     assert training_rows[-1].trade_date == dates[-1]
     assert all(row.point is not None for row in training_rows)
-    assert len(archive.read_code_window("600001", dates[-251:], snapshot)) == 251
+    assert len(history.read_code_window("600001", dates[-251:], snapshot)) == 251
     if baseline_descriptors is not None and peak_descriptors is not None:
         assert peak_descriptors <= baseline_descriptors + 4
 
@@ -232,7 +236,7 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
-    archive = HistorySnapshotReader(root)
+    history = HistorySnapshotReader(root)
     original = HistoryPricePartition.verify.__func__
     verified: list[Path] = []
 
@@ -243,11 +247,11 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(verify))
 
     observed: list[tuple[int, int, int, int, int, str]] = []
-    archive.verify_snapshot(snapshot, lambda *values: observed.append(values))
-    assert archive.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
-    assert archive.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(rows)
-    assert len(tuple(archive.iter_code("600001", dates[0], dates[-1], snapshot))) == len(dates)
-    assert len(tuple(archive.iter_code("600002", dates[0], dates[-1], snapshot))) == len(dates)
+    history.verify_snapshot(snapshot, lambda *values: observed.append(values))
+    assert history.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
+    assert history.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(rows)
+    assert len(tuple(history.iter_code("600001", dates[0], dates[-1], snapshot))) == len(dates)
+    assert len(tuple(history.iter_code("600002", dates[0], dates[-1], snapshot))) == len(dates)
 
     assert observed[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
     assert any(
@@ -296,7 +300,7 @@ def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> 
     snapshot = _build_snapshot(root, (_revision("600001", day),))
     path = root / snapshot.partitions[0].relative_path
     with SqliteSession(path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
+        connection.run("UPDATE daily_price_revision SET content_hash=?", (bytes(32),))
 
     with pytest.raises(HistorySnapshotReadError, match="verification failed"):
         HistorySnapshotReader(root).verify_published_snapshot(snapshot)
@@ -394,7 +398,9 @@ def test_published_alignment_seed_window_and_valid_looking_payload_corruption(tm
     assert len(reader.read_published_code_window("600001", dates, snapshot)) == 300
     reference = snapshot.partitions[-1]
     with SqliteSession(root / reference.relative_path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE daily_records SET qfq_amount=qfq_amount+1 WHERE trade_date=?", (dates[-1].isoformat(),))
+        connection.run(
+            "UPDATE daily_price_revision SET qfq_amount=qfq_amount+1 WHERE trade_date=?", (EncodeDate(dates[-1]),)
+        )
     with pytest.raises(HistoryPricePartitionError, match="published daily query failed"):
         reader.read_published_code_window("600001", dates, snapshot)
 
@@ -418,7 +424,7 @@ def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monke
     previous = path.stat()
     if change == "same_size_corruption":
         with SqliteSession(path) as connection, SqliteTransaction(connection):
-            connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
+            connection.run("UPDATE daily_price_revision SET content_hash=?", (bytes(32),))
         os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
     elif change == "atomic_replace":
         replacement = path.with_suffix(".replacement")

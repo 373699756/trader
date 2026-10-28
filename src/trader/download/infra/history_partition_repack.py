@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import cast
 
 from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
     HistoryControlState,
     HistoryRepackTrainingProof,
+    HistorySnapshot,
     HistorySnapshotPartition,
 )
 from trader.download.infra.history_control_index import (
@@ -52,14 +52,14 @@ _CONTROL_NAME = "catalog.sqlite3"
 _HASH_CHUNK_BYTES = 1024 * 1024
 _TABLE_QUERIES = (
     (
-        "daily_records",
+        "daily_price_revision",
         "SELECT trade_date, code, revision_id, first_seen_sequence, board, "
         + ", ".join(PRICE_COLUMNS)
-        + ", content_hash FROM daily_records ORDER BY trade_date, code, revision_id",
+        + ", content_hash FROM daily_price_revision ORDER BY trade_date, code, revision_id",
     ),
     (
-        "daily_observations",
-        "SELECT trade_date, code, sync_sequence, revision_id FROM daily_observations "
+        "daily_price_observation",
+        "SELECT trade_date, code, sync_sequence, revision_id FROM daily_price_observation "
         "ORDER BY trade_date, code, sync_sequence",
     ),
 )
@@ -85,7 +85,7 @@ class _RepackLayout:
 @dataclass(frozen=True)
 class _SourceContext:
     control_state: HistoryControlState
-    active: HistoryActiveSnapshot
+    current_snapshot: HistorySnapshot
     source_files: tuple[HistoryPartitionRepackSourceFileIdentity, ...]
     source_file_identity_hash: str
     source_bytes: int
@@ -145,8 +145,8 @@ class HistoryPartitionRepackCoordinator:
                 state = HistoryPartitionRepackBuildState(
                     str(layout.source_root),
                     str(layout.target_root),
-                    context.active.content_hash,
-                    context.active.sequence,
+                    context.current_snapshot.content_hash,
+                    context.current_snapshot.sequence,
                     context.source_file_identity_hash,
                     context.source_files,
                     context.source_bytes,
@@ -162,11 +162,15 @@ class HistoryPartitionRepackCoordinator:
                 _verify_candidate(layout.target_root, state, target=True)
                 return _status("build", "completed", state)
             completed = {item.relative_path: item for item in state.partitions}
-            for reference in context.active.partitions:
+            for reference in context.current_snapshot.partitions:
                 evidence = completed.get(reference.relative_path)
                 if evidence is None:
                     evidence = _repack_partition(
-                        layout.source_root, layout.target_root, reference, context.active.sequence, state.page_size
+                        layout.source_root,
+                        layout.target_root,
+                        reference,
+                        context.current_snapshot.sequence,
+                        state.page_size,
                     )
                     self._inject(f"partition_replaced:{reference.relative_path}")
                     completed[reference.relative_path] = evidence
@@ -186,7 +190,7 @@ class HistoryPartitionRepackCoordinator:
             _fsync_file(target_control)
             _fsync_directory(layout.target_root)
             # Physical compaction changes no logical snapshot or reference identity.
-            state = replace(state, target_snapshot_hash=context.active.content_hash, completed=True)
+            state = replace(state, target_snapshot_hash=context.current_snapshot.content_hash, completed=True)
             WriteHistoryPartitionRepackBuildState(layout.state_path, state)
             _verify_candidate(layout.target_root, state, target=True)
             self._inject("build_completed")
@@ -210,7 +214,7 @@ class HistoryPartitionRepackCoordinator:
                             layout.journal_path, replace(journal, state="verified")
                         )
                         return _status("activate", "verified", state)
-                    self._restore(journal, state)
+                    self._recover(journal, state)
                     return _status("activate", "rolled_back", state)
             if layout.backup_root.exists():
                 raise HistoryPartitionRepackError("repack backup already exists")
@@ -245,10 +249,10 @@ class HistoryPartitionRepackCoordinator:
             _require_journal_layout(journal, layout, state)
             if journal.state in {"finalizing", "finalized"}:
                 raise HistoryPartitionRepackError("finalized repack cannot be rolled back")
-            self._restore(journal, state)
+            self._recover(journal, state)
             return _status("rollback", "rolled_back", state)
 
-    def _restore(
+    def _recover(
         self, journal: HistoryPartitionRepackActivationJournal, state: HistoryPartitionRepackBuildState
     ) -> None:
         layout = self._layout
@@ -303,17 +307,22 @@ class HistoryPartitionRepackCoordinator:
         return state
 
 
-def RequireHistoryPartitionRepackInactive(history_root: Path) -> None:
+def RequireHistoryRepackIdle(history_root: Path) -> None:
     _require_no_activation_fence(history_root.resolve().with_name(_ACTIVATION_JOURNAL_NAME))
 
 
 def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, target: bool) -> None:
     _require_clean_source(root)
-    _require_stable_snapshot(root, state.source_snapshot_hash)
-    active = HistoryControlIndex(root / _CONTROL_NAME).load_state().active_snapshot
-    if active is None:
+    reference_base = Path(state.source_root)
+    _require_stable_snapshot(root, state.source_snapshot_hash, reference_base)
+    current_snapshot = (
+        HistoryControlIndex(root / _CONTROL_NAME).load_state(reference_base=reference_base).published_snapshot
+    )
+    if current_snapshot is None:
         raise HistoryPartitionRepackError("repack snapshot missing")
-    _clear_empty_partition_sidecars({root / _CONTROL_NAME, *(root / item.relative_path for item in active.partitions)})
+    _clear_empty_partition_sidecars(
+        {root / _CONTROL_NAME, *(root / item.relative_path for item in current_snapshot.partitions)}
+    )
     expected = {_CONTROL_NAME, *(item.relative_path for item in state.partitions)}
     if not root.is_dir() or root.is_symlink() or {path.name for path in root.iterdir()} != expected:
         raise HistoryPartitionRepackError("repack directory has missing or unexpected files")
@@ -321,7 +330,7 @@ def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, ta
         path = root / item.relative_path
         if path.is_symlink() or _sha256_file(path) != (item.target_sha256 if target else item.source_sha256):
             raise HistoryPartitionRepackError("repack annual file digest mismatch")
-    for reference in active.partitions:
+    for reference in current_snapshot.partitions:
         HistoryPricePartition.verify(root / reference.relative_path, reference)
 
 
@@ -336,21 +345,21 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
         state = control.load_state()
     except HistoryControlError as exc:
         raise HistoryPartitionRepackError("history repack source control is unavailable") from exc
-    active = state.active_snapshot
-    if active is None:
-        raise HistoryPartitionRepackError("history repack source has no active snapshot")
-    calendar = next((item for item in state.calendars if item.content_hash == active.calendar_hash), None)
-    universe = next((item for item in state.universes if item.content_hash == active.universe_hash), None)
+    current_snapshot = state.published_snapshot
+    if current_snapshot is None:
+        raise HistoryPartitionRepackError("history repack source has no published snapshot")
+    calendar = next((item for item in state.calendars if item.content_hash == current_snapshot.calendar_hash), None)
+    universe = next((item for item in state.universes if item.content_hash == current_snapshot.universe_hash), None)
     if calendar is None or universe is None:
         raise HistoryPartitionRepackError("history repack source snapshot parents are unavailable")
-    if len({item.relative_path for item in active.partitions}) != requirements.expected_partition_count:
+    if len({item.relative_path for item in current_snapshot.partitions}) != requirements.expected_partition_count:
         raise HistoryPartitionRepackError("history repack source partition count is invalid")
     if len(calendar.open_dates) != requirements.expected_trading_days:
         raise HistoryPartitionRepackError("history repack source trading-day count is invalid")
-    files = _source_files(root, active)
+    files = _source_files(root, current_snapshot)
     return _SourceContext(
         state,
-        active,
+        current_snapshot,
         files,
         CanonicalDigest(files),
         sum(item.size_bytes for item in files if item.relative_path != _CONTROL_NAME),
@@ -359,8 +368,10 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
     )
 
 
-def _source_files(root: Path, active: HistoryActiveSnapshot) -> tuple[HistoryPartitionRepackSourceFileIdentity, ...]:
-    paths = tuple(sorted({_CONTROL_NAME, *(item.relative_path for item in active.partitions)}))
+def _source_files(
+    root: Path, current_snapshot: HistorySnapshot
+) -> tuple[HistoryPartitionRepackSourceFileIdentity, ...]:
+    paths = tuple(sorted({_CONTROL_NAME, *(item.relative_path for item in current_snapshot.partitions)}))
     values: list[HistoryPartitionRepackSourceFileIdentity] = []
     for relative in paths:
         path = root / relative
@@ -408,8 +419,8 @@ def _require_state_source(
     if (
         state.source_root != str(layout.source_root)
         or state.target_root != str(layout.target_root)
-        or state.source_snapshot_hash != context.active.content_hash
-        or state.source_sequence != context.active.sequence
+        or state.source_snapshot_hash != context.current_snapshot.content_hash
+        or state.source_sequence != context.current_snapshot.sequence
         or state.source_file_identity_hash != context.source_file_identity_hash
         or state.source_files != context.source_files
         or state.expected_partition_count != requirements.expected_partition_count
@@ -495,9 +506,9 @@ def _partition_facts(path: Path, snapshot_sequence: int) -> _PartitionFacts:
             latest = cast(
                 int,
                 connection.run(
-                    "SELECT COUNT(*) FROM daily_observations AS current "
+                    "SELECT COUNT(*) FROM daily_price_observation AS current "
                     "WHERE current.sync_sequence <= ? AND NOT EXISTS ("
-                    "SELECT 1 FROM daily_observations AS newer "
+                    "SELECT 1 FROM daily_price_observation AS newer "
                     "WHERE newer.trade_date=current.trade_date AND newer.code=current.code "
                     "AND newer.sync_sequence <= ? AND newer.sync_sequence > current.sync_sequence)",
                     (snapshot_sequence, snapshot_sequence),
@@ -577,23 +588,25 @@ def _optional_journal(path: Path) -> HistoryPartitionRepackActivationJournal | N
     return ReadHistoryPartitionRepackActivationJournal(path) if path.exists() else None
 
 
-def _require_stable_snapshot(root: Path, expected_hash: str) -> None:
+def _require_stable_snapshot(root: Path, expected_hash: str, reference_base: Path) -> None:
     try:
-        active = HistoryControlIndex(root / _CONTROL_NAME).load_state().active_snapshot
+        current_snapshot = (
+            HistoryControlIndex(root / _CONTROL_NAME).load_state(reference_base=reference_base).published_snapshot
+        )
     except HistoryControlError as exc:
         raise HistoryPartitionRepackError("history repack stable control is unavailable") from exc
-    if active is None or active.content_hash != expected_hash:
+    if current_snapshot is None or current_snapshot.content_hash != expected_hash:
         raise HistoryPartitionRepackError("history repack stable snapshot identity is invalid")
     _clear_empty_control_sidecars(root / _CONTROL_NAME)
 
 
 def _stable_snapshot_hash(root: Path) -> str | None:
     try:
-        active = HistoryControlIndex(root / _CONTROL_NAME).load_state().active_snapshot
+        current_snapshot = HistoryControlIndex(root / _CONTROL_NAME).load_state().published_snapshot
     except (HistoryControlError, OSError):
         return None
     _clear_empty_control_sidecars(root / _CONTROL_NAME)
-    return active.content_hash if active is not None else None
+    return current_snapshot.content_hash if current_snapshot is not None else None
 
 
 def _clear_empty_control_sidecars(path: Path) -> None:
@@ -697,5 +710,5 @@ __all__ = [
     "HistoryPartitionRepackCoordinator",
     "HistoryPartitionRepackError",
     "HistoryPartitionRepackFenceError",
-    "RequireHistoryPartitionRepackInactive",
+    "RequireHistoryRepackIdle",
 ]

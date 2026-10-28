@@ -113,7 +113,7 @@ class SharedHistoryProjection:
         for profile in self._profiles:
             profile.bind_outcome_manifest(manifest)
             profile.record_maintenance(
-                "loading", stage="reading_active_snapshot", total_units=len(manifest.universe_codes)
+                "loading", stage="reading_published_snapshot", total_units=len(manifest.universe_codes)
             )
         entries = self._scan(manifest, budget)
         confirmed = self._history.manifest()
@@ -170,7 +170,7 @@ class SharedHistoryProjection:
             for profile in self._profiles:
                 profile.record_maintenance(
                     "loading",
-                    stage="reading_active_snapshot",
+                    stage="reading_published_snapshot",
                     completed_units=completed,
                     total_units=len(manifest.universe_codes),
                 )

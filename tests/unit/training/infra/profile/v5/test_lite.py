@@ -158,19 +158,19 @@ def test_runtime_rejects_threads_exceeding_cpu_affinity(monkeypatch):
 
 @pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")
 def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_samples(tmp_path):
-    from tests.unit.training.infra.profile.v5.test_v5_training import ROOT, _archive
+    from tests.unit.training.infra.profile.v5.test_v5_training import ROOT, _history
     from trader.training.infra.engine import ProfileTrainingRequest, _sample_cache_for, _training_contract_hash
     from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
     profile = V5_TRAINING_PROFILE
-    snapshot = _archive(tmp_path / "history").snapshot
+    snapshot = _history(tmp_path / "history").snapshot
     settings = LoadProfileTrainingSettings(ROOT, "v5")
 
     def identities(options):
         split = BuildTrainingDateSplit(
             snapshot.calendar.open_dates,
-            parent_manifest_hash=snapshot.active_snapshot_hash,
+            parent_manifest_hash=snapshot.snapshot_hash,
             fit_dates=options.fit_dates,
             history_sessions=62,
             annual_fit=True,

@@ -1,4 +1,4 @@
-"""Resolve the training cadence from the active history and bundle identities."""
+"""Resolve the training cadence from the published history and bundle identities."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from trader.download.domain.history_control import HistoryActiveSnapshot
+from trader.download.domain.history_control import HistorySnapshot
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
@@ -47,8 +47,8 @@ from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 
 @dataclass(frozen=True)
 class HistoryTrainingDueEvaluation:
-    archive_root: Path
-    active_snapshot: HistoryActiveSnapshot
+    history_root: Path
+    published_snapshot: HistorySnapshot
     state: TrainingDueState
     bundle: ActiveHeadBundle | None
     revised_dates: tuple[date, ...]
@@ -57,7 +57,7 @@ class HistoryTrainingDueEvaluation:
 
 @dataclass(frozen=True)
 class HistoryTrainingDueQuery:
-    archive_root: Path
+    history_root: Path
     training_root: Path
     observed_at: datetime
     profile: TrainedProfileContract
@@ -71,36 +71,36 @@ class HistoryTrainingDueQuery:
 def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainingDueEvaluation | None:
     """Read and persist one immutable due observation.
 
-    A missing active snapshot is intentionally returned as ``None``: callers
+    A missing published snapshot is intentionally returned as ``None``: callers
     project that condition as ``history_manifest_unavailable`` instead of
     fabricating a cadence baseline.
     """
 
-    archive_root = query.archive_root
+    history_root = query.history_root
     profile = query.profile
     strategy = query.strategy
     expected_training_contract_hash = query.expected_training_contract_hash
-    control = HistoryControlIndex(archive_root / "catalog.sqlite3")
-    maintenance = TrainingMaintenanceIndex(archive_root / "catalog.sqlite3")
+    control = HistoryControlIndex(history_root / "catalog.sqlite3")
+    maintenance = TrainingMaintenanceIndex(history_root / "catalog.sqlite3")
     try:
         state = control.load_state()
     except HistoryControlError:
         return None
-    active = state.active_snapshot
-    if active is None:
+    current_snapshot = state.published_snapshot
+    if current_snapshot is None:
         return None
-    calendar = next((item for item in state.calendars if item.content_hash == active.calendar_hash), None)
+    calendar = next((item for item in state.calendars if item.content_hash == current_snapshot.calendar_hash), None)
     if calendar is None:
         return None
 
     bundle, bundle_invalid = (
         (next((item for item in query.inspected if item.strategy is strategy), None), query.inspected_invalid)
         if query.inspected is not None
-        else _active_bundle(query.training_root, profile, strategy)
+        else _current_bundle(query.training_root, profile, strategy)
     )
-    current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, profile, strategy)
+    current_label_cutoff = _mature_label_cutoff(calendar.open_dates, current_snapshot.data_cutoff, profile, strategy)
     if bundle_invalid:
-        due_identity = _due_identity(query, active.content_hash, None, invalid=True)
+        due_identity = _due_identity(query, current_snapshot.content_hash, None, invalid=True)
         due = CalculateTrainingDue(
             TrainingDueRequest(
                 due_identity=due_identity,
@@ -115,7 +115,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
         )
         if query.persist:
             due = _persist_due_observation(maintenance, due)
-        return HistoryTrainingDueEvaluation(archive_root, active, due, None, (), ())
+        return HistoryTrainingDueEvaluation(history_root, current_snapshot, due, None, (), ())
     baseline_cutoff = bundle.label_cutoff if bundle is not None else None
     baseline = (
         next((item for item in state.snapshots if item.content_hash == bundle.training_input_hash), None)
@@ -124,12 +124,12 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     )
     data_complete = bundle is None or baseline is not None
     revised_dates: tuple[date, ...] = ()
-    if bundle is not None and baseline is not None and baseline.content_hash != active.content_hash:
+    if bundle is not None and baseline is not None and baseline.content_hash != current_snapshot.content_hash:
         try:
             revised_dates = _revised_dates_since_bundle(
-                archive_root,
+                history_root,
                 baseline,
-                active,
+                current_snapshot,
                 calendar.open_dates,
                 bundle.label_cutoff,
             )
@@ -144,7 +144,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
         revised_dates,
         dependency_sessions=profile.history_sessions - 1,
     )
-    due_identity = _due_identity(query, active.content_hash, bundle.metadata_hash if bundle else None)
+    due_identity = _due_identity(query, current_snapshot.content_hash, bundle.metadata_hash if bundle else None)
     due_identity += ":" + CanonicalResearchHash((data_complete, revised_dates, current_label_cutoff))[:16]
     due = CalculateTrainingDue(
         TrainingDueRequest(
@@ -164,8 +164,8 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     elif previous is not None:
         due = previous
     return HistoryTrainingDueEvaluation(
-        archive_root,
-        active,
+        history_root,
+        current_snapshot,
         due,
         bundle,
         revised_dates,
@@ -200,44 +200,44 @@ def _due_identity(
 
 
 def _revised_dates_since_bundle(
-    archive_root: Path,
-    baseline: HistoryActiveSnapshot,
-    active: HistoryActiveSnapshot,
+    history_root: Path,
+    baseline: HistorySnapshot,
+    current_snapshot: HistorySnapshot,
     calendar_dates: tuple[date, ...],
     baseline_label_cutoff: date,
 ) -> tuple[date, ...]:
     start = calendar_dates[0]
-    end = min(baseline_label_cutoff, baseline.data_cutoff, active.data_cutoff)
+    end = min(baseline_label_cutoff, baseline.data_cutoff, current_snapshot.data_cutoff)
     if start > end:
         return ()
     baseline_months = {(item.calendar_year, item.calendar_month): item for item in baseline.partitions}
-    active_months = {(item.calendar_year, item.calendar_month): item for item in active.partitions}
-    archive = HistorySnapshotReader(archive_root)
+    current_months = {(item.calendar_year, item.calendar_month): item for item in current_snapshot.partitions}
+    history = HistorySnapshotReader(history_root)
     revisions: set[date] = set()
     for year, month in RouteHistoryMonths(start, end):
-        if (year, month) not in baseline_months or (year, month) not in active_months:
+        if (year, month) not in baseline_months or (year, month) not in current_months:
             raise HistorySnapshotReadError("history snapshot comparison month is missing")
         month_start = max(start, date(year, month, 1))
         month_end = min(end, date(year, month, month_calendar.monthrange(year, month)[1]))
         baseline_reference = baseline_months[(year, month)]
-        physical_reference = active_months[(year, month)]
+        physical_reference = current_months[(year, month)]
         if month_start > month_end or baseline_reference == physical_reference:
             continue
         revisions.update(
-            archive.revised_dates(
+            history.revised_dates(
                 month_start,
                 month_end,
                 HistoryPartitionRevisionComparison(
                     physical_reference,
                     baseline.sequence,
-                    active.sequence,
+                    current_snapshot.sequence,
                 ),
             )
         )
     return tuple(sorted(revisions))
 
 
-def _active_bundle(
+def _current_bundle(
     training_root: Path,
     profile: TrainedProfileContract,
     strategy: Strategy,
