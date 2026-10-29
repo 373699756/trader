@@ -1,5 +1,12 @@
 # Scripts
 
+`diagnose_runtime.py --profile price-repair-audit --history-root data/market/history --command-timeout-seconds 1800`
+exports up to 50 locally recorded problem stocks into an external SQLite copy, rehearses additive repair metadata,
+requests complete BaoStock windows serially (minimum 1.5 seconds between daily queries), and checks that the previous
+snapshot remains unchanged. It never repairs active prices. An explicit `--database-probe-directory /absolute/external/path`
+retains the isolated copy for inspection or continuation; reuse only the copy created by this audit. Report output uses
+the usual external `--output` option. A timeout is an incomplete run, not a successful repair audit.
+
 `scripts/diagnose_runtime.py` is the only public runtime diagnostic command.
 Its profile implementations live under `scripts/runtime_diagnostics/` and
 must return bounded, sanitized summaries. A new runtime probe is added as a

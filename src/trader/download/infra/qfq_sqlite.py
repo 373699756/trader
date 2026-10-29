@@ -14,6 +14,9 @@ from uuid import uuid4
 
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.domain.price_repair import PriceIssue
+from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PRICE_SOURCE_CHECK_SQL, PriceRepairAttempts, RecordTencentCheck, TencentRecheckDue
+from trader.download.infra.published_history_codec import EncodePublishedHistoryCell, DecodePublishedHistoryCellPayload
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
 from trader.download.infra.history_sqlite_read_connection import WatchHistoryRead
 from trader.download.infra.price_columns import (
@@ -53,6 +56,13 @@ _SCHEMA = SqliteSchema(
         "CREATE TABLE window_completion(code TEXT PRIMARY KEY, cutoff_date INTEGER NOT NULL, source TEXT NOT NULL) WITHOUT ROWID",
         "CREATE TABLE window_publication(profile TEXT PRIMARY KEY, publication_id TEXT NOT NULL) WITHOUT ROWID",
     ),
+)
+_REPAIR_SQL = (
+    PRICE_SOURCE_CHECK_SQL,
+    PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
+    "CREATE TABLE IF NOT EXISTS price_issue(code TEXT NOT NULL, trade_date INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS price_candidate(code TEXT NOT NULL, trade_date INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS price_nontrading(code TEXT NOT NULL, trade_date INTEGER NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
 )
 
 
@@ -115,7 +125,70 @@ class SQLiteQfqWindowCache:
     def _write_connection(self) -> Iterator[SqliteConnection]:
         with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
             EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+            for statement in _REPAIR_SQL:
+                connection.run(statement)
             yield connection
+
+    def price_issues(self) -> tuple[PriceIssue, ...]:
+        with self._read_connection() as connection:
+            if connection is None or connection.run("SELECT 1 FROM sqlite_master WHERE name='price_issue'").fetchone() is None:
+                return ()
+            grouped: dict[str, list[date]] = {}
+            reasons: dict[str, str] = {}
+            for code, day, reason in connection.run("SELECT code,trade_date,reason FROM price_issue ORDER BY code,trade_date"):
+                grouped.setdefault(code, []).append(DecodeDate(day))
+                reasons[code] = reason
+        return tuple(PriceIssue(code, tuple(days), reasons[code]) for code, days in grouped.items())
+
+    def repair_cutoff(self) -> date | None:
+        with self._read_connection() as connection:
+            if connection is None:
+                return None
+            row = connection.run("SELECT MAX(trade_date) FROM window_calendar WHERE profile=?", (self.profile,)).require_one()
+            return DecodeDate(row[0]) if row[0] is not None else None
+
+    def record_price_issue(self, issue: PriceIssue, observed: PublishedHistoryWindow | None = None) -> None:
+        _validate_code(issue.code)
+        with self._write_connection() as connection:
+            connection.run_many("INSERT OR REPLACE INTO price_issue VALUES(?,?,?)", ((issue.code, EncodeDate(day), issue.reason) for day in issue.dates))
+            connection.run("DELETE FROM window_completion WHERE code=?", (issue.code,))
+            if observed is not None:
+                if observed.code != issue.code:
+                    raise ValueError("price_issue_identity_conflict")
+                connection.run_many("INSERT OR REPLACE INTO price_candidate VALUES(?,?,?)", ((issue.code, EncodeDate(cell.trade_date), EncodePublishedHistoryCell(cell)) for cell in observed.cells))
+
+    def covered_dates(self, code: str) -> tuple[date, ...]:
+        days = {cell.trade_date for cell in self.read_code(code).cells}
+        with self._read_connection() as connection:
+            if connection is not None and connection.run("SELECT 1 FROM sqlite_master WHERE name='price_nontrading'").fetchone():
+                days.update(DecodeDate(row[0]) for row in connection.run("SELECT trade_date FROM price_nontrading WHERE code=?", (code,)))
+        return tuple(sorted(days))
+
+    def repair_reference(self, code: str) -> PublishedHistoryWindow:
+        cells = {cell.trade_date: cell for cell in self.read_code(code).cells}
+        with self._read_connection() as connection:
+            if connection is not None and connection.run("SELECT 1 FROM sqlite_master WHERE name='price_candidate'").fetchone():
+                for day, payload in connection.run("SELECT trade_date,payload FROM price_candidate WHERE code=?", (code,)):
+                    cell = DecodePublishedHistoryCellPayload(code, DecodeDate(day).isoformat(), payload)
+                    if cell.unadjusted is not None:
+                        cells[cell.trade_date] = cell
+        return PublishedHistoryWindow(code, tuple(cells[day] for day in sorted(cells)))
+
+    def reserve_repair(self, issue: PriceIssue, batch: str, *, explicit: bool) -> bool:
+        with self._write_connection() as connection:
+            return bool(PriceRepairAttempts(connection).reserve(issue.code, issue.dates, batch, explicit=explicit))
+
+    def tencent_recheck_due(self, code: str, calendar: tuple[date, ...]) -> bool:
+        with self._write_connection() as connection:
+            due = TencentRecheckDue(connection, code, calendar)
+            if due:
+                RecordTencentCheck(connection, code, calendar[-1])
+            return due
+
+    def fail_repair(self, code: str, batch: str, reason: str) -> None:
+        with self._write_connection() as connection:
+            PriceRepairAttempts(connection).fail(code, batch, reason.lower())
+            connection.run("UPDATE price_issue SET reason=? WHERE code=?", (reason, code))
 
     def verify_integrity(self) -> None:
         with self._read_connection() as connection:
@@ -351,10 +424,21 @@ class SQLiteQfqWindowCache:
                 )
                 for window in windows
             )
-            if self._matches_windows(peer, targets, source_identity, calendar, completed_day):
+            if not self.price_issues() and self._matches_windows(peer, targets, source_identity, calendar, completed_day):
                 return (), 0
             with self._write_connection() as connection:
                 for code, target in targets:
+                    RecordTencentCheck(connection, code, calendar[-1], initial=source_identity.startswith("baostock:"))
+                    window = next(item for item in windows if item.code == code)
+                    obtained = tuple(cell.trade_date for cell in window.cells if cell.status in ("complete", "supplier_marked_suspended", "tencent_inferred_suspended"))
+                    connection.run("DELETE FROM price_nontrading WHERE code=?", (code,))
+                    connection.run_many("INSERT INTO price_nontrading VALUES(?,?)", ((code, EncodeDate(cell.trade_date)) for cell in window.cells if cell.status in ("supplier_marked_suspended", "tencent_inferred_suspended")))
+                    connection.run_many("DELETE FROM price_candidate WHERE code=? AND trade_date=?", ((code, EncodeDate(day)) for day in obtained))
+                    connection.run_many("DELETE FROM price_issue WHERE code=? AND trade_date=?", ((code, EncodeDate(day)) for day in obtained))
+                    PriceRepairAttempts(connection).resolve(code, obtained, "baostock" if source_identity.startswith("baostock:") else "tencent")
+                    incomplete = tuple(cell.trade_date for cell in window.cells if cell.trade_date not in obtained)
+                    connection.run_many("INSERT OR REPLACE INTO price_issue VALUES(?,?,'price_window_incomplete')", ((code, EncodeDate(day)) for day in incomplete))
+                    unresolved = connection.run("SELECT 1 FROM price_issue WHERE code=? AND trade_date BETWEEN ? AND ? LIMIT 1", (code, EncodeDate(calendar[0]), EncodeDate(calendar[-1]))).fetchone() is not None
                     old = tuple(
                         (row[0], tuple(row[1:]))
                         for row in connection.run(
@@ -400,7 +484,9 @@ class SQLiteQfqWindowCache:
                                 "INSERT OR REPLACE INTO window_binding VALUES (?,?,?,?,?,?)",
                                 (cache.profile, code, *identity),
                             )
-                    if completed_day is not None:
+                    if unresolved:
+                        connection.run("DELETE FROM window_completion WHERE code=?", (code,))
+                    elif completed_day is not None:
                         cursor = connection.run(
                             "INSERT INTO window_completion VALUES (?,?,?) ON CONFLICT(code) DO UPDATE SET cutoff_date=excluded.cutoff_date,source=excluded.source WHERE cutoff_date<>excluded.cutoff_date OR source<>excluded.source",
                             (code, EncodeDate(completed_day), source_identity),

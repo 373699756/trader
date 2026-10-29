@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import signal
+import os
+import subprocess
 from concurrent.futures import CancelledError
 from dataclasses import replace
 from datetime import date
@@ -21,6 +23,29 @@ from trader.entrypoints.cli import BuildParser, Main
 from trader.infra.settings import LoadRuntimeSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("target", ("history", "market"))
+def test_repair_source_is_forwarded_by_shell_and_parser(tmp_path, target):
+    parsed = BuildParser().parse_args(["sync", target, "--repair-source", "baostock"])
+    assert parsed.target == target and parsed.repair_source == "baostock"
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    for name in ("python3", "trader-cli"):
+        path = binary / name
+        path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
+        path.chmod(0o755)
+    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", target, "--repair-source", "baostock"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
+    assert command.returncode == 0, command.stderr
+    assert command.stdout.splitlines()[-4:] == ["sync", target, "--repair-source", "baostock"]
+
+
+@pytest.mark.parametrize("target", ("all", "company"))
+def test_repair_source_rejects_non_price_target_before_configuration(target, monkeypatch):
+    monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
+    with pytest.raises(SystemExit) as error:
+        Main(["sync", target, "--repair-source", "baostock"])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("profile_args", ((), ("v1",)))

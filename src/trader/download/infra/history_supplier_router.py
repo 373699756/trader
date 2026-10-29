@@ -12,7 +12,7 @@ from trader.download.domain.history_price_qualification import (
 )
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.prepared_reference import PreparedReference
-from trader.download.domain.published_history import PublishedHistoryWindow
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
@@ -61,12 +61,17 @@ class HistorySupplierRouter:
                     ("tencent_calendar", price_context.source_versions.content_hash),
                     HISTORY_TAIL_CONTRACT,
                     HISTORY_UNIVERSE_CONTRACT,
+                    ("price-repair", "whole-window-v1"),
                 ),
             ),
         )
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         return FetchTencentHistoryWindow(self._prices, security, dates, self._calendar)
+
+    def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+        result = self._baseline.fetch_code(security, dates)
+        return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in result.batch.cells))
 
 
 def FetchTencentHistoryWindow(

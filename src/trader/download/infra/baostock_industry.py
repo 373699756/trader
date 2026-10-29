@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from datetime import time as daytime
 from functools import partial
+from contextlib import nullcontext
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,7 @@ from trader.download.infra.baostock_session import (
     RateLimitedBaoStockSdk,
 )
 from trader.infra.isolated_call import IsolatedCall
+from trader.infra.process_lock import ProcessLock
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth
 
@@ -48,6 +50,7 @@ class BaoStockIndustryClient:
         timeout_seconds: float = 120.0,
         minimum_rows: int = 4_000,
         monotonic: Callable[[], float] = time.perf_counter,
+        vendor_lock: ProcessLock | None = None,
     ) -> None:
         if timeout_seconds <= 0.0 or minimum_rows < 1:
             raise ValueError("BaoStock industry timeout and minimum rows must be positive")
@@ -55,6 +58,8 @@ class BaoStockIndustryClient:
         self._timeout_seconds = float(timeout_seconds)
         self._minimum_rows = minimum_rows
         self._monotonic = monotonic
+        self._vendor_lock = vendor_lock
+        self._request_lock = threading.Lock()
         self._lock = threading.Lock()
         self._status = ModelIndustrySourceHealth(timeout_seconds=self._timeout_seconds)
 
@@ -64,7 +69,8 @@ class BaoStockIndustryClient:
         with self._lock:
             self._status = replace(self._status, planned_count=self._status.planned_count + 1)
         try:
-            raw_rows = tuple(self._fetch_rows(local.date().isoformat(), self._timeout_seconds))
+            with self._request_lock, self._vendor_lock or nullcontext():
+                raw_rows = tuple(self._fetch_rows(local.date().isoformat(), self._timeout_seconds))
             selected, invalid_rows = _select_current_rows(raw_rows, local.date())
             if len(selected) < self._minimum_rows:
                 raise ValueError("BaoStock current industry snapshot is incomplete")

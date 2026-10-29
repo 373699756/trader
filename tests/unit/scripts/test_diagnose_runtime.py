@@ -62,6 +62,15 @@ def test_removed_index_experiment_is_rejected_before_execution(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
+def test_price_repair_audit_can_resume_its_external_copy_without_empty_directory_preparation():
+    options, _ = _validate(_parser().parse_args(["--profile", "price-repair-audit", "--history-root", "data/market/history", "--database-probe-directory", "/tmp/trader-price-repair-test"]))
+    commands = build_commands(options, python_executable="/python3")
+    assert len(commands) == 1
+    assert commands[0].name == "price_repair_audit"
+    assert commands[0].argv[-2:] == ("--work-root", "/tmp/trader-price-repair-test")
+    assert commands[0].database_probe_directory is None
+
+
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
 def test_local_selected_profile_selects_only_offline_business_checks(profile):
     commands = build_commands(_options(profile="local", scoring_profile=profile), python_executable="/python")

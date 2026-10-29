@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
+from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PriceRepairAttempts
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
@@ -82,6 +83,7 @@ class HistoryDownloadBatch:
 HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
     None,
     (
+        PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
         """
         CREATE TABLE IF NOT EXISTS download_batch (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), sync_sequence INTEGER NOT NULL,
@@ -150,8 +152,8 @@ class HistoryDownloadIndex:
                 ),
             )
             connection.run_many(
-                "INSERT INTO download_tasks(code) VALUES(?)",
-                ((task.code,) for task in tasks),
+                "INSERT INTO download_tasks(code,tencent_done) VALUES(?,?)",
+                ((task.code, int(task.tencent_done)) for task in tasks),
             )
             connection.run_many(
                 "INSERT INTO download_task_dates VALUES(?,?)",
@@ -275,6 +277,7 @@ class HistoryDownloadIndex:
             }
             for completion in completions:
                 task = completion.task
+                PriceRepairAttempts(connection).resolve(task.code, tuple(day for day in task.dates if day not in completion.missing), "tencent")
                 connection.run_many(
                     "DELETE FROM download_qfq_unusable WHERE code=? AND trade_date=?",
                     ((task.code, EncodeDate(day)) for day in task.dates),

@@ -21,6 +21,8 @@ usage() {
     "  ./run.sh sync                    依次更新参考、完整历史、行情窗口与公司资料" \
     "  ./run.sh sync history            单独更新完整历史，自动续传" \
     "  ./run.sh sync market             单独更新行情窗口" \
+    "  ./run.sh sync history --repair-source baostock  只用BaoStock重试历史缺口" \
+    "  ./run.sh sync market --repair-source baostock   只用BaoStock重试行情窗口缺口" \
     "  ./run.sh sync company            单独更新公司资料" \
     "  ./run.sh train                   历史维护后处理全部档位 V1、V2、V3、V5" \
     "  ./run.sh train v1,v5             历史维护后只训练所列档位" \
@@ -59,7 +61,7 @@ case "${1:-}" in
     ;;
 esac
 
-if (($# > 1)); then
+if [[ "$MODE" != "sync" ]] && (($# > 1)); then
   printf '%s\n' '用法：./run.sh [档位列表] 或 ./run.sh train [档位列表]；列表以逗号分隔。' >&2
   exit 2
 fi
@@ -67,6 +69,10 @@ if (($#)); then
   if [[ "$MODE" == "sync" ]]; then
     if [[ "$1" != "history" && "$1" != "market" && "$1" != "company" ]]; then
       printf '%s\n' '用法：./run.sh sync [history|market|company]' >&2
+      exit 2
+    fi
+    if (($# != 1)) && { (($# != 3)) || [[ "$2" != "--repair-source" || "$3" != "baostock" || "$1" == "company" ]]; }; then
+      printf '%s\n' '用法：./run.sh sync [history|market|company]；history/market 可加 --repair-source baostock。' >&2
       exit 2
     fi
   else
@@ -84,7 +90,7 @@ if (($#)); then
       SEEN_PROFILES+="$profile,"
     done
   fi
-  FORWARD_ARGS=("$1")
+  FORWARD_ARGS=("$@")
 fi
 
 if [[ "$MODE" == "sync" ]]; then

@@ -19,6 +19,8 @@ function Show-Usage {
   .\run.ps1 sync                    依次更新参考、完整历史、行情窗口与公司资料
   .\run.ps1 sync history            单独更新完整历史，自动续传
   .\run.ps1 sync market             单独更新行情窗口
+  .\run.ps1 sync history --repair-source baostock  只用BaoStock重试历史缺口
+  .\run.ps1 sync market --repair-source baostock   只用BaoStock重试行情窗口缺口
   .\run.ps1 sync company            单独更新公司资料
   .\run.ps1 train                   历史维护后处理全部档位 V1、V2、V3、V5
   .\run.ps1 train v1,v5             历史维护后只训练所列档位
@@ -52,8 +54,10 @@ if ($Mode -in @("help", "-h", "--help")) {
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
 if ($Mode -eq "sync") {
-    if ($ForwardArgs.Count -gt 1 -or ($ForwardArgs.Count -eq 1 -and $ForwardArgs[0] -notin @("history", "market", "company"))) {
-        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]")
+    $ValidTarget = $ForwardArgs.Count -eq 0 -or $ForwardArgs[0] -in @("history", "market", "company")
+    $ValidRepair = $ForwardArgs.Count -eq 3 -and $ForwardArgs[0] -in @("history", "market") -and $ForwardArgs[1] -eq "--repair-source" -and $ForwardArgs[2] -eq "baostock"
+    if (-not $ValidTarget -or ($ForwardArgs.Count -gt 1 -and -not $ValidRepair)) {
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]；history/market 可加 --repair-source baostock。")
         exit 2
     }
 } elseif ($ForwardArgs.Count -gt 0) {

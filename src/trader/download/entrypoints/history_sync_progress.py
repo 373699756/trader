@@ -37,6 +37,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "history_st_reference": "历史ST名单",
     "history_published_gaps": "活动历史缺口",
     "history_gap_resume": "旧断点恢复",
+    "baostock_repair": "BaoStock补缺",
     "history_gap_inventory": "统计历史缺口",
     "persisting_partitions": "正式月库提交",
     "preparing_partitions": "准备月分片",
@@ -66,6 +67,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "sealing_partitions": "月份",
     "history_published_gaps": "月份",
     "history_gap_resume": "处理项",
+    "baostock_repair": "股票",
 }
 _RESULT_LABELS = {
     "completed": "同步完成",
@@ -80,6 +82,7 @@ _COUNT_STAGES = frozenset(
         "history_st_reference",
         "history_published_gaps",
         "history_gap_resume",
+        "baostock_repair",
         "downloading_codes",
         "tencent_history",
         "persisting_partitions",
@@ -93,7 +96,7 @@ _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplie
 
 def _suppress_transient(progress: HistorySyncProgress) -> bool:
     return progress.state in {"started", "waiting"} and not (
-        progress.stage in {"history_published_gaps", "history_gap_resume", "sealing_partitions", "preparing_partitions"}
+        progress.stage in {"history_published_gaps", "history_gap_resume", "baostock_repair", "sealing_partitions", "preparing_partitions"}
         or progress.stage in {"tencent_history", "persisting_prices"}
         and progress.state == "waiting"
     )
@@ -155,6 +158,9 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
             f"价格对待补 {ProgressNumber(gap_summary.price_pair_cells)} 股日",
             f"本轮Tencent失败 {ProgressNumber(gap_summary.failed_codes)} 股",
         )
+    if progress.repair_summary is not None:
+        repair = progress.repair_summary
+        return (f"已尝试 {ProgressNumber(repair.attempted)} 股", f"已修复 {ProgressNumber(repair.repaired)} 股", f"未修复 {ProgressNumber(repair.attempted - repair.repaired)} 股", f"旧缺口不重试 {ProgressNumber(repair.skipped)} 股")
     if progress.st_summary is not None:
         st_summary = progress.st_summary
         return (

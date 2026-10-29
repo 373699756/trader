@@ -35,6 +35,7 @@ class HistoryPriceResult:
     failure: str | None
     coverage: HistoryPriceCoverage | None = None
     unusable_qfq_dates: tuple[date, ...] = ()
+    replacement: PublishedHistoryWindow | None = None
 
 
 class HistoryDirectPrices:
@@ -107,6 +108,11 @@ class HistoryDirectPrices:
 
     def cancel_pending(self) -> None:
         self._activity.cancel()
+
+    def replace_window(self, security: BaoStockSecurity, window: PublishedHistoryWindow, source: Literal["tencent", "baostock"]) -> None:
+        from trader.download.infra.history_price_repair import HistoryPriceRepair
+
+        HistoryPriceRepair(self._root).replace(security, tuple(cell.trade_date for cell in window.cells), window, self, self._sequence, source=source)
 
     def prepare(
         self,

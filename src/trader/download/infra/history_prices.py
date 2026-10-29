@@ -374,6 +374,18 @@ class HistoryPricePartition:
         """Open one thread-confined writer reused across durable batch transactions."""
         return HistoryPriceWriteSession(self, fresh=fresh, pending_sequence=pending_sequence)
 
+    def replace_unpublished_code(self, revisions: tuple[HistoryRevision, ...], sequence: int) -> None:
+        """Replay a validated journal; its owner has checked the catalog publication fence."""
+        if not revisions or any(item.first_seen_sequence != sequence or item.code != revisions[0].code for item in revisions):
+            raise ValueError("history_replacement_revisions_invalid")
+        with closing(self._write_connection()) as connection, SqliteTransaction(connection, immediate=True):
+            self._require_metadata(connection)
+            connection.run_many(
+                "DELETE FROM daily_price_observation WHERE code=? AND trade_date=? AND sync_sequence=?",
+                ((item.code, EncodeDate(item.trade_date), sequence) for item in revisions),
+            )
+            self._save_batch(connection, self._prepare_revisions(revisions))
+
     def read_price_keys(self, keys: tuple[tuple[str, date], ...], sequence: int) -> tuple[HistoryRevision, ...]:
         """Read a bounded stock batch through exact observation/record keys on one connection."""
         result: list[HistoryRevision] = []

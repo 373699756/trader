@@ -17,7 +17,6 @@ from zoneinfo import ZoneInfo
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
-    BaoStockCodeDownload,
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
@@ -58,8 +57,9 @@ class _ComparisonSupplier:
         batch = self.baseline.fetch_code(security, dates).batch
         return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in batch.cells))
 
-    def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
-        return self.baseline.fetch_code(security, dates)
+    def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+        result = self.baseline.fetch_code(security, dates)
+        return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in result.batch.cells))
 
 
 def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) -> dict[str, object]:

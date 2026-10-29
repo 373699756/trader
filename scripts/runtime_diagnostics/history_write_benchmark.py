@@ -114,6 +114,10 @@ class HistoryFixtureSupplier:
             tuple(BaoStockDailyFact(security.code, day, False) for day in dates),
         )
 
+    def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+        result = self.fetch_baostock_prices(security, dates)
+        return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in result.batch.cells))
+
     def _varying_cell(self, code: str, day: date) -> BaoStockDailyCell:
         stock = int(code)
         offset = (day - date(2018, 1, 1)).days

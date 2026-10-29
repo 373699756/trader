@@ -14,6 +14,39 @@ HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 _RAW_ACTIVITY_REL_TOLERANCE = 0.001
 
 
+def QualifyReplacementWindow(
+    expected: tuple[date, ...],
+    previous: PublishedHistoryWindow,
+    incoming: PublishedHistoryWindow,
+) -> PublishedHistoryWindow:
+    """Validate a whole supplier window before replacing its adjustment basis.
+
+    Raw observations establish security/date identity. Adjusted prices deliberately
+    are not compared across suppliers: the caller must publish this entire window
+    with the new source identity, never merge individual adjusted rows.
+    """
+    if (
+        not expected
+        or expected != tuple(sorted(set(expected)))
+        or previous.code != incoming.code
+        or tuple(cell.trade_date for cell in incoming.cells) != expected
+    ):
+        raise RuntimeError("price_replacement_window_identity_conflict")
+    prior = {cell.trade_date: cell for cell in previous.cells}
+    for cell in incoming.cells:
+        if cell.status not in {"complete", "supplier_marked_suspended"}:
+            raise RuntimeError("price_replacement_window_incomplete")
+        before = prior.get(cell.trade_date)
+        if before is None or before.unadjusted is None:
+            continue
+        raw = cell.unadjusted
+        if raw is None or raw.trading_status != before.unadjusted.trading_status:
+            raise RuntimeError("price_replacement_trading_status_conflict")
+        if raw.trading_status == "trading":
+            _require_raw_prices(before.unadjusted, raw)
+    return incoming
+
+
 def _require_raw_overlap(previous: BaoStockDailyCell, incoming: BaoStockDailyCell) -> None:
     before, after = previous.unadjusted, incoming.unadjusted
     if before is None or after is None or before.trading_status != after.trading_status:

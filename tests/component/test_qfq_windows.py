@@ -491,7 +491,7 @@ def test_unpaired_only_window_does_not_report_no_trade_data_or_success(tmp_path)
     )
     assert result.no_trade_data_codes == result.completed_codes == 0
     assert result.pending_codes == 1
-    assert [(item.reason, item.count) for item in result.pending_reasons] == [("qfq_no_trade_bars", 1)]
+    assert [(item.reason, item.count) for item in result.pending_reasons] == [("tencent_history_pending", 1)]
 
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
@@ -788,10 +788,10 @@ def test_incomplete_supplier_gap_preserves_only_returned_pairs(tmp_path) -> None
     )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
-    assert result.completed_codes == 1 and result.pending_codes == 0
-    assert len(updater.v2.read_code("600001").cells) == 249
-    assert len(updater.v3.read_code("600001").cells) == 59
-    assert not any("结果 待重试" in message for message in logs)
+    assert result.completed_codes == 0 and result.pending_codes == 1
+    assert updater.v2.read_code("600001").cells == ()
+    assert updater.v3.read_code("600001").cells == ()
+    assert any("结果 待重试" in message for message in logs)
 
 
 def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_path) -> None:
@@ -832,16 +832,16 @@ def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_p
         )
         observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
         result = updater.execute(observed)
-        assert result.completed_codes == 3 and result.pending_codes == 1
+        assert result.completed_codes == 2 and result.pending_codes == 2
         assert [event[0] for event in events] == ["tencent"] * 4
         assert sum(" | sync market 股票进度 | " in line for line in logs) == 4
-        assert any("已处理 4/4（100.00%） | 合格 3 | 待重试 1" in line for line in logs)
+        assert any("已处理 4/4（100.00%） | 合格 2 | 待重试 2" in line for line in logs)
         for cache in (updater.v2, updater.v3):
-            assert cache.codes() == frozenset({"600001", "600002", "600003"})
+            assert cache.codes() == frozenset({"600002", "600003"})
         before = _fingerprints(tmp_path)
         resumed = updater.execute(observed)
-        assert resumed.skipped_codes == 3 and resumed.pending_codes == 1 and resumed.changed_files == ()
-        assert len(events) == 4
+        assert resumed.skipped_codes == 2 and resumed.pending_codes == 2 and resumed.changed_files == ()
+        assert len(events) == 6
         assert _fingerprints(tmp_path) == before
     finally:
         assert pool.stop(wait=True, cancel_futures=True).completed
@@ -864,7 +864,7 @@ def test_new_day_retries_incomplete_stock_with_tencent(tmp_path) -> None:
     assert all(cell.qfq.close_price == 10 for cell in updater.v2.read_code("600001").cells)
 
 
-def test_qfq_composition_never_constructs_baostock_for_incomplete_tencent(tmp_path, monkeypatch) -> None:
+def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, monkeypatch) -> None:
     from trader import bootstrap
 
     events = []
@@ -874,12 +874,23 @@ def test_qfq_composition_never_constructs_baostock_for_incomplete_tencent(tmp_pa
             events.append("tencent")
             raise QfqWindowIncompleteError(dates, dates)
 
+    class Bao:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def fetch_code(self, security, dates):
+            events.append("baostock")
+            raise RuntimeError("supplier_query_failed")
+
     _install_download_config(tmp_path)
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
     monkeypatch.setattr(
         bootstrap,
         "BaoStockHistorySupplier",
-        lambda *_args, **_kwargs: pytest.fail("qfq must not construct BaoStock"),
+        lambda *_args, **_kwargs: Bao(),
     )
     with HistoryMaintenanceLock(tmp_path / "data/market/.history.lock"):
         result = bootstrap.ExecuteQfqDownload(
@@ -889,7 +900,7 @@ def test_qfq_composition_never_constructs_baostock_for_incomplete_tencent(tmp_pa
             now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
         )
     assert result.completed_codes == 0 and result.pending_codes == 2
-    assert events == ["tencent", "tencent"]
+    assert events == ["tencent", "tencent", "baostock", "baostock"]
     assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2").codes() == frozenset()
 
 

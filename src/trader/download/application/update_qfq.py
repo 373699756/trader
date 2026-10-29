@@ -9,6 +9,7 @@ from datetime import date, datetime
 from itertools import islice
 from time import monotonic
 from typing import Literal, Protocol
+from uuid import uuid4
 
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import (
@@ -19,12 +20,16 @@ from trader.download.application.qfq_download_progress import (
 )
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.history_price_qualification import QualifyReplacementWindow
+from trader.download.domain.price_repair import PriceIssue
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import (
     CompletedDailyCutoff,
     MergeDailyTail,
     QfqUpdateResult,
     QfqWindowSnapshot,
+    QfqPendingReason,
 )
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
 
@@ -47,6 +52,24 @@ class QfqPairPublicationError(RuntimeError):
 
 
 class QfqWindowPort(Protocol):
+    def repair_cutoff(self) -> date | None: ...
+
+    def price_issues(self) -> tuple[PriceIssue, ...]: ...
+
+    def record_price_issue(self, issue: PriceIssue, observed: PublishedHistoryWindow | None = None) -> None: ...
+
+    def repair_reference(self, code: str) -> PublishedHistoryWindow: ...
+
+    def covered_dates(self, code: str) -> tuple[date, ...]: ...
+
+    def tencent_recheck_due(self, code: str, calendar: tuple[date, ...]) -> bool: ...
+
+    def reserve_repair(self, issue: PriceIssue, batch: str, *, explicit: bool) -> bool: ...
+
+    def fail_repair(self, code: str, batch: str, reason: str) -> None: ...
+
+    def source_identity(self, code: str) -> str | None: ...
+
     def replace_paired_windows(
         self,
         peer: QfqWindowPort,
@@ -74,6 +97,10 @@ class QfqSupplierPort(Protocol):
     def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
 
 
+class QfqRepairSupplierPort(Protocol):
+    def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
+
+
 @dataclass(frozen=True)
 class _DownloadPlan:
     security: BaoStockSecurity
@@ -86,6 +113,8 @@ class _DownloadJob:
     security: BaoStockSecurity
     dates: tuple[date, ...]
     previous: PublishedHistoryWindow
+    baostock_basis: bool = False
+    recheck_due: bool = False
 
 
 @dataclass(frozen=True)
@@ -108,6 +137,8 @@ class UpdateQfqWindows:
     worker_pool: WorkerExecutor | None = None
     writer_pool: WorkerExecutor | None = None
     monotonic: Callable[[], float] = monotonic
+    repair_supplier: QfqRepairSupplierPort | None = None
+    repair_only: bool = False
 
     def __post_init__(self) -> None:
         if not 1 <= self.workers <= 12:
@@ -146,7 +177,8 @@ class UpdateQfqWindows:
         started = self.monotonic()
         self.report(QfqMessage(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
         try:
-            context = self.supplier.load_qfq_context(CompletedDailyCutoff(observed_at), 251)
+            cutoff = self.v2.repair_cutoff() if self.repair_only else None
+            context = self.supplier.load_qfq_context(cutoff or CompletedDailyCutoff(observed_at), 251)
         except (RuntimeError, OSError, ValueError) as exc:
             cancelled = self.cancel_requested()
             stage = "已取消" if cancelled else "准备失败"
@@ -182,9 +214,70 @@ class UpdateQfqWindows:
             f"| 阶段耗时 {self.monotonic() - inspection_started:.2f} 秒",
         )
         progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
-        plans = iter(self._plans(context, progress, v2_snapshot, v3_snapshot))
-        failure_reason = self._download_rolling(plans, progress, context.calendar.open_dates[-251:])
+        if self.repair_only:
+            # Older files had no durable issue inventory. Recover absent dates
+            # only for locally published stocks; never schedule the whole universe.
+            for security in context.universe:
+                state = v2_snapshot.state_for(security.code)
+                if state is not None and state.verified:
+                    covered = self.v2.covered_dates(security.code)
+                    absent = tuple(day for day in context.calendar.expected_dates(security) if day <= max(covered) and day not in covered) if covered else ()
+                    if absent:
+                        self.v2.record_price_issue(PriceIssue(security.code, absent, "legacy_window_missing"))
+            failure_reason = None
+        else:
+            plans = iter(self._plans(context, progress, v2_snapshot, v3_snapshot))
+            failure_reason = self._download_rolling(plans, progress, context.calendar.open_dates[-251:])
+        if self.repair_supplier is not None and failure_reason is None and not self.cancel_requested():
+            self._repair(context, progress)
         return progress.finish(self.cancel_requested(), failure_reason=failure_reason)
+
+    def _repair(self, context: HistorySupplierContext, progress: QfqDownloadProgress) -> None:
+        assert self.repair_supplier is not None
+        batch = uuid4().hex
+        securities = {item.code: item for item in context.universe}
+        issues = tuple(item for item in self.v2.price_issues() if item.code in securities and any(day in context.calendar.open_dates for day in item.dates))
+        if self.repair_only:
+            progress.total = len(issues)
+        progress.publish("BaoStock补缺", f"问题股票 {len(issues)} 只 | 串行请求 | 最小间隔 1.5 秒")
+        for issue in issues:
+            if self.cancel_requested():
+                break
+            security = securities.get(issue.code)
+            if security is None:
+                continue
+            dates = context.calendar.expected_dates(security)[-251:]
+            issue = PriceIssue(issue.code, tuple(day for day in issue.dates if day in dates), issue.reason)
+            if not issue.dates or not self.v2.reserve_repair(issue, batch, explicit=self.repair_only):
+                continue
+            try:
+                previous = self.v2.read_code(issue.code)
+                candidate = None
+                if (self.v2.source_identity(issue.code) or "").startswith("baostock:") and previous.cells:
+                    missing = tuple(day for day in dates if day not in {cell.trade_date for cell in previous.cells})
+                    if len(missing) <= 5:
+                        tail = self.repair_supplier.fetch_baostock_window(security, dates[-max(5, len(missing) + 3):])
+                        candidate = MergeDailyTail(previous, tail, dates)
+                if candidate is None:
+                    candidate = self.repair_supplier.fetch_baostock_window(security, dates)
+                candidate = QualifyReplacementWindow(dates, self.v2.repair_reference(issue.code), candidate)
+                files, rows = self.v2.replace_paired_windows(self.v3, (candidate,), f"baostock:{progress.source}", calendar=context.calendar.open_dates[-251:], completed_day=progress.day)
+                progress.changed.update(files)
+                progress.rows += rows
+                progress.publish("BaoStock补缺", f"{issue.code} | 整窗发布成功 | {len(dates)} 股日")
+            except (RuntimeError, OSError, ValueError) as exc:
+                self.v2.fail_repair(issue.code, batch, QfqFailureCode(exc))
+                progress.publish("BaoStock补缺", f"{issue.code} | 未修复 | {QfqFailureCode(exc)}", level=ProgressLevel.WARNING)
+        remaining = tuple(item for item in self.v2.price_issues() if item.code in securities and any(day in context.calendar.open_dates for day in item.dates))
+        # Durable state is authoritative after the second phase; Tencent pending
+        # counters must not continue to report a stock that has been repaired.
+        resolved = len(issues) - len(remaining)
+        progress.completed += resolved
+        progress.pending = len(remaining)
+        reasons: dict[str, int] = {}
+        for issue in remaining:
+            reasons[issue.reason] = reasons.get(issue.reason, 0) + 1
+        progress.pending_reasons = tuple(QfqPendingReason(reason, count) for reason, count in sorted(reasons.items()))
 
     def _plans(
         self,
@@ -200,6 +293,8 @@ class UpdateQfqWindows:
             try:
                 plan = self._prepare_plan(security, dates, progress, v2_snapshot, v3_snapshot)
             except (RuntimeError, OSError, ValueError) as exc:
+                if self.repair_supplier is not None:
+                    self.v2.record_price_issue(PriceIssue(security.code, dates, QfqFailureCode(exc)))
                 progress.record_pending(security, exc, dates, action="本地检查")
                 plan = None
             if plan is not None:
@@ -225,9 +320,10 @@ class UpdateQfqWindows:
         same_source = all(
             state is not None and state.verified and state.source == progress.source for state in (v2_state, v3_state)
         )
+        baostock_source = all(state is not None and state.verified and state.source == f"baostock:{progress.source}" for state in (v2_state, v3_state))
         if (
-            same_source
-            and self.v2.completed(progress.day, security.code, progress.source)
+            (same_source or baostock_source)
+            and self.v2.completed(progress.day, security.code, f"baostock:{progress.source}" if baostock_source else progress.source)
             and bool(dates)
             and v2_state is not None
             and bool(v2_state.dates)
@@ -249,7 +345,7 @@ class UpdateQfqWindows:
                 ),
             )
             return None
-        return _DownloadPlan(security, dates, same_source)
+        return _DownloadPlan(security, dates, same_source or baostock_source)
 
     def _hydrate_wave(self, plans: tuple[_DownloadPlan, ...]) -> tuple[_DownloadJob, ...]:
         reusable_codes = tuple(plan.security.code for plan in plans if plan.reuse_previous)
@@ -263,7 +359,11 @@ class UpdateQfqWindows:
                 previous_index += 1
                 if window.code != plan.security.code:
                     raise RuntimeError("qfq batch read order mismatch")
-            jobs.append(_DownloadJob(plan.security, plan.dates, window))
+            basis = self.repair_supplier is not None and (self.v2.source_identity(plan.security.code) or "").startswith("baostock:")
+            if basis and not window.cells:
+                window = self.v2.read_code(plan.security.code)
+            due = basis and self.v2.tencent_recheck_due(plan.security.code, plan.dates)
+            jobs.append(_DownloadJob(plan.security, plan.dates, window, basis, due))
         return tuple(jobs)
 
     def _download_rolling(
@@ -373,6 +473,8 @@ class UpdateQfqWindows:
             jobs = self._hydrate_wave(plans)
         except (RuntimeError, OSError, ValueError) as exc:
             for plan in plans:
+                if self.repair_supplier is not None:
+                    self.v2.record_price_issue(PriceIssue(plan.security.code, plan.dates, QfqFailureCode(exc)))
                 progress.record_pending(plan.security, exc, plan.dates, action="本地检查")
             return None
         for job in jobs:
@@ -401,6 +503,14 @@ class UpdateQfqWindows:
                 )
                 continue
             except (RuntimeError, OSError, ValueError) as exc:
+                if self.repair_supplier is not None:
+                    dates = job.dates
+                    if isinstance(exc, HistorySupplierPendingError):
+                        dates = tuple(cell.trade_date for cell in exc.window.cells if cell.status not in ("complete", "supplier_marked_suspended", "tencent_inferred_suspended")) or dates
+                    if job.baostock_basis:
+                        previous_dates = {cell.trade_date for cell in self.v2.read_code(job.security.code).cells}
+                        dates = tuple(sorted(set(dates) | (set(job.dates) - previous_dates)))
+                    self.v2.record_price_issue(PriceIssue(job.security.code, dates, QfqFailureCode(exc)), exc.window if isinstance(exc, HistorySupplierPendingError) else None)
                 progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
                 continue
             if all(cell.status == "tencent_inferred_suspended" for cell in window.cells):
@@ -433,6 +543,8 @@ class UpdateQfqWindows:
                 progress.completed += 1
                 self._record_completed(progress, job, window)
             else:
+                if self.repair_supplier is not None:
+                    self.v2.record_price_issue(PriceIssue(job.security.code, job.dates, QfqFailureCode(receipt.failure or RuntimeError("qfq_pair_publication_failed"))))
                 progress.record_pending(
                     job.security,
                     receipt.failure or RuntimeError("qfq_pair_publication_failed"),
@@ -465,8 +577,11 @@ class UpdateQfqWindows:
             raise RuntimeError("qfq cancelled")
         previous_dates = {cell.trade_date for cell in job.previous.cells}
         missing = tuple(day for day in job.dates if day not in previous_dates)
+        if job.baostock_basis and not job.recheck_due:
+            self._fetch(job.security, job.dates[-max(5, min(len(missing) + 3, len(job.dates))):])
+            raise RuntimeError("price_source_basis_conflict")
         window: PublishedHistoryWindow | None = None
-        if job.previous.cells and len(missing) <= 5:
+        if job.previous.cells and len(missing) <= 5 and not job.baostock_basis:
             count = max(3, len(missing) + 3)
             tail = self._fetch(job.security, job.dates[-count:])
             merged = MergeDailyTail(job.previous, tail, job.dates)
@@ -474,6 +589,10 @@ class UpdateQfqWindows:
                 window = merged
         if window is None:
             window = self._fetch(job.security, job.dates)
+        if job.baostock_basis:
+            window = QualifyReplacementWindow(job.dates, self.v2.read_code(job.security.code), window)
+        if any(cell.status not in ("complete", "supplier_marked_suspended", "tencent_inferred_suspended") for cell in window.cells):
+            raise HistorySupplierPendingError(window)
         if not any(cell.status == "complete" for cell in window.cells) and not all(
             cell.status == "tencent_inferred_suspended" for cell in window.cells
         ):

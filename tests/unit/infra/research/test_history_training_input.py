@@ -117,8 +117,8 @@ class _Supplier:
         cells = tuple(replace(cell, qfq=None, status="qfq_missing") for cell in value.batch.cells)
         return BaoStockCodeDownload(BaoStockCodeBatch(security.code, cells), value.daily_facts)
 
-    def fetch_baostock_prices(self, security, dates):
-        return self.fetch_code(security, dates)
+    def fetch_baostock_window(self, security, dates):
+        raise RuntimeError("fixture_baostock_unavailable")
 
 
 @pytest.fixture(scope="module")

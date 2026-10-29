@@ -71,6 +71,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "model-inputs": ("model_inputs",),
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
+    "price-repair-audit": ("price_repair_audit",),
     "market-factor-compare": ("market_factor_compare",),
     "research-source-compare": ("research_source_compare",),
     "history-write": ("history_write_benchmark",),
@@ -337,6 +338,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         "history-write",
         "history-sqlite",
         "download-performance",
+        "price-repair-audit",
     }:
         raise ValueError("--database-probe-directory requires a database performance profile")
     if args.profile == "database-baseline" and args.database_probe_directory is None:
@@ -1033,6 +1035,11 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "price_repair_audit": DiagnosticCommand(
+            "price_repair_audit",
+            (python_executable, "-m", "scripts.runtime_diagnostics.price_repair_audit", "--history-root", str(options.history_root), *(("--work-root", str(options.database_probe_directory)) if options.database_probe_directory is not None else ())),
+            common_timeout,
+        ),
         "history_space": DiagnosticCommand(
             "history_space",
             (
@@ -1136,7 +1143,7 @@ def build_commands(
             else command.argv[:-1] + arguments + command.argv[-1:]
         )
         selected.append(replace(command, name=f"{name}:{selection}", argv=argv))
-    if options.database_probe_directory is not None:
+    if options.database_probe_directory is not None and options.profile != "price-repair-audit":
         selected = [
             replace(
                 command,
@@ -1890,6 +1897,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "baostock_concurrency": _baostock_concurrency_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
     "history_source_compare": _history_sqlite_performance_details,
+    "price_repair_audit": _history_sqlite_performance_details,
     "market_factor_compare": _summary_with_findings,
     "company_ledger_browser": _summary_with_findings,
     "research_source_compare": _research_source_compare_details,

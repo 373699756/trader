@@ -16,6 +16,7 @@ from threading import Event
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
+from trader.download.domain.history_price_qualification import QualifyReplacementWindow
 from trader.download.domain.history_supplier_failure import (
     HISTORY_SUPPLIER_PENDING_REASONS,
     HistorySupplierPendingError,
@@ -29,7 +30,7 @@ from trader.download.domain.history_sync import (
     HistoryTencentSummary,
     HistoryTwoStageSupplier,
 )
-from trader.download.domain.published_history import PublishedHistoryWindow
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_direct_prices import HistoryDirectPrices, HistoryPriceContext, HistoryPriceResult
 from trader.download.infra.history_download_index import (
     HistoryDownloadCompletion,
@@ -37,6 +38,7 @@ from trader.download.infra.history_download_index import (
     HistoryDownloadTask,
 )
 from trader.download.infra.history_prices import HistoryPricePartitionError
+from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.history_sync_failure import HistoryFailureDetail, HistorySyncFailureError
 from trader.download.infra.history_write_tuning import HistoryWriteTuning
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
@@ -94,6 +96,8 @@ class HistoryDownloadFlow:
         self._resources = resources
         self._reused_codes: set[str] = set()
         self._stopped = Event()
+        self._baostock_codes = HistoryPriceRepair(resources.configuration.history_root).baostock_codes()
+        self._recheck_codes = HistoryPriceRepair(resources.configuration.history_root).recheck_due(self._baostock_codes, resources.context.calendar.open_dates)
 
     def _check(self) -> None:
         if self._stopped.is_set() or self._resources.cancel():
@@ -112,6 +116,11 @@ class HistoryDownloadFlow:
     def _prepare(self, result: _TencentResult) -> HistoryPriceResult:
         task, window = result.task, result.window
         security = self._security(task.code)
+        if result.dates and task.code in self._baostock_codes:
+            if task.code not in self._recheck_codes:
+                raise RuntimeError("price_source_basis_conflict")
+            qualified = QualifyReplacementWindow(task.dates, PublishedHistoryWindow(task.code, tuple(ProjectHistoryCell(cell) for cell in result.previous)), window)
+            return HistoryPriceResult(task, (), (), None, replacement=qualified)
         return self._resources.prices.prepare(
             security,
             task,
@@ -126,6 +135,12 @@ class HistoryDownloadFlow:
         self._check()
         results = tuple(item.price for item in batch)
         self._resources.prices.commit_pipeline(results)
+        replacements = tuple(item for item in results if item.replacement is not None)
+        if replacements:
+            self._resources.prices.close_pipeline()
+            for item in replacements:
+                assert item.replacement is not None
+                self._resources.prices.replace_window(self._security(item.task.code), item.replacement, "tencent")
         self._check()
         try:
             self._resources.index.finish(
@@ -266,12 +281,18 @@ class HistoryDownloadFlow:
 
     def _fetch_task(self, task: HistoryDownloadTask) -> _PreparedResult:
         self._check()
+        uses_baostock = bool(task.dates) and task.code in self._baostock_codes
+        if uses_baostock and task.code in self._recheck_codes:
+            task = replace(task, dates=self._resources.context.calendar.expected_dates(self._security(task.code)))
         read_started = time.monotonic()
         previous = self._resources.prices.read_for_download(task.code, task.dates)
         read_seconds = time.monotonic() - read_started
         obtained = {cell.trade_date for cell in previous if cell.obtained}
         missing = set(task.dates) - obtained
         dates = tuple(sorted(missing | set(sorted(obtained)[-5:]))) if missing else ()
+        if uses_baostock and missing and task.code in self._recheck_codes:
+            dates = task.dates
+            HistoryPriceRepair(self._resources.configuration.history_root).record_tencent_check(task.code, dates[-1])
         empty = PublishedHistoryWindow(task.code, ())
         if not dates:
             started = time.monotonic()

@@ -13,6 +13,8 @@ from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from typing import Literal, cast
+from threading import RLock
+from trader.infra.process_lock import ProcessLock
 
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
@@ -204,6 +206,7 @@ class BaoStockHistorySupplier:
         cancel_requested: Callable[[], bool] = lambda: False,
         price_policy: BaoStockRequestPolicy | None = None,
         price_total_seconds: float | None = None,
+        vendor_lock: ProcessLock | None = None,
     ) -> None:
         settings = configuration
         self._context_policy = BaoStockRequestPolicy(settings.supplier_timeout_seconds, settings.supplier_retries)
@@ -223,6 +226,8 @@ class BaoStockHistorySupplier:
         self._cancel_requested = cancel_requested
         self._process: BaseProcess | None = None
         self._connection: Connection | None = None
+        self._vendor_lock = vendor_lock
+        self._serial = RLock()
 
     def __enter__(self) -> BaoStockHistorySupplier:
         return self
@@ -304,8 +309,14 @@ class BaoStockHistorySupplier:
             connection.close()
         if process is not None:
             _terminate(process)
+        if self._vendor_lock is not None:
+            self._vendor_lock.release()
 
     def _request(self, command: _LoadContext | _FetchCode | _FetchIndustry) -> _Response:
+        with self._serial:
+            return self._serial_request(command)
+
+    def _serial_request(self, command: _LoadContext | _FetchCode | _FetchIndustry) -> _Response:
         self._request_deadline = (
             self._monotonic() + self._price_total_seconds
             if isinstance(command, _FetchCode) and self._price_total_seconds is not None
@@ -466,6 +477,8 @@ class BaoStockHistorySupplier:
         if self._process is not None and self._process.is_alive() and self._connection is not None:
             return
         self.close()
+        if self._vendor_lock is not None:
+            self._vendor_lock.acquire()
         process_context = get_context("spawn")
         parent, child = process_context.Pipe()
         process = process_context.Process(

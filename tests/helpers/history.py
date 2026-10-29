@@ -41,8 +41,8 @@ class _PublishedSupplier:
     def fetch_tencent_window(self, security, dates):
         return self.supplier.fetch_tencent_window(security, dates)
 
-    def fetch_baostock_prices(self, security, dates):
-        return self.supplier.fetch_baostock_prices(security, dates)
+    def fetch_baostock_window(self, security, dates):
+        return self.supplier.fetch_baostock_window(security, dates)
 
 
 def RunHistoryFixture(configuration, supplier, **options):

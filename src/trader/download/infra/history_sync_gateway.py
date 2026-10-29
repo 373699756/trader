@@ -26,6 +26,7 @@ class HistorySyncGateway:
     worker_pool: WorkerExecutor | None = None
     writer_pool: WorkerExecutor | None = None
     storage_kind: StorageKind = "unknown"
+    repair_only: bool = False
 
     def download(
         self,
@@ -47,6 +48,7 @@ class HistorySyncGateway:
             worker_pool=self.worker_pool,
             writer_pool=self.writer_pool,
             storage_kind=self.storage_kind,
+            repair_only=self.repair_only,
         )
 
 

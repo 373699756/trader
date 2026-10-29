@@ -4,7 +4,57 @@ from datetime import date
 import pytest
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.download.domain.history_price_qualification import QualifyPriceOverlap
+from trader.download.domain.history_price_qualification import QualifyPriceOverlap, QualifyReplacementWindow
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
+
+
+def test_replacement_uses_whole_new_adjustment_basis():
+    partial, complete = _partial_and_complete(1628280000.0)
+    assert complete.qfq is not None
+    previous = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(complete),))
+    complete = replace(
+        complete,
+        qfq=replace(complete.qfq, open_price=3.0, high_price=3.1, low_price=2.9, close_price=3.0),
+    )
+    incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(complete),))
+    assert QualifyReplacementWindow((partial.trade_date,), previous, incoming) is incoming
+
+
+def test_replacement_rejects_missing_dates_and_unresolved_cells():
+    partial, complete = _partial_and_complete(1628280000.0)
+    previous = PublishedHistoryWindow(partial.code, (ProjectHistoryCell(partial),))
+    with pytest.raises(RuntimeError, match="incomplete"):
+        QualifyReplacementWindow((partial.trade_date,), previous, previous)
+    with pytest.raises(RuntimeError, match="identity_conflict"):
+        QualifyReplacementWindow((partial.trade_date,), previous, PublishedHistoryWindow(partial.code, ()))
+    incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(complete),))
+    with pytest.raises(RuntimeError, match="identity_conflict"):
+        QualifyReplacementWindow((date(2026, 10, 22), partial.trade_date), previous, incoming)
+
+
+def test_replacement_checks_raw_even_when_previous_qfq_is_missing():
+    partial, complete = _partial_and_complete(1628280000.0)
+    previous = PublishedHistoryWindow(partial.code, (ProjectHistoryCell(partial),))
+    assert complete.unadjusted is not None
+    altered = replace(complete, unadjusted=replace(complete.unadjusted, volume=1.0))
+    incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(altered),))
+    with pytest.raises(RuntimeError, match="raw_price_conflict"):
+        QualifyReplacementWindow((partial.trade_date,), previous, incoming)
+
+
+def test_replacement_does_not_turn_observed_trading_into_suspension():
+    partial, complete = _partial_and_complete(1628280000.0)
+    previous = PublishedHistoryWindow(partial.code, (ProjectHistoryCell(partial),))
+    assert complete.unadjusted is not None and complete.qfq is not None
+    suspended = replace(
+        complete,
+        status="supplier_marked_suspended",
+        unadjusted=replace(complete.unadjusted, trading_status="suspended", volume=0.0, amount=0.0),
+        qfq=replace(complete.qfq, trading_status="suspended", volume=0.0, amount=0.0),
+    )
+    incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(suspended),))
+    with pytest.raises(RuntimeError, match="trading_status_conflict"):
+        QualifyReplacementWindow((partial.trade_date,), previous, incoming)
 
 
 def _partial_and_complete(amount: float) -> tuple[BaoStockDailyCell, BaoStockDailyCell]:

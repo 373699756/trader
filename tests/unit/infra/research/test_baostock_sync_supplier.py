@@ -36,6 +36,41 @@ class _Clock:
         return self.value
 
 
+def test_supplier_serializes_callers_and_rejects_another_vendor_owner(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from time import sleep
+    from trader.infra.process_lock import ProcessLock, ProcessLockError
+
+    supplier = BaoStockHistorySupplier(HistorySyncConfiguration(tmp_path / "history", tmp_path / "reference"))
+    active = 0
+    maximum = 0
+    barrier = Barrier(2)
+
+    def request(_command):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        sleep(0.02)
+        active -= 1
+        return None
+
+    monkeypatch.setattr(supplier, "_serial_request", request)
+
+    def caller():
+        barrier.wait(timeout=2)
+        supplier._request(None)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        list(workers.map(lambda _: caller(), range(2)))
+    assert maximum == 1
+    path = tmp_path / "vendor.lock"
+    with ProcessLock(path):
+        with BaoStockHistorySupplier(HistorySyncConfiguration(tmp_path / "history", tmp_path / "reference"), vendor_lock=ProcessLock(path)) as other:
+            with pytest.raises(ProcessLockError):
+                other._start(_Attempt(1, 1))
+
+
 def test_price_total_deadline_survives_page_activity_and_bounds_retries(tmp_path, monkeypatch) -> None:
     import trader.download.infra.baostock_sync_supplier as supplier_module
 

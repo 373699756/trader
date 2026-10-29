@@ -84,6 +84,9 @@ class FakeSupplier:
     calls: list[tuple[str, tuple[date, ...]]] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
 
+    def fetch_baostock_window(self, security, dates):
+        raise RuntimeError("fixture_baostock_unavailable")
+
     def load_context(
         self,
         _as_of: date,

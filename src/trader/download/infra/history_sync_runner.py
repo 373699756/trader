@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from pathlib import Path
+from uuid import uuid4
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
@@ -29,13 +30,15 @@ from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
+    HistoryRepairSummary,
     HistorySyncConfiguration,
     HistorySyncProgress,
     HistorySyncProgressPort,
     HistorySyncProgressStage,
     HistoryTwoStageSupplier,
 )
-from trader.download.domain.qfq_window import CompletedDailyCutoff
+from trader.download.domain.qfq_window import CompletedDailyCutoff, MergeDailyTail
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_control_index import (
     HistoryControlError,
@@ -45,6 +48,8 @@ from trader.download.infra.history_control_index import (
     InspectHistoryDisk,
 )
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
+from trader.download.infra.history_price_repair import HistoryPriceRepair
+from trader.download.infra.history_download_flow import DownloadFailure
 from trader.download.infra.history_download_flow import HistoryDownloadFlow, HistoryDownloadResources
 from trader.download.infra.history_download_index import HistoryDownloadBatch, HistoryDownloadIndex, HistoryDownloadTask
 from trader.download.infra.history_reference_index import (
@@ -97,6 +102,7 @@ class _HistorySync:
     index: HistoryDownloadIndex
     storage_kind: StorageKind
     write_tuning: HistoryWriteTuning | None
+    repair_only: bool = False
 
     def execute(self) -> HistoryMaintenanceStatus:
         published = False
@@ -107,7 +113,9 @@ class _HistorySync:
             if not _has_sufficient_disk(self.configuration.history_root, self.configuration.minimum_free_bytes):
                 return _status("blocked", "disk_space_insufficient", self.configuration, current_snapshot)
             pending = self.index.pending(current_snapshot.sequence if current_snapshot else 0)
-            target = pending.cutoff if pending else CompletedDailyCutoff(self.observed_at)
+            if self.repair_only and pending is not None and any(not task.tencent_done and task.dates for task in self.index.tasks()):
+                return _status("blocked", "history_download_incomplete", self.configuration, current_snapshot)
+            target = pending.cutoff if pending else current_snapshot.data_cutoff if self.repair_only and current_snapshot is not None else CompletedDailyCutoff(self.observed_at)
             inputs = self._prepare(current_snapshot, pending, target, previous)
             if inputs is None:
                 unresolved = self.index.gap_summary(tuple(previous)) if current_snapshot is not None else None
@@ -121,7 +129,7 @@ class _HistorySync:
                 )
             snapshot = self._download(inputs, current_snapshot)
             published = True
-            if pending is not None and target < CompletedDailyCutoff(self.observed_at):
+            if not self.repair_only and pending is not None and target < CompletedDailyCutoff(self.observed_at):
                 continue
             unresolved = self.index.gap_summary(tuple(item.code for item in inputs.context.universe))
             return _status(
@@ -158,6 +166,9 @@ class _HistorySync:
             tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
         )
         tasks = _download_tasks(context, current_snapshot, previous, self.index, self.configuration.reread_sessions)
+        if self.repair_only:
+            gaps = self.index.gaps_by_code()
+            tasks = tuple(HistoryDownloadTask(item.code, gaps.get(item.code, ()), tencent_done=True) for item in context.universe)
         if (
             current_snapshot
             and not any(task.dates for task in tasks)
@@ -259,6 +270,8 @@ class _HistorySync:
             self.cancel,
         )
         prices = HistoryDirectPrices(root, inputs.batch.sequence, current_snapshot, activity, fresh=inputs.fresh)
+        repair = HistoryPriceRepair(root)
+        repair.replay(inputs.batch.sequence)
         flow = HistoryDownloadFlow(
             HistoryDownloadResources(
                 self.configuration,
@@ -273,11 +286,48 @@ class _HistorySync:
                 self.progress,
             )
         )
-        flow.tencent()
+        if not self.repair_only:
+            flow.tencent()
+        prices.prepare_retry_pass()
+        gaps = self.index.gaps_by_code()
+        batch_id = uuid4().hex
+        selected = tuple(item for item in inputs.context.universe if item.code in gaps)
+        attempted = repaired = 0
+        _publish_progress(self.progress, "baostock_repair", "started", (0, len(selected)))
+        for completed, security in enumerate(selected, 1):
+            if self.cancel():
+                raise KeyboardInterrupt
+            dates = inputs.context.calendar.expected_dates(security)
+            eligible = tuple(day for day in gaps[security.code] if day in dates)
+            if not repair.reserve(security.code, eligible, batch_id, explicit=self.repair_only):
+                continue
+            attempted += 1
+            try:
+                candidate = None
+                if repair.source(security.code, inputs.batch.sequence) == "baostock":
+                    previous = PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in prices.read(security.code, dates)))
+                    obtained = {cell.trade_date for cell in previous.cells if cell.status in ("complete", "supplier_marked_suspended")}
+                    missing = tuple(day for day in dates if day not in obtained)
+                    if len(missing) <= 5:
+                        tail = self.supplier.fetch_baostock_window(security, dates[-max(5, len(missing) + 3):])
+                        candidate = MergeDailyTail(previous, tail, dates)
+                if candidate is None:
+                    candidate = self.supplier.fetch_baostock_window(security, dates)
+                repair.replace(security, dates, candidate, prices, inputs.batch.sequence)
+            except (OSError, RuntimeError, ValueError) as exc:
+                repair.fail(security.code, batch_id, DownloadFailure(exc))
+                if self.progress is not None:
+                    self.progress.publish(HistorySyncProgress("baostock_repair", "failed", completed, len(selected), security.code, failure_reason=DownloadFailure(exc)))
+            else:
+                repaired += 1
+                _publish_progress(self.progress, "baostock_repair", "completed", (completed, len(selected)), security.code)
+        repair.replay(inputs.batch.sequence)
+        if self.progress is not None:
+            self.progress.publish(HistorySyncProgress("baostock_repair", "completed", len(selected), len(selected), repair_summary=HistoryRepairSummary(attempted, repaired, len(selected) - attempted)))
         remaining_gaps = self.index.gaps_by_code()
         for security in inputs.context.universe:
-            if gaps := remaining_gaps.get(security.code):
-                prices.record_missing(security, gaps)
+            if missing_dates := remaining_gaps.get(security.code):
+                prices.record_missing(security, missing_dates)
         if self.cancel():
             raise KeyboardInterrupt
         partitions = prices.publishable_partitions(
@@ -329,6 +379,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     writer_pool: WorkerExecutor | None = None,
     write_tuning: HistoryWriteTuning | None = None,
     storage_kind: StorageKind = "unknown",
+    repair_only: bool = False,
 ) -> HistoryMaintenanceStatus:
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -353,6 +404,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
             ):
                 raise RuntimeError("history_format_requires_rebuild")
             control.initialize()
+            HistoryPriceRepair(configuration.history_root).initialize()
             return _HistorySync(
                 configuration,
                 supplier,
@@ -365,6 +417,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 index,
                 storage_kind,
                 write_tuning,
+                repair_only,
             ).execute()
     except KeyboardInterrupt:
         return _status("cancelled", "cancelled", configuration, _safe_snapshot(control))
@@ -493,7 +546,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         state=state,
         reason=reason,
         history_root=root,
-        selected_baseline_source="tencent_with_baostock_reference",
+        selected_baseline_source="tencent_then_baostock_repair",
         efficient_daily_source="tencent",
         snapshot_hash=snapshot.content_hash if snapshot is not None else None,
         data_cutoff=snapshot.data_cutoff if snapshot is not None else None,

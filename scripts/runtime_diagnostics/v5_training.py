@@ -83,6 +83,9 @@ class _FrozenSubsetSupplier:
             tuple(BaoStockDailyFact(row.code, row.trade_date, row.is_st) for row in rows if row.is_st is not None),
         )
 
+    def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+        raise RuntimeError("isolated_frozen_source_has_no_network_repair")
+
     def _rows(self, code: str, dates: tuple[date, ...]) -> tuple[HistoryRevision, ...]:
         allowed = frozenset(dates)
         return tuple(row for row in self._revisions[code] if row.trade_date in allowed)

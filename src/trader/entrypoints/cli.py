@@ -51,6 +51,7 @@ def BuildParser() -> argparse.ArgumentParser:
     )
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
+    sync.add_argument("--repair-source", choices=("baostock",), help="仅补充 history/market 的已记录价格缺口。")
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
@@ -78,6 +79,8 @@ def BuildParser() -> argparse.ArgumentParser:
 def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     parser = BuildParser()
     args = parser.parse_args(argv)
+    if args.command == "sync" and args.repair_source is not None and args.target not in ("history", "market"):
+        parser.error("--repair-source 仅支持 sync history 或 sync market")
     try:
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
@@ -106,7 +109,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
         with ManualCancellation() as cancelled:
-            result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set)
+            result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set, repair_source=args.repair_source)
         _report_sync_failure(result)
         print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True))
         return result.exit_code

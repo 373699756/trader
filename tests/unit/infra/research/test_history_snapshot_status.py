@@ -80,8 +80,8 @@ class _Supplier:
     def fetch_baostock_raw(self, security, dates):
         return self.fetch_code(security, dates)
 
-    def fetch_baostock_prices(self, security, dates):
-        return self.fetch_code(security, dates)
+    def fetch_baostock_window(self, security, dates):
+        raise RuntimeError("fixture_baostock_unavailable")
 
 
 def test_missing_history_is_read_only_and_reports_the_current_snapshot_boundary(tmp_path: Path) -> None:

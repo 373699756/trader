@@ -31,6 +31,11 @@ from trader.training.infra.research.historical_industry_evidence import AuditPub
 
 
 class Baseline(FakeSupplier):
+    def fetch_code(self, security, dates):
+        # These fixtures exercise Tencent-only recovery. Serial second-source
+        # success is covered by test_price_repair_pipeline.
+        raise RuntimeError("fixture_baostock_unavailable")
+
     def load_industry_context(self, calendar, universe, *, industry_cache=None):
         return self.load_context(
             calendar.open_dates[-1], len(calendar.open_dates), universe=universe, industry_cache=industry_cache
@@ -335,7 +340,8 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert baseline.calls == []
     assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
     assert supplier_settings["configuration"].supplier_retries == 2
-    assert "price_policy" not in supplier_settings
+    assert supplier_settings["price_policy"].retries == 0
+    assert supplier_settings["vendor_lock"] is not None
     snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     assert snapshot is not None
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)

@@ -35,6 +35,7 @@ Profile = Literal[
     "model-inputs",
     "history-sqlite",
     "history-source-compare",
+    "price-repair-audit",
     "market-factor-compare",
     "research-source-compare",
     "history-write",

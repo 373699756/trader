@@ -31,6 +31,7 @@ HistorySyncProgressStage = Literal[
     "supplier_daily_qfq",
     "supplier_routing",
     "tencent_history",
+    "baostock_repair",
     "history_st_reference",
     "history_published_gaps",
     "history_gap_inventory",
@@ -115,6 +116,17 @@ class HistoryGapSummary:
             )
         ):
             raise ValueError("history gap summary is invalid")
+
+
+@dataclass(frozen=True)
+class HistoryRepairSummary:
+    attempted: int
+    repaired: int
+    skipped: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.repaired <= self.attempted or self.skipped < 0:
+            raise ValueError("history_repair_summary_invalid")
 
 
 @dataclass(frozen=True)
@@ -229,6 +241,7 @@ class HistorySyncProgress:
     current_name: str | None = None
     industry_missing_codes: int | None = None
     failure_detail: str | None = None
+    repair_summary: HistoryRepairSummary | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -310,6 +323,8 @@ class HistoryTwoStageSupplier(Protocol):
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext: ...
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
+
+    def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
 
 
 __all__ = [

@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from flask import Flask
@@ -33,7 +33,7 @@ from trader.download.entrypoints.history_sync_progress import StderrHistorySyncP
 from trader.download.infra import company_document_files, company_facts_reader
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
-from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
@@ -180,9 +180,9 @@ def _post_external_http(url: str, *, headers: Mapping[str, str], json: object, t
         return transport.post(url, headers=headers, json=json, timeout=timeout)
 
 
-def BuildIndustrySource(*, cancel_requested: Callable[[], bool] | None = None) -> BaoStockIndustryClient:
+def BuildIndustrySource(*, cancel_requested: Callable[[], bool] | None = None, vendor_lock: ProcessLock | None = None) -> BaoStockIndustryClient:
     execute = partial(RunIsolatedCall, cancel_requested=cancel_requested)
-    return BaoStockIndustryClient(fetch_rows=partial(FetchBaoStockIndustries, execute=execute))
+    return BaoStockIndustryClient(fetch_rows=partial(FetchBaoStockIndustries, execute=execute), vendor_lock=vendor_lock)
 
 
 def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
@@ -194,8 +194,11 @@ def PrepareRuntimeStorage(settings: RuntimeSettings, *, choose: bool = False, re
 
 
 def ExecuteSync(
-    config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False
+    config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
+    repair_source: Literal["baostock"] | None = None,
 ) -> SyncResult:
+    if repair_source is not None and target not in ("history", "market"):
+        raise ValueError("repair_source_requires_price_target")
     settings = LoadRuntimeSettings(config_path)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
@@ -211,8 +214,9 @@ def ExecuteSync(
             progress=history_progress,
             cancel_requested=cancel_requested,
             storage_medium=settings.storage_medium,
+            repair_only=repair_source is not None,
         ),
-        market=lambda reference: ExecuteQfqDownload(paths, reference=reference, cancel_requested=cancel_requested),
+        market=lambda reference: ExecuteQfqDownload(paths, reference=reference, cancel_requested=cancel_requested, repair_only=repair_source is not None),
         company=lambda reference: _sync_company_evidence(
             settings.data_paths,
             progress,
@@ -327,7 +331,7 @@ def _prepare_reference(
             FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
         )
         industry = CurrentIndustryPublication(
-            reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested)
+            reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested, vendor_lock=ProcessLock(reference_root / "baostock.lock", label="BaoStock"))
         )
         dependencies = ReferencePreparationDependencies(
             source.fetch,
@@ -413,6 +417,7 @@ def ExecuteHistoryDownload(
     clock: Callable[[], datetime] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
     storage_medium: StorageMedium | None = None,
+    repair_only: bool = False,
 ) -> HistoryMaintenanceStatus:
     storage_kind = StorageProbe(storage_medium).inspect(configuration.history_root).kind
     if reference is None:
@@ -430,7 +435,9 @@ def ExecuteHistoryDownload(
     http_resources = ExitStack()
     try:
         history_writer.start()
-        with BaoStockHistorySupplier(configuration, progress=progress, cancel_requested=cancel_requested) as baseline:
+        with BaoStockHistorySupplier(configuration, progress=progress, cancel_requested=cancel_requested,
+                                     vendor_lock=ProcessLock(configuration.reference_root / "baostock.lock", label="BaoStock"),
+                                     price_policy=BaoStockRequestPolicy(configuration.supplier_timeout_seconds, 0)) as baseline:
             http_pool = TencentSessionPool(
                 tuple(
                     http_resources.enter_context(OpenExternalHttp()) for _index in range(configuration.history_workers)
@@ -441,7 +448,7 @@ def ExecuteHistoryDownload(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
                 )
             )
-            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, storage_kind)).execute(
+            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, storage_kind, repair_only)).execute(
                 configuration,
                 HistorySupplierRouter(
                     baseline,
@@ -469,6 +476,7 @@ def ExecuteQfqDownload(
     cancel_requested: Callable[[], bool] = lambda: False,
     report: Callable[[ProgressMessage], None] | None = None,
     now: Callable[[], datetime] = _utc_now,
+    repair_only: bool = False,
 ) -> QfqUpdateResult:
     """Compose explicit short-window maintenance without building the server."""
     if report is None:
@@ -496,6 +504,13 @@ def ExecuteQfqDownload(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
                 )
             )
+            baseline = http_resources.enter_context(BaoStockHistorySupplier(
+                HistorySyncConfiguration(paths.history, paths.reference),
+                cancel_requested=cancel_requested,
+                price_policy=BaoStockRequestPolicy(45.0, 0),
+                vendor_lock=ProcessLock(paths.reference / "baostock.lock", label="BaoStock"),
+            ))
+            repair_supplier = HistorySupplierRouter(baseline, tencent, reference)
             updater = UpdateQfqWindows(
                 v2,
                 v3,
@@ -505,6 +520,8 @@ def ExecuteQfqDownload(
                 workers=8,
                 worker_pool=qfq_pool,
                 writer_pool=qfq_writer,
+                repair_supplier=repair_supplier,
+                repair_only=repair_only,
             )
             return QfqUpdateRunner(
                 history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now
