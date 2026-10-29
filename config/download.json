@@ -20,10 +20,19 @@
     "document_workers": 2,
     "document_failure_retry_seconds": 86400.0,
     "document_transient_retry_seconds": 900.0,
+    "document_ocr_timeout_seconds": 120.0,
+    "document_ocr_max_pages": 50,
+    "document_ocr_dpi": 150,
+    "document_ocr_languages": "chi_sim+eng",
     "document_limits": {
       "max_bytes": 16777216,
       "max_pages": 200,
       "max_text_characters": 1000000
+    },
+    "extended_document_limits": {
+      "max_bytes": 67108864,
+      "max_pages": 1000,
+      "max_text_characters": 2000000
     }
   },
   "online_qfq": {

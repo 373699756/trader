@@ -53,6 +53,11 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 "reused_partitions": company.reused_partitions,
                 "pending_partitions": company.pending_partitions,
                 "pending_documents": company.pending_documents,
+                "ocr_documents": company.ocr_documents,
+                "unextractable_documents": company.unextractable_documents,
+                "next_document_retry_at": company.next_document_retry_at.isoformat()
+                if company.next_document_retry_at
+                else None,
                 "news_population_codes": company.news_population_codes,
                 "news_coverage": company.news_coverage,
                 "failures": company.failures,

@@ -102,7 +102,17 @@ DOCUMENT_RETRY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS document_retries (
   disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,
   record_hash TEXT NOT NULL, retry_policy_id TEXT NOT NULL, failure TEXT NOT NULL, attempted_at TEXT NOT NULL,
-  retry_at TEXT NOT NULL, attempts INTEGER NOT NULL
+  retry_at TEXT NOT NULL, attempts INTEGER NOT NULL,
+  payload_hash BLOB CHECK(payload_hash IS NULL OR length(payload_hash)=32)
+)
+"""
+
+DOCUMENT_EXTRACTION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS document_extractions (
+  disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,
+  record_hash TEXT NOT NULL, payload_hash BLOB NOT NULL CHECK(length(payload_hash)=32),
+  method TEXT NOT NULL CHECK(method IN ('text','ocr')), policy_id TEXT NOT NULL,
+  quality REAL CHECK(quality IS NULL OR (quality>=0 AND quality<=100)), extracted_at TEXT NOT NULL
 )
 """
 
@@ -133,4 +143,4 @@ DISCLOSURE_QUERY_SCHEMA = (
     "CREATE INDEX IF NOT EXISTS disclosure_query_source_rows ON disclosure_query_rows(source_key)",
 )
 
-__all__ = ["SCHEMA", "DOCUMENT_RETRY_SCHEMA", "DISCLOSURE_QUERY_SCHEMA"]
+__all__ = ["SCHEMA", "DOCUMENT_EXTRACTION_SCHEMA", "DOCUMENT_RETRY_SCHEMA", "DISCLOSURE_QUERY_SCHEMA"]

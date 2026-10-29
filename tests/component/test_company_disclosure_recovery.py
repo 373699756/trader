@@ -94,7 +94,7 @@ def test_cancellation_preserves_cursor_without_source_circuit_or_retry_cooldown(
 
         def document(self, item):
             documents.append(item.identity)
-            return "本公司收到证监会立案告知书，已被立案调查。"
+            return fixtures._extraction("本公司收到证监会立案告知书，已被立案调查。")
 
     source = Source()
     dependencies = CompanyEvidenceDependencies(
@@ -132,8 +132,10 @@ def test_document_failure_retains_retry_and_reason(tmp_path, monkeypatch, failur
     result = fixtures._sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: clock[0], events.append), ("600001",), NOW
     )
-    assert result.pending_documents == 1
-    assert result.failures == (f"risk_documents:{failure}", "risk_documents:pending")
+    transient = str(failure) == "disclosure_document_parse_timeout"
+    assert result.pending_documents == int(transient)
+    expected = (f"risk_documents:{failure}", "risk_documents:pending") if transient else ()
+    assert result.failures == expected
     assert max(event.failed_documents for event in events) == 1
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 1
@@ -383,11 +385,12 @@ def test_failed_pdf_does_not_block_healthy_document(tmp_path, error):
             self.documents.append(item.identity)
             if item.identity == "0":
                 raise error
-            return "完整核验正文"
+            return fixtures._extraction("完整核验正文")
 
     source = Source()
     result = _run(index, source)
-    assert source.documents == ["0", "1"] and result.pending_documents == 1
+    assert source.documents == ["0", "1"]
+    assert result.pending_documents == int(not isinstance(error, CompanySourceFailure) or error.status_code != 404)
     assert "risk_documents:source_stopped" not in result.failures
 
 

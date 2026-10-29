@@ -1,6 +1,7 @@
 """Fresh SQLite, production use case and reader contracts without supplier writes."""
 
 import json
+import hashlib
 import sqlite3
 import time
 from dataclasses import replace
@@ -14,6 +15,8 @@ from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
+    CompanyDocumentExtraction,
+    CompanyDocumentPolicies,
     CompanyEvidenceRequest,
     CompanyListing,
     CompanyRatio,
@@ -43,6 +46,12 @@ NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
 _TEST_COMPANY_CONFIGURATION = replace(
     LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2]), document_workers=1
 )
+_TEST_DOCUMENT_POLICIES = CompanyDocumentPolicies("test-text", "test-ocr", "test-limits")
+
+
+def _extraction(text: str) -> CompanyDocumentExtraction:
+    complete = text if len(text.strip()) >= 80 else (text + "\n") * (80 // max(1, len(text)) + 2)
+    return CompanyDocumentExtraction(complete, "text", hashlib.sha256(complete.encode()).digest(), "test-text")
 
 
 def _sync_company_evidence(
@@ -72,7 +81,7 @@ class Sources:
             return DisclosurePage((), 0, False)
         return StructuredCompanyPage(first.component, first.page, 1, 0)
 
-    def document(self, item):
+    def document(self, item, *, route="standard"):
         raise AssertionError("ordinary announcements must not fetch a document")
 
     def split_queries(self, partition):
@@ -125,7 +134,7 @@ def test_compact_reader_binds_rule_identity_and_links_remain_issuer_scoped(tmp_p
         "notice", "关于收到立案告知书的公告", when=datetime.combine(partition.start, NOW.time(), NOW.tzinfo)
     )
     index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
-    index.commit_document(item, "本公司收到证监会立案告知书。")
+    index.commit_document(item, _extraction("本公司收到证监会立案告知书。"), NOW)
     index.publish(("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     assert reader.document_links("600002", ("notice",)) == ()
@@ -321,11 +330,12 @@ def test_unchanged_announcement_does_not_rewrite_document(tmp_path):
     partition = index.partitions(("sse",), NOW)[0]
     item = _disclosure()
     assert index.commit_page(partition, DisclosurePage((item,), 1, False), NOW) == 1
-    index.commit_document(item, "verified body")
+    extraction = _extraction("verified body")
+    index.commit_document(item, extraction, NOW)
     assert index.commit_page(partition, DisclosurePage((item,), 1, False), NOW) == 0
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         digest, checked = connection.run("SELECT body_hash,body_checked FROM disclosures").require_one()
-        assert checked == 1 and index._documents.read(digest) == "verified body"
+        assert checked == 1 and index._documents.read(digest) == extraction.text
     changed = replace(item, title="更正公告", digest="b")
     assert index.commit_page(partition, DisclosurePage((changed,), 1, False), NOW) == 1
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
@@ -821,7 +831,7 @@ def test_announcement_access_denied_preserves_cursor_but_does_not_stop_pdf_host(
             return super().fetch(first, **kwargs)
 
         def document(self, item):
-            return "官方完整正文"
+            return _extraction("官方完整正文")
 
     source = DeniedSources()
     result = _sync_company_evidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
@@ -865,7 +875,7 @@ def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_f
 
         def document(self, item, **kwargs):
             self.documents.append(item.identity)
-            return "本公司收到证监会立案告知书，已被立案调查。"
+            return _extraction("本公司收到证监会立案告知书，已被立案调查。")
 
     source = Resumable()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
@@ -921,7 +931,7 @@ def test_document_failure_counts_unique_pending_documents_and_retries_only_unfin
             self.document_calls += 1
             if self.blocked:
                 raise HttpTimeout("private transport message")
-            return "本公司收到证监会立案告知书，已被立案调查。"
+            return _extraction("本公司收到证监会立案告知书，已被立案调查。")
 
     source = Documents()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
@@ -966,7 +976,7 @@ def test_document_parse_timeout_does_not_starve_later_bodies_or_mark_failed_body
             self.document_calls.append(item.identity)
             if item.identity == "slow" and self.blocked:
                 raise TimeoutError("disclosure_document_parse_timeout")
-            return "本公司收到证监会立案告知书，已被立案调查。"
+            return _extraction("本公司收到证监会立案告知书，已被立案调查。")
 
     source = Documents()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0)
@@ -1018,7 +1028,7 @@ def test_document_parse_timeout_keeps_later_bodies_running_after_long_elapsed_ti
             clock[0] += 24 * 3600
             if item.identity == "slow":
                 raise TimeoutError("disclosure_document_parse_timeout")
-            return "本公司收到证监会立案告知书，已被立案调查。"
+            return _extraction("本公司收到证监会立案告知书，已被立案调查。")
 
     source = SlowDocuments()
     result = _sync_company_evidence(
@@ -1050,7 +1060,7 @@ def test_company_sync_runs_all_components_without_elapsed_time_cutoff(tmp_path, 
         def document(self, item):
             clock[0] += 9 * 3600
             completed.append("documents")
-            return "本公司收到证监会立案告知书，已被立案调查。"
+            return _extraction("本公司收到证监会立案告知书，已被立案调查。")
 
         def news(self, code, *, observed_at):
             clock[0] += 9 * 3600

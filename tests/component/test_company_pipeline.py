@@ -44,7 +44,7 @@ def test_page_batch_publishes_before_directory_finishes_and_restart_keeps_cursor
             return DisclosurePage((item,), 3, query.page < 3)
 
         def document(self, item):
-            return "本公司收到中国证监会立案告知书。"
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     def progress(event):
         events.append(event)
@@ -88,9 +88,9 @@ def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_can
     write_threads = []
     commit = index.commit_document
 
-    def observed_commit(item, text):
+    def observed_commit(item, extraction, extracted_at):
         write_threads.append(get_ident())
-        return commit(item, text)
+        return commit(item, extraction, extracted_at)
 
     monkeypatch.setattr(index, "commit_document", observed_commit)
 
@@ -99,7 +99,7 @@ def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_can
             worker_threads.append(get_ident())
             barrier.wait(timeout=3)
             cancelled.set()
-            return "本公司收到中国证监会立案告知书。"
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     clients = (Source(), Source())
     workers = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="test-company")
@@ -123,7 +123,7 @@ def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_can
         workers.stop(wait=True, cancel_futures=True)
     assert "task:cancelled" in result.failures
     assert len(set(worker_threads)) == 2 and write_threads == [get_ident(), get_ident()]
-    pending = index.pending_documents(("600001",), NOW)
+    pending = index.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert len(pending) == len(items) - 2
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 0
@@ -138,14 +138,28 @@ def test_revision_rejects_late_body_and_dirty_publication_retains_other_issuers(
     changed = replace(item, digest="revised")
     partition = DisclosurePartition("sse", NOW.date(), NOW.date())
     index.commit_page(partition, DisclosurePage((changed,), 1, False), NOW)
-    assert not index.commit_document(item, "过期正文")
-    assert index.pending_documents(("600001",), NOW) == (changed,)
-    assert index.commit_document(changed, "本公司收到中国证监会立案告知书。")
+    assert not index.commit_document(item, fixtures._extraction("过期正文"), NOW)
+    assert tuple(task.disclosure for task in index.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)) == (changed,)
+    assert index.commit_document(changed, fixtures._extraction("本公司收到中国证监会立案告知书。"), NOW)
     assert index.publish(("600001",), NOW, changed_only=True) == 1
     assert reader.read(("600002",))[0] == previous_other
     assert index.publish(("600001",), NOW, changed_only=True) == 0
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM company_dirty_codes WHERE code='600001'").require_one()[0] == 0
+
+
+def test_document_revision_removes_stale_success_metadata(tmp_path):
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    assert index.commit_document(item, fixtures._extraction("原公告完整正文"), NOW)
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM document_extractions").require_one()[0] == 1
+    revised = replace(item, digest="revised")
+    index.commit_page(
+        DisclosurePartition("sse", NOW.date(), NOW.date()), DisclosurePage((revised,), 1, False), NOW
+    )
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM document_extractions").require_one()[0] == 0
 
 
 def test_rule_change_rebuilds_all_existing_issuers_when_requested_subset(tmp_path):
@@ -205,8 +219,43 @@ def test_shared_document_is_selected_once_and_cooling_does_not_starve_ready_docu
     shared = replace(items[0], codes=("600001", "600002"))
     partition = DisclosurePartition("sse", NOW.date(), NOW.date())
     index.commit_page(partition, DisclosurePage((shared, *items[1:]), len(items), False), NOW)
-    index.document_failure(shared, "policy", "timeout", NOW, NOW + timedelta(minutes=15))
-    pending = index.pending_documents(("600001", "600002"), NOW, limit=2, policy="policy")
-    assert len(pending) == 2 and shared.identity not in {item.identity for item in pending}
-    workload = index.document_workload(("600001", "600002"), NOW, "policy")
+    index.document_failure(
+        shared, fixtures._TEST_DOCUMENT_POLICIES.standard, "timeout", NOW, NOW + timedelta(minutes=15)
+    )
+    pending = index.pending_documents(
+        ("600001", "600002"), NOW, limit=2, policies=fixtures._TEST_DOCUMENT_POLICIES
+    )
+    assert len(pending) == 2 and shared.identity not in {task.disclosure.identity for task in pending}
+    workload = index.document_workload(("600001", "600002"), NOW, fixtures._TEST_DOCUMENT_POLICIES)
     assert (workload.pending, workload.due, workload.cooling) == (4, 3, 1)
+
+
+def test_deterministic_document_failure_reopens_only_for_matching_route_policy_or_content(tmp_path):
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    old_policy = "old-text-policy"
+    index.document_failure(item, old_policy, "disclosure_document_no_text", NOW, NOW + timedelta(days=1))
+
+    policies = fixtures._TEST_DOCUMENT_POLICIES
+    tasks = index.pending_documents(("600001",), NOW, limit=10, policies=policies, repair="ocr")
+    assert [(task.disclosure.identity, task.route) for task in tasks] == [(item.identity, "ocr")]
+
+    index.document_failure(
+        item,
+        policies.ocr,
+        "disclosure_document_ocr_low_quality",
+        NOW,
+        NOW + timedelta(seconds=1),
+    )
+    workload = index.document_workload(("600001",), NOW + timedelta(days=2), policies, repair="ocr")
+    assert (workload.pending, workload.due, workload.unextractable) == (1, 0, 1)
+    assert index.pending_documents(
+        ("600001",), NOW + timedelta(days=2), limit=10, policies=policies, repair="ocr"
+    ) == ()
+
+    changed = replace(policies, ocr="test-ocr-v2")
+    assert index.document_workload(("600001",), NOW, changed, repair="ocr").due == 1
+    revised = replace(item, digest="revised")
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date())
+    index.commit_page(partition, DisclosurePage((revised,), 1, False), NOW)
+    assert index.document_workload(("600001",), NOW, policies).due == 1

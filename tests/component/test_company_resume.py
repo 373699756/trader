@@ -25,9 +25,7 @@ def test_document_inventory_switches_progress_before_reading_after_announcement_
     class Index(SQLiteCompanyEvidenceIndex):
         def pending_documents(self, codes, observed_at, **kwargs):
             if not inventories:
-                assert events[-2].component == "announcements" and events[-2].status == "deferred"
-                assert events[-1].component == "risk_documents" and events[-1].status == "running"
-                assert events[-1].pending is None and events[-1].completed == 0
+                assert events[-1].component == "announcements" and events[-1].status == "deferred"
             inventories.append(True)
             return super().pending_documents(codes, observed_at, **kwargs)
 
@@ -223,12 +221,12 @@ def test_oldest_calendar_day_risk_body_is_queued_and_published(tmp_path):
     fixtures._sync_company_evidence(deps, ("600001",), NOW)
     risk = fixtures._disclosure(title="关于收到立案告知书的公告", when=NOW - timedelta(days=365, hours=1))
     index.commit_page(oldest, DisclosurePage((risk,), 1, False), NOW)
-    assert index.pending_documents(("600001",), NOW) == (risk,)
+    assert tuple(task.disclosure for task in index.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)) == (risk,)
 
     class Documents(fixtures.Sources):
         def document(self, item, **kwargs):
             assert item == risk
-            return "本公司收到证监会立案告知书。"
+            return fixtures._extraction("本公司收到证监会立案告知书。")
 
     source = Documents()
     result = fixtures._sync_company_evidence(
@@ -258,7 +256,7 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
             self.attempts += 1
             if self.blocked:
                 raise ValueError("disclosure_document_oversized")
-            return "本公司收到证监会立案告知书。"
+            return fixtures._extraction("本公司收到证监会立案告知书。")
 
     source = Documents()
     events = []
@@ -273,9 +271,9 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     )
     deps = replace(deps, index=index)
     second = fixtures._sync_company_evidence(deps, ("600001",), NOW, configuration=configuration)
-    assert source.attempts == 1 and first.pending_documents == second.pending_documents == 1
+    assert source.attempts == 1 and first.pending_documents == second.pending_documents == 0
     final_body = [event for event in events if event.component == "risk_documents"][-1]
-    assert final_body.deferred_documents == 1 and final_body.attempted_documents == 0
+    assert final_body.unextractable_documents == 1 and final_body.attempted_documents == 0
     assert (
         SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
         is not CompanyDataState.COMPLETE
@@ -286,14 +284,21 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
     elif recovery == "digest":
         index.commit_page(day, DisclosurePage((replace(item, digest="changed"),), 1, False), now)
     else:
-        configuration = replace(configuration, document_parse_timeout_seconds=20)
+        expanded = configuration.extended_document_limits
+        configuration = replace(
+            configuration,
+            extended_document_limits=replace(expanded, max_pages=expanded.max_pages - 1),
+        )
     source.blocked = False
     third = fixtures._sync_company_evidence(deps, ("600001",), now, configuration=configuration)
-    assert source.attempts == 2 and not third.needs_retry
-    assert (
-        SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
-        is CompanyDataState.COMPLETE
-    )
+    if recovery == "expiry":
+        assert source.attempts == 1 and not third.needs_retry
+    else:
+        assert source.attempts == 2 and not third.needs_retry
+        assert (
+            SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].announcement_state
+            is CompanyDataState.COMPLETE
+        )
 
 
 def test_retry_schema_extension_preserves_old_cursors_and_publication(tmp_path):
@@ -305,8 +310,18 @@ def test_retry_schema_extension_preserves_old_cursors_and_publication(tmp_path):
     before = reader.read(("600001",))
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("DROP TABLE document_retries")  # Original deployed schema, isolated fixture only.
+        connection.run(
+            "CREATE TABLE document_retries(disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,"
+            "record_hash TEXT NOT NULL,retry_policy_id TEXT NOT NULL,failure TEXT NOT NULL,attempted_at TEXT NOT NULL,"
+            "retry_at TEXT NOT NULL,attempts INTEGER NOT NULL)"
+        )
     index.initialize()
     index.initialize()
     resumed = index.partitions(("sse",), NOW)[0]
     assert resumed.page == 2 and resumed.received_rows == 1
     assert reader.read(("600001",)) == before
+    with SqliteSession(index.path) as connection:
+        assert "payload_hash" in {row[1] for row in connection.run("PRAGMA table_info(document_retries)")}
+        assert connection.run(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_extractions'"
+        ).fetchone()

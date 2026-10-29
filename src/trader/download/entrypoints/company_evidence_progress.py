@@ -59,6 +59,7 @@ class CompanyEvidenceProgress:
         self._previous: EvidenceSyncProgress | None = None
         self._stocks: dict[str, CompanyStockProgress] = {}
         self._batch = 0
+        self._reported_failures: set[str] = set()
 
     def __call__(self, progress: EvidenceSyncProgress) -> None:
         now = self._monotonic()
@@ -108,12 +109,15 @@ class CompanyEvidenceProgress:
         statuses = {"running": "进行中", "complete": "完成", "reused": "本地复用", "deferred": "待续传"}
         status = "complete" if progress.component == "st_eligibility" and progress.pending == 0 else progress.status
         status_text = statuses[status]
+        if progress.component == "risk_documents" and status == "complete":
+            status_text = "本批结束"
         if progress.component == "news" and progress.completed == progress.pending == 0:
             status_text = "未覆盖"
         failure = progress.failure
-        if progress.status == "running" and previous is not None and progress.component == previous.component:
-            reported = set(previous.failure.split(","))
-            failure = ",".join(item for item in failure.split(",") if item and item not in reported)
+        if progress.component != "complete" and progress.status == "running":
+            current_failures = {item for item in failure.split(",") if item}
+            failure = ",".join(sorted(current_failures - self._reported_failures))
+            self._reported_failures.update(current_failures)
         print(
             f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
             + (f" | 批次 {self._batch}" if self._batch and progress.component != "complete" else "")
@@ -152,7 +156,7 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
     if progress.component == "complete":
         return (
             f"已发布 {progress.completed} 股（含待核实） | 公告待补 {progress.pending} 个范围 | "
-            f"待补正文 {progress.pending_documents} 篇"
+            f"可重试正文 {progress.pending_documents} 篇 | 不可提取/资料未知 {progress.unextractable_documents} 篇"
         )
     if progress.status == "reused":
         return "无需请求，复用有效缓存"
@@ -190,12 +194,21 @@ def _page_counts(progress: EvidenceSyncProgress, unit: str, pending: int) -> str
     if progress.component == "risk_documents":
         return (
             f"已尝试 {progress.attempted_documents}/{total} 篇 | 已提取正文 {progress.completed} 篇 | "
-            f"本轮失败 {progress.failed_documents} 篇 | 冷却暂缓 {progress.deferred_documents} 篇 | 待补 {progress.pending} 篇"
+            f"本轮失败 {progress.failed_documents} 篇 | 当前可处理 {max(0, pending - progress.deferred_documents)} 篇 | "
+            f"冷却暂缓 {progress.deferred_documents} 篇 | OCR分类 {progress.ocr_documents} 篇 | "
+            f"不可提取/资料未知 {progress.unextractable_documents} 篇"
             + (
-                f" | 提取速度 {progress.document_rate * 60:.1f} 篇/分 | 已知待核验预计 {ProgressDuration(progress.document_eta_seconds or 0)}（不含未发现正文及冷却）"
-                if progress.document_rate is not None
+                f" | 提取速度 {progress.document_rate * 60:.1f} 篇/分"
+                f" | 当前队列预计 {ProgressDuration(progress.document_eta_seconds)}"
+                if progress.document_rate is not None and progress.document_eta_seconds is not None
                 else ""
             )
+            + (
+                f" | 最早重试 {progress.next_document_retry_at.isoformat(timespec='seconds')}"
+                if progress.next_document_retry_at is not None
+                else ""
+            )
+            + (" | 公告目录仍在发现新正文" if progress.discovering_documents else "")
         )
     percent = f"{100 * progress.completed / total:.2f}%" if total else "无待处理"
     return f"进度 {progress.completed}/{total} {unit}（{percent}） | 待处理 {progress.pending} {unit}"
@@ -255,8 +268,18 @@ def _failure_text(failure: str) -> str:
         "disclosure_document_short_text": "PDF文字不足80字",
         "disclosure_document_parse_timeout": "PDF解析超时",
         "disclosure_document_unreadable": "PDF无法解析",
-        "disclosure_document_oversized": "PDF超过大小上限",
+        "disclosure_document_oversized": "PDF超过扩展大小上限",
+        "disclosure_document_page_limit": "PDF超过页数上限",
+        "disclosure_document_expanded_page_limit": "PDF超过扩展页数上限",
+        "disclosure_document_text_limit": "PDF文字超过扩展上限",
         "disclosure_document_encrypted": "PDF已加密",
+        "disclosure_document_ocr_unavailable": "本机OCR工具不可用",
+        "disclosure_document_ocr_language_unavailable": "OCR中文语言包不可用",
+        "disclosure_document_ocr_timeout": "OCR超时",
+        "disclosure_document_ocr_unreadable": "OCR无法读取PDF",
+        "disclosure_document_ocr_low_quality": "OCR文字或置信度不足",
+        "disclosure_document_ocr_page_limit": "PDF超过OCR页数上限",
+        "disclosure_document_ocr_resource_limit": "OCR临时资源超过上限",
         "access_denied": "来源拒绝访问",
         "rate_limited": "来源限流",
         "HttpConnectionError": "网络连接失败",
@@ -277,7 +300,7 @@ def _recovery(progress: EvidenceSyncProgress) -> str:
         return ""
     result = " | 下次 sync company 从已提交断点续传，已提取正文复用"
     if "disclosure_document_no_text" in progress.failure or "disclosure_document_short_text" in progress.failure:
-        result += " | 无文本或短文本公告保持待核实"
+        result += " | OCR仍失败的正文标记为不可提取/资料未知，同内容同策略不再重试"
     return result
 
 

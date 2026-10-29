@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.component import test_company_evidence as fixtures
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, Disclosure, DisclosurePage, DisclosurePartition
 from trader.download.infra.company_document_files import CompanyDocumentFiles
@@ -31,7 +32,7 @@ def _old_document(index, body):
         connection.run("INSERT INTO partitions(market,start_date,end_date) VALUES('sse',?,?)", (str(old.date()), str(old.date())))
     index.commit_page(partition, DisclosurePage((document,), 1, False), _AT)
     if body is not None:
-        index.commit_document(document, body)
+        index.commit_document(document, fixtures._extraction(body), _AT)
     return old
 
 

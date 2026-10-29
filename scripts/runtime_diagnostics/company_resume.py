@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from scripts.runtime_diagnostics.company_pagination_audit import AuditCompanyPagination
@@ -20,6 +20,9 @@ from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries,
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import (
+    CompanyDocumentExtraction,
+    CompanyDocumentPolicies,
+    CompanyDocumentTask,
     CompanyEvidenceRequest,
     CompanySyncConfiguration,
     Disclosure,
@@ -61,11 +64,20 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         observed_at: datetime,
         *,
         limit: int | None = None,
-        policy: str = "",
+        policies: CompanyDocumentPolicies,
         excluded: Sequence[tuple[str, str, str]] = (),
-    ) -> tuple[Disclosure, ...]:
-        return super().pending_documents(
-            codes, observed_at, limit=min(limit or 32, 32), policy=policy, excluded=excluded
+        repair: Literal["ocr", "limits"] | None = None,
+    ) -> tuple[CompanyDocumentTask, ...]:
+        return cast(
+            tuple[CompanyDocumentTask, ...],
+            super().pending_documents(
+                codes,
+                observed_at,
+                limit=min(limit or 32, 32),
+                policies=policies,
+                excluded=excluded,
+                repair=repair,
+            ),
         )
 
 
@@ -99,9 +111,9 @@ class _ObservedSource(CninfoMarketDisclosureSource):
         )
         return page
 
-    def document(self, item: Disclosure) -> str:
+    def document(self, item: Disclosure, *, route: Literal["standard", "ocr", "limits"] = "standard") -> CompanyDocumentExtraction:
         self.documents += 1
-        return super().document(item)
+        return super().document(item, route=route)
 
 
 def _copy(source: Path, destination: Path, *, deadline: float) -> None:

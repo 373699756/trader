@@ -15,14 +15,19 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import (
+    CompanyDocumentExtraction,
+    CompanyDocumentFailure,
     CompanyDocumentLimits,
+    CompanyDocumentPolicies,
     CompanySourceFailure,
+    DocumentRoute,
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
     DisclosureQuery,
     DisclosureSecurity,
 )
+from trader.download.infra.company_document_ocr import CompanyOcrEngine
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import (
     HttpCancelled,
@@ -35,6 +40,8 @@ from trader.infra.http_contracts import (
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_DOCUMENT_LIMITS = CompanyDocumentLimits()
+_DEFAULT_EXTENDED_LIMITS = CompanyDocumentLimits(64 * 1024 * 1024, 1000, 2_000_000)
+_DEFAULT_POLICIES = CompanyDocumentPolicies("text_3:default", "ocr_1:unavailable", "limits_1:default")
 
 
 class CninfoMarketDisclosureSource:
@@ -48,6 +55,9 @@ class CninfoMarketDisclosureSource:
         document_parse_timeout_seconds: float = 10.0,
         request_interval_seconds: float = 1.0,
         document_limits: CompanyDocumentLimits = _DEFAULT_DOCUMENT_LIMITS,
+        extended_document_limits: CompanyDocumentLimits = _DEFAULT_EXTENDED_LIMITS,
+        document_policies: CompanyDocumentPolicies = _DEFAULT_POLICIES,
+        ocr_engine: CompanyOcrEngine | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         self._session = session
@@ -56,6 +66,9 @@ class CninfoMarketDisclosureSource:
         self._timeout = timeout_seconds
         self._document_parse_timeout = document_parse_timeout_seconds
         self._document_limits = document_limits
+        self._extended_document_limits = extended_document_limits
+        self._document_policies = document_policies
+        self._ocr_engine = ocr_engine
         self._request_interval = request_interval_seconds
         self._cancel_requested = cancel_requested
         self._next_request = 0.0
@@ -217,24 +230,69 @@ class CninfoMarketDisclosureSource:
             delay -= interval
         self._next_request = self._monotonic() + self._request_interval
 
-    def document(self, item: Disclosure) -> str:
+    def document(self, item: Disclosure, *, route: DocumentRoute = "standard") -> CompanyDocumentExtraction:
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
-            raise ValueError("disclosure_document_unavailable")
+            raise CompanyDocumentFailure("disclosure_document_unavailable")
+        limits = self._extended_document_limits if route == "limits" else self._document_limits
         try:
-            response = self._request(
-                lambda: self._session.get(
-                    item.url,
-                    timeout=self._timeout,
-                    deadline=self._monotonic() + self._timeout,
-                    max_response_bytes=self._document_limits.max_bytes,
-                    cancel_requested=self._cancel_requested,
-                ),
-            )
+            response = self._download_document(item, limits.max_bytes)
         except HttpResponseTooLarge as exc:
-            raise ValueError("disclosure_document_oversized") from exc
-        return self._parse_document(response.content)
+            if route == "limits":
+                raise CompanyDocumentFailure("disclosure_document_oversized") from exc
+            try:
+                response = self._download_document(item, self._extended_document_limits.max_bytes)
+            except HttpResponseTooLarge as expanded:
+                raise CompanyDocumentFailure("disclosure_document_oversized") from expanded
+            limits = self._extended_document_limits
+            route = "limits"
+        payload = response.content
+        payload_hash = hashlib.sha256(payload).digest()
+        if route == "ocr":
+            return self._ocr(payload, payload_hash)
+        try:
+            text = self._parse_document(payload, limits)
+        except CompanyDocumentFailure as exc:
+            if exc.reason in {"disclosure_document_no_text", "disclosure_document_short_text", "disclosure_document_unreadable"}:
+                return self._ocr(payload, payload_hash)
+            if route == "standard" and exc.reason in {
+                "disclosure_document_page_limit",
+                "disclosure_document_text_limit",
+            }:
+                try:
+                    text = self._parse_document(payload, self._extended_document_limits)
+                except CompanyDocumentFailure as expanded:
+                    if expanded.reason in {
+                        "disclosure_document_no_text",
+                        "disclosure_document_short_text",
+                        "disclosure_document_unreadable",
+                    }:
+                        return self._ocr(payload, payload_hash)
+                    raise
+                route = "limits"
+            else:
+                raise
+        return CompanyDocumentExtraction(text, "text", payload_hash, self._document_policies.for_route(route))
 
-    def _parse_document(self, payload: bytes) -> str:
+    def _download_document(self, item: Disclosure, max_bytes: int) -> HttpResponse:
+        return self._request(
+            lambda: self._session.get(
+                item.url,
+                timeout=self._timeout,
+                deadline=self._monotonic() + self._timeout,
+                max_response_bytes=max_bytes,
+                cancel_requested=self._cancel_requested,
+            ),
+        )
+
+    def _ocr(self, payload: bytes, payload_hash: bytes) -> CompanyDocumentExtraction:
+        if self._ocr_engine is None:
+            raise CompanyDocumentFailure("disclosure_document_ocr_unavailable", payload_hash=payload_hash)
+        text, quality = self._ocr_engine.extract(payload, payload_hash)
+        return CompanyDocumentExtraction(text, "ocr", payload_hash, self._document_policies.ocr, quality)
+
+    def _parse_document(self, payload: bytes, limits: CompanyDocumentLimits | None = None) -> str:
+        limits = limits or self._document_limits
+        payload_hash = hashlib.sha256(payload).digest()
         self._check_cancelled()
         parse_deadline = self._monotonic() + self._document_parse_timeout
         process = subprocess.Popen(
@@ -243,11 +301,11 @@ class CninfoMarketDisclosureSource:
                 "-m",
                 "trader.download.infra.company_document_parser",
                 "--max-bytes",
-                str(self._document_limits.max_bytes),
+                str(limits.max_bytes),
                 "--max-pages",
-                str(self._document_limits.max_pages),
+                str(limits.max_pages),
                 "--max-text-characters",
-                str(self._document_limits.max_text_characters),
+                str(limits.max_text_characters),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -259,7 +317,7 @@ class CninfoMarketDisclosureSource:
                 self._check_cancelled()
                 remaining = parse_deadline - self._monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("disclosure_document_parse_timeout")
+                    raise CompanyDocumentFailure("disclosure_document_parse_timeout", payload_hash=payload_hash)
                 try:
                     output, _ = process.communicate(input=pending_input, timeout=min(0.1, remaining))
                     break
@@ -278,7 +336,9 @@ class CninfoMarketDisclosureSource:
                 7: "no_text",
                 8: "short_text",
             }
-            raise ValueError(f"disclosure_document_{reason.get(process.returncode, 'unreadable')}")
+            raise CompanyDocumentFailure(
+                f"disclosure_document_{reason.get(process.returncode, 'unreadable')}", payload_hash=payload_hash
+            )
         return output.decode("utf-8")
 
 

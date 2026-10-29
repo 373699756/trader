@@ -13,6 +13,8 @@ from trader.download.domain.prepared_reference import PreparedReference
 Market = Literal["sse", "szse", "bse"]
 Component = Literal["announcements", "financial", "pledge", "unlock", "news"]
 EvidenceProgressState = Literal["running", "complete", "reused", "deferred"]
+DocumentRepairMode = Literal["ocr", "limits"]
+DocumentRoute = Literal["standard", "ocr", "limits"]
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,11 @@ class CompanySyncConfiguration:
     document_failure_retry_seconds: float = 86400.0
     document_transient_retry_seconds: float = 900.0
     document_limits: CompanyDocumentLimits = CompanyDocumentLimits()
+    extended_document_limits: CompanyDocumentLimits = CompanyDocumentLimits(64 * 1024 * 1024, 1000, 2_000_000)
+    document_ocr_timeout_seconds: float = 120.0
+    document_ocr_max_pages: int = 50
+    document_ocr_dpi: int = 150
+    document_ocr_languages: str = "chi_sim+eng"
     directory_batch_pages: int = 20
     document_batch_size: int = 50
     document_workers: int = 1
@@ -49,11 +56,20 @@ class CompanySyncConfiguration:
             self.request_interval_seconds,
             self.document_failure_retry_seconds,
             self.document_transient_retry_seconds,
+            self.document_ocr_timeout_seconds,
         )
         if (
             not 1 <= self.directory_batch_pages <= 100
             or not 1 <= self.document_batch_size <= 200
             or self.document_workers not in {1, 2}
+            or not 1 <= self.document_ocr_max_pages <= 200
+            or not 72 <= self.document_ocr_dpi <= 300
+            or self.document_ocr_timeout_seconds > 600
+            or not self.document_ocr_languages
+            or any(not part.replace("_", "").isalnum() for part in self.document_ocr_languages.split("+"))
+            or self.extended_document_limits.max_bytes < self.document_limits.max_bytes
+            or self.extended_document_limits.max_pages < self.document_limits.max_pages
+            or self.extended_document_limits.max_text_characters < self.document_limits.max_text_characters
         ):
             raise ValueError("company_batch_configuration_invalid")
         if (
@@ -101,6 +117,7 @@ class CompanyEvidenceRequest:
     stock_names: tuple[tuple[str, str], ...] = ()
     event_policy: CompanyEventPolicy = CompanyEventPolicy()
     listings: tuple[CompanyListing, ...] = ()
+    document_repair: DocumentRepairMode | None = None
 
     @classmethod
     def from_reference(
@@ -111,6 +128,7 @@ class CompanyEvidenceRequest:
         event_policy: CompanyEventPolicy,
         *,
         news_codes: tuple[str, ...] = (),
+        document_repair: DocumentRepairMode | None = None,
     ) -> CompanyEvidenceRequest:
         population = reference.eligible_universe
         return cls(
@@ -121,6 +139,7 @@ class CompanyEvidenceRequest:
             tuple((item.code, item.name) for item in population),
             event_policy,
             tuple(CompanyListing(item.code, item.listed_on) for item in population),
+            document_repair,
         )
 
     def __post_init__(self) -> None:
@@ -288,13 +307,64 @@ class DocumentRetry:
 
 
 @dataclass(frozen=True)
+class CompanyDocumentExtraction:
+    text: str
+    method: Literal["text", "ocr"]
+    payload_hash: bytes
+    policy_id: str
+    quality: float | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            len(self.text.strip()) < 80
+            or len(self.payload_hash) != 32
+            or not self.policy_id
+            or (self.quality is not None and not 0 <= self.quality <= 100)
+        ):
+            raise ValueError("company_document_extraction_invalid")
+
+
+class CompanyDocumentFailure(ValueError):
+    def __init__(self, reason: str, *, payload_hash: bytes | None = None) -> None:
+        if not reason.startswith("disclosure_document_") or (payload_hash is not None and len(payload_hash) != 32):
+            raise ValueError("company_document_failure_invalid")
+        self.reason = reason
+        self.payload_hash = payload_hash
+        super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class CompanyDocumentPolicies:
+    standard: str
+    ocr: str
+    limits: str
+
+    def __post_init__(self) -> None:
+        if not all((self.standard, self.ocr, self.limits)) or len({self.standard, self.ocr, self.limits}) != 3:
+            raise ValueError("company_document_policies_invalid")
+
+    def for_route(self, route: DocumentRoute) -> str:
+        return {"standard": self.standard, "ocr": self.ocr, "limits": self.limits}[route]
+
+
+@dataclass(frozen=True)
+class CompanyDocumentTask:
+    disclosure: Disclosure
+    route: DocumentRoute
+
+
+@dataclass(frozen=True)
 class CompanyDocumentWorkload:
     pending: int
     due: int
+    cooling: int = 0
+    ocr: int = 0
+    unextractable: int = 0
+    next_retry_at: datetime | None = None
 
-    @property
-    def cooling(self) -> int:
-        return self.pending - self.due
+    def __post_init__(self) -> None:
+        if min(self.pending, self.due, self.cooling, self.ocr, self.unextractable) < 0 or self.due > self.pending:
+            raise ValueError("company_document_workload_invalid")
 
 
 @dataclass(frozen=True)
@@ -409,6 +479,10 @@ class EvidenceSyncProgress:
     unknown_queries: int = 0
     document_rate: float | None = None
     document_eta_seconds: float | None = None
+    ocr_documents: int = 0
+    unextractable_documents: int = 0
+    next_document_retry_at: datetime | None = None
+    discovering_documents: bool = False
 
 
 @dataclass(frozen=True)
@@ -425,10 +499,90 @@ class CompanyEvidenceSyncResult:
     pending_documents: int = 0
     news_population_codes: int = 0
     news_coverage: Literal["published_population", "uncovered"] = "uncovered"
+    ocr_documents: int = 0
+    unextractable_documents: int = 0
+    next_document_retry_at: datetime | None = None
 
     @property
     def needs_retry(self) -> bool:
         return bool(self.failures or self.pending_partitions or self.pending_documents)
+
+
+_OCR_FAILURES = frozenset(
+    {
+        "disclosure_document_no_text",
+        "disclosure_document_short_text",
+        "disclosure_document_unreadable",
+        "disclosure_document_ocr_unavailable",
+        "disclosure_document_ocr_language_unavailable",
+        "disclosure_document_ocr_timeout",
+        "disclosure_document_ocr_unreadable",
+        "disclosure_document_ocr_low_quality",
+        "disclosure_document_ocr_page_limit",
+        "disclosure_document_ocr_resource_limit",
+    }
+)
+_LIMIT_FAILURES = frozenset(
+    {
+        "disclosure_document_oversized",
+        "disclosure_document_page_limit",
+        "disclosure_document_expanded_page_limit",
+        "disclosure_document_text_limit",
+    }
+)
+_TRANSIENT_FAILURES = frozenset(
+    {
+        "timeout",
+        "HttpConnectionError",
+        "http_408",
+        "http_500",
+        "http_502",
+        "http_503",
+        "http_504",
+        "disclosure_document_parse_timeout",
+        "access_denied",
+        "rate_limited",
+    }
+)
+
+
+def CompanyDocumentRouteForFailure(failure: str) -> DocumentRoute:
+    if failure in _OCR_FAILURES:
+        return "ocr"
+    if failure in _LIMIT_FAILURES:
+        return "limits"
+    return "standard"
+
+
+def IsTransientCompanyDocumentFailure(failure: str) -> bool:
+    return failure in _TRANSIENT_FAILURES
+
+
+def CompanyDocumentFailureRules() -> tuple[tuple[str, DocumentRoute, bool], ...]:
+    failures = _OCR_FAILURES | _LIMIT_FAILURES | _TRANSIENT_FAILURES
+    return tuple(
+        (failure, CompanyDocumentRouteForFailure(failure), IsTransientCompanyDocumentFailure(failure))
+        for failure in sorted(failures)
+    )
+
+
+def BuildCompanyDocumentPolicies(
+    configuration: CompanySyncConfiguration, ocr_identity: str
+) -> CompanyDocumentPolicies:
+    limits = configuration.document_limits
+    expanded = configuration.extended_document_limits
+    return CompanyDocumentPolicies(
+        standard=(
+            f"text_3:{configuration.document_parse_timeout_seconds:g}:"
+            f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
+        ),
+        ocr=(
+            f"ocr_1:{ocr_identity}:{configuration.document_ocr_timeout_seconds:g}:"
+            f"{configuration.document_ocr_max_pages}:{configuration.document_ocr_dpi}:"
+            f"{configuration.document_ocr_languages}"
+        ),
+        limits=f"limits_1:{expanded.max_bytes}:{expanded.max_pages}:{expanded.max_text_characters}",
+    )
 
 
 def EvidenceMarket(code: str) -> Market:
@@ -448,6 +602,13 @@ def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
 
 
 __all__ = [
+    "BuildCompanyDocumentPolicies",
+    "CompanyDocumentExtraction",
+    "CompanyDocumentFailure",
+    "CompanyDocumentFailureRules",
+    "CompanyDocumentPolicies",
+    "CompanyDocumentRouteForFailure",
+    "CompanyDocumentTask",
     "DisclosureCoverageMismatch",
     "DisclosureSecurity",
     "DisclosureQuery",
@@ -460,6 +621,8 @@ __all__ = [
     "StructuredCompanyQuery",
     "CompanyDocument",
     "DocumentRetry",
+    "DocumentRepairMode",
+    "DocumentRoute",
     "CompanyEvidenceInput",
     "CompanyEvidenceSyncResult",
     "CompanyFinancial",
@@ -473,6 +636,7 @@ __all__ = [
     "EvidenceSyncProgress",
     "EvidenceProgressState",
     "Market",
+    "IsTransientCompanyDocumentFailure",
     "StructuredCompanyPage",
     "CompanySourceFailure",
 ]

@@ -1739,6 +1739,8 @@ def _company_resume_details(
                 "pending_documents",
                 "stored_retry_cooling",
                 "stored_retry_ready",
+                "deterministic_failures",
+                "retry_payload_hashes",
             )
         }
         tables = storage.get("table_bytes")
@@ -1763,6 +1765,18 @@ def _company_resume_details(
                 for row in (rows[:64] if isinstance(rows, list) else [])
                 if isinstance(row, dict)
             ]
+        classes = storage.get("document_failure_classes")
+        projected_storage["document_failure_classes"] = [
+            {"class": row.get("class"), "documents": row.get("documents")}
+            for row in (classes[:16] if isinstance(classes, list) else [])
+            if isinstance(row, dict)
+        ]
+        extractions = storage.get("document_extractions")
+        projected_storage["document_extractions"] = [
+            {"method": row.get("method"), "documents": row.get("documents")}
+            for row in (extractions[:4] if isinstance(extractions, list) else [])
+            if isinstance(row, dict)
+        ]
         selected["local_storage"] = projected_storage
     selected["runs"] = (
         [

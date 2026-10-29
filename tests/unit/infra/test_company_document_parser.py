@@ -13,7 +13,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from tests.unit.infra.test_company_sources import NOW, Session
-from trader.download.domain.company_evidence import CompanyDocumentLimits, Disclosure
+from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyDocumentLimits, Disclosure
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.infra.http_contracts import HttpCancelled, HttpResponse
 
@@ -106,8 +106,8 @@ def test_real_parser_reason_and_config_limits_reach_the_source():
     item = Disclosure(
         "cninfo", "fixture", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
     )
-    with pytest.raises(ValueError, match="disclosure_document_page_limit"):
-        source.document(item)
+    extraction = source.document(item)
+    assert extraction.method == "text" and extraction.policy_id == "limits_1:default"
     assert session.requests[0]["max_response_bytes"] == 65536
 
 
@@ -145,7 +145,8 @@ def test_blocked_parser_is_cancelled_or_times_out_and_is_reaped(monkeypatch, can
     )
     started = time.monotonic()
     try:
-        with pytest.raises(HttpCancelled if cancel else TimeoutError):
+        expected = HttpCancelled if cancel else CompanyDocumentFailure
+        with pytest.raises(expected, match=None if cancel else "disclosure_document_parse_timeout"):
             source._parse_document(b"fixture")
         assert time.monotonic() - started < 5
         assert len(children) == 1 and children[0].poll() is not None

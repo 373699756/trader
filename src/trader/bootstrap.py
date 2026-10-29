@@ -35,6 +35,7 @@ from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
@@ -196,9 +197,14 @@ def PrepareRuntimeStorage(settings: RuntimeSettings, *, choose: bool = False, re
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
     repair_source: Literal["baostock"] | None = None,
+    repair_documents: company_evidence.DocumentRepairMode | None = None,
 ) -> SyncResult:
     if repair_source is not None and target not in ("history", "market"):
         raise ValueError("repair_source_requires_price_target")
+    if repair_documents is not None and target != "company":
+        raise ValueError("repair_documents_requires_company_target")
+    if repair_source is not None and repair_documents is not None:
+        raise ValueError("repair_modes_are_mutually_exclusive")
     settings = LoadRuntimeSettings(config_path)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
@@ -232,6 +238,7 @@ def ExecuteSync(
                     ),
                     clock.now(),
                 ),
+                document_repair=repair_documents,
             ),
             cancel_requested=cancel_requested,
         ),
@@ -254,6 +261,15 @@ def _sync_company_evidence(
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
         heartbeat = resources.enter_context(ProgressHeartbeat(progress))
         configuration = request.configuration
+        ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
+        document_policies = company_evidence.BuildCompanyDocumentPolicies(configuration, ocr_capability.identity)
+        ocr_engine = CompanyOcrEngine(
+            ocr_capability,
+            timeout_seconds=configuration.document_ocr_timeout_seconds,
+            max_pages=configuration.document_ocr_max_pages,
+            dpi=configuration.document_ocr_dpi,
+            cancel_requested=cancel_requested,
+        )
         source_factory = partial(
             CninfoMarketDisclosureSource,
             monotonic=time.monotonic,
@@ -261,6 +277,9 @@ def _sync_company_evidence(
             timeout_seconds=configuration.source_timeout_seconds,
             document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
             document_limits=configuration.document_limits,
+            extended_document_limits=configuration.extended_document_limits,
+            document_policies=document_policies,
+            ocr_engine=ocr_engine,
             request_interval_seconds=configuration.request_interval_seconds,
             cancel_requested=cancel_requested,
         )
@@ -283,7 +302,8 @@ def _sync_company_evidence(
                 paths.company_collection,
                 facts_path=paths.company,
                 documents=company_document_files.CompanyDocumentFiles(
-                    paths.company_documents, max_text_characters=configuration.document_limits.max_text_characters
+                    paths.company_documents,
+                    max_text_characters=configuration.extended_document_limits.max_text_characters,
                 ),
                 cancel_requested=cancel_requested,
                 event_policy=request.event_policy,
@@ -298,6 +318,7 @@ def _sync_company_evidence(
             request.stock_names,
             document_sources=documents,
             document_executor=workers,
+            ocr_identity=ocr_capability.identity,
         )
         return SyncCompanyEvidence(dependencies, request)
 

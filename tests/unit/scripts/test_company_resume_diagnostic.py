@@ -66,7 +66,7 @@ def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, 
             pass
 
         def document(self, item):
-            return "本公司收到中国证监会立案告知书。"
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
     result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
@@ -113,7 +113,8 @@ def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_u
     before = index.path.read_bytes()
     report = AuditCompanyStorage(index.path, now=fixtures.NOW, budget_seconds=5)
     storage = report["summary"]["local_storage"]
-    assert storage["announcement_records"] == storage["pending_documents"] == storage["stored_retry_cooling"] == 1
+    assert storage["announcement_records"] == storage["pending_documents"] == storage["deterministic_failures"] == 1
+    assert storage["stored_retry_cooling"] == storage["stored_retry_ready"] == 0
     assert storage["extracted_bodies"] == 0 and not storage["pdf_archived"]
     assert storage["free_bytes"] >= 0
     assert any(row["name"] == "disclosures" and row["bytes"] > 0 for row in storage["table_bytes"])

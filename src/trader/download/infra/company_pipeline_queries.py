@@ -6,7 +6,15 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
-from trader.download.domain.company_evidence import Disclosure, DisclosurePartition, EvidenceMarket, Market
+from trader.download.domain.company_evidence import (
+    CompanyDocumentFailureRules,
+    CompanyDocumentPolicies,
+    Disclosure,
+    DisclosurePartition,
+    DocumentRepairMode,
+    EvidenceMarket,
+    Market,
+)
 from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
 from trader.infra.sqlite_connection import SqliteConnection
 
@@ -125,8 +133,9 @@ def SelectCompanyDocuments(
     connection: SqliteConnection,
     codes: Sequence[str],
     at: datetime,
-    policy: str,
+    policies: CompanyDocumentPolicies,
     excluded: Sequence[tuple[str, str, str]],
+    repair: DocumentRepairMode | None = None,
 ) -> None:
     connection.run("CREATE TEMP TABLE requested_codes(code TEXT PRIMARY KEY) WITHOUT ROWID")
     connection.run_many("INSERT OR IGNORE INTO temp.requested_codes VALUES(?)", ((code,) for code in codes))
@@ -135,13 +144,48 @@ def SelectCompanyDocuments(
     )
     connection.run_many("INSERT INTO temp.attempted_documents VALUES(?,?,?)", excluded)
     connection.run(
-        "CREATE TEMP TABLE pending_documents AS SELECT d.id, CASE WHEN r.retry_at>? OR EXISTS(SELECT 1 FROM temp.attempted_documents a "
-        "WHERE a.source=d.source AND a.source_key=d.source_key AND a.record_hash=d.record_hash) THEN 0 ELSE 1 END AS due "
+        "CREATE TEMP TABLE document_failure_rules(failure TEXT PRIMARY KEY,route TEXT NOT NULL,transient INTEGER NOT NULL) WITHOUT ROWID"
+    )
+    connection.run_many(
+        "INSERT INTO temp.document_failure_rules VALUES(?,?,?)",
+        ((failure, route, int(transient)) for failure, route, transient in CompanyDocumentFailureRules()),
+    )
+    connection.run(
+        "CREATE TEMP TABLE document_policies(route TEXT PRIMARY KEY,identity TEXT NOT NULL) WITHOUT ROWID"
+    )
+    connection.run_many(
+        "INSERT INTO temp.document_policies VALUES(?,?)",
+        ((route, policies.for_route(route)) for route in ("standard", "ocr", "limits")),
+    )
+    repair_route = repair or ""
+    connection.run(
+        "CREATE TEMP TABLE pending_documents AS SELECT d.id,p.route,r.retry_at,"
+        "CASE WHEN EXISTS(SELECT 1 FROM temp.attempted_documents a WHERE a.source=d.source AND a.source_key=d.source_key "
+        "AND a.record_hash=d.record_hash) OR (?<>'' AND (r.disclosure_id IS NULL OR p.route<>?)) THEN 0 "
+        "WHEN r.disclosure_id IS NULL OR r.retry_policy_id<>p.identity THEN 1 "
+        "WHEN COALESCE(f.transient,0)=1 AND r.retry_at<=? THEN 1 ELSE 0 END AS due,"
+        "CASE WHEN r.disclosure_id IS NOT NULL AND r.retry_policy_id=p.identity AND COALESCE(f.transient,0)=1 "
+        "AND r.retry_at>? THEN 1 ELSE 0 END AS cooling,"
+        "CASE WHEN p.route='ocr' THEN 1 ELSE 0 END AS ocr,"
+        "CASE WHEN r.disclosure_id IS NOT NULL AND r.retry_policy_id=p.identity AND COALESCE(f.transient,0)=0 "
+        "THEN 1 ELSE 0 END AS unextractable "
         "FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
-        "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash AND r.retry_policy_id=? "
+        "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash "
+        "LEFT JOIN temp.document_failure_rules f ON f.failure=r.failure "
+        "JOIN temp.document_policies p ON p.route=COALESCE(f.route,'standard') "
         "WHERE d.body_checked=0 AND d.published_at>=? AND d.published_at<=? "
+        "AND (?='' OR (r.disclosure_id IS NOT NULL AND p.route=?)) "
         "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN temp.requested_codes p ON p.code=c.code WHERE c.disclosure_id=d.id)",
-        (at.isoformat(), policy, (at.date() - timedelta(days=365)).isoformat(), at.isoformat()),
+        (
+            repair_route,
+            repair_route,
+            at.isoformat(),
+            at.isoformat(),
+            (at.date() - timedelta(days=365)).isoformat(),
+            at.isoformat(),
+            repair_route,
+            repair_route,
+        ),
     )
 
 

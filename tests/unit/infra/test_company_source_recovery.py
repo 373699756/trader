@@ -122,10 +122,10 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
     transport = _Transport(clock, [(HttpTimeout("fixture"), 8), (HttpResponse(200, b"PDF fixture"), 0.1)])
     parsed = []
 
-    def parse(self, payload):
+    def parse(self, payload, limits=None):
         parsed.append(payload)
         assert self._document_parse_timeout == 4.0
-        return "verified body"
+        return "verified body " * 8
 
     monkeypatch.setattr(CninfoMarketDisclosureSource, "_parse_document", parse)
     source = CninfoMarketDisclosureSource(
@@ -144,7 +144,7 @@ def test_document_download_retries_before_parsing_once(monkeypatch):
         "https://static.cninfo.com.cn/finalpage/a.PDF",
         "a",
     )
-    assert source.document(item) == "verified body"
+    assert source.document(item).text == "verified body " * 8
     assert len(transport.calls) == 2 and parsed == [b"PDF fixture"]
     assert transport.calls[-1][1]["max_response_bytes"] == 16 * 1024 * 1024
     assert clock.now >= 2.0

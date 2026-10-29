@@ -13,7 +13,14 @@ from urllib.parse import parse_qs
 
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
-from trader.download.domain.company_evidence import DisclosurePartition, DisclosureQuery, DisclosureSecurity, Market
+from trader.download.domain.company_evidence import (
+    CompanyDocumentRouteForFailure,
+    DisclosurePartition,
+    DisclosureQuery,
+    DisclosureSecurity,
+    IsTransientCompanyDocumentFailure,
+    Market,
+)
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
@@ -180,8 +187,9 @@ def AuditCompanyStorage(
     """Count local records and persisted retry reasons without reading bodies into the report."""
     deadline = time.monotonic() + budget_seconds
     cutoff = (now.date() - timedelta(days=365)).isoformat()
-    pending = cooling = ready = 0
+    pending = cooling = ready = deterministic = 0
     failures: dict[str, int] = {}
+    failure_classes: dict[str, int] = {}
     with (
         SqliteSession(
             path,
@@ -221,10 +229,36 @@ def AuditCompanyStorage(
             pending += 1
             if row[1]:
                 failures[row[1]] = failures.get(row[1], 0) + 1
-            if row[2] and datetime.fromisoformat(row[2]) > now:
+                classification = (
+                    "transient"
+                    if IsTransientCompanyDocumentFailure(row[1])
+                    else CompanyDocumentRouteForFailure(row[1])
+                )
+                failure_classes[classification] = failure_classes.get(classification, 0) + 1
+            if row[1] and not IsTransientCompanyDocumentFailure(row[1]):
+                deterministic += 1
+            elif row[2] and datetime.fromisoformat(row[2]) > now:
                 cooling += 1
             else:
                 ready += 1
+        retry_payload_hashes = 0
+        retry_columns = {
+            str(row[1]) for row in connection.run("PRAGMA table_info(document_retries)").fetchall()
+        }
+        if "payload_hash" in retry_columns:
+            retry_payload_hashes = connection.run(
+                "SELECT COUNT(*) FROM document_retries WHERE payload_hash IS NOT NULL"
+            ).require_one()[0]
+        extraction_methods: list[dict[str, object]] = []
+        if connection.run(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_extractions'"
+        ).fetchone():
+            extraction_methods = [
+                {"method": row[0], "documents": row[1]}
+                for row in connection.run(
+                    "SELECT method,COUNT(*) FROM document_extractions GROUP BY method ORDER BY method"
+                )
+            ]
     formal: dict[str, object] = {"available": False}
     if facts_path is not None and facts_path.exists():
         with SqliteSession(facts_path, SqliteConnectionOptions(read_only=True)) as connection:
@@ -257,13 +291,22 @@ def AuditCompanyStorage(
                 "pending_documents": pending,
                 "stored_retry_cooling": cooling,
                 "stored_retry_ready": ready,
+                "deterministic_failures": deterministic,
                 "partition_failures": partition_failures,
                 "document_failures": [
                     {"failure": failure, "documents": count} for failure, count in sorted(failures.items())
                 ],
+                "document_failure_classes": [
+                    {"class": name, "documents": count} for name, count in sorted(failure_classes.items())
+                ],
+                "retry_payload_hashes": retry_payload_hashes,
+                "document_extractions": extraction_methods,
             }
         },
-        "findings": ["company_download_pending"] if partitions or pending else [],
+        "findings": (
+            (["company_download_pending"] if partitions or ready or cooling else [])
+            + (["company_documents_deterministic_failure"] if deterministic else [])
+        ),
     }
 
 

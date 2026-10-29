@@ -16,6 +16,7 @@ from trader.infra.settings.parser import (
     ReadJsonObject,
     RequireExactKeys,
     RequireMapping,
+    Text,
 )
 
 
@@ -82,12 +83,23 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
             "document_workers",
             "document_failure_retry_seconds",
             "document_transient_retry_seconds",
+            "document_ocr_timeout_seconds",
+            "document_ocr_max_pages",
+            "document_ocr_dpi",
+            "document_ocr_languages",
             "document_limits",
+            "extended_document_limits",
         },
         "download.company",
     )
     limits = RequireMapping(company, "document_limits")
+    expanded = RequireMapping(company, "extended_document_limits")
     RequireExactKeys(limits, {"max_bytes", "max_pages", "max_text_characters"}, "download.company.document_limits")
+    RequireExactKeys(
+        expanded,
+        {"max_bytes", "max_pages", "max_text_characters"},
+        "download.company.extended_document_limits",
+    )
     return CompanySyncConfiguration(
         source_timeout_seconds=Number(company, "source_timeout_seconds", minimum=0.1, maximum=8.0),
         document_parse_timeout_seconds=Number(company, "document_parse_timeout_seconds", minimum=0.1, maximum=30.0),
@@ -97,10 +109,19 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
         document_workers=Integer(company, "document_workers", minimum=1, maximum=2),
         document_failure_retry_seconds=Number(company, "document_failure_retry_seconds", minimum=1.0),
         document_transient_retry_seconds=Number(company, "document_transient_retry_seconds", minimum=1.0),
+        document_ocr_timeout_seconds=Number(company, "document_ocr_timeout_seconds", minimum=1.0, maximum=600.0),
+        document_ocr_max_pages=Integer(company, "document_ocr_max_pages", minimum=1, maximum=200),
+        document_ocr_dpi=Integer(company, "document_ocr_dpi", minimum=72, maximum=300),
+        document_ocr_languages=Text(company, "document_ocr_languages"),
         document_limits=CompanyDocumentLimits(
             max_bytes=Integer(limits, "max_bytes", minimum=1, maximum=64 * 1024 * 1024),
             max_pages=Integer(limits, "max_pages", minimum=1, maximum=1000),
             max_text_characters=Integer(limits, "max_text_characters", minimum=80, maximum=2_000_000),
+        ),
+        extended_document_limits=CompanyDocumentLimits(
+            max_bytes=Integer(expanded, "max_bytes", minimum=1, maximum=64 * 1024 * 1024),
+            max_pages=Integer(expanded, "max_pages", minimum=1, maximum=1000),
+            max_text_characters=Integer(expanded, "max_text_characters", minimum=80, maximum=2_000_000),
         ),
     )
 

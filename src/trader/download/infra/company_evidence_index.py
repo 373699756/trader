@@ -12,6 +12,9 @@ from typing import cast
 
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
+    CompanyDocumentExtraction,
+    CompanyDocumentPolicies,
+    CompanyDocumentTask,
     CompanyDocumentWorkload,
     CompanyListing,
     CompanyStockProgress,
@@ -23,6 +26,7 @@ from trader.download.domain.company_evidence import (
     DisclosureQuery,
     DisclosureSecurity,
     DocumentRetry,
+    DocumentRepairMode,
     EvidenceMarket,
     Market,
     StructuredCompanyPage,
@@ -41,7 +45,12 @@ from trader.download.infra.company_disclosure_queries import (
     ValidateDisclosureQueryPage,
 )
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_sql import DISCLOSURE_QUERY_SCHEMA, DOCUMENT_RETRY_SCHEMA, SCHEMA
+from trader.download.infra.company_evidence_sql import (
+    DISCLOSURE_QUERY_SCHEMA,
+    DOCUMENT_EXTRACTION_SCHEMA,
+    DOCUMENT_RETRY_SCHEMA,
+    SCHEMA,
+)
 from trader.download.infra.company_fact_inputs import (
     BuildCompanySnapshot,
     DecodeCompanyDisclosure,
@@ -146,6 +155,15 @@ class SQLiteCompanyEvidenceIndex:
                 )
                 with SqliteTransaction(connection, immediate=True):
                     connection.run(DOCUMENT_RETRY_SCHEMA)
+                    retry_columns = {
+                        str(row[1]) for row in connection.run("PRAGMA table_info(document_retries)").fetchall()
+                    }
+                    if "payload_hash" not in retry_columns:
+                        connection.run(
+                            "ALTER TABLE document_retries ADD COLUMN payload_hash BLOB "
+                            "CHECK(payload_hash IS NULL OR length(payload_hash)=32)"
+                        )
+                    connection.run(DOCUMENT_EXTRACTION_SCHEMA)
                     for statement in DISCLOSURE_QUERY_SCHEMA:
                         connection.run(statement)
                     ActivateDisclosureQueryPolicy(connection)
@@ -179,6 +197,7 @@ class SQLiteCompanyEvidenceIndex:
                     connection.run(
                         "UPDATE disclosures SET body_checked=0,body_retained=0,body_hash=NULL WHERE id=?", (row[0],)
                     )
+                    connection.run("DELETE FROM document_extractions WHERE disclosure_id=?", (row[0],))
                     MarkCompanyDirty(
                         connection,
                         tuple(
@@ -594,6 +613,11 @@ class SQLiteCompanyEvidenceIndex:
             "SELECT ?,id FROM disclosures WHERE source=? AND source_key=?",
             ((code, item.source, item.identity) for item in rows for code in item.codes),
         ).rowcount
+        connection.run_many(
+            "DELETE FROM document_extractions WHERE disclosure_id IN (SELECT id FROM disclosures "
+            "WHERE source=? AND source_key=? AND record_hash<>document_extractions.record_hash)",
+            ((item.source, item.identity) for item in affected),
+        )
         IndexCompanyDocument(connection, affected)
         MarkCompanyDirty(connection, tuple({code for item in (rows if links else affected) for code in item.codes}))
         return changes
@@ -604,47 +628,78 @@ class SQLiteCompanyEvidenceIndex:
         observed_at: datetime,
         *,
         limit: int | None = None,
-        policy: str = "",
+        policies: CompanyDocumentPolicies,
         excluded: Sequence[tuple[str, str, str]] = (),
-    ) -> tuple[Disclosure, ...]:
+        repair: DocumentRepairMode | None = None,
+    ) -> tuple[CompanyDocumentTask, ...]:
         if limit is not None and not 1 <= limit <= 200:
             raise ValueError("company_document_batch_invalid")
         with self._connect() as connection:
-            SelectCompanyDocuments(connection, codes, observed_at, policy, excluded)
+            SelectCompanyDocuments(connection, codes, observed_at, policies, excluded, repair)
             rows = connection.run(
-                "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code FROM disclosures d "
-                "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.id IN ("
-                "SELECT p.id FROM temp.pending_documents p JOIN disclosures s ON s.id=p.id "
-                "WHERE (?=0 OR p.due=1) ORDER BY s.published_at DESC,s.id LIMIT ?) ORDER BY d.published_at DESC,d.id,c.code",
-                (bool(policy) or bool(excluded), -1 if limit is None else limit),
+                "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code,p.route FROM disclosures d "
+                "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN temp.pending_documents p ON p.id=d.id WHERE d.id IN ("
+                "SELECT selected.id FROM temp.pending_documents selected JOIN disclosures s ON s.id=selected.id "
+                "WHERE (?=0 OR selected.due=1) ORDER BY s.published_at DESC,s.id LIMIT ?) "
+                "ORDER BY d.published_at DESC,d.id,c.code",
+                (limit is not None or bool(excluded) or repair is not None, -1 if limit is None else limit),
             ).fetchall()
-        items: dict[tuple[str, str], Disclosure] = {}
+        items: dict[tuple[str, str], CompanyDocumentTask] = {}
         for row in rows:
             item = DecodeCompanyDisclosure(row)
             key = item.source, item.identity
             previous = items.get(key)
-            items[key] = item if previous is None else replace(previous, codes=(*previous.codes, *item.codes))
+            items[key] = (
+                CompanyDocumentTask(item, row[8])
+                if previous is None
+                else CompanyDocumentTask(replace(previous.disclosure, codes=(*previous.disclosure.codes, *item.codes)), previous.route)
+            )
         pending = tuple(items.values())
         return pending[: self._documents.batch_limit(limit)] if pending and limit is not None else pending
 
     def document_workload(
-        self, codes: Sequence[str], observed_at: datetime, policy: str, *, excluded: Sequence[tuple[str, str, str]] = ()
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        policies: CompanyDocumentPolicies,
+        *,
+        excluded: Sequence[tuple[str, str, str]] = (),
+        repair: DocumentRepairMode | None = None,
     ) -> CompanyDocumentWorkload:
         with self._connect() as connection:
-            SelectCompanyDocuments(connection, codes, observed_at, policy, excluded)
-            row = connection.run("SELECT COUNT(*),COALESCE(SUM(due),0) FROM temp.pending_documents").require_one()
-        return CompanyDocumentWorkload(row[0], row[1])
+            SelectCompanyDocuments(connection, codes, observed_at, policies, excluded, repair)
+            row = connection.run(
+                "SELECT COUNT(*),COALESCE(SUM(due),0),COALESCE(SUM(cooling),0),COALESCE(SUM(ocr),0),"
+                "COALESCE(SUM(unextractable),0),MIN(CASE WHEN cooling=1 THEN retry_at END) FROM temp.pending_documents"
+            ).require_one()
+        return CompanyDocumentWorkload(
+            row[0], row[1], row[2], row[3], row[4], datetime.fromisoformat(row[5]) if row[5] else None
+        )
 
-    def commit_document(self, item: Disclosure, text: str) -> bool:
+    def commit_document(self, item: Disclosure, extraction: CompanyDocumentExtraction, extracted_at: datetime) -> bool:
         # A result already accepted by the main thread is drained on cancellation.
         with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
-            digest = self._documents.write(text)
+            digest = self._documents.write(extraction.text)
             changed = connection.run(
                 "UPDATE disclosures SET body_hash=?,body_checked=1,body_retained=1 WHERE source=? AND source_key=? AND record_hash=? AND body_checked=0",
                 (digest, item.source, item.identity, item.digest),
             ).rowcount
             if not changed:
                 return False
+            connection.run(
+                "INSERT OR REPLACE INTO document_extractions(disclosure_id,record_hash,payload_hash,method,policy_id,quality,extracted_at) "
+                "SELECT id,record_hash,?,?,?,?,? FROM disclosures WHERE source=? AND source_key=? AND record_hash=?",
+                (
+                    extraction.payload_hash,
+                    extraction.method,
+                    extraction.policy_id,
+                    extraction.quality,
+                    extracted_at.isoformat(),
+                    item.source,
+                    item.identity,
+                    item.digest,
+                ),
+            )
             connection.run(
                 "DELETE FROM document_retries WHERE disclosure_id IN "
                 "(SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=?)",
@@ -672,20 +727,27 @@ class SQLiteCompanyEvidenceIndex:
         return DocumentRetry(row[0], datetime.fromisoformat(row[1])) if row else None
 
     def document_failure(
-        self, item: Disclosure, policy: str, failure: str, attempted_at: datetime, retry_after: datetime
+        self,
+        item: Disclosure,
+        policy: str,
+        failure: str,
+        attempted_at: datetime,
+        retry_after: datetime,
+        payload_hash: bytes | None = None,
     ) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             connection.run(
-                "INSERT INTO document_retries(disclosure_id,record_hash,retry_policy_id,failure,attempted_at,retry_at,attempts) "
-                "SELECT id,record_hash,?,?,?,?,1 FROM disclosures WHERE source=? AND source_key=? AND record_hash=? "
+                "INSERT INTO document_retries(disclosure_id,record_hash,retry_policy_id,failure,attempted_at,retry_at,attempts,payload_hash) "
+                "SELECT id,record_hash,?,?,?,?,1,? FROM disclosures WHERE source=? AND source_key=? AND record_hash=? "
                 "ON CONFLICT(disclosure_id) DO UPDATE SET record_hash=excluded.record_hash,retry_policy_id=excluded.retry_policy_id,failure=excluded.failure,"
-                "attempted_at=excluded.attempted_at,retry_at=excluded.retry_at,"
+                "attempted_at=excluded.attempted_at,retry_at=excluded.retry_at,payload_hash=excluded.payload_hash,"
                 "attempts=CASE WHEN document_retries.record_hash=excluded.record_hash THEN document_retries.attempts+1 ELSE 1 END",
                 (
                     policy,
                     failure,
                     attempted_at.isoformat(),
                     retry_after.isoformat(),
+                    payload_hash,
                     item.source,
                     item.identity,
                     item.digest,

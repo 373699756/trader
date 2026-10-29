@@ -63,7 +63,7 @@ def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window(
     assert "已尝试 2/147 篇 | 已提取正文 1 篇" in first
     assert "当前正文股票 600001 示例" in first and "已分析 0" not in first and "待分析 0" not in first
     assert "累计 00:09:51" in first and "591.1秒" not in first
-    assert "已尝试 147/147 篇 | 已提取正文 147 篇" in final and "状态 完成" in final
+    assert "已尝试 147/147 篇 | 已提取正文 147 篇" in final and "状态 本批结束" in final
 
 
 def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
@@ -159,9 +159,9 @@ def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end()
     first, second, third, fourth, final = stream.getvalue().splitlines()
     assert "原因 公告正文：PDF无法解析" in first
     assert "已提取正文 153 篇" in second and "原因" not in second
-    assert "原因 公告正文：PDF超过大小上限" in third and "PDF无法解析" not in third
+    assert "原因 公告正文：PDF超过扩展大小上限" in third and "PDF无法解析" not in third
     assert "已提取正文 156 篇" in fourth and "原因" not in fourth
-    assert "PDF无法解析；公告正文：PDF超过大小上限" in final
+    assert "PDF无法解析；公告正文：PDF超过扩展大小上限" in final
     assert "状态 待续传" in final
 
 
@@ -174,7 +174,7 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
         )
     )
     output = stream.getvalue()
-    assert "已发布 4402 股（含待核实） | 公告待补 26 个范围 | 待补正文 3 篇" in output
+    assert "已发布 4402 股（含待核实） | 公告待补 26 个范围 | 可重试正文 3 篇" in output
     assert "原始资料变更 2589 条（非每股发布行）" in output
     assert "下次 sync company 从已提交断点续传" in output
     assert "100.00%" not in output and "状态 待续传" in output
@@ -233,6 +233,7 @@ def test_source_failure_and_unreadable_documents_have_separate_recovery_messages
         )
     )
     text = stream.getvalue()
-    assert "本轮失败 1 篇 | 冷却暂缓 2 篇" in text
+    assert "本轮失败 1 篇 | 当前可处理 3 篇 | 冷却暂缓 2 篇" in text
     assert "公告目录：来源暂缓（连续失败或限流）" in text
-    assert "公告正文：PDF未提取到文字" in text and "无文本或短文本公告保持待核实" in text
+    assert "公告正文：PDF未提取到文字" in text
+    assert "OCR仍失败的正文标记为不可提取/资料未知，同内容同策略不再重试" in text

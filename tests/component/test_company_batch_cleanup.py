@@ -19,7 +19,7 @@ _CASE = "本公司收到证监会立案告知书〔2026〕调查1号，决定立
 def _put(index, item, body):
     partition = DisclosurePartition("sse", item.published_at.date(), item.published_at.date())
     index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
-    assert index.commit_document(item, body)
+    assert index.commit_document(item, fixtures._extraction(body), NOW)
 
 
 def test_committed_text_is_deleted_and_facts_survive_raw_unavailability(tmp_path):
@@ -54,7 +54,7 @@ def test_unresolved_review_survives_cleanup_restart_and_later_publication(tmp_pa
     )
     resumed.initialize()
     resumed.prepare_publication(("600001",), NOW + timedelta(minutes=1))
-    assert resumed.pending_documents(("600001",), NOW) == ()
+    assert resumed.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     resumed.publish(("600001",), NOW + timedelta(minutes=1))
     assert tuple(item for item in reader.read(("600001",))[0].review_reasons if item.evidence_id) == before
     assert not tuple((tmp_path / "text").rglob("*.gz"))
@@ -115,8 +115,11 @@ def test_later_discovery_of_old_case_requeues_unlinked_closure(tmp_path):
     old = fixtures._disclosure("opened", "关于收到立案告知书的公告", when=NOW - timedelta(days=3))
     _put(index, old, _CASE)
     index.publish(old.codes, NOW)
-    assert {item.identity for item in index.pending_documents(old.codes, NOW)} == {"closed"}
-    assert index.commit_document(closure, text)
+    assert {
+        task.disclosure.identity
+        for task in index.pending_documents(old.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
+    } == {"closed"}
+    assert index.commit_document(closure, fixtures._extraction(text), NOW)
     index.publish(old.codes, NOW)
     facts = reader.read(old.codes)[0]
     assert not facts.risk_events
