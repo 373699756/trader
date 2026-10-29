@@ -1,4 +1,4 @@
-"""V5 exposes its existing local-score scale together with engineering authority."""
+"""V5 exposes its model-prediction rank and production identity."""
 
 from __future__ import annotations
 
@@ -16,31 +16,36 @@ from trader.recommendation.domain.publication.models import RecommendationAction
 from trader.web import CreateApp
 
 
-def test_v5_get_and_sse_keep_local_score_and_shadow_without_reinterpreting_v2() -> None:
+def test_v5_get_and_sse_expose_model_rank_without_reinterpreting_v2() -> None:
     _, production_queries, production_stream = _app()
     source = _freeze()
-    shadow = replace(
+    ranked = replace(
         source,
         input_versions=(
-            ("score_scale", "weighted_evidence_quality_0_100"),
+            ("score_scale", "model_prediction_percentile_0_100"),
+            ("score_model_id", "v5_industry_tcn"),
             ("score_model", "v5_industry_tcn:" + "a" * 64),
-            ("execution_mode", "shadow"),
-            ("production_authority", "false"),
+            ("score_contract_hash", "b" * 64),
+            ("rank_population", "model-prediction-population:" + "c" * 64),
+            ("execution_mode", "production"),
+            ("production_authority", "true"),
         ),
-        items=tuple(replace(item, action=RecommendationAction.OBSERVE) for item in source.items),
+        items=tuple(
+            replace(item, action=RecommendationAction.EXECUTABLE, final_score=99.0) for item in source.items
+        ),
     )
     index = UnifiedFreezeIndex()
-    assert index.publish(shadow, expected_version=None).accepted
+    assert index.publish(ranked, expected_version=None).accepted
     queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock())
     stream = UnifiedFreezeEventStream()
-    stream.publish_committed(BuildFreezeCommitted(shadow))
+    stream.publish_committed(BuildFreezeCommitted(ranked))
     status = {
         "scoring_profile": {
             "profile_id": "v5",
             "heads": {
                 "tomorrow": {
-                    "score_scale": "weighted_evidence_quality_0_100",
-                    "production_authority": False,
+                    "score_scale": "model_prediction_percentile_0_100",
+                    "production_authority": True,
                     "private_internal": "must-not-leak",
                 }
             },
@@ -59,15 +64,16 @@ def test_v5_get_and_sse_keep_local_score_and_shadow_without_reinterpreting_v2() 
     client = app.test_client()
     payload = client.get("/api/freezes/tomorrow/current?profile=v5").get_json()
     assert payload["scoring_profile"] == "v5"
-    assert payload["input_versions"] == dict(shadow.input_versions)
-    assert payload["items"][0]["scores"]["final"] == payload["items"][0]["scores"]["local"] == 84.0
-    assert payload["items"][0]["action"] == "observe"
+    assert payload["input_versions"] == dict(ranked.input_versions)
+    assert payload["items"][0]["scores"]["local"] == 84.0
+    assert payload["items"][0]["scores"]["final"] == 99.0
+    assert payload["items"][0]["action"] == "executable"
     head = client.get("/api/status?profile=v5").get_json()["scoring_profile"]["heads"]["tomorrow"]
-    assert head == {"score_scale": "weighted_evidence_quality_0_100", "production_authority": False}
+    assert head == {"score_scale": "model_prediction_percentile_0_100", "production_authority": True}
     production = client.get("/api/freezes/tomorrow/current?profile=v2").get_json()
     assert production["items"][0]["action"] == "executable"
     assert "execution_mode" not in production["input_versions"]
-    assert "V5 · Shadow" in client.get("/").get_data(as_text=True)
+    assert "V5 · Shadow" not in client.get("/").get_data(as_text=True)
     events = client.get("/api/events?profile=v5", headers={"Last-Event-ID": "0"}, buffered=False)
     try:
         iterator = iter(events.response)
@@ -76,4 +82,5 @@ def test_v5_get_and_sse_keep_local_score_and_shadow_without_reinterpreting_v2() 
     finally:
         events.close()
     assert event["input_versions"] == payload["input_versions"]
-    assert event["upserts"][0]["scores"]["final_score"] == event["upserts"][0]["scores"]["local_score"] == 84.0
+    assert event["upserts"][0]["scores"]["local_score"] == 84.0
+    assert event["upserts"][0]["scores"]["final_score"] == 99.0

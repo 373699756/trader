@@ -19,6 +19,7 @@ from trader.training.infra.engine import ProfileTrainingRequest
 from trader.training.infra.model_fitting import LightGBMFittingParameters, RidgeFittingParameters
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.research_settings import LoadResearchSettings
 from trader.training.infra.sample_builder import (
     BuildTrainingSamples,
@@ -56,14 +57,17 @@ def test_v2_and_v3_share_engine_contract_shape_but_own_their_differences() -> No
 def test_profile_windows_algorithms_costs_and_research_arms_have_typed_configuration_owners() -> None:
     v2 = LoadProfileTrainingSettings(PROJECT_ROOT, "v2")
     v3 = LoadProfileTrainingSettings(PROJECT_ROOT, "v3")
+    v5 = LoadProfileTrainingSettings(PROJECT_ROOT, "v5")
     cost = LoadExecutionCostPolicy(PROJECT_ROOT / "config")
     scenarios = LoadEvaluationCostScenarios(PROJECT_ROOT / "config")
     research = LoadResearchSettings(PROJECT_ROOT / "config")
 
     assert (v2.fit_dates, v2.history_sessions, v2.momentum_horizons) == (1000, 251, (20, 40, 60, 120, 250))
     assert (v3.fit_dates, v3.history_sessions, v3.momentum_horizons) == (750, 61, (20, 40, 60))
+    assert (v5.fit_dates, v5.history_sessions, v5.fitting.minimum_industry_training_rows) == (61, 62, 5000)
     assert isinstance(v2.fitting, LightGBMFittingParameters)
     assert isinstance(v3.fitting, RidgeFittingParameters)
+    assert isinstance(v5.fitting, TcnFittingParameters)
     assert V2_TRAINING_PROFILE.algorithm == "lightgbm"
     assert V3_TRAINING_PROFILE.algorithm == "ridge"
     assert cost.estimate(0.0) == pytest.approx(0.002)

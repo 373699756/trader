@@ -114,7 +114,7 @@ def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId
     heads = RequireMapping(inputs, "heads")
     RequireExactKeys(heads, {"tomorrow", "d25"}, f"features.model_contracts.{profile_id}.heads")
     return ProfileTrainingSettings(
-        Integer(profile, "fit_dates", minimum=250 if profile_id == "v5" else 1),
+        Integer(profile, "fit_dates", minimum=61 if profile_id == "v5" else 1),
         Integer(inputs, "history_sessions", minimum=61),
         _positive_integer_tuple(
             inputs.get("momentum_horizons"), f"features.model_contracts.{profile_id}.momentum_horizons"

@@ -37,10 +37,10 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
         history.snapshot.calendar.open_dates,
         parent_manifest_hash="a" * 64,
         fit_dates=settings.fit_dates,
-        annual_fit=True,
+        recent_fit=True,
         history_sessions=62,
     )
-    signal = split.model_fit_dates[100]
+    signal = split.model_fit_dates[30]
     absent = history.snapshot.calendar.open_dates[history.snapshot.calendar.open_dates.index(signal) + 2]
     original = history.iter_training_rows
 
@@ -125,7 +125,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
     monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: history)
     settings = replace(
         LoadProfileTrainingSettings(ROOT, "v5"),
-        fit_dates=250,
+        fit_dates=61,
         fitting=TcnFittingParameters(
             10,
             epochs=2,

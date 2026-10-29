@@ -33,6 +33,7 @@ from trader.recommendation.application.ports.loaded_profile import (
     ScoringHeadRuntimeStatus,
 )
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.candidate.filters import BoardForSnapshot
 from trader.recommendation.domain.market.factors import PercentileReference, RoundScore
 from trader.recommendation.domain.market.feature_contracts import (
@@ -43,6 +44,7 @@ from trader.recommendation.domain.market.feature_contracts import (
 )
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import MODEL_PREDICTION_RANK_SCORE_SCALE
 from trader.recommendation.domain.scoring.residualization import ExposureContract, ResidualizeExposure
 from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
@@ -340,6 +342,11 @@ class ProductionModelScoringService:
             training_anchor=evidence.training_anchor,
             runtime_anchor=evidence.runtime_anchor,
             point_in_time_parity=evidence.point_in_time_parity,
+            score_scale=(
+                MODEL_PREDICTION_RANK_SCORE_SCALE
+                if self._predictor.profile_id == "v5"
+                else WEIGHTED_EVIDENCE_SCORE_SCALE
+            ),
             production_authority=evidence.production_authority,
         )
 
@@ -577,6 +584,7 @@ class ProductionModelScoringService:
             costs,
             missing_codes,
             cost_reference.version,
+            ranked=self._predictor.profile_id == "v5",
             production_authority=self._evidence.production_authority,
         )
         deadline.require_time("completed_after_score_projection_deadline")
@@ -725,8 +733,24 @@ def _score_predictions(
     missing_codes: tuple[str, ...],
     cost_reference_version: str,
     *,
+    ranked: bool = False,
     production_authority: bool = True,
 ) -> ModelScoreBatch:
+    score_identity = (
+        {
+            "score_scale": MODEL_PREDICTION_RANK_SCORE_SCALE,
+            "score_model_id": model_version.split(":", 1)[0],
+            "score_contract_hash": hashlib.sha256(
+                repr(("v5_model_prediction_rank", model_version)).encode()
+            ).hexdigest(),
+            "rank_population_version": "model-prediction-population:"
+            + hashlib.sha256(
+                repr(tuple((item.code, item.predicted_excess_return) for item in predictions)).encode()
+            ).hexdigest(),
+        }
+        if ranked
+        else {}
+    )
     if not predictions:
         return ModelScoreBatch(
             model_version,
@@ -735,6 +759,7 @@ def _score_predictions(
             missing_codes,
             cost_reference_version,
             production_authority=production_authority,
+            **score_identity,
         )
     utilities = tuple(
         prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
@@ -767,6 +792,7 @@ def _score_predictions(
         missing_codes,
         cost_reference_version,
         production_authority=production_authority,
+        **score_identity,
     )
 
 

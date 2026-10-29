@@ -73,7 +73,6 @@ from trader.training.infra.sample_builder import (
     TrainingSampleBuildRequest,
 )
 from trader.training.infra.sample_cache import PruneEmptySampleDirectories, SampleCacheBytes, TrainingSampleCache
-from trader.training.infra.sample_schema import TrainingFeatureNames
 from trader.training.infra.sample_index import (
     TRAINING_SAMPLE_CACHE_MIB,
     TRAINING_SAMPLE_MMAP_BYTES,
@@ -81,6 +80,7 @@ from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TargetMetric,
 )
+from trader.training.infra.sample_schema import TrainingFeatureNames
 from trader.training.infra.sample_sequences import SEQUENCE_STORAGE_CONTRACT, SampleSequenceLayout
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
@@ -570,7 +570,7 @@ def _prepare_locked_split(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.snapshot_hash,
             fit_dates=settings.fit_dates,
-            annual_fit=profile.profile_id == "v5",
+            recent_fit=profile.profile_id == "v5",
             early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
             history_sessions=profile.history_sessions,
         )

@@ -17,6 +17,7 @@ from trader.recommendation.domain.market.history_alignment import ModelHistoryQu
 from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import MODEL_PREDICTION_RANK_SCORE_SCALE
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
@@ -24,6 +25,7 @@ from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfi
 
 class _SequencePredictor(_Predictor):
     profile_id = "v5"
+    model_id = "v5_industry_tcn"
     predicted = 0.02
     calls = 0
 
@@ -48,7 +50,11 @@ def test_v5_sequence_prediction_cost_once_and_missing_input_closes_admission(app
     batch = service.score((feature,))
     diagnostic = batch.diagnostics[feature.quote.code]
     assert diagnostic.predicted_net_excess_pct == pytest.approx(prediction * 100 - diagnostic.estimated_cost_pct)
-    assert batch.score_scale == "weighted_evidence_quality_0_100"
+    assert batch.score_scale == MODEL_PREDICTION_RANK_SCORE_SCALE
+    assert diagnostic.signal_score == 50.0
+    assert batch.score_model_id == "v5_industry_tcn"
+    assert batch.score_contract_hash
+    assert batch.rank_population_version
     assert not service.is_input_eligible(base)
     calls = predictor.calls
     missing = service.score((base,))
@@ -174,7 +180,7 @@ def test_model_status_and_nonempty_empty_missing_batches_keep_explicit_authority
     predictor.profile_id = profile_id
     profile = profile_for(predictor)
     head = profile.heads[Strategy.TOMORROW]
-    authority = profile_id != "v5"
+    authority = True
     profile = replace(
         profile,
         heads={Strategy.TOMORROW: replace(head, evidence=replace(head.evidence, production_authority=authority))},

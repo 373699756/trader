@@ -50,7 +50,7 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
         assert set(scoring["heads"]) == {"tomorrow", "d25"}
         for head in scoring["heads"].values():
             assert head["is_enable"] is False
-            assert head["production_authority"] is (selected != "v5")
+            assert head["production_authority"] is True
             assert head["model_hash"] == ""
             assert head["historical_failure_reasons"] == ["production_model_missing"]
         assert "./run.sh train" in caplog.text

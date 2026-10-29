@@ -81,7 +81,7 @@ from trader.recommendation.domain.risk.scored_fusion import (
     ScoredReviewCandidate,
     SelectScoredReviewCandidates,
 )
-from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
+from trader.recommendation.domain.scoring.profile_identity import MODEL_RANK_SCORE_SCALES
 from trader.recommendation.domain.selection.scored_selection import (
     ApplySelectionRisks,
     LocalRiskPolicy,
@@ -156,12 +156,16 @@ def BuildScoredLocal(
     if sequence < 1:
         raise ValueError("scored freeze sequence must be positive")
     runtime = runtime if runtime is not None else ScoredProjectionInputs()
+    model_scoring = runtime.model_scoring
+    profile_status = model_scoring.status() if model_scoring is not None else None
+    head_status = profile_status.heads.get(native_input.strategy) if profile_status is not None else None
+    model_rank = head_status is not None and head_status.score_scale in MODEL_RANK_SCORE_SCALES
     if runtime.quality_batch is None:
         minimum_history = (
-            runtime.model_scoring.history_required_sessions(native_input.strategy)
-            if runtime.model_scoring is not None
-            and native_input.phase != "close_fallback"
-            and runtime.model_scoring.uses_model(native_input.strategy)
+            model_scoring.history_required_sessions(native_input.strategy)
+            if model_scoring is not None
+            and (native_input.phase != "close_fallback" or model_rank)
+            and model_scoring.uses_model(native_input.strategy)
             else 20
         )
         quality_batch = PrepareNativeQualityBatch(native_input, policy.hard_filter, minimum_history, runtime.monotonic)
@@ -179,12 +183,9 @@ def BuildScoredLocal(
         runtime.ranking_selection if runtime.ranking_selection is not None else RankingSelectionService()
     )
     population = tuple(PreselectionReplayFeature(feature) for feature in native_input.market_features)
-    model_scoring = runtime.model_scoring
-    profile_status = model_scoring.status() if model_scoring is not None else None
-    learned_rank = profile_status is not None and profile_status.profile_id == "v1"
     uses_model = (
         model_scoring is not None
-        and (native_input.phase != "close_fallback" or learned_rank)
+        and (native_input.phase != "close_fallback" or model_rank)
         and model_scoring.uses_model(strategy)
     )
     model_batch = (
@@ -222,8 +223,8 @@ def BuildScoredLocal(
     production_authority = (profile_status is None or profile_status.production_authority) and (
         model_batch is None or model_batch.production_authority
     )
-    if learned_rank and (model_batch is None or model_batch.score_scale != LEARNED_RANK_SCORE_SCALE):
-        raise ValueError("learned_rank_model_unavailable")
+    if model_rank and (model_batch is None or model_batch.score_scale not in MODEL_RANK_SCORE_SCALES):
+        raise ValueError("model_rank_unavailable")
     profile_history_qualified_codes = (
         frozenset(
             feature.quote.code
@@ -313,13 +314,13 @@ def BuildScoredLocal(
         native_input.evaluated_at,
         strategy,
     )
-    if learned_rank or not production_authority:
+    if model_rank or not production_authority:
         ranked = {
             item.code: replace(
                 item,
                 ranking_score=(
                     model_batch.diagnostics[item.code].signal_score
-                    if learned_rank and model_batch is not None
+                    if model_rank and model_batch is not None
                     else item.ranking_score
                 ),
                 shadow_only=not production_authority,
@@ -626,7 +627,7 @@ def _scored_freeze(
     execution_versions: tuple[tuple[str, str], ...] = ()
     if not context.production_authority:
         execution_versions = (("production_authority", "false"), ("execution_mode", "shadow"))
-    elif context.score_scale == LEARNED_RANK_SCORE_SCALE:
+    elif context.score_scale in MODEL_RANK_SCORE_SCALES:
         execution_versions = (("production_authority", "true"), ("execution_mode", "production"))
     return ScoredFreeze(
         strategy=context.strategy,

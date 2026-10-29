@@ -31,7 +31,7 @@ def test_strategy_contract_distinguishes_current_profile_authority_from_return_v
     for statement in (
         "全新V1已获用户明确授权正式接入",
         "V1使用第6.4节的独立模型排序分",
-        "V5保持工程Shadow",
+        "V5使用第6.5节的独立模型预测排序分",
         "Long：不冻结、不写推荐历史",
         "不能宣称已证明持续盈利",
     ):

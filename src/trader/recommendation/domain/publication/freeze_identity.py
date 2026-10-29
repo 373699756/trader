@@ -21,7 +21,10 @@ from trader.recommendation.domain.publication.historical_pipeline import (
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedger, ScoreLedgerPayload
-from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
+from trader.recommendation.domain.scoring.profile_identity import (
+    LEARNED_RANK_SCORE_SCALE,
+    MODEL_RANK_SCORE_SCALES,
+)
 
 FreezeStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "close_fallback"]
@@ -286,17 +289,20 @@ class ScoredFreeze:
             or any(item.action is RecommendationAction.EXECUTABLE for item in items)
         ):
             raise ValueError("shadow identity cannot grant production authority or executable actions")
-        learned_rank = dict(versions).get("score_scale") == LEARNED_RANK_SCORE_SCALE
-        if learned_rank:
+        score_scale = dict(versions).get("score_scale")
+        model_rank = score_scale in MODEL_RANK_SCORE_SCALES
+        if model_rank:
+            score_model_id = dict(versions).get("score_model_id")
             if (
                 (dict(versions).get("execution_mode"), dict(versions).get("production_authority"))
                 not in {("shadow", "false"), ("production", "true")}
-                or dict(versions).get("score_model_id") != "learned_rank"
+                or not score_model_id
+                or (score_scale == LEARNED_RANK_SCORE_SCALE and score_model_id != "learned_rank")
                 or not all(
                     dict(versions).get(name) for name in ("score_model", "score_contract_hash", "rank_population")
                 )
             ):
-                raise ValueError("learned rank freezes require a complete execution and model identity")
+                raise ValueError("model rank freezes require a complete execution and model identity")
         elif self.stage == "local" and any(item.final_score != item.local_score for item in items):
             raise ValueError("local freeze final scores must equal local scores")
         if any(item.quote is not None and item.quote.source_time > self.observed_at for item in items):

@@ -12,7 +12,11 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE, ScoringProfileId
+from trader.recommendation.domain.scoring.profile_identity import (
+    LEARNED_RANK_SCORE_SCALE,
+    MODEL_PREDICTION_RANK_SCORE_SCALE,
+    ScoringProfileId,
+)
 
 
 @dataclass(frozen=True)
@@ -41,14 +45,20 @@ class UnavailableModelCapability:
             model_id="",
             model_hash="",
             scoring_version="",
-            activation_basis="manual_user_override" if self.profile_id == "v1" else "trained_artifact",
+            activation_basis="manual_user_override" if self.profile_id in {"v1", "v5"} else "trained_artifact",
             historical_status="historical_unavailable",
             historical_failure_reasons=(self.reason,),
             monitoring_mode="automatic_t1_outcome_settlement",
             automatic_model_update=False,
             loss_probability_status="not_modeled",
-            score_scale=LEARNED_RANK_SCORE_SCALE if self.profile_id == "v1" else WEIGHTED_EVIDENCE_SCORE_SCALE,
-            production_authority=self.profile_id != "v5",
+            score_scale=(
+                LEARNED_RANK_SCORE_SCALE
+                if self.profile_id == "v1"
+                else MODEL_PREDICTION_RANK_SCORE_SCALE
+                if self.profile_id == "v5"
+                else WEIGHTED_EVIDENCE_SCORE_SCALE
+            ),
+            production_authority=True,
         )
 
 

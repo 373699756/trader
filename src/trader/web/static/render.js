@@ -262,7 +262,7 @@
   function scorePresentation(snapshot) {
     const versions = snapshot && snapshot.input_versions || {};
     const learnedRank = Boolean(snapshot && snapshot.strategy !== "long"
-      && versions.score_scale === "learned_rank_percentile_0_100");
+      && ["learned_rank_percentile_0_100", "model_prediction_percentile_0_100"].includes(versions.score_scale));
     return {
       learnedRank,
       shadow: Boolean(snapshot && snapshot.strategy !== "long" && versions.execution_mode === "shadow"),

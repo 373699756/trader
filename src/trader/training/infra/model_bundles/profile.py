@@ -25,7 +25,7 @@ def BuildTrainedScoringProfile(
     bundles: tuple[TrainedHeadModelBundle, ...],
 ) -> LoadedScoringProfile:
     if profile_id not in {"v2", "v3", "v5"}:
-        raise ValueError("shared trained heads require the V2 or V3 scoring profile")
+        raise ValueError("shared trained heads require the V2, V3 or V5 scoring profile")
     by_strategy = {bundle.strategy: bundle for bundle in bundles}
     if len(bundles) != 2 or set(by_strategy) != {Strategy.TOMORROW, Strategy.D25}:
         raise ValueError("shared scoring profiles require one Tomorrow and D25 bundle")
@@ -69,11 +69,11 @@ def _evidence(bundle: TrainedHeadModelBundle) -> ProfileEvidence:
     return ProfileEvidence(
         bundle.historical_status,
         bundle.historical_failure_reasons,
-        "trained_artifact" if bundle.serialization_profile_id == "v5" else "manual_user_override",
+        "manual_user_override",
         training_anchor=bundle.training_anchor,
         runtime_anchor=bundle.runtime_anchor,
         point_in_time_parity=bundle.point_in_time_parity,
-        production_authority=bundle.serialization_profile_id != "v5",
+        production_authority=True,
     )
 
 

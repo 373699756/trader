@@ -1,4 +1,4 @@
-"""V5 engineering freezes stay observable without acquiring formal authority."""
+"""V5 production ranking and immutable legacy shadow identities."""
 
 from __future__ import annotations
 
@@ -24,11 +24,11 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
     ScoredFreezeCoordinator,
 )
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
-from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
+from trader.recommendation.application.ports.loaded_profile import ModelPrediction
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
@@ -96,8 +96,16 @@ def _features(factory):
     return tuple(features)
 
 
-def _model_router(strategy, *, production_authority=False):
-    predictor = _SequencePredictor()
+def _model_router(strategy, *, production_authority=True):
+    class _RankedSequencePredictor(_SequencePredictor):
+        def predict(self, inputs):
+            self.calls += 1
+            assert all(item.sequence is not None for item in inputs)
+            return tuple(
+                ModelPrediction(item.code, 0.02 + int(item.code[-3:]) * 0.0001) for item in inputs
+            )
+
+    predictor = _RankedSequencePredictor()
     predictor.calls = 0
     if strategy is Strategy.D25:
         predictor.feature_ids = predictor.feature_ids[1:]
@@ -113,7 +121,7 @@ def _model_router(strategy, *, production_authority=False):
 
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
 @pytest.mark.parametrize("phase", ("final_review", "close_fallback"))
-def test_v5_local_and_model_free_close_rebuild_keep_shadow_actions_and_local_scores(
+def test_v5_final_and_close_rebuild_use_model_rank_with_production_identity(
     application_feature_factory, native_type, phase
 ) -> None:
     strategy = native_type.strategy
@@ -130,32 +138,28 @@ def test_v5_local_and_model_free_close_rebuild_keep_shadow_actions_and_local_sco
 
     seats = VisibleScoredSeats(projection.local)
     assert seats
-    assert IsShadowFreeze(projection.local)
-    assert projection.production_authority is False
-    assert dict(projection.local.input_versions)["production_authority"] == "false"
-    assert projection.score_scale == "weighted_evidence_quality_0_100"
-    assert all(item.final_score == item.local_score for item in projection.local.items)
-    assert all(item.action is not RecommendationAction.EXECUTABLE for item in projection.local.items)
-    assert projection.review_candidates == ()
-    assert all(reason.code != "deepseek_pending" for reason in projection.stages.risk_review.snapshot.reasons)
-    assert predictor.calls == (0 if phase == "close_fallback" else 1)
-    if phase == "close_fallback":
-        assert projection.input_quality.history_required_sessions == 20
-    # The adapter must skip before accessing any of these absent production dependencies.
-    assert DeepSeekAdapter(None, None, None, now=lambda: EVALUATED_AT).build_hybrid(projection.local, None) is None
+    assert not IsShadowFreeze(projection.local)
+    assert projection.production_authority is True
+    versions = dict(projection.local.input_versions)
+    assert versions["production_authority"] == "true"
+    assert versions["execution_mode"] == "production"
+    assert versions["score_scale"] == "model_prediction_percentile_0_100"
+    assert versions["score_model_id"] == "v5_industry_tcn"
+    assert projection.score_scale == "model_prediction_percentile_0_100"
+    assert any(item.final_score != item.local_score for item in projection.local.items)
+    assert tuple(item.code for item in seats) == tuple(sorted((item.code for item in seats), reverse=True))
+    assert predictor.calls == 1
+    assert projection.input_quality.history_required_sessions == 61
 
 
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
-def test_v5_missing_model_close_rebuild_cannot_gain_production_authority(application_feature_factory, native_type):
+def test_v5_missing_model_close_rebuild_fails_closed(application_feature_factory, native_type):
     strategy = native_type.strategy
     router = ModelScoringRouter("v5", {strategy: UnavailableModelCapability("v5", 62)})
     native = replace(_native_input(_features(application_feature_factory), native_type), phase="close_fallback")
 
-    projection = BuildScoredLocal(native, _policy(), sequence=1, runtime=ScoredProjectionInputs(model_scoring=router))
-
-    assert IsShadowFreeze(projection.local)
-    assert projection.production_authority is False
-    assert all(item.action is not RecommendationAction.EXECUTABLE for item in projection.local.items)
+    with pytest.raises(RuntimeError, match="production_model_missing"):
+        BuildScoredLocal(native, _policy(), sequence=1, runtime=ScoredProjectionInputs(model_scoring=router))
 
 
 @pytest.mark.parametrize("upgrade", ("authority", "formal", "executable"))

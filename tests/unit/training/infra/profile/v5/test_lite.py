@@ -64,13 +64,13 @@ def test_training_restores_smallest_loss_weights_not_significant_anchor_or_last_
     assert weights[1] != weights[0] and weights[1] != weights[2]
 
 
-def test_annual_split_preserves_evaluation_dates_and_supplier_neutral_default_identity():
+def test_recent_split_preserves_evaluation_dates_and_supplier_neutral_default_identity():
     dates = tuple(date(2018, 1, 1) + timedelta(days=index) for index in range(2000))
     old = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, fit_dates=750, history_sessions=62)
     new = BuildTrainingDateSplit(
-        dates, parent_manifest_hash="a" * 64, fit_dates=250, history_sessions=62, annual_fit=True
+        dates, parent_manifest_hash="a" * 64, fit_dates=61, history_sessions=62, recent_fit=True
     )
-    assert new.model_fit_dates == old.model_fit_dates[-250:]
+    assert new.model_fit_dates == old.model_fit_dates[-61:]
     assert len(new.warmup_dates) == 61 and new.warmup_dates[-1] < new.model_fit_dates[0]
     assert new.early_stopping_dates == old.early_stopping_dates
     assert new.calibration_dates == old.calibration_dates
@@ -78,10 +78,10 @@ def test_annual_split_preserves_evaluation_dates_and_supplier_neutral_default_id
     assert new.daily_proxy_holdout_dates == old.daily_proxy_holdout_dates
     assert new.point_in_time_holdout_dates == old.point_in_time_holdout_dates
     assert old.schema_version == "training_date_split"
-    assert new.schema_version == "v5_annual_training_split"
+    assert new.schema_version == "v5_recent_training_split"
     assert old.content_hash != new.content_hash
     with pytest.raises(ValueError):
-        BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, fit_dates=250)
+        BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, fit_dates=61)
     with pytest.raises(ValueError):
         replace(new, calibration_dates=new.model_fit_dates[:20])
 
@@ -173,7 +173,7 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
             parent_manifest_hash=snapshot.snapshot_hash,
             fit_dates=options.fit_dates,
             history_sessions=62,
-            annual_fit=True,
+            recent_fit=True,
         )
         request = ProfileTrainingRequest(
             tmp_path / "history",

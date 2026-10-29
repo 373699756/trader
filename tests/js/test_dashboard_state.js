@@ -218,27 +218,27 @@ const v5Snapshot = {
   ...rankSnapshot,
   scoring_profile: "v5",
   input_versions: {
-    score_scale: "weighted_evidence_quality_0_100",
+    score_scale: "model_prediction_percentile_0_100",
+    score_model_id: "v5_industry_tcn",
     score_model: "v5_industry_tcn:model-hash",
-    execution_mode: "shadow",
-    production_authority: "false",
+    execution_mode: "production",
+    production_authority: "true",
   },
 };
 const v5Item = {
   ...rankItem,
-  action_reason: "engineering_shadow_only",
-  scores: { local_score: 80, final_score: 80 },
+  action: "executable",
+  action_reason: "threshold_met",
+  scores: { local_score: 80, final_score: 95 },
 };
-assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).shadow, true);
-assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).learnedRank, false);
-assert.match(sandbox.window.TraderRender.tableDefinition(v5Snapshot).head, /最终/);
+assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).shadow, false);
+assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).learnedRank, true);
+assert.match(sandbox.window.TraderRender.tableDefinition(v5Snapshot).head, /模型排序/);
 const v5Drawer = state.drawer(v5Item, v5Snapshot);
-assert.match(v5Drawer, /最终评分/);
-assert.match(v5Drawer, /Shadow 仅供观察/);
-assert(!v5Drawer.includes("模型排序分"));
+assert.match(v5Drawer, /模型排序分/);
+assert(!v5Drawer.includes("Shadow 仅供观察"));
 const v5Notice = state.snapshotNotice(v5Snapshot, null);
-assert.match(v5Notice.message, /Shadow · 本地评分仅供观察/);
-assert(!v5Notice.message.includes("模型排序"));
+assert(!JSON.stringify(v5Notice).includes("Shadow"));
 assert.strictEqual(sandbox.window.TraderRender.scorePresentation({
   ...v5Snapshot, input_versions: { score_scale: "weighted_evidence_quality_0_100" },
 }).shadow, false, "profile name must not reinterpret historical V5 authority");

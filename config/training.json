@@ -46,8 +46,8 @@
     },
     {
       "profile": "v5",
-      "fit_dates": 250,
-      "minimum_industry_training_rows": 20000,
+      "fit_dates": 61,
+      "minimum_industry_training_rows": 5000,
       "tcn": {
         "learning_rate": 0.001,
         "weight_decay": 0.0001,

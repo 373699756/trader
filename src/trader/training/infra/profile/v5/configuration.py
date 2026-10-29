@@ -54,7 +54,7 @@ def TcnConfigurationDocument(fit_dates: int, parameters: TcnFittingParameters) -
 def DecodeTcnConfiguration(value: object) -> tuple[int, TcnFittingParameters]:
     if not isinstance(value, dict) or set(value) != {"fit_dates", "parameters", "content_hash"}:
         raise ValueError("V5 training configuration snapshot is invalid")
-    fit_dates = Integer(value, "fit_dates", minimum=250)
+    fit_dates = Integer(value, "fit_dates", minimum=61)
     raw = value["parameters"]
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         raise ValueError("V5 training parameters snapshot is invalid")
