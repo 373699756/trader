@@ -44,23 +44,12 @@ def PrepareDatabaseProbeDirectory(directory: Path, runtime_config: Path) -> Data
         existing = existing.parent
     filesystem = _filesystem(existing)
     memory = filesystem in {"tmpfs", "ramfs"}
-    detected = StorageProbe(settings.storage_overrides).inspect(target)
+    detected = StorageProbe().inspect(target)
     kind = detected.kind
     source: str = detected.source
-    # An explicit override can identify a virtual disk, but cannot turn RAM into SSD.
+    # External probe media must be measured independently from the application's configured medium.
     if memory:
         kind, source = "unknown", "memory_filesystem"
-    elif kind == "unknown":
-        device = existing.stat().st_dev
-        configured: set[StorageKind] = set()
-        for override in settings.storage_overrides:
-            ancestor = override.path
-            while not ancestor.exists():
-                ancestor = ancestor.parent
-            if ancestor.stat().st_dev == device:
-                configured.add(override.kind)
-        if len(configured) == 1:
-            kind, source = configured.pop(), "configuration_same_filesystem"
     target.mkdir(parents=True, exist_ok=False)
     return DatabaseProbeLocation(target, kind, source, filesystem, memory)
 

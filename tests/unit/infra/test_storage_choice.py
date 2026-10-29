@@ -27,7 +27,7 @@ def _config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     shutil.copytree(ROOT / "config", config)
     path = config / "runtime.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["storage"] = {"overrides": []}
+    raw["storage"] = None
     path.write_text(json.dumps(raw), encoding="utf-8")
     paths = ("runtime", "history")
 
@@ -55,18 +55,14 @@ def test_interactive_storage_choice_is_saved_and_reused(tmp_path, monkeypatch, a
     monkeypatch.setattr(storage_runtime.sys, "stdin", _Terminal(answer))
     first = bootstrap.PrepareRuntimeStorage(LoadRuntimeSettings(path), choose=True, report=False)
 
-    assert {override.kind for override in first.storage_overrides} == {kind}
+    assert first.storage_medium == kind
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["data_dir"] == "data"
-    assert {entry["path"] for entry in raw["storage"]["overrides"]} == {
-        ".runtime/trader",
-        "data/market/history",
-    }
-    assert {entry["kind"] for entry in raw["storage"]["overrides"]} == {kind}
+    assert raw["storage"] == kind
 
     monkeypatch.setattr(storage_runtime.sys, "stdin", _Terminal(""))
     second = bootstrap.PrepareRuntimeStorage(LoadRuntimeSettings(path), choose=True, report=False)
-    assert second.storage_overrides == first.storage_overrides
+    assert second.storage_medium == first.storage_medium
     assert json.loads(path.read_text(encoding="utf-8")) == raw
 
 
@@ -80,28 +76,25 @@ def test_noninteractive_storage_probe_does_not_change_configuration(tmp_path, mo
     assert path.read_bytes() == before
 
 
-def test_unresolved_paths_are_selected_independently(tmp_path):
+def test_unresolved_paths_prompt_once(tmp_path):
     unknown = StorageProfile("unknown", "unresolved", "automatic", "path_unavailable")
     first = tmp_path / "first"
     second = tmp_path / "second"
     locations = (StorageLocation("first", first, unknown), StorageLocation("second", second, unknown))
 
-    choices = storage_runtime.PromptUnknownStorage(locations, tmp_path, input_stream=_Terminal("1\n2\n"))
-    assert {item.path: item.kind for item in choices} == {first: "ssd", second: "hdd"}
+    assert storage_runtime.PromptUnknownStorage(locations, input_stream=_Terminal("1\n2\n")) == "ssd"
 
 
-def test_choice_preserves_existing_path_override(tmp_path, monkeypatch):
+def test_configured_medium_skips_prompt(tmp_path, monkeypatch):
     path = _config(tmp_path, monkeypatch)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["storage"]["overrides"] = [{"path": "data/market/history", "kind": "ssd"}]
+    raw["storage"] = "ssd"
     path.write_text(json.dumps(raw), encoding="utf-8")
     monkeypatch.setattr(storage_runtime.sys, "stdin", _Terminal("2\n"))
 
     selected = bootstrap.PrepareRuntimeStorage(LoadRuntimeSettings(path), choose=True, report=False)
-    assert {item.path: item.kind for item in selected.storage_overrides} == {
-        selected.runtime_dir: "hdd",
-        selected.data_paths.history: "ssd",
-    }
+    assert selected.storage_medium == "ssd"
+    assert json.loads(path.read_text(encoding="utf-8"))["storage"] == "ssd"
 
 
 def test_train_entrypoint_saves_choice_before_running(tmp_path, monkeypatch):
@@ -111,7 +104,7 @@ def test_train_entrypoint_saves_choice_before_running(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_run_history_download", lambda _path, _profiles: 0)
 
     assert cli.Main(["--config", str(path), "train", "v2"]) == 0
-    assert {item.kind for item in LoadRuntimeSettings(path).storage_overrides} == {"ssd"}
+    assert LoadRuntimeSettings(path).storage_medium == "ssd"
 
 
 def test_server_entrypoint_saves_choice_before_build(tmp_path, monkeypatch):
@@ -120,7 +113,7 @@ def test_server_entrypoint_saves_choice_before_build(tmp_path, monkeypatch):
 
     def build(_path, *, scoring_profile):
         assert scoring_profile == "v2"
-        assert {item.kind for item in LoadRuntimeSettings(path).storage_overrides} == {"hdd"}
+        assert LoadRuntimeSettings(path).storage_medium == "hdd"
         return SimpleNamespace(settings=SimpleNamespace(pipeline=SimpleNamespace(shutdown_timeout_seconds=30)))
 
     monkeypatch.setattr(server, "BuildSystem", build)

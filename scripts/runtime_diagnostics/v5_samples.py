@@ -18,7 +18,6 @@ from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.infra.storage_probe import StorageProbe
-from trader.infra.storage_types import StorageOverride
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
@@ -41,14 +40,13 @@ def ProbeV5Samples(
     *,
     days: int = 256,
     codes: int = 32,
-    overrides: tuple[StorageOverride, ...] = (),
     wide_source: Path | None = None,
 ) -> dict[str, object]:
     project = Path(__file__).resolve().parents[2]
     work = work.expanduser().resolve()
     if work.is_relative_to(project) or work.exists() or not 64 <= days <= 500 or not 2 <= codes <= 128:
         raise ValueError("v5_samples_requires_new_external_directory_and_bounded_workload")
-    storage = StorageProbe(overrides).inspect(work)
+    storage = StorageProbe().inspect(work)
     work.mkdir(parents=True)
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
     source_started = time.perf_counter()
@@ -120,7 +118,7 @@ def ProbeV5Samples(
                 "full_training": False,
                 "rows": row_count,
                 "source_read_seconds": source_seconds,
-                "source_storage_kind": StorageProbe(overrides).inspect(wide_source).kind if wide_source else None,
+                "source_storage_kind": StorageProbe().inspect(wide_source).kind if wide_source else None,
                 "equal_values_and_order": bool(equal),
                 "storage_kind": storage.kind,
                 "storage_source": storage.source,
@@ -149,8 +147,8 @@ def Main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--wide-sample-source", type=Path)
     args = parser.parse_args()
-    settings = LoadRuntimeSettings(args.config)
-    report = ProbeV5Samples(args.work_root, overrides=settings.storage_overrides, wide_source=args.wide_sample_source)
+    LoadRuntimeSettings(args.config)
+    report = ProbeV5Samples(args.work_root, wide_source=args.wide_sample_source)
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report["status"] == "passed" else 1
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from trader.infra.cache_contracts import CachePolicy
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.storage_types import StorageOverride
+from trader.infra.storage_types import StorageMedium
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
     FeatureComponentWeightPolicy,
@@ -154,7 +154,7 @@ class RuntimeSettings:
     performance_budgets: PerformanceBudgetSettings
     deepseek: DeepSeekSettings
     api: ApiSettings
-    storage_overrides: tuple[StorageOverride, ...] = ()
+    storage_medium: StorageMedium | None = None
 
 
 @dataclass(frozen=True)

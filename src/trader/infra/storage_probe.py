@@ -1,4 +1,4 @@
-"""One storage detector, with per-invocation device caching and explicit overrides."""
+"""One storage detector, with device caching and a global manual medium."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from trader.infra.storage_platform import ProbeMacStorage, ProbeWindowsStorage
-from trader.infra.storage_types import StorageKind, StorageOverride, StorageProfile
+from trader.infra.storage_types import StorageKind, StorageMedium, StorageProfile
 
 _SYSFS_BLOCK_ROOT = Path("/sys/dev/block")
 _VIRTUAL_DISK_IDENTIFIERS = ("VMWARE", "QEMU", "VBOX", "VIRTUAL", "XEN")
@@ -17,18 +17,15 @@ _VIRTUAL_DISK_IDENTIFIERS = ("VMWARE", "QEMU", "VBOX", "VIRTUAL", "XEN")
 class StorageProbe:
     """Read metadata only; never create paths, benchmark disks or change mount settings."""
 
-    def __init__(self, overrides: tuple[StorageOverride, ...] = ()) -> None:
-        self._overrides = tuple(sorted(overrides, key=lambda item: len(item.path.parts), reverse=True))
+    def __init__(self, medium: StorageMedium | None = None) -> None:
+        self._medium = medium
         self._devices: dict[int, StorageProfile] = {}
 
     def inspect(self, path: Path) -> StorageProfile:
+        if self._medium is not None:
+            return StorageProfile(self._medium, "configured", "configuration", "manual_medium")
         try:
             target = path.resolve()
-            for override in self._overrides:
-                if target.is_relative_to(override.path):
-                    return StorageProfile(
-                        override.kind, f"override:{override.path}", "configuration", "manual_override"
-                    )
             existing = target
             while True:
                 try:

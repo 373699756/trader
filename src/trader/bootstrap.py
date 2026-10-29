@@ -70,7 +70,7 @@ from trader.infra.settings.data_paths import DataPaths
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.storage_probe import StorageProbe
 from trader.infra.storage_runtime import ConfigureStorage
-from trader.infra.storage_types import StorageOverride
+from trader.infra.storage_types import StorageMedium
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
@@ -210,7 +210,7 @@ def ExecuteSync(
             reference=reference,
             progress=history_progress,
             cancel_requested=cancel_requested,
-            storage_overrides=settings.storage_overrides,
+            storage_medium=settings.storage_medium,
         ),
         market=lambda reference: ExecuteQfqDownload(paths, reference=reference, cancel_requested=cancel_requested),
         company=lambda reference: _sync_company_evidence(
@@ -412,9 +412,9 @@ def ExecuteHistoryDownload(
     progress: HistorySyncProgressPort | None = None,
     clock: Callable[[], datetime] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
-    storage_overrides: tuple[StorageOverride, ...] = (),
+    storage_medium: StorageMedium | None = None,
 ) -> HistoryMaintenanceStatus:
-    storage_kind = StorageProbe(storage_overrides).inspect(configuration.history_root).kind
+    storage_kind = StorageProbe(storage_medium).inspect(configuration.history_root).kind
     if reference is None:
         reference = _prepare_reference(
             configuration.reference_root,

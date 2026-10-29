@@ -222,10 +222,10 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(tmp_
 
     config = _empty_config(tmp_path)
     previous = signal.getsignal(signal.SIGTERM)
-    configured_overrides = LoadRuntimeSettings(config).storage_overrides
+    configured_medium = LoadRuntimeSettings(config).storage_medium
 
-    def download(configuration, *, progress, cancel_requested, storage_overrides):
-        assert storage_overrides == configured_overrides
+    def download(configuration, *, progress, cancel_requested, storage_medium):
+        assert storage_medium == configured_medium
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)
@@ -246,10 +246,10 @@ def test_train_cancellation_during_reference_preparation_returns_130(tmp_path, m
 
     config = _empty_config(tmp_path)
     previous = signal.getsignal(signal.SIGTERM)
-    configured_overrides = LoadRuntimeSettings(config).storage_overrides
+    configured_medium = LoadRuntimeSettings(config).storage_medium
 
-    def prepare(configuration, *, progress, cancel_requested, storage_overrides):
-        assert storage_overrides == configured_overrides
+    def prepare(configuration, *, progress, cancel_requested, storage_medium):
+        assert storage_medium == configured_medium
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)

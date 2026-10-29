@@ -22,7 +22,7 @@ from scripts.runtime_diagnostics.database_workspace import (
 from scripts.runtime_diagnostics.diagnostic_types import PROJECT_ROOT, DiagnosticCommand
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
-from trader.infra.storage_types import StorageOverride, StorageProfile
+from trader.infra.storage_types import StorageProfile
 
 _CONFIG = PROJECT_ROOT / "config/runtime.json"
 
@@ -53,22 +53,17 @@ def test_measurement_counts_wrapper_operations_and_preserves_rollback(tmp_path: 
 
 
 @pytest.mark.parametrize(
-    "filesystem, kinds, expected, source",
+    "filesystem, medium, expected, source",
     (
-        ("tmpfs", ("ssd",), "unknown", "memory_filesystem"),
-        ("ext4", ("ssd",), "ssd", "configuration_same_filesystem"),
-        ("ext4", ("ssd", "hdd"), "unknown", "automatic"),
+        ("tmpfs", "ssd", "unknown", "memory_filesystem"),
+        ("ext4", "ssd", "unknown", "automatic"),
+        ("ext4", None, "unknown", "automatic"),
     ),
 )
-def test_workspace_distinguishes_memory_and_manual_same_filesystem_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filesystem, kinds, expected, source
+def test_workspace_ignores_app_medium_and_rejects_memory_disk_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filesystem, medium, expected, source
 ) -> None:
-    settings = replace(
-        LoadRuntimeSettings(_CONFIG),
-        storage_overrides=tuple(
-            StorageOverride(tmp_path / f"configured-{offset}", kind) for offset, kind in enumerate(kinds)
-        ),
-    )
+    settings = replace(LoadRuntimeSettings(_CONFIG), storage_medium=medium)
     monkeypatch.setattr(database_workspace, "LoadRuntimeSettings", lambda _: settings)
     monkeypatch.setattr(database_workspace, "_filesystem", lambda _: filesystem)
     monkeypatch.setattr(
@@ -81,7 +76,7 @@ def test_workspace_distinguishes_memory_and_manual_same_filesystem_evidence(
     assert location.storage_source == source
     evidence = ProjectDatabaseProbeLocation(location)
     assert evidence["memory_backed"] is (filesystem == "tmpfs")
-    assert evidence["disk_performance_evidence"] is (filesystem == "ext4" and expected == "ssd")
+    assert evidence["disk_performance_evidence"] is False
 
 
 def test_workspace_rejects_source_existing_relative_and_symlink_targets(tmp_path: Path) -> None:

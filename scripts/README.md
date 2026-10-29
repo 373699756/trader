@@ -9,7 +9,7 @@ module and profile there; it is not added as another top-level script.
 
 `--profile storage`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
 可重复使用`--storage-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
-unknown结果附带实际runtime配置文件、`storage.overrides`字段和修改示例。机械硬盘填写`hdd`，固态填写`ssd`，重启后生效。
+unknown结果附带实际runtime配置文件和单项`storage`修改示例：`"storage": "hdd"`或`"storage": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
 
 `--profile v5-samples --training-probe-directory /absolute/new/external/directory`
 隔离比较V5宽表与float64紧凑序列块的大小、构建、封存及双头批量读取，逐值检查顺序和标签。

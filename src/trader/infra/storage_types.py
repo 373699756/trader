@@ -5,12 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 StorageKind = Literal["hdd", "ssd", "unknown"]
-
-
-@dataclass(frozen=True)
-class StorageOverride:
-    path: Path
-    kind: Literal["hdd", "ssd"]
+StorageMedium = Literal["hdd", "ssd"]
 
 
 @dataclass(frozen=True)

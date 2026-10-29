@@ -32,7 +32,7 @@ def RunDownload(
                 configuration,
                 progress=progress,
                 cancel_requested=cancelled.is_set,
-                storage_overrides=runtime.storage_overrides,
+                storage_medium=runtime.storage_medium,
             )
         except (CancelledError, OSError, RuntimeError, ValueError) as exc:
             if not cancelled.is_set():

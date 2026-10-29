@@ -38,7 +38,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
         runtime_dir=tmp_path,
         project_root=tmp_path,
         data_paths=DataPaths(tmp_path / "data"),
-        storage_overrides=(),
+        storage_medium=None,
     )
     monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: settings)
 

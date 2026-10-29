@@ -5,7 +5,6 @@ import os
 import plistlib
 import shutil
 import subprocess
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,9 +12,8 @@ import pytest
 from trader.infra import storage_platform, storage_probe
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.parser import ConfigurationError
-from trader.infra.settings.storage import ParseStorageOverrides
+from trader.infra.settings.storage import ParseStorageMedium
 from trader.infra.storage_runtime import InspectDataStorage, ReportStorageProfiles
-from trader.infra.storage_types import StorageOverride
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -76,33 +74,29 @@ def test_linux_virtual_scsi_does_not_claim_host_medium(tmp_path, monkeypatch, ro
     assert profile.reason == "device_metadata_unavailable"
 
 
-def test_manual_override_longest_scope_and_resolved_symlink(tmp_path):
+def test_manual_medium_applies_to_all_paths(tmp_path):
     target = tmp_path / "mounted"
     target.mkdir()
     (tmp_path / "samples").symlink_to(target, target_is_directory=True)
-    overrides = ParseStorageOverrides(
-        {"overrides": [{"path": ".", "kind": "hdd"}, {"path": "samples", "kind": "ssd"}]}, tmp_path
-    )
-    probe = storage_probe.StorageProbe(overrides)
+    probe = storage_probe.StorageProbe("ssd")
     result = probe.inspect(tmp_path / "samples/new")
     assert result.kind == "ssd" and result.source == "configuration"
-    assert probe.inspect(tmp_path / "history").kind == "hdd"
+    assert probe.inspect(tmp_path / "history").kind == "ssd"
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "value",
     [
-        [{"path": ".", "kind": "unknown"}],
-        [{"path": ".", "kind": "SSD"}],
-        [{"path": ".", "kind": "hdd", "other": True}],
-        [{"path": ".", "kind": "hdd"}, {"path": "./", "kind": "ssd"}],
+        "unknown",
+        "SSD",
+        {"overrides": []},
         [None],
         {},
     ],
 )
-def test_invalid_overrides_are_errors(tmp_path, overrides):
+def test_invalid_storage_medium_is_error(value):
     with pytest.raises(ConfigurationError):
-        ParseStorageOverrides({"overrides": overrides}, tmp_path)
+        ParseStorageMedium(value)
 
 
 def test_runtime_config_storage_is_optional_and_uses_actual_config(tmp_path, monkeypatch, capsys):
@@ -113,7 +107,7 @@ def test_runtime_config_storage_is_optional_and_uses_actual_config(tmp_path, mon
     raw.pop("storage")
     path.write_text(json.dumps(raw))
     settings = LoadRuntimeSettings(path)
-    assert settings.storage_overrides == ()
+    assert settings.storage_medium is None
     monkeypatch.setattr(storage_probe, "_SYSFS_BLOCK_ROOT", tmp_path / "absent")
     monkeypatch.setattr(storage_probe.sys, "platform", "linux")
     locations = InspectDataStorage(settings, storage_probe.StorageProbe())
@@ -122,18 +116,17 @@ def test_runtime_config_storage_is_optional_and_uses_actual_config(tmp_path, mon
     assert output.out == ""
     assert output.err.count("[存储配置需修改]") == 1
     assert "config/runtime.json" in output.err
-    assert "storage.overrides" in output.err and '"kind": "hdd"' in output.err
+    assert '"storage": "hdd"' in output.err
     assert "data/training/samples/v5" in output.err
     assert "ssd" in output.err and "重新启动" in output.err
-    assert len(locations) == 23
+    assert len(locations) == 22
     assert not settings.data_paths.root.exists()
-    raw["storage"] = {"overrides": [{"path": "data", "kind": "ssd"}]}
+    raw["storage"] = "ssd"
     path.write_text(json.dumps(raw))
     configured = LoadRuntimeSettings(path)
-    assert configured.storage_overrides == (StorageOverride(tmp_path / "data", "ssd"),)
-    all_manual = replace(configured, storage_overrides=(StorageOverride(tmp_path, "ssd"),))
+    assert configured.storage_medium == "ssd"
     ReportStorageProfiles(
-        all_manual, InspectDataStorage(all_manual, storage_probe.StorageProbe(all_manual.storage_overrides))
+        configured, InspectDataStorage(configured, storage_probe.StorageProbe(configured.storage_medium))
     )
     output = capsys.readouterr()
     assert "已使用手动配置" in output.err and "需修改" not in output.err

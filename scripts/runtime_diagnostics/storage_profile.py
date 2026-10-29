@@ -15,9 +15,10 @@ def Main() -> int:
     parser.add_argument("--path", type=Path, action="append", default=[])
     args = parser.parse_args()
     settings = LoadRuntimeSettings(args.config)
-    locations = InspectDataStorage(settings, StorageProbe(settings.storage_overrides), additional_paths=args.path)
+    locations = InspectDataStorage(settings, StorageProbe(settings.storage_medium), additional_paths=args.path)
     ReportStorageProfiles(settings, locations)
     unknown = sum(item.profile.kind == "unknown" for item in locations)
+    unknown_app = any(item.profile.kind == "unknown" and not item.role.startswith("external.") for item in locations)
     details = [
         {
             "role": item.role,
@@ -38,11 +39,12 @@ def Main() -> int:
                     "unknown": unknown,
                     "read_only": True,
                     "configuration_file": DisplayStoragePath(settings.config_path, settings.project_root),
-                    "configuration_field": "storage.overrides",
-                    "instruction": "unknown目录需手动配置：机械硬盘填写hdd，固态硬盘填写ssd；保存后重新启动命令。",
-                    "override_examples": [
-                        {"path": item["path"], "kind": "hdd"} for item in details if item["kind"] == "unknown"
-                    ],
+                    "configuration_field": "storage",
+                    "instruction": (
+                        '统一设置"storage": "ssd"或"storage": "hdd"；保存后重新启动命令。'
+                        if unknown_app else "外部目录按实际设备独立检测；请核实该目录所在介质。"
+                    ),
+                    "configuration_example": {"storage": "hdd"} if unknown_app else None,
                 },
             },
             ensure_ascii=False,

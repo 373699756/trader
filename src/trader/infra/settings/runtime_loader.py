@@ -67,7 +67,7 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     Text as _text,
 )
-from trader.infra.settings.storage import ParseStorageOverrides
+from trader.infra.settings.storage import ParseStorageMedium
 
 
 def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
@@ -85,7 +85,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         label="runtime",
         optional_root_keys=frozenset({"storage"}),
     )
-    raw.setdefault("storage", {"overrides": []})
+    raw.setdefault("storage", None)
     cache_sections = _read_json_object(path.parent / "cache.json")
     _require_exact_keys(cache_sections, {"cache_policy"}, "cache")
     market_section = _mapping(raw, "market_data")
@@ -205,7 +205,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     settings = RuntimeSettings(
         config_version=_configuration_identity("runtime", raw),
         config_path=path,
-        storage_overrides=ParseStorageOverrides(_mapping(raw, "storage"), project_root),
+        storage_medium=ParseStorageMedium(raw["storage"]),
         project_root=project_root,
         runtime_dir=runtime_dir,
         data_paths=data_paths,
