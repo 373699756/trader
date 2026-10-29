@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import html
+import os
 import re
+import signal
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -20,14 +22,15 @@ from trader.download.domain.company_evidence import (
     CompanyDocumentLimits,
     CompanyDocumentPolicies,
     CompanySourceFailure,
-    DocumentRoute,
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
     DisclosureQuery,
     DisclosureSecurity,
+    DocumentRoute,
 )
 from trader.download.infra.company_document_ocr import CompanyOcrEngine
+from trader.download.infra.company_document_parser import CompanyTextCapability
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import (
     HttpCancelled,
@@ -41,7 +44,8 @@ from trader.infra.http_contracts import (
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_DOCUMENT_LIMITS = CompanyDocumentLimits()
 _DEFAULT_EXTENDED_LIMITS = CompanyDocumentLimits(64 * 1024 * 1024, 1000, 2_000_000)
-_DEFAULT_POLICIES = CompanyDocumentPolicies("text_3:default", "ocr_1:unavailable", "limits_1:default")
+_DEFAULT_POLICIES = CompanyDocumentPolicies("text_4:poppler-path", "ocr_1:unavailable", "limits_1:default")
+_DEFAULT_TEXT_CAPABILITY = CompanyTextCapability("poppler-path", "pdftotext", "pdfinfo")
 
 
 class CninfoMarketDisclosureSource:
@@ -57,6 +61,7 @@ class CninfoMarketDisclosureSource:
         document_limits: CompanyDocumentLimits = _DEFAULT_DOCUMENT_LIMITS,
         extended_document_limits: CompanyDocumentLimits = _DEFAULT_EXTENDED_LIMITS,
         document_policies: CompanyDocumentPolicies = _DEFAULT_POLICIES,
+        text_capability: CompanyTextCapability = _DEFAULT_TEXT_CAPABILITY,
         ocr_engine: CompanyOcrEngine | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
@@ -68,6 +73,7 @@ class CninfoMarketDisclosureSource:
         self._document_limits = document_limits
         self._extended_document_limits = extended_document_limits
         self._document_policies = document_policies
+        self._text_capability = text_capability
         self._ocr_engine = ocr_engine
         self._request_interval = request_interval_seconds
         self._cancel_requested = cancel_requested
@@ -252,7 +258,13 @@ class CninfoMarketDisclosureSource:
         try:
             text = self._parse_document(payload, limits)
         except CompanyDocumentFailure as exc:
-            if exc.reason in {"disclosure_document_no_text", "disclosure_document_short_text", "disclosure_document_unreadable"}:
+            if exc.reason in {
+                "disclosure_document_no_text",
+                "disclosure_document_short_text",
+                "disclosure_document_unreadable",
+                "disclosure_document_parse_timeout",
+                "disclosure_document_text_unavailable",
+            }:
                 return self._ocr(payload, payload_hash)
             if route == "standard" and exc.reason in {
                 "disclosure_document_page_limit",
@@ -265,6 +277,8 @@ class CninfoMarketDisclosureSource:
                         "disclosure_document_no_text",
                         "disclosure_document_short_text",
                         "disclosure_document_unreadable",
+                        "disclosure_document_parse_timeout",
+                        "disclosure_document_text_unavailable",
                     }:
                         return self._ocr(payload, payload_hash)
                     raise
@@ -293,6 +307,11 @@ class CninfoMarketDisclosureSource:
     def _parse_document(self, payload: bytes, limits: CompanyDocumentLimits | None = None) -> str:
         limits = limits or self._document_limits
         payload_hash = hashlib.sha256(payload).digest()
+        if not self._text_capability.available:
+            raise CompanyDocumentFailure(
+                self._text_capability.failure or "disclosure_document_text_unavailable",
+                payload_hash=payload_hash,
+            )
         self._check_cancelled()
         parse_deadline = self._monotonic() + self._document_parse_timeout
         process = subprocess.Popen(
@@ -306,10 +325,15 @@ class CninfoMarketDisclosureSource:
                 str(limits.max_pages),
                 "--max-text-characters",
                 str(limits.max_text_characters),
+                "--pdftotext",
+                self._text_capability.pdftotext or "pdftotext",
+                "--pdfinfo",
+                self._text_capability.pdfinfo or "pdfinfo",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
         )
         pending_input: bytes | None = payload
         try:
@@ -345,11 +369,23 @@ class CninfoMarketDisclosureSource:
 def _close_parser(process: subprocess.Popen[bytes]) -> None:
     try:
         if process.poll() is None:
-            process.terminate()
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                pass
             try:
                 process.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
-                process.kill()
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.kill()
                 process.wait(timeout=1.0)
     finally:
         if process.stdin is not None:

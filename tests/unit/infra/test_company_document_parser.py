@@ -15,13 +15,14 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from tests.unit.infra.test_company_sources import NOW, Session
 from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyDocumentLimits, Disclosure
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_document_parser import DetectCompanyText
 from trader.infra.http_contracts import HttpCancelled, HttpResponse
 
 
 def _pdf(pages=1, *, encrypted=False, blank=False, short=False):
     writer = PdfWriter()
     for _ in range(pages):
-        page = writer.add_blank_page(width=500, height=500)
+        page = writer.add_blank_page(width=2000, height=500)
         if not blank:
             font = DictionaryObject(
                 {
@@ -31,12 +32,12 @@ def _pdf(pages=1, *, encrypted=False, blank=False, short=False):
                 }
             )
             page[NameObject("/Resources")] = DictionaryObject(
-                {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
+                {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
             )
             stream = DecodedStreamObject()
             text = b"Short text." if short else b"Official announcement evidence. " * 5
             stream.set_data(b"BT /F1 12 Tf 10 10 Td (" + text + b") Tj ET")
-            page[NameObject("/Contents")] = stream
+            page[NameObject("/Contents")] = writer._add_object(stream)
     if encrypted:
         writer.encrypt("fixture")
     output = io.BytesIO()
@@ -109,6 +110,38 @@ def test_real_parser_reason_and_config_limits_reach_the_source():
     extraction = source.document(item)
     assert extraction.method == "text" and extraction.policy_id == "limits_1:default"
     assert session.requests[0]["max_response_bytes"] == 65536
+
+
+def test_poppler_capability_is_versioned_and_parser_timeout_falls_back_to_ocr(monkeypatch):
+    capability = DetectCompanyText()
+    assert capability.available and capability.identity not in {"", "unavailable"}
+
+    class PdfSession(Session):
+        def get(self, url, **kwargs):
+            return HttpResponse(200, _pdf())
+
+    class Ocr:
+        def extract(self, payload, payload_hash):
+            assert payload and len(payload_hash) == 32
+            return "OCR recovered announcement evidence. " * 4, 88.0
+
+    source = CninfoMarketDisclosureSource(
+        PdfSession({}),
+        monotonic=lambda: 0,
+        sleeper=lambda _: None,
+        text_capability=capability,
+        ocr_engine=Ocr(),
+    )
+    monkeypatch.setattr(
+        source,
+        "_parse_document",
+        lambda *_args: (_ for _ in ()).throw(CompanyDocumentFailure("disclosure_document_parse_timeout")),
+    )
+    item = Disclosure(
+        "cninfo", "timeout", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
+    )
+    extraction = source.document(item)
+    assert extraction.method == "ocr" and extraction.quality == 88.0
 
 
 @pytest.mark.skipif(os.name != "posix", reason="signal-based parser termination probe")

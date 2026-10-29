@@ -230,6 +230,40 @@ def test_shared_document_is_selected_once_and_cooling_does_not_starve_ready_docu
     assert (workload.pending, workload.due, workload.cooling) == (4, 3, 1)
 
 
+def test_transient_failure_attempted_in_this_run_stays_cooling_after_retry_time(tmp_path):
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    index.document_failure(
+        item,
+        fixtures._TEST_DOCUMENT_POLICIES.standard,
+        "disclosure_document_parse_timeout",
+        NOW,
+        NOW + timedelta(seconds=1),
+    )
+    workload = index.document_workload(
+        ("600001",),
+        NOW + timedelta(hours=1),
+        fixtures._TEST_DOCUMENT_POLICIES,
+        excluded=((item.source, item.identity, item.digest),),
+    )
+    assert (workload.pending, workload.due, workload.cooling) == (1, 0, 1)
+
+
+def test_poppler_policy_upgrade_reopens_old_parser_timeout_without_waiting(tmp_path):
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    index.document_failure(
+        item,
+        "text_3:10:16777216:200:1000000",
+        "disclosure_document_parse_timeout",
+        NOW,
+        NOW + timedelta(days=1),
+    )
+    policies = replace(fixtures._TEST_DOCUMENT_POLICIES, standard="text_4:poppler-fixture:10:16777216:200:1000000")
+    workload = index.document_workload(("600001",), NOW, policies)
+    assert (workload.pending, workload.due, workload.cooling) == (1, 1, 0)
+
+
 def test_deterministic_document_failure_reopens_only_for_matching_route_policy_or_content(tmp_path):
     index = fixtures._index(tmp_path)
     item = _seed(index, 1)[0]

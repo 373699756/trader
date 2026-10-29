@@ -513,6 +513,7 @@ _OCR_FAILURES = frozenset(
         "disclosure_document_no_text",
         "disclosure_document_short_text",
         "disclosure_document_unreadable",
+        "disclosure_document_text_unavailable",
         "disclosure_document_ocr_unavailable",
         "disclosure_document_ocr_language_unavailable",
         "disclosure_document_ocr_timeout",
@@ -567,13 +568,16 @@ def CompanyDocumentFailureRules() -> tuple[tuple[str, DocumentRoute, bool], ...]
 
 
 def BuildCompanyDocumentPolicies(
-    configuration: CompanySyncConfiguration, ocr_identity: str
+    configuration: CompanySyncConfiguration,
+    ocr_identity: str,
+    *,
+    text_identity: str = "poppler-path",
 ) -> CompanyDocumentPolicies:
     limits = configuration.document_limits
     expanded = configuration.extended_document_limits
     return CompanyDocumentPolicies(
         standard=(
-            f"text_3:{configuration.document_parse_timeout_seconds:g}:"
+            f"text_4:{text_identity}:{configuration.document_parse_timeout_seconds:g}:"
             f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
         ),
         ocr=(

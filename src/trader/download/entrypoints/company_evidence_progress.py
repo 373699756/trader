@@ -194,7 +194,8 @@ def _page_counts(progress: EvidenceSyncProgress, unit: str, pending: int) -> str
     if progress.component == "risk_documents":
         return (
             f"已尝试 {progress.attempted_documents}/{total} 篇 | 已提取正文 {progress.completed} 篇 | "
-            f"本轮失败 {progress.failed_documents} 篇 | 当前可处理 {max(0, pending - progress.deferred_documents)} 篇 | "
+            f"本轮失败 {progress.failed_documents} 篇 | 当前可处理 "
+            f"{max(0, pending - progress.deferred_documents - progress.unextractable_documents)} 篇 | "
             f"冷却暂缓 {progress.deferred_documents} 篇 | OCR分类 {progress.ocr_documents} 篇 | "
             f"不可提取/资料未知 {progress.unextractable_documents} 篇"
             + (

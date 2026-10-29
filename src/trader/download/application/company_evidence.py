@@ -140,6 +140,7 @@ class CompanyEvidenceDependencies:
     document_sources: tuple[CompanyDisclosureSource, ...] = ()
     document_executor: WorkerExecutor | None = None
     ocr_identity: str = "unavailable"
+    text_identity: str = "poppler-path"
 
 
 @dataclass
@@ -618,7 +619,11 @@ class _DocumentRun:
             raise ValueError("company_document_executor_required")
         self.executor = dependencies.document_executor
         self.failed_identities: set[tuple[str, str, str]] = set()
-        self.policies = BuildCompanyDocumentPolicies(configuration, dependencies.ocr_identity)
+        self.policies = BuildCompanyDocumentPolicies(
+            configuration,
+            dependencies.ocr_identity,
+            text_identity=dependencies.text_identity,
+        )
         self.repair = repair
         self.circuit = _SourceCircuit()
         self.stopped = False
@@ -687,9 +692,10 @@ class _DocumentRun:
                 self.report(workload, completed_before, discovering=discovering)
         self.elapsed += max(0.0, dependencies.monotonic() - self.batch_started)
         self.batch_started = None
+        final_workload = self.workload()
         self.report(
-            workload,
-            completed_before,
+            final_workload,
+            self.completed,
             status="deferred" if self.stopped else "complete",
             discovering=discovering,
         )

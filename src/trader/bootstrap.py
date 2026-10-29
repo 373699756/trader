@@ -36,6 +36,7 @@ from trader.download.infra.baostock_industry import BaoStockIndustryClient, Fetc
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
+from trader.download.infra.company_document_parser import DetectCompanyText
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
@@ -262,7 +263,12 @@ def _sync_company_evidence(
         heartbeat = resources.enter_context(ProgressHeartbeat(progress))
         configuration = request.configuration
         ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
-        document_policies = company_evidence.BuildCompanyDocumentPolicies(configuration, ocr_capability.identity)
+        text_capability = DetectCompanyText()
+        document_policies = company_evidence.BuildCompanyDocumentPolicies(
+            configuration,
+            ocr_capability.identity,
+            text_identity=text_capability.identity,
+        )
         ocr_engine = CompanyOcrEngine(
             ocr_capability,
             timeout_seconds=configuration.document_ocr_timeout_seconds,
@@ -279,6 +285,7 @@ def _sync_company_evidence(
             document_limits=configuration.document_limits,
             extended_document_limits=configuration.extended_document_limits,
             document_policies=document_policies,
+            text_capability=text_capability,
             ocr_engine=ocr_engine,
             request_interval_seconds=configuration.request_interval_seconds,
             cancel_requested=cancel_requested,
@@ -319,6 +326,7 @@ def _sync_company_evidence(
             document_sources=documents,
             document_executor=workers,
             ocr_identity=ocr_capability.identity,
+            text_identity=text_capability.identity,
         )
         return SyncCompanyEvidence(dependencies, request)
 

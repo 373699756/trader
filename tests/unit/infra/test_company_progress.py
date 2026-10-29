@@ -218,7 +218,19 @@ def test_last_stock_starts_atomic_publication_and_news_without_candidates_is_exp
 def test_source_failure_and_unreadable_documents_have_separate_recovery_messages():
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
-    report(EvidenceSyncProgress("risk_documents", 2, 5, 0, 0, 0, failed_documents=1, deferred_documents=2))
+    report(
+        EvidenceSyncProgress(
+            "risk_documents",
+            2,
+            5,
+            0,
+            0,
+            0,
+            failed_documents=1,
+            deferred_documents=2,
+            unextractable_documents=1,
+        )
+    )
     report(
         EvidenceSyncProgress(
             "complete",
@@ -233,7 +245,7 @@ def test_source_failure_and_unreadable_documents_have_separate_recovery_messages
         )
     )
     text = stream.getvalue()
-    assert "本轮失败 1 篇 | 当前可处理 3 篇 | 冷却暂缓 2 篇" in text
+    assert "本轮失败 1 篇 | 当前可处理 2 篇 | 冷却暂缓 2 篇" in text
     assert "公告目录：来源暂缓（连续失败或限流）" in text
     assert "公告正文：PDF未提取到文字" in text
     assert "OCR仍失败的正文标记为不可提取/资料未知，同内容同策略不再重试" in text
