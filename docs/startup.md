@@ -1,4 +1,11 @@
+run.sh v1,v2,v3现在company的数据启动时只有几M需要加载的，为什么web还是显示正在加载，需要这么长时间，定位下原因
+refresh failed: task=close_quotes code=history_preload_deadline boundary=require_projection:362
+refresh failed: task=close_quotes code=history_preload_deadline boundary=require_projection:362
+refresh failed: task=close_quotes code=history_preload_deadline boundary=require_projection:362
+
+
 定位完成：不是 company 数据加载慢，而是全市场历史投影在启动时超过了固定 300 秒期限。
+
 
 关键原因：
 
@@ -148,3 +155,7 @@ Web 是异步启动的，所以页面先能打开，随后等待后台线程完�
 8. 更新文档并完成单批交付
 
    实施时只更新阶段281原记录，逐项核对其中旧company重建事项与当前实际状态；已完成的内容补充证据，仍未验证的保留，不重新删除或下载company数据。
+
+
+
+v5训练时间太长了，训练时间改成最近的61日，是否可以，另外不弄成过滤的，训练出来的模型直接荐股，弄成直接给出评分最高6只股票，跟v1一样，这样训练速度是不是会快很多
