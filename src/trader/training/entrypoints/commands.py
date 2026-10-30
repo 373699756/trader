@@ -129,7 +129,9 @@ def RunResearchCommand(
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)
-        screening_snapshot = SQLiteHistoricalScreeningSnapshot(research_root).inspect(
+        screening_snapshot = SQLiteHistoricalScreeningSnapshot(
+            research_root / "experiments/historical_screening"
+        ).inspect(
             HISTORICAL_SCREENING_SPEC.research_identity
         )
         screening_coverage = (
@@ -346,7 +348,7 @@ def _tomorrow_research_result_payload(
 
 
 def _tomorrow_research_prerequisite(research_root: Path) -> TomorrowLabelReadinessInspector:
-    snapshot = SQLiteH1PointInTimeSnapshot(research_root)
+    snapshot = SQLiteH1PointInTimeSnapshot(research_root / "experiments/h1_point_in_time")
     return TomorrowLabelReadinessInspector(HistoricalLabelPreregistrationService(snapshot))
 
 

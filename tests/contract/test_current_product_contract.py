@@ -65,3 +65,20 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
         assert retired_command not in operations
     assert (ROOT / "tests/performance/run_desktop_dashboard.py").is_file()
     assert not (ROOT / "tests/performance/run_chrome_dashboard.py").exists()
+
+
+def test_database_dictionary_covers_all_profiles_and_separates_research_schemas() -> None:
+    storage = (ROOT / "docs/4_下载训练.md").read_text(encoding="utf-8")
+
+    for number in range(1, 33):
+        assert f"| DB{number:02d} |" in storage
+    for path in (
+        "data/recommendation/v5/freeze.sqlite3",
+        "data/recommendation/v5/publication_state.sqlite3",
+        "data/research/v5/outcomes.sqlite3",
+        "data/research/v5/traces/<trade-date>.sqlite3",
+        "experiments/historical_screening/samples.sqlite3",
+        "experiments/h1_point_in_time/samples.sqlite3",
+    ):
+        assert path in storage
+    assert "不得共用研究根的`samples.sqlite3`" in storage

@@ -508,6 +508,10 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     config = _runtime_config(tmp_path)
+    research_root = LoadRuntimeSettings(config).data_paths.research("v2")
+    research_root.mkdir(parents=True)
+    legacy_database = research_root / "samples.sqlite3"
+    legacy_database.write_bytes(b"retired shared research database")
 
     assert Main(["--config", str(config), "research-status"]) == 0
 
@@ -533,6 +537,9 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     assert payload["blockers"] == ["target_selection_external_validation_required"]
     assert payload["target_selection"]["research_identity"] == "eleven_layer_full_population"
     assert payload["target_selection"]["strategies"] == ["tomorrow", "d25"]
+    assert legacy_database.read_bytes() == b"retired shared research database"
+    assert not (research_root / "experiments/historical_screening/samples.sqlite3").exists()
+    assert not (research_root / "experiments/h1_point_in_time/samples.sqlite3").exists()
     assert payload["historical_screening"]["target_selection_evidence"] is False
     assert payload["tomorrow_historical"]["validation_mode"] == "historical_only"
     assert payload["tomorrow_historical_risk"] == {
