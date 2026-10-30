@@ -47,3 +47,79 @@ def test_storage_command_reports_real_config_and_external_paths(tmp_path, monkey
     assert report["summary"]["configuration_example"] == {"storage": "hdd"}
     assert "存储配置需修改" in output.err
     assert not (tmp_path / "new-output").exists()
+
+
+def test_storage_command_degrades_when_configured_medium_disagrees_with_physical(
+    tmp_path, monkeypatch, capsys
+):
+    import json
+    import shutil
+    import sys
+
+    from trader.infra.storage_types import StorageProfile
+
+    class _StorageProbe:
+        def __init__(self, medium=None):
+            self._medium = medium
+
+        def inspect(self, path):
+            if self._medium is not None:
+                return StorageProfile(self._medium, "configured", "configuration", "manual_medium")
+            return StorageProfile("hdd", "sda", "automatic", "rotational_metadata")
+
+    config_dir = tmp_path / "config"
+    shutil.copytree(Path(__file__).resolve().parents[3] / "config", config_dir)
+    config = config_dir / "runtime.json"
+    raw = json.loads(config.read_text(encoding="utf-8"))
+    raw["storage"] = "ssd"
+    config.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.setattr(storage_profile, "StorageProbe", _StorageProbe)
+    monkeypatch.setattr(sys, "argv", ["storage", "--config", str(config)])
+
+    assert storage_profile.Main() == 0
+
+    output = capsys.readouterr()
+    report = json.loads(output.out)
+    summary = report["summary"]
+    assert report["status"] == "degraded"
+    assert summary["configured_mismatches"] == len(summary["locations"])
+    assert summary["configuration_example"] == {"storage": "hdd"}
+    assert all(item["kind"] == "ssd" for item in summary["locations"])
+    assert all(item["actual_kind"] == "hdd" for item in summary["locations"])
+    assert all(item["configured_mismatch"] for item in summary["locations"])
+    assert "存储配置需修改" in output.err
+
+
+def test_storage_command_does_not_treat_unverified_manual_medium_as_performance_evidence(
+    tmp_path, monkeypatch, capsys
+):
+    import json
+    import shutil
+    import sys
+
+    from trader.infra.storage_types import StorageProfile
+
+    class _StorageProbe:
+        def __init__(self, medium=None):
+            self._medium = medium
+
+        def inspect(self, path):
+            if self._medium is not None:
+                return StorageProfile(self._medium, "configured", "configuration", "manual_medium")
+            return StorageProfile("unknown", "virtual", "automatic", "device_metadata_unavailable")
+
+    config_dir = tmp_path / "config"
+    shutil.copytree(Path(__file__).resolve().parents[3] / "config", config_dir)
+    config = config_dir / "runtime.json"
+    monkeypatch.setattr(storage_profile, "StorageProbe", _StorageProbe)
+    monkeypatch.setattr(sys, "argv", ["storage", "--config", str(config)])
+
+    assert storage_profile.Main() == 0
+
+    report = json.loads(capsys.readouterr().out)
+    summary = report["summary"]
+    assert report["status"] == "degraded"
+    assert summary["configured_mismatches"] == 0
+    assert summary["actual_unknown"] == len(summary["locations"])
+    assert summary["configuration_example"] is None
+    assert "不能作为磁盘性能证据" in summary["instruction"]

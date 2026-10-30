@@ -1,6 +1,6 @@
 {
   "runtime_dir": ".runtime/trader",
-  "storage": "ssd",
+  "storage": "hdd",
   "data_dir": "data",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json"
