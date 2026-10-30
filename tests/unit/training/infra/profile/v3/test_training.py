@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import nullcontext
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -236,8 +237,8 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     if failure is sqlite3.OperationalError:
         assert all(head.failure_reasons == ("training_database_failed",) for head in first.heads)
 
-    def fit(_samples, _split, contract, algorithm, *_args, **_kwargs):
-        return _fitted_result(len(contract.feature_positions), algorithm)
+    def fit(_samples, _split, contracts, algorithm, *_args, **_kwargs):
+        return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args: None)
@@ -310,11 +311,10 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
 
-    def fit(_samples, _split, contract, algorithm, *_args, progress):
+    def fit(_samples, _split, contracts, algorithm, *_args, progress):
         del progress
-        fitted.append(contract.strategy)
-        width = len(contract.feature_positions)
-        return _fitted_result(width, algorithm)
+        fitted.extend(contract.strategy for contract in contracts)
+        return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     published: list[tuple[Strategy, Path]] = []
@@ -377,10 +377,10 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
 
-    def fit(_samples, _split, contract, algorithm, *_args, progress):
+    def fit(_samples, _split, contracts, algorithm, *_args, progress):
         del progress
-        fitted.append(contract.strategy)
-        return _fitted_result(len(contract.feature_positions), algorithm)
+        fitted.extend(contract.strategy for contract in contracts)
+        return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args, **_kwargs: None)
@@ -578,6 +578,11 @@ def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, cal
             pass
 
         @staticmethod
+        def share_industry(_industry, *, checkpoint):
+            checkpoint()
+            return nullcontext()
+
+        @staticmethod
         def industry_counts(_contract) -> tuple[V3TrainingIndustryCounts, ...]:
             assert updates[-1].stage == "industry_statistics"
             assert updates[-1].state == "started"
@@ -599,10 +604,10 @@ def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, cal
 
     monkeypatch.setattr("trader.training.infra.model_fitting._fit_industry", reject_calibration)
 
-    result = FitIndustryModels(
+    result, = FitIndustryModels(
         Samples(),
         split,
-        TOMORROW_HEAD_CONTRACT,
+        (TOMORROW_HEAD_CONTRACT,),
         RidgeFittingParameters(20_000, 1.0),
         progress=progress,  # type: ignore[arg-type]
     )

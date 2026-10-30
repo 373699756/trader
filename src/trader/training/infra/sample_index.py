@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import mmap
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date
@@ -79,6 +79,16 @@ class TrainingIndustryData:
 
 
 @dataclass(frozen=True)
+class _IndustryRows:
+    industry: str
+    features: np.ndarray
+    targets: np.ndarray
+    dates: tuple[date, ...]
+    codes: tuple[str, ...]
+    splits: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class TargetMetric:
     target: str
     count: int
@@ -125,6 +135,7 @@ class SQLiteTrainingSampleIndex:
         self._prepared_split_hash = prepared_split_hash
         self._counts_by_target: dict[str, tuple[TrainingIndustryCounts, ...]] = {}
         self._date_values: dict[int, date] = {}
+        self._shared_rows: _IndustryRows | None = None
         self._connection = OpenSqliteConnection(
             path,
             SqliteConnectionOptions(
@@ -189,6 +200,8 @@ class SQLiteTrainingSampleIndex:
         self.close()
 
     def add_final(self, samples: Iterable[TrainingSample]) -> None:
+        if self._prepared_split_hash is not None:
+            raise RuntimeError("training samples are sealed")
         self._counts_by_target.clear()
         values = tuple(samples)
         column_width = self._column_features + int(self._sequence_layout is not None)
@@ -224,6 +237,8 @@ class SQLiteTrainingSampleIndex:
             )
 
     def record_day(self, day: date, candidates: int, missing: tuple[int, ...]) -> None:
+        if self._prepared_split_hash is not None:
+            raise RuntimeError("training samples are sealed")
         if len(missing) != 5:
             raise ValueError("sample diagnostics require five horizons")
         self._connection.run(
@@ -293,6 +308,23 @@ class SQLiteTrainingSampleIndex:
             raise ValueError("training_holdout_is_sealed")
         target = _require_target_column(contract.target_column)
         self._feature_columns(contract)
+        shared = self._shared_rows
+        if shared is not None and industry == shared.industry and split_name != "validation":
+            target_position = SAMPLE_TARGET_COLUMNS.index(target)
+            selected_rows = [
+                position for position, partition in enumerate(shared.splits)
+                if partition == split_name and not np.isnan(shared.targets[position, target_position])
+            ]
+            for start in range(0, len(selected_rows), batch_size):
+                row_positions = selected_rows[start:start + batch_size]
+                yield TrainingSampleBatch(
+                    shared.features[np.ix_(row_positions, contract.feature_positions)],
+                    shared.targets[row_positions, target_position],
+                    tuple(shared.dates[position] for position in row_positions),
+                    tuple(shared.codes[position] for position in row_positions),
+                    (shared.industry,) * len(row_positions),
+                )
+            return
         if self._sequence_layout is not None:
             columns = ",".join(f's."{name}"' for name in self._feature_names[:self._column_features]) + ",s.sequence_start"
         else:
@@ -381,6 +413,59 @@ class SQLiteTrainingSampleIndex:
             )
 
     @contextmanager
+    def share_industry(self, industry: str, *, checkpoint: Callable[[], None] | None = None) -> Iterator[None]:
+        """Decode common rows once, project independent heads, release at industry end."""
+        if self._shared_rows is not None:
+            raise RuntimeError("training industry read already in progress")
+        predicate = "FROM samples s JOIN sample_split_dates d ON d.trade_date=s.trade_date WHERE s.industry=? AND d.split_name IN ('training','early_stopping','calibration')"
+        count = int(self._connection.run(f"SELECT COUNT(*) {predicate}", (industry,)).require_one()[0])
+        with ExitStack() as resources:
+            width = self._feature_count + len(SAMPLE_TARGET_COLUMNS)
+            directory = Path(resources.enter_context(TemporaryDirectory(prefix="sample-shared-", dir=self.workspace)))
+            matrix = _empty_matrix(count, width, "common", directory, resources).features
+            columns = ",".join(f's."{name}"' for name in self._feature_names[:self._column_features])
+            if self._sequence_layout is not None:
+                columns += ",s.sequence_start"
+            targets = ",".join(f"s.{name}" for name in SAMPLE_TARGET_COLUMNS)
+            cursor = self._connection.run(
+                f"SELECT d.split_name,s.trade_date,s.code,{columns},{targets} {predicate} ORDER BY s.trade_date,s.code",
+                (industry,),
+            )
+            decoder = SampleSequenceReader(self._connection, self._sequence_layout) if self._sequence_layout else None
+            dates: list[date] = []
+            codes: list[str] = []
+            splits: list[str] = []
+            position = 0
+            try:
+                while rows := cursor.fetch_values(256):
+                    if checkpoint is not None:
+                        checkpoint()
+                    end = position + len(rows)
+                    if end > count:
+                        raise RuntimeError("training sample count changed during shared read")
+                    matrix[position:end, :self._column_features] = [row[3:3 + self._column_features] for row in rows]
+                    if decoder is not None:
+                        decoder.read(
+                            cast(tuple[tuple[str, int], ...], tuple((str(row[2]), row[3 + self._column_features]) for row in rows)),
+                            output=matrix[position:end, self._column_features:self._feature_count],
+                        )
+                    matrix[position:end, self._feature_count:] = np.asarray([row[-len(SAMPLE_TARGET_COLUMNS):] for row in rows], dtype=np.float64)
+                    dates.extend(self._decode_dates(cast(tuple[int, ...], tuple(row[1] for row in rows))))
+                    codes.extend(str(row[2]) for row in rows)
+                    splits.extend(str(row[0]) for row in rows)
+                    position = end
+            finally:
+                cursor.close()
+            if position != count:
+                raise RuntimeError("training sample count changed during shared read")
+            matrix.flags.writeable = False
+            self._shared_rows = _IndustryRows(industry, matrix[:, :self._feature_count], matrix[:, self._feature_count:], tuple(dates), tuple(codes), tuple(splits))
+            try:
+                yield
+            finally:
+                self._shared_rows = None
+
+    @contextmanager
     def industry_data(
         self,
         counts: TrainingIndustryCounts,
@@ -411,7 +496,7 @@ class SQLiteTrainingSampleIndex:
             "calibration": 0,
         }
         calibration_dates: list[date] = []
-        if self._sequence_layout is not None:
+        if self._sequence_layout is not None or self._shared_rows is not None:
             for partition, matrix in matrices.items():
                 position = 0
                 for batch in self.iter_batches(counts.industry, contract, cast(TrainingSplitName, partition)):

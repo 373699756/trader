@@ -185,7 +185,7 @@ class ResearchReaderPort(Protocol):
 
 
 class ReferenceDataPort(Protocol):
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult: ...
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> IntradayRefreshResult: ...
 
 
 class MarketMetadataPort(Protocol):

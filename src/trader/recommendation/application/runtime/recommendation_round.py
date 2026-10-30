@@ -26,6 +26,7 @@ class RecommendationRounds:
         self._active: RoundAdmission | None = None
         self._pending: set[str] = set()
         self._collecting: set[str] = set()
+        self._preparing: set[str] = set()
         self._running: set[str] = set()
         self._cancelled = False
         self._started = 0.0
@@ -57,20 +58,33 @@ class RecommendationRounds:
                 return None
             self._pending.remove(profile)
             self._collecting.add(profile)
+            self._preparing.add(profile)
             self._running.add(profile)
             return self._active
 
+    def cancelled(self, sequence: int) -> bool:
+        with self._condition:
+            return self._active is None or self._active.sequence != sequence or self._cancelled
+
+    def prepared(self, profile: str, sequence: int, *, timeout_seconds: float) -> bool:
+        return self._wait_for_collection(profile, sequence, self._preparing, timeout_seconds)
+
     def collected(self, profile: str, sequence: int, *, timeout_seconds: float) -> bool:
-        deadline = time.monotonic() + timeout_seconds
+        return self._wait_for_collection(profile, sequence, self._collecting, timeout_seconds)
+
+    def _wait_for_collection(
+        self, profile: str, sequence: int, remaining_profiles: set[str], timeout_seconds: float,
+    ) -> bool:
+        deadline = self._monotonic() + timeout_seconds
         with self._condition:
             if self._active is None or self._active.sequence != sequence:
                 return False
-            self._collecting.discard(profile)
+            remaining_profiles.discard(profile)
             self._condition.notify_all()
-            while self._pending or self._collecting:
+            while self._pending or remaining_profiles:
                 if self._cancelled:
                     return False
-                remaining = deadline - time.monotonic()
+                remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     self._cancelled = True
                     self._pending.clear()
@@ -85,6 +99,7 @@ class RecommendationRounds:
                 return
             self._pending.discard(profile)
             self._collecting.discard(profile)
+            self._preparing.discard(profile)
             self._running.discard(profile)
             self._close_finished_locked()
 

@@ -195,7 +195,6 @@ class _HeadFitRequest:
     settings: ProfileTrainingSettings
     snapshot: HistoryTrainingInputSnapshot
     split: TrainingDateSplit
-    samples: SQLiteTrainingSampleIndex
     metrics: tuple[TargetMetric, ...]
     train_root: Path
     run_id: str
@@ -399,7 +398,8 @@ def _run_locked(
                     )
                 )
             prepared: list[tuple[Strategy, Path]] = []
-            for plan in plans:
+            fitted_heads = FitIndustryModels(samples, split, tuple(plan.contract for plan in plans), request.settings.fitting, progress=request.progress)
+            for plan, fitted in zip(plans, fitted_heads, strict=True):
                 result, staging = _fit_and_prepare_head(
                     _HeadFitRequest(
                         plan,
@@ -407,13 +407,13 @@ def _run_locked(
                         request.settings,
                         snapshot,
                         split,
-                        samples,
                         metrics,
                         request.train_root,
                         run_id,
                         request.progress,
                         peak_bytes,
-                    )
+                    ),
+                    fitted,
                 )
                 completed.append(result)
                 if staging is not None:
@@ -624,19 +624,12 @@ def _preflight_failure_result(
     )
 
 
-def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult, Path | None]:
+def _fit_and_prepare_head(request: _HeadFitRequest, fitted: IndustryFitResult) -> tuple[HeadTrainingResult, Path | None]:
     plan = request.plan
     snapshot = request.snapshot
     contract = plan.contract
     staging: Path | None = None
     try:
-        fitted = FitIndustryModels(
-            request.samples,
-            request.split,
-            contract,
-            request.settings.fitting,
-            progress=request.progress,
-        )
         models, training_rows, validation_rows = fitted.models, fitted.training_rows, fitted.validation_rows
         split_hash = _head_split_hash(request.split, contract)
         training_input = _training_input_document(

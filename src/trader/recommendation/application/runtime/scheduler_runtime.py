@@ -518,8 +518,10 @@ class SchedulerRuntime:
         changed = PipelineTask.SCORE in tasks
         try:
             for task in _DATA_LANES:
-                if task not in tasks:
+                if task not in tasks or task is PipelineTask.CANDIDATE_QUOTES:
                     continue
+                if rounds.cancelled(sequence):
+                    return
                 with SessionGuard(scheduled.session):
                     pass
                 now = ShanghaiNow(self._dependencies.clock.now())
@@ -535,6 +537,23 @@ class SchedulerRuntime:
                         return
                     continue
                 changed = changed or (outcome_changed and task in _SCORING_INPUT_TASKS)
+            # Finish slow auxiliary inputs across profiles before refreshing the
+            # final candidate quote cut, so their wait does not age that cut.
+            if not rounds.prepared(profile, sequence, timeout_seconds=60.0):
+                self._record_failure("refresh", "round_collection_timeout")
+                return
+            candidate = tasks.get(PipelineTask.CANDIDATE_QUOTES)
+            if candidate is not None:
+                with SessionGuard(scheduled.session):
+                    pass
+                now = ShanghaiNow(self._dependencies.clock.now())
+                if now.date() != scheduled.scheduled_at.date() or now.time() >= wall_time(15, 0):
+                    return
+                self._dependencies.cadence.record_submission(candidate, accepted=True, at=now)
+                candidate_changed = self._execute_pipeline_task(candidate)
+                if candidate_changed is None:
+                    return
+                changed = changed or candidate_changed
             if not rounds.collected(profile, sequence, timeout_seconds=60.0):
                 self._record_failure("refresh", "round_collection_timeout")
                 return

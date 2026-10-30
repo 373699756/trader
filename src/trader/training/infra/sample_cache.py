@@ -6,6 +6,7 @@ import errno
 import hashlib
 import logging
 import os
+import shutil
 import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -47,6 +48,8 @@ class TrainingSampleCache:
         self.reused = False
         self._checkpoint = checkpoint
         self._progress = progress
+        self._inspected = False
+        self._inspection_signature: tuple[tuple[int, int, int, int] | None, ...] = ()
 
     @property
     def feature_count(self) -> int:
@@ -55,12 +58,24 @@ class TrainingSampleCache:
     def inspect(self) -> bool:
         if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
             raise ValueError("training_sample_cache_symlink")
-        self.reused = self._matches()
+        signature = self._signature()
+        if not self._inspected or signature != self._inspection_signature:
+            self.reused = self._matches()
+            self._inspected = True
+            self._inspection_signature = signature
         return self.reused
 
     def open(self, *, inspected: bool = False) -> SQLiteTrainingSampleIndex:
         if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
             raise ValueError("training_sample_cache_symlink")
+        # The caller holds the profile lock; these are scratch mappings from a
+        # killed fit, never sealed samples or another running profile's files.
+        for pattern in ("sample-fit-*", "sample-shared-*"):
+            for workspace in self.root.glob(pattern):
+                if workspace.is_symlink():
+                    raise ValueError("training_sample_cache_symlink")
+                if workspace.is_dir():
+                    shutil.rmtree(workspace)
         if not inspected:
             self.inspect()
         if not self.reused:
@@ -75,17 +90,34 @@ class TrainingSampleCache:
 
     def seal(self, samples: SQLiteTrainingSampleIndex) -> None:
         samples.require_split_hash(self.split_hash)
-        size = self.path.stat().st_size
+        before = self.path.stat()
+        size = before.st_size
         if self._progress:
             self._progress("sealing", "started", 0, size)
         with self.path.open("rb") as handle:
             os.fsync(handle.fileno())
         digest = _digest(self.path, self._checkpoint, self._report_bytes("sealing"))
+        stamp = self.path.stat()
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns):
+            raise ValueError("training_sample_cache_changed_during_seal")
         AtomicWriteJson(self.manifest, {
-            "identity": self.identity, "sha256": digest, "storage": self.storage_contract, "split_hash": self.split_hash
+            "identity": self.identity, "sha256": digest, "storage": self.storage_contract, "split_hash": self.split_hash,
+            "size_bytes": stamp.st_size, "modified_ns": stamp.st_mtime_ns,
         })
         if self._progress:
             self._progress("sealing", "completed", size, size)
+        self._inspected = False
+
+    def _signature(self) -> tuple[tuple[int, int, int, int] | None, ...]:
+        result: list[tuple[int, int, int, int] | None] = []
+        for path in (self.path, self.manifest):
+            try:
+                value = path.stat()
+            except FileNotFoundError:
+                result.append(None)
+            else:
+                result.append((value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns))
+        return tuple(result)
 
     def _report_bytes(self, phase: SampleCachePhase) -> Callable[[int, int], None]:
         def report(completed: int, total: int) -> None:
@@ -94,7 +126,13 @@ class TrainingSampleCache:
 
         return report
 
-    def _matches(self) -> bool:
+    def audit(self) -> bool:
+        """Explicit full-byte verification; normal reuse checks the sealed metadata."""
+        if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
+            raise ValueError("training_sample_cache_symlink")
+        return self._matches(verify_content=True)
+
+    def _matches(self, *, verify_content: bool = False) -> bool:
         if not self.manifest.is_file() or not self.path.is_file():
             return False
         try:
@@ -106,13 +144,26 @@ class TrainingSampleCache:
                 or value.get("split_hash") != self.split_hash
             ):
                 return False
-            size = self.path.stat().st_size
+            stamp = self.path.stat()
+            size = stamp.st_size
+            if (
+                value.get("size_bytes") != size
+                or value.get("modified_ns") != stamp.st_mtime_ns
+                or not isinstance(value.get("sha256"), str)
+                or len(value["sha256"]) != 64
+            ):
+                return False
+            units = size if verify_content else 1
             if self._progress:
-                self._progress("checking", "started", 0, size)
-            digest = _digest(self.path, self._checkpoint, self._report_bytes("checking"))
+                self._progress("checking", "started", 0, units)
+            if self._checkpoint is not None:
+                self._checkpoint()
+            matches = not verify_content or value["sha256"] == _digest(
+                self.path, self._checkpoint, self._report_bytes("checking")
+            )
             if self._progress:
-                self._progress("checking", "completed", size, size)
-            return value.get("sha256") == digest
+                self._progress("checking", "completed", units, units)
+            return matches
         except InterruptedError:
             raise
         except (OSError, ValueError):
@@ -122,6 +173,8 @@ class TrainingSampleCache:
     def clear(self) -> None:
         if self.root.is_symlink():
             raise ValueError("training_sample_cache_symlink")
+        self.reused = False
+        self._inspected = False
         # Readiness goes first: interruption must never bless partial bytes.
         for path in (self.manifest, self.path, Path(f"{self.path}-journal")):
             if path.is_symlink():

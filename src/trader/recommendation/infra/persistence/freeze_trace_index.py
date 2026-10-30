@@ -170,6 +170,26 @@ def _require_persistable_observation(observation: FreezeObservation) -> None:
         raise ValueError("preview freezes cannot enter research traces")
 
 
+@dataclass(frozen=True)
+class _PartitionSummary:
+    signature: tuple[tuple[int, int, int, int, int] | None, ...]
+    summary: TraceIndexSummary
+
+
+def _partition_signature(path: Path) -> tuple[tuple[int, int, int, int, int] | None, ...]:
+    values: list[tuple[int, int, int, int, int] | None] = []
+    for source in (path, Path(f"{path}-wal")):
+        try:
+            stat = source.stat()
+        except FileNotFoundError:
+            values.append(None)
+        else:
+            # Read-only WAL connections can create/remove an empty sidecar.
+            # It has no committed frames and must not invalidate a data summary.
+            values.append(None if source != path and stat.st_size == 0 else (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+    return tuple(values)
+
+
 class SQLiteFreezeTraceIndex:
     """Observer consumer that persists only the generic committed event."""
 
@@ -192,6 +212,7 @@ class SQLiteFreezeTraceIndex:
         self._physical_budget = TracePhysicalBudget(limits.physical_trade_date_bytes, limits.physical_total_bytes)
         self._lock = threading.RLock()
         self._initialized_databases: set[Path] = set()
+        self._summaries: dict[Path, _PartitionSummary] = {}
         self._recorded = 0
         self._duplicate = 0
         self._quarantined = 0
@@ -261,12 +282,8 @@ class SQLiteFreezeTraceIndex:
             self._initialize_database(database)
             with SqliteSession(database) as connection, SqliteTransaction(connection, immediate=True):
                 connection.run("PRAGMA cache_spill = OFF")
-                retained = int(connection.run("SELECT COUNT(*) FROM committed_events").require_one()[0])
-                retained_bytes = int(
-                    connection.run("SELECT COALESCE(SUM(LENGTH(event_bytes)), 0) FROM committed_events").require_one()[
-                        0
-                    ]
-                )
+                totals = connection.run("SELECT COUNT(*), COALESCE(SUM(LENGTH(event_bytes)), 0) FROM committed_events").require_one()
+                retained, retained_bytes = int(totals[0]), int(totals[1])
                 if retained >= self._capacity or retained_bytes + len(payload) > self._maximum_partition_bytes:
                     raise ResearchTraceCapacityError("research trace partition capacity exhausted")
                 connection.run(
@@ -448,17 +465,22 @@ class SQLiteFreezeTraceIndex:
         retained_bytes = 0
         legacy_retained = 0
         dates: set[date] = set()
-        for database in self._source_databases():
-            with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
-                EnsureSqliteSchema(connection, SCHEMA)
-                row = connection.run(
-                    "SELECT COUNT(*) retained, COALESCE(SUM(LENGTH(event_bytes)), 0) retained_bytes FROM committed_events"
-                ).require_one()
-                day_rows = connection.run("SELECT DISTINCT trade_date FROM committed_events").fetchall()
-            count = int(row["retained"])
-            retained += count
-            retained_bytes += int(row["retained_bytes"])
-            dates.update(DecodeDate(item["trade_date"]) for item in day_rows)
+        databases = self._source_databases()
+        self._summaries = {path: value for path, value in self._summaries.items() if path in databases}
+        for database in databases:
+            signature = _partition_signature(database)
+            cached = self._summaries.get(database)
+            if cached is None or cached.signature != signature:
+                with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+                    EnsureSqliteSchema(connection, SCHEMA)
+                    rows = connection.run("SELECT trade_date,COUNT(*),COALESCE(SUM(LENGTH(event_bytes)),0) FROM committed_events GROUP BY trade_date").fetchall()
+                summary = TraceIndexSummary(sum(int(row[1]) for row in rows), sum(int(row[2]) for row in rows), frozenset(DecodeDate(row[0]) for row in rows), 0)
+                cached = _PartitionSummary(signature, summary)
+                if signature == _partition_signature(database):
+                    self._summaries[database] = cached
+            retained += cached.summary.retained
+            retained_bytes += cached.summary.retained_bytes
+            dates.update(cached.summary.trade_dates)
         return TraceIndexSummary(retained, retained_bytes, frozenset(dates), legacy_retained)
 
     def _quarantine_invalid_rows(self, connection: SqliteConnection) -> int:

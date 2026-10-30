@@ -468,8 +468,8 @@ class MarketFeatureService:
         eligible = set(self._eligible_codes(tuple(feature.quote.code for feature in features), observed_at))
         return tuple(feature for feature in features if feature.quote.code in eligible)
 
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
-        return self.intraday.refresh(self._eligible_codes(codes, observed_at), observed_at)
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> IntradayRefreshResult:
+        return self.intraday.refresh(self._eligible_codes(codes, observed_at), observed_at, deadline=deadline)
 
     def prepare_scoring_features(
         self,

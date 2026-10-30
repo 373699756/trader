@@ -42,6 +42,29 @@ def _persistent_event(value):
     return FreezeObservation(BuildFreezeCommitted(value), None).materialize().event
 
 
+def test_summary_reuses_unchanged_partition_and_observes_external_commit(tmp_path, monkeypatch):
+    from trader.infra.sqlite_connection import SqliteConnection
+
+    archive = SQLiteFreezeTraceIndex(tmp_path)
+    archive.record(FreezeObservation(_persistent_event(freeze()), None))
+    assert archive.status().retained == 1
+    statements = []
+    original = SqliteConnection.run
+
+    def observe(connection, sql, *args, **kwargs):
+        statements.append(sql)
+        return original(connection, sql, *args, **kwargs)
+
+    monkeypatch.setattr(SqliteConnection, "run", observe)
+    assert archive.status().retained == 1
+    assert not any("FROM committed_events" in sql for sql in statements)
+    external = SQLiteFreezeTraceIndex(tmp_path)
+    external.record(FreezeObservation(_persistent_event(freeze(sequence=2)), None))
+    statements.clear()
+    assert archive.status().retained == 2
+    assert sum("GROUP BY trade_date" in sql for sql in statements) == 1
+
+
 @pytest.mark.parametrize("limit", ("physical_trade_date_bytes", "physical_total_bytes"))
 def test_physical_capacity_rejection_preserves_old_audit_and_allows_duplicate(tmp_path, limit):
     first = FreezeObservation(_persistent_event(freeze()), None)

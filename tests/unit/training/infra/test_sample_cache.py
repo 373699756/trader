@@ -48,6 +48,16 @@ def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
         samples.require_split(split)
         assert tuple(samples._connection.run("PRAGMA mmap_size").fetchone()) == (0,)
         assert tuple(samples._connection.run("PRAGMA temp_store").fetchone()) == (1,)
+    for name in ("sample-fit-abandoned", "sample-shared-abandoned"):
+        workspace = tmp_path / name
+        workspace.mkdir()
+        (workspace / "features.bin").write_bytes(b"scratch")
+    unrelated = tmp_path / "preserved"
+    unrelated.mkdir()
+    with cache.open() as samples:
+        assert cache.reused and samples.count() == 1
+    assert not tuple(tmp_path.glob("sample-*-abandoned"))
+    assert unrelated.is_dir()
     with cache.path.open("ab") as handle:
         handle.write(b"corrupted-tail")
     with cache.open() as samples:
@@ -57,6 +67,23 @@ def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
         assert not changed.reused and samples.count() == 0
     changed.clear()
     assert not changed.path.exists()
+
+
+def test_normal_reuse_skips_digest_but_explicit_audit_reads_content(tmp_path, monkeypatch):
+    split = BuildTrainingDateSplit(tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(2000)), parent_manifest_hash="a" * 64)
+    cache = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash)
+    with cache.open() as samples:
+        samples.prepare_for_model_fitting(split)
+        with pytest.raises(RuntimeError, match="sealed"):
+            samples.add_final(())
+        cache.seal(samples)
+    calls = []
+    monkeypatch.setattr("trader.training.infra.sample_cache._digest", lambda *args: calls.append(args) or "0" * 64)
+    reused = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash)
+    assert reused.inspect() and reused.inspect()
+    assert calls == []
+    assert not reused.audit()
+    assert len(calls) == 1
 
 
 def test_partial_cache_is_never_reused(tmp_path):
@@ -127,7 +154,7 @@ def test_cache_reports_separate_byte_progress_and_cancelled_seal_is_not_reusable
     assert cache.inspect()
     for phase in ("checking", "sealing"):
         selected = [item for item in events if item[0] == phase]
-        size = cache.path.stat().st_size
+        size = cache.path.stat().st_size if phase == "sealing" else 1
         assert selected[0] == (phase, "started", 0, size)
         assert selected[-1] == (phase, "completed", size, size)
         assert all(0 <= done <= total == size for _, _, done, total in selected)

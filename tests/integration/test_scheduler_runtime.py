@@ -442,6 +442,32 @@ def test_stopping_queued_wave_releases_round_without_releasing_running_work() ->
         assert runtime._score_lane.stop(deadline=ShutdownDeadline.start(2.0)).completed
 
 
+def test_round_refreshes_candidates_after_auxiliary_inputs_before_scoring(monkeypatch) -> None:
+    runtime = _round_cleanup_runtime()
+    tasks = tuple(
+        ScheduledPipelineTask(task, NOW, MarketPhase.BEFORE_CLOSE)
+        for task in (PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES, PipelineTask.INTRADAY_TAIL, PipelineTask.INDUSTRY_HEAT)
+    )
+    rounds = runtime._dependencies.rounds
+    profile = runtime._dependencies.round_profile
+    admission = rounds.enter(profile, tasks)
+    assert admission is not None
+    executed = []
+
+    def execute(task):
+        executed.append(task.task)
+        return True
+
+    monkeypatch.setattr(runtime, "_execute_pipeline_task", execute)
+    monkeypatch.setattr(runtime, "_process_score_wave", lambda _task: executed.append(PipelineTask.SCORE))
+    runtime._process_recommendation_round(replace(tasks[0], round_sequence=admission.sequence, round_tasks=tasks))
+    assert set(executed[:-2]) == {PipelineTask.FULL_MARKET, PipelineTask.INTRADAY_TAIL, PipelineTask.INDUSTRY_HEAT}
+    assert executed[-2:] == [PipelineTask.CANDIDATE_QUOTES, PipelineTask.SCORE]
+    following = rounds.enter(profile, tasks)
+    assert following is not None and following.sequence != admission.sequence
+    rounds.finish(profile, following.sequence)
+
+
 def _round_cleanup_runtime() -> SchedulerRuntime:
     return SchedulerRuntime(
         RuntimeDependencies(

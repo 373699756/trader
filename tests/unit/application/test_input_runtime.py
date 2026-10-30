@@ -149,7 +149,7 @@ class _Market:
         requested = set(codes)
         return tuple(feature for feature in self._features if feature.quote.code in requested)
 
-    def refresh_intraday_tail(self, codes, _observed_at):
+    def refresh_intraday_tail(self, codes, _observed_at, *, deadline=None):
         del codes
         raise AssertionError("the local freeze path must not wait for an intraday network refresh")
 
@@ -1175,7 +1175,7 @@ def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_c
                 callback()
             return super().read_candidate_features(codes, read_at, **options)
 
-        def refresh_intraday_tail(self, codes, _observed_at):
+        def refresh_intraday_tail(self, codes, _observed_at, *, deadline=None):
             assert tuple(codes) == ("600001",)
             return IntradayRefreshResult(
                 (IntradayInputIdentity("600001", "minute:updated", (), _observed_at, _observed_at),),
@@ -1210,7 +1210,7 @@ def test_intraday_changes_invalidate_scoring_only_for_content_or_qualification(a
         content = "facts:first"
         restrictions = ()
 
-        def refresh_intraday_tail(self, codes, checked_at):
+        def refresh_intraday_tail(self, codes, checked_at, *, deadline=None):
             return IntradayRefreshResult(
                 tuple(
                     IntradayInputIdentity(code, self.content, self.restrictions, observed_at, checked_at)

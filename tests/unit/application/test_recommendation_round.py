@@ -29,6 +29,27 @@ def test_all_profiles_finish_collection_and_publication_before_next_wave() -> No
     assert rounds.enter("v1", tasks) is None
 
 
+def test_candidate_refresh_waits_for_every_profiles_slow_preparation() -> None:
+    rounds = RecommendationRounds()
+    rounds.register("v2")
+    rounds.register("v3")
+    tasks = (ScheduledPipelineTask(PipelineTask.FULL_MARKET, datetime(2026, 8, 12, 10, tzinfo=SHANGHAI), MarketPhase.BEFORE_CLOSE),)
+    first = rounds.enter("v2", tasks)
+    assert first is not None
+    rounds.enter("v3", tasks)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        waiting = pool.submit(rounds.prepared, "v2", first.sequence, timeout_seconds=2)
+        assert not waiting.done()
+        assert rounds.prepared("v3", first.sequence, timeout_seconds=2)
+        assert waiting.result(timeout=2)
+    rounds.withdraw("v3")
+    assert rounds.cancelled(first.sequence)
+    assert rounds.enter("v2", tasks) is None
+    rounds.finish("v2", first.sequence)
+    rounds.finish("v3", first.sequence)
+    assert rounds.enter("v2", tasks) is not None
+
+
 def test_collection_timeout_does_not_overlap_a_still_running_profile() -> None:
     rounds = RecommendationRounds()
     for profile in ("v1", "v2", "v3"):

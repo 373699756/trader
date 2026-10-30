@@ -181,7 +181,7 @@ class MarketReader(Protocol):
 
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
 
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult: ...
+    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> IntradayRefreshResult: ...
 
     def read_candidate_features(
         self,
@@ -616,13 +616,13 @@ class MarketInputCoordinator(DataRefreshPort):
     def _refresh_intraday_tail(
         self,
         request: PipelineTaskRequest,
-        _deadline: datetime | None,
+        deadline: datetime | None,
     ) -> RefreshOutcome:
         requested = self._requested_codes()
         if not requested and request.preview_context is not None:
             return RefreshOutcome(request.task, False, "intraday:empty", (), request.observed_at, False)
         _require_codes(requested, "intraday_universe_unavailable")
-        refreshed = self._market.refresh_intraday_tail(requested, request.observed_at)
+        refreshed = self._market.refresh_intraday_tail(requested, request.observed_at, deadline=deadline)
         with SessionGuard(request.session), self._lock:
             previous = self._intraday_refresh
             if previous is not None and refreshed.checked_at < previous.checked_at:

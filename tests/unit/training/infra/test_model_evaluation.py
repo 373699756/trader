@@ -108,7 +108,7 @@ def test_one_degenerate_industry_does_not_block_other_models_or_count_as_fitted(
         samples.prepare_for_model_fitting(split)
         statements: list[str] = []
         samples._connection.observe_statements(statements.append)
-        result = FitIndustryModels(samples, split, TOMORROW_HEAD_CONTRACT, RidgeFittingParameters(6, 1.0))
+        result, = FitIndustryModels(samples, split, (TOMORROW_HEAD_CONTRACT,), RidgeFittingParameters(6, 1.0))
         samples._connection.observe_statements(None)
         assert tuple(item.industry for item in result.models) == ("usable",)
         assert tuple(item.reason for item in result.failures) == ("calibration_prediction_variance_insufficient",)

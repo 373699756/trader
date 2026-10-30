@@ -57,12 +57,15 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first = FitIndustryModels(repository, split, contract, settings.fitting)
+        first, = FitIndustryModels(repository, split, (contract,), settings.fitting)
         cache.seal(repository)
 
     with cache.open() as repository, ExitStack() as resources:
         assert cache.reused
-        second = FitIndustryModels(repository, split, contract, settings.fitting)
+        second, = FitIndustryModels(repository, split, (contract,), settings.fitting)
+        if profile.algorithm == "ridge":
+            paired = FitIndustryModels(repository, split, HEAD_CONTRACTS, settings.fitting)
+            assert paired[HEAD_CONTRACTS.index(contract)] == first
 
     assert TOMORROW_TRAINING_COMPUTE_THREADS == 2
     assert first == second

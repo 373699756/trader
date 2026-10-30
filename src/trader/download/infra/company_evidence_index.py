@@ -580,26 +580,29 @@ class SQLiteCompanyEvidenceIndex:
             MarkCompanyMarketDirty(connection, partition.market)
 
     def _write_disclosures(self, connection: SqliteConnection, rows: Sequence[Disclosure]) -> int:
+        existing: dict[tuple[str, str], str] = {}
+        previous_codes: dict[tuple[str, str], set[str]] = {}
+        for offset in range(0, len(rows), 128):
+            batch = rows[offset:offset + 128]
+            placeholders = ",".join("(?,?)" for _ in batch)
+            parameters = tuple(value for item in batch for value in (item.source, item.identity))
+            for row in connection.run(
+                f"WITH requested(source,source_key) AS (VALUES {placeholders}) "
+                "SELECT d.source,d.source_key,d.record_hash,c.code FROM requested r "
+                "JOIN disclosures d ON d.source=r.source AND d.source_key=r.source_key "
+                "LEFT JOIN disclosure_codes c ON c.disclosure_id=d.id",
+                parameters,
+            ):
+                key = (str(row[0]), str(row[1]))
+                existing[key] = str(row[2])
+                if row[3] is not None:
+                    previous_codes.setdefault(key, set()).add(str(row[3]))
         affected = tuple(
             item
             for item in rows
-            if connection.run(
-                "SELECT 1 FROM disclosures WHERE source=? AND source_key=? AND record_hash=?",
-                (item.source, item.identity, item.digest),
-            ).fetchone()
-            is None
+            if existing.get((item.source, item.identity)) != item.digest
         )
-        for item in affected:
-            MarkCompanyDirty(
-                connection,
-                tuple(
-                    row[0]
-                    for row in connection.run(
-                        "SELECT c.code FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id WHERE d.source=? AND d.source_key=?",
-                        (item.source, item.identity),
-                    )
-                ),
-            )
+        MarkCompanyDirty(connection, tuple({code for item in affected for code in previous_codes.get((item.source, item.identity), ())}))
         changes = connection.run_many(
             "INSERT INTO disclosures(source,source_key,kind,title,published_at,url,record_hash) VALUES(?,?,?,?,?,?,?) "
             "ON CONFLICT(source,source_key) DO UPDATE SET title=excluded.title,published_at=excluded.published_at,"

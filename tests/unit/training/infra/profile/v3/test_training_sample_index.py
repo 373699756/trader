@@ -30,6 +30,27 @@ def _sample(
     return V3TrainingSample(code, day, "main", industry, 1_000_000.0, (0.1,) * 6, typed_targets)
 
 
+def test_shared_industry_reads_once_and_keeps_head_matrices_independent(tmp_path):
+    split = BuildTrainingDateSplit(tuple(date(2021, 1, 1) + timedelta(days=i) for i in range(1600)), parent_manifest_hash="a" * 64)
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as index:
+        index.add_final((_sample("600001", split.model_fit_dates[0]), _sample("600002", split.model_fit_dates[0], targets=(None, 0.03, 0.04, 0.05, 0.06, 0.045))))
+        index.prepare_for_model_fitting(split)
+        first = index.industry_counts(TOMORROW_HEAD_CONTRACT)[0]
+        second = index.industry_counts(D25_HEAD_CONTRACT)[0]
+        statements = []
+        index._connection.observe_statements(statements.append)
+        with index.share_industry("银行"):
+            with index.industry_data(first, TOMORROW_HEAD_CONTRACT) as data:
+                assert len(data.training.labels) == 1
+                data.training.features[:] = 99
+            with index.industry_data(second, D25_HEAD_CONTRACT) as data:
+                assert len(data.training.labels) == 2
+                assert np.all(data.training.features == 0.1)
+        assert sum("SELECT d.split_name,s.trade_date,s.code" in sql for sql in statements) == 1
+        assert not any("SELECT s.trade_date,s.code" in sql for sql in statements)
+        assert not tuple(tmp_path.glob("sample-shared-*"))
+
+
 @pytest.mark.parametrize("failure", (None, RuntimeError, InterruptedError))
 def test_large_matrices_release_mappings_and_files_on_every_exit(tmp_path, monkeypatch, failure):
     monkeypatch.setattr("trader.training.infra.sample_index.TRAINING_MATRIX_BYTES", 1)

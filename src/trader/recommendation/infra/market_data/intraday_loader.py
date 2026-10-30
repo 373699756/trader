@@ -111,10 +111,10 @@ class IntradayLoader:
                 self._entries.clear()
                 self._preview_context = context
 
-    def refresh(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
+    def refresh(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> IntradayRefreshResult:
         observed_at = observed_at.astimezone(_SHANGHAI)
         requested = tuple(sorted(set(codes)))
-        self.load(requested, observed_at)
+        self.load(requested, observed_at, deadline=deadline)
         completed_at = max(observed_at, self._runner.wall_clock()).astimezone(_SHANGHAI)
         restrictions: dict[str, set[str]] = {}
         # Use the same retained view as the scoring reader, including expiry/fallback qualification.
@@ -138,12 +138,13 @@ class IntradayLoader:
         observed_at: datetime,
         *,
         action_restrictions: dict[str, set[str]] | None = None,
+        deadline: datetime | None = None,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         request = _IntradayLoadRequest(
             tuple(codes),
             observed_at,
             action_restrictions,
-            self._monotonic() + self._batch_timeout_seconds,
+            self._monotonic() + min(self._batch_timeout_seconds, max(0.0, (deadline - self._runner.wall_clock()).total_seconds())) if deadline is not None else self._monotonic() + self._batch_timeout_seconds,
             self._preview_context,
         )
         source_lanes = self._runner.source_lanes

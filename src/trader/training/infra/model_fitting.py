@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Literal
@@ -105,89 +106,89 @@ class _IndustryProgress:
 def FitIndustryModels(
     samples: SQLiteTrainingSampleIndex,
     split: TrainingDateSplit,
-    contract: TrainedHeadContract,
+    contracts: tuple[TrainedHeadContract, ...],
     parameters: ModelFittingParameters,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
-) -> IndustryFitResult:
+) -> tuple[IndustryFitResult, ...]:
     samples.require_split(split)
-    models: list[FittedIndustryModel] = []
-    failures: list[IndustryFitFailure] = []
-    if progress is not None:
-        progress.publish(TomorrowTrainingProgress("industry_statistics", "started", 0, 1, strategy=contract.strategy))
-    workloads = samples.industry_counts(contract)
-    if isinstance(parameters, TcnFittingParameters):
-        logger = logging.getLogger(__name__)
-        for counts in workloads:
-            logger.warning(
-                "V5行业预检 | %s | %s | 训练样本 %s | %s",
-                contract.strategy.value,
-                counts.industry,
-                counts.training,
-                IndustryCoverageFailure(counts, parameters) or "合格",
-            )
-    if progress is not None:
-        progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=contract.strategy))
-    _publish(progress, contract, _FitProgress("started", 0, len(workloads)))
-    for position, counts in enumerate(workloads, start=1):
-        detail = TrainingFitDetail(counts.industry, counts.training, "preparation")
-        observer = _IndustryProgress(
-            progress, contract, _FitProgress("running", position - 1, len(workloads), len(models), detail)
-        )
-        observer.heartbeat()
-        model, failure = _attempt_industry_fit(
-            samples,
-            counts,
-            contract,
-            parameters,
-            observer.heartbeat,
-            observer.publish,
-        )
-        if model is not None:
-            models.append(model)
-        if failure:
-            failures.append(
-                IndustryFitFailure(
-                    counts.industry,
-                    failure,
-                    counts.training,
-                    counts.calibration,
-                    counts.calibration_dates,
-                    counts.validation,
-                )
-            )
-        _publish(
-            progress,
-            contract,
-            replace(
-                _FitProgress("running", position, len(workloads), len(models))
-                if models and position == len(workloads)
-                else _fit_progress(position, len(workloads), len(models)),
-                fit_detail=replace(detail, phase="skipped" if failure else "completed", failure_reason=failure or None),
-            ),
-        )
-    if not workloads:
-        _publish(progress, contract, _FitProgress("completed", 0, 0))
-    heartbeat = partial(
-        _publish, progress, contract, _FitProgress("running", len(workloads), len(workloads), len(models))
-    )
+    for contract in contracts:
+        if progress is not None:
+            progress.publish(TomorrowTrainingProgress("industry_statistics", "started", 0, 1, strategy=contract.strategy))
+    states = tuple(_HeadFitState(contract, samples.industry_counts(contract), [], []) for contract in contracts)
+    for state in states:
+        if progress is not None:
+            progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=state.contract.strategy))
+        _publish(progress, state.contract, _FitProgress("started", 0, len(state.workloads)))
+        if isinstance(parameters, TcnFittingParameters):
+            for counts in state.workloads:
+                logging.getLogger(__name__).warning("V5行业预检 | %s | %s | 训练样本 %s | %s", state.contract.strategy.value, counts.industry, counts.training, IndustryCoverageFailure(counts, parameters) or "合格")
+    industries = tuple(dict.fromkeys(counts.industry for state in states for counts in state.workloads))
+    for industry in industries:
+        reader = next(((state, counts) for state in states for counts in state.workloads if counts.industry == industry and not IndustryCoverageFailure(counts, parameters)), None)
+        shared_read: AbstractContextManager[None]
+        if reader is not None:
+            state, counts = reader
+            read_progress = _IndustryProgress(progress, state.contract, _FitProgress(
+                "running", state.workloads.index(counts), len(state.workloads), len(state.models),
+                TrainingFitDetail(industry, counts.training, "preparation"),
+            ))
+            shared_read = samples.share_industry(industry, checkpoint=read_progress.heartbeat)
+        else:
+            shared_read = nullcontext()
+        with shared_read:
+            for state in states:
+                industry_counts = next((item for item in state.workloads if item.industry == industry), None)
+                if industry_counts is None:
+                    continue
+                _fit_head_industry(samples, state, industry_counts, parameters, progress)
+    return tuple(_finish_head_fit(samples, state, progress) for state in states)
+
+
+@dataclass
+class _HeadFitState:
+    contract: TrainedHeadContract
+    workloads: tuple[TrainingIndustryCounts, ...]
+    models: list[FittedIndustryModel]
+    failures: list[IndustryFitFailure]
+
+
+def _fit_head_industry(
+    samples: SQLiteTrainingSampleIndex,
+    state: _HeadFitState,
+    counts: TrainingIndustryCounts,
+    parameters: ModelFittingParameters,
+    progress: TomorrowTrainingProgressPort | None,
+) -> None:
+    contract = state.contract
+    position = state.workloads.index(counts) + 1
+    detail = TrainingFitDetail(counts.industry, counts.training, "preparation")
+    observer = _IndustryProgress(progress, contract, _FitProgress("running", position - 1, len(state.workloads), len(state.models), detail))
+    observer.heartbeat()
+    model, failure = _attempt_industry_fit(samples, counts, contract, parameters, observer.heartbeat, observer.publish)
+    if model is not None:
+        state.models.append(model)
+    if failure:
+        state.failures.append(IndustryFitFailure(counts.industry, failure, counts.training, counts.calibration, counts.calibration_dates, counts.validation))
+    observer.update = replace(observer.update, completed_units=position, produced_units=len(state.models))
+    observer.publish(replace(detail, phase="skipped" if failure else "completed", failure_reason=failure or None))
+
+
+def _finish_head_fit(
+    samples: SQLiteTrainingSampleIndex, state: _HeadFitState, progress: TomorrowTrainingProgressPort | None,
+) -> IndustryFitResult:
+    contract, workloads, models, failures = state.contract, state.workloads, state.models, state.failures
+    heartbeat = partial(_publish, progress, contract, _FitProgress("running", len(workloads), len(workloads), len(models)))
     if models:
         metrics, industry_metrics = _evaluate_validation(samples, contract, tuple(models), heartbeat)
         expected = {item.industry: item.validation for item in workloads}
         if any(value.predicted_rows != expected[industry] for industry, value in industry_metrics):
             raise ValueError("validation_sample_coverage_changed")
-        _publish(progress, contract, _FitProgress("completed", len(workloads), len(workloads), len(models)))
     else:
         metrics = PredictionMetrics(sum(item.validation for item in workloads), 0, 0, 0, 0, None, None, None, 0)
         industry_metrics = ()
-    return IndustryFitResult(
-        tuple(models),
-        tuple(failures),
-        metrics,
-        industry_metrics,
-        sum(item.training for item in workloads),
-        sum(item.holdout for item in workloads),
-    )
+    _publish(progress, contract, _FitProgress("completed", len(workloads), len(workloads), len(models)))
+    return IndustryFitResult(tuple(models), tuple(failures), metrics, industry_metrics, sum(item.training for item in workloads), sum(item.holdout for item in workloads))
 
 
 def _attempt_industry_fit(
@@ -243,10 +244,6 @@ def _publish(
                 fit_detail=update.fit_detail,
             )
         )
-
-
-def _fit_progress(position: int, total: int, produced: int) -> _FitProgress:
-    return _FitProgress("completed" if position == total else "running", position, total, produced)
 
 
 def _fit_industry(

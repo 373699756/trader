@@ -40,6 +40,18 @@ from tests.component.market_data_test_support import (
 from trader.recommendation.infra.market_data.market_cache_identity import MinuteContentVersion
 
 
+def test_expired_outer_deadline_does_not_start_intraday_supplier_requests() -> None:
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    service = _service(
+        StaticGateway((_quote(),)), StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        intraday_client=intraday, wall_clock=lambda: AFTERNOON,
+    )
+    result = service.refresh_intraday_tail(("600001",), AFTERNOON, deadline=AFTERNOON - timedelta(seconds=1))
+    assert intraday.calls == []
+    assert result.inputs[0].restrictions == ("intraday_no_data",)
+
+
 def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
     payload = {
         "data": {

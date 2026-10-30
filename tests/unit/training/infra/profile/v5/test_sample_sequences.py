@@ -36,6 +36,31 @@ def _samples(days, codes=4):
         yield tuple(batch)
 
 
+def test_shared_compact_rows_preserve_both_heads_and_validation(tmp_path):
+    split = _split()
+    days = (*split.model_fit_dates[:5], *split.early_stopping_dates[:2], *split.calibration_dates[:2], *split.confirmation_dates[:2])
+    with SQLiteTrainingSampleIndex(tmp_path / "compact.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
+        for batch in _samples(days):
+            samples.add_final(batch)
+        samples.prepare_for_model_fitting(split)
+        expected = {
+            (head.strategy, partition): tuple(samples.iter_batches("industry0", head, partition))
+            for head in V5_TRAINING_PROFILE.heads
+            for partition in ("training", "early_stopping", "calibration", "validation")
+        }
+        with samples.share_industry("industry0"):
+            for head in V5_TRAINING_PROFILE.heads:
+                for partition in ("training", "early_stopping", "calibration", "validation"):
+                    observed = tuple(samples.iter_batches("industry0", head, partition))
+                    for left, right in zip(expected[head.strategy, partition], observed, strict=True):
+                        np.testing.assert_array_equal(left.features, right.features)
+                        np.testing.assert_array_equal(left.labels, right.labels)
+                        assert left.trade_dates == right.trade_dates and left.codes == right.codes
+                with pytest.raises(ValueError, match="holdout_is_sealed"):
+                    tuple(samples.iter_batches("industry0", head, "holdout"))
+        assert not tuple(tmp_path.glob("sample-shared-*"))
+
+
 def test_compact_samples_match_all_head_partitions_statistics_and_order(tmp_path):
     split = _split()
     days = (
