@@ -20,7 +20,7 @@ from trader.download.domain.history_revision import HistoryRevision, HistoryTrai
 from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_partition_proof import CalculateHistoryProof
 from trader.download.infra.history_revision_codec import (
-    PublishedCellFromRevisionColumns,
+    PublishedCellFromPriceColumns,
     RevisionColumnValues,
     RevisionFromColumns,
 )
@@ -89,6 +89,7 @@ _REVISION_COLUMNS = (
 _INSERT_RECORD = (
     "INSERT INTO daily_price_revision VALUES (" + ",".join("?" for _ in range(6 + len(PRICE_COLUMNS))) + ")"
 )
+_PUBLISHED_COLUMNS = "records.trade_date, records.code, " + _PRICE_SELECT
 _LATEST_WINDOW = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
@@ -132,9 +133,14 @@ _LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
 )
 # Published month windows must seek dates in the annual file, then sort only the requested rows.
 _PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
-    columns=_REVISION_COLUMNS,
+    columns=_PUBLISHED_COLUMNS,
     index="sqlite_autoindex_daily_price_revision_1",
     observation_index="sqlite_autoindex_daily_price_observation_1",
+)
+_PUBLISHED_ANNUAL_BY_CODE_SQL = _RANGE_BY_CODE.format(
+    columns=_PUBLISHED_COLUMNS,
+    index="history_price_code_date_idx",
+    observation_index="history_price_observation_code_date_idx",
 )
 _LATEST_SHADOW_SQL = """
 WITH latest AS (
@@ -173,7 +179,7 @@ _LATEST_CODE_BOARD_SQL = _LATEST_WINDOW.format(
     record_filter="  AND records.board = ?",
 )
 _PUBLISHED_CODE_SQL = _LATEST_WINDOW.format(
-    columns=_REVISION_COLUMNS, observation_filter="      AND code = ?", record_filter=""
+    columns=_PUBLISHED_COLUMNS, observation_filter="      AND code = ?", record_filter=""
 )
 _TRAINING_RANGE_SQL = """
 SELECT records.trade_date,
@@ -657,7 +663,7 @@ class HistoryPricePartition:
             else self._clip_range(start, end)
         )
         query = (
-            (_LATEST_RANGE_BY_CODE_SQL if annual_range else _PUBLISHED_RANGE_BY_CODE_SQL)
+            (_PUBLISHED_ANNUAL_BY_CODE_SQL if annual_range else _PUBLISHED_RANGE_BY_CODE_SQL)
             if code is None
             else _PUBLISHED_CODE_SQL
         )
@@ -674,7 +680,7 @@ class HistoryPricePartition:
                     if check is not None:
                         check()
                     for row in rows:
-                        yield PublishedCellFromRevisionColumns(tuple(row))
+                        yield PublishedCellFromPriceColumns(tuple(row))
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryPricePartitionError("published daily query failed") from exc
 

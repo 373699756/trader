@@ -145,6 +145,9 @@ class _RecordingData:
     def scoring_epoch(self) -> str:
         return "measurement:fixed-input"
 
+    def release_scoring_input(self, request: CycleRequest) -> None:
+        del request
+
     def snapshot(self) -> list[dict[str, object]]:
         with self._lock:
             return [dict(call) for call in self._calls]

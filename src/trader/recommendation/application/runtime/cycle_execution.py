@@ -80,6 +80,8 @@ class RecommendationCycleExecutor:
             self._execute(request)
         except StaleSessionError:
             return
+        finally:
+            self._dependencies.data.release_scoring_input(request)
 
     def execute_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
         """Publish one local Tomorrow/D25 wave only after both inputs are ready."""
@@ -96,6 +98,9 @@ class RecommendationCycleExecutor:
                 self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
         except StaleSessionError:
             return
+        finally:
+            for request in requests:
+                self._dependencies.data.release_scoring_input(request)
 
     def _build_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> tuple[ScoredFreeze, ScoredFreeze] | None:
         started_at = time.perf_counter()

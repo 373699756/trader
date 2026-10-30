@@ -21,7 +21,7 @@ from trader.download.domain.history_reference import HistoryReferenceSnapshot, H
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import ProjectHistoryCell
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError
+from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_reader import (
     HistoryPartitionRevisionComparison,
     HistorySnapshotReader,
@@ -386,10 +386,10 @@ def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_
     streamed = tuple(reader.iter_published_range_by_code(dates[0], dates[-1], snapshot))
     assert tuple(cell for cell in streamed if cell.code == "600001") == expected
     assert len(streamed) == len(dates) * 2
-    assert prefetched == ["prices_2026.sqlite3"]
+    assert prefetched == []
 
 
-def test_published_alignment_seed_window_and_valid_looking_payload_corruption(tmp_path):
+def test_published_read_skips_payload_revalidation_but_explicit_audit_rejects_corruption(tmp_path):
     root = tmp_path / "history"
     dates = tuple(date(2025, 1, 1) + timedelta(days=offset) for offset in range(300))
     rows = tuple(_revision("600001", day) for day in dates)
@@ -401,8 +401,9 @@ def test_published_alignment_seed_window_and_valid_looking_payload_corruption(tm
         connection.run(
             "UPDATE daily_price_revision SET qfq_amount=qfq_amount+1 WHERE trade_date=?", (EncodeDate(dates[-1]),)
         )
-    with pytest.raises(HistoryPricePartitionError, match="published daily query failed"):
-        reader.read_published_code_window("600001", dates, snapshot)
+    assert len(reader.read_published_code_window("600001", dates, snapshot)) == 300
+    with pytest.raises(HistorySnapshotReadError):
+        reader.verify_snapshot(snapshot)
 
 
 @pytest.mark.parametrize("change", ("same_size_corruption", "atomic_replace"))
@@ -419,7 +420,7 @@ def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monke
 
     monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(observed))
     reader = HistorySnapshotReader(root)
-    reader.read_published_code_window("600001", (day,), snapshot)
+    reader.verify_snapshot(snapshot)
     path = root / snapshot.partitions[0].relative_path
     previous = path.stat()
     if change == "same_size_corruption":
@@ -434,7 +435,7 @@ def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monke
     else:
         Path(f"{path}-wal").write_bytes(b"pending")
     with pytest.raises(HistorySnapshotReadError):
-        reader.read_published_code_window("600001", (day,), snapshot)
+        reader.verify_snapshot(snapshot)
     if change == "pending_wal":
         assert len(verified) == 1
         Path(f"{path}-wal").unlink()
@@ -466,11 +467,11 @@ def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp
     assert reader.read_published_code_window("600001", (day,), old_snapshot) == (ProjectHistoryCell(original.cell),)
     current = replace(snapshot, sequence=2)
     assert reader.read_published_code_window("600001", (day,), current) == (ProjectHistoryCell(revised.cell),)
-    assert len(calls) == 2
+    assert calls == []
     invalid = replace(current, partitions=(replace(current.partitions[0], logical_hash="f" * 64),))
     with pytest.raises(HistorySnapshotReadError):
-        reader.read_published_code_window("600001", (day,), invalid)
-    assert len(calls) == 3
+        reader.verify_published_snapshot(invalid)
+    assert len(calls) == 1
 
 
 def test_annual_published_stream_keeps_each_months_sequence_and_ignores_unpublished_revisions(tmp_path):

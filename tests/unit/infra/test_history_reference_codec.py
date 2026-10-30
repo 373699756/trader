@@ -296,12 +296,20 @@ def test_pinned_history_reuses_verified_catalog_and_rejects_reference_changes_in
     assert manifest is not None
     first = reader.read_windows(manifest, ("600001",), sessions=2)
     assert first and first == reader.read_windows(manifest, ("600001",), sessions=2)
+    earlier = reader.read_range(manifest, ("600001",), dates[0], dates[0])
+    assert earlier[0].cells == first[0].cells[:1]
+    with pytest.raises(ValueError, match="range is invalid"):
+        reader.read_range(manifest, ("600001",), dates[0] - timedelta(days=1), dates[-1])
+    def cancelled():
+        raise RuntimeError("history_preload_cancelled")
+    with pytest.raises(RuntimeError, match="history_preload_cancelled"):
+        reader.read_range(manifest, ("600001",), dates[0], dates[-1], check=cancelled)
     assert len(loads) == 1
     with SqliteSession(tmp_path / "catalog.sqlite3") as writer:
         with SqliteTransaction(writer):
             writer.run("UPDATE reference_binding SET publication_id='missing'")
         with pytest.raises(PublishedHistoryReadError, match="history_reference_unavailable"):
-            reader.read_windows(manifest, ("600001",), sessions=2)
+            reader.read_range(manifest, ("600001",), dates[0], dates[-1])
     assert len(loads) == 2
 
 

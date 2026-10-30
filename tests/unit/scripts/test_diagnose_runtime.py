@@ -221,6 +221,21 @@ def test_history_resume_probe_routes_sample_bound_without_starting_downloads():
         _validate(args)
 
 
+def test_preload_timing_defaults_to_three_profiles_and_separates_feature_cpu_probe():
+    plain, _ = _validate(_parser().parse_args(["--profile", "history-sqlite", "--history-preload-audit"]))
+    command = build_commands(plain, python_executable="/python3")[0]
+    assert command.argv[command.argv.index("--preload-profiles") + 1] == "v1,v2,v3"
+    assert "--preload-cpu-profile" not in command.argv
+    assert "--preload-feature-audit" not in command.argv
+    detailed, _ = _validate(_parser().parse_args([
+        "--profile", "history-sqlite", "--history-preload-audit", "--history-preload-feature-audit",
+        "--history-preload-profiles", "v3",
+    ]))
+    command = build_commands(detailed, python_executable="/python3")[0]
+    assert "--preload-feature-audit" in command.argv
+    assert command.argv[command.argv.index("--preload-profiles") + 1] == "v3"
+
+
 def test_local_invalid_configuration_skips_dependents():
     commands = build_commands(_options(profile="local", scoring_profile="v2"), python_executable="/python")
     called = []

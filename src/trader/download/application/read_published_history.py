@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Protocol
 
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
@@ -11,6 +12,16 @@ from trader.download.domain.published_history import PublishedHistoryManifest, P
 
 class PublishedHistoryReadPort(Protocol):
     def manifest(self) -> PublishedHistoryManifest | None: ...
+
+    def read_range(
+        self,
+        manifest: PublishedHistoryManifest,
+        codes: Sequence[str],
+        start: date,
+        end: date,
+        *,
+        check: Callable[[], None] | None = None,
+    ) -> tuple[PublishedHistoryWindow, ...]: ...
 
     def iter_windows(
         self,
@@ -36,6 +47,17 @@ class ReadPublishedHistoryUseCase:
 
     def manifest(self) -> PublishedHistoryManifest | None:
         return self.publication.manifest()
+
+    def read_range(
+        self,
+        manifest: PublishedHistoryManifest,
+        codes: Sequence[str],
+        start: date,
+        end: date,
+        *,
+        check: Callable[[], None] | None = None,
+    ) -> tuple[PublishedHistoryWindow, ...]:
+        return self.publication.read_range(manifest, codes, start, end, check=check)
 
     def iter_windows(
         self,

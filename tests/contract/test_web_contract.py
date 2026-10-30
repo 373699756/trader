@@ -419,6 +419,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
         "history_maintenance_stage": "publishing_snapshot",
         "history_maintenance_completed_units": 120,
         "history_maintenance_total_units": 120,
+        "history_maintenance_elapsed_seconds": 201.5,
         "issuer_eligibility": {
             "excluded_count": 3,
             "fact_count": 4,
@@ -717,6 +718,7 @@ def _app():
                 "history_maintenance_stage": "publishing_snapshot",
                 "history_maintenance_completed_units": 120,
                 "history_maintenance_total_units": 120,
+                "history_maintenance_elapsed_seconds": 201.5,
                 "history_recovery_requested_count": 240,
                 "history_recovery_cache_hit_count": 40,
                 "history_recovery_dispatched_count": 120,

@@ -542,7 +542,10 @@ class FeatureBuilder:
                 )
                 return result
 
-            cached = cast(_CachedQuoteFactors, cache.coalesce(identity, build))
+            found = cache.get(identity)
+            cached = cast(_CachedQuoteFactors, found.value) if found is not None and found.value is not None else None
+            if cached is None or not cached.matches(inputs, prepared_history(cached)):
+                cached = cast(_CachedQuoteFactors, cache.coalesce(identity, build))
             # A concurrent owner may have different facts under the same latest
             # slot. Recheck the arithmetic inputs before consuming its result.
             if not cached.matches(inputs, prepared_history(cached)):

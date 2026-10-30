@@ -39,6 +39,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.company import (
     AssessCompanyAdjustments,
     BuildCompanyScoringContext,
+    CompanyScoringCalendar,
     CompanyFinancialScores,
     CompanyScoringPolicy,
 )
@@ -297,7 +298,7 @@ def test_feature_assembly_keeps_company_context_and_does_not_label_soft_risk_cle
         at=NOW,
     )
     policy = CompanyScoringPolicy(enabled=True)
-    context = BuildCompanyScoringContext(facts, (), policy)
+    context = BuildCompanyScoringContext(facts, CompanyScoringCalendar(()), policy)
     research = ResearchEpoch(
         NOW.date(),
         1,

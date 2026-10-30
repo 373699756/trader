@@ -610,6 +610,22 @@ class SQLiteQfqWindowCache:
             manifest, codes, sessions=sessions, allowed=frozenset(manifest.universe_codes), check=check
         )
 
+    def read_range(
+        self,
+        manifest: PublishedHistoryManifest,
+        codes: Sequence[str],
+        start: date,
+        end: date,
+        *,
+        check: Callable[[], None] | None = None,
+    ) -> tuple[PublishedHistoryWindow, ...]:
+        if start > end or start < manifest.calendar_dates[0] or end > manifest.data_cutoff:
+            raise ValueError("qfq_read_window_invalid")
+        return tuple(
+            PublishedHistoryWindow(window.code, tuple(cell for cell in window.cells if start <= cell.trade_date <= end))
+            for window in self.read_windows(manifest, codes, sessions=self.sessions, check=check)
+        )
+
     def _read_windows(
         self,
         manifest: PublishedHistoryManifest,

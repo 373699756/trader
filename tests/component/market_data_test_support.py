@@ -248,6 +248,7 @@ class _FixtureHistory:
             maintenance_stage=None,
             maintenance_completed_units=0,
             maintenance_total_units=0,
+            maintenance_elapsed_seconds=0.0,
         )
 
     def read_outcome_bars(self, codes, _observed_at):

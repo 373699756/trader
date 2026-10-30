@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from bisect import bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
@@ -67,6 +68,7 @@ class PublishedHistoryStatus:
     suspended_history_codes: int = 0
     history_scan_count: int = 0
     history_window_count: int = 0
+    maintenance_elapsed_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,8 @@ class PublishedHistoryCache:
         self._maintenance_stage: str | None = None
         self._maintenance_completed_units = 0
         self._maintenance_total_units = 0
+        self._maintenance_started_at: float | None = None
+        self._maintenance_finished_at: float | None = None
         self._preview_context: PreviewContext | None = None
 
         self._projection_owner = projection_owner or SharedHistoryProjection(history, monotonic=monotonic)
@@ -209,14 +213,14 @@ class PublishedHistoryCache:
         if cancelled() or self._monotonic() >= deadline:
             self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
             return None
-        size_bytes = sum(
-            len(
-                CanonicalJsonBytes(
-                    (code, replace(entry, bars=()) if self._projection_owner.accounts_shared_bars else entry)
-                )
-            )
-            for code, entry in entries.items()
-        )
+        size_bytes = 0
+        for index, (code, entry) in enumerate(entries.items()):
+            if index % 64 == 0 and (cancelled() or self._monotonic() >= deadline):
+                self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
+                return None
+            size_bytes += len(CanonicalJsonBytes(
+                (code, replace(entry, bars=()) if self._projection_owner.accounts_shared_bars else entry)
+            ))
         if cancelled() or self._monotonic() >= deadline:
             self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
             return None
@@ -281,21 +285,31 @@ class PublishedHistoryCache:
         reason: str | None = None,
         *,
         stage: str | None = None,
-        completed_units: int = 0,
-        total_units: int = 0,
+        completed_units: int | None = None,
+        total_units: int | None = None,
     ) -> None:
         with self._lock:
+            if state == "loading":
+                if self._maintenance_started_at is None:
+                    self._maintenance_started_at = self._monotonic()
+                self._maintenance_finished_at = None
+            elif self._maintenance_finished_at is None:
+                self._maintenance_finished_at = self._monotonic()
             self._maintenance_state = state
             self._maintenance_reason = reason
             self._maintenance_stage = stage
-            self._maintenance_completed_units = completed_units
-            self._maintenance_total_units = total_units
+            if completed_units is not None:
+                self._maintenance_completed_units = completed_units
+            if total_units is not None:
+                self._maintenance_total_units = total_units
 
     def record_projection_observation(self) -> None:
         """Publish current read health atomically, preserving concurrent errors."""
 
         with self._lock:
             state = "ready" if self._manifest is not None else "unavailable"
+            if self._manifest is not None and self._require_input_binding and self._daily_pack is None:
+                state = "loading"
             if self._maintenance_reason is not None and (
                 self._manifest is not None or self._maintenance_reason != "history_snapshot_unavailable"
             ):
@@ -303,7 +317,7 @@ class PublishedHistoryCache:
             self.record_maintenance(
                 state,
                 self._maintenance_reason,
-                stage="reading_published_snapshot",
+                stage=self._maintenance_stage,
                 completed_units=self._maintenance_completed_units,
                 total_units=self._maintenance_total_units,
             )
@@ -534,6 +548,10 @@ class PublishedHistoryCache:
                 suspended_history_codes=sum(entry.suspended_sessions > 0 for entry in self._entries.values()),
                 history_scan_count=self._projection_owner.scan_count,
                 history_window_count=self._projection_owner.window_count,
+                maintenance_elapsed_seconds=(
+                    max(0.0, (self._maintenance_finished_at if self._maintenance_finished_at is not None else self._monotonic()) - self._maintenance_started_at)
+                    if self._maintenance_started_at is not None else 0.0
+                ),
             )
 
     def entries(self) -> Mapping[str, PublishedHistoryEntry]:
@@ -626,7 +644,8 @@ def _completed_model_values(bars: tuple[DailyBar, ...], open_dates: tuple[date, 
     if any(bar.close <= 0.0 or bar.amount < 0.0 for bar in selected):
         return None
     dates = tuple(date.fromisoformat(bar.trade_date) for bar in selected)
-    expected = tuple(day for day in open_dates if day <= dates[-1])[-251:]
+    end = bisect_right(open_dates, dates[-1])
+    expected = open_dates[max(0, end - 251):end]
     if dates != expected:
         return None
     return CalculateLearnedRankFeatures(

@@ -148,7 +148,7 @@ class QuoteCache:
             history_summaries=history_summaries,
             preview_context=self._preview_context,
         )
-        return _apply_action_restrictions(self._with_model_industries(features), action_restrictions or {})
+        return self._with_model_industries(features, action_restrictions=action_restrictions or {})
 
     def build_market_features(
         self,
@@ -159,19 +159,24 @@ class QuoteCache:
         research_observations: Mapping[str, ResearchObservation] | None = None,
         action_restrictions: Mapping[str, set[str]],
     ) -> tuple[FeatureSnapshot, ...]:
-        return _apply_action_restrictions(
-            self._with_model_industries(
-                self._feature_builder.build(
-                    self._with_industry_quotes(quotes, observed_at),
-                    histories,
-                    observed_at,
-                    research_observations=research_observations,
-                    history_summaries=self._history.summaries(histories, observed_at),
-                    preview_context=self._preview_context,
-                )
-            ),
-            action_restrictions,
+        started = self._monotonic()
+        summaries = self._history.summaries(histories, observed_at)
+        local_quotes = self._with_industry_quotes(quotes, observed_at)
+        self.gateway.record_local_latency("market_history_summary", (self._monotonic() - started) * 1000)
+        started = self._monotonic()
+        features = self._feature_builder.build(
+            local_quotes,
+            histories,
+            observed_at,
+            research_observations=research_observations,
+            history_summaries=summaries,
+            preview_context=self._preview_context,
         )
+        self.gateway.record_local_latency("market_factor_build", (self._monotonic() - started) * 1000)
+        started = self._monotonic()
+        features = self._with_model_industries(features, action_restrictions=action_restrictions)
+        self.gateway.record_local_latency("market_model_inputs", (self._monotonic() - started) * 1000)
+        return features
 
     def cached_market_features(self, *, force: bool, reference_epoch: str) -> tuple[FeatureSnapshot, ...] | None:
         with self._lock:
@@ -196,6 +201,8 @@ class QuoteCache:
     def _with_model_industries(
         self,
         features: Sequence[FeatureSnapshot],
+        *,
+        action_restrictions: Mapping[str, set[str]] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
         references = self._references.model_industries(tuple(feature.quote.code for feature in features))
         by_time: dict[datetime, list[str]] = {}
@@ -210,33 +217,24 @@ class QuoteCache:
                 quality[item.code] = item.quality
                 if item.sequence is not None:
                     sequences[item.code] = item.sequence
-        return tuple(
-            replace(
+        result: list[FeatureSnapshot] = []
+        for feature in features:
+            code = feature.quote.code
+            day = self._preview_context.market_trade_date if self._preview_context else ShanghaiNow(feature.observed_at).date()
+            reference = references.get(code)
+            quote = QuoteWithIndustry(feature.quote, reference, day)
+            if action_restrictions is not None:
+                quote = _restricted_quote(quote, action_restrictions.get(code, set()))
+            learned = completed.get(code, ())
+            result.append(replace(
                 feature,
-                values={**feature.values, **dict(completed.get(feature.quote.code, ()))},
-                model_sequence=sequences.get(feature.quote.code),
-                model_history_quality=quality[feature.quote.code],
-                quote=QuoteWithIndustry(
-                    feature.quote,
-                    references.get(feature.quote.code),
-                    self._preview_context.market_trade_date
-                    if self._preview_context
-                    else ShanghaiNow(feature.observed_at).date(),
-                ),
-                model_industry=(
-                    reference
-                    if (reference := references.get(feature.quote.code)) is not None
-                    and reference.effective_date
-                    <= (
-                        self._preview_context.market_trade_date
-                        if self._preview_context
-                        else ShanghaiNow(feature.observed_at).date()
-                    )
-                    else None
-                ),
-            )
-            for feature in features
-        )
+                values={**feature.values, **dict(learned)} if learned else feature.values,
+                model_sequence=sequences.get(code),
+                model_history_quality=quality[code],
+                quote=quote,
+                model_industry=reference if reference is not None and reference.effective_date <= day else None,
+            ))
+        return tuple(result)
 
     def publish_market_features(
         self, features: Sequence[FeatureSnapshot], *, reference_epoch: str
@@ -333,31 +331,12 @@ class QuoteCache:
             return dict(self._candidate_quotes)
 
 
-def _apply_action_restrictions(
-    features: Sequence[FeatureSnapshot],
-    action_restrictions: Mapping[str, set[str]],
-) -> tuple[FeatureSnapshot, ...]:
-    return tuple(
-        replace(
-            feature,
-            quote=replace(
-                feature.quote,
-                execution_restrictions=tuple(
-                    sorted(
-                        {
-                            *(
-                                reason
-                                for reason in feature.quote.execution_restrictions
-                                if reason not in _AUXILIARY_ACTION_RESTRICTIONS
-                            ),
-                            *action_restrictions.get(feature.quote.code, set()),
-                        }
-                    )
-                ),
-            ),
-        )
-        for feature in features
-    )
+def _restricted_quote(quote: MarketQuote, restrictions: set[str]) -> MarketQuote:
+    reasons = tuple(sorted({
+        *(reason for reason in quote.execution_restrictions if reason not in _AUXILIARY_ACTION_RESTRICTIONS),
+        *restrictions,
+    }))
+    return quote if reasons == quote.execution_restrictions else replace(quote, execution_restrictions=reasons)
 
 
-__all__ = ["QuoteCache", "QuoteCacheStatus", "_apply_action_restrictions"]
+__all__ = ["QuoteCache", "QuoteCacheStatus"]

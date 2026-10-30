@@ -33,6 +33,16 @@ class _PreloadBudget:
             raise RuntimeError("history_preload_cancelled" if self.cancelled() else "history_preload_deadline")
 
 
+@dataclass(frozen=True)
+class HistoryProjectionTimings:
+    read_seconds: float
+    alignment_seconds: float
+    derivation_seconds: float
+    publication_seconds: float
+    extension_requests: int
+    extension_rows: int
+
+
 class SharedHistoryProjection:
     def __init__(
         self,
@@ -49,6 +59,19 @@ class SharedHistoryProjection:
         self._initialized = False
         self._scan_count = 0
         self._window_count = 0
+        self._read_seconds = self._alignment_seconds = self._derivation_seconds = self._publication_seconds = 0.0
+        self._extension_requests = self._extension_rows = 0
+
+    @property
+    def timings(self) -> HistoryProjectionTimings:
+        return HistoryProjectionTimings(
+            self._read_seconds,
+            self._alignment_seconds,
+            self._derivation_seconds,
+            self._publication_seconds,
+            self._extension_requests,
+            self._extension_rows,
+        )
 
     @property
     def accounts_shared_bars(self) -> bool:
@@ -119,7 +142,13 @@ class SharedHistoryProjection:
         confirmed = self._history.manifest()
         if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
             raise RuntimeError("history_snapshot_changed")
-        self._publish(manifest, entries, budget)
+        for profile in self._profiles:
+            profile.record_maintenance("loading", stage="publishing_history_projection")
+        started = self._monotonic()
+        try:
+            self._publish(manifest, entries, budget)
+        finally:
+            self._publication_seconds += self._monotonic() - started
 
     def _publish(
         self,
@@ -127,9 +156,12 @@ class SharedHistoryProjection:
         entries: tuple[dict[str, PublishedHistoryEntry], ...],
         budget: _PreloadBudget,
     ) -> None:
-        shared_bytes = (
-            sum(len(CanonicalJsonBytes((code, entry.bars))) for code, entry in entries[0].items()) if entries else 0
-        )
+        shared_bytes = 0
+        if entries:
+            for index, (code, entry) in enumerate(entries[0].items()):
+                if index % 64 == 0:
+                    budget.require_time()
+                shared_bytes += len(CanonicalJsonBytes((code, entry.bars)))
         if self._reserve_bytes is not None and not self._reserve_bytes(shared_bytes):
             raise RuntimeError("history_preload_capacity")
         published = False
@@ -151,12 +183,24 @@ class SharedHistoryProjection:
         results: tuple[dict[str, PublishedHistoryEntry], ...] = tuple({} for _profile in self._profiles)
         lifetimes = {code: (start, end) for code, start, end in manifest.listing_intervals}
         self._scan_count += 1
-        for completed, window in enumerate(
-            self._history.iter_windows(manifest, sessions=sessions, check=budget.require_time), start=1
-        ):
+        windows = iter(self._history.iter_windows(manifest, sessions=sessions, check=budget.require_time))
+        completed = 0
+        while True:
+            started = self._monotonic()
+            try:
+                window = next(windows)
+            except StopIteration:
+                break
+            finally:
+                self._read_seconds += self._monotonic() - started
             budget.require_time()
-            aligned = self._aligned(window, manifest, lifetimes.get(window.code), sessions, budget)
+            started = self._monotonic()
+            try:
+                aligned = self._aligned(window, manifest, lifetimes.get(window.code), sessions, budget)
+            finally:
+                self._alignment_seconds += self._monotonic() - started
             self._window_count += 1
+            started = self._monotonic()
             if aligned.bars:
                 shared_bars = aligned.bars[-20:]
                 contexts = {
@@ -167,6 +211,8 @@ class SharedHistoryProjection:
                     values[window.code] = profile.project_history_window(
                         manifest, window.code, aligned, calendar, shared_bars, contexts[profile.history_sessions]
                     )
+            self._derivation_seconds += self._monotonic() - started
+            completed += 1
             for profile in self._profiles:
                 profile.record_maintenance(
                     "loading",
@@ -196,16 +242,21 @@ class SharedHistoryProjection:
             return aligned
         maximum = min(2000, len(manifest.calendar_dates))
         extended_sessions = sessions
+        retained = window
         while len(aligned.bars) < sessions and extended_sessions < maximum:
             budget.require_time()
-            extended_sessions = min(maximum, extended_sessions + 63)
-            extended = self._history.read_windows(
-                manifest, (window.code,), sessions=extended_sessions, check=budget.require_time
+            next_sessions = min(maximum, extended_sessions + 63)
+            earlier_dates = manifest.calendar_dates[-next_sessions:-extended_sessions]
+            self._extension_requests += 1
+            extended = self._history.read_range(
+                manifest, (window.code,), earlier_dates[0], earlier_dates[-1], check=budget.require_time
             )
-            if not extended:
-                break
-            aligned = BuildAlignedHistoryBars(extended[0], manifest.calendar_dates[-extended_sessions:], lifetime)
+            extended_sessions = next_sessions
+            if extended:
+                self._extension_rows += len(extended[0].cells)
+                retained = PublishedHistoryWindow(window.code, (*extended[0].cells, *retained.cells))
+            aligned = BuildAlignedHistoryBars(retained, manifest.calendar_dates[-extended_sessions:], lifetime)
         return aligned
 
 
-__all__ = ["SharedHistoryProjection"]
+__all__ = ["HistoryProjectionTimings", "SharedHistoryProjection"]

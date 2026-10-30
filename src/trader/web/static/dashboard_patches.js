@@ -54,7 +54,10 @@
     return {
       ...current,
       status: "ready",
+      score_status: "scored",
+      freeze_version: patch.snapshot_id,
       publication_id: patch.publication_id,
+      content_hash: patch.content_hash,
       snapshot_id: patch.snapshot_id,
       projection_version: patch.projection_version || patch.snapshot_id,
       strategy: patch.strategy,
@@ -64,6 +67,8 @@
       historical: false,
       view: patch.view,
       phase: patch.phase,
+      stage: patch.phase,
+      observed_at: patch.published_at,
       published_at: patch.published_at,
       strategy_version: patch.strategy_version,
       input_versions: patch.input_versions || {},
@@ -220,16 +225,26 @@
       };
     }
     const blocker = inputQuality && inputQuality.primary_blocker;
+    const progress = inputQuality && Number.isInteger(inputQuality.total) && inputQuality.total > 0
+      ? `（${inputQuality.completed || 0}/${inputQuality.total}）` : "";
+    const elapsed = inputQuality && Number.isFinite(inputQuality.elapsed_seconds)
+      ? `，耗时 ${Math.floor(inputQuality.elapsed_seconds)} 秒` : "";
     if (blocker === "history_projection_loading") {
+      const stages = {
+        reading_published_snapshot: "正在加载本地历史数据",
+        publishing_history_projection: "正在校验历史投影容量",
+        reading_company_inputs: "正在加载公司资料",
+        binding_startup_inputs: "正在绑定评分输入",
+      };
       return {
-        message: "正在加载本地历史数据",
+        message: `${stages[inputQuality.stage] || "正在加载本地历史数据"}${progress}${elapsed}`,
         notice: "历史加载完成后自动重试评分，请稍候",
         level: "idle",
       };
     }
     if (blocker === "history_projection_failed") {
       return {
-        message: "本地历史加载失败，暂不能生成荐股",
+        message: `${inputQuality.failure_reason === "history_preload_deadline" ? "历史加载超时" : "本地历史加载失败，暂不能生成荐股"}${progress}${elapsed}`,
         notice: `原因：${inputQuality.failure_reason}；处理后重启服务重新加载`,
         level: "warn",
       };
@@ -238,7 +253,7 @@
     const modelStage = pipelineStage(inputQuality, "model_input");
     const refreshStage = pipelineStage(inputQuality, "candidate_refresh");
     const coverageStage = pipelineStage(inputQuality, "input_coverage");
-    if (blocker === "market_population_stale") {
+    if (["market_population_stale", "stale_quote"].includes(blocker)) {
       const stale = nonNegativeInteger(
         inputQuality && inputQuality.population_filter_reason_counts
           && inputQuality.population_filter_reason_counts.stale_quote,
@@ -476,11 +491,12 @@
     const selected = nonNegativeInteger(coverage.selected_count);
     const executable = nonNegativeInteger(coverage.executable_count);
     const observation = nonNegativeInteger(coverage.observation_count);
-    return [candidate, evaluated, rejected, selected, executable, observation].every((value) => value != null)
+    const unavailable = nonNegativeInteger(coverage.unavailable_count);
+    return [candidate, evaluated, rejected, selected, executable, observation, unavailable].every((value) => value != null)
       && evaluated <= candidate
       && rejected <= candidate
       && selected <= candidate
-      && executable + observation === selected;
+      && executable + observation + unavailable === selected;
   }
 
   function topKValid(items, strategy) {

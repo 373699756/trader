@@ -130,7 +130,7 @@ for (const strategy of ["tomorrow", "d25"]) {
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(state.notReadyMessage(failedPayload, readiness))),
     {
-      message: "本地历史加载失败，暂不能生成荐股",
+      message: "历史加载超时",
       notice: "原因：history_preload_deadline；处理后重启服务重新加载",
       level: "warn",
     },
@@ -153,12 +153,28 @@ for (const payload of [
     "history_projection_loading",
   );
 }
-assert.notStrictEqual(
+assert.strictEqual(
   sandbox.window.TraderStatusView.recommendationReadinessStatus(historyLoadingPayload, {
     market_data: { ...historyLoadingStatus.market_data, published_history_state: "published" },
   })?.primary_blocker,
   "history_projection_loading",
 );
+for (const [stage, label] of [
+  ["publishing_history_projection", "正在校验历史投影容量"],
+  ["reading_company_inputs", "正在加载公司资料"],
+  ["binding_startup_inputs", "正在绑定评分输入"],
+]) {
+  const readiness = sandbox.window.TraderStatusView.recommendationReadinessStatus(historyLoadingPayload, {
+    market_data: { ...historyLoadingStatus.market_data,
+      published_history_state: "published", history_maintenance_stage: stage,
+      history_maintenance_completed_units: 4401, history_maintenance_total_units: 4401,
+      history_maintenance_elapsed_seconds: 201.2,
+    },
+  });
+  assert.match(state.notReadyMessage(historyLoadingPayload, readiness).message, new RegExp(label));
+  assert.match(state.notReadyMessage(historyLoadingPayload, readiness).message, /4401\/4401/);
+  assert.match(state.notReadyMessage(historyLoadingPayload, readiness).message, /201/);
+}
 assert(state, "dashboard state helpers were not exported into the test sandbox");
 const unselectedLeader = {
   code: "688199", name: "久日新材", selected: false,
@@ -963,26 +979,6 @@ state.renderInputQuality(summaryElements, {
 }], null, null);
 assert.strictEqual(summaryElements.inputQualityStatus.textContent, "不适用");
 assert.strictEqual(summaryElements.inputQualityMeta.textContent, "长期固定观察池不评分");
-assert.strictEqual(
-  state.initialStrategy({
-    strategies: {
-      tomorrow: { status: "ready", coverage: { selected_count: 0 } },
-      d25: { status: "ready", coverage: { selected_count: 0 } },
-      long: { status: "ready", coverage: { selected_count: 224 } },
-    },
-  }),
-  "long",
-);
-assert.strictEqual(
-  state.initialStrategy({
-    strategies: {
-      tomorrow: { status: "ready", coverage: { selected_count: 6 } },
-      long: { status: "ready", coverage: { selected_count: 224 } },
-    },
-  }),
-  "tomorrow",
-);
-assert.strictEqual(state.initialStrategy({ strategies: {} }), "tomorrow");
 const degradedHealth = state.healthView({
   health: { level: "degraded", issue_count: 2 },
   recent_errors: [
@@ -1228,7 +1224,7 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.notReadyMessage(
     { strategy: "tomorrow", readiness_reason: "snapshot_not_published" },
     {
-      primary_blocker: "market_population_stale",
+      primary_blocker: "stale_quote",
       population_count: 5291,
       population_filter_reason_counts: { stale_quote: 5089 },
     },
@@ -1697,6 +1693,9 @@ const patch = {
   base_projection_version: "tomorrow-base",
   projection_version: "tomorrow-next",
   snapshot_id: "tomorrow-next",
+  content_hash: "next-content",
+  phase: "local",
+  published_at: "2026-07-23T14:32:00+08:00",
   strategy: "tomorrow",
   trade_date: "2026-07-23",
   view: "live",
@@ -1708,12 +1707,31 @@ const patch = {
     selected_count: 2,
     executable_count: 2,
     observation_count: 0,
+    unavailable_count: 0,
   },
   upserts: [{ code: "600001", rank: 2 }, { code: "600003", rank: 1 }],
   removed_codes: ["600002"],
 };
 
 assert.strictEqual(state.patchVersionValid(patch), true);
+const unavailableSeatsPatch = {
+  ...patch,
+  coverage: { ...patch.coverage, executable_count: 0, unavailable_count: 2 },
+};
+assert.strictEqual(
+  state.recommendationPatchFreeze(unavailableSeatsPatch, payload, "tomorrow-base", "tomorrow", "live"),
+  "apply",
+  "fixed seats with unavailable actions must reach the page through SSE",
+);
+for (const unavailable_count of [undefined, -1, 1, 3]) {
+  assert.strictEqual(
+    state.recommendationPatchFreeze(
+      { ...unavailableSeatsPatch, coverage: { ...unavailableSeatsPatch.coverage, unavailable_count } },
+      payload, "tomorrow-base", "tomorrow", "live",
+    ),
+    "schema_mismatch",
+  );
+}
 assert.strictEqual(
   state.recommendationPatchFreeze(patch, payload, "tomorrow-base", "tomorrow", "live"),
   "apply",
@@ -1735,6 +1753,11 @@ assert.strictEqual(
 );
 const replacementPayload = state.replacementPayload(payload, coveragePatch, []);
 assert.strictEqual(replacementPayload.publication_id, coveragePatch.publication_id);
+assert.strictEqual(replacementPayload.freeze_version, coveragePatch.snapshot_id);
+assert.strictEqual(replacementPayload.observed_at, coveragePatch.published_at);
+assert.strictEqual(replacementPayload.content_hash, coveragePatch.content_hash);
+assert.strictEqual(replacementPayload.stage, "local");
+assert.strictEqual(replacementPayload.score_status, "scored");
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(replacementPayload.coverage)),
   coveragePatch.coverage,

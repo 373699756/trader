@@ -73,6 +73,14 @@ class CompanyScoringContext:
 
 
 @dataclass(frozen=True, slots=True)
+class CompanyScoringCalendar:
+    open_dates: tuple[date, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "open_dates", tuple(sorted(set(self.open_dates))))
+
+
+@dataclass(frozen=True, slots=True)
 class CompanyAdjustments:
     bonuses: tuple[ScoreAdjustmentItem, ...]
     risks: tuple[RiskFact, ...]
@@ -98,10 +106,10 @@ class ScoreLedgerInput:
 
 def BuildCompanyScoringContext(
     facts: CompanyFacts,
-    open_dates: tuple[date, ...],
+    calendar: CompanyScoringCalendar,
     policy: CompanyScoringPolicy,
 ) -> CompanyScoringContext:
-    days = tuple(sorted(set(open_dates)))
+    days = calendar.open_dates
     windows: list[CompanyEventWindow] = []
     for event in facts.positive_events:
         for milestone in event.level_milestones:

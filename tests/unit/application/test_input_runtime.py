@@ -17,7 +17,7 @@ from trader.recommendation.application.pipeline.data_source.input_assembly impor
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import MergeOverlayQuote
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
-from trader.recommendation.application.ports.market_data import MarketDataPendingError
+from trader.recommendation.application.ports.market_data import MarketDataPendingError, MarketDataUnavailableError
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPendingError,
@@ -165,6 +165,30 @@ def test_loading_local_history_is_pending_without_a_refresh_failure(application_
     with pytest.raises(DataRefreshPendingError, match="history_projection_loading"):
         adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, TEST_NOW))
     assert not any("refresh failed" in record.getMessage() for record in caplog.records)
+
+
+def test_terminal_history_failure_logs_once_until_recovery(application_feature_factory, caplog) -> None:
+    class FailedMarket(_Market):
+        failed = True
+
+        def fetch_market_features(self, observed_at, *, force=False, deadline=None):
+            if self.failed:
+                raise MarketDataUnavailableError("history_preload_deadline")
+            return super().fetch_market_features(observed_at, force=force, deadline=deadline)
+
+    market = FailedMarket((application_feature_factory("600001", TEST_NOW),))
+    adapter = build_cycle_fixture(market, config_version="test-config", freeze_build=_freeze_build())
+    request = PipelineTaskRequest(PipelineTask.FULL_MARKET, TEST_NOW)
+    for _ in range(3):
+        with pytest.raises(DataRefreshUnavailableError, match="history_preload_deadline"):
+            adapter.data.refresh_task(request)
+    assert sum("refresh failed" in item.getMessage() for item in caplog.records) == 1
+    market.failed = False
+    adapter.data.refresh_task(request)
+    market.failed = True
+    with pytest.raises(DataRefreshUnavailableError, match="history_preload_deadline"):
+        adapter.data.refresh_task(request)
+    assert sum("refresh failed" in item.getMessage() for item in caplog.records) == 2
 
 
 class _RejectingLongRuntime:
@@ -765,6 +789,24 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
     assert all(status.primary_blocker == "scoring_pending" for status in adapter.data.input_quality_status())
+
+
+def test_pending_empty_population_reports_stale_quotes_without_counting_them_as_rejections(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    source = application_feature_factory("600001", observed_at)
+    stale = replace(source, quote=replace(source.quote, source_time=observed_at - timedelta(minutes=2)))
+    adapter = build_cycle_fixture(_Market((stale,)), config_version="test-config", freeze_build=_freeze_build())
+    for task in (PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES):
+        adapter.data.refresh_task(PipelineTaskRequest(task, observed_at))
+        for status in adapter.data.input_quality_status():
+            assert status.primary_blocker == "stale_quote"
+            assert status.refresh_pending_count == 1
+            assert status.data_pending_count == 0
+            assert status.population_rejected_count == status.candidate_rejected_count == 0
+            assert dict(status.population_filter_reason_counts)["stale_quote"] == 1
+            assert status.publishable is False
 
 
 def test_production_adapter_rejects_vendor_future_time_without_local_observation_support(
@@ -1750,6 +1792,24 @@ def test_stale_candidate_quote_stays_pending_without_a_replacement(
 
     assert market.candidate_requests == [("600002", "600003", "600004")]
     assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == ("600002", "600003", "600004")
+
+
+def test_finished_scoring_input_releases_population_without_removing_replacement(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    adapter = build_cycle_fixture(_Market((feature,)), config_version="test-config", freeze_build=_freeze_build())
+    _prime_scoring_cache(adapter, observed_at)
+    request = _request(observed_at, strategy=Strategy.TOMORROW, phase="afternoon")
+    replacement = replace(request)
+    adapter.data.refresh(request)
+    adapter.data.refresh(replacement)
+    adapter.data.release_scoring_input(request)
+    assert adapter.data.batch(replacement) is not None
+    adapter.data.release_scoring_input(replacement)
+    assert adapter.data.batch(replacement) is None
+    assert not adapter.data._batches
 
 
 def test_two_strategy_candidate_windows_share_deduplicated_quote_io(

@@ -57,8 +57,10 @@ def PriceColumnValues(cell: PublishedHistoryCell) -> PriceValues:
     return (*values, flags)
 
 
-def PriceCellFromColumns(code: str, day: int, values: PriceValues) -> PublishedHistoryCell:
-    if len(values) != len(PRICE_COLUMNS) or not isinstance(values[0], str):
+def PriceCellFromColumns(
+    code: str, day: int, values: PriceValues, *, already_validated: bool = False
+) -> PublishedHistoryCell:
+    if not already_validated and (len(values) != len(PRICE_COLUMNS) or not isinstance(values[0], str)):
         raise ValueError("price_columns_invalid")
     trade_date = DecodeDate(day)
     values = DecodePriceValues(values)
@@ -66,8 +68,9 @@ def PriceCellFromColumns(code: str, day: int, values: PriceValues) -> PublishedH
         code,
         trade_date,
         cast(BaoStockCellStatus, values[0]),
-        _side(code, trade_date, "unadjusted", values[1:12]),
-        _side(code, trade_date, "qfq", values[12:23]),
+        _side(code, trade_date, "unadjusted", values[1:12], already_validated=already_validated),
+        _side(code, trade_date, "qfq", values[12:23], already_validated=already_validated),
+        already_validated=already_validated,
     )
 
 
@@ -113,18 +116,20 @@ def _side_values(side: PublishedHistorySide | None) -> PriceValues:
     )
 
 
-def _side(code: str, day: date, adjustment: BaoStockAdjustment, values: PriceValues) -> PublishedHistorySide | None:
-    if values[0] == 0 and all(value is None for value in values[1:]):
+def _side(
+    code: str, day: date, adjustment: BaoStockAdjustment, values: PriceValues, *, already_validated: bool
+) -> PublishedHistorySide | None:
+    if values[0] == 0 and (already_validated or all(value is None for value in values[1:])):
         return None
-    if values[0] != 1 or values[-1] not in ("trading", "suspended"):
-        raise ValueError("price_side_invalid")
-    numbers: list[float | None] = []
-    for value in values[1:10]:
-        if value is not None and (
-            isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value)
-        ):
-            raise ValueError("price_number_invalid")
-        numbers.append(value)
+    if not already_validated:
+        if values[0] != 1 or values[-1] not in ("trading", "suspended"):
+            raise ValueError("price_side_invalid")
+        for value in values[1:10]:
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value)
+            ):
+                raise ValueError("price_number_invalid")
+    numbers = cast(tuple[float | None, ...], values[1:10])
     return PublishedHistorySide(
         code,
         day,
@@ -139,6 +144,7 @@ def _side(code: str, day: date, adjustment: BaoStockAdjustment, values: PriceVal
         numbers[7],
         numbers[8],
         cast(BaoStockTradingStatus, values[-1]),
+        already_validated=already_validated,
     )
 
 

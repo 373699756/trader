@@ -73,6 +73,7 @@ class DataRefresh:
         self.calls: list[Strategy] = []
         self.requests: list[CycleRequest] = []
         self.task_requests: list[object] = []
+        self.released_requests: list[CycleRequest] = []
 
     def refresh(self, request: CycleRequest) -> None:
         self.calls.append(request.strategy)
@@ -80,6 +81,9 @@ class DataRefresh:
 
     def scoring_epoch(self) -> str:
         return "test:shared_input"
+
+    def release_scoring_input(self, request: CycleRequest) -> None:
+        self.released_requests.append(request)
 
     def refresh_task(self, request) -> RefreshOutcome:
         self.task_requests.append(request)
@@ -1092,6 +1096,7 @@ def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> N
         runtime.stop(ShutdownDeadline.start(2.0))
     assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
     assert runtime.status().last_error_code == "freeze:paired_input_epoch_mismatch"
+    assert all(request in data.released_requests for request in data.requests)
 
 
 @pytest.mark.parametrize("finish_after_close", (False, True))

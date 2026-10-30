@@ -22,8 +22,9 @@ _Value = TypeVar("_Value")
 class DatabaseMeasurement:
     """Count SQLite wrapper operations without retaining SQL text, parameters or rows."""
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, *, sample_wal: bool = True) -> None:
         self._directory = directory
+        self._sample_wal = sample_wal
         self._lock = Lock()
         self._stop = Event()
         self._stack = ExitStack()
@@ -88,7 +89,8 @@ class DatabaseMeasurement:
         self._before_io = _physical_io()
         self._wall, self._cpu = time.perf_counter(), time.process_time()
         try:
-            self._sampler.start()
+            if self._sample_wal:
+                self._sampler.start()
         except RuntimeError:
             self._stack.close()
             raise
@@ -149,7 +151,8 @@ class DatabaseMeasurement:
         after_io = _physical_io()
         try:
             self._stop.set()
-            self._sampler.join()
+            if self._sample_wal:
+                self._sampler.join()
         finally:
             self._stack.close()
         before = self._before_io
@@ -165,6 +168,7 @@ class DatabaseMeasurement:
             "physical_read_bytes": after_io[0] - before[0] if before and after_io else None,
             "physical_write_bytes": after_io[1] - before[1] if before and after_io else None,
             "sampled_wal_peak_bytes": self._wal_peak,
+            "wal_sampling_enabled": self._sample_wal,
             "wal_sampling_failed": self._wal_sampling_failure,
             "process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
             * (1 if sys.platform == "darwin" else 1024),

@@ -82,6 +82,22 @@ def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplic
     assert feature.values["limit_distance_safety"] is None
 
 
+def test_model_binding_replaces_auxiliary_restrictions_and_preserves_exchange_restrictions() -> None:
+    quote = replace(_quote(), execution_restrictions=("exchange_suspension", "history_data_degraded"))
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    service = _service(StaticGateway((quote,)), StaticHistoryClient(), builder)
+    bars = {quote.code: _history_bars()}
+    expected = builder.build(service.quotes._with_industry_quotes((quote,), NOW), bars, NOW)[0]
+    feature = service.quotes.build_market_features(
+        (quote,), bars, NOW, action_restrictions={quote.code: {"research_data_degraded"}}
+    )[0]
+    assert feature.quote.execution_restrictions == ("exchange_suspension", "research_data_degraded")
+    assert quote.execution_restrictions == ("exchange_suspension", "history_data_degraded")
+    assert feature.values == expected.values
+    assert feature.evidence == expected.evidence
+    assert feature.model_history_quality is not None
+
+
 def test_feature_builder_marks_history_missing_and_builds_cross_section() -> None:
     quote = _quote()
     bars = tuple(

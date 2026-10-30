@@ -190,9 +190,9 @@
   }
   async function initializeStrategy() {
     const selectionId = state.selectionSequence;
-    const status = await loadStatus();
+    await loadStatus();
     if (selectionId !== state.selectionSequence) return;
-    await selectStrategy(selection.initialStrategy(status));
+    await selectStrategy("tomorrow");
   }
 
   async function selectProfile(profile) {

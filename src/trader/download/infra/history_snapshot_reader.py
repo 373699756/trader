@@ -377,9 +377,9 @@ class HistorySnapshotReader:
         rows: list[PublishedHistoryCell] = []
         for year, month in RouteHistoryMonths(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
-            partition = self._partition_with_trust(
-                reference, None, required_level=None, establish_level="logical", check=check
-            )
+            if check is not None:
+                check()
+            partition = self._published_partition(reference)
             rows.extend(
                 row
                 for row in partition.iter_published_cells(
@@ -387,7 +387,8 @@ class HistorySnapshotReader:
                 )
                 if row.trade_date in allowed
             )
-            self._partition_with_trust(reference, None, required_level=None, establish_level="logical", check=check)
+            if check is not None:
+                check()
         return tuple(rows)
 
     def iter_published_range_by_code(
@@ -407,10 +408,10 @@ class HistorySnapshotReader:
                 references, key=lambda reference: (reference.relative_path, reference.sequence)
             ):
                 annual = tuple(group)
-                for reference in annual:
-                    partition = self._partition_with_trust(
-                        reference, None, required_level=None, establish_level="logical", check=check
-                    )
+                if check is not None:
+                    check()
+                reference = annual[-1]
+                partition = self._published_partition(reference)
                 first, last = annual[0], annual[-1]
                 lower = max(start, date(first.calendar_year, first.calendar_month, 1))
                 upper = min(
@@ -440,8 +441,8 @@ class HistorySnapshotReader:
                 for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
                 if index.eligible(row.code)
             )
-        for reference in references:
-            self._partition_with_trust(reference, None, required_level=None, establish_level="logical", check=check)
+        if check is not None:
+            check()
 
     def iter_shadow_facts(
         self,
@@ -453,7 +454,7 @@ class HistorySnapshotReader:
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("history shadow range is invalid")
         streams = tuple(
-            self._shadow_partition(self._reference(snapshot, year, month)).iter_shadow_facts(
+            self._published_partition(self._reference(snapshot, year, month)).iter_shadow_facts(
                 start,
                 end,
                 snapshot_sequence=self._reference(snapshot, year, month).sequence,
@@ -524,7 +525,7 @@ class HistorySnapshotReader:
         reference_index = self.reference_index(snapshot)
         selected = tuple(item for item in snapshot.partitions if _reference_month(item) in expected_months)
         for position, reference in enumerate(selected):
-            partition = self._shadow_partition(reference)
+            partition = self._published_partition(reference)
             completed_month = False
             try:
                 with closing(
@@ -628,13 +629,10 @@ class HistorySnapshotReader:
             )
             return partition
 
-    def _shadow_partition(self, reference: HistorySnapshotPartition) -> HistoryPricePartition:
-        """Open a read-only shadow reader without repeating sealed-file hashing."""
-        year, month = _reference_month(reference)
+    def _published_partition(self, reference: HistorySnapshotPartition) -> HistoryPricePartition:
+        """Read a download-published partition; publication owns content verification."""
         return HistoryPricePartition(
-            self._root / reference.relative_path,
-            year,
-            month,
+            self._root / reference.relative_path, reference.calendar_year, reference.calendar_month
         )
 
 

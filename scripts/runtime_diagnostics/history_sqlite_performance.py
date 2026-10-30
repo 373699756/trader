@@ -7,17 +7,22 @@ import calendar
 import cProfile
 import json
 import os
+import platform
 import pstats
 import resource
 import sqlite3
 import statistics
 import sys
 import tempfile
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from functools import partial
+from zoneinfo import ZoneInfo
 from itertools import islice
 from pathlib import Path
 
@@ -29,13 +34,29 @@ from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.download.infra.current_industry_publication import CurrentIndustryCache
+from trader.download.infra.reference_index import SQLiteReferenceIndex
+from trader.infra.cache import BoundedLruCache
+from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
+from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
+from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
+from trader.recommendation.infra.runtime.initialization import FixedCacheTtl
+from trader.recommendation.infra.normalization.features import FeatureBuilder
+from trader.recommendation.domain.market.models import MarketQuote
 
 from .reporting import emit_report
+from .database_measurement import DatabaseMeasurement
+from .diagnostic_types import PROJECT_ROOT
 
 
 @dataclass(frozen=True)
@@ -84,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--inventory-only", action="store_true")
     parser.add_argument("--preload-audit", action="store_true")
+    parser.add_argument("--preload-cpu-profile", action="store_true")
+    parser.add_argument("--preload-feature-audit", action="store_true")
+    parser.add_argument("--preload-profiles", type=ParseProfileSelection, default=("v1", "v2", "v3"))
+    parser.add_argument("--runtime-config", type=Path, default=PROJECT_ROOT / "config/runtime.json")
     parser.add_argument("--resume-samples", type=int, default=0)
     parser.add_argument("--page-sample-count", type=int, default=1)
     parser.add_argument("--query-rounds", type=int, default=3)
@@ -94,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.preload_audit:
-        return _measure_preload(args.history_root.resolve())
+        return _measure_preload(args.history_root.resolve(), args.runtime_config, args.preload_profiles, cpu_profile=args.preload_cpu_profile, feature_audit=args.preload_feature_audit)
     if args.resume_samples:
         try:
             return _measure_resume_reads(args.history_root.resolve(), args.resume_samples)
@@ -165,21 +190,52 @@ def main() -> int:
     return 0
 
 
-def _measure_preload(root: Path) -> int:
+def _measure_preload(
+    root: Path,
+    runtime_config: Path,
+    selected: tuple[ScoringProfileId, ...],
+    *,
+    cpu_profile: bool = False,
+    feature_audit: bool = False,
+) -> int:
+    total_started = time.monotonic()
+    settings = LoadRuntimeSettings(runtime_config)
+    observed = datetime.now(ZoneInfo("Asia/Shanghai"))
+    cache: BoundedLruCache[object] = BoundedLruCache(settings.market_data.cache_policy)
+    reserve = partial(cache.reserve_resident, "security_master_calendar")
+    reference_index = SQLiteReferenceIndex(settings.data_paths.reference_database)
+    references = PublishedReferences(
+        reference_index.read,
+        reference_index.identity,
+        CurrentIndustryCache(settings.data_paths.reference / "industry.sqlite3").load,
+        max_age_seconds=FixedCacheTtl(settings, "security_master_calendar"),
+        reserve_bytes=partial(reserve, "startup_reference"),
+    )
+    references.initialize()
+    reference = references.reference()
+    if reference is None:
+        raise RuntimeError("startup_reference_unavailable")
+    reference_seconds = time.monotonic() - total_started
+    model_started = time.monotonic()
+    models = tuple(LoadScoringProfile(profile, training_root=settings.data_paths.models) for profile in selected)
+    model_seconds = time.monotonic() - model_started
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(root))
     manifest = history.manifest()
-    calendar_dates = manifest.calendar_dates if manifest else ()
-    owner = SharedHistoryProjection(history, monotonic=time.monotonic)
+    calendar_dates = reference.open_dates
+    owner = SharedHistoryProjection(history, monotonic=time.monotonic, reserve_bytes=partial(reserve, "qfq_shared_bars"))
     profiles = tuple(
         PublishedHistoryCache(
             history,
-            lookback_sessions=sessions,
-            learned_rank_inputs=rank,
+            lookback_sessions=LoadRuntimeTrainingSettings(settings.project_root, profile).history_sessions,
+            learned_rank_inputs=profile == "v1",
+            sequence_inputs=profile == "v5",
+            require_input_binding=True,
+            reserve_bytes=partial(reserve, f"qfq_{profile}"),
             projection_owner=owner,
             open_dates=lambda: calendar_dates,
             monotonic=time.monotonic,
         )
-        for sessions, rank in ((251, True), (251, False), (61, False))
+        for profile in selected
     )
     started = time.monotonic()
     profiler = cProfile.Profile()
@@ -187,14 +243,48 @@ def _measure_preload(root: Path) -> int:
 
     def cancelled() -> bool:
         nonlocal profiling
-        if owner.window_count and not profiling:
+        if cpu_profile and owner.window_count and not profiling:
             profiler.enable()
             profiling = True
-        return time.monotonic() - started >= 290
+        return False
 
-    owner.initialize(cancelled)
+    # A read-only preload does not need a background WAL sampler; keeping this
+    # probe single-threaded also makes function profiling attributable.
+    with DatabaseMeasurement(root, sample_wal=False) as measurement:
+        owner.initialize(cancelled)
     profiler.disable()
-    stats = pstats.Stats(profiler).get_stats_profile()
+    history_seconds = time.monotonic() - started
+    company_seconds = binding_seconds = 0.0
+    company_error: str | None = None
+    company_profiler = cProfile.Profile()
+    feature_measurement: dict[str, object] = {}
+    if all(profile.status().state == "published" for profile in profiles):
+        if cpu_profile:
+            company_profiler.enable()
+        company_started = time.monotonic()
+        policy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=selected[0])
+        research = PublishedCompanyResearch(
+            SQLiteCompanyEvidenceReader(settings.data_paths.company, raw_path=settings.data_paths.company_collection, event_policy=policy.company_scoring.events),
+            wall_clock=lambda: observed,
+            open_dates=lambda: calendar_dates,
+            monotonic=time.monotonic,
+            reserve_bytes=partial(reserve, "company"),
+            source_versions=references.versions,
+            config_version=settings.config_version,
+            company_policy=policy.company_scoring,
+        )
+        research.initialize(manifest.universe_codes if manifest else (), cancelled=lambda: False)
+        company_seconds = time.monotonic() - company_started
+        company_error = research.status().last_error or None
+        binding_started = time.monotonic()
+        for profile, model in zip(profiles, models, strict=True):
+            profile.bind_inputs(observed, versions={**references.versions(), "company": research.loaded_identity, "model": CanonicalDigest(model.publications)}, config_version=settings.config_version)
+            profile.record_projection_observation()
+        binding_seconds = time.monotonic() - binding_started
+        company_profiler.disable()
+        if feature_audit:
+            feature_measurement = _measure_features(runtime_config, selected, profiles, research, references, cache, observed)
+    stats = pstats.Stats(profiler).get_stats_profile() if profiling else None
     functions = [
         {
             "function": name,
@@ -203,19 +293,47 @@ def _measure_preload(root: Path) -> int:
             "self_seconds": value.tottime,
             "cumulative_seconds": value.cumtime,
         }
-        for name, value in sorted(stats.func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:25]
+        for name, value in (sorted(stats.func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:25] if stats else ())
     ]
     states = [profile.status() for profile in profiles]
-    passed = all(state.state == "published" for state in states)
+    passed = all(state.maintenance_state == "ready" for state in states) and company_error is None
     emit_report(
         {
             "schema_version": "history_sqlite_performance",
             "status": "passed" if passed else "degraded",
             "summary": {
                 "read_only": True,
-                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "elapsed_seconds": round(time.monotonic() - total_started, 3),
+                "history_seconds": history_seconds,
+                "reference_seconds": reference_seconds,
+                "model_seconds": model_seconds,
+                "company_seconds": company_seconds,
+                "binding_seconds": binding_seconds,
+                "company_error": company_error,
+                "feature_audit": feature_measurement,
+                "company_functions": [
+                    {"function": name, "module": Path(value.file_name).name, "calls": value.ncalls,
+                     "self_seconds": value.tottime, "cumulative_seconds": value.cumtime}
+                    for name, value in (sorted(pstats.Stats(company_profiler).get_stats_profile().func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:20] if cpu_profile and company_seconds else ())
+                ],
+                "model_versions": {profile: CanonicalDigest(model.publications) for profile, model in zip(selected, models, strict=True)},
+                "environment": {"python": platform.python_version(), "platform": platform.platform(), "cpu_count": os.cpu_count()},
+                "logical_cache_bytes": sum(item.estimated_bytes for sources in cache.status().datasets.values() for item in sources.values()),
+                "process_peak_rss_bytes": _peak_rss_bytes(),
+                "snapshot_hash": manifest.snapshot_hash if manifest else None,
+                "config_version": settings.config_version,
+                "sqlite": measurement.result,
+                "cpu_profile": cpu_profile,
                 "scan_count": owner.scan_count,
                 "window_count": owner.window_count,
+                "history_phases": {
+                    "read_seconds": owner.timings.read_seconds,
+                    "alignment_seconds": owner.timings.alignment_seconds,
+                    "derivation_seconds": owner.timings.derivation_seconds,
+                    "publication_seconds": owner.timings.publication_seconds,
+                    "extension_requests": owner.timings.extension_requests,
+                    "extension_rows": owner.timings.extension_rows,
+                },
                 "profiles": [
                     {"sessions": profile.history_sessions, "entries": state.entries, "reason": state.maintenance_reason}
                     for profile, state in zip(profiles, states, strict=True)
@@ -225,6 +343,86 @@ def _measure_preload(root: Path) -> int:
         }
     )
     return 0
+
+
+def _measure_features(
+    config: Path,
+    selected: tuple[ScoringProfileId, ...],
+    profiles: tuple[PublishedHistoryCache, ...],
+    research: PublishedCompanyResearch,
+    references: PublishedReferences,
+    cache: BoundedLruCache[object],
+    observed: datetime,
+) -> dict[str, object]:
+    """Keep real fixed inputs/cache ownership; synthetic quotes imply no live acceptance."""
+    settings = LoadRuntimeSettings(config)
+    entries = profiles[0].entries()
+    industries = references.model_industries(tuple(entries))
+    quotes = tuple(
+        MarketQuote(
+            code=code, name=code, price=entry.bars[-1].close, previous_close=entry.bars[-1].close,
+            open_price=entry.bars[-1].open_price, high=entry.bars[-1].high, low=entry.bars[-1].low,
+            pct_change=0.0, change_5m=0.0, speed=0.0, volume_ratio=1.0, turnover_rate=entry.bars[-1].turnover_rate,
+            amount=entry.bars[-1].amount, amplitude=2.0, market_cap=1e10,
+            industry=industries[code].industry_id if code in industries else "",
+            source="diagnostic_synthetic", source_time=observed, received_time=observed,
+            data_version="diagnostic_synthetic", volume=entry.bars[-1].volume,
+        )
+        for code, entry in entries.items() if entry.bars
+    )
+    codes = tuple(quote.code for quote in quotes)
+    observations = research.cached(codes, include_structured=True, as_of=observed)
+    barrier = threading.Barrier(len(selected))
+
+    def measure(
+        profile_id: ScoringProfileId,
+        history: PublishedHistoryCache,
+        *,
+        profile_cpu: bool = False,
+        factor_cache: BoundedLruCache[object] | None = cache,
+    ) -> dict[str, object]:
+        strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile_id)
+        training = LoadRuntimeTrainingSettings(settings.project_root, profile_id)
+        builder = FeatureBuilder(
+            strategy.news_signal, strategy.tomorrow_tail_signal, strategy.market_regime,
+            strategy.long_research, strategy.feature_component_weights,
+            model_momentum_horizons=training.momentum_horizons, cache=factor_cache,
+        )
+        histories = history.cached(codes, observed_at=observed)
+        summaries = history.summaries(histories, observed)
+        profiler = cProfile.Profile() if profile_cpu else None
+        if not profile_cpu:
+            barrier.wait(timeout=30)
+        started = time.monotonic()
+        if profiler is not None:
+            profiler.enable()
+        try:
+            features = builder.build(quotes, histories, observed, research_observations=observations, history_summaries=summaries)
+        finally:
+            if profiler is not None:
+                profiler.disable()
+        elapsed = time.monotonic() - started
+        stats = pstats.Stats(profiler).get_stats_profile() if profiler else None
+        return {
+            "profile": profile_id, "rows": len(features), "elapsed_seconds": elapsed,
+            "functions": [
+                {"function": name, "module": Path(value.file_name).name, "calls": value.ncalls,
+                 "self_seconds": value.tottime, "cumulative_seconds": value.cumtime}
+                for name, value in (sorted(stats.func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:35] if stats else ())
+            ],
+        }
+
+    cold = measure(selected[-1], profiles[-1], profile_cpu=True, factor_cache=BoundedLruCache(settings.market_data.cache_policy))
+    uncached = measure(selected[-1], profiles[-1], profile_cpu=True, factor_cache=None)
+    with ThreadPoolExecutor(max_workers=len(profiles), thread_name_prefix="feature-audit") as pool:
+        futures = [pool.submit(measure, name, profile) for name, profile in zip(selected, profiles, strict=True)]
+        measurements = [future.result(timeout=120) for future in futures]
+    return {
+        "quote_source": "synthetic", "concurrent": True, "profiles": measurements,
+        "cold_serial_cpu_profile": cold,
+        "uncached_serial_cpu_profile": uncached,
+        "serial_cpu_profile": measure(selected[-1], profiles[-1], profile_cpu=True),
+    }
 
 
 def _measure_resume_reads(root: Path, count: int) -> int:

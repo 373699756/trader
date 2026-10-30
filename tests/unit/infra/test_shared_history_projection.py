@@ -118,6 +118,9 @@ def test_deadline_before_first_window_becomes_terminal_without_publishing_partia
     assert not cache.entries() and owner.window_count == 0 and owner.scan_count == 1
     assert cache.status().maintenance_state == "failed"
     assert cache.status().maintenance_total_units == 1
+    assert cache.status().maintenance_elapsed_seconds == 301.0
+    ticks[0] = 900.0
+    assert cache.status().maintenance_elapsed_seconds == 301.0
     with pytest.raises(MarketDataUnavailableError, match="history_preload_deadline") as failure:
         cache.require_projection()
     assert not isinstance(failure.value, MarketDataPendingError)
@@ -149,9 +152,9 @@ def test_seed_extension_stops_when_the_original_history_window_is_complete():
                 if (day := self.current.data_cutoff - timedelta(days=offset)).weekday() < 5
             )
             self.current = replace(self.current, calendar_dates=dates)
-            self.seed_day = dates[-90]
+            self.seed_day = dates[-150]
             self.resume_day = dates[-10]
-            self.requested_sessions = []
+            self.requested_dates = []
 
         def window(self, code, dates):
             complete = super().window(code, dates)
@@ -165,9 +168,9 @@ def test_seed_extension_stops_when_the_original_history_window_is_complete():
                 ),
             )
 
-        def read_windows(self, manifest, codes, *, sessions, check=None):
-            self.requested_sessions.append(sessions)
-            return super().read_windows(manifest, codes, sessions=sessions, check=check)
+        def read_range(self, manifest, codes, start, end, *, check=None):
+            self.requested_dates.append(tuple(day for day in manifest.calendar_dates if start <= day <= end))
+            return super().read_range(manifest, codes, start, end, check=check)
 
     source = History()
     owner = SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0)
@@ -176,7 +179,9 @@ def test_seed_extension_stops_when_the_original_history_window_is_complete():
     cache.initialize(cancelled=lambda: False)
 
     assert len(source.current.calendar_dates) == 2000
-    assert source.requested_sessions == [62 + 63]
+    assert source.requested_dates == [source.current.calendar_dates[-125:-62], source.current.calendar_dates[-188:-125]]
+    assert len(set(day for dates in source.requested_dates for day in dates)) == 126
+    assert owner.timings.extension_rows == 126
     assert owner.scan_count == 1
     entry = cache.entries()["600001"]
     assert entry.context.sample_count == 61

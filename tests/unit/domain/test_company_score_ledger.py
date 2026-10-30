@@ -19,6 +19,7 @@ from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmen
 from trader.recommendation.domain.scoring.company import (
     AssessCompanyAdjustments,
     BuildCompanyScoringContext,
+    CompanyScoringCalendar,
     BuildScoreLedger,
     CompanyAdjustments,
     CompanyFinancialScores,
@@ -155,7 +156,7 @@ def _facts(documents=(), at=AT):
 def _assess(facts, strategy="tomorrow", *, at=AT, enabled=True, calendar=True):
     policy = CompanyScoringPolicy(enabled=enabled)
     days = tuple((AT + timedelta(days=i)).date() for i in range(-5, 40) if (AT + timedelta(days=i)).weekday() < 5)
-    context = BuildCompanyScoringContext(facts, days if calendar else (), policy)
+    context = BuildCompanyScoringContext(facts, CompanyScoringCalendar(days if calendar else ()), policy)
     return AssessCompanyAdjustments(
         context, policy, strategy, at, financial_scores=CompanyFinancialScores(100, 100, 100)
     )
@@ -200,7 +201,7 @@ def test_positive_expiry_uses_trading_sessions_and_unknown_calendar_never_guesse
     )
     context = BuildCompanyScoringContext(
         facts,
-        tuple((AT + timedelta(days=i)).date() for i in range(-5, 40) if (AT + timedelta(days=i)).weekday() < 5),
+        CompanyScoringCalendar(tuple((AT + timedelta(days=i)).date() for i in range(-5, 40) if (AT + timedelta(days=i)).weekday() < 5)),
         CompanyScoringPolicy(),
     )
     until = context.windows[-1].tomorrow_until
@@ -214,7 +215,7 @@ def test_positive_expiry_uses_trading_sessions_and_unknown_calendar_never_guesse
     assert not any(item.reason == "eligible" for item in _assess(facts, "d25", calendar=False).bonuses)
     truncated = BuildCompanyScoringContext(
         facts,
-        tuple((AT + timedelta(days=i)).date() for i in range(200, 240) if (AT + timedelta(days=i)).weekday() < 5),
+        CompanyScoringCalendar(tuple((AT + timedelta(days=i)).date() for i in range(200, 240) if (AT + timedelta(days=i)).weekday() < 5)),
         CompanyScoringPolicy(),
     )
     assert all(window.tomorrow_until is None and window.d25_until is None for window in truncated.windows)

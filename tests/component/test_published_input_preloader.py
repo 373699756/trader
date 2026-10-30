@@ -109,18 +109,30 @@ def test_preload_retries_changed_identity_and_restart_adopts_new_publication(mon
 
 @pytest.mark.parametrize("cancelled", (False, True))
 def test_preload_cancel_or_monotonic_deadline_never_accepts_partial_projection(cancelled):
-    source = HistoryInput(61, 1, ("600001", "600002"))
-    ticks = iter((0.0, 0.0, 301.0, 302.0, 303.0, 304.0))
-    history = _cache(source, monotonic=lambda: next(ticks))
+    ticks = [0.0]
+
+    class SlowHistory(HistoryInput):
+        def iter_windows(self, manifest, *, sessions, check=None):
+            ticks[0] = 301.0
+            yield from super().iter_windows(manifest, sessions=sessions, check=check)
+
+    source = SlowHistory(61, 1, ("600001", "600002"))
+    history = _cache(source, monotonic=lambda: ticks[0])
     history.initialize(cancelled=lambda: cancelled)
     assert history.entries() == {}
     assert history.status().maintenance_state == "failed"
 
 
 def test_preload_exceeding_old_thirty_second_limit_publishes_complete_projection():
-    source = HistoryInput(61, 1, ("600001", "600002"))
-    ticks = iter((0.0, 0.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0))
-    history = _cache(source, monotonic=lambda: next(ticks))
+    ticks = [0.0]
+
+    class SlowHistory(HistoryInput):
+        def iter_windows(self, manifest, *, sessions, check=None):
+            ticks[0] = 31.0
+            yield from super().iter_windows(manifest, sessions=sessions, check=check)
+
+    source = SlowHistory(61, 1, ("600001", "600002"))
+    history = _cache(source, monotonic=lambda: ticks[0])
     history.initialize(cancelled=lambda: False)
     assert set(history.entries()) == {"600001", "600002"}
     assert history.status().maintenance_state == "ready"

@@ -112,12 +112,10 @@ def _structured_evidence(
     values: Mapping[str, float | None],
     observed_at: datetime,
 ) -> Evidence:
-    available = {
-        name: round(value, 4) for name, raw in values.items() if raw is not None and math.isfinite(value := float(raw))
-    }
+    available_count = sum(raw is not None and math.isfinite(float(raw)) for raw in values.values())
     summary = (
         f"结构化点时数据：价格={quote.price}，涨幅={quote.pct_change}，量比={quote.volume_ratio}，"
-        f"换手={quote.turnover_rate}，可用历史因子={len(available)}项"
+        f"换手={quote.turnover_rate}，可用历史因子={available_count}项"
     )
     return Evidence(
         evidence_id=f"structured:{quote.code}:{observed_at.date().isoformat()}",

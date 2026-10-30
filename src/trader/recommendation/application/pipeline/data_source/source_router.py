@@ -54,6 +54,7 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
     AssessCandidateInputStage,
     HasTransientCandidateGap,
+    HasTransientEvaluationGap,
 )
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     BuildPendingStageSnapshots,
@@ -206,6 +207,7 @@ class MarketInputCoordinator(DataRefreshPort):
             )
         )
         self._lock = threading.RLock()
+        self._last_preload_failure: str | None = None
         self._batches: dict[tuple[Strategy, str], InputBatch] = {}
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
         self._issuer_eligibility: IssuerEligibilityBatch | None = None
@@ -260,14 +262,18 @@ class MarketInputCoordinator(DataRefreshPort):
     def refresh_task(self, request: PipelineTaskRequest) -> RefreshOutcome:
         deadline = _task_deadline(request)
         try:
-            return self._run_refresh_task(request, deadline)
+            outcome = self._run_refresh_task(request, deadline)
         except MarketDataPendingError as exc:
             raise DataRefreshPendingError(_failure_code(exc)) from exc
         except DataRefreshUnavailableError:
             raise
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            reason = _failure_code(exc)
+            with self._lock:
+                repeated = reason.startswith("history_preload_") and reason == self._last_preload_failure
+                self._last_preload_failure = reason if reason.startswith("history_preload_") else None
             frames = traceback.extract_tb(exc.__traceback__, limit=-1)
-            if frames:
+            if frames and not repeated:
                 _LOGGER.warning(
                     "refresh failed: task=%s code=%s boundary=%s:%s",
                     request.task.value,
@@ -276,6 +282,10 @@ class MarketInputCoordinator(DataRefreshPort):
                     frames[0].lineno,
                 )
             raise DataRefreshUnavailableError(_failure_code(exc)) from exc
+        if request.task in {PipelineTask.FULL_MARKET, PipelineTask.CLOSE_QUOTES}:
+            with self._lock:
+                self._last_preload_failure = None
+        return outcome
 
     def _run_refresh_task(
         self,
@@ -495,7 +505,8 @@ class MarketInputCoordinator(DataRefreshPort):
 
     def _record_pending_quality_locked(self, context: _PendingQualityContext) -> None:
         for strategy in SCORED_STRATEGIES:
-            stage_counts = context.candidate_plans.plans[strategy].stage_counts
+            plan = context.candidate_plans.plans[strategy]
+            stage_counts = plan.stage_counts
             requested_count = stage_counts.scoring_input_count
             candidate_feature_count = min(requested_count, context.candidate_feature_counts[strategy])
             covered = candidate_feature_count
@@ -523,6 +534,19 @@ class MarketInputCoordinator(DataRefreshPort):
             prepared = (*first_eight[:-1], quality_stage.snapshot)
             snapshots = BuildPendingStageSnapshots(prepared)
             pipeline = ProjectPipelineFacts(snapshots)
+            transient = tuple(item for item in plan.evaluations if HasTransientEvaluationGap(item))
+            refresh_pending = sum(
+                any(reason.code in {"stale_quote", "future_quote"} for reason in item.filter_reasons)
+                for item in transient
+            )
+            blocker = context.primary_blocker
+            if requested_count == 0:
+                transient_reasons = {reason.code for item in transient for reason in item.filter_reasons}
+                for stage in pipeline.stages:
+                    if stage.input_count and stage.output_count == 0 and stage.reason_counts:
+                        reasons = tuple(reason for reason in stage.reason_counts if reason.reason in transient_reasons)
+                        blocker = max(reasons or stage.reason_counts, key=lambda reason: reason.count).reason
+                        break
             quality = InputQualityStatus(
                 strategy=strategy,
                 status="not_ready",
@@ -544,12 +568,14 @@ class MarketInputCoordinator(DataRefreshPort):
                     if self._model_scoring is not None and context.apply_model_eligibility
                     else 20
                 ),
-                population_rejected_count=max(0, context.population_count - requested_count),
-                candidate_rejected_count=max(0, requested_count - candidate_feature_count),
+                population_rejected_count=plan.population_rejected_count,
+                population_filter_reason_counts=tuple(sorted(plan.population_filter_reason_counts.items())),
+                refresh_pending_count=refresh_pending,
+                data_pending_count=len(transient) - refresh_pending + requested_count - candidate_feature_count,
                 candidate_feature_coverage_ratio=(
                     candidate_feature_count / requested_count if requested_count else 0.0
                 ),
-                primary_blocker=context.primary_blocker,
+                primary_blocker=blocker,
             )
             self._input_quality[strategy] = InputQualityObservation(quality)
 
@@ -812,6 +838,14 @@ class MarketInputCoordinator(DataRefreshPort):
 
         with self._lock:
             return self._scoring_epoch_locked(include_intraday_tail=True)
+
+    def release_scoring_input(self, request: CycleRequest) -> None:
+        """Release a finished cycle's full population even after its session expired."""
+        key = (request.strategy, request.input_version)
+        with self._lock:
+            batch = self._batches.get(key)
+            if batch is not None and batch.request is request:
+                del self._batches[key]
 
     def _invalidate_scoring_locked(self) -> None:
         self._score_feature_batches.clear()

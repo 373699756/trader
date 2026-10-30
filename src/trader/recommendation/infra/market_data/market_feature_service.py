@@ -115,6 +115,9 @@ class MarketFeatureService:
         self.references.initialize()
         self.quotes.gateway.update_reference_observations(self.references.security_observations())
         self.history.initialize(cancelled=cancelled)
+        if cancelled() or self.history.status().maintenance_state in {"failed", "unavailable"}:
+            return
+        self.history.record_maintenance("loading", stage="reading_company_inputs")
         observed_at = self.runner.wall_clock()
         self.research.initialize(self.risk_universe_codes(observed_at), cancelled=cancelled)
         if cancelled():
@@ -123,6 +126,7 @@ class MarketFeatureService:
         if cancelled():
             return
         # Binding opens the refresh gate only after every fixed input is ready.
+        self.history.record_maintenance("loading", stage="binding_startup_inputs")
         self.history.bind_inputs(
             observed_at,
             versions={
@@ -132,6 +136,10 @@ class MarketFeatureService:
             },
             config_version=config_version,
         )
+        self.history.record_projection_observation()
+        if self.history.status().maintenance_state == "loading":
+            self.history.fail_history_projection("history_inputs_unavailable")
+            self.history.record_projection_observation()
 
     def risk_universe_codes(self, observed_at: datetime) -> tuple[str, ...]:
         """Return the official non-ST research population without requiring quotes."""
@@ -234,17 +242,19 @@ class MarketFeatureService:
         self.quotes.gateway.record_local_latency("history_load", self._elapsed_ms(assembly_started))
         self.runner.ensure_before_deadline(deadline)
         feature_started = self._monotonic()
+        research = self.research.cached(
+            history_codes,
+            include_structured=True,
+            action_restrictions=action_restrictions,
+            as_of=observed_at,
+        )
+        self.quotes.gateway.record_local_latency("market_research_lookup", self._elapsed_ms(feature_started))
         features = self._apply_issuer_risk_facts(
             self.quotes.build_market_features(
                 quotes,
                 histories,
                 observed_at,
-                research_observations=self.research.cached(
-                    history_codes,
-                    include_structured=True,
-                    action_restrictions=action_restrictions,
-                    as_of=observed_at,
-                ),
+                research_observations=research,
                 action_restrictions=action_restrictions,
             ),
             observed_at,

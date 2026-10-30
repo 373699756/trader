@@ -119,7 +119,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--company-pagination-audit", action="store_true", help="read-only CNInfo page-size comparison")
     parser.add_argument("--company-ocr-audit", action="store_true", help="one failed announcement OCR probe without active writes")
-    parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup CPU profile")
+    parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup timing")
+    parser.add_argument("--history-preload-cpu-profile", action="store_true", help="include CPU profiling overhead in preload timing")
+    parser.add_argument("--history-preload-feature-audit", action="store_true", help="profile concurrent feature builds with published inputs and synthetic quotes")
+    parser.add_argument("--history-preload-profiles", type=ParseProfileSelection, default=("v1", "v2", "v3"))
     parser.add_argument(
         "--company-pipeline-audit", action="store_true", help="isolated same-PDF serial/parallel comparison"
     )
@@ -526,6 +529,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_query_audit=args.company_query_audit,
             company_storage_audit=args.company_storage_audit,
             history_preload_audit=args.history_preload_audit,
+            history_preload_cpu_profile=args.history_preload_cpu_profile,
+            history_preload_feature_audit=args.history_preload_feature_audit,
+            history_preload_profiles=args.history_preload_profiles,
             company_pagination_audit=args.company_pagination_audit,
             company_pipeline_audit=args.company_pipeline_audit,
             company_ocr_audit=args.company_ocr_audit,
@@ -913,6 +919,10 @@ def build_commands(
                 "--resume-samples",
                 str(options.history_resume_samples),
                 *(("--preload-audit",) if options.history_preload_audit else ()),
+                *(("--preload-cpu-profile",) if options.history_preload_cpu_profile else ()),
+                *(("--preload-feature-audit",) if options.history_preload_feature_audit else ()),
+                "--preload-profiles", ",".join(options.history_preload_profiles),
+                "--runtime-config", str(options.runtime_config),
             ),
             common_timeout,
         ),
@@ -1338,6 +1348,22 @@ def _web_health_details(_result: DiagnosticResult, source: Mapping[str, object],
     payload["summary"] = _mapping(source.get("summary"))
     payload["findings"] = _bounded_findings(source.get("findings"))
     samples = source.get("samples")
+    if isinstance(samples, list):
+        payload["publication_samples"] = [
+            {
+                "sample": sample.get("sample"),
+                "collected_at": sample.get("collected_at"),
+                "strategies": {
+                    strategy: {
+                        key: _mapping(_mapping(_mapping(sample.get("strategies")).get(strategy)).get("current_projection")).get(key)
+                        for key in ("status", "trade_date", "projection_version", "evaluated_count", "selected_count")
+                    }
+                    for strategy in ("tomorrow", "d25")
+                },
+            }
+            for sample in samples[-16:]
+            if isinstance(sample, dict)
+        ]
     if isinstance(samples, list) and samples and isinstance(samples[-1], dict):
         latest = samples[-1]
         payload["latest_runtime"] = {

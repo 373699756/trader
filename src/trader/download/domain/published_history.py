@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
 from datetime import date
 
 from trader.download.domain.baostock_daily import (
@@ -34,8 +34,11 @@ class PublishedHistorySide:
     pct_change: float | None
     turnover: float | None
     trading_status: BaoStockTradingStatus
+    already_validated: InitVar[bool] = field(default=False, kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, already_validated: bool) -> None:
+        if already_validated:
+            return
         if len(self.code) != 6 or not self.code.isdigit() or type(self.trade_date) is not date:
             raise ValueError("published history side identity is invalid")
         ValidateDailyPrices(
@@ -59,8 +62,11 @@ class PublishedHistoryCell:
     status: BaoStockCellStatus
     unadjusted: PublishedHistorySide | None
     qfq: PublishedHistorySide | None
+    already_validated: InitVar[bool] = field(default=False, kw_only=True)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, already_validated: bool) -> None:
+        if already_validated:
+            return
         if len(self.code) != 6 or not self.code.isdigit() or type(self.trade_date) is not date:
             raise ValueError("published history cell code is invalid")
         for side, adjustment in ((self.unadjusted, "unadjusted"), (self.qfq, "qfq")):

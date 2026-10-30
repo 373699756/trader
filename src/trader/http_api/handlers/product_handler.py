@@ -408,6 +408,7 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "history_maintenance_stage",
         "history_maintenance_completed_units",
         "history_maintenance_total_units",
+        "history_maintenance_elapsed_seconds",
         "measured_at",
     )
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}

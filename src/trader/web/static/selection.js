@@ -7,19 +7,6 @@
     long: "长期研究 · 名单资格待核实\n· 仅展示当前数据",
   });
 
-  function initialStrategy(statusPayload) {
-    const strategies = statusPayload && statusPayload.strategies;
-    if (!strategies || typeof strategies !== "object") return "tomorrow";
-    const ordered = ["tomorrow", "d25", "long"];
-    const withItems = ordered.find((strategy) => {
-      const status = strategies[strategy];
-      const selected = Number(status && status.coverage && status.coverage.selected_count);
-      return status && status.status === "ready" && Number.isFinite(selected) && selected > 0;
-    });
-    if (withItems) return withItems;
-    return ordered.find((strategy) => strategies[strategy] && strategies[strategy].status === "ready") || "tomorrow";
-  }
-
   function currentViewMatches(strategy, payloadView) {
     return strategy === "long"
       ? payloadView === "current"
@@ -165,7 +152,6 @@
     currentViewMatches,
     detailItem,
     descriptions,
-    initialStrategy,
     isSnapshotNotFound,
     markDateAvailability,
     observationRecommendations,

@@ -125,10 +125,26 @@ class SQLitePublishedHistorySnapshot:
         sessions: int,
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
+        dates = _session_dates(manifest, sessions)
+        return self.read_range(manifest, codes, dates[0], dates[-1], check=check)
+
+    def read_range(
+        self,
+        manifest: PublishedHistoryManifest,
+        codes: Sequence[str],
+        start: date,
+        end: date,
+        *,
+        check: Callable[[], None] | None = None,
+    ) -> tuple[PublishedHistoryWindow, ...]:
         if check is not None:
             check()
+        if start > end or start < manifest.calendar_dates[0] or end > manifest.data_cutoff:
+            raise ValueError("published history range is invalid")
         history = self._matching_snapshot(manifest)
-        dates = _session_dates(manifest, sessions)
+        dates = tuple(day for day in manifest.calendar_dates if start <= day <= end)
+        if not dates:
+            return ()
         windows: list[PublishedHistoryWindow] = []
         allowed_codes = frozenset(manifest.universe_codes)
         try:

@@ -95,6 +95,13 @@ class HistoryInput:
         self.reads.append(tuple(codes))
         return tuple(self.window(code, manifest.calendar_dates[-sessions:]) for code in codes)
 
+    def read_range(self, manifest, codes, start, end, *, check=None):
+        if check is not None:
+            check()
+        self.reads.append(tuple(codes))
+        dates = tuple(day for day in manifest.calendar_dates if start <= day <= end)
+        return tuple(self.window(code, dates) for code in codes)
+
     @staticmethod
     def window(code: str, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         return PublishedHistoryWindow(code, tuple(ProjectHistoryCell(_cell(code, day)) for day in dates))

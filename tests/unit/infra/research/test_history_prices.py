@@ -10,6 +10,8 @@ import pytest
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.published_history import ProjectHistoryCell
+from trader.download.infra.price_columns import PriceCellFromColumns, PriceColumnValues
 from trader.download.infra import history_prices as partition_module
 from trader.download.infra.history_prices import (
     HistoryPricePartition,
@@ -65,12 +67,27 @@ def test_real_price_columns_preserve_mixed_numeric_types_and_revision_hash(tmp_p
     assert type(decoded.cell.unadjusted.amount) is float
     assert math.copysign(1, decoded.cell.unadjusted.pct_change) == -1
     assert decoded.content_hash == mixed.content_hash
+    published = tuple(month.iter_published_cells(day, day, snapshot_sequence=1))[0]
+    assert published == ProjectHistoryCell(mixed.cell)
+    assert type(published.unadjusted.open_price) is int
+    assert type(published.unadjusted.amount) is float
+    assert math.copysign(1, published.unadjusted.pct_change) == -1
     with SqliteSession(path) as connection:
         assert tuple(
             connection.run(
                 "SELECT typeof(raw_open),typeof(raw_volume),typeof(content_hash) FROM daily_price_revision"
             ).require_one()
         ) == ("real", "real", "blob")
+
+
+@pytest.mark.parametrize("position", (2, 6, 8, 9, 10, 13, 17))
+@pytest.mark.parametrize("invalid", (float("inf"), float("-inf"), float("nan"), True, "10"))
+def test_price_read_boundary_rejects_invalid_numbers(position, invalid):
+    day = date(2026, 9, 10)
+    values = list(PriceColumnValues(ProjectHistoryCell(_revision(day, 1, 10.0).cell)))
+    values[position] = invalid
+    with pytest.raises(ValueError):
+        PriceCellFromColumns("600001", EncodeDate(day), tuple(values))
 
 
 def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> None:

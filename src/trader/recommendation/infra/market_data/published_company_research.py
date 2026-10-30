@@ -31,7 +31,7 @@ from trader.recommendation.domain.market.research import (
     FinancialReport,
     ResearchObservation,
 )
-from trader.recommendation.domain.scoring.company import BuildCompanyScoringContext, CompanyScoringPolicy
+from trader.recommendation.domain.scoring.company import BuildCompanyScoringContext, CompanyScoringCalendar, CompanyScoringPolicy
 from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoaderStatus
 
 
@@ -132,14 +132,14 @@ class PublishedCompanyResearch:
         self, requested: tuple[str, ...], observed_at: datetime, cancelled: Callable[[], bool], deadline: float
     ) -> tuple[str, dict[str, ResearchObservation]]:
         before = self._reader.publication_version()
-        open_dates = self._open_dates()
+        calendar = CompanyScoringCalendar(self._open_dates())
         rows: dict[str, ResearchObservation] = {}
 
         def capture(snapshot: CompanyFacts) -> None:
             if cancelled() or self._monotonic() >= deadline:
                 raise InterruptedError("company_preload_stopped")
             if snapshot.published_at <= observed_at:
-                rows[snapshot.code] = _observation(snapshot, observed_at, before, open_dates, self._company_policy)
+                rows[snapshot.code] = _observation(snapshot, observed_at, before, calendar, self._company_policy)
 
         self._reader.visit(requested, capture, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline)
         return before, rows
@@ -396,7 +396,7 @@ def _qualified_unlock(item: ResearchObservation, now: datetime, days: int) -> Re
 
 
 def _observation(
-    snapshot: CompanyFacts, now: datetime, publication: str, open_dates: tuple[date, ...], policy: CompanyScoringPolicy
+    snapshot: CompanyFacts, now: datetime, publication: str, calendar: CompanyScoringCalendar, policy: CompanyScoringPolicy
 ) -> ResearchObservation:
     financial = snapshot.financial
     report = (
@@ -456,7 +456,7 @@ def _observation(
         sorted({f"{item.scope}:{item.reason_code}" for item in snapshot.review_reasons if item.scope != "positive"})
     )
     observation = ResearchObservation(
-        company_context=BuildCompanyScoringContext(snapshot, open_dates, policy),
+        company_context=BuildCompanyScoringContext(snapshot, calendar, policy),
         data_version=publication,
         snapshot_at=ShanghaiNow(snapshot.published_at),
         loaded_at=now,
