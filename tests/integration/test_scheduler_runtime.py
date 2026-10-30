@@ -82,6 +82,10 @@ class DataRefresh:
     def scoring_epoch(self) -> str:
         return "test:shared_input"
 
+    def refresh_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
+        for request in requests:
+            self.refresh(request)
+
     def release_scoring_input(self, request: CycleRequest) -> None:
         self.released_requests.append(request)
 
@@ -973,12 +977,12 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
         runtime.submit_due(observed_at)
         if block_full_market:
             assert data.full_market_started.wait(1.0)
-            assert data.candidate_started.wait(1.0)
+            assert not data.candidate_started.is_set()
             data.release_full_market.set()
         assert data.candidate_started.wait(1.0)
         runtime.submit_due(observed_at + timedelta(seconds=2))
         candidate_lane = next(
-            lane for lane in runtime.status().task_lanes if lane.name == "trader-task-candidate_quotes"
+            lane for lane in runtime.status().task_lanes if lane.name == "trader-task-score-wave"
         )
         assert candidate_lane.running
         assert not candidate_lane.pending
@@ -1042,7 +1046,7 @@ def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> 
     assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
 
 
-def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> None:
+def test_scoring_wave_uses_captured_pair_when_live_source_advances() -> None:
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
     index = UnifiedFreezeIndex()
     originals = (freeze(Strategy.TOMORROW), freeze(Strategy.D25))
@@ -1094,13 +1098,13 @@ def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> N
         assert runtime.wait_idle(2.0)
     finally:
         runtime.stop(ShutdownDeadline.start(2.0))
-    assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
-    assert runtime.status().last_error_code == "freeze:paired_input_epoch_mismatch"
+    assert all(index.snapshot(item.strategy).current != item for item in originals)
+    assert runtime.status().last_error_code != "freeze:paired_input_epoch_mismatch"
     assert all(request in data.released_requests for request in data.requests)
 
 
 @pytest.mark.parametrize("finish_after_close", (False, True))
-def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> None:
+def test_scoring_wave_blocks_next_collection_until_current_publication_finishes(finish_after_close) -> None:
     observed_at = datetime(2026, 8, 11, 14, 59, 49, tzinfo=SHANGHAI)
     clock = FixedClock(observed_at)
     entered = threading.Event()
@@ -1121,6 +1125,8 @@ def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> Non
             self.built: list[Strategy] = []
 
         def build_local(self, request: CycleRequest):
+            if request.strategy is Strategy.LONG:
+                return super().build_local(request)
             if request.strategy is Strategy.D25:
                 entered.set()
                 assert release.wait(2.0)
@@ -1164,10 +1170,12 @@ def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> Non
         runtime._dispatch_pipeline_task(
             ScheduledPipelineTask(PipelineTask.SCORE, observed_at + timedelta(seconds=10), MarketPhase.BEFORE_CLOSE)
         )
+        runtime.submit_due(observed_at + timedelta(seconds=1))
+        assert data.task_requests == []
         data.epoch = "new-input-after-cut"
         score_lane = next(lane for lane in runtime.status().task_lanes if lane.name == "trader-task-score-wave")
-        assert score_lane.offered_count == 2
-        assert score_lane.running and score_lane.pending
+        assert score_lane.offered_count == 1
+        assert score_lane.running and not score_lane.pending
         if finish_after_close:
             clock.current = observed_at.replace(hour=15, minute=0, second=0)
         release.set()
@@ -1175,7 +1183,7 @@ def test_scoring_wave_keeps_only_latest_pending_input(finish_after_close) -> Non
     finally:
         release.set()
         runtime.stop(ShutdownDeadline.start(2.0))
-    expected = [Strategy.TOMORROW, Strategy.D25] * (1 if finish_after_close else 2)
+    expected = [Strategy.TOMORROW, Strategy.D25]
     assert freezes.built == expected
     if finish_after_close:
         assert all(index.snapshot(strategy).current is None for strategy in expected)
@@ -1223,7 +1231,7 @@ def test_scoring_input_refresh_triggers_score_only_when_changed(task, changed) -
     )
 
     runtime.start()
-    runtime._process_pipeline_task(  # noqa: SLF001 - verifies the refresh-to-score handoff boundary
+    runtime._dispatch_pipeline_task(
         ScheduledPipelineTask(task, observed_at, MarketPhase.BEFORE_CLOSE)
     )
     assert runtime.wait_idle(2.0)

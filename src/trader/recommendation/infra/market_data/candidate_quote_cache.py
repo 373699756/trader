@@ -150,6 +150,26 @@ class QuoteCache:
         )
         return self._with_model_industries(features, action_restrictions=action_restrictions or {})
 
+    def with_intraday_features(
+        self,
+        features: tuple[FeatureSnapshot, ...],
+        minutes: Mapping[str, Sequence[MinuteBar]],
+        observed_at: datetime,
+        restrictions: Mapping[str, set[str]],
+    ) -> tuple[FeatureSnapshot, ...]:
+        enriched = self._feature_builder.with_intraday(features, minutes, observed_at)
+        return tuple(
+            replace(feature, quote=replace(
+                feature.quote,
+                execution_restrictions=tuple(sorted({
+                    *(item for item in feature.quote.execution_restrictions if item != "intraday_data_degraded"),
+                    *restrictions.get(feature.quote.code, set()),
+                })),
+            )) if restrictions.get(feature.quote.code) or "intraday_data_degraded" in feature.quote.execution_restrictions
+            else feature
+            for feature in enriched
+        )
+
     def build_market_features(
         self,
         quotes: Sequence[MarketQuote],

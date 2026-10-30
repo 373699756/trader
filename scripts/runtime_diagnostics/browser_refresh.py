@@ -142,8 +142,9 @@ class _RecordingData:
             False,
         )
 
-    def scoring_epoch(self) -> str:
-        return "measurement:fixed-input"
+    def refresh_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
+        for request in requests:
+            self.refresh(request)
 
     def release_scoring_input(self, request: CycleRequest) -> None:
         del request

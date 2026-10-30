@@ -36,7 +36,6 @@ from trader.recommendation.application.ports.runtime import (
 from trader.recommendation.application.runtime.cadence import PipelineTask, SchedulePointKey, SchedulePointStatus
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import SHANGHAI, SchedulePoint
-from trader.recommendation.application.runtime.schedule_requests import PipelineLane
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
@@ -293,7 +292,7 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
         config_version="runtime-current",
     )
     if transition == "fast_handoff":
-        lane = runtime._task_lanes[PipelineLane(PipelineTask.CLOSE_QUOTES)]  # noqa: SLF001
+        lane = runtime._task_lanes[PipelineTask.CLOSE_QUOTES]  # noqa: SLF001
         offer = lane.offer
 
         def finish_before_offer_returns(scheduled):

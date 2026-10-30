@@ -64,6 +64,14 @@ def test_overlay_quote_normalizes_aware_utc_supplier_time(application_feature_fa
 
 
 class _Market:
+    def prepare_scoring_features(self, features, observed_at, *, include_intraday_tail):
+        if not include_intraday_tail:
+            return features
+        return self.read_candidate_features(
+            tuple(feature.quote.code for feature in features), observed_at,
+            include_intraday_tail=include_intraday_tail, include_structured_research=True,
+        )
+
     def __init__(self, features):
         self._features = tuple(features)
         self.market_fetch_count = 0
@@ -368,9 +376,9 @@ def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(
     scoring_reads: list[bool] = []
     original_score_features = adapter.data._score_features
 
-    def record_scoring_read(*args, **kwargs):
-        scoring_reads.append(kwargs["include_intraday_tail"])
-        return original_score_features(*args, **kwargs)
+    def record_scoring_read(request, shared):
+        scoring_reads.append(request.strategy is Strategy.TOMORROW)
+        return original_score_features(request, shared)
 
     monkeypatch.setattr(adapter.data, "_score_features", record_scoring_read)
 
@@ -389,6 +397,71 @@ def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(
     changed = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     assert changed.changed
     assert adapter.data.scoring_epoch() != shared_epoch
+
+
+def test_pair_capture_keeps_both_populations_when_source_refreshes_during_preparation(
+    application_feature_factory,
+) -> None:
+    observed_at = TEST_NOW
+    original = application_feature_factory("600001", observed_at)
+    original = replace(original, quote=replace(original.quote, board=Board.MAIN))
+    entered = threading.Event()
+    release = threading.Event()
+
+    class PinnedMarket(_Market):
+        def prepare_scoring_features(self, features, observed_at, *, include_intraday_tail):
+            if include_intraday_tail:
+                entered.set()
+                assert release.wait(2)
+            return features
+
+    market = PinnedMarket((original,))
+    adapter = build_cycle_fixture(market, config_version="test-config", freeze_build=_freeze_build())
+    _prime_scoring_cache(adapter, observed_at)
+    requests = (
+        _request(observed_at, phase="afternoon"),
+        _request(observed_at, strategy=Strategy.D25, phase="afternoon"),
+    )
+    revision = adapter.data._quality_revision
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(adapter.data.refresh_pair, requests)
+        try:
+            assert entered.wait(2)
+            market._features = (replace(original, quote=replace(original.quote, price=99.0)),)
+            _prime_scoring_cache(adapter, observed_at + timedelta(seconds=1))
+            assert adapter.data._quality_revision > revision
+        finally:
+            release.set()
+        pending.result(timeout=2)
+    first, second = (adapter.data.batch(request) for request in requests)
+    assert first is not None and second is not None
+    assert first.market_features is second.market_features
+    assert first.candidate_features == second.candidate_features == (original,)
+    assert first.quality_identity.source_revision == second.quality_identity.source_revision == revision
+    assert market.candidate_reads == []
+
+
+def test_pair_preparation_failure_does_not_accept_half_a_wave(application_feature_factory) -> None:
+    class FailingSecondMarket(_Market):
+        def prepare_scoring_features(self, features, observed_at, *, include_intraday_tail):
+            if not include_intraday_tail:
+                raise MarketDataUnavailableError("second_input_failed")
+            return features
+
+    feature = application_feature_factory("600001", TEST_NOW)
+    feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
+    adapter = build_cycle_fixture(
+        FailingSecondMarket((feature,)),
+        config_version="test-config", freeze_build=_freeze_build(),
+    )
+    _prime_scoring_cache(adapter, TEST_NOW)
+    requests = (
+        _request(TEST_NOW, phase="afternoon"),
+        _request(TEST_NOW, strategy=Strategy.D25, phase="afternoon"),
+    )
+    with pytest.raises(DataRefreshUnavailableError, match="second_input_failed"):
+        adapter.data.refresh_pair(requests)
+    assert all(adapter.data.batch(request) is None for request in requests)
 
 
 def test_refresh_outcome_normalizes_later_utc_completion_to_shanghai(

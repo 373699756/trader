@@ -140,6 +140,14 @@ class CandidateFeatureReaderPort(Protocol):
         include_structured_research: bool = False,
     ) -> Sequence[FeatureSnapshot]: ...
 
+    def prepare_scoring_features(
+        self,
+        features: tuple[FeatureSnapshot, ...],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool,
+    ) -> tuple[FeatureSnapshot, ...]: ...
+
     def read_candidate_features(
         self,
         codes: Sequence[str],

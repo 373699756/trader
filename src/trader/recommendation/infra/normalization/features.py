@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
@@ -103,6 +103,13 @@ class _FeatureGroupOptions(FeatureBuildOptions):
 
 
 class StandardizedFeatureBuilder(Protocol):
+    def with_intraday(
+        self,
+        features: tuple[FeatureSnapshot, ...],
+        minutes: Mapping[str, Sequence[MinuteBar]],
+        observed_at: datetime,
+    ) -> tuple[FeatureSnapshot, ...]: ...
+
     def build(
         self,
         quotes: Sequence[MarketQuote],
@@ -353,19 +360,6 @@ class FeatureBuilder:
         research_observations = options.get("research_observations")
         intraday_minutes = options.get("intraday_minutes")
         history_summaries = options.get("history_summaries")
-        tail_signals = (
-            {
-                quote.code: DeriveTailSignals(
-                    tuple(intraday_minutes.get(quote.code, ())),
-                    observed_at=observed_at,
-                    policy=self._tail_signal_policy,
-                    preview_context=options.get("preview_context"),
-                )
-                for quote in quotes
-            }
-            if intraday_minutes is not None
-            else None
-        )
         raw = {
             quote.code: self._raw_features(
                 quote,
@@ -387,8 +381,6 @@ class FeatureBuilder:
             values = raw[quote.code]
             research_observation = (research_observations or {}).get(quote.code)
             candidate_evidence = tuple(research_observation.evidence if research_observation is not None else ())[:15]
-            tail_signal = tail_signals.get(quote.code) if tail_signals is not None else None
-            intraday_evidence = TailSignalEvidence(quote.code, tail_signal) if tail_signal is not None else None
             news_signals = DeriveNewsSignals(
                 candidate_evidence,
                 observed_at=observed_at,
@@ -402,15 +394,6 @@ class FeatureBuilder:
                 }
             )
             values["entry_quality"] = DeriveEntrySetupValues(quote, values).score
-            if tail_signal is not None:
-                values.update(
-                    {
-                        "tail_return_30m_pct": tail_signal.return_pct,
-                        "tail_return_30m": tail_signal.return_score,
-                        "tail_volume_ratio_raw": tail_signal.volume_ratio,
-                        "tail_volume_ratio": tail_signal.volume_score,
-                    }
-                )
             market_regime = DeriveMarketRegime(values.get("market_breadth"), self._market_regime_policy)
             observation = research_observation or ResearchObservation()
             values.update(
@@ -439,7 +422,6 @@ class FeatureBuilder:
                     quote,
                     values,
                     observed_at,
-                    valid_minute_count=tail_signal.valid_bar_count if tail_signal is not None else None,
                 )
             )
             missing = tuple(
@@ -464,7 +446,6 @@ class FeatureBuilder:
                     missing_fields=missing,
                     evidence=(
                         _structured_evidence(quote, values, observed_at),
-                        *((intraday_evidence,) if intraday_evidence is not None else ()),
                         *candidate_evidence,
                     ),
                     normalization=cross_sections[quote.code].normalization,
@@ -473,7 +454,51 @@ class FeatureBuilder:
                     preview_context=options.get("preview_context"),
                 )
             )
-        return tuple(snapshots)
+        result = tuple(snapshots)
+        return self.with_intraday(result, intraday_minutes, observed_at) if intraday_minutes is not None else result
+
+    def with_intraday(
+        self,
+        features: tuple[FeatureSnapshot, ...],
+        minutes: Mapping[str, Sequence[MinuteBar]],
+        observed_at: datetime,
+    ) -> tuple[FeatureSnapshot, ...]:
+        """Extend accepted features without rebuilding history, research or cross sections."""
+        result: list[FeatureSnapshot] = []
+        for feature in features:
+            signal = DeriveTailSignals(
+                tuple(minutes.get(feature.quote.code, ())),
+                observed_at=observed_at,
+                policy=self._tail_signal_policy,
+                preview_context=feature.preview_context,
+            )
+            values = {
+                **feature.values,
+                "tail_return_30m_pct": signal.return_pct,
+                "tail_return_30m": signal.return_score,
+                "tail_volume_ratio_raw": signal.volume_ratio,
+                "tail_volume_ratio": signal.volume_score,
+            }
+            values.update(ExtremeStructureRisks(
+                feature.quote, values, observed_at, valid_minute_count=signal.valid_bar_count,
+            ))
+            evidence = TailSignalEvidence(feature.quote.code, signal)
+            result.append(replace(
+                feature,
+                values=values,
+                missing_fields=tuple(sorted({
+                    *(name for name in feature.missing_fields if name not in values),
+                    *(name for name, value in values.items() if value is None),
+                })),
+                evidence=(
+                    _structured_evidence(feature.quote, values, feature.observed_at),
+                    *((evidence,) if evidence is not None else ()),
+                    *(item for item in feature.evidence if item.evidence_type not in {
+                        "structured_point_in_time", "intraday_tail",
+                    }),
+                ),
+            ))
+        return tuple(result)
 
     def _raw_features(
         self,

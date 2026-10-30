@@ -278,6 +278,40 @@ def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_i
     assert required.isdisjoint(feature.missing_fields)
 
 
+@pytest.mark.parametrize("minutes", ({}, {"600001": _tail_minute_bars()}))
+def test_minute_extension_matches_full_build_and_preserves_base(minutes) -> None:
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    base = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON)
+    expected = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON, intraday_minutes=minutes)
+    extended = builder.with_intraday(base, minutes, AFTERNOON)
+    assert extended == expected
+    assert "tail_return_30m" not in base[0].values
+    assert extended[0].quote is base[0].quote
+    assert extended[0].model_sequence is base[0].model_sequence
+    assert extended[0].company_context is base[0].company_context
+    assert builder.with_intraday(extended, minutes, AFTERNOON) == extended
+
+
+def test_scoring_preparation_reuses_accepted_base_without_history_or_quote_reads(monkeypatch) -> None:
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    service = _service(StaticGateway((_quote(),)), StaticHistoryClient(), builder)
+    base = tuple(service.refresh_candidate_quotes(("600001",), NOW))
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("scoring preparation must reuse the accepted base")
+
+    monkeypatch.setattr(service.history, "cached", unexpected)
+    monkeypatch.setattr(service.history, "load", unexpected)
+    monkeypatch.setattr(service.research, "cached", unexpected)
+    monkeypatch.setattr(service.quotes, "candidate_snapshot", unexpected)
+    monkeypatch.setattr(service.quotes, "build_candidate_features", unexpected)
+    assert service.prepare_scoring_features(base, NOW, include_intraday_tail=False) == base
+    tomorrow = service.prepare_scoring_features(base, NOW, include_intraday_tail=True)
+    assert tomorrow[0].quote is base[0].quote
+    assert tomorrow[0].company_context is base[0].company_context
+    assert tomorrow[0].optional_value("tail_return_30m") is None
+
+
 def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_sessions() -> None:
     bars = tuple(
         DailyBar(

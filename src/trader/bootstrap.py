@@ -97,6 +97,7 @@ from trader.recommendation.application.runtime import supervisor as runtime_supe
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
@@ -630,6 +631,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     runtime_scope: ScoringProfileId | None = None,
     owns_shared_runtime: bool = True,
     shared_inputs: composition_inputs.SharedRecommendationInputs | None = None,
+    recommendation_rounds: RecommendationRounds | None = None,
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     budget_path = settings.runtime_dir / "deepseek/state.json"
@@ -820,6 +822,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             publication_io=publication_io,
             run_scope=run_scope,
             long_quotes=publication.long_runtime,
+            rounds=recommendation_rounds if recommendation_rounds is not None else RecommendationRounds(),
+            round_profile=profile_id,
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -913,7 +917,10 @@ def BuildProfiledSystem(
     profiles = ParseProfileSelection(",".join(profiles))
     settings = LoadRuntimeSettings(config_path)
     default_profile = "v2" if "v2" in profiles else profiles[0]
-    primary = BuildSystem(config_path, scoring_profile=default_profile, runtime_scope=default_profile)
+    rounds = RecommendationRounds()
+    primary = BuildSystem(
+        config_path, scoring_profile=default_profile, runtime_scope=default_profile, recommendation_rounds=rounds,
+    )
     shared = composition_inputs.SharedRecommendationInputs(
         primary.workers,
         primary.market_data,
@@ -923,7 +930,9 @@ def BuildProfiledSystem(
         primary.run_scope,
         primary.eligibility,
     )
-    build_secondary = partial(BuildSystem, config_path, owns_shared_runtime=False, shared_inputs=shared)
+    build_secondary = partial(
+        BuildSystem, config_path, owns_shared_runtime=False, shared_inputs=shared, recommendation_rounds=rounds,
+    )
     systems = [primary]
     for profile in profiles:
         if profile != default_profile:

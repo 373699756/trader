@@ -157,6 +157,8 @@ class ScheduledPipelineTask:
     freeze_strategies: tuple[str, ...] = ()
     schedule_point: SchedulePoint | None = None
     session: SessionLease | None = None
+    round_sequence: int | None = None
+    round_tasks: tuple[ScheduledPipelineTask, ...] = ()
 
 
 @dataclass(frozen=True)

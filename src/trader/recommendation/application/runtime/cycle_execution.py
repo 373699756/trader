@@ -104,12 +104,14 @@ class RecommendationCycleExecutor:
 
     def _build_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> tuple[ScoredFreeze, ScoredFreeze] | None:
         started_at = time.perf_counter()
-        shared_epoch = self._dependencies.data.scoring_epoch()
-        if not all(self._prepare_cycle_data(request) for request in requests):
+        try:
+            self._dependencies.data.refresh_pair(requests)
+        except DataRefreshUnavailableError as exc:
+            with SessionGuard(requests[0].session):
+                self._hooks.failure("refresh", FailureCode(exc, "refresh_unavailable"), None)
             return None
-        if self._dependencies.data.scoring_epoch() != shared_epoch:
-            self._hooks.failure("freeze", "paired_input_epoch_mismatch", None)
-            return None
+        for request in requests:
+            self._refresh_overlay(request)
         self._record_latency("scoring_data_prepare", started_at)
         started_at = time.perf_counter()
         tomorrow = self._build_local(requests[0])
@@ -261,12 +263,15 @@ class RecommendationCycleExecutor:
     def _prepare_cycle_data(self, request: CycleRequest) -> bool:
         if not self._refresh_data(request):
             return False
+        self._refresh_overlay(request)
+        return True
+
+    def _refresh_overlay(self, request: CycleRequest) -> None:
         for outcome in self._overlay_refresher.refresh(request):
             if outcome.status == "failed":
                 self._hooks.failure("overlay", outcome.error_code, outcome.strategy)
             elif outcome.status != "skipped":
                 self._hooks.overlay_success(outcome.strategy, outcome.status == "published")
-        return True
 
     def _build_local(self, request: CycleRequest) -> FreezeIdentity | None:
         try:

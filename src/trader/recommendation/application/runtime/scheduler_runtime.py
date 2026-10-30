@@ -23,7 +23,6 @@ from trader.recommendation.application.ports.runtime import (
     DataRefreshPendingError,
     DataRefreshUnavailableError,
     PipelineTaskRequest,
-    RefreshOutcome,
     TradingCalendarUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import (
@@ -60,7 +59,6 @@ from trader.recommendation.application.runtime.schedule_requests import (
     CycleOrderKey,
     CyclePhase,
     FailureCode,
-    PipelineLane,
     PipelineTaskCorrelationId,
     PipelineTaskOrderKey,
 )
@@ -110,6 +108,7 @@ class SchedulerRuntime:
         if contract.daily_physical_limit != 168 or not contract.shared_cache or not contract.shared_single_flight:
             raise ValueError("scheduler runtime requires the shared 168-request DeepSeek boundary")
         self._dependencies = dependencies
+        dependencies.rounds.register(dependencies.round_profile)
         self._overlay_refresher = FreezeOverlayRefresher(
             dependencies.index,
             dependencies.freezes,
@@ -166,7 +165,7 @@ class SchedulerRuntime:
                     lambda request: f"data:{request.task.value}",
                 ),
             )
-            for task in _DATA_LANES
+            for task in (PipelineTask.CLOSE_QUOTES,)
         }
         self._score_lane = LatestWinsWorker(
             "trader-task-score-wave",
@@ -254,14 +253,15 @@ class SchedulerRuntime:
             raise RuntimeError("research runtime did not start")
 
     def _start_task_lanes(self) -> None:
-        for task in _DATA_LANES:
-            if not self._task_lanes[task].start():
+        for task, lane in self._task_lanes.items():
+            if not lane.start():
                 raise RuntimeError(f"{task.value} task lane did not start")
         if not self._score_lane.start():
             raise RuntimeError("score wave lane did not start")
 
     def _abort_start(self) -> None:
         deadline = ShutdownDeadline.start(self._shutdown_timeout_seconds)
+        self._dependencies.rounds.withdraw(self._dependencies.round_profile)
         self._research.stop(wait=False, deadline=deadline)
         for task_lane in self._task_lanes.values():
             task_lane.close()
@@ -317,10 +317,31 @@ class SchedulerRuntime:
                     is_trading_day=is_trading_day,
                 ).phase
             )
+        round_tasks = tuple(task for task in batch.tasks if task.task in {*_DATA_LANES, PipelineTask.SCORE})
         for scheduled in batch.tasks:
+            if scheduled in round_tasks:
+                continue
             if not self._periodic_task_inflight(scheduled):
                 self._dispatch_pipeline_task(replace(scheduled, session=session))
-        return batch.next_delay_seconds
+        self._submit_round_tasks(
+            round_tasks, ScheduledPipelineTask(PipelineTask.SCORE, observed_at, self._phase, session=session),
+        )
+        return min(batch.next_delay_seconds, 1.0)
+
+    def _submit_round_tasks(
+        self, tasks: tuple[ScheduledPipelineTask, ...], scheduled: ScheduledPipelineTask,
+    ) -> bool:
+        rounds = self._dependencies.rounds
+        profile = self._dependencies.round_profile
+        admission = rounds.enter(profile, tasks)
+        if admission is None:
+            return False
+        if self._submit_scoring(replace(
+            scheduled, round_sequence=admission.sequence, round_tasks=admission.tasks,
+        )):
+            return True
+        rounds.finish(profile, admission.sequence)
+        return False
 
     def _submit_preview(self, observed_at: datetime) -> float:
         observed_at = max(observed_at, ShanghaiNow(self._dependencies.clock.now()))
@@ -400,8 +421,8 @@ class SchedulerRuntime:
             scheduled = replace(scheduled, session=self._session.capture())
         self._dependencies.cadence.record_submission(scheduled, accepted=True, at=scheduled.scheduled_at)
         rejected_freezes: tuple[str, ...] = ()
-        if scheduled.task is PipelineTask.SCORE:
-            accepted = self._submit_scoring(scheduled)
+        if scheduled.task in {*_DATA_LANES, PipelineTask.SCORE}:
+            accepted = self._submit_round_tasks((scheduled,), scheduled)
         elif scheduled.task is PipelineTask.LONG_QUOTES:
             offer = self.submit_cycle(
                 replace(
@@ -422,7 +443,7 @@ class SchedulerRuntime:
             accepted = any(submissions.values())
             rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
         else:
-            offer = self._task_lanes[PipelineLane(scheduled.task)].offer(scheduled)
+            offer = self._task_lanes[scheduled.task].offer(scheduled)
             accepted = offer is not LatestWinsOffer.REJECTED
         if not accepted:
             self._dependencies.cadence.record_submission(scheduled, accepted=False, at=scheduled.scheduled_at)
@@ -441,7 +462,7 @@ class SchedulerRuntime:
         lane = (
             self._lanes[Strategy.LONG].status()
             if scheduled.task is PipelineTask.LONG_QUOTES
-            else self._task_lanes[PipelineLane(scheduled.task)].status()
+            else self._score_lane.status()
         )
         return lane.running or lane.pending
 
@@ -450,6 +471,9 @@ class SchedulerRuntime:
             return self._score_lane.offer(scheduled) is not LatestWinsOffer.REJECTED
 
     def _process_score_wave(self, scheduled: ScheduledPipelineTask) -> None:
+        if scheduled.round_sequence is not None:
+            self._process_recommendation_round(scheduled)
+            return
         try:
             with SessionGuard(scheduled.session):
                 pass
@@ -474,6 +498,50 @@ class SchedulerRuntime:
             self._cycles.execute_pair((requests[0], requests[1]))
         except StaleSessionError:
             return
+
+    def _process_recommendation_round(self, scheduled: ScheduledPipelineTask) -> None:
+        sequence = scheduled.round_sequence
+        if sequence is None:
+            raise ValueError("recommendation round identity is missing")
+        rounds = self._dependencies.rounds
+        profile = self._dependencies.round_profile
+        tasks = {task.task: replace(task, session=scheduled.session, round_sequence=sequence) for task in scheduled.round_tasks}
+        if PipelineTask.FULL_MARKET in tasks and PipelineTask.CANDIDATE_QUOTES not in tasks:
+            tasks[PipelineTask.CANDIDATE_QUOTES] = replace(
+                scheduled, task=PipelineTask.CANDIDATE_QUOTES, round_tasks=(),
+            )
+        changed = PipelineTask.SCORE in tasks
+        try:
+            for task in _DATA_LANES:
+                if task not in tasks:
+                    continue
+                with SessionGuard(scheduled.session):
+                    pass
+                now = ShanghaiNow(self._dependencies.clock.now())
+                if now.date() != scheduled.scheduled_at.date():
+                    return
+                if now.time() >= wall_time(15, 0) and task is not PipelineTask.TOPK_QUOTES:
+                    continue
+                request = tasks[task]
+                self._dependencies.cadence.record_submission(request, accepted=True, at=now)
+                outcome_changed = self._execute_pipeline_task(request)
+                if outcome_changed is None:
+                    if task in {PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES}:
+                        return
+                    continue
+                changed = changed or (outcome_changed and task in _SCORING_INPUT_TASKS)
+            if not rounds.collected(profile, sequence, timeout_seconds=60.0):
+                self._record_failure("refresh", "round_collection_timeout")
+                return
+            if changed:
+                self._process_score_wave(replace(
+                    scheduled, scheduled_at=ShanghaiNow(self._dependencies.clock.now()),
+                    round_sequence=None, round_tasks=(),
+                ))
+        except StaleSessionError:
+            return
+        finally:
+            rounds.finish(profile, sequence)
 
     def submit_cycle(self, request: CycleRequest) -> LatestWinsOffer:
         with self._lock:
@@ -505,10 +573,10 @@ class SchedulerRuntime:
         except StaleSessionError:
             return
 
-    def _execute_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
+    def _execute_pipeline_task(self, scheduled: ScheduledPipelineTask) -> bool | None:
         if scheduled.task is PipelineTask.CLOSE_QUOTES:
             self._close_control.process_close_recovery(scheduled)
-            return
+            return None
         selected_codes = (
             self._selected_overlay_codes(scheduled.phase) if scheduled.task is PipelineTask.TOPK_QUOTES else ()
         )
@@ -523,52 +591,19 @@ class SchedulerRuntime:
         except DataRefreshPendingError:
             with SessionGuard(scheduled.session):
                 self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
-            return
+            return None
         except DataRefreshUnavailableError as exc:
             with SessionGuard(scheduled.session):
                 self._record_failure("refresh", FailureCode(exc, "refresh_unavailable"), task=scheduled.task)
                 self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
-            return
+            return None
         with SessionGuard(scheduled.session):
-            self._after_successful_data_refresh(scheduled, outcome, observed_at=request.observed_at)
+            if scheduled.task is PipelineTask.TOPK_QUOTES and outcome.changed:
+                self._refresh_selected_overlays(scheduled, request.observed_at)
             with self._lock:
                 self._resolve_issues_locked(stages=frozenset({"refresh"}), task=scheduled.task)
             self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
-
-    def _after_successful_data_refresh(
-        self,
-        scheduled: ScheduledPipelineTask,
-        outcome: RefreshOutcome,
-        *,
-        observed_at: datetime,
-    ) -> None:
-        if scheduled.task is PipelineTask.TOPK_QUOTES and outcome.changed:
-            self._refresh_selected_overlays(scheduled, observed_at)
-        elif scheduled.task is PipelineTask.FULL_MARKET:
-            completed_at = ShanghaiNow(self._dependencies.clock.now())
-            if completed_at.date() == scheduled.scheduled_at.date() and completed_at.time() < wall_time(15, 0):
-                self._dispatch_pipeline_task(
-                    ScheduledPipelineTask(
-                        PipelineTask.CANDIDATE_QUOTES,
-                        completed_at,
-                        scheduled.phase,
-                        session=scheduled.session,
-                    )
-                )
-        if scheduled.task in _SCORING_INPUT_TASKS and outcome.changed:
-            self._trigger_scoring_after_input()
-
-    def _trigger_scoring_after_input(self) -> None:
-        completed_at = ShanghaiNow(self._dependencies.clock.now())
-        is_trading_day, _retry_delay = self._calendar_freeze(completed_at)
-        if is_trading_day is None:
-            return
-        scheduled = self._dependencies.cadence.plan_score_after_input(
-            completed_at,
-            is_trading_day=is_trading_day,
-        )
-        if scheduled is not None:
-            self._dispatch_pipeline_task(scheduled)
+        return outcome.changed
 
     def _record_pipeline_result(
         self,
@@ -614,7 +649,7 @@ class SchedulerRuntime:
     def wait_idle(self, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         waiters = (
-            *(self._task_lanes[task].wait_idle for task in _DATA_LANES),
+            *(lane.wait_idle for lane in self._task_lanes.values()),
             self._score_lane.wait_idle,
             *(self._lanes[strategy].wait_idle for strategy in Strategy),
             *(self._hybrid_lanes[strategy].wait_idle for strategy in (Strategy.TOMORROW, Strategy.D25)),
@@ -646,6 +681,7 @@ class SchedulerRuntime:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
             self._running = False
             self._stopped = True
+        self._dependencies.rounds.withdraw(self._dependencies.round_profile)
         self._research.stop(wait=False, deadline=deadline)
         self._dependencies.observer.close()
         for task_lane in self._task_lanes.values():
@@ -656,7 +692,7 @@ class SchedulerRuntime:
         for hybrid_lane in self._hybrid_lanes.values():
             hybrid_lane.close()
         steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
-        steps.extend(self._task_lanes[task].stop(deadline=deadline) for task in _DATA_LANES)
+        steps.extend(lane.stop(deadline=deadline) for lane in self._task_lanes.values())
         steps.append(self._score_lane.stop(deadline=deadline))
         steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
         steps.extend(
@@ -674,7 +710,7 @@ class SchedulerRuntime:
         session = self._session.status()
         lanes = tuple(self._lanes[strategy].status() for strategy in Strategy)
         hybrid_lanes = tuple(self._hybrid_lanes[strategy].status() for strategy in (Strategy.TOMORROW, Strategy.D25))
-        task_lanes = (*tuple(self._task_lanes[task].status() for task in _DATA_LANES), self._score_lane.status())
+        task_lanes = (*tuple(lane.status() for lane in self._task_lanes.values()), self._score_lane.status())
         preview = self._preview.status()
         preview_context = self._dependencies.run_scope.preview if self._dependencies.run_scope else None
         with self._lock:

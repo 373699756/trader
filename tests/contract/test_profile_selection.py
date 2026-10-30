@@ -63,6 +63,7 @@ def test_selected_profiles_share_resources_and_web_shows_only_selected_buttons(t
         assert system.market_data.quotes.gateway is primary.market_data.quotes.gateway
         assert system.market_data.research is primary.market_data.research
         assert system.run_scope is primary.run_scope
+        assert system.scheduler._dependencies.rounds is primary.scheduler._dependencies.rounds
     client = group.app.test_client()
     html = client.get("/").get_data(as_text=True)
     assert html.count('class="profile-tab') == len(profiles) + 1  # Includes the tablist class.

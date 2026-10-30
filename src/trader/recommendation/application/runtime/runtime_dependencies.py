@@ -32,6 +32,7 @@ from trader.recommendation.application.runtime.cadence import (
 )
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
 
 
 @dataclass(frozen=True)
@@ -55,3 +56,5 @@ class RuntimeDependencies:
     monotonic: Callable[[], float] = time.monotonic
     run_scope: RecommendationRunScope | None = None
     long_quotes: LongRefreshPort | None = None
+    rounds: RecommendationRounds = field(default_factory=RecommendationRounds)
+    round_profile: str = "default"

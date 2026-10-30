@@ -109,6 +109,9 @@ class _SharedInputBatch:
     input_stages: tuple[PipelineStageSnapshot, ...]
     candidate_stage: PipelineStageOutput[SelectedCandidateInput]
     started_monotonic: float | None
+    source_revision: int
+    source_epoch: str
+    reference_version: str
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,14 @@ class _PendingQualityContext:
 
 
 class MarketReader(Protocol):
+    def prepare_scoring_features(
+        self,
+        features: tuple[FeatureSnapshot, ...],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool,
+    ) -> tuple[FeatureSnapshot, ...]: ...
+
     def prepare_preview(self, context: PreviewContext | None) -> None: ...
 
     def reference_version(self) -> str: ...
@@ -478,12 +489,6 @@ class MarketInputCoordinator(DataRefreshPort):
                 or HasTransientCandidateGap(initial_plans.plans[strategy])
                 for strategy in SCORED_STRATEGIES
             }
-            epoch = self._scoring_epoch_locked(include_intraday_tail=False)
-            if len(set(strategy_requested.values())) == 1:
-                strategy = SCORED_STRATEGIES[0]
-                codes = strategy_requested[strategy]
-                generation = request.session.generation if request.session is not None else 0
-                self._score_feature_batches[(generation, epoch, False, codes)] = strategy_features[strategy]
             self._record_pending_quality_locked(
                 _PendingQualityContext(
                     completed_at,
@@ -668,20 +673,53 @@ class MarketInputCoordinator(DataRefreshPort):
                 raise DataRefreshUnavailableError("long_refresh_rejected")
             return
         with SessionGuard(request.session), self._lock:
-            source_revision = self._quality_revision
+            shared = self._capture_input_locked(request)
+        batch = self._prepare_input(request, shared, preparation_started)
+        with SessionGuard(request.session), self._lock:
+            self._accept_batch_locked(batch)
+
+    def refresh_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
+        """Capture both populations once; later source refreshes belong to the next wave."""
+        first, second = requests
+        if (
+            (first.strategy, second.strategy) != (Strategy.TOMORROW, Strategy.D25)
+            or first.trade_date != second.trade_date
+            or first.observed_at != second.observed_at
+            or first.phase != second.phase
+            or first.phase == "close_fallback"
+            or first.preview_context != second.preview_context
+            or first.session is not second.session
+        ):
+            raise DataRefreshUnavailableError("paired_request_identity_mismatch")
+        started = self._monotonic()
+        with SessionGuard(first.session), self._lock:
+            shared = (self._capture_input_locked(first), self._capture_input_locked(second))
+        batches = tuple(
+            self._prepare_input(request, captured, started)
+            for request, captured in zip(requests, shared, strict=True)
+        )
+        with SessionGuard(first.session), self._lock:
+            for batch in batches:
+                self._accept_batch_locked(batch)
+
+    def _accept_batch_locked(self, batch: InputBatch) -> None:
+        self._batches[(batch.request.strategy, batch.request.input_version)] = batch
+        while len(self._batches) > 32:
+            self._batches.pop(next(iter(self._batches)))
+
+    def _prepare_input(
+        self, request: CycleRequest, shared: _SharedInputBatch, preparation_started: float,
+    ) -> InputBatch:
         try:
-            shared = self._cached_input(request)
-            candidate_features = shared.candidate_features
+            candidate_features = self._score_features(request, shared).features if shared.requested_codes else ()
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise DataRefreshUnavailableError(_failure_code(exc)) from exc
-        reference_version = self._market.reference_version()
+        reference_version = shared.reference_version
         data_version = self._versions.accept(
             f"native:{request.strategy.value}",
             (
                 request.input_version,
-                self._market_version,
-                self._candidate_version,
-                self._research_version,
+                shared.source_epoch,
                 reference_version,
                 shared.market_features,
                 candidate_features,
@@ -703,14 +741,14 @@ class MarketInputCoordinator(DataRefreshPort):
                 ),
             ),
         )
-        batch = InputBatch(
+        return InputBatch(
             request,
             shared.market_features,
             shared.requested_codes,
             candidate_features,
             data_version,
             shared.candidate_stage_counts,
-            shared.candidate_quote_eligible,
+            len(candidate_features) if request.phase == "close_fallback" else shared.candidate_quote_eligible,
             shared.preselection_transient_invalid,
             shared.issuer_eligibility,
             (*shared.input_stages[:-1], candidate_stage.snapshot),
@@ -718,55 +756,39 @@ class MarketInputCoordinator(DataRefreshPort):
             ScoringInputIdentity(
                 request.strategy,
                 request.trade_date,
-                source_revision,
+                shared.source_revision,
                 data_version,
                 request.session.generation if request.session is not None else 0,
                 request.sequence,
             ),
             shared.started_monotonic,
         )
-        with SessionGuard(request.session), self._lock:
-            self._batches[(request.strategy, request.input_version)] = batch
-            while len(self._batches) > 32:
-                self._batches.pop(next(iter(self._batches)))
 
-    def _cached_input(self, request: CycleRequest) -> _SharedInputBatch:
-        with SessionGuard(request.session), self._lock:
-            if self._candidate_refresh_pending and request.phase != "close_fallback":
-                raise DataRefreshUnavailableError("candidate_quotes_pending")
-            market_features = self._latest_market_features
-            issuer_eligibility = self._issuer_eligibility
-            input_stages, candidate_stage = self._observed_input_locked(request.strategy)
-            requested = self._strategy_requested_codes[request.strategy]
-            candidate_features = self._strategy_candidate_features[request.strategy]
-            candidate_plans = self._candidate_plans
-            started_monotonic = self._round_started
-            preselection_transient_invalid = self._strategy_preselection_transient_invalid[request.strategy]
+    def _capture_input_locked(self, request: CycleRequest) -> _SharedInputBatch:
+        if self._candidate_refresh_pending and request.phase != "close_fallback":
+            raise DataRefreshUnavailableError("candidate_quotes_pending")
+        market_features = self._latest_market_features
+        issuer_eligibility = self._issuer_eligibility
+        input_stages, candidate_stage = self._observed_input_locked(request.strategy)
+        requested = self._strategy_requested_codes[request.strategy]
+        candidate_features = self._strategy_candidate_features[request.strategy]
+        candidate_plans = self._candidate_plans
         if not market_features or candidate_plans is None or issuer_eligibility is None:
             raise DataRefreshUnavailableError("market_snapshot_unavailable")
-        scoring_batch = (
-            self._score_features(
-                requested
-                if request.phase == "close_fallback"
-                else tuple(item.quote.code for item in candidate_features),
-                request.observed_at,
-                include_intraday_tail=request.strategy is Strategy.TOMORROW,
-                session=request.session,
-            )
-            if requested
-            else _ScoringFeatureBatch(candidate_features)
-        )
         return _SharedInputBatch(
             market_features,
             requested,
-            scoring_batch.features,
+            candidate_features,
             candidate_plans.plans[request.strategy].stage_counts,
-            len(scoring_batch.features) if request.phase == "close_fallback" else len(candidate_features),
-            preselection_transient_invalid,
+            len(candidate_features),
+            self._strategy_preselection_transient_invalid[request.strategy],
             issuer_eligibility,
             input_stages,
             candidate_stage,
-            started_monotonic,
+            self._round_started,
+            self._quality_revision,
+            self._scoring_epoch_locked(include_intraday_tail=request.strategy is Strategy.TOMORROW),
+            self._market.reference_version(),
         )
 
     def _observed_input_locked(
@@ -788,30 +810,35 @@ class MarketInputCoordinator(DataRefreshPort):
 
     def _score_features(
         self,
-        requested: tuple[str, ...],
-        observed_at: datetime,
-        *,
-        include_intraday_tail: bool,
-        session: SessionLease | None,
+        request: CycleRequest,
+        shared: _SharedInputBatch,
     ) -> _ScoringFeatureBatch:
+        include_intraday_tail = request.strategy is Strategy.TOMORROW
+        session = request.session
+        requested = shared.requested_codes if request.phase == "close_fallback" else tuple(
+            feature.quote.code for feature in shared.candidate_features
+        )
         with SessionGuard(session), self._lock:
-            epoch = self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail)
+            epoch = shared.source_epoch
             generation = session.generation if session is not None else 0
-            key = (generation, epoch, include_intraday_tail, requested)
+            key = (generation, epoch + (":close" if request.phase == "close_fallback" else ""), include_intraday_tail, requested)
             cached = self._score_feature_batches.get(key)
             if cached is not None:
                 return _ScoringFeatureBatch(cached)
         requested_codes = frozenset(requested)
-        features = tuple(
-            feature
-            for feature in self._market.read_candidate_features(
+        prepared = (
+            self._market.read_candidate_features(
                 requested,
-                observed_at,
+                request.observed_at,
                 include_intraday_tail=include_intraday_tail,
                 include_structured_research=True,
             )
-            if feature.quote.code in requested_codes
+            if request.phase == "close_fallback"
+            else self._market.prepare_scoring_features(
+                shared.candidate_features, request.observed_at, include_intraday_tail=include_intraday_tail,
+            )
         )
+        features = tuple(feature for feature in prepared if feature.quote.code in requested_codes)
         with SessionGuard(session), self._lock:
             if epoch == self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail):
                 self._score_feature_batches[key] = features

@@ -471,6 +471,24 @@ class MarketFeatureService:
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> IntradayRefreshResult:
         return self.intraday.refresh(self._eligible_codes(codes, observed_at), observed_at)
 
+    def prepare_scoring_features(
+        self,
+        features: tuple[FeatureSnapshot, ...],
+        observed_at: datetime,
+        *,
+        include_intraday_tail: bool,
+    ) -> tuple[FeatureSnapshot, ...]:
+        """Use the accepted quote cut; only minute signals and current issuer vetoes vary."""
+        if include_intraday_tail and features:
+            codes = tuple(feature.quote.code for feature in features)
+            restrictions: dict[str, set[str]] = {}
+            started = self._monotonic()
+            minutes = self.intraday.cached(codes, action_restrictions=restrictions, observed_at=observed_at)
+            features = self.quotes.with_intraday_features(features, minutes, observed_at, restrictions)
+            self.intraday.record_feature_coverage(codes, features)
+            self.quotes.gateway.record_local_latency("candidate_intraday_assembly", self._elapsed_ms(started))
+        return self._apply_issuer_risk_facts(features, observed_at)
+
     def read_candidate_features(
         self,
         codes: Sequence[str],

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from trader.recommendation.application.ports.runtime import CycleRequest, FreezeUnavailableError
-from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
+from trader.recommendation.application.runtime.cadence import ScheduledPipelineTask
 from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity
@@ -43,12 +43,6 @@ def PipelineTaskCorrelationId(request: ScheduledPipelineTask) -> str:
     return f"data:{request.task.value}:{request.scheduled_at.isoformat()}"
 
 
-def PipelineLane(task: PipelineTask) -> PipelineTask:
-    if task is PipelineTask.CLOSE_QUOTES:
-        return PipelineTask.FULL_MARKET
-    return task
-
-
 def FailureCode(exc: BaseException, fallback: str) -> str:
     value = str(exc).strip().lower().replace(" ", "_")
     if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
@@ -65,7 +59,6 @@ __all__ = [
     "CycleOrderKey",
     "CyclePhase",
     "FailureCode",
-    "PipelineLane",
     "PipelineTaskCorrelationId",
     "PipelineTaskOrderKey",
     "ResearchInputVersion",
