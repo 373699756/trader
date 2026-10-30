@@ -10,10 +10,13 @@ from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityFact,
     IssuerEligibilityFreeze,
     IssuerEligibilitySnapshot,
+    IssuerEligibilityView,
 )
 
 
 class IssuerEligibilityPort(Protocol):
+    def view(self, observed_at: datetime) -> IssuerEligibilityView: ...
+
     def record(self, facts: Sequence[IssuerEligibilityFact]) -> int: ...
 
     def filter_codes(self, codes: Sequence[str], observed_at: datetime) -> tuple[str, ...]: ...

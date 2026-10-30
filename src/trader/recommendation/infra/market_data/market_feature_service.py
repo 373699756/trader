@@ -22,7 +22,6 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.eligibility import (
     EligibilityFactsFromQuote,
     IssuerEligibilityFact,
-    IssuerEligibilityReason,
 )
 from trader.recommendation.domain.market.models import (
     Board,
@@ -517,11 +516,7 @@ class MarketFeatureService:
 
     def _eligible_codes(self, codes: Sequence[str], observed_at: datetime) -> tuple[str, ...]:
         normalized = _normalize_codes(codes)
-        st_reasons = {
-            IssuerEligibilityReason.HISTORICAL_ST,
-            IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
-        }
-        excluded = {item.code for item in self.eligibility.exclusions(observed_at) if item.reason in st_reasons}
+        excluded = self.eligibility.view(observed_at).st_excluded_codes
         return tuple(code for code in normalized if code not in excluded)
 
     def _apply_issuer_risk_facts(
@@ -530,9 +525,7 @@ class MarketFeatureService:
         observed_at: datetime,
     ) -> tuple[FeatureSnapshot, ...]:
         self._record_quote_eligibility(tuple(feature.quote for feature in features), observed_at)
-        reasons = {
-            item.code: item.reason for item in self.eligibility.exclusions(observed_at) if item.reason is not None
-        }
+        reasons = self.eligibility.view(observed_at).reasons
         return tuple(
             replace(
                 feature,
@@ -557,7 +550,7 @@ class MarketFeatureService:
             return
 
     def _record_quote_eligibility(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> None:
-        known = {(fact.code, fact.reason) for fact in self.eligibility.facts() if fact.effective_at <= observed_at}
+        known = self.eligibility.view(observed_at).known_reasons
         facts = tuple(
             fact
             for quote in quotes

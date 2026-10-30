@@ -537,6 +537,7 @@ def _issuer_eligibility(raw: object) -> dict[str, object]:
             "manifest_hash",
             "integrity_ok",
             "persistence_error_count",
+            "pending_persistence_count",
             "last_error",
         )
         if key in raw and _json_scalar(raw[key])

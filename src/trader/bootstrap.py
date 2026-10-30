@@ -55,7 +55,6 @@ from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier, TencentSessionPool
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
-from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.clock.shanghai import ShanghaiClock
@@ -94,7 +93,6 @@ from trader.recommendation.application.pipeline.local_score.base_scoring import 
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
-from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.runtime import supervisor as runtime_supervisor
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
@@ -693,10 +691,31 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         model_failure = f"production_model_{exc.reason}"
     WarnMissingLocalData(paths, profile_id, model_failure=model_failure if loaded_profile is None else None)
     training_settings = LoadRuntimeTrainingSettings(settings.project_root, profile_id)
+    eligibility = (
+        shared_inputs.eligibility
+        if shared_inputs
+        else CompanyEligibility(
+            PublishCompanyExclusions(
+                SQLiteCompanyFactsIndex(
+                    paths.company,
+                    event_policy=strategy.company_scoring.events,
+                    cancel_requested=lambda: eligibility.write_cancelled,
+                )
+            ),
+            workers=workers.company_pool,
+            monotonic=time.monotonic,
+        )
+    )
+    if shared_inputs is None:
+        with suppress(RuntimeError):
+            eligibility.record_manual_blacklist(
+                strategy.hard_filters.blacklist_codes, now(), effective_config_version
+            )
     market_data = _build_market_data(
         context,
         calendar,
         references,
+        eligibility=eligibility,
         training_settings=training_settings,
         shared_market=shared_inputs.market if shared_inputs else None,
     )
@@ -879,6 +898,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         web_services=web_services,
         workers=workers,
         market_data=market_data,
+        eligibility=eligibility,
         budget=persistence.budget,
         review_cache=review_cache,
         run_scope=run_scope,
@@ -901,6 +921,7 @@ def BuildProfiledSystem(
         primary.review_cache,
         primary.input_preloader,
         primary.run_scope,
+        primary.eligibility,
     )
     build_secondary = partial(BuildSystem, config_path, owns_shared_runtime=False, shared_inputs=shared)
     systems = [primary]
@@ -926,14 +947,13 @@ def _build_worker_context(
     control_pool = BoundedExecutor(
         worker_count=2, urgent_worker_count=1, queue_capacity=4, thread_name_prefix="trader-control"
     )
-    persistence_pool = BoundedExecutor(
-        worker_count=1,
-        queue_capacity=max(1, settings.pipeline.event_queue_size),
-        thread_name_prefix="trader-persistence",
-    )
-    json_writer = RuntimeJsonWriter(persistence_pool)
     if shared is not None:
-        return replace(shared, control_pool=control_pool, persistence_pool=persistence_pool, json_writer=json_writer)
+        return replace(shared, control_pool=control_pool)
+    company_pool = BoundedExecutor(
+        worker_count=1,
+        queue_capacity=1,
+        thread_name_prefix="company-exclusions",
+    )
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers + urgent_worker_count,
         urgent_worker_count=urgent_worker_count,
@@ -953,9 +973,8 @@ def _build_worker_context(
         quote_pool=quote_pool,
         market_quote_pool=market_quote_pool,
         minute_pool=minute_pool,
-        persistence_pool=persistence_pool,
+        company_pool=company_pool,
         source_lanes=source_lanes,
-        json_writer=json_writer,
         market_cache=market_cache,
     )
 
@@ -966,6 +985,7 @@ def _build_market_data(
     references: PublishedReferences,
     *,
     training_settings: ProfileTrainingSettings | V1TrainingSettings,
+    eligibility: CompanyEligibility,
     shared_market: market_feature_service.MarketFeatureService | None = None,
 ) -> market_feature_service.MarketFeatureService:
     settings, strategy = context.settings, context.strategy
@@ -1073,18 +1093,6 @@ def _build_market_data(
             schema_version="market_snapshot",
             wall_clock=now,
         )
-        eligibility_index = CompanyEligibility(
-            PublishCompanyExclusions(
-                SQLiteCompanyFactsIndex(paths.company, event_policy=strategy.company_scoring.events)
-            ),
-            read_only=not context.owns_shared_runtime,
-        )
-        if context.owns_shared_runtime:
-            with suppress(RuntimeError):
-                eligibility_index.record_manual_blacklist(
-                    strategy.hard_filters.blacklist_codes, now(), context.effective_config_version
-                )
-        eligibility: IssuerEligibilityPort = eligibility_index
         research = PublishedCompanyResearch(
             company_facts_reader.SQLiteCompanyEvidenceReader(
                 paths.company, raw_path=paths.company_collection, event_policy=strategy.company_scoring.events
@@ -1110,7 +1118,6 @@ def _build_market_data(
     else:
         gateway = shared_market.quotes.gateway
         runner = shared_market.runner
-        eligibility = shared_market.eligibility
         research = shared_market.research
         intraday_loader = shared_market.intraday
     quote_cache = QuoteCache(

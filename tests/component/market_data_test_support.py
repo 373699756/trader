@@ -49,7 +49,7 @@ from trader.recommendation.application.runtime.source_lanes import (
     SourceLaneScheduler,
     SourceRequestSupersededError,
 )
-from trader.recommendation.domain.market.eligibility import IssuerEligibilitySnapshot
+from trader.recommendation.domain.market.eligibility import IssuerEligibilitySnapshot, IssuerEligibilityView
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.models import (
     Board,
@@ -116,6 +116,9 @@ FEATURE_WEIGHT_POLICY = _STRATEGY_SETTINGS.feature_component_weights
 
 
 class _AllowAllEligibility:
+    def view(self, _observed_at):
+        return IssuerEligibilityView((), {}, frozenset(), frozenset())
+
     def record(self, _facts) -> int:
         return 0
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
@@ -27,6 +26,7 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
+from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 
@@ -45,9 +45,8 @@ class RuntimeWorkerResources:
     quote_pool: BoundedExecutor
     market_quote_pool: BoundedExecutor
     minute_pool: BoundedExecutor
-    persistence_pool: BoundedExecutor
+    company_pool: BoundedExecutor
     source_lanes: SourceLaneScheduler
-    json_writer: RuntimeJsonWriter
     market_cache: BoundedLruCache[object]
 
 
@@ -77,6 +76,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     web_services: WebServicesT
     workers: RuntimeWorkerResources
     market_data: MarketFeatureService
+    eligibility: CompanyEligibility
     budget: DeepSeekBudgetLedger
     review_cache: ReviewCache
     run_scope: RecommendationRunScope
@@ -94,7 +94,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             self.quote_pool,
             self.market_quote_pool,
             self.minute_pool,
-            (self.long_runtime, *((self.input_preloader,) if self.owns_shared_resources else ())),
+            (self.long_runtime, *((self.eligibility, self.input_preloader) if self.owns_shared_resources else ())),
             self.market_cache,
             self.owns_shared_resources,
         )

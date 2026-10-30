@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from types import MappingProxyType
 from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -138,6 +140,17 @@ class IssuerEligibilityFreeze:
 
 
 @dataclass(frozen=True)
+class IssuerEligibilityView:
+    facts: tuple[IssuerEligibilityFact, ...]
+    reasons: Mapping[str, IssuerEligibilityReason]
+    st_excluded_codes: frozenset[str]
+    known_reasons: frozenset[tuple[str, IssuerEligibilityReason]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reasons", MappingProxyType(dict(self.reasons)))
+
+
+@dataclass(frozen=True)
 class IssuerEligibilityReasonCount:
     reason: IssuerEligibilityReason
     count: int
@@ -161,11 +174,12 @@ class IssuerEligibilitySnapshot:
     last_refresh_at: datetime | None = None
     next_refresh_at: datetime | None = None
     refresh_failure_count: int = 0
+    pending_persistence_count: int = 0
 
     def __post_init__(self) -> None:
         if self.fact_count < 0 or self.excluded_count < 0 or self.persistence_error_count < 0:
             raise ValueError("issuer eligibility status counts cannot be negative")
-        if self.refresh_failure_count < 0:
+        if self.refresh_failure_count < 0 or self.pending_persistence_count < 0:
             raise ValueError("issuer eligibility refresh failure count cannot be negative")
         if self.excluded_count > self.fact_count:
             raise ValueError("issuer exclusion count cannot exceed fact count")
@@ -371,6 +385,7 @@ __all__ = [
     "HistoricalStEligibilitySnapshot",
     "IssuerEligibilityBatch",
     "IssuerEligibilityFreeze",
+    "IssuerEligibilityView",
     "IssuerEligibilityFact",
     "IssuerEligibilityReason",
     "IssuerEligibilityReasonCount",

@@ -169,12 +169,18 @@ class SQLiteCompanyFactsIndex:
             return 0
         self.initialize()
         with (
-            SqliteSession(self.path, SqliteConnectionOptions(foreign_keys=True, timeout_seconds=8)) as connection,
+            SqliteSession(
+                self.path,
+                SqliteConnectionOptions(foreign_keys=True, timeout_seconds=8),
+                cancel_requested=self._cancel_requested,
+            ) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             parent = ReadCompanyPublicationIdentity(connection)
             inserted = 0
             for fact in facts:
+                if self._cancel_requested is not None and self._cancel_requested():
+                    raise InterruptedError("company_exclusion_write_cancelled")
                 key = (fact.code, int(fact.reason), int(fact.source), fact.source_key)
                 old = connection.run(
                     "SELECT effective_at,evidence_hash FROM company_exclusion WHERE code=? AND reason=? AND source=? AND source_key=?",

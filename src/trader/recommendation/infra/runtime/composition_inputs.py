@@ -24,6 +24,7 @@ from trader.recommendation.application.runtime.run_scope import RecommendationRu
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
+from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 from trader.recommendation.infra.persistence.freeze_trace_index import SQLiteFreezeTraceIndex
@@ -61,6 +62,7 @@ class SharedRecommendationInputs:
     review_cache: ReviewCache
     input_preloader: PublishedInputPreloader
     run_scope: RecommendationRunScope
+    eligibility: CompanyEligibility
 
 
 @dataclass(frozen=True)

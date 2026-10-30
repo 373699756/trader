@@ -51,6 +51,10 @@ def test_selected_profiles_share_sources_and_budget_but_isolate_models_and_publi
         assert owner.budget is other.budget
         assert owner.market_data.quotes.gateway is other.market_data.quotes.gateway
         assert owner.market_data.research is other.market_data.research
+        assert owner.eligibility is other.eligibility is other.market_data.eligibility
+        assert owner.eligibility.view(NOW) is other.eligibility.view(NOW)
+        assert owner.eligibility in owner._application_resources().auxiliary_runtimes
+        assert owner.eligibility not in other._application_resources().auxiliary_runtimes
         assert owner.market_data.static_cache is other.market_data.static_cache
         assert owner.market_data.references is other.market_data.references
         assert owner.market_data.intraday is other.market_data.intraday
@@ -58,7 +62,7 @@ def test_selected_profiles_share_sources_and_budget_but_isolate_models_and_publi
         assert owner.tomorrow_index is not other.tomorrow_index
         assert owner.records is not other.records
         assert owner.workers.control_pool is not other.workers.control_pool
-        assert owner.workers.persistence_pool is not other.workers.persistence_pool
+        assert owner.workers.company_pool is other.workers.company_pool
         assert not other.owns_shared_resources
     for profile in profiles:
         single = BuildSystem(tmp_path / "config/runtime.json", scoring_profile=profile)

@@ -214,6 +214,7 @@ class MarketDataHealth:
                         "manifest_hash": eligibility.manifest_hash,
                         "integrity_ok": eligibility.integrity_ok,
                         "persistence_error_count": eligibility.persistence_error_count,
+                        "pending_persistence_count": eligibility.pending_persistence_count,
                         "last_error": eligibility.last_error,
                         "refresh_state": eligibility.refresh_state,
                         "last_refresh_at": (
