@@ -18,10 +18,12 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.history_sync import HistoryGapSummary, HistorySyncConfiguration, HistorySyncProgress
+from trader.download.domain.history_sync import HistoryGapSummary, HistorySyncProgress
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow, HistorySupplierRouter
@@ -317,7 +319,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         return Session(dates)
 
     monkeypatch.setattr("trader.bootstrap.BaoStockHistorySupplier", build_supplier)
-    monkeypatch.setattr("trader.bootstrap.TencentQfqSupplier", lambda _dependencies: Prices())
+    monkeypatch.setattr("trader.bootstrap.TencentQfqSupplier", lambda _dependencies, _options: Prices())
     monkeypatch.setattr("trader.bootstrap.HistoryStNameSource", lambda *_args, **_kwargs: StSource())
     monkeypatch.setattr(
         "trader.bootstrap.LoadCurrentAShareUniverse",
@@ -333,6 +335,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
             minimum_free_bytes=0,
             reference_root=(tmp_path).parent / "reference",
         ),
+        qfq_configuration=LoadQfqWindowConfiguration(Path(__file__).resolve().parents[3]),
         shutdown_timeout_seconds=2.0,
         reference=reference,
         clock=lambda: _at(dates[-1]),

@@ -16,9 +16,9 @@ class CompanyDocumentFiles:
         self,
         root: Path,
         *,
-        max_text_characters: int = 1_000_000,
-        max_bytes: int = 256 * 1024 * 1024,
-        reserve_bytes: int = 64 * 1024 * 1024,
+        max_text_characters: int,
+        max_bytes: int,
+        reserve_bytes: int,
     ) -> None:
         if min(max_text_characters, max_bytes, reserve_bytes) <= 0:
             raise ValueError("company_document_capacity_invalid")

@@ -13,7 +13,7 @@ from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_sync import NOW, ProgressRecorder, _download
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _at, _current_universe, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import history_sync_runner

@@ -38,6 +38,7 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     Integer as _integer,
 )
+from trader.infra.settings.parser import IntegerMapping as _integer_mapping
 from trader.infra.settings.parser import (
     NestedNumberMapping as _nested_number_mapping,
 )
@@ -146,7 +147,26 @@ def LoadStrategySettings(
         "strategy.fusion",
     )
     selection_raw = _mapping(raw, "selection")
+    _require_exact_keys(
+        selection_raw,
+        {
+            "default_top_k",
+            "maximum_top_k",
+            "observation_margin",
+            "thresholds",
+            "maximum_board_fraction",
+            "competition_group_limits",
+            "minimum_board_reliability",
+            "review_candidate_limit",
+        },
+        "strategy.selection",
+    )
     hard_filters_raw = _mapping(raw, "hard_filters")
+    _require_exact_keys(
+        hard_filters_raw,
+        {"blacklist_codes", "structured_risk_thresholds"},
+        "strategy.hard_filters",
+    )
     blacklist_raw = hard_filters_raw.get("blacklist_codes")
     if not isinstance(blacklist_raw, list) or any(
         not isinstance(code, str) or len(code) != 6 or not code.isdigit() for code in blacklist_raw
@@ -206,9 +226,7 @@ def LoadStrategySettings(
             observation_margin=_number(selection_raw, "observation_margin", minimum=0.0),
             thresholds=_number_mapping(selection_raw, "thresholds"),
             maximum_board_fraction=_number(selection_raw, "maximum_board_fraction", minimum=0.01, maximum=1.0),
-            competition_group_limits={
-                name: int(value) for name, value in _number_mapping(selection_raw, "competition_group_limits").items()
-            },
+            competition_group_limits=_integer_mapping(selection_raw, "competition_group_limits", minimum=1),
             minimum_board_reliability=_number(selection_raw, "minimum_board_reliability", minimum=0.0, maximum=1.0),
             review_candidate_limit=_integer(selection_raw, "review_candidate_limit", minimum=1, maximum=120),
         ),
@@ -413,6 +431,23 @@ def _validate_long_group_code(
 def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
     if not isinstance(raw, dict):
         raise ConfigurationError(f"risk rule {index} must be an object")
+    required_keys = {
+        "risk_code",
+        "strategies",
+        "trigger",
+        "severity",
+        "penalty",
+        "minimum_confidence",
+        "evidence_ttl_hours",
+        "group",
+        "combination_mode",
+        "risk_fact_id_fields",
+        "veto",
+        "allowed_evidence_types",
+    }
+    optional_keys = {"local_trigger_enabled"}
+    if not required_keys.issubset(raw) or set(raw) - required_keys - optional_keys:
+        raise ConfigurationError(f"risk rule {index} has missing or unknown fields")
     allowed_evidence_types = raw.get("allowed_evidence_types")
     if not isinstance(allowed_evidence_types, list) or any(
         not isinstance(value, str) or not value for value in allowed_evidence_types
@@ -427,6 +462,7 @@ def _parse_risk_rule(raw: object, index: int) -> RiskRuleSettings:
     ):
         raise ConfigurationError(f"risk rule {index} strategies must contain supported strategies")
     trigger = _mapping(raw, "trigger")
+    _require_exact_keys(trigger, {"factor", "operator", "thresholds"}, f"risk rule {index} trigger")
     operator = _text(trigger, "operator")
     thresholds = trigger.get("thresholds")
     if not isinstance(thresholds, list) or any(

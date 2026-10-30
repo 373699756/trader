@@ -11,6 +11,7 @@ from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSessio
 from trader.training.infra.sample_sequences import SampleSequenceLayout
 from trader.training.infra.sample_schema import SampleStorageId
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from tests.helpers.configuration import TcnFittingParametersFixture
 
 
 def test_lite_quality_limits_and_missing_values_fail_closed():
@@ -107,9 +108,7 @@ def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path)
     from dataclasses import replace
 
     from scripts.runtime_diagnostics.v5_lite import _quality
-    from trader.training.infra.profile.v5.settings import TcnFittingParameters
-
-    parameters = TcnFittingParameters(5000)
+    parameters = TcnFittingParametersFixture(minimum_industry_training_rows=5000)
     for candidate in ((250, parameters), (61, replace(parameters, minimum_industry_training_rows=10000))):
         with pytest.raises(ValueError, match="identical fit dates"):
             _quality(tmp_path / "absent", tmp_path, time.monotonic() + 10, (61, parameters), candidate)

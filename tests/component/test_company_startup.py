@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.download.domain.company_events import CompanyEventPolicy
+from tests.helpers.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
 from trader.download.domain.company_evidence import (
     CompanyDocument,
     CompanyEvidenceInput,
@@ -17,7 +17,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.recommendation.domain.market.research import DeriveCorporateRiskFeatures, ResearchComponentsFromObservation
-from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from tests.helpers.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
 
 _AT = datetime(2026, 9, 30, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 _DATES = (date(2026, 9, 29), date(2026, 9, 30), date(2026, 10, 8), date(2026, 10, 9))

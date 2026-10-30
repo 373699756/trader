@@ -15,7 +15,7 @@ from trader import bootstrap
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadQfqWindowConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
@@ -181,6 +181,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
             HistorySyncConfiguration(
                 tmp_path / "history", reference_root, sessions=3, reread_sessions=2, minimum_free_bytes=0
             ),
+            qfq_configuration=LoadQfqWindowConfiguration(_ROOT),
             shutdown_timeout_seconds=2.0,
             clock=lambda: NOW,
         )

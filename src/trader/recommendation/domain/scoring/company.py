@@ -21,17 +21,17 @@ from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmen
 
 @dataclass(frozen=True, slots=True)
 class CompanyScoringPolicy:
-    enabled: bool = False
-    tomorrow_cap: float = 2.0
-    d25_cap: float = 5.0
-    financial_max_bonus: float = 2.0
-    financial_neutral: float = 50.0
-    financial_weights: tuple[float, float, float] = (0.5, 0.3, 0.2)
-    positive_points: tuple[float, float, float] = (1.0, 2.0, 3.0)
-    risk_points: tuple[float, float, float] = (3.0, 5.0, 8.0)
-    tomorrow_sessions: int = 5
-    d25_sessions: int = 20
-    events: CompanyEventPolicy = CompanyEventPolicy()
+    enabled: bool
+    tomorrow_cap: float
+    d25_cap: float
+    financial_max_bonus: float
+    financial_neutral: float
+    financial_weights: tuple[float, float, float]
+    positive_points: tuple[float, float, float]
+    risk_points: tuple[float, float, float]
+    tomorrow_sessions: int
+    d25_sessions: int
+    events: CompanyEventPolicy
 
     def __post_init__(self) -> None:
         values = (

@@ -12,10 +12,12 @@ from zoneinfo import ZoneInfo
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_evidence import DisclosurePartition, Market
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 
 def AuditCompanyPagination(path: Path, *, budget_seconds: float) -> dict[str, object]:
+    configuration = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
     deadline = time.monotonic() + budget_seconds
     yesterday = datetime.now(ZoneInfo("Asia/Shanghai")).date() - timedelta(days=1)
     with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3)) as connection:
@@ -33,6 +35,11 @@ def AuditCompanyPagination(path: Path, *, budget_seconds: float) -> dict[str, ob
             session,
             monotonic=time.monotonic,
             sleeper=time.sleep,
+            timeout_seconds=configuration.source_timeout_seconds,
+            document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
+            request_interval_seconds=configuration.request_interval_seconds,
+            document_limits=configuration.document_limits,
+            extended_document_limits=configuration.extended_document_limits,
             cancel_requested=lambda: time.monotonic() >= deadline,
         )
         for target in targets:

@@ -17,7 +17,8 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.history_sync import HistorySupplierContext
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction

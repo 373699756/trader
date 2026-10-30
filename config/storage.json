@@ -1,0 +1,16 @@
+{
+  "storage_policy": {
+    "hdd": {
+      "connection_timeout_seconds": 5.0,
+      "read_window_rows": 512,
+      "transaction_batch_rows": 64,
+      "checkpoint_mode": "TRUNCATE"
+    },
+    "ssd": {
+      "connection_timeout_seconds": 5.0,
+      "read_window_rows": 512,
+      "transaction_batch_rows": 64,
+      "checkpoint_mode": "TRUNCATE"
+    }
+  }
+}

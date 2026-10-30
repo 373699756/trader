@@ -14,8 +14,10 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
     StructuredCompanyQuery,
 )
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from tests.helpers.configuration import (
+    CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource,
+    EastmoneyCompanySourceFixture as EastmoneyCompanySource,
+)
 from trader.infra.http_contracts import HttpResponse, HttpResponseTooLarge
 
 NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))

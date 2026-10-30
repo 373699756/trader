@@ -13,7 +13,8 @@ from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _current_universe
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
-from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncConfiguration
+from trader.download.domain.history_sync import HistoryStEligibilitySummary
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_control_index import HistoryControlIndex

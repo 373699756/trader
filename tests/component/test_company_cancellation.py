@@ -8,9 +8,11 @@ from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import Session
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from tests.helpers.configuration import (
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+)
+from tests.helpers.configuration import EastmoneyCompanySourceFixture as EastmoneyCompanySource
 from trader.infra.http_contracts import HttpCancelled
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 

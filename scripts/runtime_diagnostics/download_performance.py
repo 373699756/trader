@@ -19,22 +19,36 @@ from trader.download.domain.company_evidence import Disclosure, DisclosurePage
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, PriceAdjustment
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 from .reporting import emit_report
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _measure(root: Path) -> dict[str, float | int]:
     usage_before = resource.getrusage(resource.RUSAGE_SELF)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
+    company_configuration = LoadCompanySyncConfiguration(_PROJECT_ROOT)
+    company_policy = LoadStrategySettings(_PROJECT_ROOT / "config/strategy.json").company_scoring
     codes = tuple(str(600000 + offset) for offset in range(4402))
-    documents = CompanyDocumentFiles(root / "text")
+    documents = CompanyDocumentFiles(
+        root / "text",
+        max_text_characters=company_configuration.extended_document_limits.max_text_characters,
+        max_bytes=company_configuration.temporary_text_capacity_bytes,
+        reserve_bytes=company_configuration.temporary_disk_reserve_bytes,
+    )
     index = SQLiteCompanyEvidenceIndex(
-        root / "collection.sqlite3", facts_path=root / "company_facts.sqlite3", documents=documents
+        root / "collection.sqlite3",
+        facts_path=root / "company_facts.sqlite3",
+        documents=documents,
+        event_policy=company_policy.events,
     )
     index.initialize()
     partition = index.partitions(("sse",), now)[0]
@@ -53,7 +67,7 @@ def _measure(root: Path) -> dict[str, float | int]:
     started = time.monotonic()
     index.publish(codes, now)
     publish = time.monotonic() - started
-    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path, event_policy=company_policy.events)
     started = time.monotonic()
     cold = reader.read(codes)
     cold_read = time.monotonic() - started
@@ -75,6 +89,7 @@ def _measure(root: Path) -> dict[str, float | int]:
         wall_clock=lambda: now + timedelta(minutes=1),
         open_dates=lambda: tuple((now + timedelta(days=offset)).date() for offset in range(-5, 5)),
         monotonic=time.monotonic,
+        company_policy=company_policy,
     )
     started = time.monotonic()
     research.initialize(codes, cancelled=lambda: False)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 
 from trader.recommendation.domain.candidate.filters import HardFilterPolicy
@@ -23,10 +23,10 @@ class RecommendationSelectionSettings:
     maximum_top_k: int
     observation_margin: float
     thresholds: Mapping[str, float]
-    maximum_board_fraction: float = 1.0
-    competition_group_limits: Mapping[Board, int] = field(default_factory=lambda: MappingProxyType({}))
-    minimum_board_reliability: float = 0.0
-    review_candidate_limit: int = 6
+    maximum_board_fraction: float
+    competition_group_limits: Mapping[Board, int]
+    minimum_board_reliability: float
+    review_candidate_limit: int
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thresholds", MappingProxyType(dict(self.thresholds)))
@@ -56,8 +56,8 @@ class RecommendationPolicy:
     board_policy_version: str
     board_local_strategy_weights: Mapping[Strategy, Mapping[Board, Mapping[str, float]]]
     local_component_weights: Mapping[Strategy, Mapping[str, Mapping[str, float]]]
-    hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
-    company_scoring: CompanyScoringPolicy = CompanyScoringPolicy()
+    hard_filter: HardFilterPolicy
+    company_scoring: CompanyScoringPolicy
 
     def __post_init__(self) -> None:
         object.__setattr__(

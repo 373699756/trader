@@ -31,6 +31,7 @@ from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceRead
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.infra.settings import LoadStrategySettings
 from trader.infra.workers import BoundedExecutor
 
 
@@ -69,6 +70,9 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
     codes = tuple(sorted({code for item in items for code in item.codes}))
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     configuration = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
+    event_policy = LoadStrategySettings(
+        Path(__file__).resolve().parents[2] / "config" / "strategy.json"
+    ).company_scoring.events
     deadline = time.monotonic() + budget_seconds
     runs: list[dict[str, object]] = []
     signatures: list[str] = []
@@ -79,7 +83,13 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
         index = _SampleIndex(
             database,
             facts_path=directory / f"facts-{count}.sqlite3",
-            documents=CompanyDocumentFiles(directory / f"text-{count}"),
+            documents=CompanyDocumentFiles(
+                directory / f"text-{count}",
+                max_text_characters=configuration.extended_document_limits.max_text_characters,
+                max_bytes=configuration.temporary_text_capacity_bytes,
+                reserve_bytes=configuration.temporary_disk_reserve_bytes,
+            ),
+            event_policy=event_policy,
         )
         index.initialize()
         for market, day in sorted({(EvidenceMarket(item.codes[0]), item.published_at.date()) for item in items}):
@@ -112,6 +122,7 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                     timeout_seconds=configuration.source_timeout_seconds,
                     document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
                     document_limits=configuration.document_limits,
+                    extended_document_limits=configuration.extended_document_limits,
                     request_interval_seconds=configuration.request_interval_seconds,
                     cancel_requested=cancelled,
                 )
@@ -123,7 +134,11 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
             dependencies = CompanyEvidenceDependencies(
                 index,
                 sources[0],
-                EastmoneyCompanySource(sessions[0], monotonic=time.monotonic),
+                EastmoneyCompanySource(
+                    sessions[0],
+                    monotonic=time.monotonic,
+                    timeout_seconds=configuration.source_timeout_seconds,
+                ),
                 time.monotonic,
                 progress,
                 cancelled,
@@ -131,15 +146,22 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                 document_executor=workers,
             )
             result = SyncCompanyEvidence(
-                dependencies, CompanyEvidenceRequest(codes, now, replace(configuration, document_workers=count))
+                dependencies,
+                CompanyEvidenceRequest(
+                    codes,
+                    now,
+                    replace(configuration, document_workers=count),
+                    event_policy,
+                ),
             )
             elapsed = time.monotonic() - started
             first_attempts = attempts
             attempts = 0
             resumed = SyncCompanyEvidence(
-                dependencies, CompanyEvidenceRequest(codes, now, replace(configuration, document_workers=count))
+                dependencies,
+                CompanyEvidenceRequest(codes, now, replace(configuration, document_workers=count), event_policy),
             )
-        facts = SQLiteCompanyEvidenceReader(index.facts_path).read(codes)
+        facts = SQLiteCompanyEvidenceReader(index.facts_path, event_policy=event_policy).read(codes)
         # Compare business facts; observation timestamps naturally differ by worker count.
         comparable = tuple(
             replace(

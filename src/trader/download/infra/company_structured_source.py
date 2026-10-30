@@ -31,7 +31,7 @@ class EastmoneyCompanySource:
         session: HttpTransport,
         *,
         monotonic: Callable[[], float],
-        timeout_seconds: float = 8.0,
+        timeout_seconds: float,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         self._session = session

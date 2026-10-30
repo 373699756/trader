@@ -15,7 +15,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from tests.unit.infra.test_company_sources import NOW, Session
 from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyDocumentLimits, Disclosure
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from tests.helpers.configuration import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource
 from trader.download.infra.company_document_parser import DetectCompanyText
 from trader.infra.http_contracts import HttpCancelled, HttpResponse
 
@@ -110,7 +110,7 @@ def test_real_parser_reason_and_config_limits_reach_the_source():
         session,
         monotonic=lambda: 0,
         sleeper=lambda _: None,
-        document_limits=CompanyDocumentLimits(max_bytes=65536, max_pages=1),
+        document_limits=CompanyDocumentLimits(max_bytes=65536, max_pages=1, max_text_characters=1_000_000),
     )
     item = Disclosure(
         "cninfo", "fixture", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"

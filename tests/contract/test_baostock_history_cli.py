@@ -19,6 +19,7 @@ from trader.download.domain.history_maintenance import (
     HistoryPriceGapSummary,
 )
 from trader.download.domain.history_sync import HistorySyncProgress
+from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 from trader.entrypoints.cli import BuildParser, Main
 from trader.infra.settings import LoadRuntimeSettings
 
@@ -279,8 +280,17 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(tmp_
     previous = signal.getsignal(signal.SIGTERM)
     configured_medium = LoadRuntimeSettings(config).storage_medium
 
-    def download(configuration, *, shutdown_timeout_seconds, progress, cancel_requested, storage_medium):
+    def download(
+        configuration,
+        *,
+        qfq_configuration,
+        shutdown_timeout_seconds,
+        progress,
+        cancel_requested,
+        storage_medium,
+    ):
         assert storage_medium == configured_medium
+        assert qfq_configuration == LoadQfqWindowConfiguration(PROJECT_ROOT)
         assert shutdown_timeout_seconds == LoadRuntimeSettings(config).pipeline.shutdown_timeout_seconds
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
@@ -304,8 +314,17 @@ def test_train_cancellation_during_reference_preparation_returns_130(tmp_path, m
     previous = signal.getsignal(signal.SIGTERM)
     configured_medium = LoadRuntimeSettings(config).storage_medium
 
-    def prepare(configuration, *, shutdown_timeout_seconds, progress, cancel_requested, storage_medium):
+    def prepare(
+        configuration,
+        *,
+        qfq_configuration,
+        shutdown_timeout_seconds,
+        progress,
+        cancel_requested,
+        storage_medium,
+    ):
         assert storage_medium == configured_medium
+        assert qfq_configuration == LoadQfqWindowConfiguration(PROJECT_ROOT)
         assert shutdown_timeout_seconds == LoadRuntimeSettings(config).pipeline.shutdown_timeout_seconds
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)

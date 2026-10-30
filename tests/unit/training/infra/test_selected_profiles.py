@@ -9,9 +9,9 @@ from tests.unit.training.infra.profile.v5.test_v5_training import _history
 from trader.infra.settings import LoadRuntimeSettings
 from trader.training.application.selected_training import TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.selected_training import SelectedTrainingRequest, TrainSelectedProfiles
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from tests.helpers.configuration import TcnFittingParametersFixture
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -45,7 +45,14 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
     def settings(project, profile):
         result = LoadProfileTrainingSettings(project, profile)
         if profile == "v5":
-            return replace(result, fitting=TcnFittingParameters(10, epochs=2, early_stopping_rounds=2))
+            return replace(
+                result,
+                fitting=TcnFittingParametersFixture(
+                    minimum_industry_training_rows=10,
+                    epochs=2,
+                    early_stopping_rounds=2,
+                ),
+            )
         fitting = replace(result.fitting, minimum_industry_training_rows=10)
         if profile == "v2":
             fitting = replace(fitting, boosting_rounds=12, early_stopping_rounds=3, minimum_leaf_rows=5)

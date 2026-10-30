@@ -7,7 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.application.company_exclusions import PublishCompanyExclusions
-from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+from tests.helpers.configuration import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
 from trader.entrypoints import cli
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths

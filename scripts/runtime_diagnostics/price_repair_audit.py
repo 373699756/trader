@@ -12,7 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -22,8 +22,10 @@ from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.history_reference_index import ReadBoundHistoryReference
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.process_lock import ProcessLock
+from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 from .reporting import emit_report
@@ -76,7 +78,14 @@ def _audit(root: Path, work_root: Path | None = None) -> dict[str, object]:
     observed = datetime.combine(snapshot.data_cutoff, time(20), ZoneInfo("Asia/Shanghai"))
     with tempfile.TemporaryDirectory(prefix="trader-price-repair-") if work_root is None else nullcontext(str(work_root)) as temporary:
         work = Path(temporary)
-        configuration = HistorySyncConfiguration(work / "history", work / "reference", sessions=len(dates), minimum_free_bytes=0, supplier_retries=0)
+        configuration = replace(
+            LoadHistorySyncConfiguration(Path(__file__).resolve().parents[2], DataPaths(work / "data")),
+            history_root=work / "history",
+            reference_root=work / "reference",
+            sessions=len(dates),
+            minimum_free_bytes=0,
+            supplier_retries=0,
+        )
         SQLiteReferenceIndex(configuration.reference_root / "company_st.sqlite3").publish(subset, subset.st_evidence)
         with BaoStockHistorySupplier(configuration, price_policy=BaoStockRequestPolicy(45, 0), vendor_lock=ProcessLock(control.reference_path().parent / "baostock.lock", label="BaoStock")) as baseline:
             from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockSourceVersions

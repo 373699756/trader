@@ -69,6 +69,7 @@ from trader.infra.settings.parser import (
     Text as _text,
 )
 from trader.infra.settings.storage import ParseStorageMedium
+from trader.infra.settings.storage_policy import ParseStorageSettings
 
 
 def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
@@ -81,6 +82,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             "scheduler.json": {"pipeline"},
             "market_data.json": {"market_data"},
             "performance.json": {"performance_budgets"},
+            "storage.json": {"storage_policy"},
             "deepseek.json": {"deepseek"},
         },
         label="runtime",
@@ -104,6 +106,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             "pipeline",
             "market_data",
             "performance_budgets",
+            "storage_policy",
             "deepseek",
             "api",
             "storage",
@@ -116,6 +119,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     pipeline_raw = _mapping(raw, "pipeline")
     market_raw = _mapping(raw, "market_data")
     performance_raw = _mapping(raw, "performance_budgets")
+    storage_policy_raw = _mapping(raw, "storage_policy")
     deepseek_raw = _mapping(raw, "deepseek")
     deepseek_adaptive_raw = _mapping(deepseek_raw, "adaptive")
     api_raw = _mapping(raw, "api")
@@ -209,7 +213,11 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     # Startup timing warnings do not change feature or sample semantics.
     settings = RuntimeSettings(
         config_version=_configuration_identity(
-            "runtime", {**raw, "pipeline": {key: value for key, value in pipeline_raw.items() if key != "history_preload"}}
+            "runtime",
+            {
+                **{key: value for key, value in raw.items() if key != "storage_policy"},
+                "pipeline": {key: value for key, value in pipeline_raw.items() if key != "history_preload"},
+            },
         ),
         config_path=path,
         storage_medium=ParseStorageMedium(raw["storage"]),
@@ -258,6 +266,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             cache_policy=_parse_cache_policy(_mapping(market_raw, "cache_policy")),
         ),
         performance_budgets=_parse_performance_budgets(performance_raw),
+        storage_policy=ParseStorageSettings(storage_policy_raw),
         deepseek=DeepSeekSettings(
             enabled=deepseek_enabled,
             base_url=_text(deepseek_raw, "base_url").rstrip("/"),
@@ -356,8 +365,6 @@ def _load_tushare_token(project_root: Path, configured_file: str) -> tuple[str, 
 def _parse_tushare_settings(raw: Mapping[str, object], project_root: Path) -> TushareSettings:
     _require_exact_keys(raw, {"enabled", "points", "timeout_seconds", "token_file"}, "market_data.tushare")
     timeout = _number(raw, "timeout_seconds", minimum=0.1, maximum=8.0)
-    if timeout != 8.0:
-        raise ConfigurationError("market_data.tushare.timeout_seconds must be fixed at 8")
     token_file = _text(raw, "token_file")
     token, resolved_token_file = _load_tushare_token(project_root, token_file)
     return TushareSettings(
@@ -397,8 +404,6 @@ def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
         raise ConfigurationError("priority_queue_size must be smaller than event_queue_size")
     if settings.api.default_top_n > settings.api.maximum_top_n:
         raise ConfigurationError("default_top_n cannot exceed maximum_top_n")
-    if settings.pipeline.market_workers != 5:
-        raise ConfigurationError("pipeline.market_workers must be fixed at 5 for the five source lanes")
     if not settings.market_data.single_flight:
         raise ConfigurationError("market_data.single_flight must remain enabled")
     if settings.market_data.cache_policy.total_bytes != settings.performance_budgets.memory.cache_logical_bytes:

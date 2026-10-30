@@ -53,6 +53,8 @@ def _report(args: argparse.Namespace, codes: tuple[str, ...]) -> dict[str, objec
         token=configured.token if configured.enabled else "",
         points=configured.points,
         timeout_seconds=configured.timeout_seconds,
+        circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
+        circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
         wall_clock=lambda: datetime.now(_SHANGHAI),
     )
     started = time.monotonic()

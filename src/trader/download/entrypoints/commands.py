@@ -11,7 +11,7 @@ from pathlib import Path
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.download_settings import LoadHistorySyncConfiguration
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 
@@ -25,11 +25,13 @@ def RunDownload(
 
     runtime = LoadRuntimeSettings(config_path)
     configuration = LoadHistorySyncConfiguration(repository_root, runtime.data_paths)
+    qfq_configuration = LoadQfqWindowConfiguration(repository_root)
     progress = StderrHistorySyncProgress()
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         try:
             status = ExecuteHistoryDownload(
                 configuration,
+                qfq_configuration=qfq_configuration,
                 shutdown_timeout_seconds=runtime.pipeline.shutdown_timeout_seconds,
                 progress=progress,
                 cancel_requested=cancelled.is_set,

@@ -10,10 +10,12 @@ from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from tests.helpers.configuration import (
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
+)
 
 NOW = fixtures.NOW
 

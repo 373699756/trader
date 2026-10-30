@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
@@ -65,14 +66,14 @@ class _PerCodeRecords:
 
 class _TushareRequiredOptions(TypedDict):
     token: str
+    points: int
     timeout_seconds: float
+    circuit_breaker_failures: int
+    circuit_breaker_seconds: float
     sdk_factory: _SdkFactory
 
 
 class _TushareOptionalOptions(TypedDict, total=False):
-    points: int
-    circuit_breaker_failures: int
-    circuit_breaker_seconds: float
     cancel_requested: Callable[[], bool]
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
@@ -90,13 +91,27 @@ class TushareClient:
         **options: Unpack[_TushareOptions],
     ) -> None:
         timeout_seconds = options["timeout_seconds"]
-        if timeout_seconds != 8.0:
-            raise ValueError("Tushare transport timeout must be exactly 8 seconds")
+        points = options["points"]
+        failure_limit = options["circuit_breaker_failures"]
+        breaker_seconds = options["circuit_breaker_seconds"]
+        if not math.isfinite(timeout_seconds) or not 0.0 < timeout_seconds <= 8.0:
+            raise ValueError("Tushare transport timeout must be in (0, 8] seconds")
+        if (
+            type(points) is not int
+            or points < 0
+            or type(failure_limit) is not int
+            or failure_limit < 1
+            or isinstance(breaker_seconds, bool)
+            or not isinstance(breaker_seconds, (int, float))
+            or not math.isfinite(breaker_seconds)
+            or breaker_seconds <= 0
+        ):
+            raise ValueError("Tushare quota and circuit breaker settings are invalid")
         self._token = options["token"].strip()
-        self._points = max(0, options.get("points", 2000))
+        self._points = points
         self._timeout_seconds = timeout_seconds
-        self._failure_limit = max(1, options.get("circuit_breaker_failures", 3))
-        self._breaker_seconds = max(0.1, options.get("circuit_breaker_seconds", 60.0))
+        self._failure_limit = failure_limit
+        self._breaker_seconds = breaker_seconds
         self._sdk_factory = options["sdk_factory"]
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._monotonic = options.get("monotonic", time.monotonic)

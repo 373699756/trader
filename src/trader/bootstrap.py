@@ -23,7 +23,7 @@ from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
-from trader.download.domain import company_evidence
+from trader.download.domain import company_evidence, company_events
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.prepared_reference import PreparedReference
@@ -56,7 +56,12 @@ from trader.download.infra.published_history_snapshot import SQLitePublishedHist
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
-from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier, TencentSessionPool
+from trader.download.infra.tencent_qfq_supplier import (
+    TencentQfqDependencies,
+    TencentQfqOptions,
+    TencentQfqSupplier,
+    TencentSessionPool,
+)
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
 from trader.infra.cache import BoundedLruCache
@@ -215,9 +220,7 @@ def ExecuteSync(
     progress = company_evidence_progress.CompanyEvidenceProgress()
     history_progress = StderrHistorySyncProgress()
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
-    qfq_configuration = (
-        LoadQfqWindowConfiguration(settings.project_root) if target in ("all", "market") else None
-    )
+    qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
 
     def sync_market(reference: PreparedReference) -> QfqUpdateResult:
@@ -233,6 +236,20 @@ def ExecuteSync(
             repair_only=repair_source is not None,
         )
 
+    def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
+        if qfq_configuration is None:
+            raise RuntimeError("qfq_configuration_unavailable")
+        return ExecuteHistoryDownload(
+            configuration,
+            qfq_configuration=qfq_configuration,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
+            reference=reference,
+            progress=history_progress,
+            cancel_requested=cancel_requested,
+            storage_medium=settings.storage_medium,
+            repair_only=repair_source is not None,
+        )
+
     return SyncData(
         prepare=lambda: _prepare_reference(
             paths.reference,
@@ -241,15 +258,7 @@ def ExecuteSync(
             cancel_requested=cancel_requested,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
         ),
-        history=lambda reference: ExecuteHistoryDownload(
-            configuration,
-            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            reference=reference,
-            progress=history_progress,
-            cancel_requested=cancel_requested,
-            storage_medium=settings.storage_medium,
-            repair_only=repair_source is not None,
-        ),
+        history=sync_history,
         market=sync_market,
         company=lambda reference: _sync_company_evidence(
             settings.data_paths,
@@ -274,8 +283,11 @@ def ExecuteSync(
     ).execute(target)
 
 
-def CreateCompanyEligibilityReader(path: Path) -> CompanyEligibility:
-    return CompanyEligibility(PublishCompanyExclusions(SQLiteCompanyFactsIndex(path)), read_only=True)
+def CreateCompanyEligibilityReader(path: Path, event_policy: company_events.CompanyEventPolicy) -> CompanyEligibility:
+    return CompanyEligibility(
+        PublishCompanyExclusions(SQLiteCompanyFactsIndex(path, event_policy=event_policy)),
+        read_only=True,
+    )
 
 
 def _sync_company_evidence(
@@ -338,6 +350,8 @@ def _sync_company_evidence(
                 documents=company_document_files.CompanyDocumentFiles(
                     paths.company_documents,
                     max_text_characters=configuration.extended_document_limits.max_text_characters,
+                    max_bytes=configuration.temporary_text_capacity_bytes,
+                    reserve_bytes=configuration.temporary_disk_reserve_bytes,
                 ),
                 cancel_requested=cancel_requested,
                 event_policy=request.event_policy,
@@ -473,6 +487,7 @@ def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
 def ExecuteHistoryDownload(
     configuration: HistorySyncConfiguration,
     *,
+    qfq_configuration: QfqWindowConfiguration,
     shutdown_timeout_seconds: float,
     reference: PreparedReference | None = None,
     progress: HistorySyncProgressPort | None = None,
@@ -509,7 +524,11 @@ def ExecuteHistoryDownload(
             prices = TencentQfqSupplier(
                 TencentQfqDependencies(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
-                )
+                ),
+                TencentQfqOptions(
+                    timeout_seconds=qfq_configuration.source_timeout_seconds,
+                    retries=qfq_configuration.source_retries,
+                ),
             )
             return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, storage_kind, repair_only)).execute(
                 configuration,
@@ -560,19 +579,30 @@ def ExecuteQfqDownload(
     v3 = SQLiteQfqWindowCache(paths.daily_window, "v3")
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
     started = time.monotonic()
-    qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
+    qfq_pool = BoundedExecutor(
+        worker_count=qfq_configuration.workers,
+        queue_capacity=0,
+        thread_name_prefix="qfq-download",
+    )
     qfq_pool.start()
     qfq_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="qfq-writer")
     with ExitStack() as http_resources:
         try:
             qfq_writer.start()
             http_pool = TencentSessionPool(
-                tuple(http_resources.enter_context(OpenExternalHttp()) for _index in range(8))
+                tuple(
+                    http_resources.enter_context(OpenExternalHttp())
+                    for _index in range(qfq_configuration.workers)
+                )
             )
             tencent = TencentQfqSupplier(
                 TencentQfqDependencies(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
-                )
+                ),
+                TencentQfqOptions(
+                    timeout_seconds=qfq_configuration.source_timeout_seconds,
+                    retries=qfq_configuration.source_retries,
+                ),
             )
             baseline = http_resources.enter_context(BaoStockHistorySupplier(
                 history_configuration,
@@ -588,7 +618,6 @@ def ExecuteQfqDownload(
                 cancel_requested,
                 report,
                 qfq_configuration,
-                workers=8,
                 worker_pool=qfq_pool,
                 writer_pool=qfq_writer,
                 repair_supplier=repair_supplier,

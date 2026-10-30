@@ -35,6 +35,7 @@ from trader.training.infra.research.point_in_time_dataset_evidence import (
     PointInTimeDatasetEvidenceConflictError,
     PointInTimeDatasetEvidenceIndex,
 )
+from tests.helpers.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
 
 HASHES = tuple(character * 64 for character in "abcdef0123456789")
 
@@ -132,6 +133,8 @@ def _policy() -> ScoredSelectionPolicy:
         risk_rules={},
         max_age_seconds=60.0,
         local_risk_cap=25.0,
+        hard_filter=HardFilterPolicyFixture(),
+        company_scoring=CompanyScoringPolicyFixture(),
         top_k=1,
     )
 

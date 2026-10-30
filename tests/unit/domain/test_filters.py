@@ -10,12 +10,29 @@ from trader.recommendation.domain.candidate.filters import (
     ApplyFilters,
     BoardForCode,
     FilterTier,
-    HardFilter,
-    HardFilterPolicy,
-    LevelOneFilterRules,
-    LevelTwoFilterRules,
+    HardFilter as _HardFilter,
+    LevelOneFilterRules as _LevelOneFilterRules,
+    LevelTwoFilterRules as _LevelTwoFilterRules,
 )
 from trader.recommendation.domain.market.models import Board
+from tests.helpers.configuration import HardFilterPolicyFixture
+
+
+def HardFilter(snapshot, now, *, max_age_seconds, policy=None):
+    return _HardFilter(
+        snapshot,
+        now,
+        max_age_seconds=max_age_seconds,
+        policy=policy or HardFilterPolicyFixture(),
+    )
+
+
+def LevelOneFilterRules(*, max_age_seconds, policy=None):
+    return _LevelOneFilterRules(max_age_seconds=max_age_seconds, policy=policy or HardFilterPolicyFixture())
+
+
+def LevelTwoFilterRules(*, max_age_seconds, policy=None):
+    return _LevelTwoFilterRules(max_age_seconds=max_age_seconds, policy=policy or HardFilterPolicyFixture())
 
 
 @pytest.mark.parametrize(
@@ -162,7 +179,7 @@ def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> 
         snapshot,
         observed_at,
         max_age_seconds=20,
-        policy=HardFilterPolicy(blacklist_codes=frozenset({"600001"})),
+        policy=HardFilterPolicyFixture(blacklist_codes=frozenset({"600001"})),
     )
 
     assert result.allowed is False

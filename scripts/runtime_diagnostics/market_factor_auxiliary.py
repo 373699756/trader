@@ -15,6 +15,7 @@ from trader.infra.http_contracts import HttpError
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.research import LongResearchPolicy, ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
+from trader.recommendation.domain.scoring.company import CompanyScoringPolicy
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
@@ -35,16 +36,18 @@ def ProbeAuxiliary(
     *,
     company_database: Path,
     open_dates: tuple[date, ...],
+    company_policy: CompanyScoringPolicy,
 ) -> AuxiliaryInputs:
     """Read the published risk snapshot; only minute probes contact a supplier."""
     research: dict[str, ResearchObservation] = {}
     minutes: dict[str, tuple[MinuteBar, ...]] = {}
     reports: list[dict[str, object]] = []
     reader = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(company_database),
+        SQLiteCompanyEvidenceReader(company_database, event_policy=company_policy.events),
         wall_clock=lambda: at,
         open_dates=lambda: open_dates,
         monotonic=time.monotonic,
+        company_policy=company_policy,
     )
     reader.initialize(codes[:3], cancelled=lambda: False)
     for index, code in enumerate(codes[:3]):

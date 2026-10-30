@@ -376,6 +376,23 @@ def _sqlite_adapter_cases(
     from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
     from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 
+    document_options: dict[str, object] = {}
+    index_options: dict[str, object] = {}
+    reader_options: dict[str, object] = {}
+    if checkout == Path(__file__).resolve().parents[2]:
+        from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+        from trader.infra.settings import LoadStrategySettings
+
+        company_configuration = LoadCompanySyncConfiguration(checkout)
+        event_policy = LoadStrategySettings(checkout / "config/strategy.json").company_scoring.events
+        document_options = {
+            "max_text_characters": company_configuration.extended_document_limits.max_text_characters,
+            "max_bytes": company_configuration.temporary_text_capacity_bytes,
+            "reserve_bytes": company_configuration.temporary_disk_reserve_bytes,
+        }
+        index_options = {"event_policy": event_policy}
+        reader_options = {"event_policy": event_policy}
+
     codes = tuple(f"600{number:03d}" for number in range(size))
     days = tuple(date(2026, 1, day) for day in range(1, 21))
     revisions = []
@@ -437,7 +454,8 @@ def _sqlite_adapter_cases(
     company = SQLiteCompanyEvidenceIndex(
         root / "company.sqlite3",
         facts_path=root / "company_facts.sqlite3",
-        documents=CompanyDocumentFiles(root / "text"),
+        documents=CompanyDocumentFiles(root / "text", **document_options),
+        **index_options,
     )
     company.initialize()
     disclosure_partition = company.partitions(("sse",), now)[0]
@@ -451,7 +469,7 @@ def _sqlite_adapter_cases(
         lambda: company.commit_page(disclosure_partition, DisclosurePage(disclosures, len(disclosures), False), now),
     )
     measure("company_publish", lambda: company.publish(codes, now))
-    reader = SQLiteCompanyEvidenceReader(company.facts_path, raw_path=company.path)
+    reader = SQLiteCompanyEvidenceReader(company.facts_path, raw_path=company.path, **reader_options)
     expected = reader.read(codes)
 
     def read_company() -> None:

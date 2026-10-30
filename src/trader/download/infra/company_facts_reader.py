@@ -21,14 +21,11 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 
-_DEFAULT_EVENT_POLICY = CompanyEventPolicy()
-
-
 class SQLiteCompanyEvidenceReader:
     """Only the published, indexed projection is visible to recommendation."""
 
     def __init__(
-        self, path: Path, *, raw_path: Path | None = None, event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY
+        self, path: Path, *, event_policy: CompanyEventPolicy, raw_path: Path | None = None
     ) -> None:
         self.path = path
         self._raw_path = raw_path

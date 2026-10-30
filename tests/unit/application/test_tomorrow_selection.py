@@ -41,8 +41,8 @@ from trader.recommendation.domain.scoring.company import (
     BuildCompanyScoringContext,
     CompanyScoringCalendar,
     CompanyFinancialScores,
-    CompanyScoringPolicy,
 )
+from tests.helpers.configuration import CompanyScoringPolicyFixture as CompanyScoringPolicy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=SHANGHAI)

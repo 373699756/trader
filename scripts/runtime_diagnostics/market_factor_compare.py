@@ -884,6 +884,7 @@ def _official_references(
 def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) -> dict[str, object]:
     budget = DiagnosticBudget(args.source_loop_seconds, args.task_seconds)
     settings = LoadRuntimeSettings(args.config)
+    strategy_settings = LoadStrategySettings(settings.strategy_config_path)
     at = _now()
     started = time.monotonic()
     local_references = ReadReferences(settings.data_paths.reference, at)
@@ -913,7 +914,10 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
     reference_gateway.update_reference_observations((*base_references.observations, *official))
     official = tuple(reference_gateway.reference_observations(tuple(item.subject_key for item in official)))
     official_codes = SelectCodes(official, 0)
-    eligibility_index = CreateCompanyEligibilityReader(settings.data_paths.company)
+    eligibility_index = CreateCompanyEligibilityReader(
+        settings.data_paths.company,
+        strategy_settings.company_scoring.events,
+    )
     eligibility_status = eligibility_index.status()
     if not eligibility_status.integrity_ok:
         raise RuntimeError("issuer eligibility snapshot integrity failed")
@@ -962,11 +966,12 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
         auxiliary = ProbeAuxiliary(
             SelectCodes(official, 3),
             _now(),
-            LoadStrategySettings(settings.strategy_config_path).long_research,
+            strategy_settings.long_research,
             args.timeout_seconds,
             auxiliary_pool,
             company_database=settings.data_paths.company,
             open_dates=local_references.open_dates,
+            company_policy=strategy_settings.company_scoring,
         )
         for size in args.sizes:
             codes = SelectCodes(official, size)

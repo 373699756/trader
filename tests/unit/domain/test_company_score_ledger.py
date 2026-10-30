@@ -8,7 +8,7 @@ import pytest
 
 from trader.download.domain.company_descriptions import CompanyPositiveDescription, CompanyRiskDescription
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
-from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, CompanySubject
+from trader.download.domain.company_events import CompanyDataState, CompanySubject
 from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, CompanyRatio, Disclosure
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
@@ -23,13 +23,21 @@ from trader.recommendation.domain.scoring.company import (
     BuildScoreLedger,
     CompanyAdjustments,
     CompanyFinancialScores,
-    CompanyScoringPolicy,
     IsCompanyRiskEffective,
     ScoreLedgerInput,
 )
 from trader.recommendation.infra.persistence.score_ledger_codec import DecodeScoreLedger
+from tests.helpers.configuration import CompanyEventPolicyFixture, CompanyScoringPolicyFixture
 
 AT = datetime(2026, 10, 27, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def CompanyEventPolicy(**changes):
+    return CompanyEventPolicyFixture(**changes)
+
+
+def CompanyScoringPolicy(**changes):
+    return CompanyScoringPolicyFixture(**changes)
 
 
 def _adjustment(points):
@@ -281,11 +289,12 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
             ),
         )
     )
-    index = SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3")
+    event_policy = CompanyEventPolicy()
+    index = SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3", event_policy=event_policy)
     index.initialize()
     sources = {key: "cninfo" for event in (*facts.risk_events, *facts.positive_events) for key in event.evidence_ids}
     index.publish((facts,), sources, None, AT)
-    reader = SQLiteCompanyEvidenceReader(index.path)
+    reader = SQLiteCompanyEvidenceReader(index.path, event_policy=event_policy)
     restored = reader.read((facts.code,))[0]
     assert restored == replace(
         facts,

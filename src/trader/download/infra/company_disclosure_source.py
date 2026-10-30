@@ -43,8 +43,6 @@ from trader.infra.http_contracts import (
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_DEFAULT_DOCUMENT_LIMITS = CompanyDocumentLimits()
-_DEFAULT_EXTENDED_LIMITS = CompanyDocumentLimits(64 * 1024 * 1024, 1000, 2_000_000)
 _DEFAULT_POLICIES = CompanyDocumentPolicies("text_4:poppler-path", "ocr_3:unavailable", "limits_1:default")
 _DEFAULT_TEXT_CAPABILITY = CompanyTextCapability("poppler-path", "pdftotext", "pdfinfo")
 
@@ -56,11 +54,11 @@ class CninfoMarketDisclosureSource:
         *,
         monotonic: Callable[[], float],
         sleeper: Callable[[float], None],
-        timeout_seconds: float = 8.0,
-        document_parse_timeout_seconds: float = 10.0,
-        request_interval_seconds: float = 1.0,
-        document_limits: CompanyDocumentLimits = _DEFAULT_DOCUMENT_LIMITS,
-        extended_document_limits: CompanyDocumentLimits = _DEFAULT_EXTENDED_LIMITS,
+        timeout_seconds: float,
+        document_parse_timeout_seconds: float,
+        request_interval_seconds: float,
+        document_limits: CompanyDocumentLimits,
+        extended_document_limits: CompanyDocumentLimits,
         document_policies: CompanyDocumentPolicies = _DEFAULT_POLICIES,
         text_capability: CompanyTextCapability = _DEFAULT_TEXT_CAPABILITY,
         ocr_engine: CompanyOcrEngine | None = None,

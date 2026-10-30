@@ -13,6 +13,8 @@ import pytest
 
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+from trader.infra.settings import LoadStrategySettings
 from trader.infra.process_lock import ProcessLock
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -84,12 +86,20 @@ def test_terminal_ctrl_c_exits_and_releases_lock_and_database(tmp_path, scenario
 def _child_main():
     scenario, directory = sys.argv[1:3]
     root = Path(directory)
+    configuration = LoadCompanySyncConfiguration(_ROOT)
+    event_policy = LoadStrategySettings(_ROOT / "config/strategy.json").company_scoring.events
     with ManualCancellation(timeout_seconds=0.8 if scenario == "deadline" else 30) as cancelled:
         with ProcessLock(root / "evidence.lock"):
             index = SQLiteCompanyEvidenceIndex(
                 root / "evidence.sqlite3",
                 facts_path=(root / "evidence.sqlite3").parent / "company_facts.sqlite3",
-                documents=CompanyDocumentFiles((root / "evidence.sqlite3").parent / "text"),
+                documents=CompanyDocumentFiles(
+                    (root / "evidence.sqlite3").parent / "text",
+                    max_text_characters=configuration.extended_document_limits.max_text_characters,
+                    max_bytes=configuration.temporary_text_capacity_bytes,
+                    reserve_bytes=configuration.temporary_disk_reserve_bytes,
+                ),
+                event_policy=event_policy,
                 cancel_requested=cancelled.is_set,
             )
             index.initialize()

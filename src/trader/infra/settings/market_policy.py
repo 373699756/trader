@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from trader.infra.cache_contracts import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
 from trader.infra.settings.models import (
+    DatabaseMediumPerformanceSettings,
     DatabasePerformanceSettings,
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
@@ -198,16 +199,29 @@ def ParsePerformanceBudgets(raw: Mapping[str, object]) -> PerformanceBudgetSetti
     )
     relative = Number(raw, "relative_regression_percent", minimum=0.000001)
     database_raw = RequireMapping(raw, "database")
-    RequireExactKeys(
-        database_raw, {"sqlite_improvement_percent", "parquet_improvement_percent", "minimum_wins"},
-        "performance_budgets.database",
-    )
+    RequireExactKeys(database_raw, {"hdd", "ssd"}, "performance_budgets.database")
     database = DatabasePerformanceSettings(
-        Number(database_raw, "sqlite_improvement_percent", minimum=0.000001),
-        Number(database_raw, "parquet_improvement_percent", minimum=0.000001),
-        Integer(database_raw, "minimum_wins", minimum=1),
+        _parse_database_medium(RequireMapping(database_raw, "hdd"), "hdd"),
+        _parse_database_medium(RequireMapping(database_raw, "ssd"), "ssd"),
     )
     return PerformanceBudgetSettings(workload, rounds, latency, data_age, memory, relative, database)
+
+
+def _parse_database_medium(raw: Mapping[str, object], medium: str) -> DatabaseMediumPerformanceSettings:
+    RequireExactKeys(
+        raw,
+        {"sqlite_improvement_percent", "parquet_improvement_percent", "minimum_wins", "evidence_status"},
+        f"performance_budgets.database.{medium}",
+    )
+    evidence_status = Text(raw, "evidence_status")
+    if evidence_status not in {"validated", "unverified"}:
+        raise ConfigurationError(f"performance_budgets.database.{medium}.evidence_status is invalid")
+    return DatabaseMediumPerformanceSettings(
+        Number(raw, "sqlite_improvement_percent", minimum=0.000001),
+        Number(raw, "parquet_improvement_percent", minimum=0.000001),
+        Integer(raw, "minimum_wins", minimum=1),
+        evidence_status,
+    )
 
 
 def _positive_number_mapping(

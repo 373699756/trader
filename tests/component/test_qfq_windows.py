@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.helpers.qfq import QFQ_CONFIGURATION, publish_windows
+from tests.helpers.qfq import QFQ_CONFIGURATION, QFQ_TENCENT_OPTIONS, publish_windows
 from tests.reference_fixtures import PreparedFixture
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -35,7 +35,6 @@ from trader.download.domain.published_history import (
 from trader.download.domain.qfq_window import (
     QfqPendingReason,
     QfqUpdateResult,
-    QfqWindowConfiguration,
     QfqWindowIncompleteError,
 )
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
@@ -313,7 +312,7 @@ def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
 
 
 def test_non_default_configuration_controls_supplier_and_both_published_windows(tmp_path) -> None:
-    configuration = QfqWindowConfiguration(200, 50)
+    configuration = replace(QFQ_CONFIGURATION, v2_sessions=200, v3_sessions=50)
     supplier = Supplier(requested_sessions=200)
     updater = UpdateQfqWindows(
         SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2"),
@@ -790,7 +789,10 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
             )
 
     security = BaoStockSecurity("688001", "fixture", "star", DAYS[-sessions], None, "fixture")
-    supplier = TencentQfqSupplier(TencentQfqDependencies(Http, lambda _as_of: (security,), lambda: False))
+    supplier = TencentQfqSupplier(
+        TencentQfqDependencies(Http, lambda _as_of: (security,), lambda: False),
+        QFQ_TENCENT_OPTIONS,
+    )
     logs = []
     updater = UpdateQfqWindows(
         SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2"),
@@ -941,7 +943,11 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
     paths = DataPaths(tmp_path / "data")
     history_configuration, qfq_configuration = _qfq_download_configuration(tmp_path, paths)
     history_configuration = replace(history_configuration, supplier_timeout_seconds=12.5)
-    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
+    monkeypatch.setattr(
+        bootstrap,
+        "TencentQfqSupplier",
+        lambda _dependencies, _options: Tencent(codes=("600001", "600002")),
+    )
     def baostock(configuration, **options):
         assert options["price_policy"].timeout_seconds == configuration.supplier_timeout_seconds == 12.5
         return Bao()
@@ -982,7 +988,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
             )
 
     class Tencent(Supplier):
-        def __init__(self, dependencies):
+        def __init__(self, dependencies, _options):
             super().__init__(codes=(eligible.code,))
             self.dependencies = dependencies
 
@@ -1034,7 +1040,7 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
     _install_download_config(tmp_path)
     paths = DataPaths(tmp_path / "data")
     supplier = Tencent()
-    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: supplier)
+    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies, _options: supplier)
     with HistoryMaintenanceLock(tmp_path / "data/market/daily_window.lock"):
         result = bootstrap.ExecuteQfqDownload(
             paths,
@@ -1072,7 +1078,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
             return super().fetch_tencent_window(security, dates)
 
     _install_download_config(tmp_path)
-    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent())
+    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies, _options: Tencent())
     root = tmp_path / "data/history"
     paths = DataPaths(tmp_path / "data")
     with ThreadPoolExecutor(max_workers=1) as pool:

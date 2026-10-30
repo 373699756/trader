@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingRow
@@ -55,7 +56,7 @@ def PrepareTrainingHistory(root: Path, *, size: int, sessions: int) -> Path:
     # A third committed revision is deliberately not published and must be invisible.
     hidden = replace(source, qfq=replace(source.qfq, amount=source.qfq.amount + 9876))
     partition.save_revisions((HistoryRevision(3, "main", hidden, False, "fixture", "fixture"),))
-    return config.history_root
+    return cast(Path, config.history_root)
 
 
 def TrainingRowsHash(rows: Iterable[HistoryTrainingRow]) -> tuple[str, int]:

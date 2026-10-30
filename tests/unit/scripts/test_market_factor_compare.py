@@ -331,7 +331,12 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     monkeypatch.setattr(
         comparison, "ExchangeSecurityMasterClient", lambda **kwargs: SimpleNamespace(fetch=lambda at: ())
     )
-    monkeypatch.setattr(comparison, "LoadStrategySettings", lambda path: SimpleNamespace(long_research=None))
+    company_policy = LoadStrategySettings(Path("config/strategy.json")).company_scoring
+    monkeypatch.setattr(
+        comparison,
+        "LoadStrategySettings",
+        lambda path: SimpleNamespace(long_research=None, company_scoring=company_policy),
+    )
     monkeypatch.setattr(comparison, "ProbeAuxiliary", lambda *args, **kwargs: SimpleNamespace(report=()))
     monkeypatch.setattr(
         comparison,
@@ -618,14 +623,16 @@ def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unkno
     pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="factor-test")
     pool.start()
     try:
+        strategy = LoadStrategySettings(Path("config/strategy.json"))
         result = auxiliary.ProbeAuxiliary(
             ("600001",),
             AT,
-            LoadStrategySettings(Path("config/strategy.json")).long_research,
+            strategy.long_research,
             1,
             pool,
             company_database=Path("unused/evidence.sqlite3"),
             open_dates=(AT.date(),),
+            company_policy=strategy.company_scoring,
         )
     finally:
         pool.stop(wait=True, cancel_futures=True)

@@ -281,7 +281,12 @@ class _HistorySync:
                 self.index,
                 self.executor,
                 self.writer,
-                self.write_tuning or ChooseHistoryWriteTuning(self.storage_kind, fresh=current_snapshot is None),
+                self.write_tuning
+                or ChooseHistoryWriteTuning(
+                    self.storage_kind,
+                    self.configuration.write_batches,
+                    fresh=current_snapshot is None,
+                ),
                 self.cancel,
                 self.progress,
             )

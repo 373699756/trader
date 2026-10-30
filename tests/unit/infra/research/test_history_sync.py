@@ -24,7 +24,6 @@ from trader.download.domain.history_price_qualification import QualifyPriceOverl
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
-    HistorySyncConfiguration,
     HistorySyncProgress,
 )
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
@@ -36,6 +35,7 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_write_tuning import HistoryWriteTuning
 from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteSession, SqliteTransaction
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

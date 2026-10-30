@@ -19,9 +19,9 @@ DocumentRoute = Literal["standard", "ocr", "limits"]
 
 @dataclass(frozen=True)
 class CompanyDocumentLimits:
-    max_bytes: int = 16 * 1024 * 1024
-    max_pages: int = 200
-    max_text_characters: int = 1_000_000
+    max_bytes: int
+    max_pages: int
+    max_text_characters: int
 
     def __post_init__(self) -> None:
         if not (
@@ -37,17 +37,19 @@ class CompanySyncConfiguration:
     source_timeout_seconds: float
     document_parse_timeout_seconds: float
     request_interval_seconds: float
-    document_failure_retry_seconds: float = 86400.0
-    document_transient_retry_seconds: float = 900.0
-    document_limits: CompanyDocumentLimits = CompanyDocumentLimits()
-    extended_document_limits: CompanyDocumentLimits = CompanyDocumentLimits(64 * 1024 * 1024, 1000, 2_000_000)
-    document_ocr_timeout_seconds: float = 120.0
-    document_ocr_max_pages: int = 50
-    document_ocr_dpi: int = 150
-    document_ocr_languages: str = "chi_sim+eng"
-    directory_batch_pages: int = 20
-    document_batch_size: int = 50
-    document_workers: int = 1
+    document_failure_retry_seconds: float
+    document_transient_retry_seconds: float
+    document_limits: CompanyDocumentLimits
+    extended_document_limits: CompanyDocumentLimits
+    document_ocr_timeout_seconds: float
+    document_ocr_max_pages: int
+    document_ocr_dpi: int
+    document_ocr_languages: str
+    temporary_text_capacity_bytes: int
+    temporary_disk_reserve_bytes: int
+    directory_batch_pages: int
+    document_batch_size: int
+    document_workers: int
 
     def __post_init__(self) -> None:
         values = (
@@ -66,6 +68,8 @@ class CompanySyncConfiguration:
             or not 72 <= self.document_ocr_dpi <= 300
             or self.document_ocr_timeout_seconds > 600
             or not self.document_ocr_languages
+            or self.temporary_text_capacity_bytes < self.extended_document_limits.max_text_characters * 4
+            or self.temporary_disk_reserve_bytes < 1
             or any(not part.replace("_", "").isalnum() for part in self.document_ocr_languages.split("+"))
             or self.extended_document_limits.max_bytes < self.document_limits.max_bytes
             or self.extended_document_limits.max_pages < self.document_limits.max_pages
@@ -113,9 +117,9 @@ class CompanyEvidenceRequest:
     codes: tuple[str, ...]
     observed_at: datetime
     configuration: CompanySyncConfiguration
+    event_policy: CompanyEventPolicy
     news_codes: tuple[str, ...] = ()
     stock_names: tuple[tuple[str, str], ...] = ()
-    event_policy: CompanyEventPolicy = CompanyEventPolicy()
     listings: tuple[CompanyListing, ...] = ()
     document_repair: DocumentRepairMode | None = None
 
@@ -132,14 +136,14 @@ class CompanyEvidenceRequest:
     ) -> CompanyEvidenceRequest:
         population = reference.eligible_universe
         return cls(
-            tuple(item.code for item in population),
-            observed_at,
-            configuration,
-            news_codes,
-            tuple((item.code, item.name) for item in population),
-            event_policy,
-            tuple(CompanyListing(item.code, item.listed_on) for item in population),
-            document_repair,
+            codes=tuple(item.code for item in population),
+            observed_at=observed_at,
+            configuration=configuration,
+            event_policy=event_policy,
+            news_codes=news_codes,
+            stock_names=tuple((item.code, item.name) for item in population),
+            listings=tuple(CompanyListing(item.code, item.listed_on) for item in population),
+            document_repair=document_repair,
         )
 
     def __post_init__(self) -> None:

@@ -7,10 +7,12 @@ from zoneinfo import ZoneInfo
 
 from tests.reference_fixtures import PreparedFixture
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
-from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from tests.helpers.configuration import (
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    PublishedCompanyResearchFixture as PublishedCompanyResearch,
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
+)
 
 
 def test_company_projection_is_incremental_and_reads_full_population_without_network(tmp_path):

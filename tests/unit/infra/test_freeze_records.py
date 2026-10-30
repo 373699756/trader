@@ -27,9 +27,9 @@ from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmen
 from trader.recommendation.domain.scoring.company import (
     BuildScoreLedger,
     CompanyAdjustments,
-    CompanyScoringPolicy,
     ScoreLedgerInput,
 )
+from tests.helpers.configuration import CompanyScoringPolicyFixture as CompanyScoringPolicy
 from trader.recommendation.infra.persistence import freeze_records as freeze_records_module
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords

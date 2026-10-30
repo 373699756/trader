@@ -35,6 +35,7 @@ _RUNTIME_FILES = {
     "market_data.json": ("market_data",),
     "cache.json": ("cache_policy",),
     "performance.json": ("performance_budgets",),
+    "storage.json": ("storage_policy",),
     "deepseek.json": ("deepseek",),
 }
 _STRATEGY_FILES = {
@@ -724,9 +725,10 @@ def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(
         {"process_peak_rss_bytes": 2147483649, "growth_percent": 21}
     )
     raw["performance_budgets"]["relative_regression_percent"] = 6
-    raw["performance_budgets"]["database"].update(
+    raw["performance_budgets"]["database"]["hdd"].update(
         {"sqlite_improvement_percent": 11, "parquet_improvement_percent": 16, "minimum_wins": 3}
     )
+    raw["storage_policy"]["hdd"]["read_window_rows"] = 513
 
     runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
@@ -742,7 +744,36 @@ def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(
     assert runtime.performance_budgets.memory.process_peak_rss_bytes == 2147483649
     assert runtime.performance_budgets.memory.growth_percent == 21
     assert runtime.performance_budgets.relative_regression_percent == 6
-    assert runtime.performance_budgets.database.minimum_wins == 3
+    assert runtime.performance_budgets.database.hdd.minimum_wins == 3
+    assert runtime.storage_policy.hdd.read_window_rows == 513
+
+
+def test_storage_policy_changes_do_not_invalidate_feature_identity(tmp_path) -> None:
+    baseline = LoadRuntimeSettings(RUNTIME_CONFIG)
+    raw = _runtime_document()
+    raw["storage_policy"]["hdd"]["read_window_rows"] = 513
+
+    changed = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+    assert changed.storage_policy.hdd.read_window_rows == 513
+    assert changed.config_version == baseline.config_version
+
+
+@pytest.mark.parametrize(
+    ("medium", "field", "value"),
+    (
+        ("hdd", "connection_timeout_seconds", 0),
+        ("ssd", "read_window_rows", 0),
+        ("hdd", "transaction_batch_rows", True),
+        ("ssd", "checkpoint_mode", "UNKNOWN"),
+    ),
+)
+def test_storage_policy_rejects_invalid_values(tmp_path, medium: str, field: str, value: object) -> None:
+    raw = _runtime_document()
+    raw["storage_policy"][medium][field] = value
+
+    with pytest.raises(ConfigurationError):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
 
 @pytest.mark.parametrize(
@@ -826,6 +857,9 @@ def test_qfq_windows_are_loaded_from_download_configuration(tmp_path) -> None:
         {"profile": "v2", "sessions": 200},
         {"profile": "v3", "sessions": 50},
     ]
+    document["online_qfq"].update(
+        {"workers": 7, "source_timeout_seconds": 14.5, "source_retries": 1}
+    )
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
 
     settings = LoadQfqWindowConfiguration(tmp_path)
@@ -833,6 +867,9 @@ def test_qfq_windows_are_loaded_from_download_configuration(tmp_path) -> None:
     assert settings.v2_sessions == 200
     assert settings.v3_sessions == 50
     assert settings.maximum_sessions == 200
+    assert settings.workers == 7
+    assert settings.source_timeout_seconds == 14.5
+    assert settings.source_retries == 1
 
 
 def test_qfq_windows_reject_short_profile_larger_than_long_profile(tmp_path) -> None:
@@ -923,7 +960,6 @@ def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
     (
         ("fusion", "confidence_coverage_min", 0.1, "coverage and known-dimension"),
         ("fusion", "minimum_known_dimensions", 1, "coverage and known-dimension"),
-        ("selection", "observation_margin", 5, "observation margin"),
     ),
 )
 def test_fixed_review_and_observation_gates_cannot_drift(
@@ -939,6 +975,25 @@ def test_fixed_review_and_observation_gates_cannot_drift(
 
     with pytest.raises(ConfigurationError, match=message):
         LoadStrategySettings(strategy_path)
+
+
+def test_adjustable_selection_gate_reaches_policy_and_changes_identity(tmp_path) -> None:
+    baseline = LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json")
+    raw = _strategy_document()
+    raw["selection"]["observation_margin"] = 5
+    changed = LoadStrategySettings(_write_strategy_config(tmp_path, raw))
+
+    assert changed.selection.observation_margin == 5
+    assert changed.strategy_version != baseline.strategy_version
+    assert _recommendation_policy(changed).selection.observation_margin == 5
+
+
+def test_competition_group_limits_reject_fractional_values(tmp_path) -> None:
+    raw = _strategy_document()
+    raw["selection"]["competition_group_limits"]["main"] = 2.5
+
+    with pytest.raises(ConfigurationError, match="integers"):
+        LoadStrategySettings(_write_strategy_config(tmp_path, raw))
 
 
 @pytest.mark.parametrize("weight_family", ("dimension", "board_local"))
@@ -1109,7 +1164,7 @@ def test_incomplete_risk_trigger_contract_is_rejected(tmp_path) -> None:
     del raw["risk_rules"][0]["trigger"]
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="trigger"):
+    with pytest.raises(ConfigurationError, match="missing or unknown fields"):
         LoadStrategySettings(strategy_path)
 
 
@@ -1162,13 +1217,16 @@ def test_news_signal_is_required(tmp_path) -> None:
         LoadStrategySettings(changed_path)
 
 
-def test_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> None:
+def test_news_signal_window_is_adjustable_and_changes_identity(tmp_path) -> None:
+    baseline = LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json")
     raw = _strategy_document()
     raw["news_signal"]["lookback_hours"] = 48
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="fixed at 72h/1h and 75/50/25"):
-        LoadStrategySettings(changed_path)
+    changed = LoadStrategySettings(changed_path)
+
+    assert changed.news_signal.lookback_hours == 48
+    assert changed.strategy_version != baseline.strategy_version
 
 
 def test_tomorrow_tail_signal_is_required(tmp_path) -> None:
@@ -1180,22 +1238,20 @@ def test_tomorrow_tail_signal_is_required(tmp_path) -> None:
         LoadStrategySettings(changed_path)
 
 
-def test_tomorrow_tail_signal_fixed_formula_cannot_drift(tmp_path) -> None:
+def test_tomorrow_tail_signal_window_is_adjustable(tmp_path) -> None:
     raw = _strategy_document()
     raw["tomorrow_tail_signal"]["lookback_minutes"] = 20
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
-        LoadStrategySettings(changed_path)
+    assert LoadStrategySettings(changed_path).tomorrow_tail_signal.lookback_minutes == 20
 
 
-def test_tomorrow_tail_signal_rejects_manual_factor_version(tmp_path) -> None:
+def test_tomorrow_tail_signal_adjustment_reaches_policy_but_factor_version_is_rejected(tmp_path) -> None:
     raw = _strategy_document()
     raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 49
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
-        LoadStrategySettings(changed_path)
+    assert LoadStrategySettings(changed_path).tomorrow_tail_signal.volume_score_points_per_ratio == 49
     raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 50
     raw["factor_index"]["tail_volume_ratio"]["version"] = "3"
     changed_path = _write_strategy_config(tmp_path, raw)
@@ -1213,7 +1269,7 @@ def test_tomorrow_tail_factor_index_cannot_contradict_executable_formula(tmp_pat
         LoadStrategySettings(changed_path)
 
 
-def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None:
+def test_d25_market_regime_policy_is_required_and_adjustable(tmp_path) -> None:
     raw = _strategy_document()
     del raw["market_regime"]["risk_on_breadth_min"]
     changed_path = _write_strategy_config(tmp_path, raw)
@@ -1225,8 +1281,7 @@ def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None
     raw["market_regime"]["risk_on_breadth_min"] = 61
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="market regime boundaries are fixed"):
-        LoadStrategySettings(changed_path)
+    assert LoadStrategySettings(changed_path).market_regime.risk_on_breadth_min == 61
 
 
 def test_long_research_contract_is_required_and_hashes_company_policy_changes(tmp_path) -> None:

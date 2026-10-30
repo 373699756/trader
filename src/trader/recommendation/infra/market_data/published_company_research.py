@@ -53,7 +53,6 @@ class _CompanyInputOptions(TypedDict, total=False):
     reserve_bytes: Callable[[int], bool]
     source_versions: Callable[[], Mapping[str, str]]
     config_version: str
-    company_policy: CompanyScoringPolicy
 
 
 class PublishedCompanyResearch:
@@ -64,6 +63,7 @@ class PublishedCompanyResearch:
         wall_clock: Callable[[], datetime],
         open_dates: Callable[[], tuple[date, ...]],
         monotonic: Callable[[], float],
+        company_policy: CompanyScoringPolicy,
         **options: Unpack[_CompanyInputOptions],
     ) -> None:
         self._reader = reader
@@ -72,7 +72,7 @@ class PublishedCompanyResearch:
         self._monotonic = monotonic
         self._reserve_bytes = options.get("reserve_bytes")
         self._source_versions = options.get("source_versions")
-        self._company_policy = options.get("company_policy", CompanyScoringPolicy())
+        self._company_policy = company_policy
         self._config_version = options.get("config_version", "company")
         self._initialization_lock = threading.Lock()
         self._lock = threading.RLock()

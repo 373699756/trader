@@ -9,7 +9,7 @@ from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _updater,
 from tests.helpers.history import RunHistoryFixture
 from tests.unit.infra.research.test_history_sync import FakeSupplier, _download
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex

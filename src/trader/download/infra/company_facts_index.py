@@ -27,9 +27,6 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 
-_DEFAULT_EVENT_POLICY = CompanyEventPolicy()
-
-
 @dataclass(frozen=True, slots=True)
 class CompanyPublicationIdentity:
     content_hash: bytes
@@ -98,7 +95,7 @@ class SQLiteCompanyFactsIndex:
         self,
         path: Path,
         *,
-        event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY,
+        event_policy: CompanyEventPolicy,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         self.path = path

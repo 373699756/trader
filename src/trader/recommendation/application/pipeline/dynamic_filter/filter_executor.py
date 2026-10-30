@@ -251,6 +251,7 @@ def _selection_policy(
         top_k=min(policy.selection.default_top_k, 10),
         minimum_local_score=minimum_score if minimum_score is not None else 100.0,
         hard_filter=policy.hard_filter,
+        company_scoring=policy.company_scoring,
         strategy=options.strategy,
     )
 

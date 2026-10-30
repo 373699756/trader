@@ -285,7 +285,28 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "data_dir": str(runtime.data_paths.root),
         "shutdown_timeout_seconds": runtime.pipeline.shutdown_timeout_seconds,
         "history_sessions": download.sessions,
+        "history_write_batches": {
+            "maximum_codes": download.write_batches.maximum_codes,
+            "maximum_cells": download.write_batches.maximum_cells,
+        },
         "qfq_sessions": {"v2": qfq.v2_sessions, "v3": qfq.v3_sessions},
+        "qfq_workers": qfq.workers,
+        "qfq_source_timeout_seconds": qfq.source_timeout_seconds,
+        "qfq_source_retries": qfq.source_retries,
+        "storage_policy": {
+            "hdd": {
+                "connection_timeout_seconds": runtime.storage_policy.hdd.connection_timeout_seconds,
+                "read_window_rows": runtime.storage_policy.hdd.read_window_rows,
+                "transaction_batch_rows": runtime.storage_policy.hdd.transaction_batch_rows,
+                "checkpoint_mode": runtime.storage_policy.hdd.checkpoint_mode,
+            },
+            "ssd": {
+                "connection_timeout_seconds": runtime.storage_policy.ssd.connection_timeout_seconds,
+                "read_window_rows": runtime.storage_policy.ssd.read_window_rows,
+                "transaction_batch_rows": runtime.storage_policy.ssd.transaction_batch_rows,
+                "checkpoint_mode": runtime.storage_policy.ssd.checkpoint_mode,
+            },
+        },
         "training_fit_dates": fit_dates,
         "v5_training_configuration": TcnConfigurationDocument(training_v5.fit_dates, training_v5.fitting),
         "research_arms": len(research.ablation_arms),
@@ -302,7 +323,8 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise SystemExit("--as-of must include a timezone offset")
     observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
-    eligibility_index = CreateCompanyEligibilityReader(runtime.data_paths.company)
+    event_policy = LoadStrategySettings(runtime.strategy_config_path).company_scoring.events
+    eligibility_index = CreateCompanyEligibilityReader(runtime.data_paths.company, event_policy)
     facts = tuple(fact for fact in eligibility_index.facts() if fact.effective_at <= observed_at)
     status = eligibility_index.status()
     print(

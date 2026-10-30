@@ -136,7 +136,7 @@ class UpdateQfqWindows:
     cancel_requested: Callable[[], bool]
     report: Callable[[ProgressMessage], None]
     configuration: QfqWindowConfiguration
-    workers: int = 8
+    workers: int | None = None
     worker_pool: WorkerExecutor | None = None
     writer_pool: WorkerExecutor | None = None
     monotonic: Callable[[], float] = monotonic
@@ -144,8 +144,16 @@ class UpdateQfqWindows:
     repair_only: bool = False
 
     def __post_init__(self) -> None:
-        if not 1 <= self.workers <= 12:
+        workers = self.configuration.workers if self.workers is None else self.workers
+        if not 1 <= workers <= 12:
             raise ValueError("qfq workers must be within 1..12")
+        object.__setattr__(self, "workers", workers)
+
+    @property
+    def worker_count(self) -> int:
+        if self.workers is None:
+            raise RuntimeError("qfq workers were not initialized")
+        return self.workers
 
     def seed(
         self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...]
@@ -228,7 +236,7 @@ class UpdateQfqWindows:
             f"完成 | V2 {len(v2_snapshot.states)} 只 | V3 {len(v3_snapshot.states)} 只 "
             f"| 阶段耗时 {self.monotonic() - inspection_started:.2f} 秒",
         )
-        progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
+        progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.worker_count}")
         if self.repair_only:
             # Older files had no durable issue inventory. Recover absent dates
             # only for locally published stocks; never schedule the whole universe.
@@ -415,7 +423,7 @@ class UpdateQfqWindows:
                 cells = sum(len(window.cells) for _, window in (*downloaded, *write_batch))
                 cells += sum(len(job.dates) for job in futures.values())
                 capacity = min(
-                    self.workers - len(futures),
+                    self.worker_count - len(futures),
                     max(0, 32 - buffered),
                     max(0, (8192 - cells) // self.configuration.maximum_sessions),
                 )

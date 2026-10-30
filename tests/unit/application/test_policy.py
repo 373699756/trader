@@ -8,6 +8,7 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import FusionPolicy
+from tests.helpers.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
 
 
 def test_selection_policy_default_competition_limits_are_isolated_and_immutable() -> None:
@@ -39,6 +40,10 @@ def _selection_policy() -> RecommendationSelectionSettings:
         maximum_top_k=18,
         observation_margin=5.0,
         thresholds={"morning_main": 70.0},
+        maximum_board_fraction=1.0,
+        competition_group_limits={},
+        minimum_board_reliability=0.0,
+        review_candidate_limit=6,
     )
 
 
@@ -53,4 +58,6 @@ def _recommendation_policy() -> RecommendationPolicy:
         board_policy_version="fixture",
         board_local_strategy_weights={},
         local_component_weights={},
+        hard_filter=HardFilterPolicyFixture(),
+        company_scoring=CompanyScoringPolicyFixture(),
     )

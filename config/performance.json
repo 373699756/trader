@@ -9,9 +9,18 @@
       "measurement": 5
     },
     "database": {
-      "sqlite_improvement_percent": 10,
-      "parquet_improvement_percent": 15,
-      "minimum_wins": 4
+      "hdd": {
+        "sqlite_improvement_percent": 10,
+        "parquet_improvement_percent": 15,
+        "minimum_wins": 4,
+        "evidence_status": "validated"
+      },
+      "ssd": {
+        "sqlite_improvement_percent": 10,
+        "parquet_improvement_percent": 15,
+        "minimum_wins": 4,
+        "evidence_status": "unverified"
+      }
     },
     "latency_p95_ms": {
       "market_normalization": 250,

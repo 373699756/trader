@@ -29,6 +29,7 @@ from trader.training.domain.v1.learned_rank import (
     LearnedRankRelevance,
     V1TrainingSettings,
 )
+from tests.helpers.configuration import V1TrainingSettingsFixture
 from trader.training.entrypoints.profile_training import ProjectLearnedRankTrainingResult
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.profile.v1.models import (
@@ -88,7 +89,7 @@ class _History:
 
 
 def _settings() -> V1TrainingSettings:
-    return V1TrainingSettings(
+    return V1TrainingSettingsFixture(
         fit_dates=30,
         early_stopping_dates=5,
         calibration_dates=5,

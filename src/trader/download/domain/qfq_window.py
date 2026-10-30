@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from math import isfinite
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -22,14 +23,25 @@ class QfqWindowConfiguration:
 
     v2_sessions: int
     v3_sessions: int
+    workers: int
+    source_timeout_seconds: float
+    source_retries: int
 
     def __post_init__(self) -> None:
         if (
             type(self.v2_sessions) is not int
             or type(self.v3_sessions) is not int
+            or type(self.workers) is not int
+            or type(self.source_retries) is not int
             or self.v3_sessions < 1
             or self.v2_sessions < self.v3_sessions
             or self.v2_sessions > MAX_QFQ_WINDOW_SESSIONS
+            or not 1 <= self.workers <= 12
+            or isinstance(self.source_timeout_seconds, bool)
+            or not isinstance(self.source_timeout_seconds, (int, float))
+            or not isfinite(self.source_timeout_seconds)
+            or self.source_timeout_seconds <= 0
+            or not 0 <= self.source_retries <= 2
         ):
             raise ValueError("qfq window configuration is invalid")
 

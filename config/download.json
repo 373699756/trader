@@ -9,7 +9,23 @@
     "supplier_retries": 2,
     "query_interval_seconds": 1.5,
     "cancellation_grace_seconds": 10.0,
-    "progress_heartbeat_seconds": 5.0
+    "progress_heartbeat_seconds": 5.0,
+    "write_batches": {
+      "maximum_codes": 64,
+      "maximum_cells": 32768,
+      "hdd": {
+        "fresh_codes": 8,
+        "fresh_cells": 16384,
+        "incremental_codes": 16,
+        "incremental_cells": 8192
+      },
+      "ssd": {
+        "fresh_codes": 16,
+        "fresh_cells": 8192,
+        "incremental_codes": 16,
+        "incremental_cells": 8192
+      }
+    }
   },
   "company": {
     "source_timeout_seconds": 8.0,
@@ -24,6 +40,8 @@
     "document_ocr_max_pages": 50,
     "document_ocr_dpi": 150,
     "document_ocr_languages": "chi_sim+eng",
+    "temporary_text_capacity_bytes": 268435456,
+    "temporary_disk_reserve_bytes": 67108864,
     "document_limits": {
       "max_bytes": 16777216,
       "max_pages": 200,
@@ -36,6 +54,9 @@
     }
   },
   "online_qfq": {
+    "workers": 8,
+    "source_timeout_seconds": 15.0,
+    "source_retries": 2,
     "profiles": [
       {"profile": "v2", "sessions": 251},
       {"profile": "v3", "sessions": 61}

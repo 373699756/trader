@@ -14,6 +14,7 @@ from trader.recommendation.domain.market.models import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy
+from tests.helpers.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
 
 _TEST_DIRECTORY_MARKERS = frozenset({"unit", "component", "integration", "contract", "performance", "js"})
 _BUSINESS_OWNERS = frozenset({"train", "history", "recommendation", "crosscut"})
@@ -288,6 +289,10 @@ def recommendation_policy() -> RecommendationPolicy:
             maximum_top_k=12,
             observation_margin=5.0,
             thresholds={"tomorrow": 72.0, "d25": 70.0},
+            maximum_board_fraction=0.6,
+            competition_group_limits={},
+            minimum_board_reliability=0.85,
+            review_candidate_limit=6,
         ),
         dimension_weights={
             strategy: {
@@ -300,6 +305,8 @@ def recommendation_policy() -> RecommendationPolicy:
         board_policy_version="fixture",
         board_local_strategy_weights={},
         local_component_weights={},
+        hard_filter=HardFilterPolicyFixture(),
+        company_scoring=CompanyScoringPolicyFixture(),
     )
 
 

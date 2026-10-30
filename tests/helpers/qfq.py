@@ -2,13 +2,19 @@
 
 from dataclasses import replace
 from datetime import date, timedelta
+from pathlib import Path
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
-from trader.download.domain.qfq_window import QfqWindowConfiguration
+from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.download.infra.tencent_qfq_supplier import TencentQfqOptions
 
-QFQ_CONFIGURATION = QfqWindowConfiguration(251, 61)
+QFQ_CONFIGURATION = LoadQfqWindowConfiguration(Path(__file__).resolve().parents[2])
+QFQ_TENCENT_OPTIONS = TencentQfqOptions(
+    timeout_seconds=QFQ_CONFIGURATION.source_timeout_seconds,
+    retries=QFQ_CONFIGURATION.source_retries,
+)
 
 
 def publish_windows(cache: SQLiteQfqWindowCache, windows: tuple[PublishedHistoryWindow, ...], source: str):

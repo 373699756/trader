@@ -100,11 +100,11 @@ class ScoredSelectionPolicy:
     risk_rules: Mapping[str, RiskRule]
     max_age_seconds: float
     local_risk_cap: float
+    hard_filter: HardFilterPolicy
+    company_scoring: CompanyScoringPolicy
     top_k: int = 10
     minimum_local_score: float = 0.0
-    hard_filter: HardFilterPolicy = field(default_factory=HardFilterPolicy)
     strategy: Strategy = Strategy.TOMORROW
-    company_scoring: CompanyScoringPolicy = CompanyScoringPolicy()
 
     def __post_init__(self) -> None:
         policies = dict(self.board_policies)

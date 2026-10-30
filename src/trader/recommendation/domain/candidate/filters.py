@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
@@ -30,28 +30,15 @@ class FilterTier(str, Enum):
 
 @dataclass(frozen=True)
 class HardFilterPolicy:
-    blacklist_codes: frozenset[str] = frozenset()
-    structured_risk_thresholds: Mapping[str, float] = field(
-        default_factory=lambda: MappingProxyType(
-            {
-                "major_shareholder_reduction": 0.0,
-                "financial_fraud_history": 0.0,
-                "official_investigation_history": 0.0,
-                "major_illegal_history": 0.0,
-                "fund_occupation_history": 0.0,
-                "illegal_guarantee_history": 0.0,
-                "forced_delisting_risk": 0.0,
-                "unlock_risk": 0.0,
-                "pledge_risk": 0.0,
-                "latest_disclosed_report_loss": 0.0,
-                "financial_deterioration": 0.5,
-            }
-        )
-    )
+    blacklist_codes: frozenset[str]
+    structured_risk_thresholds: Mapping[str, float]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "blacklist_codes", frozenset(self.blacklist_codes))
-        object.__setattr__(self, "structured_risk_thresholds", MappingProxyType(dict(self.structured_risk_thresholds)))
+        thresholds = dict(self.structured_risk_thresholds)
+        if any(not name or not math.isfinite(value) or value < 0.0 for name, value in thresholds.items()):
+            raise ValueError("structured risk thresholds must be finite and non-negative")
+        object.__setattr__(self, "structured_risk_thresholds", MappingProxyType(thresholds))
 
 
 @dataclass(frozen=True)
@@ -100,7 +87,7 @@ def HardFilter(
     now: datetime,
     *,
     max_age_seconds: float,
-    policy: HardFilterPolicy | None = None,
+    policy: HardFilterPolicy,
 ) -> FilterResult:
     return ApplyFilters(
         snapshot,
@@ -464,10 +451,10 @@ _PERMANENT_STRUCTURED_RISK_FIELDS = frozenset(
 )
 
 
-def LevelOneFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+def LevelOneFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy) -> tuple[FilterRule, ...]:
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
         raise ValueError("max_age_seconds must be finite and non-negative")
-    rules = _DefaultFilterRules(max_age_seconds, policy or HardFilterPolicy())
+    rules = _DefaultFilterRules(max_age_seconds, policy)
     return (
         FilterRule("st_or_delisting", FilterSeverity.REQUIRED, rules.st_or_delisting),
         FilterRule("unsupported_code", FilterSeverity.REQUIRED, rules.unsupported_code),
@@ -496,7 +483,7 @@ def LevelOneFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy | No
 def LevelTwoFilterRules(
     *,
     max_age_seconds: float,
-    policy: HardFilterPolicy | None = None,
+    policy: HardFilterPolicy,
 ) -> tuple[FilterRule, ...]:
     """Build the default filter rule set for all strategies.
 
@@ -505,7 +492,6 @@ def LevelTwoFilterRules(
     """
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
         raise ValueError("max_age_seconds must be finite and non-negative")
-    policy = policy or HardFilterPolicy()
     rules = _DefaultFilterRules(max_age_seconds, policy)
 
     return (
@@ -537,7 +523,7 @@ def LevelTwoFilterRules(
     )
 
 
-def DefaultFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+def DefaultFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy) -> tuple[FilterRule, ...]:
     """Return level one defense rules followed by level two point-in-time rules."""
     return (
         *LevelOneFilterRules(max_age_seconds=max_age_seconds, policy=policy),

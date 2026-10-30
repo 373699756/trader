@@ -31,8 +31,8 @@ _MAX_QFQ_PAGES = 5
 
 @dataclass(frozen=True)
 class TencentQfqOptions:
-    timeout_seconds: float = 15.0
-    retries: int = 2
+    timeout_seconds: float
+    retries: int
     history_host: Literal["proxy", "direct"] = "proxy"
 
     def __post_init__(self) -> None:
@@ -123,9 +123,9 @@ class TencentSessionPool:
 class TencentQfqSupplier:
     """Use injected HTTP sessions; the composition root owns all worker resources."""
 
-    def __init__(self, dependencies: TencentQfqDependencies, options: TencentQfqOptions | None = None) -> None:
+    def __init__(self, dependencies: TencentQfqDependencies, options: TencentQfqOptions) -> None:
         self._dependencies = dependencies
-        self._options = options or TencentQfqOptions()
+        self._options = options
 
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         if not 1 <= sessions <= MAX_QFQ_WINDOW_SESSIONS:

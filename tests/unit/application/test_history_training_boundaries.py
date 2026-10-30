@@ -6,7 +6,7 @@ from pathlib import Path
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.training.application.profile_training_primary import TrainV2UseCase
 from trader.training.application.profile_training_secondary import TrainV3UseCase
 from trader.training.application.training_due import TrainingDueUseCase

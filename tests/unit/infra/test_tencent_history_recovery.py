@@ -1,13 +1,15 @@
 """Tencent bounded responses and transport failure contracts."""
 
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
 
+from tests.helpers.qfq import QFQ_TENCENT_OPTIONS
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
-from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqOptions, TencentQfqSupplier
+from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.infra.http_contracts import HttpTimeout
 
 _DAYS = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2800) if i % 7 < 5)
@@ -62,7 +64,7 @@ class _Session:
     def supplier(self):
         return TencentQfqSupplier(
             TencentQfqDependencies(lambda: self, lambda _day: (_SECURITY,), lambda: self.cancelled),
-            TencentQfqOptions(retries=0),
+            replace(QFQ_TENCENT_OPTIONS, retries=0),
         )
 
 

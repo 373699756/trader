@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.application.company_exclusions import PublishCompanyExclusions
-from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+from tests.helpers.configuration import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor

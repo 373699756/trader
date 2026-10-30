@@ -81,9 +81,6 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 
-_DEFAULT_EVENT_POLICY = CompanyEventPolicy()
-
-
 class SQLiteCompanyEvidenceIndex:
     """Own writes to the fresh database; all connections have bounded lifetimes."""
 
@@ -94,7 +91,7 @@ class SQLiteCompanyEvidenceIndex:
         facts_path: Path,
         documents: CompanyDocumentFiles,
         cancel_requested: Callable[[], bool] | None = None,
-        event_policy: CompanyEventPolicy = _DEFAULT_EVENT_POLICY,
+        event_policy: CompanyEventPolicy,
         stock_progress: Callable[[CompanyStockProgress], None] | None = None,
         listings: tuple[CompanyListing, ...] = (),
     ) -> None:

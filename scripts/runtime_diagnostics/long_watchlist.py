@@ -30,6 +30,7 @@ from trader.recommendation.domain.market.eligibility import (  # noqa: E402
     IssuerEligibilityReason,
 )
 from trader.recommendation.domain.market.research import FinancialReport, LongResearchPolicy  # noqa: E402
+from trader.recommendation.domain.scoring.company import CompanyScoringPolicy  # noqa: E402
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch  # noqa: E402
 
 
@@ -113,6 +114,7 @@ def audit_code(
     *,
     observed_at: datetime,
     policy: LongResearchPolicy,
+    company_policy: CompanyScoringPolicy,
     timeout: float,
     exclusions: dict[str, tuple[str, ...]],
     evidence_database: Path,
@@ -121,10 +123,11 @@ def audit_code(
     if code in exclusions:
         return Admission(code, "excluded", ("existing_permanent_exclusion",), exclusions[code])
     reader = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(evidence_database),
+        SQLiteCompanyEvidenceReader(evidence_database, event_policy=company_policy.events),
         wall_clock=lambda: observed_at,
         open_dates=lambda: open_dates,
         monotonic=time.monotonic,
+        company_policy=company_policy,
     )
     reader.initialize((code,), cancelled=lambda: False)
     observation = reader.load((code,), observed_at, include_structured=True).get(code)
@@ -170,7 +173,8 @@ def main() -> int:
             parser.error("evidence output must be an absolute path outside the repository")
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
     watchlist = LoadLongWatchlist(args.watchlist)
-    policy = LoadStrategySettings(args.strategy).long_research
+    strategy = LoadStrategySettings(args.strategy)
+    policy = strategy.long_research
     exclusions = historical_exclusions(tuple(args.eligibility_evidence), observed_at)
     reference = SQLiteReferenceIndex(LoadRuntimeSettings(args.runtime_config).data_paths.reference_database).read()
     open_dates = reference.open_dates if reference else ()
@@ -181,6 +185,7 @@ def main() -> int:
                     item.code,
                     observed_at=observed_at,
                     policy=policy,
+                    company_policy=strategy.company_scoring,
                     timeout=args.timeout_seconds,
                     exclusions=exclusions,
                     evidence_database=args.company_evidence_database,

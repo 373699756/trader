@@ -93,6 +93,18 @@ def Main() -> int:
                     "configuration_field": "storage",
                     "instruction": instruction,
                     "configuration_example": configuration_example,
+                    "storage_policies": {
+                        medium: {
+                            "connection_timeout_seconds": policy.connection_timeout_seconds,
+                            "read_window_rows": policy.read_window_rows,
+                            "transaction_batch_rows": policy.transaction_batch_rows,
+                            "checkpoint_mode": policy.checkpoint_mode,
+                        }
+                        for medium, policy in (
+                            ("hdd", settings.storage_policy.hdd),
+                            ("ssd", settings.storage_policy.ssd),
+                        )
+                    },
                 },
             },
             ensure_ascii=False,

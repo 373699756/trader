@@ -26,6 +26,11 @@ from tests.component.market_data_test_support import (
 from tests.component.test_candidate_history_tail import HistoryInput
 from tests.reference_fixtures import PreparedFixture
 from tests.unit.infra.test_history_supplier_router import _current_universe
+from tests.helpers.configuration import (
+    CompanyEventPolicyFixture as CompanyEventPolicy,
+    HardFilterPolicyFixture,
+    SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex,
+)
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.recommendation.application.pipeline.static_market import static_pipeline
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
@@ -374,7 +379,6 @@ def test_only_permanent_startup_facts_are_filtered_before_current_quotes() -> No
 
 def test_new_quote_st_risk_is_dynamic_and_remains_excluded_after_name_recovers(tmp_path):
     from trader.download.application.company_exclusions import PublishCompanyExclusions
-    from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
     from trader.recommendation.domain.candidate.filters import HardFilter
     from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 
@@ -395,20 +399,25 @@ def test_new_quote_st_risk_is_dynamic_and_remains_excluded_after_name_recovers(t
     assert blocked.static_stages[1].rejected_count == 0
     assert blocked.dynamic_stage.snapshot.output_count == 1
     assert "st_or_delisting" in {
-        reason.filter_code for reason in HardFilter(blocked.features[0], now=at, max_age_seconds=30).reasons
+        reason.filter_code
+        for reason in HardFilter(
+            blocked.features[0], now=at, max_age_seconds=30, policy=HardFilterPolicyFixture()
+        ).reasons
     }
     assert len(service.eligibility.facts()) == 1
     later = at + timedelta(seconds=10)
     gateway._quotes = (replace(_quote(), source_time=later, received_time=later),)
     recovered_name = service.fetch_market_feature_batch(later, force=True)
     assert "historical_st" in {
-        reason.filter_code for reason in HardFilter(recovered_name.features[0], now=later, max_age_seconds=30).reasons
+        reason.filter_code
+        for reason in HardFilter(
+            recovered_name.features[0], now=later, max_age_seconds=30, policy=HardFilterPolicyFixture()
+        ).reasons
     }
     assert len(service.eligibility.facts()) == 1
 
 
 def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory():
-    from trader.download.domain.company_events import CompanyEventPolicy
     from trader.download.domain.company_evidence import CompanyDocument, CompanyEvidenceInput, Disclosure
     from trader.download.domain.company_facts import CompileCompanyFacts
     from trader.recommendation.domain.candidate.filters import HardFilter
@@ -459,7 +468,12 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
     assert "research_data_degraded" in expired.features[0].quote.execution_restrictions
     assert "official_investigation_history" in {
         reason.filter_code
-        for reason in HardFilter(effective_batch.features[0], now=effective, max_age_seconds=30).reasons
+        for reason in HardFilter(
+            effective_batch.features[0],
+            now=effective,
+            max_age_seconds=30,
+            policy=HardFilterPolicyFixture(),
+        ).reasons
     }
     assert before.static_stages[1].output_count == effective_batch.static_stages[1].output_count == 1
     assert before.static_stages[1].output_batch_id == expired.static_stages[1].output_batch_id
@@ -468,7 +482,6 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
 
 def test_future_permanent_fact_takes_effect_dynamically_without_rebuilding_static_snapshot(tmp_path):
     from trader.download.application.company_exclusions import PublishCompanyExclusions
-    from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
     from trader.recommendation.domain.candidate.filters import HardFilter
     from trader.recommendation.domain.market.eligibility import ManualBlacklistFact
     from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
@@ -488,7 +501,10 @@ def test_future_permanent_fact_takes_effect_dynamically_without_rebuilding_stati
     after = service.fetch_market_feature_batch(effective)
     assert not any(value.startswith("issuer_risk:") for value in before.features[0].quote.execution_restrictions)
     assert "manual_permanent_blacklist" in {
-        reason.filter_code for reason in HardFilter(after.features[0], now=effective, max_age_seconds=30).reasons
+        reason.filter_code
+        for reason in HardFilter(
+            after.features[0], now=effective, max_age_seconds=30, policy=HardFilterPolicyFixture()
+        ).reasons
     }
     assert before.static_stages[1].output_batch_id == after.static_stages[1].output_batch_id
     assert after.static_stages[1].rejected_count == 0

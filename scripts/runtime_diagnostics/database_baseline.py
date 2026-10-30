@@ -22,7 +22,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.application.sync_data import SyncData, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult, Disclosure, DisclosurePage
+from trader.download.domain.company_evidence import CompanyEvidenceSyncResult, CompanySyncConfiguration, Disclosure, DisclosurePage
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.prepared_reference import PreparedReference
@@ -31,7 +31,11 @@ from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
-from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
+from trader.download.infra.download_settings import (
+    LoadCompanySyncConfiguration,
+    LoadHistorySyncConfiguration,
+    LoadQfqWindowConfiguration,
+)
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
@@ -39,7 +43,7 @@ from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.settings import LoadRuntimeSettings
+from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.storage_types import StorageKind
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -53,6 +57,15 @@ from .reporting import emit_report
 
 _Result = TypeVar("_Result")
 _NOW = datetime(2026, 10, 16, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def _company_documents(path: Path, configuration: CompanySyncConfiguration) -> CompanyDocumentFiles:
+    return CompanyDocumentFiles(
+        path,
+        max_text_characters=configuration.extended_document_limits.max_text_characters,
+        max_bytes=configuration.temporary_text_capacity_bytes,
+        reserve_bytes=configuration.temporary_disk_reserve_bytes,
+    )
 
 
 @dataclass(frozen=True)
@@ -90,6 +103,8 @@ class _SyncFixture:
 
     def __init__(self, root: Path, size: int, sessions: int, storage_kind: StorageKind) -> None:
         self.preload_settings = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.history_preload
+        self.company_configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
+        self.company_policy = LoadStrategySettings(PROJECT_ROOT / "config/strategy.json").company_scoring
         self.paths = DataPaths(root)
         self.root = root
         self.sessions = sessions
@@ -167,7 +182,8 @@ class _SyncFixture:
             index = SQLiteCompanyEvidenceIndex(
                 self.paths.company_collection,
                 facts_path=self.paths.company,
-                documents=CompanyDocumentFiles(self.paths.company_documents),
+                documents=_company_documents(self.paths.company_documents, self.company_configuration),
+                event_policy=self.company_policy.events,
             )
             index.initialize()
             codes = tuple(item.code for item in reference.eligible_universe)
@@ -242,10 +258,11 @@ class _SyncFixture:
         self._measure("startup_history", lambda: caches[0].initialize(cancelled=lambda: False))
         codes = tuple(item.code for item in self.reference.eligible_universe)
         research = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(self.paths.company),
+            SQLiteCompanyEvidenceReader(self.paths.company, event_policy=self.company_policy.events),
             wall_clock=lambda: _NOW,
             open_dates=lambda: self.reference.open_dates,
             monotonic=time.monotonic,
+            company_policy=self.company_policy,
         )
         self._measure("startup_company", lambda: research.initialize(codes, cancelled=lambda: False))
 
@@ -295,7 +312,7 @@ class _SyncFixture:
         if not self.paths.daily_window.exists():
             return None
         codes = tuple(item.code for item in self.reference.eligible_universe)
-        return CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2").read_codes(codes))
+        return cast(str, CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2").read_codes(codes)))
 
 
 def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, storage_kind: StorageKind) -> dict[str, object]:

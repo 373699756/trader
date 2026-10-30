@@ -19,23 +19,23 @@ from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONT
 
 @dataclass(frozen=True)
 class V1TrainingSettings:
-    fit_dates: int = 750
-    early_stopping_dates: int = 20
-    calibration_dates: int = 20
-    validation_dates: int = 20
-    embargo_dates: int = 5
-    minimum_training_rows: int = 1000
-    learning_rate: float = 0.05
-    max_depth: int = 3
-    num_leaves: int = 7
-    minimum_leaf_rows: int = 20
-    boosting_rounds: int = 200
-    early_stopping_rounds: int = 20
-    maximum_bins: int = 63
-    histogram_pool_mib: int = 64
-    seed: int = 0
-    ridge_penalty: float = 10.0
-    ranking_round_trip_cost: float = 0.002
+    fit_dates: int
+    early_stopping_dates: int
+    calibration_dates: int
+    validation_dates: int
+    embargo_dates: int
+    minimum_training_rows: int
+    learning_rate: float
+    max_depth: int
+    num_leaves: int
+    minimum_leaf_rows: int
+    boosting_rounds: int
+    early_stopping_rounds: int
+    maximum_bins: int
+    histogram_pool_mib: int
+    seed: int
+    ridge_penalty: float
+    ranking_round_trip_cost: float
 
     @property
     def history_sessions(self) -> int:

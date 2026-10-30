@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from scripts.runtime_diagnostics.company_pagination_audit import AuditCompanyPagination
@@ -20,6 +20,7 @@ from scripts.runtime_diagnostics.company_ocr_audit import AuditCompanyOcr
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries, AuditCompanyStorage
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
+from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
     CompanyDocumentPolicies,
@@ -38,14 +39,33 @@ from trader.download.infra.company_pipeline_queries import ReleaseCompletedCompa
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpTransport
+from trader.infra.settings import LoadStrategySettings
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 _ROOT = Path(__file__).resolve().parents[2]
 
 
 class _ReplayIndex(SQLiteCompanyEvidenceIndex):
-    def __init__(self, path: Path, selection: frozenset[tuple[str, str, str]], *, facts_path: Path) -> None:
-        super().__init__(path, facts_path=facts_path, documents=CompanyDocumentFiles(path.parent / "text"))
+    def __init__(
+        self,
+        path: Path,
+        selection: frozenset[tuple[str, str, str]],
+        configuration: CompanySyncConfiguration,
+        *,
+        facts_path: Path,
+        event_policy: CompanyEventPolicy,
+    ) -> None:
+        super().__init__(
+            path,
+            facts_path=facts_path,
+            documents=CompanyDocumentFiles(
+                path.parent / "text",
+                max_text_characters=configuration.extended_document_limits.max_text_characters,
+                max_bytes=configuration.temporary_text_capacity_bytes,
+                reserve_bytes=configuration.temporary_disk_reserve_bytes,
+            ),
+            event_policy=event_policy,
+        )
         self._selection = selection
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
@@ -69,13 +89,16 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         excluded: Sequence[tuple[str, str, str]] = (),
         repair: Literal["ocr", "limits"] | None = None,
     ) -> tuple[CompanyDocumentTask, ...]:
-        return super().pending_documents(
-            codes,
-            observed_at,
-            limit=min(limit or 32, 32),
-            policies=policies,
-            excluded=excluded,
-            repair=repair,
+        return cast(
+            tuple[CompanyDocumentTask, ...],
+            super().pending_documents(
+                codes,
+                observed_at,
+                limit=min(limit or 32, 32),
+                policies=policies,
+                excluded=excluded,
+                repair=repair,
+            ),
         )
 
 
@@ -90,6 +113,7 @@ class _ObservedSource(CninfoMarketDisclosureSource):
             timeout_seconds=configuration.source_timeout_seconds,
             document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
             document_limits=configuration.document_limits,
+            extended_document_limits=configuration.extended_document_limits,
             request_interval_seconds=configuration.request_interval_seconds,
             cancel_requested=cancel_requested,
         )
@@ -302,9 +326,16 @@ def Main() -> int:
     facts_path = directory / "company_facts.sqlite3"
     if not facts_path.exists():
         _copy(args.facts_database, facts_path, deadline=started + args.budget_seconds)
-    index = _ReplayIndex(destination, selection, facts_path=facts_path)
-    now = datetime.now(ZoneInfo("Asia/Shanghai"))
     configuration = replace(LoadCompanySyncConfiguration(_ROOT), document_workers=1)
+    event_policy = LoadStrategySettings(_ROOT / "config" / "strategy.json").company_scoring.events
+    index = _ReplayIndex(
+        destination,
+        selection,
+        configuration,
+        facts_path=facts_path,
+        event_policy=event_policy,
+    )
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
     runs = []
     saved: set[tuple[str, str, str, str, int]] = set()
     replayed = 0
@@ -324,11 +355,16 @@ def Main() -> int:
                 CompanyEvidenceDependencies(
                     index,
                     source,
-                    EastmoneyCompanySource(session, monotonic=time.monotonic, cancel_requested=interrupt),
+                    EastmoneyCompanySource(
+                        session,
+                        monotonic=time.monotonic,
+                        timeout_seconds=configuration.source_timeout_seconds,
+                        cancel_requested=interrupt,
+                    ),
                     time.monotonic,
                     cancel_requested=interrupt,
                 ),
-                CompanyEvidenceRequest(codes, now, configuration),
+                CompanyEvidenceRequest(codes, now, configuration, event_policy),
             )
             if number == 0:
                 saved = _saved_pages(destination, source.pages)

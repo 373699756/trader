@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.domain.company_evidence import CompanySourceFailure, Disclosure, DisclosurePartition
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from tests.helpers.configuration import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource
 from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpResponse, HttpTimeout
 
 _DAY = date(2026, 10, 18)

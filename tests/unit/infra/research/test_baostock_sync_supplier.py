@@ -8,7 +8,8 @@ import pytest
 
 from tests.unit.infra.research.test_baostock_gateway import _Result
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
+from trader.download.domain.history_sync import HistorySyncProgress
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.infra.baostock_gateway import BaoStockRowResult
 from trader.download.infra.baostock_sync_supplier import (
     BaoStockHistorySupplier,

@@ -20,10 +20,10 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.profile.v5.tensors import DecodeTcnTensors, TensorShapes
 from trader.training.infra.profile.v5.training import RunV5Training
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from tests.helpers.configuration import TcnFittingParametersFixture
 
 ROOT = Path(__file__).resolve().parents[6]
 
@@ -127,8 +127,8 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
     settings = replace(
         LoadProfileTrainingSettings(ROOT, "v5"),
         fit_dates=61,
-        fitting=TcnFittingParameters(
-            10,
+        fitting=TcnFittingParametersFixture(
+            minimum_industry_training_rows=10,
             epochs=2,
             early_stopping_rounds=2,
             hidden_channels=8,

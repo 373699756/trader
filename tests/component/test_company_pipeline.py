@@ -8,13 +8,16 @@ import pytest
 
 from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
-from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.infra.workers import BoundedExecutor
+from tests.helpers.configuration import (
+    CompanyEventPolicyFixture as CompanyEventPolicy,
+    CompanyEvidenceRequestFixture as CompanyEvidenceRequest,
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
+)
 
 NOW = fixtures.NOW
 
@@ -65,7 +68,6 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
 @pytest.mark.parametrize("route,failure", [("ocr", "disclosure_document_no_text"), ("limits", "disclosure_document_page_limit")])
 def test_targeted_document_repair_publishes_risk_and_releases_body(tmp_path, route, failure):
     from trader.download.application.company_evidence import SyncCompanyEvidence
-    from trader.download.domain.company_evidence import CompanyEvidenceRequest
 
     index = fixtures._index(tmp_path)
     item = _seed(index, 1)[0]
@@ -89,7 +91,6 @@ def test_targeted_document_repair_publishes_risk_and_releases_body(tmp_path, rou
 
 def test_targeted_repair_cancellation_preserves_old_publication(tmp_path):
     from trader.download.application.company_evidence import SyncCompanyEvidence
-    from trader.download.domain.company_evidence import CompanyEvidenceRequest
 
     index = fixtures._index(tmp_path)
     item = _seed(index, 1)[0]

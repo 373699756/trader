@@ -90,8 +90,7 @@ def _benchmark(
                 sample_supplier,
                 lambda: False,
                 feedback,
-                configuration,
-                workers=workers,
+                replace(configuration, workers=workers),
                 worker_pool=pool,
                 writer_pool=writer,
             )
@@ -202,6 +201,7 @@ def main() -> int:
         if len(args.sizes) > 3 or any(not 1 <= size <= 100 for size in args.sizes) or not 1 <= args.workers <= 12:
             raise ValueError("Tencent diagnostic sizes/workers are out of bounds")
         observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
+        configuration = LoadQfqWindowConfiguration(PROJECT_ROOT)
         sessions = tuple(OpenExternalHttp() for _index in range(args.workers))
         session_pool = TencentSessionPool(sessions)
         supplier = TencentQfqSupplier(
@@ -215,10 +215,13 @@ def main() -> int:
                 ),
                 lambda: False,
             ),
-            TencentQfqOptions(timeout_seconds=args.timeout_seconds, history_host=args.tencent_history_host),
+            TencentQfqOptions(
+                timeout_seconds=args.timeout_seconds,
+                retries=configuration.source_retries,
+                history_host=args.tencent_history_host,
+            ),
         )
         started = time.monotonic()
-        configuration = LoadQfqWindowConfiguration(PROJECT_ROOT)
         context = supplier.load_qfq_context(CompletedDailyCutoff(observed_at), configuration.maximum_sessions)
         context_elapsed = time.monotonic() - started
         experiments = [_benchmark(supplier, context, size, args.workers, observed_at) for size in args.sizes]

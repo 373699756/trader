@@ -9,7 +9,7 @@ from pathlib import Path
 
 from trader.infra.cache_contracts import CachePolicy
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.storage_types import StorageMedium
+from trader.infra.storage_types import StorageKind, StorageMedium
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
     FeatureComponentWeightPolicy,
@@ -102,10 +102,59 @@ class PerformanceMemorySettings:
 
 
 @dataclass(frozen=True)
-class DatabasePerformanceSettings:
+class DatabaseMediumPerformanceSettings:
     sqlite_improvement_percent: float
     parquet_improvement_percent: float
     minimum_wins: int
+    evidence_status: str
+
+
+@dataclass(frozen=True)
+class DatabasePerformanceSettings:
+    hdd: DatabaseMediumPerformanceSettings
+    ssd: DatabaseMediumPerformanceSettings
+
+    def for_medium(self, medium: StorageKind) -> DatabaseMediumPerformanceSettings:
+        if medium == "hdd":
+            return self.hdd
+        if medium == "ssd":
+            return self.ssd
+        raise ValueError("database performance gates require a detected HDD or SSD medium")
+
+
+@dataclass(frozen=True)
+class StorageMediumSettings:
+    connection_timeout_seconds: float
+    read_window_rows: int
+    transaction_batch_rows: int
+    checkpoint_mode: str
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.connection_timeout_seconds, bool)
+            or not isinstance(self.connection_timeout_seconds, (int, float))
+            or not isfinite(self.connection_timeout_seconds)
+            or self.connection_timeout_seconds <= 0
+            or type(self.read_window_rows) is not int
+            or self.read_window_rows < 1
+            or type(self.transaction_batch_rows) is not int
+            or self.transaction_batch_rows < 1
+            or self.checkpoint_mode not in {"PASSIVE", "RESTART", "TRUNCATE"}
+        ):
+            raise ValueError("storage medium settings are invalid")
+
+
+@dataclass(frozen=True)
+class StorageSettings:
+    hdd: StorageMediumSettings
+    ssd: StorageMediumSettings
+
+    def for_medium(self, medium: StorageKind) -> StorageMediumSettings:
+        if medium == "hdd":
+            return self.hdd
+        if medium == "ssd":
+            return self.ssd
+        raise ValueError("storage policy requires a detected HDD or SSD medium")
 
 
 @dataclass(frozen=True)
@@ -170,6 +219,7 @@ class RuntimeSettings:
     performance_budgets: PerformanceBudgetSettings
     deepseek: DeepSeekSettings
     api: ApiSettings
+    storage_policy: StorageSettings
     storage_medium: StorageMedium | None = None
 
 
@@ -259,7 +309,7 @@ class StrategySettings:
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
     factor_index: Mapping[str, FactorDefinition]
-    company_scoring: CompanyScoringPolicy = CompanyScoringPolicy()
+    company_scoring: CompanyScoringPolicy
 
 
 @dataclass(frozen=True)

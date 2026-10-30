@@ -22,7 +22,7 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra import tushare_records as tushare_records_module
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
 from trader.download.infra.exchange_security_master import ExchangeSecurityMasterClient
-from trader.download.infra.tushare import TushareClient
+from tests.helpers.configuration import TushareClientFixture as TushareClient
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import (
     BuildHistoryContext,
@@ -79,7 +79,7 @@ from trader.recommendation.infra.market_data.market_task_runner import MarketTas
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient
-from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from tests.helpers.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import CompletedModelInput
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS

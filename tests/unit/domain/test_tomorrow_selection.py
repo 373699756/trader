@@ -15,6 +15,7 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredSelectionRequest,
     SelectScored,
 )
+from tests.helpers.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -81,6 +82,8 @@ def _selection_policy(*, candidate_limit: int = 120, top_k: int = 10) -> ScoredS
         },
         max_age_seconds=60.0,
         local_risk_cap=25.0,
+        hard_filter=HardFilterPolicyFixture(),
+        company_scoring=CompanyScoringPolicyFixture(),
         top_k=top_k,
         minimum_local_score=0.0,
     )

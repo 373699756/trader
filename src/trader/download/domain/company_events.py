@@ -270,11 +270,11 @@ class CompanyReviewReason:
 
 @dataclass(frozen=True, slots=True)
 class CompanyEventPolicy:
-    share_thresholds: tuple[float, float, float] = (0.1, 0.3, 0.5)
-    contract_thresholds: tuple[float, float, float] = (5.0, 10.0, 20.0)
-    risk_days: int = 365
-    reduction_tail_days: int = 90
-    unlock_days: int = 180
+    share_thresholds: tuple[float, float, float]
+    contract_thresholds: tuple[float, float, float]
+    risk_days: int
+    reduction_tail_days: int
+    unlock_days: int
 
     def __post_init__(self) -> None:
         for thresholds in (self.share_thresholds, self.contract_thresholds):

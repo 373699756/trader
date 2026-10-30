@@ -15,7 +15,6 @@ from trader.infra.settings.parser import (
     ConfigurationError,
 )
 from trader.recommendation.domain.market.factors import PRODUCTION_FACTOR_IDS
-from trader.recommendation.domain.market.research import MarketRegimePolicy
 from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES, DeepseekRiskRuleCode
 
 
@@ -33,22 +32,24 @@ def _validate_filter_fusion_selection(settings: StrategySettings) -> None:
 
 
 def _validate_hard_filters(settings: StrategySettings) -> None:
-    expected_hard_filter_thresholds = {
-        "major_shareholder_reduction": 0.0,
-        "financial_fraud_history": 0.0,
-        "official_investigation_history": 0.0,
-        "major_illegal_history": 0.0,
-        "fund_occupation_history": 0.0,
-        "illegal_guarantee_history": 0.0,
-        "forced_delisting_risk": 0.0,
-        "unlock_risk": 0.0,
-        "pledge_risk": 0.0,
-        "latest_disclosed_report_loss": 0.0,
-        "financial_deterioration": 0.5,
+    required_hard_filter_factors = {
+        "major_shareholder_reduction",
+        "financial_fraud_history",
+        "official_investigation_history",
+        "major_illegal_history",
+        "fund_occupation_history",
+        "illegal_guarantee_history",
+        "forced_delisting_risk",
+        "unlock_risk",
+        "pledge_risk",
+        "latest_disclosed_report_loss",
+        "financial_deterioration",
     }
-    if dict(settings.hard_filters.structured_risk_thresholds) != expected_hard_filter_thresholds:
-        raise ConfigurationError("hard filter structured risk thresholds must match section 9")
-    hard_filtered_factors = set(expected_hard_filter_thresholds)
+    if set(settings.hard_filters.structured_risk_thresholds) != required_hard_filter_factors:
+        raise ConfigurationError("hard filter structured risk thresholds must define the complete factor set")
+    if any(value < 0.0 for value in settings.hard_filters.structured_risk_thresholds.values()):
+        raise ConfigurationError("hard filter structured risk thresholds cannot be negative")
+    hard_filtered_factors = required_hard_filter_factors
     if any(rule.local_trigger_enabled for rule in settings.risk_rules if rule.trigger_factor in hard_filtered_factors):
         raise ConfigurationError("hard-filtered structured risks cannot also trigger local penalties")
 
@@ -60,8 +61,8 @@ def _validate_fusion(settings: StrategySettings) -> None:
         raise ConfigurationError("fusion score_decimals must be 2")
     if settings.fusion.rounding != "ROUND_HALF_UP":
         raise ConfigurationError("unsupported score rounding mode")
-    if settings.fusion.local_risk_cap != 25.0:
-        raise ConfigurationError("local risk cap must be 25")
+    if settings.fusion.local_risk_cap <= 0.0:
+        raise ConfigurationError("local risk cap must be positive")
     if settings.fusion.confidence_coverage_min != 0.5 or settings.fusion.minimum_known_dimensions != 2:
         raise ConfigurationError("fusion coverage and known-dimension gates are fixed at 0.5 and 2")
 
@@ -69,77 +70,37 @@ def _validate_fusion(settings: StrategySettings) -> None:
 def _validate_selection(settings: StrategySettings) -> None:
     if settings.selection.default_top_k > settings.selection.maximum_top_k:
         raise ConfigurationError("default_top_k cannot exceed maximum_top_k")
-    if settings.selection.default_top_k != 6 or settings.selection.maximum_top_k != 12:
-        raise ConfigurationError("active selection limits are fixed at 6 formal and 6 observation")
     if settings.board_policy_version != "score_first":
         raise ConfigurationError("unsupported board policy identity")
-    if settings.selection.maximum_board_fraction != 0.6:
-        raise ConfigurationError("maximum board fraction is fixed at 0.6")
-    if settings.selection.competition_group_limits:
-        raise ConfigurationError("competition group limits must be disabled")
-    if settings.selection.minimum_board_reliability != 0.85:
-        raise ConfigurationError("board reliability gate is fixed at 0.85")
+    if any(
+        board not in {"main", "chinext", "star"} or type(limit) is not int or limit < 1
+        for board, limit in settings.selection.competition_group_limits.items()
+    ):
+        raise ConfigurationError("competition group limits must use supported boards and positive integers")
     if settings.selection.review_candidate_limit != 6:
         raise ConfigurationError("DeepSeek review candidate limit must be 6")
-    if settings.selection.observation_margin != 6.0:
-        raise ConfigurationError("selection observation margin is fixed at 6")
 
 
 def _validate_signal_policies(settings: StrategySettings) -> None:
     news = settings.news_signal
-    if (
-        news.lookback_hours != 72.0
-        or news.freshness_full_score_hours != 1.0
-        or news.positive_score != 75.0
-        or news.neutral_score != 50.0
-        or news.negative_score != 25.0
-    ):
-        raise ConfigurationError("news signal window and scores are fixed at 72h/1h and 75/50/25")
+    if news.freshness_full_score_hours > news.lookback_hours:
+        raise ConfigurationError("news full-score freshness cannot exceed its lookback window")
+    if not news.negative_score <= news.neutral_score <= news.positive_score:
+        raise ConfigurationError("news signal scores must be ordered negative <= neutral <= positive")
     tail = settings.tomorrow_tail_signal
-    if (
-        tail.lookback_minutes != 30
-        or tail.minimum_baseline_minutes != 30
-        or tail.return_score_points_per_pct != 25.0
-        or tail.volume_score_points_per_ratio != 50.0
-    ):
-        raise ConfigurationError("tomorrow tail signal formula is fixed at 30/30/25/50")
+    if tail.minimum_baseline_minutes < tail.lookback_minutes:
+        raise ConfigurationError("tomorrow tail baseline must cover the configured lookback")
     market_regime = settings.market_regime
-    if market_regime != MarketRegimePolicy(
-        risk_on_breadth_min=60.0,
-        risk_off_breadth_max=40.0,
-    ):
-        raise ConfigurationError("market regime boundaries are fixed at 60/40")
-    long = settings.long_research
-    if (
-        long.financial_max_age_days != 550
-        or long.announcement_lookback_days != 180
-        or long.announcement_limit != 100
-        or long.unlock_forward_days != 180
-        or long.pe_full_score_max != 10.0
-        or long.pe_zero_score_min != 50.0
-        or long.pb_full_score_max != 1.0
-        or long.pb_zero_score_min != 8.0
-        or long.growth_points_per_pct != 2.0
-        or long.quality_roe_neutral_pct != 10.0
-        or long.quality_roe_points_per_pct != 2.5
-        or long.financial_revenue_deterioration_pct != -10.0
-        or long.financial_profit_deterioration_pct != -20.0
-        or long.financial_core_profit_deterioration_pct != -20.0
-        or long.pledge_thresholds != (10.0, 20.0, 35.0)
-        or long.unlock_thresholds != (1.0, 5.0, 10.0)
-    ):
-        raise ConfigurationError("long research windows, scoring slopes and risk thresholds are fixed")
+    if market_regime.risk_off_breadth_max >= market_regime.risk_on_breadth_min:
+        raise ConfigurationError("market regime risk-off boundary must be below risk-on")
 
 
 def _validate_strategy_weights(settings: StrategySettings) -> None:
     required_thresholds = {"tomorrow", "d25"}
     if set(settings.selection.thresholds) != required_thresholds:
         raise ConfigurationError("selection thresholds must define tomorrow and d25")
-    if dict(settings.selection.thresholds) != {
-        "tomorrow": 78.0,
-        "d25": 76.0,
-    }:
-        raise ConfigurationError("current selection thresholds must be 78/76")
+    if any(not 0.0 <= value <= 100.0 for value in settings.selection.thresholds.values()):
+        raise ConfigurationError("selection thresholds must be in [0, 100]")
     required_strategies = {"tomorrow", "d25"}
     _validate_dimension_weights(settings, required_strategies)
     _validate_board_weights(settings)
@@ -237,26 +198,16 @@ def _validate_deepseek_risk_mapping_targets(registered_risk_codes: set[str]) -> 
 
 
 def _validate_short_risk_contract(settings: StrategySettings) -> None:
-    short_risk_penalties = {
-        "near_limit_crowding": 5.0,
-        "price_volume_divergence": 4.0,
-        "high_volatility": 3.0,
-        "short_term_overheat": 3.0,
-        "intraday_reversal": 4.0,
-        "liquidity_contraction": 3.0,
-        "trend_breakdown": 3.0,
+    short_risk_codes = {
+        "near_limit_crowding",
+        "price_volume_divergence",
+        "high_volatility",
+        "short_term_overheat",
+        "intraday_reversal",
+        "liquidity_contraction",
+        "trend_breakdown",
     }
-    short_rules = {rule.risk_code: rule for rule in settings.risk_rules if rule.risk_code in short_risk_penalties}
-    if any(
-        rule.penalty != short_risk_penalties[code]
-        or set(rule.strategies) != {"tomorrow", "d25"}
-        or not rule.local_trigger_enabled
-        or rule.combination_mode != "additive"
-        for code, rule in short_rules.items()
-    ):
-        raise ConfigurationError(
-            "current short risk rules must use fixed strategies, additive groups and 5/4/3/3/4/3/3"
-        )
+    short_rules = {rule.risk_code: rule for rule in settings.risk_rules if rule.risk_code in short_risk_codes}
     _validate_short_risk_rules(short_rules)
     _validate_short_risk_factors(settings.factor_index)
     group_modes: dict[str, str] = {}
@@ -268,88 +219,27 @@ def _validate_short_risk_contract(settings: StrategySettings) -> None:
 
 def _validate_short_risk_rules(rules: Mapping[str, RiskRuleSettings]) -> None:
     identity_fields = ("stock_code", "risk_code", "actual", "source", "trade_date")
-    expected = {
-        "near_limit_crowding": ("medium", 5.0, "limit_proximity", "gte", (0.75,), 4, "market_crowding"),
-        "price_volume_divergence": (
-            "medium",
-            4.0,
-            "price_volume_divergence",
-            "gte",
-            (0.5,),
-            24,
-            "market_structure_divergence",
-        ),
-        "high_volatility": (
-            "low",
-            3.0,
-            "volatility_20d",
-            "gte",
-            (4.0,),
-            24,
-            "market_structure_volatility",
-        ),
-        "short_term_overheat": (
-            "low",
-            3.0,
-            "short_term_overheat",
-            "gte",
-            (0.5,),
-            24,
-            "market_structure_overheat",
-        ),
-        "intraday_reversal": (
-            "medium",
-            4.0,
-            "intraday_reversal",
-            "gte",
-            (0.5,),
-            4,
-            "market_structure_reversal",
-        ),
-        "liquidity_contraction": (
-            "low",
-            3.0,
-            "liquidity_contraction",
-            "gte",
-            (0.5,),
-            4,
-            "market_structure_liquidity",
-        ),
-        "trend_breakdown": (
-            "low",
-            3.0,
-            "trend_breakdown",
-            "gte",
-            (0.5,),
-            24,
-            "market_structure_breakdown",
-        ),
+    expected_codes = {
+        "near_limit_crowding",
+        "price_volume_divergence",
+        "high_volatility",
+        "short_term_overheat",
+        "intraday_reversal",
+        "liquidity_contraction",
+        "trend_breakdown",
     }
-    if set(rules) != set(expected):
+    if set(rules) != expected_codes:
         raise ConfigurationError("current short risk rule set is incomplete")
-    for code, contract in expected.items():
-        rule = rules[code]
-        actual = (
-            rule.severity,
-            rule.penalty,
-            rule.trigger_factor,
-            rule.trigger_operator,
-            rule.trigger_thresholds,
-            rule.evidence_ttl_hours,
-            rule.group,
-        )
-        if actual != contract:
-            raise ConfigurationError(f"risk rule {code} does not match the current fixed trigger contract")
+    for code, rule in rules.items():
         if (
-            rule.minimum_confidence != 0.7
-            or rule.veto
+            rule.veto
             or rule.allowed_evidence_types != ("structured_point_in_time",)
             or set(rule.strategies) != {"tomorrow", "d25"}
             or rule.combination_mode != "additive"
             or rule.risk_fact_id_fields != identity_fields
             or not rule.local_trigger_enabled
         ):
-            raise ConfigurationError(f"risk rule {code} has invalid current audit or evidence settings")
+            raise ConfigurationError(f"risk rule {code} has invalid audit or evidence structure")
 
 
 def _validate_short_risk_factors(factors: Mapping[str, FactorDefinition]) -> None:

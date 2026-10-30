@@ -80,6 +80,10 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
     if location.memory_backed:
         raise ValueError("training_sample_disk_comparison_rejects_memory_filesystem")
     budget = settings.performance_budgets
+    database_gate = budget.database.for_medium(location.storage_kind)
+    storage_policy = settings.storage_policy.for_medium(location.storage_kind)
+    if database_gate.evidence_status != "validated":
+        raise ValueError(f"training_sample_{location.storage_kind}_performance_gate_is_unverified")
     rounds = budget.rounds.measurement
     runs: dict[str, list[_Run]] = {"baseline": [], "candidate": []}
     worker = Path(__file__).with_name("sample_comparison_worker.py")
@@ -109,15 +113,15 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
     )
     repeated = next(row for row in read_comparison if row["case"] == "repeat")
     parquet_eligible = (
-        float(cast(float, repeated["ratio"])) <= 1 - budget.database.parquet_improvement_percent / 100
-        and int(cast(int, repeated["wins"])) >= budget.database.minimum_wins
+        float(cast(float, repeated["ratio"])) <= 1 - database_gate.parquet_improvement_percent / 100
+        and int(cast(int, repeated["wins"])) >= database_gate.minimum_wins
         and all(row["within_regression_limit"] for row in read_comparison)
         and memory_passed and memory_growth <= 1 + budget.memory.growth_percent / 100
     )
     sqlite_improvements = [
         row for row in sample_comparison
-        if float(cast(float, row["ratio"])) <= 1 - budget.database.sqlite_improvement_percent / 100
-        and int(cast(int, row["wins"])) >= budget.database.minimum_wins
+        if float(cast(float, row["ratio"])) <= 1 - database_gate.sqlite_improvement_percent / 100
+        and int(cast(int, row["wins"])) >= database_gate.minimum_wins
     ]
     sqlite_passed = bool(sqlite_improvements) and memory_passed and all(
         row["within_regression_limit"] for row in sample_comparison
@@ -131,6 +135,14 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
             "scope": "four-profile dual-head sample IO and history read/alignment; no model fitting or release",
             "rounds": rounds, "stocks": size, "sample_training_dates": sessions,
             "storage": ProjectDatabaseProbeLocation(location),
+            "database_gate_medium": location.storage_kind,
+            "database_gate_evidence_status": database_gate.evidence_status,
+            "storage_policy": {
+                "connection_timeout_seconds": storage_policy.connection_timeout_seconds,
+                "read_window_rows": storage_policy.read_window_rows,
+                "transaction_batch_rows": storage_policy.transaction_batch_rows,
+                "checkpoint_mode": storage_policy.checkpoint_mode,
+            },
             "policy": "fresh workers; alternating order; warm OS cache; unchanged algorithms; no network",
             "samples": sample_comparison, "sample_improvements": sqlite_improvements, "sqlite_performance_passed": sqlite_passed,
             "sample_timing_scope": "writes include deterministic feature fixture generation; reads include the same byte-hash verification",

@@ -13,11 +13,10 @@ import pytest
 
 from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
-from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
+from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
     CompanyDocumentPolicies,
-    CompanyEvidenceRequest,
     CompanyListing,
     CompanyRatio,
     CompanySourceFailure,
@@ -28,11 +27,6 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
-from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpResponse, HttpTimeout
 from trader.infra.sqlite_connection import (
@@ -40,7 +34,16 @@ from trader.infra.sqlite_connection import (
     SqliteSession,
     SqliteTransaction,
 )
-from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from tests.helpers.configuration import (
+    CompanyEventPolicyFixture as CompanyEventPolicy,
+    CompanyEvidenceRequestFixture as CompanyEvidenceRequest,
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource,
+    PublishedCompanyResearchFixture as PublishedCompanyResearch,
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
+    SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex,
+)
 
 NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
 _TEST_COMPANY_CONFIGURATION = replace(
@@ -64,7 +67,7 @@ def _sync_company_evidence(
 ):
     return SyncCompanyEvidence(
         dependencies,
-        CompanyEvidenceRequest(tuple(codes), observed_at, configuration, tuple(news_codes)),
+        CompanyEvidenceRequest(tuple(codes), observed_at, configuration, news_codes=tuple(news_codes)),
     )
 
 

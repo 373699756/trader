@@ -15,11 +15,13 @@ from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_evidence import DisclosurePartition, StructuredCompanyQuery
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def Collect(args: argparse.Namespace) -> dict[str, object]:
+    configuration = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
     started = time.monotonic()
     deadline = started + args.task_seconds
     now = datetime.now(_SHANGHAI)
@@ -34,6 +36,10 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
             monotonic=time.monotonic,
             sleeper=time.sleep,
             timeout_seconds=args.timeout_seconds,
+            document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
+            request_interval_seconds=configuration.request_interval_seconds,
+            document_limits=configuration.document_limits,
+            extended_document_limits=configuration.extended_document_limits,
             cancel_requested=lambda: time.monotonic() >= announcement_deadline,
         )
         for market in ("sse", "szse", "bse"):

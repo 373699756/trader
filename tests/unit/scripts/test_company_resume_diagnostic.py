@@ -14,8 +14,10 @@ from scripts.runtime_diagnostics.company_resume import Main, _compact_storage, _
 from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import DisclosurePage, DisclosureQuery
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from tests.helpers.configuration import (
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+)
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 

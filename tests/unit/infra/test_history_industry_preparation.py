@@ -6,7 +6,7 @@ from tests.helpers.history import RunHistoryFixture
 from tests.unit.infra.research.test_history_industry_cache import DATES, UNIVERSE, _IndustrySdk
 from tests.unit.infra.test_history_supplier_router import Prices, _at, _prepared
 from trader.download.domain.baostock_daily import BaoStockCalendar
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.infra import baostock_sync_supplier as supplier_module
 from trader.download.infra.baostock_gateway import BaoStockRowGateway
 from trader.download.infra.history_control_index import HistoryControlIndex

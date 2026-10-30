@@ -23,17 +23,17 @@ class TcnArchitecture:
 @dataclass(frozen=True)
 class TcnFittingParameters:
     minimum_industry_training_rows: int
-    learning_rate: float = 0.001
-    weight_decay: float = 0.0001
-    dropout: float = 0.1
-    batch_size: int = 256
-    epochs: int = 100
-    early_stopping_rounds: int = 10
-    seed: int = 0
-    hidden_channels: int = 16
-    compute_dtype: TcnComputeDtype = "float64"
-    early_stopping_relative_delta: float = 0.0
-    compute_threads: int = 2
+    learning_rate: float
+    weight_decay: float
+    dropout: float
+    batch_size: int
+    epochs: int
+    early_stopping_rounds: int
+    seed: int
+    hidden_channels: int
+    compute_dtype: TcnComputeDtype
+    early_stopping_relative_delta: float
+    compute_threads: int
 
     def __post_init__(self) -> None:
         TcnArchitecture(self.hidden_channels, self.compute_dtype)

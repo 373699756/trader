@@ -348,7 +348,11 @@ def main() -> int:
         parser.error("flush-codes and flush-cells must be set together")
     if args.flush_codes is not None and (not 1 <= args.flush_codes <= 64 or not 1 <= args.flush_cells <= 32768):
         parser.error("flush thresholds must fit the bounded pipeline")
-    tuning = HistoryWriteTuning(args.flush_codes, args.flush_cells) if args.flush_codes is not None else None
+    tuning = (
+        HistoryWriteTuning(args.flush_codes, args.flush_cells, 64, 32768)
+        if args.flush_codes is not None
+        else None
+    )
     report = MeasureHistoryWrites(args.size, args.sessions, tuning, storage_kind=args.storage_kind)
     emit_report(report)
     return int(report["status"] != "passed")

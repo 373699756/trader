@@ -14,8 +14,10 @@ from trader.download.domain.company_evidence import (
     DisclosureQuery,
     DisclosureSecurity,
 )
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from tests.helpers.configuration import (
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+)
 from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpTimeout
 from trader.infra.sqlite_connection import SqliteSession
 

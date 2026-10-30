@@ -53,19 +53,57 @@ BAOSTOCK_PREPARATION_INTERVAL_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
+class HistoryWriteBatchPolicy:
+    maximum_codes: int
+    maximum_cells: int
+    hdd_fresh_codes: int
+    hdd_fresh_cells: int
+    hdd_incremental_codes: int
+    hdd_incremental_cells: int
+    ssd_fresh_codes: int
+    ssd_fresh_cells: int
+    ssd_incremental_codes: int
+    ssd_incremental_cells: int
+
+    def __post_init__(self) -> None:
+        code_values = (
+            self.hdd_fresh_codes,
+            self.hdd_incremental_codes,
+            self.ssd_fresh_codes,
+            self.ssd_incremental_codes,
+        )
+        cell_values = (
+            self.hdd_fresh_cells,
+            self.hdd_incremental_cells,
+            self.ssd_fresh_cells,
+            self.ssd_incremental_cells,
+        )
+        if (
+            type(self.maximum_codes) is not int
+            or type(self.maximum_cells) is not int
+            or not 1 <= self.maximum_codes <= 64
+            or not 1 <= self.maximum_cells <= 32768
+            or any(type(value) is not int or not 1 <= value <= self.maximum_codes for value in code_values)
+            or any(type(value) is not int or not 1 <= value <= self.maximum_cells for value in cell_values)
+        ):
+            raise ValueError("history write batch policy is invalid")
+
+
+@dataclass(frozen=True)
 class HistorySyncConfiguration:
     history_root: Path
     reference_root: Path
-    sessions: int = 2000
-    reread_sessions: int = 5
-    download_batch_size: int = 64
-    history_workers: int = 8
-    minimum_free_bytes: int = 1 * 1024**3
-    supplier_timeout_seconds: float = 45.0
-    supplier_retries: int = 2
-    query_interval_seconds: float = BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
-    cancellation_grace_seconds: float = 10.0
-    progress_heartbeat_seconds: float = 5.0
+    sessions: int
+    reread_sessions: int
+    download_batch_size: int
+    history_workers: int
+    minimum_free_bytes: int
+    supplier_timeout_seconds: float
+    supplier_retries: int
+    query_interval_seconds: float
+    cancellation_grace_seconds: float
+    progress_heartbeat_seconds: float
+    write_batches: HistoryWriteBatchPolicy
 
     def __post_init__(self) -> None:
         if (

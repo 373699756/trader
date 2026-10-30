@@ -8,8 +8,10 @@ import pytest
 
 from scripts.runtime_diagnostics.long_watchlist import audit_code, financial_admission, historical_exclusions
 from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from tests.helpers.configuration import (
+    CompanyDocumentFilesFixture as CompanyDocumentFiles,
+    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
+)
 from trader.infra.settings import LoadStrategySettings
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityReason
@@ -90,10 +92,12 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
     index.publish(("000001",), now)
     original = financial.read_bytes()
 
+    strategy = LoadStrategySettings(PROJECT_ROOT / "config/strategy.json")
     result = audit_code(
         "000001",
         observed_at=datetime(2026, 10, 9, 16, tzinfo=SHANGHAI),
-        policy=LoadStrategySettings(PROJECT_ROOT / "config/strategy.json").long_research,
+        policy=strategy.long_research,
+        company_policy=strategy.company_scoring,
         timeout=1,
         exclusions={},
         evidence_database=index.facts_path,

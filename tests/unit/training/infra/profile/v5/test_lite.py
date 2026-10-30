@@ -12,8 +12,16 @@ from trader.training.infra.profile.v5.configuration import (
     ParseTcnParameters,
     TcnConfigurationDocument,
 )
-from trader.training.infra.profile.v5.settings import TcnArchitecture, TcnFittingParameters
+from trader.training.infra.profile.v5.settings import TcnArchitecture
 from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork
+from tests.helpers.configuration import TcnFittingParametersFixture
+
+
+def TcnFittingParameters(minimum_industry_training_rows=5000, **changes):
+    return TcnFittingParametersFixture(
+        minimum_industry_training_rows=minimum_industry_training_rows,
+        **changes,
+    )
 
 
 def test_patience_ignores_tiny_improvements_but_keeps_best_weights_and_accumulates_gain():

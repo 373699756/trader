@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
 
+from tests.helpers.qfq import QFQ_TENCENT_OPTIONS
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
-    TencentQfqOptions,
     TencentQfqSupplier,
     TencentSessionPool,
 )
@@ -67,7 +68,8 @@ class _Http:
 
     def supplier(self):
         return TencentQfqSupplier(
-            TencentQfqDependencies(lambda: self, lambda _as_of: (SECURITY,), lambda: self.cancelled)
+            TencentQfqDependencies(lambda: self, lambda _as_of: (SECURITY,), lambda: self.cancelled),
+            QFQ_TENCENT_OPTIONS,
         )
 
 
@@ -109,7 +111,10 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
         sessions.append(session)
         return session
 
-    supplier = TencentQfqSupplier(TencentQfqDependencies(create_session, lambda _as_of: (SECURITY,), lambda: False))
+    supplier = TencentQfqSupplier(
+        TencentQfqDependencies(create_session, lambda _as_of: (SECURITY,), lambda: False),
+        QFQ_TENCENT_OPTIONS,
+    )
     supplier.fetch_window(SECURITY, (DAY,))
 
     assert len(sessions) == 1
@@ -245,7 +250,10 @@ def test_qfq_page_with_different_overlap_is_pending_and_keeps_verified_recent_ro
 def test_session_pool_reuses_bootstrap_owned_connection_between_stocks():
     session = _Http()
     pool = TencentSessionPool((session,))
-    supplier = TencentQfqSupplier(TencentQfqDependencies(pool.borrow, lambda _as_of: (SECURITY,), lambda: False))
+    supplier = TencentQfqSupplier(
+        TencentQfqDependencies(pool.borrow, lambda _as_of: (SECURITY,), lambda: False),
+        QFQ_TENCENT_OPTIONS,
+    )
 
     supplier.fetch_window(SECURITY, (DAY,))
     supplier.fetch_window(SECURITY, (DAY,))
@@ -409,4 +417,4 @@ def test_retries_transport_only_and_cancellation_stops_attempts():
 def test_rejects_unbounded_or_nonfinite_options():
     for kwargs in ({"retries": 3}, {"timeout_seconds": float("nan")}, {"timeout_seconds": 0}):
         with pytest.raises(ValueError):
-            TencentQfqOptions(**kwargs)
+            replace(QFQ_TENCENT_OPTIONS, **kwargs)
