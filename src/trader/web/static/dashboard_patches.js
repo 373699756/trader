@@ -253,7 +253,7 @@
           && inputQuality.population_filter_reason_counts.missing_liquidity_history,
       ) || 0;
       const population = nonNegativeInteger(inputQuality && inputQuality.population_count) || missing;
-      const message = `暂不可发布｜全市场流动性历史未就绪 ${missing} / ${population}，等待历史档案同步`;
+      const message = `暂不可发布｜全市场流动性历史未就绪 ${missing} / ${population}，请手动执行 sync history 后重启`;
       return { message, notice: message, level: "warn" };
     }
     if (blocker === "model_input_unavailable") {
@@ -314,7 +314,7 @@
     }
     if (blocker === "strategy_history_unavailable") {
       const requirement = historyRequiredSessions == null ? "当前策略历史要求" : `至少 ${historyRequiredSessions} 个交易日`;
-      return `暂不可发布｜符合${requirement} ${pipelineFacetCount(coverageStage, "history") || 0} / ${requested}`;
+      return `暂不可发布｜符合${requirement} ${pipelineFacetCount(coverageStage, "history") || 0} / ${requested}，请手动执行 sync history 后重启`;
     }
     return "";
   }

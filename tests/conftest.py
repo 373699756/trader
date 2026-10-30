@@ -41,7 +41,6 @@ _HISTORY_PATHS = frozenset(
         "unit/infra/test_history_st_merge.py",
         "unit/infra/test_history_supplier_router.py",
         "unit/infra/test_history_reference_codec.py",
-        "unit/infra/test_history_recovery.py",
         "unit/infra/test_tencent_history_supplier.py",
         "unit/infra/research/test_history_industry_cache.py",
         "unit/scripts/test_baostock_qfq_shadow.py",

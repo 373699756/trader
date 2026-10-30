@@ -50,7 +50,6 @@ class MarketDataHealth:
         measured_at = self._wall_clock()
         quote_status = self._quotes.status()
         history = self._history.status()
-        recovery = history.recovery
         eligibility = self._eligibility.status()
         research = self._research.status()
         intraday = self._intraday.status()
@@ -207,30 +206,6 @@ class MarketDataHealth:
                     "history_maintenance_stage": history.maintenance_stage,
                     "history_maintenance_completed_units": history.maintenance_completed_units,
                     "history_maintenance_total_units": history.maintenance_total_units,
-                    "history_recovery_planned_count": recovery.planned_count,
-                    "history_recovery_success_count": recovery.success_count,
-                    "history_recovery_failure_count": recovery.failure_count,
-                    "history_recovery_timeout_count": recovery.timeout_count,
-                    "history_recovery_last_source": recovery.last_source,
-                    "history_recovery_last_error": recovery.last_error,
-                    "history_recovery_requested_count": recovery.requested_count,
-                    "history_recovery_cache_hit_count": recovery.cache_hit_count,
-                    "history_recovery_dispatched_count": recovery.dispatched_count,
-                    "history_recovery_deferred_count": recovery.deferred_count,
-                    "history_recovery_inflight_count": recovery.inflight_count,
-                    "history_recovery_latency_ms": recovery.latency_ms,
-                    "history_tail_requested_count": history.tail.requested_count,
-                    "history_tail_dispatched_count": history.tail.dispatched_count,
-                    "history_tail_cache_hit_count": history.tail.cache_hit_count,
-                    "history_tail_deferred_count": history.tail.deferred_count,
-                    "history_tail_inflight_count": history.tail.inflight_count,
-                    "history_tail_expected_date": history.tail.expected_date.isoformat()
-                    if history.tail.expected_date
-                    else None,
-                    "history_tail_quality_counts": {
-                        quality.value: count for quality, count in history.tail.quality_counts
-                    },
-                    "history_tail_last_error": history.tail.last_error,
                     "issuer_eligibility": {
                         "schema_version": eligibility.schema_version,
                         "fact_count": eligibility.fact_count,

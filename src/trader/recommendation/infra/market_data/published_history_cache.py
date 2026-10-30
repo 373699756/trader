@@ -20,7 +20,6 @@ from trader.recommendation.application.ports.market_data import MarketDataPendin
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.epochs import DailyFeaturePack, DailyFeatureRow, DataPlaneCoverageEvidence
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
-from trader.recommendation.domain.market.history_tail import HistoryQuality
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.domain.market.v1.features import (
     LEARNED_RANK_FEATURE_IDS,
@@ -35,14 +34,6 @@ from trader.recommendation.domain.market.v5.features import (
 )
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars
-from trader.recommendation.infra.market_data.history_recovery import (
-    HistoryRecovery,
-    HistoryRecoveryStatus,
-)
-from trader.recommendation.infra.market_data.history_tail_recovery import (
-    CandidateHistoryTailRecovery,
-    HistoryTailStatus,
-)
 from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.domain.outcomes.models import OutcomeBar
@@ -68,8 +59,6 @@ class PublishedHistoryStatus:
     maintenance_stage: str | None
     maintenance_completed_units: int
     maintenance_total_units: int
-    recovery: HistoryRecoveryStatus = HistoryRecoveryStatus(0, 0, 0, 0, None, None)
-    tail: HistoryTailStatus = HistoryTailStatus()
     disk_snapshot_hash: str | None = None
     outcome_snapshot_hash: str | None = None
     outcome_disk_snapshot_hash: str | None = None
@@ -114,8 +103,6 @@ class PublishedHistoryCache:
         *,
         lookback_sessions: int,
         monotonic: Callable[[], float],
-        recovery: HistoryRecovery | None = None,
-        tail_recovery: CandidateHistoryTailRecovery | None = None,
         outcome_history: ReadPublishedHistoryUseCase | None = None,
         open_dates: Callable[[], tuple[date, ...]] | None = None,
         reserve_bytes: Callable[[int], bool] | None = None,
@@ -133,8 +120,6 @@ class PublishedHistoryCache:
         self._learned_rank_inputs = learned_rank_inputs
         self._sequence_inputs = sequence_inputs
         self._lookback_sessions = max(61, lookback_sessions)
-        self._recovery = recovery
-        self._tail_recovery = tail_recovery
         self._lock = threading.RLock()
         self._manifest: PublishedHistoryManifest | None = None
         self._outcome_manifest: PublishedHistoryManifest | None = None
@@ -327,27 +312,13 @@ class PublishedHistoryCache:
         self,
         codes: Sequence[str],
         *,
-        deadline: datetime | None = None,
         action_restrictions: dict[str, set[str]] | None = None,
         observed_at: datetime | None = None,
-        recover_tail: bool = True,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         self.require_projection()
         result = self.cached(codes, observed_at=observed_at)
         if self._open_dates is not None and observed_at is not None:
             result = self._fresh_entries(result, observed_at)
-        if self._recovery is not None:
-            missing = tuple(code for code in dict.fromkeys(codes) if code not in result)
-            if missing:
-                result.update(
-                    self._recovery.recover(
-                        missing,
-                        days=self._lookback_sessions,
-                        deadline=deadline,
-                    )
-                )
-        if self._tail_recovery is not None and observed_at is not None and recover_tail:
-            result = self._load_tail(result, observed_at, deadline)
         if action_restrictions is not None:
             for code in dict.fromkeys(codes):
                 if code not in result:
@@ -364,37 +335,6 @@ class PublishedHistoryCache:
             if self._manifest is None and (self._projection_owner.is_loading or self._maintenance_state == "loading"):
                 raise MarketDataPendingError("history_projection_loading")
 
-    def _load_tail(
-        self,
-        result: dict[str, tuple[DailyBar, ...]],
-        observed_at: datetime,
-        deadline: datetime | None,
-    ) -> dict[str, tuple[DailyBar, ...]]:
-        assert self._tail_recovery is not None
-        if self._preview_context is not None:
-            observed_at = self._preview_context.market_as_of
-        with self._lock:
-            manifest = self._manifest
-        if manifest is None:
-            # Standalone whole-window recovery has no weekly base to stitch.
-            # Its existing independent-source qualification remains intact.
-            return result
-        stale = tuple(code for code, bars in result.items() if not self._fresh(bars, observed_at))
-        if stale:
-            recovered = self._tail_recovery.recover(
-                stale,
-                manifest,
-                sessions=self._lookback_sessions,
-                observed_at=observed_at,
-                deadline=deadline,
-            )
-            with self._lock:
-                if self._manifest == manifest:
-                    result.update(recovered)
-                else:
-                    result = self.cached(tuple(result), observed_at=observed_at)
-        return {code: bars for code, bars in result.items() if self._fresh(bars, observed_at)}
-
     def cached(
         self,
         codes: Iterable[str],
@@ -406,15 +346,7 @@ class PublishedHistoryCache:
         requested = tuple(dict.fromkeys(codes))
         with self._lock:
             result = {code: entry.bars for code in requested if (entry := self._entries.get(code)) is not None}
-            manifest = self._manifest
-        if self._tail_recovery is not None and observed_at is not None:
-            if self._preview_context is not None:
-                observed_at = self._preview_context.market_as_of
-            if manifest is not None:
-                result.update(self._tail_recovery.cached(requested, manifest, self._lookback_sessions, observed_at))
-            if fresh_only:
-                result = {code: bars for code, bars in result.items() if self._fresh(bars, observed_at)}
-        elif fresh_only and self._open_dates is not None and observed_at is not None:
+        if fresh_only and self._open_dates is not None and observed_at is not None:
             result = self._fresh_entries(result, observed_at)
         if action_restrictions is not None:
             for code in requested:
@@ -452,23 +384,6 @@ class PublishedHistoryCache:
                 or (observed_dates.get(code, bars[-1].trade_date) == today and observed_at.hour >= 15)
             )
         }
-
-    def _fresh(self, bars: tuple[DailyBar, ...], observed_at: datetime) -> bool:
-        if self._preview_context is not None:
-            return bool(bars) and bars[-1].trade_date == self._preview_context.market_trade_date.isoformat()
-        if self._tail_recovery is None:
-            return True
-        try:
-            observed_at = observed_at.astimezone(SHANGHAI)
-            if bars and bars[-1].trade_date == observed_at.date().isoformat() and observed_at.hour < 15:
-                return False
-            return (
-                bool(bars)
-                and self._tail_recovery.plan(date.fromisoformat(bars[-1].trade_date), observed_at).quality
-                is HistoryQuality.FULL_HISTORY_READY
-            )
-        except (OSError, RuntimeError, ValueError):
-            return False
 
     def summaries(
         self,
@@ -607,12 +522,6 @@ class PublishedHistoryCache:
                 maintenance_stage=self._maintenance_stage,
                 maintenance_completed_units=self._maintenance_completed_units,
                 maintenance_total_units=self._maintenance_total_units,
-                recovery=(
-                    self._recovery.status()
-                    if self._recovery is not None
-                    else HistoryRecoveryStatus(0, 0, 0, 0, None, None)
-                ),
-                tail=self._tail_recovery.status() if self._tail_recovery is not None else HistoryTailStatus(),
                 disk_snapshot_hash=self._disk_snapshot_hash,
                 outcome_snapshot_hash=self._outcome_manifest.snapshot_hash if self._outcome_manifest else None,
                 outcome_disk_snapshot_hash=self._outcome_disk_snapshot_hash,

@@ -1407,7 +1407,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
                 if attempts == 1:
                     if loading_history:
                         try:
-                            history.load(("600001",), deadline=request.observed_at + timedelta(seconds=20))
+                            history.load(("600001",))
                         except MarketDataPendingError as exc:
                             raise DataRefreshPendingError(FailureCode(exc)) from exc
                     raise DataRefreshUnavailableError("controlled_close_source_failure")

@@ -229,10 +229,8 @@ class MarketFeatureService:
         action_restrictions: dict[str, set[str]] = {}
         histories = self.history.load(
             history_codes,
-            deadline=deadline,
             action_restrictions=action_restrictions,
             observed_at=observed_at,
-            recover_tail=False,
         )
         self.quotes.gateway.record_local_latency("history_load", self._elapsed_ms(assembly_started))
         self.runner.ensure_before_deadline(deadline)
@@ -360,7 +358,6 @@ class MarketFeatureService:
             self.history.load(
                 normalized,
                 observed_at=observed_at,
-                deadline=deadline,
                 action_restrictions=action_restrictions,
             ),
             observed_at,

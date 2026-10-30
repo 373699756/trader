@@ -34,7 +34,6 @@ from tests.component.market_data_test_support import (
     replace,
 )
 from tests.reference_fixtures import PreparedFixture
-from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
@@ -168,27 +167,17 @@ def test_market_service_loads_history_before_cold_start_candidate_cross_section(
     assert all(item.history_days == 60 for item in features)
     assert service.health()["history_coverage_ratio"] == 1.0
     assert service.health()["history_universe_rows"] == 2
-    assert service.health()["history_recovery_dispatched_count"] == 0
-    assert service.health()["history_recovery_inflight_count"] == 0
 
 
-def test_market_health_exposes_real_recovery_counts_without_stock_payloads() -> None:
+def test_missing_history_remains_unavailable_without_recovery() -> None:
     class _MissingHistory:
         def manifest(self):
             return None
 
-    recovery = HistoryRecovery(
-        CountingHistoryClient(_history_bars()),
-        StaticHistoryClient(),
-        worker_pool=None,
-        workers=1,
-        max_batch_size=1,
-        wall_clock=lambda: NOW,
-    )
-    history = PublishedHistoryCache(
-        _MissingHistory(), lookback_sessions=61, recovery=recovery, monotonic=time.monotonic
-    )
-    history.load(("600001", "600002"))
+    history = PublishedHistoryCache(_MissingHistory(), lookback_sessions=61, monotonic=time.monotonic)
+    restrictions = {}
+    assert history.load(("600001", "600002"), action_restrictions=restrictions) == {}
+    assert restrictions == {code: {"history_data_pending"} for code in ("600001", "600002")}
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
@@ -205,13 +194,8 @@ def test_market_health_exposes_real_recovery_counts_without_stock_payloads() -> 
         ),
         wall_clock=lambda: NOW,
     ).health()
-    assert health["history_recovery_requested_count"] == 2
-    assert health["history_recovery_dispatched_count"] == 1
-    assert health["history_recovery_success_count"] == 1
-    assert health["history_recovery_deferred_count"] == 1
-    assert health["history_recovery_inflight_count"] == 0
     assert health["published_history_state"] == "unavailable"
-    assert "history_recovery_codes" not in health
+    assert not any(key.startswith(("history_recovery_", "history_tail_")) for key in health)
 
 
 def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:

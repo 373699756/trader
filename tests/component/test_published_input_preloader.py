@@ -1,7 +1,6 @@
 import threading
 import time
 from dataclasses import replace
-from datetime import timedelta
 
 import pytest
 
@@ -76,7 +75,7 @@ def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_pending_i
     try:
         assert entered.wait(2)
         with pytest.raises(MarketDataPendingError, match="history_projection_loading"):
-            history.load(("600001",), deadline=NOW + timedelta(seconds=1))
+            history.load(("600001",))
         report = preloader.stop(wait=True, deadline=ShutdownDeadline.start(0.01))
         assert not report.completed and report.timed_out
     finally:

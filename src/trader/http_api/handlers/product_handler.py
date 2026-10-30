@@ -408,29 +408,9 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "history_maintenance_stage",
         "history_maintenance_completed_units",
         "history_maintenance_total_units",
-        "history_recovery_planned_count",
-        "history_recovery_success_count",
-        "history_recovery_failure_count",
-        "history_recovery_timeout_count",
-        "history_recovery_last_source",
-        "history_recovery_last_error",
-        "history_recovery_requested_count",
-        "history_recovery_cache_hit_count",
-        "history_recovery_dispatched_count",
-        "history_recovery_deferred_count",
-        "history_recovery_inflight_count",
-        "history_recovery_latency_ms",
-        "history_tail_requested_count",
-        "history_tail_dispatched_count",
-        "history_tail_cache_hit_count",
-        "history_tail_deferred_count",
-        "history_tail_inflight_count",
-        "history_tail_expected_date",
-        "history_tail_last_error",
         "measured_at",
     )
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
-    result.update(_history_tail_quality(raw.get("history_tail_quality_counts")))
     result.update(_issuer_eligibility(raw.get("issuer_eligibility")))
     result.update(_reference_publication(raw.get("reference_publication")))
     for field in ("market_quote_age", "candidate_quote_age"):
@@ -744,26 +724,6 @@ def _latency_waterfall(value: object) -> dict[str, object]:
             if isinstance(stage, Mapping)
         }
     return result
-
-
-def _history_tail_quality(value: object) -> dict[str, object]:
-    if not isinstance(value, Mapping):
-        return {}
-    return {
-        "history_tail_quality_counts": {
-            key: value[key]
-            for key in (
-                "full_history_ready",
-                "tail_pending",
-                "raw_only",
-                "qfq_only",
-                "adjustment_conflict",
-                "history_stale",
-                "history_unavailable",
-            )
-            if key in value and isinstance(value[key], int) and not isinstance(value[key], bool) and value[key] >= 0
-        }
-    }
 
 
 def _json_scalar(value: object) -> bool:

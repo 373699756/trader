@@ -1249,8 +1249,8 @@ assert.deepStrictEqual(
     },
   ))),
   {
-    message: "暂不可发布｜全市场流动性历史未就绪 5165 / 5279，等待历史档案同步",
-    notice: "暂不可发布｜全市场流动性历史未就绪 5165 / 5279，等待历史档案同步",
+    message: "暂不可发布｜全市场流动性历史未就绪 5165 / 5279，请手动执行 sync history 后重启",
+    notice: "暂不可发布｜全市场流动性历史未就绪 5165 / 5279，请手动执行 sync history 后重启",
     level: "warn",
   },
 );
@@ -1308,8 +1308,8 @@ assert.deepStrictEqual(
     },
   ))),
   {
-    message: "暂不可发布｜符合至少 61 个交易日 350 / 360",
-    notice: "暂不可发布｜符合至少 61 个交易日 350 / 360",
+    message: "暂不可发布｜符合至少 61 个交易日 350 / 360，请手动执行 sync history 后重启",
+    notice: "暂不可发布｜符合至少 61 个交易日 350 / 360，请手动执行 sync history 后重启",
     level: "warn",
   },
 );

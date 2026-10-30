@@ -460,11 +460,11 @@ def test_deadline_bound_history_load_never_starts_a_history_scan(
     )
 
     def unexpected_manifest():
-        pytest.fail("market deadline must not start archive verification")
+        pytest.fail("market reads must not start archive verification")
 
     monkeypatch.setattr(published, "manifest", unexpected_manifest)
     restrictions: dict[str, set[str]] = {}
-    assert history.load(("600001",), deadline=NOW, action_restrictions=restrictions) == {}
+    assert history.load(("600001",), action_restrictions=restrictions) == {}
     assert restrictions == {"600001": {"history_data_pending"}}
 
 
