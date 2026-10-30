@@ -1794,6 +1794,50 @@ def test_stale_candidate_quote_stays_pending_without_a_replacement(
     assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == ("600002", "600003", "600004")
 
 
+def test_old_projection_is_released_but_queued_audit_keeps_its_original_input(application_feature_factory) -> None:
+    import gc
+    import weakref
+
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    audited = []
+
+    def audit(projection, freeze):
+        audited.append((projection.local.version, freeze.version))
+        return None
+
+    adapter = build_cycle_fixture(
+        _Market((application_feature_factory("600001", observed_at),)),
+        config_version="test-config",
+        freeze_build=replace(_freeze_build(), research_audit_builder=audit),
+    )
+    _prime_scoring_cache(adapter, observed_at)
+
+    def build(strategy):
+        request = _request(observed_at, strategy=strategy, phase="afternoon")
+        adapter.data.refresh(request)
+        result = adapter.freezes.build_local(request)
+        adapter.data.release_scoring_input(request)
+        assert result is not None
+        return result
+
+    first = build(Strategy.TOMORROW)
+    reference = weakref.ref(adapter.freezes.projection(first.version))
+    queued_audit = adapter.freezes.research_audit_factory(first.version)
+    other = build(Strategy.D25)
+    previous = build(Strategy.TOMORROW)
+    current = build(Strategy.TOMORROW)
+    assert adapter.freezes.projection(first.version) is None
+    assert adapter.freezes.projection(previous.version) is not None
+    assert adapter.freezes.projection(current.version) is not None
+    assert adapter.freezes.projection(other.version) is not None
+    queued_audit()
+    assert audited == [(first.version, first.version)]
+    assert reference() is not None
+    del queued_audit
+    gc.collect()
+    assert reference() is None
+
+
 def test_finished_scoring_input_releases_population_without_removing_replacement(
     application_feature_factory,
 ) -> None:

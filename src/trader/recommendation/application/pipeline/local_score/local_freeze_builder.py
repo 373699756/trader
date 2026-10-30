@@ -391,6 +391,19 @@ class LocalFreezeBuilder(FreezeBuilderPort):
         )
 
     def _trim_research_sources(self) -> None:
+        # Keep the preceding/current local cuts for each strategy. Running reviews
+        # and queued audit factories already own their immutable projection; a
+        # late hybrid alias must not extend an obsolete local cut's lifetime.
+        retained: dict[Strategy, set[str]] = {}
+        for projection in sorted(self._projections.values(), key=lambda item: item.local.sequence, reverse=True):
+            versions = retained.setdefault(projection.local.strategy, set())
+            if len(versions) < 2:
+                versions.add(projection.local.version)
+        for version, projection in tuple(self._projections.items()):
+            if projection.local.version not in retained[projection.local.strategy]:
+                self._projections.pop(version)
+                self._freezes.pop(version, None)
+                self._review_inputs.pop(version, None)
         while len(self._freezes) > 64:
             version = next(iter(self._freezes))
             self._freezes.pop(version, None)
