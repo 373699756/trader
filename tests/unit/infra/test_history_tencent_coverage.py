@@ -10,7 +10,7 @@ import pytest
 from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _plain_feedback, _updater, _window
 from tests.helpers.history import RunHistoryFixture
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
-from tests.unit.infra.research.test_history_sync import NOW, ProgressRecorder
+from tests.unit.infra.research.test_history_sync import NOW, ProgressRecorder, _download
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _at, _current_universe, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySyncConfiguration
@@ -24,7 +24,7 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
 
 @pytest.mark.parametrize("recovers", (False, True))
-def test_history_retries_failed_stock_once_after_first_summary(tmp_path, capsys, recovers):
+def test_history_sends_failed_stock_to_baostock_after_single_tencent_summary(tmp_path, capsys, recovers):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
     class FailedOnce(Prices):
@@ -39,13 +39,23 @@ def test_history_retries_failed_stock_once_after_first_summary(tmp_path, capsys,
             return super().fetch_window(security, dates, **kwargs)
 
     prices = FailedOnce()
+
+    class RepairBaseline(Baseline):
+        def fetch_code(self, security, dates):
+            assert Counter(prices.attempted_codes) == {"600001": 1, "600002": 1}
+            self.calls.append((security.code, dates))
+            if not recovers:
+                raise RuntimeError("fixture_baostock_unavailable")
+            return _download(security.code, dates, 2.0)
+
+    baseline = RepairBaseline(days)
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
     with ThreadPoolExecutor(max_workers=2) as workers, ThreadPoolExecutor(max_workers=1) as writer:
         result = RunHistoryFixture(
             config,
-            _router(Baseline(days), prices, _current_universe("600001", "600002")),
+            _router(baseline, prices, _current_universe("600001", "600002")),
             clock=lambda: _at(days[-1]),
             progress=StderrHistorySyncProgress(),
             worker_pool=workers,
@@ -53,22 +63,23 @@ def test_history_retries_failed_stock_once_after_first_summary(tmp_path, capsys,
         )
 
     assert result.state == "completed"
-    assert Counter(prices.attempted_codes) == {"600001": 2, "600002": 1}
+    assert Counter(prices.attempted_codes) == {"600001": 1, "600002": 1}
+    assert baseline.calls == [("600001", days)]
     logs = _compact_log(capsys.readouterr().err)
     lines = logs.splitlines()
     summary_positions = [index for index, line in enumerate(lines) if "Tencent下载 | 完成 |" in line]
     summaries = [lines[index] for index in summary_positions]
-    assert len(summaries) == 2
+    assert len(summaries) == 1
     assert "失败 1 股 | 其中待重试 1 股" in summaries[0]
-    retry_position = next(index for index, line in enumerate(lines) if "Tencent下载 | 重试 |" in line)
-    assert summary_positions[0] < retry_position < summary_positions[1]
-    assert f"失败 {0 if recovers else 1} 股" in summaries[-1]
+    repair_position = next(index for index, line in enumerate(lines) if "BaoStock补缺 | 开始 |" in line)
+    assert summary_positions[0] < repair_position
+    assert "Tencent下载 | 重试 |" not in logs
     assert sum("发布内容校验" in line for line in logs.splitlines()) == 1
     assert result.unresolved_price_cells == (0 if recovers else 3)
     assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3").gaps_by_code() == ({} if recovers else {"600001": days})
 
 
-def test_history_retry_upgrades_a_partial_price_pair_before_publication(tmp_path):
+def test_history_baostock_replaces_partial_tencent_window_before_publication(tmp_path):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
     class PartialOnce(Prices):
@@ -80,24 +91,33 @@ def test_history_retry_upgrades_a_partial_price_pair_before_publication(tmp_path
             return window
 
     prices = PartialOnce()
+
+    class RepairBaseline(Baseline):
+        def fetch_code(self, security, dates):
+            self.calls.append((security.code, dates))
+            return _download(security.code, dates, 2.0)
+
+    baseline = RepairBaseline(days)
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
     result = RunHistoryFixture(
         config,
-        _router(Baseline(days), prices, _current_universe("600001")),
+        _router(baseline, prices, _current_universe("600001")),
         clock=lambda: _at(days[-1]),
     )
 
     assert result.state == "completed" and result.unresolved_price_cells == 0
-    assert len(prices.calls) == 2
+    assert prices.calls == [days]
+    assert baseline.calls == [("600001", days)]
     current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
     assert current_snapshot is not None
     first_day = HistorySnapshotReader(tmp_path).read_day(days[0], current_snapshot)
     assert len(first_day) == 1 and first_day[0].cell.status == "complete"
+    assert first_day[0].cell.qfq.close_price == days[0].day + 2.0
 
 
-def test_history_retry_excludes_deferred_qfq_dates(tmp_path):
+def test_history_next_run_excludes_deferred_qfq_dates(tmp_path):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
     class MixedGaps(Prices):
@@ -116,9 +136,13 @@ def test_history_retry_excludes_deferred_qfq_dates(tmp_path):
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
+    supplier = _router(Baseline(days), prices, _current_universe("600001"))
+    first = RunHistoryFixture(config, supplier, clock=lambda: _at(days[-1]))
+    assert first.unresolved_price_cells == 2
+    assert prices.calls == [days]
     result = RunHistoryFixture(
         config,
-        _router(Baseline(days), prices, _current_universe("600001")),
+        supplier,
         clock=lambda: _at(days[-1]),
     )
 

@@ -1,7 +1,9 @@
 """Second-source publication, restart and cross-basis regression boundaries."""
 
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+
+import pytest
 
 from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _updater, _window
 from tests.helpers.history import RunHistoryFixture
@@ -152,10 +154,78 @@ def test_new_history_day_uses_tencent_tail_then_same_source_bao_tail(tmp_path):
     result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert supplier.events[-1] == "baostock"
+    assert supplier.events.count("tencent") == 2  # One request per stock, with no second pass.
     snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot
     for day in days[1:]:
         rows = HistorySnapshotReader(config.history_root).read_day(day, snapshot)
         assert next(row.cell for row in rows if row.code == "600001").qfq.close_price == day.day + 2
+
+
+@pytest.mark.parametrize(
+    ("initial_source", "basis_changed", "incomplete"),
+    (("tencent", True, False), ("baostock", False, False), ("baostock", True, False), ("baostock", True, True)),
+)
+def test_one_day_gap_replaces_all_2000_days_on_basis_change(tmp_path, initial_source, basis_changed, incomplete):
+    days = tuple(
+        day for day in (date(2018, 1, 1) + timedelta(days=offset) for offset in range(3000)) if day.weekday() < 5
+    )[:2001]
+
+    class DailySupplier(FakeSupplier):
+        seed = True
+
+        def load_context(self, as_of, sessions, **kwargs):
+            context = super().load_context(as_of, sessions, **kwargs)
+            return replace(context, universe=context.universe[:1], st_evidence=context.st_evidence[:1])
+
+        def fetch_tencent_window(self, security, dates):
+            self.calls.append(("tencent", dates))
+            cells = tuple(ProjectHistoryCell(cell) for cell in _download(security.code, dates, 0.5).batch.cells)
+            if not self.seed or initial_source == "baostock":
+                cells = (*cells[:-1], replace(cells[-1], status="qfq_missing", qfq=None))
+                raise HistorySupplierPendingError(PublishedHistoryWindow(security.code, cells))
+            return PublishedHistoryWindow(security.code, cells)
+
+        def fetch_baostock_window(self, security, dates):
+            self.calls.append(("baostock", dates))
+            shift = 4.0 if not self.seed and basis_changed else 2.0
+            cells = tuple(ProjectHistoryCell(cell) for cell in _download(security.code, dates, shift).batch.cells)
+            if not self.seed and incomplete and len(dates) == 2000:
+                cells = (replace(cells[0], status="qfq_missing", qfq=None), *cells[1:])
+            return PublishedHistoryWindow(security.code, cells)
+
+    config = replace(_config(tmp_path, days[:2000]), reread_sessions=5)
+    supplier = DailySupplier(days[:2000])
+    first = RunHistoryFixture(config, supplier, clock=lambda: _now(days[1999]))
+    assert first.state == "completed" and first.unresolved_price_cells == 0
+    control = HistoryControlIndex(config.history_root / "catalog.sqlite3")
+    previous_snapshot = control.load_state().published_snapshot
+    reader = HistorySnapshotReader(config.history_root)
+    previous = reader.read_published_code_window("600001", days[:2000], previous_snapshot)
+    supplier.seed = False
+    supplier.dates = days
+    supplier.calls.clear()
+
+    result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+
+    expected_bao_dates = [days[1:]] if initial_source == "tencent" else [days[-5:]]
+    if initial_source == "baostock" and basis_changed:
+        expected_bao_dates.append(days[1:])
+    assert supplier.calls == [("tencent", days[-6:]), *(("baostock", window) for window in expected_bao_dates)]
+    assert result.state == "completed"
+    assert result.unresolved_price_cells == int(incomplete)
+    snapshot = control.load_state().published_snapshot
+    current = reader.read_published_code_window("600001", days[1:], snapshot)
+    assert len(current) == 2000
+    if incomplete:
+        assert current[:-1] == previous[1:]
+        assert current[-1].status != "complete"
+        assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3").gaps_by_code() == {"600001": days[-1:]}
+    else:
+        shift = 4.0 if basis_changed else 2.0
+        assert all(cell.status == "complete" and cell.qfq.close_price == cell.trade_date.day + shift for cell in current)
+        assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3").gap_codes() == frozenset()
+        assert HistoryPriceRepair(config.history_root).source("600001", snapshot.sequence) == "baostock"
+    assert reader.read_published_code_window("600001", days[:2000], previous_snapshot) == previous
 
 
 def test_market_conflicting_raw_preserves_previous_pair_and_completion_is_not_claimed(tmp_path):
