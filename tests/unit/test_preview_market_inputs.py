@@ -308,7 +308,7 @@ def test_preview_v5_does_not_admit_a_sequence_including_its_signal_day(applicati
 
 
 @pytest.mark.parametrize(
-    "sessions,rank,sequence", ((251, True, False), (251, False, False), (61, False, False), (62, False, True))
+    "sessions,rank,sequence", ((251, True, False), (251, False, False), (61, False, False), (61, False, True))
 )
 def test_preview_history_uses_signal_day_for_all_profiles(sessions, rank, sequence):
     source = HistoryInput(252, 0, ("600001",))

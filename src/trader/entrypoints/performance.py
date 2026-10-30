@@ -89,6 +89,7 @@ from trader.recommendation.infra.performance.process_memory import ReadPerforman
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
 from trader.web import CreateApp
 
 
@@ -411,8 +412,12 @@ def _prepare_profiles(
             profiles.append(_ProfileLoad(profile_id, exc.reason))
             continue
         started = time.perf_counter()
+        training = LoadRuntimeTrainingSettings(settings.project_root, profile_id)
         market, market_quotes, features = BuildPerformanceFixtures(
-            settings.performance_budgets, loaded, rows=replay_rows
+            settings.performance_budgets,
+            loaded,
+            history_sessions=training.history_sessions,
+            rows=replay_rows,
         )
         fixture_seconds += time.perf_counter() - started
         workloads.append(

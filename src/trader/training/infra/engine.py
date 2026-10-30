@@ -573,6 +573,7 @@ def _prepare_locked_split(
             recent_fit=profile.profile_id == "v5",
             early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
             history_sessions=profile.history_sessions,
+            history_excludes_signal=profile.algorithm == "tcn",
         )
     except ValueError:
         return None, "training_split_unavailable"

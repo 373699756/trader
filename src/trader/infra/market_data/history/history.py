@@ -18,7 +18,7 @@ class HistoryAdjustmentError(ValueError):
     """A qfq-only feature boundary received raw historical prices."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DailyBar:
     """Daily prices with actual volume in shares, amount in yuan and turnover in percentage points."""
 
@@ -53,7 +53,7 @@ def RequireQfqHistory(histories: Mapping[str, tuple[DailyBar, ...]]) -> None:
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class HistoryProfile:
     """Precomputed history metrics reused by feature extraction."""
 
@@ -75,7 +75,7 @@ class HistoryProfile:
     upward_consistency_20d: float | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class HistoryContext:
     """Compact long-lookback state retained alongside the 20 raw bars."""
 

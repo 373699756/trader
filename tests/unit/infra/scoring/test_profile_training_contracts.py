@@ -64,7 +64,7 @@ def test_profile_windows_algorithms_costs_and_research_arms_have_typed_configura
 
     assert (v2.fit_dates, v2.history_sessions, v2.momentum_horizons) == (1000, 251, (20, 40, 60, 120, 250))
     assert (v3.fit_dates, v3.history_sessions, v3.momentum_horizons) == (750, 61, (20, 40, 60))
-    assert (v5.fit_dates, v5.history_sessions, v5.fitting.minimum_industry_training_rows) == (61, 62, 5000)
+    assert (v5.fit_dates, v5.history_sessions, v5.fitting.minimum_industry_training_rows) == (61, 61, 5000)
     assert isinstance(v2.fitting, LightGBMFittingParameters)
     assert isinstance(v3.fitting, RidgeFittingParameters)
     assert isinstance(v5.fitting, TcnFittingParameters)

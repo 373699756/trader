@@ -144,7 +144,7 @@ class _SampleBuildState:
                 return
             if row.industry is None:
                 self.missing_industry += 1
-            elif len(rolling.points) == self.profile.history_sessions:
+            elif len(rolling.points) == _training_window_sessions(self.profile):
                 candidate = _pending_sample(row, rolling.points, position, self.readable_dates, self.profile)
                 if candidate is not None:
                     self.pending_days[-1].samples[code] = candidate
@@ -165,7 +165,7 @@ class _SampleBuildState:
     def _rolling_for(self, code: str, position: int) -> _RollingCodeState:
         rolling = self.rolling_codes.setdefault(
             code,
-            _RollingCodeState(deque(maxlen=self.profile.history_sessions)),
+            _RollingCodeState(deque(maxlen=_training_window_sessions(self.profile))),
         )
         if rolling.previous_position is not None and position != rolling.previous_position + 1:
             rolling.points.clear()
@@ -333,7 +333,7 @@ def _pending_sample(
         completed = tuple(points)[:-1]
         ordered_dates = _ordered_dates(readable_dates)
         end = bisect_left(ordered_dates, row.trade_date)
-        expected = ordered_dates[max(0, end - 61) : end]
+        expected = ordered_dates[max(0, end - profile.history_sessions) : end]
         try:
             sequence = CalculatePriceVolumeSequence(
                 row.code,
@@ -368,6 +368,11 @@ def _pending_sample(
         (*raw_features.require_complete(), *sequence),
         close,
     )
+
+
+def _training_window_sessions(profile: TrainedProfileContract) -> int:
+    """Include the signal row only for TCN's prior-session sequence input."""
+    return profile.history_sessions + 1 if profile.algorithm == "tcn" else profile.history_sessions
 
 
 @lru_cache(maxsize=4)

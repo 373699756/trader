@@ -22,12 +22,12 @@ def test_v5_eligibility_uses_sixty_one_completed_days_with_either_history_cutoff
             data_cutoff=NOW.date(),
             calendar_dates=(*source.current.calendar_dates, NOW.date()),
         )
-    cache = _cache(source, 62, sequence=True)
+    cache = _cache(source, 61, sequence=True)
     cache.initialize(cancelled=lambda: False)
 
     item = cache.completed_model_inputs(("600001",), NOW)[0]
 
-    assert cache.history_sessions == 62
+    assert cache.history_sessions == 61
     if completed_sessions == 61:
         assert item.quality.failure is None
         assert item.sequence is not None

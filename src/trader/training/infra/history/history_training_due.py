@@ -142,7 +142,9 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     invalidated_dates = CalculateTrainingCacheInvalidationDates(
         calendar.open_dates,
         revised_dates,
-        dependency_sessions=profile.history_sessions - 1,
+        dependency_sessions=(
+            profile.history_sessions if profile.algorithm == "tcn" else profile.history_sessions - 1
+        ),
     )
     due_identity = _due_identity(query, current_snapshot.content_hash, bundle.metadata_hash if bundle else None)
     due_identity += ":" + CanonicalResearchHash((data_complete, revised_dates, current_label_cutoff))[:16]

@@ -29,12 +29,13 @@ D25_HEAD_CONTRACT = TrainedHeadContract(
     "pre_cost_mean_excess_return_t2_t5",
 )
 HEAD_CONTRACTS = (TOMORROW_HEAD_CONTRACT, D25_HEAD_CONTRACT)
+_MOMENTUM_HORIZONS = (20, 40, 60)
 V3_TRAINING_PROFILE = TrainedProfileContract(
     "v3",
     "v3",
-    61,
+    max(_MOMENTUM_HORIZONS) + 1,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
-    (20, 40, 60),
+    _MOMENTUM_HORIZONS,
     (),
     HEAD_CONTRACTS,
     "ridge",

@@ -27,7 +27,7 @@ class Board(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModelIndustryReference:
     """Point-in-time CSRC classification for model inputs and labeled read-only display."""
 
@@ -47,7 +47,7 @@ class ModelIndustryReference:
             raise ValueError("model industry reference identity is invalid")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MarketQuote:
     code: str
     name: str
@@ -138,7 +138,7 @@ class CanonicalMarketSnapshot:
         object.__setattr__(self, "failure_categories", tuple(sorted(set(self.failure_categories))))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LiveQuote:
     code: str
     price: float | None
@@ -159,7 +159,7 @@ class LiveQuote:
         return max(0.0, (now - self.source_time).total_seconds())
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Evidence:
     evidence_id: str
     evidence_type: str
@@ -170,7 +170,7 @@ class Evidence:
     data_version: str = ""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CrossSectionStats:
     lower_bound: float | None
     upper_bound: float | None
@@ -181,7 +181,7 @@ class CrossSectionStats:
     population_data_version: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BoardPopulation:
     trade_date: str
     phase: str
@@ -215,7 +215,7 @@ class BoardPopulation:
             raise ValueError("current board population cannot declare a fallback")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FeatureSnapshot:
     quote: MarketQuote
     values: Mapping[str, float | None]

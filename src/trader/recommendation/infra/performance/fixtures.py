@@ -36,7 +36,6 @@ from trader.recommendation.infra.normalization.merge import ObservationFromQuote
 from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput
 
 _FIXTURE_SOURCE = "performance-completed-history"
-_HISTORY_SESSIONS = {"v1": 251, "v2": 251, "v3": 61, "v5": 62}
 
 
 @dataclass(frozen=True)
@@ -51,7 +50,7 @@ def BuildPerformanceHistory(features: tuple[FeatureSnapshot, ...]) -> tuple[Perf
     """Reuse the model fixture's daily generator; retain the production-sized raw tail."""
     if not features:
         raise ValueError("performance history requires a population")
-    days = _completed_dates(features[0].observed_at.date(), 251)
+    days = _completed_dates(features[0].observed_at.date(), max(feature.history_days for feature in features))
     result: list[PerformanceHistoryInput] = []
     for position, feature in enumerate(features):
         points = _history_points(feature.quote, position, days)[-feature.history_days :]
@@ -86,12 +85,15 @@ def BuildPerformanceFixtures(
     budgets: PerformanceBudgetSettings,
     profile: LoadedScoringProfile,
     *,
+    history_sessions: int,
     rows: int | None = None,
 ) -> tuple[tuple[MarketQuoteInput, ...], tuple[MarketQuote, ...], tuple[FeatureSnapshot, ...]]:
     """Build every profile's complete synthetic workload outside measured operations."""
 
     now = datetime(2026, 8, 25, 14, 50, tzinfo=SHANGHAI)
     row_count = budgets.workload.market_rows if rows is None else rows
+    if history_sessions < 1:
+        raise ValueError("performance fixture history sessions must be positive")
     if not 1 <= row_count <= budgets.workload.market_rows:
         raise ValueError("performance fixture rows must be within the configured population")
     industries = _shared_industries(profile)
@@ -99,8 +101,10 @@ def BuildPerformanceFixtures(
         replace(_quote_input(index, now), industry=industries[index % len(industries)]) for index in range(row_count)
     )
     quotes = tuple(_complete_quote(BuildMarketQuote(item), now) for item in market)
-    days = _completed_dates(now.date(), 251)
-    candidates = tuple(_model_feature(quote, index, now, days, profile) for index, quote in enumerate(quotes))
+    days = _completed_dates(now.date(), history_sessions)
+    candidates = tuple(
+        _model_feature(quote, index, now, days, profile, history_sessions) for index, quote in enumerate(quotes)
+    )
     return market, quotes, candidates
 
 
@@ -149,6 +153,7 @@ def _model_feature(
     now: datetime,
     days: tuple[date, ...],
     profile: LoadedScoringProfile,
+    history_sessions: int,
 ) -> FeatureSnapshot:
     points = _history_points(quote, position, days)
     horizons = (20, 40, 60, 120, 250) if profile.profile_id == "v2" else (20, 40, 60)
@@ -179,7 +184,10 @@ def _model_feature(
         values.update(zip(LEARNED_RANK_FEATURE_IDS, learned, strict=True))
     sequence = (
         CalculatePriceVolumeSequence(
-            quote.code, points[-61:], expected_dates=days[-61:], source_identity=_FIXTURE_SOURCE
+            quote.code,
+            points[-history_sessions:],
+            expected_dates=days[-history_sessions:],
+            source_identity=_FIXTURE_SOURCE,
         )
         if profile.profile_id == "v5"
         else None
@@ -188,7 +196,7 @@ def _model_feature(
         quote,
         values,
         now,
-        history_days=_HISTORY_SESSIONS[profile.profile_id],
+        history_days=history_sessions,
         model_industry=ModelIndustryReference(
             quote.industry, "证监会行业分类", days[-1], "performance_fixture", _FIXTURE_SOURCE
         ),

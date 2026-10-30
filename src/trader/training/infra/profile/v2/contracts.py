@@ -29,12 +29,13 @@ V2_D25_HEAD_CONTRACT = TrainedHeadContract(
     "pre_cost_mean_excess_return_t2_t5",
 )
 V2_HEAD_CONTRACTS = (V2_TOMORROW_HEAD_CONTRACT, V2_D25_HEAD_CONTRACT)
+_MOMENTUM_HORIZONS = (20, 40, 60, 120, 250)
 V2_TRAINING_PROFILE = TrainedProfileContract(
     "v2",
     "v2",
-    251,
+    max(_MOMENTUM_HORIZONS) + 1,
     V2_RAW_ALPHA_FEATURE_MANIFEST,
-    (20, 40, 60, 120, 250),
+    _MOMENTUM_HORIZONS,
     (120, 250),
     V2_HEAD_CONTRACTS,
     "lightgbm",

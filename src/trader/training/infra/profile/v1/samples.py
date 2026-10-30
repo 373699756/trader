@@ -9,8 +9,8 @@ from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
 from itertools import repeat
+from pathlib import Path
 from typing import Literal, Protocol, cast
 
 import numpy as np
@@ -154,7 +154,7 @@ class _PendingDay:
 
 @dataclass
 class _RollingCode:
-    points: deque[LearnedRankDailyPoint] = field(default_factory=lambda: deque(maxlen=251))
+    points: deque[LearnedRankDailyPoint]
     last_position: int = -1
 
 
@@ -363,13 +363,16 @@ def BuildLearnedRankSamples(
     splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit],
     index: LearnedRankSampleIndex,
     *,
+    history_sessions: int,
     stream: LearnedRankSampleStream = _STANDALONE_STREAM,
 ) -> LearnedRankSampleCounts:
     progress, cancel_requested, aligned_rows = stream.progress, stream.cancel_requested, stream.aligned_rows
     calendar = source.snapshot.calendar.open_dates
     positions = {day: position for position, day in enumerate(calendar)}
     selected = frozenset(day for split in splits for day in split.sample_dates)
-    first_position = min(positions[day] for day in selected) - 251
+    if history_sessions < 1:
+        raise ValueError("learned-rank history sessions must be positive")
+    first_position = min(positions[day] for day in selected) - history_sessions
     readable = frozenset(calendar[first_position:])
     readable = AlignmentReadDates(calendar, readable)
     total = source.training_row_upper_bound(readable)
@@ -410,7 +413,7 @@ def BuildLearnedRankSamples(
             current = row.trade_date
             if row.trade_date in selected:
                 pending.append(_PendingDay(row.trade_date, position))
-        state = rolling.setdefault(row.code, _RollingCode())
+        state = rolling.setdefault(row.code, _RollingCode(deque(maxlen=history_sessions)))
         if state.last_position != position - 1:
             state.points.clear()
         point = _complete_point(row)

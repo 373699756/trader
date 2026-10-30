@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from datetime import date
 
 from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
-from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
+from trader.recommendation.domain.market.v1.features import (
+    LEARNED_RANK_FEATURE_IDS,
+    LEARNED_RANK_HISTORY_SESSIONS,
+)
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
@@ -36,7 +39,7 @@ class V1TrainingSettings:
 
     @property
     def history_sessions(self) -> int:
-        return 251
+        return LEARNED_RANK_HISTORY_SESSIONS
 
     @property
     def momentum_horizons(self) -> tuple[int, ...]:
@@ -124,7 +127,7 @@ def BuildLearnedRankDateSplit(
         settings.fit_dates,
     ):
         start = end - size
-        if start < 251:
+        if start < settings.history_sessions:
             raise ValueError("learned_rank_calendar_insufficient")
         partitions.append(dates[start:end])
         end = start - embargo

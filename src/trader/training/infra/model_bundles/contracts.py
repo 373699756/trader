@@ -49,7 +49,7 @@ class TrainedProfileContract:
             self.profile_id not in {"v2", "v3", "v5"}
             or self.output_directory != self.profile_id
             or self.history_sessions < 61
-            or self.history_sessions != max(self.momentum_horizons) + (2 if self.profile_id == "v5" else 1)
+            or self.history_sessions != max(self.momentum_horizons) + 1
             or len(set(self.momentum_horizons)) != len(self.momentum_horizons)
             or not set(self.market_state_momentum_horizons).issubset(self.momentum_horizons)
             or tuple(head.strategy for head in self.heads) != (Strategy.TOMORROW, Strategy.D25)

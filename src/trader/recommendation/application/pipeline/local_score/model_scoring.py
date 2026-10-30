@@ -65,7 +65,7 @@ class _RuntimeFeatureContract:
     market_state_horizons: tuple[int, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _SharedFeatureMatrices:
     daily_returns: tuple[tuple[float | None, ...], ...]
     momenta: tuple[tuple[float | None, ...], ...]
@@ -73,7 +73,7 @@ class _SharedFeatureMatrices:
     market_state: tuple[float | None, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _RawRow:
     code: str
     board: str
@@ -84,7 +84,7 @@ class _RawRow:
     industry: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ModelRowContract:
     return_horizons: tuple[int, ...]
     momentum_horizons: tuple[int, ...]
@@ -93,7 +93,7 @@ class _ModelRowContract:
     history_required_sessions: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ModelRowIdentity:
     code: str
     board: Board
@@ -105,13 +105,13 @@ class _ModelRowIdentity:
     values: tuple[float | None, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _PreparedModelRows:
     rows: tuple[_RawRow, ...]
     missing_codes: tuple[str, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _CostReferenceIdentity:
     profile_id: str
     strategy: Strategy
@@ -135,7 +135,7 @@ class _ModelFeatureVectorContext:
     feature_ids: tuple[str, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ModelComputationState:
     fact_revisions: tuple[FeatureFactRevision, ...]
     daily_returns: tuple[tuple[float | None, ...], ...]
@@ -150,7 +150,7 @@ class _ModelComputationState:
     batch: ModelScoreBatch
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _CostReference:
     version: str
     boards: tuple[tuple[str, PercentileReference], ...]
@@ -160,9 +160,9 @@ class _CostReference:
 
 
 class SharedModelFeatureCache:
-    """Bounded exact-identity cache for cross-head feature calculations, never predictions."""
+    """Retain only the current exact identity for cross-head feature calculations."""
 
-    def __init__(self, capacity: int = 3) -> None:
+    def __init__(self, capacity: int = 1) -> None:
         if capacity < 1:
             raise ValueError("shared model feature cache capacity must be positive")
         self._capacity = capacity
@@ -642,7 +642,7 @@ class ProductionModelScoringService:
             return cached
         reference = self._build_cost_reference(identity)
         self._cost_references[identity] = reference
-        while len(self._cost_references) > 3:
+        while len(self._cost_references) > 1:
             self._cost_references.popitem(last=False)
         return reference
 

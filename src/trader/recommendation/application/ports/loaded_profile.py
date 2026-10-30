@@ -18,7 +18,7 @@ from trader.recommendation.domain.scoring.residualization import ExposureContrac
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModelInput:
     """Validated feature vector passed from an application scorer to a head."""
 
@@ -60,7 +60,7 @@ class HeadPredictorPort(Protocol):
     def predict(self, inputs: Sequence[ModelInput]) -> tuple[HeadPrediction, ...]: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModelPrediction:
     code: str
     predicted_excess_return: float
@@ -104,7 +104,7 @@ class LearnedRankPredictorPort(HeadPredictorPort, Protocol):
     def predict(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModelDiagnostics:
     signal_score: float
     predicted_excess_return_pct: float
@@ -133,7 +133,7 @@ class ModelDiagnostics:
             raise ValueError("model diagnostics are invalid")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ModelScoreBatch:
     model_version: str
     diagnostics: Mapping[str, ModelDiagnostics]

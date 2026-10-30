@@ -66,9 +66,20 @@ def test_training_restores_smallest_loss_weights_not_significant_anchor_or_last_
 
 def test_recent_split_preserves_evaluation_dates_and_supplier_neutral_default_identity():
     dates = tuple(date(2018, 1, 1) + timedelta(days=index) for index in range(2000))
-    old = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, fit_dates=750, history_sessions=62)
+    old = BuildTrainingDateSplit(
+        dates,
+        parent_manifest_hash="a" * 64,
+        fit_dates=750,
+        history_sessions=61,
+        history_excludes_signal=True,
+    )
     new = BuildTrainingDateSplit(
-        dates, parent_manifest_hash="a" * 64, fit_dates=61, history_sessions=62, recent_fit=True
+        dates,
+        parent_manifest_hash="a" * 64,
+        fit_dates=61,
+        history_sessions=61,
+        recent_fit=True,
+        history_excludes_signal=True,
     )
     assert new.model_fit_dates == old.model_fit_dates[-61:]
     assert len(new.warmup_dates) == 61 and new.warmup_dates[-1] < new.model_fit_dates[0]
@@ -172,8 +183,9 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.snapshot_hash,
             fit_dates=options.fit_dates,
-            history_sessions=62,
+            history_sessions=61,
             recent_fit=True,
+            history_excludes_signal=True,
         )
         request = ProfileTrainingRequest(
             tmp_path / "history",

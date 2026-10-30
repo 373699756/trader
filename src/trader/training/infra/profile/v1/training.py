@@ -158,6 +158,7 @@ def RunV1Training(
                         source,
                         splits,
                         index,
+                        history_sessions=settings.history_sessions,
                         stream=LearnedRankSampleStream(progress, cancel_requested, aligned_rows),
                     )
                     peak_bytes = sample_path.stat().st_size

@@ -125,7 +125,7 @@ def test_missing_dual_head_status_preserves_profile_authority(profile_id, author
     scorer = BuildProfileScoring(
         profile_id,
         None,
-        history_sessions=62,
+        history_sessions=61,
         model_failure="production_model_missing",
         cost_policy=ExecutionCostPolicy(0.002, 1.0),
         maintenance=None,

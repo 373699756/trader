@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.entrypoints.test_performance_fixtures import _budgets
+from tests.unit.entrypoints.test_performance_fixtures import _budgets, _history_sessions
 from tests.unit.entrypoints.test_performance_models import _workload
 from trader.entrypoints import performance
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
@@ -177,10 +177,12 @@ def test_bounded_replay_does_not_change_the_fixed_production_population():
     budgets = settings.performance_budgets
     assert budgets.workload.market_rows == budgets.workload.candidate_rows == 5500
     profile = _workload("v3").profile
-    inputs, quotes, features = BuildPerformanceFixtures(budgets, profile, rows=3)
+    inputs, quotes, features = BuildPerformanceFixtures(
+        budgets, profile, history_sessions=_history_sessions("v3"), rows=3
+    )
     assert len(inputs) == len(quotes) == len(features) == 3
     assert budgets.workload.market_rows == 5500
     with pytest.raises(ValueError, match="configured population"):
-        BuildPerformanceFixtures(budgets, profile, rows=5501)
+        BuildPerformanceFixtures(budgets, profile, history_sessions=_history_sessions("v3"), rows=5501)
     with pytest.raises(ValueError, match="require continuous"):
         performance.Run(Path("missing.json"), replay_rows=3)

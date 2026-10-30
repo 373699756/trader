@@ -38,7 +38,8 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
         parent_manifest_hash="a" * 64,
         fit_dates=settings.fit_dates,
         recent_fit=True,
-        history_sessions=62,
+        history_sessions=61,
+        history_excludes_signal=True,
     )
     signal = split.model_fit_dates[30]
     absent = history.snapshot.calendar.open_dates[history.snapshot.calendar.open_dates.index(signal) + 2]

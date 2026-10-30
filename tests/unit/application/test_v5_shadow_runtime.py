@@ -155,7 +155,7 @@ def test_v5_final_and_close_rebuild_use_model_rank_with_production_identity(
 @pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
 def test_v5_missing_model_close_rebuild_fails_closed(application_feature_factory, native_type):
     strategy = native_type.strategy
-    router = ModelScoringRouter("v5", {strategy: UnavailableModelCapability("v5", 62)})
+    router = ModelScoringRouter("v5", {strategy: UnavailableModelCapability("v5", 61)})
     native = replace(_native_input(_features(application_feature_factory), native_type), phase="close_fallback")
 
     with pytest.raises(RuntimeError, match="production_model_missing"):

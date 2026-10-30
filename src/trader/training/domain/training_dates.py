@@ -123,13 +123,20 @@ def BuildTrainingDateSplit(
     early_stopping_sessions: int = 20,
     history_sessions: int = 61,
     recent_fit: bool = False,
+    history_excludes_signal: bool = False,
 ) -> TrainingDateSplit:
     ordered = tuple(dates)
-    if early_stopping_sessions not in {0, 20} or (fit_dates is not None and fit_dates < 1) or history_sessions < 1:
+    if (
+        early_stopping_sessions not in {0, 20}
+        or (fit_dates is not None and fit_dates < 1)
+        or history_sessions < 1
+        or type(history_excludes_signal) is not bool
+    ):
         raise ValueError("training fit window is invalid")
+    warmup_sessions = history_sessions if history_excludes_signal else history_sessions - 1
     minimum_dates = max(
         MIN_TRAINING_DATES,
-        history_sessions - 1 + 600 + 200 * 2 + 5 * 3 + TRAINING_POINT_IN_TIME_RESERVE,
+        warmup_sessions + 600 + 200 * 2 + 5 * 3 + TRAINING_POINT_IN_TIME_RESERVE,
     )
     if ordered != tuple(sorted(set(ordered))) or not minimum_dates <= len(ordered) <= MAX_TRAINING_SESSIONS:
         raise ValueError("training split requires enough unique dates for warmup and isolated holdouts")
@@ -152,11 +159,11 @@ def BuildTrainingDateSplit(
     calibration_embargo = take(5) if early_stopping_sessions else ()
     early_stopping = take(early_stopping_sessions)
     fit_embargo = take(5)
-    available_fit_days = cursor - (history_sessions - 1)
+    available_fit_days = cursor - warmup_sessions
     if available_fit_days < 1 or (fit_dates is not None and available_fit_days < fit_dates):
         raise ValueError("training fit dates are insufficient")
     model_fit = take(fit_dates if fit_dates is not None else available_fit_days)
-    warmup = take(history_sessions - 1)
+    warmup = take(warmup_sessions)
     development = model_fit + fit_embargo + early_stopping + calibration_embargo + calibration
     return TrainingDateSplit(
         schema_version="v5_recent_training_split" if recent_fit else "training_date_split",

@@ -125,7 +125,7 @@ class _TrainingTaskFactory:
         if reused is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
         splits = tuple(BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=h) for h in (1, 5))
-        first = min(calendar.index(day) for split in splits for day in split.sample_dates) - 251
+        first = min(calendar.index(day) for split in splits for day in split.sample_dates) - settings.history_sessions
         dates = AlignmentReadDates(calendar, frozenset(calendar[first:]))
         execute = partial(
             RunV1Training,

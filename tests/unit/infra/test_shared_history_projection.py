@@ -1,16 +1,16 @@
 """Shared streaming preload and profile-specific window contracts."""
 
+import sqlite3
 from dataclasses import replace
 from datetime import timedelta
-import sqlite3
 
 import pytest
 
 from tests.component.test_candidate_history_tail import CALENDAR, NOW, HistoryInput
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
-from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.settings.models import HistoryPreloadSettings
+from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
@@ -41,7 +41,7 @@ def test_shared_scan_matches_independent_profile_projections_and_reuses_retained
         reserve_bytes=lambda size: reservations.append(size) or True,
         settings=HistoryPreloadSettings(warn_after_seconds=300.0),
     )
-    contracts = ((251, True, False), (251, False, False), (61, False, False), (62, False, True))
+    contracts = ((251, True, False), (251, False, False), (61, False, False), (61, False, True))
     shared = tuple(_cache(source, sessions, owner, rank, sequence) for sessions, rank, sequence in contracts)
     shared[0].initialize(cancelled=lambda: False)
     for profile, (sessions, rank, sequence) in zip(shared, contracts, strict=True):
@@ -59,8 +59,8 @@ def test_shared_scan_matches_independent_profile_projections_and_reuses_retained
     for code in source.current.universe_codes:
         contexts = tuple(profile.entries()[code].context for profile in shared)
         assert contexts[0] is contexts[1]
-        assert contexts[0] is not contexts[2] and contexts[2] is not contexts[3]
-        assert tuple(context.sample_count for context in contexts) == (251, 251, 61, 62)
+        assert contexts[0] is not contexts[2] and contexts[2] is contexts[3]
+        assert tuple(context.sample_count for context in contexts) == (251, 251, 61, 61)
 
 
 def test_batch_model_quality_reads_calendar_once_and_keeps_date_failures():

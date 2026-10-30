@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pytest
 
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings.models import (
-    PerformanceBudgetSettings,
     DatabasePerformanceSettings,
+    PerformanceBudgetSettings,
     PerformanceMemorySettings,
     PerformanceRoundSettings,
     PerformanceWorkloadSettings,
@@ -38,6 +39,7 @@ from trader.training.infra.profile.composition import SingleHeadCombiner
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,10 @@ def _profile(profile_id: ScoringProfileId) -> LoadedScoringProfile:
     return LoadedScoringProfile(profile_id, heads)
 
 
+def _history_sessions(profile_id: ScoringProfileId) -> int:
+    return LoadRuntimeTrainingSettings(Path.cwd(), profile_id).history_sessions
+
+
 def _budgets() -> PerformanceBudgetSettings:
     return PerformanceBudgetSettings(
         PerformanceWorkloadSettings(12, 12),
@@ -87,10 +93,13 @@ def _budgets() -> PerformanceBudgetSettings:
     )
 
 
-@pytest.mark.parametrize("profile_id,sessions", (("v1", 251), ("v2", 251), ("v3", 61), ("v5", 62)))
-def test_profile_fixtures_qualify_for_both_actual_scoring_services(profile_id, sessions):
+@pytest.mark.parametrize("profile_id", ("v1", "v2", "v3", "v5"))
+def test_profile_fixtures_qualify_for_both_actual_scoring_services(profile_id):
     profile = _profile(profile_id)
-    inputs, quotes, features = BuildPerformanceFixtures(_budgets(), profile)
+    sessions = _history_sessions(profile_id)
+    inputs, quotes, features = BuildPerformanceFixtures(
+        _budgets(), profile, history_sessions=_history_sessions(profile_id)
+    )
     assert len(inputs) == len(quotes) == len(features) == 12
     assert len({feature.quote.code for feature in features}) == 12
     assert all(feature.history_days == sessions for feature in features)
@@ -114,7 +123,9 @@ def test_profile_fixtures_qualify_for_both_actual_scoring_services(profile_id, s
             assert len(set(sequence.values)) > 6
     else:
         assert all(feature.model_sequence is None for feature in features)
-    assert BuildPerformanceFixtures(_budgets(), profile) == (inputs, quotes, features)
+    assert BuildPerformanceFixtures(
+        _budgets(), profile, history_sessions=_history_sessions(profile_id)
+    ) == (inputs, quotes, features)
 
 
 def test_industry_fixture_rejects_disjoint_head_coverage():
@@ -123,11 +134,11 @@ def test_industry_fixture_rejects_disjoint_head_coverage():
     different = replace(head, predictor=replace(head.predictor, industry_ids=("other",)))
     profile = replace(profile, heads={**profile.heads, Strategy.D25: different})
     with pytest.raises(ValueError, match="common_industry_coverage_missing"):
-        BuildPerformanceFixtures(_budgets(), profile)
-
-
+        BuildPerformanceFixtures(_budgets(), profile, history_sessions=_history_sessions("v2"))
 def test_candidate_union_and_realtime_observations_keep_fixture_codes():
-    _, quotes, _ = BuildPerformanceFixtures(_budgets(), _profile("v3"))
+    _, quotes, _ = BuildPerformanceFixtures(
+        _budgets(), _profile("v3"), history_sessions=_history_sessions("v3")
+    )
     plans = BuildWorstCaseCandidatePlans(len(quotes), quotes[0].received_time)
     assert ProjectCandidateUnionQuotes(quotes, plans) == quotes
     observations = CompleteRealtimeObservations(quotes, quotes[0].received_time)
@@ -137,7 +148,9 @@ def test_candidate_union_and_realtime_observations_keep_fixture_codes():
 
 def test_full_market_fixture_quote_structure_is_valid_on_all_boards():
     budgets = replace(_budgets(), workload=PerformanceWorkloadSettings(5500, 5500))
-    _, quotes, _ = BuildPerformanceFixtures(budgets, _profile("v3"))
+    _, quotes, _ = BuildPerformanceFixtures(
+        budgets, _profile("v3"), history_sessions=_history_sessions("v3")
+    )
     assert {quote.board.value for quote in quotes} == {"main", "chinext", "star"}
     assert all(
         quote.low <= quote.open_price <= quote.high and quote.low <= quote.price <= quote.high for quote in quotes

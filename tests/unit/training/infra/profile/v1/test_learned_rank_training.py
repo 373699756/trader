@@ -37,7 +37,11 @@ from trader.training.infra.profile.v1.models import (
     PublishLearnedRankPair,
     ReadLearnedRankPair,
 )
-from trader.training.infra.profile.v1.samples import BuildLearnedRankSamples, LearnedRankMatrixRequest, LearnedRankSampleIndex
+from trader.training.infra.profile.v1.samples import (
+    BuildLearnedRankSamples,
+    LearnedRankMatrixRequest,
+    LearnedRankSampleIndex,
+)
 from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training
 
 
@@ -282,12 +286,14 @@ def test_training_samples_use_prior_completed_sessions_and_explicit_missing_labe
         BuildLearnedRankDateSplit(history.dates, _settings(), maturity_sessions=maturity) for maturity in (1, 5)
     )
     with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
-        counts = BuildLearnedRankSamples(history, (splits[0], splits[1]), index)
+        counts = BuildLearnedRankSamples(
+            history, (splits[0], splits[1]), index, history_sessions=_settings().history_sessions
+        )
         with ExitStack() as resources:
             matrix = index.read_matrices((LearnedRankMatrixRequest(splits[0].fitting, Strategy.TOMORROW),), tmp_path / "matrix", resources)[0]
             position = history.dates.index(matrix.dates[0])
             expected = CalculateLearnedRankFeatures(
-                tuple(history.point(day, 0) for day in range(position - 251, position))
+                tuple(history.point(day, 0) for day in range(position - _settings().history_sessions, position))
             )
             assert tuple(matrix.features[0]) == pytest.approx(expected)
             assert counts.missing_d25 > 0  # Tomorrow's newest anchors lack mature D25 labels.
@@ -311,7 +317,9 @@ def test_v1_missing_t1_keeps_d25_and_fixed_calendar_partitions(tmp_path: Path) -
                 yield row
 
     with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
-        counts = BuildLearnedRankSamples(MissingHistory(), (splits[0], splits[1]), index)
+        counts = BuildLearnedRankSamples(
+            MissingHistory(), (splits[0], splits[1]), index, history_sessions=_settings().history_sessions
+        )
         with ExitStack() as resources:
             tomorrow, d25 = index.read_matrices(
                 tuple(LearnedRankMatrixRequest((anchor, missing_day), strategy) for strategy in (Strategy.TOMORROW, Strategy.D25)),

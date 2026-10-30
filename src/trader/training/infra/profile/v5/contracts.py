@@ -14,6 +14,7 @@ from trader.training.infra.model_bundles.contracts import TrainedHeadContract, T
 SEQUENCE_FEATURE_IDS = tuple(
     FeatureId(f"sequence_{step}_{channel}") for step in range(60) for channel in SEQUENCE_CHANNELS
 )
+_MOMENTUM_HORIZONS = (20, 40, 60)
 
 
 def _manifest(auxiliary: FeatureVectorManifest) -> FeatureVectorManifest:
@@ -28,9 +29,9 @@ def _manifest(auxiliary: FeatureVectorManifest) -> FeatureVectorManifest:
 V5_TRAINING_PROFILE = TrainedProfileContract(
     "v5",
     "v5",
-    62,
+    max(_MOMENTUM_HORIZONS) + 1,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
-    (20, 40, 60),
+    _MOMENTUM_HORIZONS,
     (),
     (
         TrainedHeadContract(

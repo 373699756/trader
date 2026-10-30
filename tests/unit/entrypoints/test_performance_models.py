@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from tests.unit.entrypoints.test_performance_fixtures import _budgets, _profile
+from tests.unit.entrypoints.test_performance_fixtures import _budgets, _history_sessions, _profile
 from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.ports.loaded_profile import ModelPrediction
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
@@ -53,7 +53,9 @@ def _workload(profile_id):
             strategy: replace(head, predictor=_Predictor(head.predictor)) for strategy, head in profile.heads.items()
         },
     )
-    _, _, features = BuildPerformanceFixtures(_budgets(), profile)
+    _, _, features = BuildPerformanceFixtures(
+        _budgets(), profile, history_sessions=_history_sessions(profile_id)
+    )
     policy = _recommendation_policy(LoadStrategySettings(Path("config/strategy.json"), scoring_profile=profile_id))
     return PerformanceProfileWorkload(profile, policy, features, "fixture-config", ExecutionCostPolicy(0.002, 1.0))
 

@@ -56,7 +56,7 @@
     },
     {
       "profile": "v5",
-      "history_sessions": 62,
+      "history_sessions": 61,
       "momentum_horizons": [20, 40, 60],
       "market_state_momentum_horizons": [],
       "heads": {
