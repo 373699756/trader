@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from threading import Event, Timer
+from tempfile import TemporaryDirectory
 
 import pytest
 from pypdf import PdfWriter
@@ -46,11 +47,18 @@ def _pdf(pages=1, *, encrypted=False, blank=False, short=False):
 
 
 def _parse(payload, *, max_pages=200, max_text=1_000_000):
+    with TemporaryDirectory(prefix="test-company-text-") as directory:
+        return _parse_in_directory(payload, directory, max_pages, max_text)
+
+
+def _parse_in_directory(payload, directory, max_pages, max_text):
     return subprocess.run(
         [
             sys.executable,
             "-m",
             "trader.download.infra.company_document_parser",
+            "--directory",
+            directory,
             "--max-bytes",
             "16777216",
             "--max-pages",

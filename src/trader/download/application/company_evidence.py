@@ -204,8 +204,13 @@ def SyncCompanyEvidence(
         while documents.has_due():
             state.batch += 1
             documents.run_batch(discovering=False)
+            if not _cancelled(dependencies):
+                _publish_batch(dependencies, population, observed_at, started, state)
             if documents.stopped or _cancelled(dependencies):
                 break
+        # A cancelled previous run may have accepted a body but not published it.
+        if not _cancelled(dependencies):
+            _publish_batch(dependencies, population, observed_at, started, state)
         published = 0 if _cancelled(dependencies) else index.published_count(population)
     else:
         components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")

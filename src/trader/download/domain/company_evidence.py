@@ -581,7 +581,7 @@ def BuildCompanyDocumentPolicies(
             f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
         ),
         ocr=(
-            f"ocr_1:{ocr_identity}:{configuration.document_ocr_timeout_seconds:g}:"
+            f"ocr_2:edge4096:{ocr_identity}:{configuration.document_ocr_timeout_seconds:g}:"
             f"{configuration.document_ocr_max_pages}:{configuration.document_ocr_dpi}:"
             f"{configuration.document_ocr_languages}"
         ),

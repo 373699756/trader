@@ -6,9 +6,9 @@ import hashlib
 import html
 import os
 import re
-import signal
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime
@@ -31,6 +31,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_document_ocr import CompanyOcrEngine
 from trader.download.infra.company_document_parser import CompanyTextCapability
+from trader.download.infra.company_document_process import DocumentProcessFamily
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import (
     HttpCancelled,
@@ -44,7 +45,7 @@ from trader.infra.http_contracts import (
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_DOCUMENT_LIMITS = CompanyDocumentLimits()
 _DEFAULT_EXTENDED_LIMITS = CompanyDocumentLimits(64 * 1024 * 1024, 1000, 2_000_000)
-_DEFAULT_POLICIES = CompanyDocumentPolicies("text_4:poppler-path", "ocr_1:unavailable", "limits_1:default")
+_DEFAULT_POLICIES = CompanyDocumentPolicies("text_4:poppler-path", "ocr_2:unavailable", "limits_1:default")
 _DEFAULT_TEXT_CAPABILITY = CompanyTextCapability("poppler-path", "pdftotext", "pdfinfo")
 
 
@@ -306,6 +307,10 @@ class CninfoMarketDisclosureSource:
 
     def _parse_document(self, payload: bytes, limits: CompanyDocumentLimits | None = None) -> str:
         limits = limits or self._document_limits
+        with tempfile.TemporaryDirectory(prefix="trader-company-text-") as directory:
+            return self._extract_document(payload, limits, directory)
+
+    def _extract_document(self, payload: bytes, limits: CompanyDocumentLimits, directory: str) -> str:
         payload_hash = hashlib.sha256(payload).digest()
         if not self._text_capability.available:
             raise CompanyDocumentFailure(
@@ -319,6 +324,8 @@ class CninfoMarketDisclosureSource:
                 sys.executable,
                 "-m",
                 "trader.download.infra.company_document_parser",
+                "--directory",
+                directory,
                 "--max-bytes",
                 str(limits.max_bytes),
                 "--max-pages",
@@ -336,7 +343,9 @@ class CninfoMarketDisclosureSource:
             start_new_session=os.name == "posix",
         )
         pending_input: bytes | None = payload
+        family: DocumentProcessFamily | None = None
         try:
+            family = DocumentProcessFamily(process)
             while True:
                 self._check_cancelled()
                 remaining = parse_deadline - self._monotonic()
@@ -350,7 +359,7 @@ class CninfoMarketDisclosureSource:
                     pending_input = None
             self._check_cancelled()
         finally:
-            _close_parser(process)
+            _close_parser(process, family)
         if process.returncode:
             reason = {
                 3: "encrypted",
@@ -366,27 +375,13 @@ class CninfoMarketDisclosureSource:
         return output.decode("utf-8")
 
 
-def _close_parser(process: subprocess.Popen[bytes]) -> None:
+def _close_parser(process: subprocess.Popen[bytes], family: DocumentProcessFamily | None) -> None:
     try:
-        if process.poll() is None:
-            try:
-                if os.name == "posix":
-                    os.killpg(process.pid, signal.SIGTERM)
-                else:
-                    process.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                if os.name == "posix":
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                else:
-                    process.kill()
-                process.wait(timeout=1.0)
+        if family is not None:
+            family.close()
+        elif process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
     finally:
         if process.stdin is not None:
             process.stdin.close()

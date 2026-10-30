@@ -8,7 +8,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
@@ -55,6 +54,7 @@ def DetectCompanyText() -> CompanyTextCapability:
 def Main() -> int:
     signal.signal(signal.SIGTERM, _terminate)
     parser = argparse.ArgumentParser()
+    parser.add_argument("--directory", required=True)
     parser.add_argument("--max-bytes", required=True, type=int)
     parser.add_argument("--max-pages", required=True, type=int)
     parser.add_argument("--max-text-characters", required=True, type=int)
@@ -66,49 +66,42 @@ def Main() -> int:
     if len(payload) > limits.max_bytes:
         return 2
     try:
-        with tempfile.TemporaryDirectory(prefix="trader-company-text-") as directory:
-            root = Path(directory)
-            pdf = root / "document.pdf"
-            text_path = root / "document.txt"
-            pdf.write_bytes(payload)
-            details = subprocess.run((args.pdfinfo, str(pdf)), capture_output=True, check=False)
-            metadata = (details.stdout + details.stderr).decode("utf-8", errors="replace")
-            if _metadata_value(metadata, "Encrypted").lower().startswith("yes") or "Incorrect password" in metadata:
-                return 3
-            if details.returncode:
-                return 2
-            pages = _metadata_value(metadata, "Pages")
-            if not pages.isdigit():
-                return 2
-            if int(pages) > limits.max_pages:
-                return 4
-            extracted = subprocess.run(
-                (
-                    args.pdftotext,
-                    "-enc",
-                    "UTF-8",
-                    "-nopgbrk",
-                    str(pdf),
-                    str(text_path),
-                ),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            if extracted.returncode or not text_path.exists():
-                return 2
-            maximum_bytes = limits.max_text_characters * 4 + 1
-            with text_path.open("rb") as stream:
-                encoded = stream.read(maximum_bytes)
-            if len(encoded) >= maximum_bytes:
-                return 6
-            text = encoded.decode("utf-8", errors="replace").strip()
-            if len(text) > limits.max_text_characters:
-                return 6
-            if len(text) < 80:
-                return 7 if not text else 8
-            sys.stdout.buffer.write(text.encode("utf-8"))
-            return 0
+        # The supervising caller owns cleanup after the complete process family exits.
+        root = Path(args.directory)
+        pdf = root / "document.pdf"
+        text_path = root / "document.txt"
+        pdf.write_bytes(payload)
+        details = subprocess.run((args.pdfinfo, str(pdf)), capture_output=True, check=False)
+        metadata = (details.stdout + details.stderr).decode("utf-8", errors="replace")
+        if _metadata_value(metadata, "Encrypted").lower().startswith("yes") or "Incorrect password" in metadata:
+            return 3
+        if details.returncode:
+            return 2
+        pages = _metadata_value(metadata, "Pages")
+        if not pages.isdigit():
+            return 2
+        if int(pages) > limits.max_pages:
+            return 4
+        extracted = subprocess.run(
+            (args.pdftotext, "-enc", "UTF-8", "-nopgbrk", str(pdf), str(text_path)),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if extracted.returncode or not text_path.exists():
+            return 2
+        maximum_bytes = limits.max_text_characters * 4 + 1
+        with text_path.open("rb") as stream:
+            encoded = stream.read(maximum_bytes)
+        if len(encoded) >= maximum_bytes:
+            return 6
+        text = encoded.decode("utf-8", errors="replace").strip()
+        if len(text) > limits.max_text_characters:
+            return 6
+        if len(text) < 80:
+            return 7 if not text else 8
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        return 0
     except (OSError, ValueError):
         return 2
 

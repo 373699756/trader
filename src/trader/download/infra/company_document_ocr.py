@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import os
+import math
+import re
 import shutil
-import signal
 import subprocess
 import tempfile
 import time
@@ -15,11 +15,14 @@ from pathlib import Path
 from threading import Lock
 
 from trader.download.domain.company_evidence import CompanyDocumentFailure
+from trader.download.infra.company_document_process import CaptureDocumentTool
 from trader.infra.http_contracts import HttpCancelled
 
 _MAX_RENDERED_BYTES = 256 * 1024 * 1024
 _MAX_TSV_BYTES = 8 * 1024 * 1024
 _MIN_CONFIDENCE = 35.0
+_MAX_IMAGE_EDGE = 4096
+_MAX_TEXT_CHARACTERS = 2_000_000
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class CompanyOcrCapability:
     pdftoppm: str | None
     languages: str
     failure: str | None = None
+    pdfinfo: str | None = "pdfinfo"
 
     @property
     def available(self) -> bool:
@@ -38,7 +42,8 @@ class CompanyOcrCapability:
 def DetectCompanyOcr(languages: str) -> CompanyOcrCapability:
     tesseract = shutil.which("tesseract")
     pdftoppm = shutil.which("pdftoppm")
-    if tesseract is None or pdftoppm is None:
+    pdfinfo = shutil.which("pdfinfo")
+    if tesseract is None or pdftoppm is None or pdfinfo is None:
         return CompanyOcrCapability("unavailable", tesseract, pdftoppm, languages, "disclosure_document_ocr_unavailable")
     try:
         version = subprocess.run(
@@ -64,7 +69,7 @@ def DetectCompanyOcr(languages: str) -> CompanyOcrCapability:
             "disclosure_document_ocr_language_unavailable",
         )
     identity = hashlib.sha256(version.stdout + listed.stdout + renderer.stderr).hexdigest()[:20]
-    return CompanyOcrCapability(identity, tesseract, pdftoppm, languages)
+    return CompanyOcrCapability(identity, tesseract, pdftoppm, languages, pdfinfo=pdfinfo)
 
 
 class CompanyOcrEngine:
@@ -91,39 +96,49 @@ class CompanyOcrEngine:
     def extract(self, payload: bytes, payload_hash: bytes) -> tuple[str, float]:
         if not self.capability.available:
             raise CompanyDocumentFailure(self.capability.failure or "disclosure_document_ocr_unavailable", payload_hash=payload_hash)
-        with self._lock:
+        while not self._lock.acquire(timeout=0.1):
+            self._check_cancelled()
+        try:
             self._check_cancelled()
             deadline = self._monotonic() + self._timeout_seconds
             with tempfile.TemporaryDirectory(prefix="trader-company-ocr-") as directory:
                 root = Path(directory)
                 pdf = root / "document.pdf"
                 pdf.write_bytes(payload)
-                prefix = root / "page"
-                self._run(
-                    (
-                        self.capability.pdftoppm or "pdftoppm",
-                        "-png",
-                        "-r",
-                        str(self._dpi),
-                        "-f",
-                        "1",
-                        "-l",
-                        str(self._max_pages + 1),
-                        str(pdf),
-                        str(prefix),
-                    ),
+                metadata = self._run(
+                    (self.capability.pdfinfo or "pdfinfo", "-f", "1", "-l", str(self._max_pages + 1), str(pdf)),
                     deadline,
                     payload_hash,
                     "disclosure_document_ocr_unreadable",
+                    maximum_bytes=65536,
                 )
-                images = tuple(sorted(root.glob("page-*.png"), key=_page_number))
-                if len(images) > self._max_pages:
+                pages = next((line.split(":", 1)[1].strip() for line in metadata.decode("utf-8", errors="replace").splitlines() if line.startswith("Pages:")), "")
+                if not pages.isdigit() or int(pages) < 1:
+                    raise CompanyDocumentFailure("disclosure_document_ocr_unreadable", payload_hash=payload_hash)
+                if int(pages) > self._max_pages:
                     raise CompanyDocumentFailure("disclosure_document_ocr_page_limit", payload_hash=payload_hash)
-                if not images or sum(image.stat().st_size for image in images) > _MAX_RENDERED_BYTES:
-                    raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash)
+                edges = _render_edges(metadata, int(pages), self._dpi, payload_hash)
                 texts: list[str] = []
-                confidences: list[float] = []
-                for image in images:
+                confidence_sum = 0.0
+                confidence_count = characters = rendered_bytes = 0
+                image = root / "page.png"
+                for page, edge in enumerate(edges, start=1):
+                    rendered = self._run(
+                        (
+                            self.capability.pdftoppm or "pdftoppm", "-png", "-singlefile",
+                            "-r", str(self._dpi), "-scale-to", str(edge),
+                            "-f", str(page), "-l", str(page), str(pdf),
+                        ),
+                        deadline,
+                        payload_hash,
+                        "disclosure_document_ocr_unreadable",
+                        maximum_bytes=_MAX_RENDERED_BYTES - rendered_bytes,
+                    )
+                    if not rendered:
+                        raise CompanyDocumentFailure("disclosure_document_ocr_unreadable", payload_hash=payload_hash)
+                    rendered_bytes += len(rendered)
+                    image.write_bytes(rendered)
+                    del rendered
                     output = self._run(
                         (
                             self.capability.tesseract or "tesseract",
@@ -139,16 +154,21 @@ class CompanyOcrEngine:
                         payload_hash,
                         "disclosure_document_ocr_unreadable",
                     )
-                    if len(output) > _MAX_TSV_BYTES:
-                        raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash)
+                    image.unlink()
                     text, confidence = _read_tsv(output)
+                    characters += len(text) + 1
+                    if characters > _MAX_TEXT_CHARACTERS:
+                        raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash)
                     texts.append(text)
-                    confidences.extend(confidence)
+                    confidence_sum += sum(confidence)
+                    confidence_count += len(confidence)
             result = "\n".join(texts).strip()
-            quality = sum(confidences) / len(confidences) if confidences else 0.0
+            quality = confidence_sum / confidence_count if confidence_count else 0.0
             if len("".join(result.split())) < 80 or quality < _MIN_CONFIDENCE:
                 raise CompanyDocumentFailure("disclosure_document_ocr_low_quality", payload_hash=payload_hash)
             return result, quality
+        finally:
+            self._lock.release()
 
     def _run(
         self,
@@ -156,40 +176,43 @@ class CompanyOcrEngine:
         deadline: float,
         payload_hash: bytes,
         failure: str,
+        *,
+        maximum_bytes: int = _MAX_TSV_BYTES,
     ) -> bytes:
-        process: subprocess.Popen[bytes] = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            start_new_session=os.name == "posix",
-        )
+        def check() -> None:
+            self._check_cancelled()
+            if self._monotonic() >= deadline:
+                raise CompanyDocumentFailure("disclosure_document_ocr_timeout", payload_hash=payload_hash)
+
         try:
-            while True:
-                self._check_cancelled()
-                remaining = deadline - self._monotonic()
-                if remaining <= 0:
-                    raise CompanyDocumentFailure("disclosure_document_ocr_timeout", payload_hash=payload_hash)
-                try:
-                    output, _ = process.communicate(timeout=min(0.1, remaining))
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
-            if process.returncode:
-                raise CompanyDocumentFailure(failure, payload_hash=payload_hash)
-            return output
-        finally:
-            _close_process(process)
+            code, output = CaptureDocumentTool(command, maximum_bytes=maximum_bytes, check=check)
+        except OverflowError as exc:
+            raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash) from exc
+        if code:
+            raise CompanyDocumentFailure(failure, payload_hash=payload_hash)
+        return output
 
     def _check_cancelled(self) -> None:
         if self._cancel_requested is not None and self._cancel_requested():
             raise HttpCancelled("http_cancelled")
 
 
-def _page_number(path: Path) -> int:
-    try:
-        return int(path.stem.rsplit("-", 1)[1])
-    except (IndexError, ValueError) as exc:
-        raise ValueError("company_ocr_page_identity_invalid") from exc
+def _render_edges(metadata: bytes, pages: int, dpi: int, payload_hash: bytes) -> tuple[int, ...]:
+    sizes = re.findall(
+        r"Page\s+(\d+)\s+size:\s+([0-9.eE+-]+)\s+x\s+([0-9.eE+-]+)\s+pts",
+        metadata.decode("utf-8", errors="replace"),
+    )
+    if tuple(int(page) for page, _, _ in sizes) != tuple(range(1, pages + 1)):
+        raise CompanyDocumentFailure("disclosure_document_ocr_unreadable", payload_hash=payload_hash)
+    edges = []
+    for _, width, height in sizes:
+        dimensions = (float(width), float(height))
+        if any(not math.isfinite(value) or value <= 0 for value in dimensions):
+            raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash)
+        # Cap before multiplication, keeping huge PDF dimensions finite.
+        edge = math.ceil(min(_MAX_IMAGE_EDGE * 72 / dpi, max(dimensions)) * dpi / 72)
+        edges.append(min(_MAX_IMAGE_EDGE, max(1, edge)))
+    return tuple(edges)
 
 
 def _read_tsv(payload: bytes) -> tuple[str, list[float]]:
@@ -208,29 +231,6 @@ def _read_tsv(payload: bytes) -> tuple[str, list[float]]:
         words.append(columns[11].strip())
         confidences.append(confidence)
     return " ".join(words), confidences
-
-
-def _close_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        else:
-            process.kill()
-        process.wait(timeout=1)
 
 
 __all__ = ["CompanyOcrCapability", "CompanyOcrEngine", "DetectCompanyOcr"]

@@ -19,6 +19,59 @@ from trader.infra.workers import BoundedExecutor
 NOW = fixtures.NOW
 
 
+@pytest.mark.parametrize("route,failure", [("ocr", "disclosure_document_no_text"), ("limits", "disclosure_document_page_limit")])
+def test_targeted_document_repair_publishes_risk_and_releases_body(tmp_path, route, failure):
+    from trader.download.application.company_evidence import SyncCompanyEvidence
+    from trader.download.domain.company_evidence import CompanyEvidenceRequest
+
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    index.document_failure(item, "old-policy", failure, NOW, NOW + timedelta(days=1))
+    index.publish(("600001",), NOW)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
+    assert not reader.read(("600001",))[0].risk_events
+
+    class Source(fixtures.Sources):
+        def document(self, disclosure, *, route="standard"):
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
+
+    source = Source()
+    request = CompanyEvidenceRequest(("600001",), NOW, fixtures._TEST_COMPANY_CONFIGURATION, document_repair=route)
+    result = SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0.0), request)
+    assert not result.needs_retry and result.changed_rows == 1
+    assert len(reader.read(("600001",))[0].risk_events) == 1
+    assert not source.calls
+    assert not tuple((tmp_path / "text").glob("*/*.txt.gz"))
+
+
+def test_targeted_repair_cancellation_preserves_old_publication(tmp_path):
+    from trader.download.application.company_evidence import SyncCompanyEvidence
+    from trader.download.domain.company_evidence import CompanyEvidenceRequest
+
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    index.document_failure(item, "old-policy", "disclosure_document_no_text", NOW, NOW + timedelta(days=1))
+    index.publish(("600001",), NOW)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
+    previous = reader.read(("600001",))
+    cancelled = Event()
+
+    class Source(fixtures.Sources):
+        def document(self, disclosure, *, route="standard"):
+            cancelled.set()
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
+
+    source = Source()
+    request = CompanyEvidenceRequest(("600001",), NOW, fixtures._TEST_COMPANY_CONFIGURATION, document_repair="ocr")
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, cancel_requested=cancelled.is_set)
+    assert SyncCompanyEvidence(dependencies, request).needs_retry
+    assert reader.read(("600001",)) == previous
+    cancelled.clear()
+    # The accepted body must publish on resume even though no download remains.
+    SyncCompanyEvidence(dependencies, request)
+    assert len(reader.read(("600001",))[0].risk_events) == 1
+
+
 def _seed(index, count=4):
     partition = next(p for p in index.partitions(("sse",), NOW) if p.start == NOW.date())
     items = tuple(fixtures._disclosure(str(i), "关于收到立案告知书的公告") for i in range(count))
