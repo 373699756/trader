@@ -221,7 +221,11 @@ def Run(
         )
         steady = MeasureSteadyState(tuple(workloads), executor, ReadPerformanceMemory)
     finally:
-        stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        stopped = workers.stop(
+            wait=True,
+            cancel_futures=True,
+            deadline=ShutdownDeadline.start(settings.pipeline.shutdown_timeout_seconds),
+        )
         if not stopped.completed:
             raise RuntimeError("performance workers did not stop within the shutdown budget")
     model_workload = {item.scenario: item.project() for item in scenarios}
@@ -335,7 +339,11 @@ def _continuous_report(
             trace=trace,
         )
     finally:
-        stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        stopped = workers.stop(
+            wait=True,
+            cancel_futures=True,
+            deadline=ShutdownDeadline.start(settings.pipeline.shutdown_timeout_seconds),
+        )
         if not stopped.completed:
             raise RuntimeError("continuous replay workers did not stop")
     memory = cast(dict[str, float], replay["memory"])

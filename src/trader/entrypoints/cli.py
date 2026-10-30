@@ -117,7 +117,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         from trader.bootstrap import ExecuteSync
         from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
-        with ManualCancellation() as cancelled:
+        with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
             result = ExecuteSync(
                 config_path,
                 args.target,
@@ -283,6 +283,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "watchlist_version": watchlist.watchlist_version,
         "runtime_dir": str(runtime.runtime_dir),
         "data_dir": str(runtime.data_paths.root),
+        "shutdown_timeout_seconds": runtime.pipeline.shutdown_timeout_seconds,
         "history_sessions": download.sessions,
         "qfq_sessions": {"v2": qfq.v2_sessions, "v3": qfq.v3_sessions},
         "training_fit_dates": fit_dates,

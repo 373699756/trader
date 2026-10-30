@@ -72,6 +72,7 @@ def test_old_inflight_result_cannot_replace_visible_snapshot_after_clock_jump(ju
             publish_overlay=lambda _overlay: None,
         ),
         config_version="test",
+        shutdown_timeout_seconds=2.0,
     )
     request = CycleRequest(
         Strategy.TOMORROW, NOW.date(), NOW, "afternoon", 1, "old", stage == "hybrid", NOW + timedelta(minutes=1)

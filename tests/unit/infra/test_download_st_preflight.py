@@ -181,6 +181,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
             HistorySyncConfiguration(
                 tmp_path / "history", reference_root, sessions=3, reread_sessions=2, minimum_free_bytes=0
             ),
+            shutdown_timeout_seconds=2.0,
             clock=lambda: NOW,
         )
         assert result.state == "completed", result.reason
@@ -190,6 +191,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
             paths,
             bootstrap.LoadHistorySyncConfiguration(_ROOT, paths),
             LoadQfqWindowConfiguration(_ROOT),
+            shutdown_timeout_seconds=2.0,
             now=lambda: NOW,
         )
         assert result.completed_codes == 3

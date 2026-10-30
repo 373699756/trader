@@ -178,7 +178,8 @@ class FakePipeline:
         self.started += 1
         return True
 
-    def stop(self, timeout_seconds: float = 15.0) -> None:
+    def stop(self, *, deadline: ShutdownDeadline) -> None:
+        assert deadline.timeout_seconds > 0.0
         self.stopped += 1
 
     def submit_due(self, at: datetime | None = None) -> float:

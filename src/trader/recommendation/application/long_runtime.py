@@ -128,7 +128,9 @@ class LongRuntime:
         if not wait:
             self._worker.close()
             return ShutdownStep("trader-long-close", True, False)
-        return self._worker.stop(deadline=deadline or ShutdownDeadline.start(30.0))
+        if deadline is None:
+            raise ValueError("long runtime wait requires a shared shutdown deadline")
+        return self._worker.stop(deadline=deadline)
 
     def status(self) -> LongRuntimeStatus:
         with self._lock:

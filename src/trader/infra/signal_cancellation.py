@@ -10,7 +10,7 @@ from trader.infra.shutdown import ShutdownDeadline, ShutdownSignalController
 
 @contextmanager
 def ManualCancellation(
-    *, timeout_seconds: float = 30.0, force_exit: Callable[[int], object] = os._exit
+    *, timeout_seconds: float, force_exit: Callable[[int], object] = os._exit
 ) -> Iterator[Event]:
     """Keep cancellation and its watchdog active until all owned resources close."""
     cancelled = Event()

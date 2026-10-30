@@ -11,6 +11,7 @@ from threading import Event
 from zoneinfo import ZoneInfo
 
 from trader.infra.settings import RuntimeSettings
+from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -43,7 +44,7 @@ def RunSelectedTraining(
     memory_admission: TrainingMemoryAdmission,
     paths: TrainingLocations,
 ) -> int:
-    with ManualCancellation() as cancelled:
+    with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         return _run_selected_training(runtime, profiles, executor, memory_admission, paths, cancelled)
 
 
@@ -158,4 +159,8 @@ def _run_selected_training(
         print(json.dumps({"schema_version": "selected_training_result", "status": "failed", "failure": reason}))
         return 1
     finally:
-        executor.stop(wait=True, cancel_futures=True)
+        executor.stop(
+            wait=True,
+            cancel_futures=True,
+            deadline=ShutdownDeadline.start(runtime.pipeline.shutdown_timeout_seconds),
+        )

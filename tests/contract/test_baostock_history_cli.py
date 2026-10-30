@@ -279,8 +279,9 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(tmp_
     previous = signal.getsignal(signal.SIGTERM)
     configured_medium = LoadRuntimeSettings(config).storage_medium
 
-    def download(configuration, *, progress, cancel_requested, storage_medium):
+    def download(configuration, *, shutdown_timeout_seconds, progress, cancel_requested, storage_medium):
         assert storage_medium == configured_medium
+        assert shutdown_timeout_seconds == LoadRuntimeSettings(config).pipeline.shutdown_timeout_seconds
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)
@@ -303,8 +304,9 @@ def test_train_cancellation_during_reference_preparation_returns_130(tmp_path, m
     previous = signal.getsignal(signal.SIGTERM)
     configured_medium = LoadRuntimeSettings(config).storage_medium
 
-    def prepare(configuration, *, progress, cancel_requested, storage_medium):
+    def prepare(configuration, *, shutdown_timeout_seconds, progress, cancel_requested, storage_medium):
         assert storage_medium == configured_medium
+        assert shutdown_timeout_seconds == LoadRuntimeSettings(config).pipeline.shutdown_timeout_seconds
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         handler(signal.SIGTERM, None)

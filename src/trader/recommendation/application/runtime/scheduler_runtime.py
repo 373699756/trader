@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import replace
@@ -100,10 +101,12 @@ class SchedulerRuntime:
         dependencies: RuntimeDependencies,
         *,
         config_version: str,
-        shutdown_timeout_seconds: float = 30.0,
+        shutdown_timeout_seconds: float,
     ) -> None:
         if not config_version:
             raise ValueError("scheduler runtime config version must not be empty")
+        if not math.isfinite(shutdown_timeout_seconds) or shutdown_timeout_seconds <= 0.0:
+            raise ValueError("scheduler shutdown timeout must be finite and positive")
         contract = dependencies.reviews.runtime_contract
         if contract.daily_physical_limit != 168 or not contract.shared_cache or not contract.shared_single_flight:
             raise ValueError("scheduler runtime requires the shared 168-request DeepSeek boundary")
@@ -117,7 +120,7 @@ class SchedulerRuntime:
         )
         self._research = dependencies.research_factory()
         self._config_version = config_version
-        self._shutdown_timeout_seconds = max(0.1, shutdown_timeout_seconds)
+        self._shutdown_timeout_seconds = shutdown_timeout_seconds
         self._lock = threading.RLock()
         self._session = TradingSession(dependencies.clock.now, dependencies.monotonic)
         self._planned_generation = 0
@@ -692,14 +695,8 @@ class SchedulerRuntime:
 
     def stop(
         self,
-        timeout_seconds: float | ShutdownDeadline = 15.0,
-        *,
-        deadline: ShutdownDeadline | None = None,
+        deadline: ShutdownDeadline,
     ) -> ShutdownReport:
-        if isinstance(timeout_seconds, ShutdownDeadline):
-            deadline = deadline or timeout_seconds
-        else:
-            deadline = deadline or ShutdownDeadline.start(timeout_seconds)
         with self._lock:
             if self._stopped:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())

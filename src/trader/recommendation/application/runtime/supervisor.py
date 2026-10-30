@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import threading
 import time
@@ -22,12 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 class ScheduledRuntime(Protocol):
     def start(self) -> bool: ...
 
-    def stop(
-        self,
-        timeout_seconds: float = 15.0,
-        *,
-        deadline: ShutdownDeadline | None = None,
-    ) -> ShutdownReport: ...
+    def stop(self, *, deadline: ShutdownDeadline) -> ShutdownReport: ...
 
     def submit_due(self, at: datetime | None = None) -> float: ...
 
@@ -193,11 +187,7 @@ class RuntimeSupervisor:
 
         def stop_runtime() -> None:
             try:
-                stop_method = self._runtime.stop
-                if "deadline" in inspect.signature(stop_method).parameters:
-                    result.append(stop_method(deadline=deadline))
-                else:
-                    result.append(stop_method(deadline.remaining_seconds()))
+                result.append(self._runtime.stop(deadline=deadline))
             except BaseException as exc:
                 error.append(exc)
             finally:

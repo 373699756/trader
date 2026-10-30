@@ -333,6 +333,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
             minimum_free_bytes=0,
             reference_root=(tmp_path).parent / "reference",
         ),
+        shutdown_timeout_seconds=2.0,
         reference=reference,
         clock=lambda: _at(dates[-1]),
     )

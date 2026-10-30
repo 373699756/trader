@@ -119,6 +119,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     key = SchedulePointKey(at.date().isoformat(), SchedulePoint.CLOSE_QUOTES, "-")
     queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), records, clock)
@@ -224,6 +225,7 @@ def test_close_retry_does_not_duplicate_inflight_work(blocking_stage: str) -> No
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime.start()
     try:
@@ -290,6 +292,7 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     if transition == "fast_handoff":
         lane = runtime._task_lanes[PipelineTask.CLOSE_QUOTES]  # noqa: SLF001

@@ -10,7 +10,7 @@ from trader.infra.signal_cancellation import ManualCancellation
 def test_manual_cancellation_stops_dispatch_then_forces_exit_and_restores_handlers(signum, capfd):
     previous = {value: signal.getsignal(value) for value in (signal.SIGINT, signal.SIGTERM)}
     forced = []
-    with ManualCancellation(force_exit=forced.append) as cancelled:
+    with ManualCancellation(timeout_seconds=30.0, force_exit=forced.append) as cancelled:
         handler = signal.getsignal(signum)
         assert callable(handler)
         assert not cancelled.is_set()

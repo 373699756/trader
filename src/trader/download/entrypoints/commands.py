@@ -26,10 +26,11 @@ def RunDownload(
     runtime = LoadRuntimeSettings(config_path)
     configuration = LoadHistorySyncConfiguration(repository_root, runtime.data_paths)
     progress = StderrHistorySyncProgress()
-    with ManualCancellation() as cancelled:
+    with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         try:
             status = ExecuteHistoryDownload(
                 configuration,
+                shutdown_timeout_seconds=runtime.pipeline.shutdown_timeout_seconds,
                 progress=progress,
                 cancel_requested=cancelled.is_set,
                 storage_medium=runtime.storage_medium,

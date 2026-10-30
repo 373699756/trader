@@ -227,15 +227,23 @@ def ExecuteSync(
             paths,
             configuration,
             qfq_configuration,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference,
             cancel_requested=cancel_requested,
             repair_only=repair_source is not None,
         )
 
     return SyncData(
-        prepare=lambda: _prepare_reference(paths.reference, clock.now(), progress, cancel_requested=cancel_requested),
+        prepare=lambda: _prepare_reference(
+            paths.reference,
+            clock.now(),
+            progress,
+            cancel_requested=cancel_requested,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
+        ),
         history=lambda reference: ExecuteHistoryDownload(
             configuration,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference,
             progress=history_progress,
             cancel_requested=cancel_requested,
@@ -356,6 +364,7 @@ def _prepare_reference(
     progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
     *,
     cancel_requested: Callable[[], bool],
+    shutdown_timeout_seconds: float,
 ) -> PreparedReference:
     if cancel_requested():
         raise RuntimeError("reference_preparation_cancelled")
@@ -390,10 +399,14 @@ def _prepare_reference(
         )
         return PrepareReference(universe, observed_at, dependencies)
     finally:
-        stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        stopped = workers.stop(
+            wait=True,
+            cancel_futures=True,
+            deadline=ShutdownDeadline.start(shutdown_timeout_seconds),
+        )
         resources.close()
         if not stopped.completed:
-            raise RuntimeError("history ST worker shutdown exceeded 30 seconds")
+            raise RuntimeError("history ST worker shutdown exceeded configured deadline")
 
 
 def ExecuteDownloadTrain(
@@ -460,6 +473,7 @@ def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
 def ExecuteHistoryDownload(
     configuration: HistorySyncConfiguration,
     *,
+    shutdown_timeout_seconds: float,
     reference: PreparedReference | None = None,
     progress: HistorySyncProgressPort | None = None,
     clock: Callable[[], datetime] | None = None,
@@ -474,6 +488,7 @@ def ExecuteHistoryDownload(
             ShanghaiClock(clock or _utc_now).now(),
             None,
             cancel_requested=cancel_requested,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
         )
     history_pool = BoundedExecutor(
         worker_count=configuration.history_workers, queue_capacity=0, thread_name_prefix="history-download"
@@ -509,12 +524,12 @@ def ExecuteHistoryDownload(
                 cancel_requested=cancel_requested,
             )
     finally:
-        deadline = ShutdownDeadline.start(30.0)
+        deadline = ShutdownDeadline.start(shutdown_timeout_seconds)
         writer_stopped = history_writer.stop(wait=True, cancel_futures=True, deadline=deadline)
         stopped = history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
         http_resources.close()
         if not stopped.completed or not writer_stopped.completed:
-            raise RuntimeError("history worker shutdown exceeded 30 seconds")
+            raise RuntimeError("history worker shutdown exceeded configured deadline")
 
 
 def ExecuteQfqDownload(
@@ -522,6 +537,7 @@ def ExecuteQfqDownload(
     history_configuration: HistorySyncConfiguration,
     qfq_configuration: QfqWindowConfiguration,
     *,
+    shutdown_timeout_seconds: float,
     reference: PreparedReference | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
     report: Callable[[ProgressMessage], None] | None = None,
@@ -533,7 +549,11 @@ def ExecuteQfqDownload(
         report = TerminalDownloadProgress()
     if reference is None:
         reference = _prepare_reference(
-            paths.reference, ShanghaiClock(now).now(), None, cancel_requested=cancel_requested
+            paths.reference,
+            ShanghaiClock(now).now(),
+            None,
+            cancel_requested=cancel_requested,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
         )
     history_root = paths.history
     v2 = SQLiteQfqWindowCache(paths.daily_window, "v2")
@@ -578,7 +598,7 @@ def ExecuteQfqDownload(
                 history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now
             ).execute()
         finally:
-            deadline = ShutdownDeadline.start(30.0)
+            deadline = ShutdownDeadline.start(shutdown_timeout_seconds)
             writer_stopped = qfq_writer.stop(wait=True, cancel_futures=True, deadline=deadline)
             stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
             if not stopped.completed or not writer_stopped.completed:

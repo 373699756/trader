@@ -69,6 +69,7 @@ def test_long_close_refresh_is_independent_of_short_model_preparation(applicatio
             publish_freeze=lambda _: None,
         ),
         config_version="preview-fixture",
+        shutdown_timeout_seconds=2.0,
     )
     try:
         long_runtime.start()
@@ -106,7 +107,7 @@ def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_arch
         publish_freeze=published.append,
         run_scope=scope,
     )
-    runtime = SchedulerRuntime(deps, config_version="preview-fixture")
+    runtime = SchedulerRuntime(deps, config_version="preview-fixture", shutdown_timeout_seconds=2.0)
     try:
         assert runtime.start()
         assert runtime.submit_due() == 1.0
@@ -170,6 +171,7 @@ def test_preview_waits_for_risk_review_and_reports_failure_with_local_result(fai
             publish_freeze=lambda _: None,
         ),
         config_version="preview-fixture",
+        shutdown_timeout_seconds=2.0,
     )
     try:
         assert runtime.start()

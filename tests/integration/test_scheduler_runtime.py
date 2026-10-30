@@ -312,6 +312,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
             publication_io=tracker,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     # Keeping the observer stopped deterministically models bounded queue rejection.
     candidate = (
@@ -372,6 +373,7 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
             publication_io=tracker,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     request = CycleRequest(
         Strategy.TOMORROW,
@@ -481,6 +483,7 @@ def _round_cleanup_runtime() -> SchedulerRuntime:
             publish_freeze=lambda _event: None, publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
 
@@ -518,6 +521,7 @@ def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     first = CycleRequest(
         Strategy.TOMORROW,
@@ -603,6 +607,7 @@ def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_fre
             publish_overlay=overlay_events.append,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     request = CycleRequest(
         Strategy.TOMORROW,
@@ -697,6 +702,7 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     assert runtime._selected_overlay_codes(MarketPhase.BEFORE_CLOSE) == ("600001",)
@@ -769,6 +775,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     first = CycleRequest(
         Strategy.TOMORROW,
@@ -845,6 +852,7 @@ def test_scheduler_publishes_local_before_research_visibility_and_does_not_defer
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     request = CycleRequest(
         Strategy.TOMORROW,
@@ -952,6 +960,7 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1053,6 +1062,7 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1119,6 +1129,7 @@ def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> 
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime.start()
     try:
@@ -1174,6 +1185,7 @@ def test_scoring_wave_uses_captured_pair_when_live_source_advances() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime.start()
     try:
@@ -1243,6 +1255,7 @@ def test_scoring_wave_blocks_next_collection_until_current_publication_finishes(
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime.start()
     try:
@@ -1311,6 +1324,7 @@ def test_scoring_input_refresh_triggers_score_only_when_changed(task, changed) -
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1364,6 +1378,7 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     assert runtime.start()
@@ -1448,6 +1463,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1540,6 +1556,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     close_key = SchedulePointKey(after_close.date().isoformat(), SchedulePoint.CLOSE_QUOTES, "-")
 
@@ -1610,6 +1627,7 @@ def test_midday_continues_ten_second_scoring_and_review() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1676,6 +1694,7 @@ def test_midday_pending_draft_does_not_disable_later_scoring() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1730,6 +1749,7 @@ def test_midday_continuous_loop_retries_failed_input() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1783,6 +1803,7 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_running() -> Non
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1829,6 +1850,7 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         current = replace(
@@ -1887,6 +1909,7 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -1938,6 +1961,7 @@ def test_tomorrow_lane_progresses_while_d25_lane_is_blocked() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime.start()
     d25 = CycleRequest(Strategy.D25, NOW.date(), NOW, "afternoon", 1, "d25-fixture", True, NOW)
@@ -1990,6 +2014,7 @@ def test_newer_same_strategy_cycle_does_not_starve_first_current_publication() -
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     first = CycleRequest(Strategy.TOMORROW, NOW.date(), NOW, "afternoon", 1, "input-initial", False, NOW)
     second = replace(
@@ -2061,6 +2086,7 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     first = CycleRequest(
         Strategy.TOMORROW,
@@ -2151,6 +2177,7 @@ def test_direct_freeze_stream_delivery_survives_a_full_audit_observer_queue() ->
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime.start()
     try:
@@ -2228,6 +2255,7 @@ def test_refresh_failure_retains_last_valid_freeze_without_cascading_build_failu
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     request = CycleRequest(
         Strategy.TOMORROW,
@@ -2350,6 +2378,7 @@ def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     full_market = ScheduledPipelineTask(PipelineTask.FULL_MARKET, NOW, MarketPhase.BEFORE_CLOSE)
     candidate_quotes = ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, NOW, MarketPhase.BEFORE_CLOSE)
@@ -2415,6 +2444,7 @@ def test_successful_hybrid_publish_recovers_freeze_path_issues() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime._record_failure("review", "review_unavailable", Strategy.TOMORROW)
 
@@ -2453,6 +2483,7 @@ def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() 
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime._record_failure("refresh", "source_unavailable", Strategy.TOMORROW)
@@ -2493,6 +2524,7 @@ def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> No
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     runtime._record_failure("seal", "freeze_unavailable", Strategy.TOMORROW)
     runtime._record_failure("freeze", "freeze_unavailable", Strategy.TOMORROW)
@@ -2547,6 +2579,7 @@ def test_afternoon_schedule_keeps_tomorrow_d25_and_long_running() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
 
     runtime.start()
@@ -2599,6 +2632,7 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     request = CycleRequest(
         Strategy.TOMORROW,
@@ -2648,6 +2682,7 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
             publish_overlay=lambda _overlay: None,
         ),
         config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
     )
     request = CycleRequest(Strategy.TOMORROW, NOW.date(), NOW, "afternoon", 1, "input-initial", True, NOW)
     runtime.start()

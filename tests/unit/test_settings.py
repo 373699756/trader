@@ -713,6 +713,7 @@ def test_current_cache_and_performance_configuration_rejects_missing_unknown_or_
 
 def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(tmp_path) -> None:
     raw = _runtime_document()
+    raw["pipeline"]["shutdown_timeout_seconds"] = 17.5
     raw["pipeline"]["cadence_seconds"]["candidate_quotes"]["before_close"] = 11
     raw["market_data"]["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] = 11000
     raw["performance_budgets"]["workload"].update({"market_rows": 5499, "candidate_rows": 1079})
@@ -729,6 +730,7 @@ def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(
 
     runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
+    assert runtime.pipeline.shutdown_timeout_seconds == 17.5
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["before_close"] == 11
     assert runtime.market_data.cache_policy.datasets["candidate_quotes"].capacity == 11000
     assert runtime.performance_budgets.workload.market_rows == 5499

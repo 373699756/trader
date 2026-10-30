@@ -952,6 +952,7 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
             paths,
             history_configuration,
             qfq_configuration,
+            shutdown_timeout_seconds=2.0,
             reference=_reference(("600001", "600002")),
             report=lambda _message: None,
             now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
@@ -1004,6 +1005,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     result = bootstrap.ExecuteQfqDownload(
         paths,
         *_qfq_download_configuration(tmp_path, paths),
+        shutdown_timeout_seconds=2.0,
         reference=PreparedFixture(
             datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI),
             (eligible, excluded),
@@ -1037,6 +1039,7 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
         result = bootstrap.ExecuteQfqDownload(
             paths,
             *_qfq_download_configuration(tmp_path, paths),
+            shutdown_timeout_seconds=2.0,
             reference=_reference(),
             report=lambda _message: None,
         )
@@ -1077,6 +1080,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
             bootstrap.ExecuteQfqDownload,
             paths,
             *_qfq_download_configuration(tmp_path, paths),
+            shutdown_timeout_seconds=2.0,
             reference=_reference(),
             report=lambda _message: None,
             now=lambda: observed,
