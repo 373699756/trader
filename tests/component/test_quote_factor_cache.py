@@ -23,6 +23,7 @@ from trader.infra.market_data.history.history import BuildHistoryContext
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.normalization import factor_history
+from trader.recommendation.infra.normalization.feature_cross_section import BuildCrossSectionFeatures, CrossSectionReferences
 
 
 def _builder(cache=None):
@@ -233,8 +234,7 @@ def test_complete_market_base_factors_fit_existing_budget_and_reuse_every_stock(
     context = BuildHistoryContext(bars)
     builder = _builder(factor_cache)
     quotes = tuple(replace(_quote(str(600000 + index)), price=12.0 + index / 1000) for index in range(5500))
-    for quote in quotes:
-        builder._raw_features(quote, bars[-20:], context)
+    raw = {quote.code: builder._raw_features(quote, bars[-20:], context) for quote in quotes}
     cold = factor_cache.status().datasets["quote_factor_inputs"]["local_history"]
     assert cold.entries == 5500
     assert cold.eviction == 0
@@ -251,3 +251,12 @@ def test_complete_market_base_factors_fit_existing_budget_and_reuse_every_stock(
     assert warm.entries == cold.entries
     assert warm.estimated_bytes == cold.estimated_bytes
     assert warm.eviction == 0
+    for tick in range(4):
+        BuildCrossSectionFeatures(quotes, raw, f"market:{tick}", CrossSectionReferences({}, {}), cache=factor_cache)
+    status = factor_cache.status()
+    populations = status.datasets["market_cross_section"]["local_factors"]
+    factors = status.datasets["quote_factor_inputs"]["local_history"]
+    assert populations.entries == 4
+    assert populations.eviction == factors.eviction == 0
+    assert factors.entries == 5500
+    assert populations.estimated_bytes + factors.estimated_bytes < 51380224

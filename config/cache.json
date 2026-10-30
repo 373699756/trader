@@ -51,6 +51,16 @@
         "group": "feature_batches",
         "persisted": false
       },
+      "market_cross_section": {
+        "refresh_ttl_seconds": 86400,
+        "action_max_age_seconds": 86400,
+        "cadence_task": null,
+        "action_max_age_multiplier": null,
+        "negative_ttl_seconds": 60,
+        "capacity": 4,
+        "group": "feature_batches",
+        "persisted": false
+      },
       "board_cross_section": {
         "refresh_ttl_seconds": 86400,
         "action_max_age_seconds": 86400,

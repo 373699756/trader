@@ -379,6 +379,7 @@ class FeatureBuilder:
             raw,
             data_version,
             CrossSectionReferences(cross_section_reference or {}, cross_section_normalization_reference or {}),
+            cache=self._cache,
         )
 
         snapshots: list[FeatureSnapshot] = []
