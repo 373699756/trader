@@ -122,6 +122,7 @@ class DiagnosticOptions:
     storage_paths: tuple[Path, ...] = ()
     wide_sample_source: Path | None = None
     v5_sample_root: Path | None = None
+    v5_candidate_config: Path | None = None
     performance_replay_ticks: int = 0
     performance_replay_rows: int | None = None
     database_probe_directory: Path | None = None

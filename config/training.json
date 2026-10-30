@@ -53,13 +53,13 @@
         "weight_decay": 0.0001,
         "dropout": 0.1,
         "batch_size": 256,
-        "epochs": 30,
-        "early_stopping_rounds": 5,
+        "epochs": 10,
+        "early_stopping_rounds": 3,
         "seed": 0,
         "hidden_channels": 8,
         "compute_dtype": "float32",
-        "early_stopping_relative_delta": 0.001,
-        "compute_threads": 2
+        "early_stopping_relative_delta": 0.005,
+        "compute_threads": 1
       }
     }
   ]

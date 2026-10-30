@@ -1,4 +1,5 @@
 import hashlib
+import json
 import time
 
 import pytest
@@ -31,6 +32,8 @@ def test_lite_diagnostic_requires_explicit_output_and_routes_sample_input(tmp_pa
                 "v5-lite",
                 "--training-probe-directory",
                 str(tmp_path / "new"),
+                "--v5-candidate-config",
+                str(tmp_path / "candidate.json"),
                 "--v5-sample-root",
                 str(tmp_path / "source"),
             ]
@@ -39,9 +42,16 @@ def test_lite_diagnostic_requires_explicit_output_and_routes_sample_input(tmp_pa
     (command,) = build_commands(options)
     assert command.name == "v5_lite"
     assert command.argv[-2:] == ("--sample-root", str(tmp_path / "source"))
+    assert "--candidate-config" in command.argv
+    with pytest.raises(ValueError, match="v5-candidate-config"):
+        _validate(_parser().parse_args([
+            "--profile", "v5-lite", "--training-probe-directory", str(tmp_path / "new"),
+            "--v5-sample-root", str(tmp_path / "source"),
+        ]))
 
 
-def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tmp_path):
+@pytest.mark.parametrize("source_days", (61, 250, 750))
+def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tmp_path, source_days):
     source, work = tmp_path / "source", tmp_path / "work"
     source.mkdir()
     work.mkdir()
@@ -51,9 +61,12 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
         connection.run("CREATE TABLE sample_contract(singleton INTEGER PRIMARY KEY,split_hash BLOB)")
         connection.run("INSERT INTO sample_contract VALUES(1,?)", (b"a" * 32,))
         connection.run("CREATE TABLE sample_split_dates (split_name TEXT, trade_date INTEGER)")
-        for index in range(750):
+        for index in range(source_days):
             connection.run("INSERT INTO sample_split_dates VALUES (?, ?)", ("training", index))
         connection.run("INSERT INTO sample_split_dates VALUES ('validation', 800)")
+        connection.run("INSERT INTO sample_split_dates VALUES ('early_stopping', 801)")
+        connection.run("INSERT INTO sample_split_dates VALUES ('calibration', 802)")
+        connection.run("INSERT INTO sample_split_dates VALUES ('holdout', 803)")
     original = database.read_bytes()
     AtomicWriteJson(
         source / "complete.json",
@@ -62,20 +75,21 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
             "sha256": hashlib.sha256(original).hexdigest(),
         },
     )
-    reference, candidate = _prepare(source, work, time.monotonic() + 10)
-    assert database.read_bytes() == reference.read_bytes() == original
+    reference, candidate = _prepare(source, work, time.monotonic() + 10, 61)
+    assert database.read_bytes() == original
+    assert reference.read_bytes() == candidate.read_bytes()
     with SqliteSession(candidate, options) as connection:
         assert tuple(
             connection.run(
                 "SELECT COUNT(*), MIN(trade_date), MAX(trade_date) FROM sample_split_dates WHERE split_name='training'"
             ).fetchone()
-        ) == (250, 500, 749)
+        ) == (61, source_days - 61, source_days - 1)
         assert [
             tuple(row)
             for row in connection.run(
-                "SELECT trade_date FROM sample_split_dates WHERE split_name='validation'"
+                "SELECT split_name, trade_date FROM sample_split_dates WHERE split_name!='training' ORDER BY trade_date"
             ).fetchall()
-        ] == [(800,)]
+        ] == [("validation", 800), ("early_stopping", 801), ("calibration", 802), ("holdout", 803)]
     invalid = tmp_path / "invalid"
     invalid.mkdir()
     AtomicWriteJson(
@@ -86,4 +100,42 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
         },
     )
     with pytest.raises(ValueError, match="digest"):
-        _prepare(source, invalid, time.monotonic() + 10)
+        _prepare(source, invalid, time.monotonic() + 10, 61)
+
+
+def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path):
+    from dataclasses import replace
+
+    from scripts.runtime_diagnostics.v5_lite import _quality
+    from trader.training.infra.profile.v5.settings import TcnFittingParameters
+
+    parameters = TcnFittingParameters(5000)
+    for candidate in ((250, parameters), (61, replace(parameters, minimum_industry_training_rows=10000))):
+        with pytest.raises(ValueError, match="identical fit dates"):
+            _quality(tmp_path / "absent", tmp_path, time.monotonic() + 10, (61, parameters), candidate)
+    assert not tuple(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("interrupted", (False, True))
+def test_compute_only_or_interrupted_probe_cannot_claim_quality_passed(tmp_path, monkeypatch, capsys, interrupted):
+    from scripts.runtime_diagnostics import v5_lite
+
+    work = tmp_path / "probe"
+    monkeypatch.setattr("sys.argv", ["v5_lite", "--work-root", str(work)])
+
+    def compute():
+        if interrupted:
+            raise KeyboardInterrupt
+        return {"median_seconds_per_batch": {"fixture": 0.01}}
+
+    monkeypatch.setattr(v5_lite, "ProbeLiteKernels", compute)
+    assert v5_lite.Main() == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "degraded"
+    summary = report["summary"]
+    assert summary["full_training"] is False and summary["production_authority"] is False
+    if interrupted:
+        assert summary["failure"] == "interrupted"
+    else:
+        assert summary["reason"] == "quality_not_requested"
+    assert not tuple(work.glob("*.sqlite3"))

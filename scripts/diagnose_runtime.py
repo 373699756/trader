@@ -153,6 +153,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--qfq-database", type=Path)
     parser.add_argument("--wide-sample-source", type=Path, help="bounded read-only V5 wide-cache storage comparison")
     parser.add_argument("--v5-sample-root", type=Path, help="sealed compact V5 cache for isolated lite comparison")
+    parser.add_argument("--v5-candidate-config", type=Path, help="explicit training JSON candidate for v5-lite")
     parser.add_argument(
         "--storage-path", type=Path, action="append", default=[], help="additional read-only storage probe path"
     )
@@ -465,6 +466,10 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--wide-sample-source requires --profile v5-samples")
     if args.v5_sample_root is not None and args.profile != "v5-lite":
         raise ValueError("--v5-sample-root requires --profile v5-lite")
+    if args.v5_candidate_config is not None and args.profile != "v5-lite":
+        raise ValueError("--v5-candidate-config requires --profile v5-lite")
+    if args.profile == "v5-lite" and args.v5_sample_root is not None and args.v5_candidate_config is None:
+        raise ValueError("--v5-sample-root requires --v5-candidate-config")
     if args.profile in {"training-alignment", "training-performance"} and (
         args.training_probe_directory is None or args.history_root is None
     ):
@@ -484,6 +489,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             storage_paths=tuple(path.expanduser().resolve() for path in args.storage_path),
             wide_sample_source=args.wide_sample_source.expanduser().resolve() if args.wide_sample_source else None,
             v5_sample_root=args.v5_sample_root.expanduser().resolve() if args.v5_sample_root else None,
+            v5_candidate_config=args.v5_candidate_config.expanduser().resolve() if args.v5_candidate_config else None,
             codes=codes,
             web_samples=args.web_samples,
             web_interval_seconds=args.web_interval_seconds,
@@ -624,6 +630,7 @@ def build_commands(
                 "--work-root",
                 str(options.training_probe_directory),
             )
+            + (("--candidate-config", str(options.v5_candidate_config)) if options.v5_candidate_config else ())
             + (("--sample-root", str(options.v5_sample_root)) if options.v5_sample_root else ()),
             common_timeout,
         ),

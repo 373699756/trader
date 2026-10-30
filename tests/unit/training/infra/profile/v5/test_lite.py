@@ -193,7 +193,7 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
         ("hidden_channels", 4),
         ("compute_dtype", "float64" if settings.fitting.compute_dtype == "float32" else "float32"),
         ("early_stopping_relative_delta", 0.01),
-        ("compute_threads", 1),
+        ("compute_threads", 2 if settings.fitting.compute_threads == 1 else 1),
         ("epochs", 29),
     ):
         changed = identities(replace(settings, fitting=replace(settings.fitting, **{field: value})))
