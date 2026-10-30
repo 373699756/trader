@@ -119,7 +119,7 @@ def _population_features(
         "market_cross_section", "local_factors", "population",
         RequestKey({"inputs": ContentHash(inputs), "data_version": data_version}),
         latest.source_time.astimezone(_SHANGHAI).date().isoformat(),
-        "market_factors", "qfq", "percentile_025_975", "market_cross_section_v1",
+        "market_factors", "qfq", "percentile_025_975", "market_cross_section",
     )
     found = cache.get(identity)
     if found is not None and found.value is not None:

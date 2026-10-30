@@ -37,6 +37,7 @@ from trader.recommendation.application.runtime.cadence import (
     SchedulePointKey,
     SchedulePointStatus,
 )
+from trader.recommendation.application.runtime.latest_wins import LatestWinsOffer
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
@@ -399,6 +400,60 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
     assert snapshot.overlay.quotes[0].amount == 120_000_000.0
     assert snapshot.overlay.quotes[0].turnover_rate == 2.1
     assert snapshot.overlay.quotes[0].market_cap == 12_000_000_000.0
+
+
+@pytest.mark.parametrize("offer", [LatestWinsOffer.COALESCED, LatestWinsOffer.STALE, LatestWinsOffer.REJECTED])
+def test_unqueued_wave_releases_round_admission(monkeypatch, offer) -> None:
+    runtime = _round_cleanup_runtime()
+    scheduled = ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE)
+    monkeypatch.setattr(runtime._score_lane, "offer", lambda _item: offer)
+    assert not runtime._submit_round_tasks((scheduled,), scheduled)
+    following = runtime._dependencies.rounds.enter(runtime._dependencies.round_profile, (scheduled,))
+    assert following is not None
+    runtime._dependencies.rounds.finish(runtime._dependencies.round_profile, following.sequence)
+
+
+def test_stopping_queued_wave_releases_round_without_releasing_running_work() -> None:
+    runtime = _round_cleanup_runtime()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def block(_item: ScheduledPipelineTask) -> None:
+        entered.set()
+        release.wait()
+
+    runtime._score_lane._processor = block
+    scheduled = ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE)
+    runtime._score_lane.start()
+    try:
+        runtime._score_lane.offer(scheduled)
+        assert entered.wait(1.0)
+        queued = replace(scheduled, scheduled_at=NOW + timedelta(seconds=1))
+        assert runtime._submit_round_tasks((queued,), queued)
+        rounds = runtime._dependencies.rounds
+        profile = runtime._dependencies.round_profile
+        runtime._score_lane.close()
+        assert runtime._score_lane.status().running
+        following = rounds.enter(profile, (queued,))
+        assert following is not None
+        rounds.finish(profile, following.sequence)
+    finally:
+        release.set()
+        assert runtime._score_lane.stop(deadline=ShutdownDeadline.start(2.0)).completed
+
+
+def _round_cleanup_runtime() -> SchedulerRuntime:
+    return SchedulerRuntime(
+        RuntimeDependencies(
+            control_pool=BoundedExecutor(worker_count=1, queue_capacity=4, thread_name_prefix="test-round-cleanup"),
+            clock=FixedClock(NOW), calendar=TradingCalendar(), cadence=_cadence(NOW),
+            data=DataRefresh(), freezes=Freezes(), reviews=SharedReviews(), index=UnifiedFreezeIndex(),
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-round-cleanup-observer"),
+            sealing=Sealing(), settlement=Settlement(), research_factory=noop_research_factory,
+            publish_freeze=lambda _event: None, publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+    )
 
 
 def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:

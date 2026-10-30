@@ -171,6 +171,7 @@ class SchedulerRuntime:
             "trader-task-score-wave",
             self._process_score_wave,
             order_key=PipelineTaskOrderKey,
+            on_discard=self._discard_score_wave,
             telemetry=LatestWinsTelemetry(
                 dependencies.latency,
                 PipelineTaskCorrelationId,
@@ -468,7 +469,11 @@ class SchedulerRuntime:
 
     def _submit_scoring(self, scheduled: ScheduledPipelineTask) -> bool:
         with self._lock:
-            return self._score_lane.offer(scheduled) is not LatestWinsOffer.REJECTED
+            return self._score_lane.offer(scheduled) in {LatestWinsOffer.ACCEPTED, LatestWinsOffer.REPLACED}
+
+    def _discard_score_wave(self, scheduled: ScheduledPipelineTask) -> None:
+        if scheduled.round_sequence is not None:
+            self._dependencies.rounds.finish(self._dependencies.round_profile, scheduled.round_sequence)
 
     def _process_score_wave(self, scheduled: ScheduledPipelineTask) -> None:
         if scheduled.round_sequence is not None:

@@ -175,7 +175,7 @@ def RunV1Training(
                             "failed", run_id, input_hash, peak_bytes, (), counts, failures, coverage
                         )
                 strategies = (Strategy.TOMORROW, Strategy.D25)
-                # Both raw mapped heads plus one native fit fit within the existing
+                # Both raw mapped heads plus one native fitter fit within the existing
                 # 512-byte-per-row reservation; no second simultaneous fitter.
                 required_bytes = max(
                     sum(item.rows for item in coverage if item.strategy is strategy) for strategy in strategies

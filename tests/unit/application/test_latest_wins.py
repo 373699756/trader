@@ -7,6 +7,32 @@ from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.latest_wins import LatestWinsOffer, LatestWinsTelemetry, LatestWinsWorker
 
 
+def test_discard_callback_settles_replaced_and_closed_items_once() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    discarded: list[int] = []
+
+    def process(_value: int) -> None:
+        entered.set()
+        release.wait()
+
+    worker = LatestWinsWorker("test-discard", process, order_key=lambda value: value, on_discard=discarded.append)
+    worker.start()
+    try:
+        assert worker.offer(1) is LatestWinsOffer.ACCEPTED
+        assert entered.wait(1.0)
+        worker.offer(2)
+        worker.offer(3)
+        assert discarded == [2]
+        assert worker.close() == 1
+        assert worker.close() == 0
+        assert discarded == [2, 3]
+        assert worker.status().running
+    finally:
+        release.set()
+        assert worker.stop(deadline=ShutdownDeadline.start(2.0)).completed
+
+
 def test_latest_wins_keeps_running_item_and_only_the_newest_pending_item() -> None:
     entered = threading.Event()
     release = threading.Event()

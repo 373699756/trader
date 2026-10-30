@@ -74,11 +74,11 @@ def test_leading_absence_uses_earlier_valuation_without_compressing_calendar():
     missing = dates[-252:-248]
 
     class History(HistoryInput):
-        read_sessions = []
+        read_ranges = []
 
-        def read_windows(self, manifest, codes, *, sessions, check=None):
-            self.read_sessions.append(sessions)
-            return super().read_windows(manifest, codes, sessions=sessions, check=check)
+        def read_range(self, manifest, codes, start, end, *, check=None):
+            self.read_ranges.append((start, end))
+            return super().read_range(manifest, codes, start, end, check=check)
 
         @staticmethod
         def window(code, selected):
@@ -103,7 +103,7 @@ def test_leading_absence_uses_earlier_valuation_without_compressing_calendar():
     )
     history.initialize(cancelled=lambda: False)
     assert source.reads == [("600001",)]
-    assert source.read_sessions == [315]
+    assert source.read_ranges == [(dates[-315], dates[-253])]
     assert len(history.completed_model_features(("600001",), NOW)["600001"]) == 10
     quality = history.model_history_quality("600001", NOW)
     assert quality.failure is None and quality.estimated_sessions == 4

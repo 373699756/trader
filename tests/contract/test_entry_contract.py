@@ -718,8 +718,9 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
     assert "不要删除 server.lock" in message
 
 
-def test_budget_uses_its_own_database_and_never_opens_the_legacy_runtime_name() -> None:
+def test_budget_uses_its_own_file_and_never_opens_the_legacy_runtime_name() -> None:
     bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
 
-    assert "settings.data_paths.budget," in bootstrap
+    assert 'settings.runtime_dir / "deepseek/state.json"' in bootstrap
+    assert "BudgetStateFile(budget_path," in bootstrap
     assert 'settings.runtime_dir / "runtime.sqlite3"' not in bootstrap

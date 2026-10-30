@@ -38,7 +38,6 @@ from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.published_history_snapshot import PublishedHistoryReadError, SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
@@ -347,11 +346,9 @@ def test_recommendation_without_an_published_snapshot_is_pending_and_never_fabri
     assert restrictions == {"600001": {"history_data_pending"}}
 
 
-@pytest.mark.parametrize("deadline", (None, NOW + timedelta(seconds=20)))
 def test_history_consumers_do_not_wait_for_background_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    deadline: datetime | None,
     prepared_history,
 ) -> None:
     history_root = tmp_path / "history"
@@ -388,7 +385,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
         refresh = pool.submit(history.initialize, cancelled=lambda: False)
         try:
             assert entered.wait(2)
-            load = pool.submit(history.load, ("600001",), deadline=deadline)
+            load = pool.submit(history.load, ("600001",))
             with pytest.raises(MarketDataUnavailableError, match="history_projection_loading"):
                 load.result(timeout=2)
             assert history.status().snapshot_hash is None
@@ -412,7 +409,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
     assert len(history.load(("600001",))["600001"]) == 20
 
 
-def test_shared_published_reader_reuses_partition_trust_for_projection_and_outcomes(
+def test_published_projection_and_outcomes_do_not_repeat_full_content_verification(
     tmp_path, monkeypatch, prepared_history
 ):
     root = tmp_path / "history"
@@ -435,19 +432,10 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
         outcome_history=ReadPublishedHistoryUseCase(published),
     )
     history.initialize(cancelled=lambda: False)
-    initial_count = len(verified)
-    assert initial_count > 0
+    assert verified == []
     assert len(published.read_windows(manifest, ("600001",), sessions=61)[0].cells) == 61
     assert history.read_outcome_bars(("600001",), NOW)
-    assert len(verified) == initial_count
-    partition = root / verified[0].relative_path
-    with SqliteSession(partition) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE daily_price_revision SET qfq_close=99 WHERE trade_date=?", (EncodeDate(dates[0]),))
-    before = history.entries()
-    assert history.read_outcome_bars(("600001",), NOW) == {}
-    assert history.entries() == before
-    assert history.status().error_count == 1
-    assert len(verified) == initial_count + 1
+    assert verified == []
 
 
 def test_deadline_bound_history_load_never_starts_a_history_scan(

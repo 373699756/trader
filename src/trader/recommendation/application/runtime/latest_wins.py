@@ -58,6 +58,7 @@ class LatestWinsWorker(Generic[_T]):
         *,
         order_key: Callable[[_T], int],
         telemetry: LatestWinsTelemetry[_T] | None = None,
+        on_discard: Callable[[_T], None] | None = None,
     ) -> None:
         if not name:
             raise ValueError("latest-wins worker name must not be empty")
@@ -65,6 +66,7 @@ class LatestWinsWorker(Generic[_T]):
         self._processor = processor
         self._order_key = order_key
         self._telemetry = telemetry
+        self._on_discard = on_discard
         self._condition = threading.Condition(threading.RLock())
         self._thread: threading.Thread | None = None
         self._accepting = False
@@ -115,6 +117,7 @@ class LatestWinsWorker(Generic[_T]):
             replaced = self._pending is not None
             if replaced:
                 self._finish_latency(self._pending, "superseded")
+                self._discard_pending()
             self._pending = item
             if replaced:
                 self._replaced_count += 1
@@ -141,10 +144,16 @@ class LatestWinsWorker(Generic[_T]):
             self._accepting = False
             cancelled = int(self._pending is not None)
             self._finish_latency(self._pending, "dropped")
+            self._discard_pending()
             self._pending = None
             self._cancelled_count += cancelled
             self._condition.notify_all()
             return cancelled
+
+    def _discard_pending(self) -> None:
+        # The callback must only settle ownership; it runs under the queue lock.
+        if self._pending is not None and self._on_discard is not None:
+            self._on_discard(self._pending)
 
     def stop(self, *, deadline: ShutdownDeadline) -> ShutdownStep:
         self.close()
