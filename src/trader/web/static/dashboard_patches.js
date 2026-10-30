@@ -244,7 +244,7 @@
     }
     if (blocker === "history_projection_failed") {
       return {
-        message: `${inputQuality.failure_reason === "history_preload_deadline" ? "历史加载超时" : "本地历史加载失败，暂不能生成荐股"}${progress}${elapsed}`,
+        message: `本地历史加载失败，暂不能生成荐股${progress}${elapsed}`,
         notice: `原因：${inputQuality.failure_reason}；处理后重启服务重新加载`,
         level: "warn",
       };

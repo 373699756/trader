@@ -690,6 +690,8 @@ def build_commands(
                 "--history-root",
                 str(options.history_root),
                 "--inputs-only",
+                "--runtime-config",
+                str(options.runtime_config),
             ),
             common_timeout,
         ),

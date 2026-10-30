@@ -3,7 +3,9 @@ from datetime import timedelta
 
 from tests.component.test_candidate_history_tail import CALENDAR, NOW, HistoryInput
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 
 
 def test_completed_v1_inputs_are_read_once_and_invalid_stock_does_not_block_the_population(monkeypatch) -> None:
@@ -24,6 +26,7 @@ def test_completed_v1_inputs_are_read_once_and_invalid_stock_does_not_block_the_
         monotonic=lambda: 0.0,
         open_dates=lambda: CALENDAR,
         learned_rank_inputs=True,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.initialize(cancelled=lambda: False)
     assert history.status().state == "published"
@@ -55,6 +58,7 @@ def test_signal_day_publication_keeps_previous_251_day_v1_input():
         monotonic=lambda: 0.0,
         open_dates=lambda: CALENDAR,
         learned_rank_inputs=True,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.initialize(cancelled=lambda: False)
     actual = history.completed_model_features(("600001",), NOW.replace(hour=20))
@@ -100,6 +104,7 @@ def test_leading_absence_uses_earlier_valuation_without_compressing_calendar():
         monotonic=lambda: 0.0,
         open_dates=lambda: CALENDAR,
         learned_rank_inputs=True,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.initialize(cancelled=lambda: False)
     assert source.reads == [("600001",)]

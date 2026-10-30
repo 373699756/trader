@@ -124,14 +124,14 @@ for (const strategy of ["tomorrow", "d25"]) {
     market_data: {
       ...historyLoadingStatus.market_data,
       history_maintenance_state: "failed",
-      history_maintenance_reason: "history_preload_deadline",
+      history_maintenance_reason: "history_snapshot_changed",
     },
   });
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(state.notReadyMessage(failedPayload, readiness))),
     {
-      message: "历史加载超时",
-      notice: "原因：history_preload_deadline；处理后重启服务重新加载",
+      message: "本地历史加载失败，暂不能生成荐股",
+      notice: "原因：history_snapshot_changed；处理后重启服务重新加载",
       level: "warn",
     },
   );
@@ -160,6 +160,7 @@ assert.strictEqual(
   "history_projection_loading",
 );
 for (const [stage, label] of [
+  ["reading_published_snapshot", "正在加载本地历史数据"],
   ["publishing_history_projection", "正在校验历史投影容量"],
   ["reading_company_inputs", "正在加载公司资料"],
   ["binding_startup_inputs", "正在绑定评分输入"],
@@ -168,12 +169,13 @@ for (const [stage, label] of [
     market_data: { ...historyLoadingStatus.market_data,
       published_history_state: "published", history_maintenance_stage: stage,
       history_maintenance_completed_units: 4401, history_maintenance_total_units: 4401,
-      history_maintenance_elapsed_seconds: 201.2,
+      history_maintenance_elapsed_seconds: 903.2,
     },
   });
   assert.match(state.notReadyMessage(historyLoadingPayload, readiness).message, new RegExp(label));
   assert.match(state.notReadyMessage(historyLoadingPayload, readiness).message, /4401\/4401/);
-  assert.match(state.notReadyMessage(historyLoadingPayload, readiness).message, /201/);
+  assert.match(state.notReadyMessage(historyLoadingPayload, readiness).message, /903/);
+  assert.strictEqual(state.notReadyMessage(historyLoadingPayload, readiness).level, "idle");
 }
 assert(state, "dashboard state helpers were not exported into the test sandbox");
 const unselectedLeader = {

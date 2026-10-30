@@ -1012,6 +1012,7 @@ def _build_market_data(
         else SharedHistoryProjection(
             published_history,
             monotonic=time.monotonic,
+            settings=settings.pipeline.history_preload,
             reserve_bytes=partial(market_cache.reserve_resident, "security_master_calendar", "qfq_shared_bars"),
         )
     )

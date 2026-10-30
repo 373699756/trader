@@ -7,6 +7,9 @@
     "strategy_workers": 3,
     "deepseek_workers": 4,
     "shutdown_timeout_seconds": 30,
+    "history_preload": {
+      "warn_after_seconds": 300
+    },
     "cadence_seconds": {
       "full_market": {
         "before_close": 10

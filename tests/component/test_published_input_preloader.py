@@ -8,7 +8,9 @@ from tests.component.test_candidate_history_tail import NOW, HistoryInput
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 
 
@@ -18,6 +20,7 @@ def _cache(source, *, outcomes=None, monotonic=time.monotonic):
         lookback_sessions=61,
         monotonic=monotonic,
         outcome_history=ReadPublishedHistoryUseCase(outcomes) if outcomes else None,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
 
 
@@ -84,7 +87,7 @@ def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_pending_i
     assert not history.entries()
 
 
-def test_preload_retries_changed_identity_and_restart_adopts_new_publication(monkeypatch):
+def test_preload_rejects_changed_identity_without_retry_and_restart_adopts_new_publication(monkeypatch):
     source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)
     windows = source.iter_windows
@@ -97,18 +100,20 @@ def test_preload_retries_changed_identity_and_restart_adopts_new_publication(mon
 
     monkeypatch.setattr(source, "iter_windows", changed)
     history.initialize(cancelled=lambda: False)
-    assert reads == ["a" * 64, "b" * 64]
-    assert history.status().snapshot_hash == "b" * 64
+    assert reads == ["a" * 64]
+    assert not history.entries()
+    assert history.status().maintenance_reason == "history_snapshot_changed"
     source.current = replace(source.current, snapshot_hash="c" * 64)
     monkeypatch.setattr(source, "iter_windows", windows)
     restarted = _cache(source)
     restarted.initialize(cancelled=lambda: False)
     assert restarted.status().snapshot_hash == "c" * 64
-    assert history.status().snapshot_hash == "b" * 64
+    assert not history.entries()
+    assert history.status().maintenance_reason == "history_snapshot_changed"
 
 
 @pytest.mark.parametrize("cancelled", (False, True))
-def test_preload_cancel_or_monotonic_deadline_never_accepts_partial_projection(cancelled):
+def test_slow_preload_completes_unless_cancelled(cancelled):
     ticks = [0.0]
 
     class SlowHistory(HistoryInput):
@@ -119,8 +124,14 @@ def test_preload_cancel_or_monotonic_deadline_never_accepts_partial_projection(c
     source = SlowHistory(61, 1, ("600001", "600002"))
     history = _cache(source, monotonic=lambda: ticks[0])
     history.initialize(cancelled=lambda: cancelled)
-    assert history.entries() == {}
-    assert history.status().maintenance_state == "failed"
+    if cancelled:
+        assert history.entries() == {}
+        assert history.status().maintenance_state == "failed"
+        assert history.status().maintenance_reason == "history_preload_cancelled"
+    else:
+        assert set(history.entries()) == {"600001", "600002"}
+        assert history.status().maintenance_state == "ready"
+        assert history.status().error_count == 0
 
 
 def test_preload_exceeding_old_thirty_second_limit_publishes_complete_projection():

@@ -46,7 +46,9 @@ from trader.entrypoints import cli
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 
 
 def _plain_feedback(message: ProgressMessage) -> str:
@@ -378,6 +380,7 @@ def test_inferred_suspension_keeps_only_tencent_real_bars_without_backfill(tmp_p
         lookback_sessions=251,
         open_dates=lambda: DAYS,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(updater.v2), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     projection.initialize(cancelled=lambda: False)
     assert "600001" in projection.load(("600001",), observed_at=observed)
@@ -422,6 +425,7 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
         lookback_sessions=251,
         open_dates=lambda: (*DAYS, next_morning.date()),
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(updater.v2), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     projection.initialize(cancelled=lambda: False)
     assert not projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
@@ -442,6 +446,7 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
         lookback_sessions=251,
         open_dates=lambda: (*DAYS, next_morning.date()),
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(updater.v2), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     projection.initialize(cancelled=lambda: False)
     assert "600001" in projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
@@ -1438,8 +1443,9 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
         outcome_history=reader,
         open_dates=dates,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(reader, monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
-    original = PublishedHistoryCache(reader, lookback_sessions=251, monotonic=time.monotonic, outcome_history=reader)
+    original = PublishedHistoryCache(reader, lookback_sessions=251, monotonic=time.monotonic, outcome_history=reader, projection_owner=SharedHistoryProjection(reader, monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)))
     projection.initialize(cancelled=lambda: False)
     original.initialize(cancelled=lambda: False)
     assert calendar_calls == 1  # Startup aligns the shared history projection to the calendar.
@@ -1456,6 +1462,7 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
         lookback_sessions=251,
         outcome_history=reader,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLiteQfqWindowCache((tmp_path / "missing") / "daily_window.sqlite3", "v2")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     missing.initialize(cancelled=lambda: False)
     assert missing.read_outcome_bars(("600001",), NOW) == original.read_outcome_bars(("600001",), NOW)

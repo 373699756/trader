@@ -41,7 +41,9 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.training.infra.history.history_training_due import (
     EvaluateAllHistoryTrainingDue,
     EvaluateHistoryTrainingDue,
@@ -217,6 +219,7 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)),
         lookback_sessions=251,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
 
     history.initialize(cancelled=lambda: False)
@@ -338,6 +341,7 @@ def test_recommendation_without_an_published_snapshot_is_pending_and_never_fabri
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
         lookback_sessions=61,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     restrictions: dict[str, set[str]] = {}
 
@@ -365,6 +369,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
         lookback_sessions=61,
         outcome_history=ReadPublishedHistoryUseCase(published),
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(short), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     old_manifest = short.manifest()
     assert old_manifest is not None
@@ -430,6 +435,7 @@ def test_published_projection_and_outcomes_do_not_repeat_full_content_verificati
         lookback_sessions=61,
         monotonic=time.monotonic,
         outcome_history=ReadPublishedHistoryUseCase(published),
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(published), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.initialize(cancelled=lambda: False)
     assert verified == []
@@ -444,7 +450,11 @@ def test_deadline_bound_history_load_never_starts_a_history_scan(
 ) -> None:
     published = SQLitePublishedHistorySnapshot(tmp_path / "history")
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(published), lookback_sessions=61, monotonic=time.monotonic
+        ReadPublishedHistoryUseCase(published), lookback_sessions=61, monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(
+            ReadPublishedHistoryUseCase(published), monotonic=time.monotonic,
+            settings=HistoryPreloadSettings(warn_after_seconds=300.0),
+        ),
     )
 
     def unexpected_manifest():
@@ -484,6 +494,7 @@ def test_recommendation_retains_the_last_valid_projection_when_the_history_becom
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)),
         lookback_sessions=61,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.initialize(cancelled=lambda: False)
     before = history.entries()

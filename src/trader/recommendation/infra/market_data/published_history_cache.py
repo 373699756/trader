@@ -105,13 +105,13 @@ class PublishedHistoryCache:
         *,
         lookback_sessions: int,
         monotonic: Callable[[], float],
+        projection_owner: SharedHistoryProjection,
         outcome_history: ReadPublishedHistoryUseCase | None = None,
         open_dates: Callable[[], tuple[date, ...]] | None = None,
         reserve_bytes: Callable[[int], bool] | None = None,
         require_input_binding: bool = False,
         learned_rank_inputs: bool = False,
         sequence_inputs: bool = False,
-        projection_owner: SharedHistoryProjection | None = None,
     ) -> None:
         self._history = history
         self._outcome_history = outcome_history
@@ -142,7 +142,7 @@ class PublishedHistoryCache:
         self._maintenance_finished_at: float | None = None
         self._preview_context: PreviewContext | None = None
 
-        self._projection_owner = projection_owner or SharedHistoryProjection(history, monotonic=monotonic)
+        self._projection_owner = projection_owner
         self._projection_owner.register(self)
 
     @property
@@ -185,10 +185,9 @@ class PublishedHistoryCache:
         self,
         manifest: PublishedHistoryManifest,
         entries: dict[str, PublishedHistoryEntry],
-        cancelled: Callable[[], bool],
-        deadline: float,
+        check: Callable[[], None],
     ) -> bool:
-        size_bytes = self._reserve_projection(entries, cancelled, deadline)
+        size_bytes = self._reserve_projection(entries, check)
         if size_bytes is None:
             return False
         outcome = manifest if self._outcome_history is self._history else self._outcome_manifest
@@ -208,22 +207,17 @@ class PublishedHistoryCache:
         self._record_error(reason)
 
     def _reserve_projection(
-        self, entries: Mapping[str, PublishedHistoryEntry], cancelled: Callable[[], bool], deadline: float
+        self, entries: Mapping[str, PublishedHistoryEntry], check: Callable[[], None]
     ) -> int | None:
-        if cancelled() or self._monotonic() >= deadline:
-            self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
-            return None
+        check()
         size_bytes = 0
         for index, (code, entry) in enumerate(entries.items()):
-            if index % 64 == 0 and (cancelled() or self._monotonic() >= deadline):
-                self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
-                return None
+            if index % 64 == 0:
+                check()
             size_bytes += len(CanonicalJsonBytes(
                 (code, replace(entry, bars=()) if self._projection_owner.accounts_shared_bars else entry)
             ))
-        if cancelled() or self._monotonic() >= deadline:
-            self._record_error("history_preload_cancelled" if cancelled() else "history_preload_deadline")
-            return None
+        check()
         if self._reserve_bytes is not None and not self._reserve_bytes(size_bytes):
             self._record_error("history_preload_capacity")
             return None

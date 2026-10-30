@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -13,6 +14,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.market_data.history.history import BuildHistoryContext
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars, BuildAlignedHistoryBars
 
 if TYPE_CHECKING:
@@ -22,15 +24,24 @@ if TYPE_CHECKING:
     )
 
 
-@dataclass(frozen=True)
-class _PreloadBudget:
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _PreloadProgress:
     cancelled: Callable[[], bool]
     monotonic: Callable[[], float]
-    deadline: float
+    started: float
+    warn_after_seconds: float
+    warned: bool = False
 
-    def require_time(self) -> None:
-        if self.cancelled() or self.monotonic() >= self.deadline:
-            raise RuntimeError("history_preload_cancelled" if self.cancelled() else "history_preload_deadline")
+    def check(self) -> None:
+        if self.cancelled():
+            raise RuntimeError("history_preload_cancelled")
+        elapsed = self.monotonic() - self.started
+        if not self.warned and elapsed >= self.warn_after_seconds:
+            self.warned = True
+            _LOGGER.warning("历史预读已耗时 %.3f 秒，超过提示阈值 %.3f 秒，继续读取", elapsed, self.warn_after_seconds)
 
 
 @dataclass(frozen=True)
@@ -49,10 +60,12 @@ class SharedHistoryProjection:
         history: ReadPublishedHistoryUseCase,
         *,
         monotonic: Callable[[], float],
+        settings: HistoryPreloadSettings,
         reserve_bytes: Callable[[int], bool] | None = None,
     ) -> None:
         self._history = history
         self._monotonic = monotonic
+        self._settings = settings
         self._reserve_bytes = reserve_bytes
         self._lock = threading.Lock()
         self._profiles: list[PublishedHistoryCache] = []
@@ -101,18 +114,16 @@ class SharedHistoryProjection:
             if self._initialized:
                 return
             self._initialized = True
-            budget = _PreloadBudget(cancelled, self._monotonic, self._monotonic() + 300.0)
+            progress = _PreloadProgress(cancelled, self._monotonic, self._monotonic(), self._settings.warn_after_seconds)
             if not cancelled():
                 for profile in self._profiles:
                     profile.initialize_outcome_projection()
-            for _attempt in range(3):
-                try:
-                    self._load_projection(budget)
-                    break
-                except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-                    self._record_failure(exc)
-                    if cancelled() or self._monotonic() >= budget.deadline:
-                        break
+            try:
+                self._load_projection(progress)
+            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                self._record_failure(exc)
+            finally:
+                _LOGGER.info("历史预读结束，耗时 %.3f 秒", self._monotonic() - progress.started)
             for profile in self._profiles:
                 profile.record_projection_observation()
 
@@ -122,14 +133,13 @@ class SharedHistoryProjection:
             "history_snapshot_changed",
             "history_preload_capacity",
             "history_preload_cancelled",
-            "history_preload_deadline",
         }
         reason = str(exc) if str(exc) in declared else type(exc).__name__
         for profile in self._profiles:
             profile.fail_history_projection(reason)
 
-    def _load_projection(self, budget: _PreloadBudget) -> None:
-        budget.require_time()
+    def _load_projection(self, progress: _PreloadProgress) -> None:
+        progress.check()
         manifest = self._history.manifest()
         if manifest is None:
             raise RuntimeError("history_snapshot_unavailable")
@@ -138,7 +148,7 @@ class SharedHistoryProjection:
             profile.record_maintenance(
                 "loading", stage="reading_published_snapshot", total_units=len(manifest.universe_codes)
             )
-        entries = self._scan(manifest, budget)
+        entries = self._scan(manifest, progress)
         confirmed = self._history.manifest()
         if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
             raise RuntimeError("history_snapshot_changed")
@@ -146,7 +156,7 @@ class SharedHistoryProjection:
             profile.record_maintenance("loading", stage="publishing_history_projection")
         started = self._monotonic()
         try:
-            self._publish(manifest, entries, budget)
+            self._publish(manifest, entries, progress)
         finally:
             self._publication_seconds += self._monotonic() - started
 
@@ -154,13 +164,13 @@ class SharedHistoryProjection:
         self,
         manifest: PublishedHistoryManifest,
         entries: tuple[dict[str, PublishedHistoryEntry], ...],
-        budget: _PreloadBudget,
+        progress: _PreloadProgress,
     ) -> None:
         shared_bytes = 0
         if entries:
             for index, (code, entry) in enumerate(entries[0].items()):
                 if index % 64 == 0:
-                    budget.require_time()
+                    progress.check()
                 shared_bytes += len(CanonicalJsonBytes((code, entry.bars)))
         if self._reserve_bytes is not None and not self._reserve_bytes(shared_bytes):
             raise RuntimeError("history_preload_capacity")
@@ -168,14 +178,14 @@ class SharedHistoryProjection:
         try:
             for profile, values in zip(self._profiles, entries, strict=True):
                 published = (
-                    profile.publish_history_projection(manifest, values, budget.cancelled, budget.deadline) or published
+                    profile.publish_history_projection(manifest, values, progress.check) or published
                 )
         finally:
             if not published and self._reserve_bytes is not None:
                 self._reserve_bytes(0)
 
     def _scan(
-        self, manifest: PublishedHistoryManifest, budget: _PreloadBudget
+        self, manifest: PublishedHistoryManifest, progress: _PreloadProgress
     ) -> tuple[dict[str, PublishedHistoryEntry], ...]:
         sessions = min(max(profile.history_sessions for profile in self._profiles) + 1, len(manifest.calendar_dates))
         calendars = tuple(profile.projection_calendar() for profile in self._profiles)
@@ -183,7 +193,7 @@ class SharedHistoryProjection:
         results: tuple[dict[str, PublishedHistoryEntry], ...] = tuple({} for _profile in self._profiles)
         lifetimes = {code: (start, end) for code, start, end in manifest.listing_intervals}
         self._scan_count += 1
-        windows = iter(self._history.iter_windows(manifest, sessions=sessions, check=budget.require_time))
+        windows = iter(self._history.iter_windows(manifest, sessions=sessions, check=progress.check))
         completed = 0
         while True:
             started = self._monotonic()
@@ -193,10 +203,10 @@ class SharedHistoryProjection:
                 break
             finally:
                 self._read_seconds += self._monotonic() - started
-            budget.require_time()
+            progress.check()
             started = self._monotonic()
             try:
-                aligned = self._aligned(window, manifest, lifetimes.get(window.code), sessions, budget)
+                aligned = self._aligned(window, manifest, lifetimes.get(window.code), sessions, progress)
             finally:
                 self._alignment_seconds += self._monotonic() - started
             self._window_count += 1
@@ -228,7 +238,7 @@ class SharedHistoryProjection:
         manifest: PublishedHistoryManifest,
         lifetime: tuple[date, date | None] | None,
         sessions: int,
-        budget: _PreloadBudget,
+        progress: _PreloadProgress,
     ) -> AlignedHistoryBars:
         aligned = BuildAlignedHistoryBars(window, manifest.calendar_dates[-sessions:], lifetime)
         first = manifest.calendar_dates[-sessions]
@@ -244,12 +254,12 @@ class SharedHistoryProjection:
         extended_sessions = sessions
         retained = window
         while len(aligned.bars) < sessions and extended_sessions < maximum:
-            budget.require_time()
+            progress.check()
             next_sessions = min(maximum, extended_sessions + 63)
             earlier_dates = manifest.calendar_dates[-next_sessions:-extended_sessions]
             self._extension_requests += 1
             extended = self._history.read_range(
-                manifest, (window.code,), earlier_dates[0], earlier_dates[-1], check=budget.require_time
+                manifest, (window.code,), earlier_dates[0], earlier_dates[-1], check=progress.check
             )
             extended_sessions = next_sessions
             if extended:

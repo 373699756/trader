@@ -35,7 +35,9 @@ from tests.component.market_data_test_support import (
 )
 from tests.reference_fixtures import PreparedFixture
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 
 
@@ -190,7 +192,16 @@ def test_missing_history_remains_unavailable_without_recovery() -> None:
         def manifest(self):
             return None
 
-    history = PublishedHistoryCache(_MissingHistory(), lookback_sessions=61, monotonic=time.monotonic)
+    source = _MissingHistory()
+    history = PublishedHistoryCache(
+        source,
+        lookback_sessions=61,
+        monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(
+            source, monotonic=time.monotonic,
+            settings=HistoryPreloadSettings(warn_after_seconds=300.0),
+        ),
+    )
     restrictions = {}
     assert history.load(("600001", "600002"), action_restrictions=restrictions) == {}
     assert restrictions == {code: {"history_data_pending"} for code in ("600001", "600002")}

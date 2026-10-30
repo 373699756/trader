@@ -35,7 +35,9 @@ from trader.recommendation.application.ports.static_reference import StaticRefer
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 
@@ -67,6 +69,7 @@ def test_startup_binds_published_security_facts_before_preview_quotes_are_merged
         lookback_sessions=61,
         monotonic=lambda: 0.0,
         require_input_binding=True,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(HistoryInput(62, 0, ("600001",))), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     service = _service(
         gateway,
@@ -100,6 +103,7 @@ def test_startup_does_not_open_refresh_before_static_eligibility_finishes(fail_s
         lookback_sessions=61,
         monotonic=lambda: 0.0,
         require_input_binding=True,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(HistoryInput(62, 0, ("600001",))), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     gateway = RecordingGateway((_quote(),))
     service = _service(

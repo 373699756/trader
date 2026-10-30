@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 
 from trader.infra.cache_contracts import CachePolicy
@@ -30,6 +31,20 @@ class ServerSettings:
 
 
 @dataclass(frozen=True)
+class HistoryPreloadSettings:
+    warn_after_seconds: float
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.warn_after_seconds, bool)
+            or not isinstance(self.warn_after_seconds, (int, float))
+            or not isfinite(self.warn_after_seconds)
+            or not 0.001 <= self.warn_after_seconds <= 3600
+        ):
+            raise ValueError("history preload settings are invalid")
+
+
+@dataclass(frozen=True)
 class PipelineSettings:
     event_queue_size: int
     priority_queue_size: int
@@ -38,6 +53,7 @@ class PipelineSettings:
     strategy_workers: int
     deepseek_workers: int
     shutdown_timeout_seconds: float
+    history_preload: HistoryPreloadSettings
     cadence_seconds: Mapping[str, Mapping[str, float]]
     publish_heartbeat_seconds: int
 

@@ -236,6 +236,12 @@ def test_preload_timing_defaults_to_three_profiles_and_separates_feature_cpu_pro
     assert command.argv[command.argv.index("--preload-profiles") + 1] == "v3"
 
 
+def test_model_inputs_forwards_the_selected_runtime_configuration():
+    options = _options(profile="model-inputs", runtime_config=Path("config/runtime.json"))
+    command = build_commands(options, python_executable="/python3")[0]
+    assert command.argv[command.argv.index("--runtime-config") + 1] == str(options.runtime_config)
+
+
 def test_local_invalid_configuration_skips_dependents():
     commands = build_commands(_options(profile="local", scoring_profile="v2"), python_executable="/python")
     called = []

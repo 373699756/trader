@@ -44,7 +44,9 @@ from tests.component.market_data_test_support import (
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 
 
 def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_lock() -> None:
@@ -77,6 +79,7 @@ def test_initial_history_projection_defers_market_io(tmp_path, monkeypatch) -> N
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
         lookback_sessions=61,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.record_maintenance("loading", stage="reading_published_snapshot")
     service = _service(

@@ -449,6 +449,39 @@ def test_runtime_rejects_removed_freeze_execution_mode(tmp_path) -> None:
         LoadRuntimeSettings(changed_path)
 
 
+def test_history_preload_settings_change_without_invalidating_feature_identity(tmp_path) -> None:
+    baseline = LoadRuntimeSettings(RUNTIME_CONFIG)
+    assert baseline.pipeline.history_preload.warn_after_seconds == 300
+    raw = _runtime_document()
+    raw["pipeline"]["history_preload"] = {"warn_after_seconds": 12.5}
+    changed = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+    assert changed.pipeline.history_preload.warn_after_seconds == 12.5
+    assert changed.config_version == baseline.config_version
+
+
+@pytest.mark.parametrize("preload", [
+    {}, {"timeout_seconds": 300}, {"max_attempts": 3},
+    {"warn_after_seconds": 300, "max_attempts": 3},
+    {"warn_after_seconds": 0},
+    {"warn_after_seconds": float("inf")},
+    {"warn_after_seconds": float("nan")},
+    {"warn_after_seconds": True},
+    {"warn_after_seconds": 3601},
+])
+def test_history_preload_rejects_missing_invalid_and_unknown_parameters(tmp_path, preload) -> None:
+    raw = _runtime_document()
+    raw["pipeline"]["history_preload"] = preload
+    with pytest.raises(ConfigurationError):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
+def test_history_preload_section_is_required(tmp_path) -> None:
+    raw = _runtime_document()
+    del raw["pipeline"]["history_preload"]
+    with pytest.raises(ConfigurationError, match="history_preload"):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
 @pytest.mark.parametrize("model", ["deepseek-chat", "deepseek-reasoner", "unknown-model"])
 def test_runtime_settings_rejects_unapproved_primary_model(tmp_path, model: str) -> None:
     raw = _runtime_document()

@@ -34,7 +34,9 @@ from trader.recommendation.application.ports.market_data import MarketDataPendin
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 
 
@@ -148,6 +150,7 @@ def test_history_binding_capacity_failure_keeps_all_resident_bytes_and_blocks_sc
         monotonic=time.monotonic,
         reserve_bytes=reserve,
         require_input_binding=True,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(HistoryInput(61, 1, ("600001",))), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.initialize(cancelled=lambda: False)
     with pytest.raises(MarketDataPendingError):

@@ -49,7 +49,9 @@ from trader.recommendation.domain.publication.freeze_identity import (
     ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.status_projection import RuntimeStatus
 
 
@@ -1490,6 +1492,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
         lookback_sessions=61,
         monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.record_maintenance("loading", stage="reading_published_snapshot")
 

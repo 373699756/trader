@@ -39,6 +39,7 @@ from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.storage_types import StorageKind
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -88,6 +89,7 @@ class _SyncFixture:
     """Real sync coordinator and persistence adapters with finite synthetic supplier facts."""
 
     def __init__(self, root: Path, size: int, sessions: int, storage_kind: StorageKind) -> None:
+        self.preload_settings = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.history_preload
         self.paths = DataPaths(root)
         self.root = root
         self.sessions = sessions
@@ -218,7 +220,7 @@ class _SyncFixture:
         references = PublishedReferences(publication.read, publication.identity, lambda _now: (), max_age_seconds=86400)
         self._measure("startup_reference", references.initialize)
         history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history))
-        projection = SharedHistoryProjection(history, monotonic=time.monotonic)
+        projection = SharedHistoryProjection(history, monotonic=time.monotonic, settings=self.preload_settings)
         caches = tuple(
             PublishedHistoryCache(
                 history,

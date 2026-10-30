@@ -23,12 +23,15 @@ if TYPE_CHECKING:
     from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
-def _inputs(history: Path) -> dict[str, object]:
+def _inputs(history: Path, runtime_config: Path) -> dict[str, object]:
     from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
     from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
+    from trader.infra.settings import LoadRuntimeSettings
     from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+    from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 
     started = time.monotonic()
+    settings = LoadRuntimeSettings(runtime_config)
     source = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history))
     manifest = source.manifest()
     if manifest is None:
@@ -39,6 +42,9 @@ def _inputs(history: Path) -> dict[str, object]:
         monotonic=time.monotonic,
         open_dates=lambda: manifest.calendar_dates,
         learned_rank_inputs=True,
+        projection_owner=SharedHistoryProjection(
+            source, monotonic=time.monotonic, settings=settings.pipeline.history_preload,
+        ),
     )
     cache.initialize(cancelled=lambda: False)
     as_of = datetime.combine(manifest.data_cutoff, daytime(20, 0), ZoneInfo("Asia/Shanghai"))
@@ -166,7 +172,7 @@ def _train_once(
 
 
 def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ...]) -> tuple[dict[str, object], ...]:
-    fingerprints = []
+    fingerprints: list[dict[str, object]] = []
     metric_fields = (
         "prediction_metrics",
         "industry_prediction_metrics",
@@ -250,7 +256,7 @@ def main() -> int:
 
         profiles = ParseProfileSelection(args.profiles) if args.profiles is not None else SCORING_PROFILE_IDS
         if args.inputs_only:
-            report = _inputs(args.history_root)
+            report = _inputs(args.history_root, args.runtime_config or product / "config/runtime.json")
         elif args.work_root is not None:
             report = _probe(args.history_root, args.work_root, profiles, runtime_config=args.runtime_config)
             report["benchmark_mode"] = args.benchmark_mode

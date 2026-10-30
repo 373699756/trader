@@ -222,7 +222,10 @@ def _measure_preload(
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(root))
     manifest = history.manifest()
     calendar_dates = reference.open_dates
-    owner = SharedHistoryProjection(history, monotonic=time.monotonic, reserve_bytes=partial(reserve, "qfq_shared_bars"))
+    owner = SharedHistoryProjection(
+        history, monotonic=time.monotonic, settings=settings.pipeline.history_preload,
+        reserve_bytes=partial(reserve, "qfq_shared_bars"),
+    )
     profiles = tuple(
         PublishedHistoryCache(
             history,
@@ -322,6 +325,9 @@ def _measure_preload(
                 "process_peak_rss_bytes": _peak_rss_bytes(),
                 "snapshot_hash": manifest.snapshot_hash if manifest else None,
                 "config_version": settings.config_version,
+                "preload_settings": {
+                    "warn_after_seconds": settings.pipeline.history_preload.warn_after_seconds,
+                },
                 "sqlite": measurement.result,
                 "cpu_profile": cpu_profile,
                 "scan_count": owner.scan_count,

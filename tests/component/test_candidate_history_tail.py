@@ -27,7 +27,9 @@ from trader.download.domain.published_history import (
     PublishedHistoryWindow,
 )
 from trader.recommendation.infra.market_data.published_history_bars import QfqBars
+from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 
 NOW = datetime(2026, 7, 16, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 CALENDAR = tuple(
@@ -112,6 +114,10 @@ def _cache(sessions=61, gap=0):
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(published), lookback_sessions=sessions,
         open_dates=lambda: CALENDAR, monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(
+            ReadPublishedHistoryUseCase(published), monotonic=time.monotonic,
+            settings=HistoryPreloadSettings(warn_after_seconds=300.0),
+        ),
     )
     history.initialize(cancelled=lambda: False)
     return history, published
@@ -153,8 +159,14 @@ def test_holiday_and_weekend_accept_last_completed_session(observed_on, cutoff):
     published = HistoryInput(61, 0, ("600001",))
     published.current = replace(published.current, data_cutoff=cutoff,
                                 calendar_dates=tuple(day for day in CALENDAR if day <= cutoff))
-    history = PublishedHistoryCache(ReadPublishedHistoryUseCase(published), lookback_sessions=61,
-                                    open_dates=lambda: CALENDAR, monotonic=time.monotonic)
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(published), lookback_sessions=61,
+        open_dates=lambda: CALENDAR, monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(
+            ReadPublishedHistoryUseCase(published), monotonic=time.monotonic,
+            settings=HistoryPreloadSettings(warn_after_seconds=300.0),
+        ),
+    )
     history.initialize(cancelled=lambda: False)
     assert history.load(("600001",), observed_at=datetime.combine(observed_on, NOW.timetz()))
 

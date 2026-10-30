@@ -21,6 +21,7 @@ from trader.infra.settings.models import (
     ApiSettings,
     DeepSeekAdaptiveSettings,
     DeepSeekSettings,
+    HistoryPreloadSettings,
     MarketDataSettings,
     PipelineSettings,
     RuntimeSettings,
@@ -131,10 +132,13 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "strategy_workers",
         "deepseek_workers",
         "shutdown_timeout_seconds",
+        "history_preload",
         "cadence_seconds",
         "publish_heartbeat_seconds",
     }
     _require_exact_keys(pipeline_raw, pipeline_keys, "pipeline")
+    preload_raw = _mapping(pipeline_raw, "history_preload")
+    _require_exact_keys(preload_raw, {"warn_after_seconds"}, "pipeline.history_preload")
     market_keys = {
         "eastmoney_timeout_seconds",
         "candidate_timeout_seconds",
@@ -202,8 +206,11 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         pipeline_raw,
         "cadence_seconds",
     )
+    # Startup timing warnings do not change feature or sample semantics.
     settings = RuntimeSettings(
-        config_version=_configuration_identity("runtime", raw),
+        config_version=_configuration_identity(
+            "runtime", {**raw, "pipeline": {key: value for key, value in pipeline_raw.items() if key != "history_preload"}}
+        ),
         config_path=path,
         storage_medium=ParseStorageMedium(raw["storage"]),
         project_root=project_root,
@@ -226,6 +233,9 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             strategy_workers=_integer(pipeline_raw, "strategy_workers", minimum=1),
             deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
             shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
+            history_preload=HistoryPreloadSettings(
+                warn_after_seconds=_number(preload_raw, "warn_after_seconds", minimum=0.001, maximum=3600),
+            ),
             cadence_seconds=cadence_seconds,
             publish_heartbeat_seconds=_integer(pipeline_raw, "publish_heartbeat_seconds", minimum=1),
         ),
