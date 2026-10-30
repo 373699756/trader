@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (
+    FreezeBatchPayload,
     FreezeEventPayload,
     FreezeReplacementPatch,
     OverlayEventPayload,
@@ -344,7 +345,18 @@ def SerializeFreezeItem(item: FreezeItemView) -> dict[str, object]:
 def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
     payload = event.payload
     common: dict[str, object] = {"schema_version": "freeze_event"}
-    if isinstance(payload, FreezeEventPayload):
+    if isinstance(payload, FreezeBatchPayload):
+        common.update(
+            round_sequence=payload.round_sequence,
+            profiles={
+                profile.profile: {
+                    freeze.strategy.value: _serialize_freeze_event(freeze)
+                    for freeze in profile.freezes
+                }
+                for profile in payload.profiles
+            },
+        )
+    elif isinstance(payload, FreezeEventPayload):
         common.update(
             strategy=payload.strategy.value,
             trade_date=payload.trade_date,
@@ -352,6 +364,7 @@ def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
             content_hash=payload.content_hash,
             stage=payload.stage,
             publication_id=payload.version,
+            scoring_profile=payload.profile,
         )
         if payload.replacement is not None:
             common.update(_serialize_freeze_replacement(payload, payload.replacement))
@@ -367,10 +380,27 @@ def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
             projection_version=payload.projection_version,
             patch_schema_version=4,
             quotes=[_serialize_overlay_quote(quote) for quote in payload.quotes],
+            scoring_profile=payload.profile,
         )
     elif isinstance(payload, ResyncEventPayload):
         common["reason"] = payload.reason
     return common
+
+
+def _serialize_freeze_event(payload: FreezeEventPayload) -> dict[str, object]:
+    serialized: dict[str, object] = {
+        "schema_version": "freeze_event",
+        "strategy": payload.strategy.value,
+        "trade_date": payload.trade_date,
+        "version": payload.version,
+        "content_hash": payload.content_hash,
+        "stage": payload.stage,
+        "publication_id": payload.version,
+        "scoring_profile": payload.profile,
+    }
+    if payload.replacement is not None:
+        serialized.update(_serialize_freeze_replacement(payload, payload.replacement))
+    return serialized
 
 
 def SerializeError(code: str, message: str) -> dict[str, object]:

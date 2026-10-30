@@ -159,6 +159,9 @@ class ScheduledPipelineTask:
     session: SessionLease | None = None
     round_sequence: int | None = None
     round_tasks: tuple[ScheduledPipelineTask, ...] = ()
+    round_started_monotonic: float | None = None
+    round_deadline_monotonic: float | None = None
+    round_deadline: datetime | None = None
 
 
 @dataclass(frozen=True)

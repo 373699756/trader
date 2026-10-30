@@ -29,6 +29,8 @@
     }
 
     function eventMatchesCurrent(payload) {
+      const deliveryProfile = state.strategy === "long" ? state.longProfile : state.profile;
+      if (payload && payload.scoring_profile && payload.scoring_profile !== deliveryProfile) return false;
       const currentDate = state.payload && (state.payload.current_trade_date || state.payload.trade_date);
       return patches.eventMatchesCurrent(payload, state.strategy, currentDate);
     }
@@ -71,6 +73,18 @@
         const payload = eventPayload(event);
         if (!state.date && eventMatchesCurrent(payload) && applyOverlayPatch(payload)) recordPatchPaint(receivedAt);
       };
+      const replaceBatch = (event) => {
+        const receivedAt = performance.now();
+        rememberEvent(event);
+        diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
+        const payload = eventPayload(event);
+        const profileBatch = payload && payload.profiles && payload.profiles[state.profile];
+        const replacement = profileBatch && profileBatch[state.strategy];
+        if (!state.date && replacement && eventMatchesCurrent(replacement) && applyRecommendationPatch(replacement)) {
+          recordPatchPaint(receivedAt);
+        }
+      };
+      stream.addEventListener("batch", replaceBatch);
       stream.addEventListener("freeze", refreshFreeze);
       stream.addEventListener("overlay", refreshOverlay);
       stream.addEventListener("resync_required", (event) => {

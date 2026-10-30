@@ -3,11 +3,15 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta
+import threading
 from zoneinfo import ZoneInfo
 
 from tests.unit.domain.test_freeze_identity import NOW, freeze
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import FreezeCommitted
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
+    UnifiedFreezeIndex,
+    UnifiedProfilePair,
+)
 from trader.recommendation.domain.publication.freeze_identity import (
     DisplayQuoteCodes,
     FreezeOverlay,
@@ -40,6 +44,41 @@ def test_unified_index_allows_one_concurrent_expected_version_winner() -> None:
     event = next(item.event for item in results if item.accepted)
     assert isinstance(event, FreezeCommitted)
     assert event.items[0].score_components == (("trend", 88.0),)
+
+
+def test_profiled_batch_rejects_every_profile_before_any_partial_write() -> None:
+    lock = threading.RLock()
+    indexes = (UnifiedFreezeIndex(transaction_lock=lock), UnifiedFreezeIndex(transaction_lock=lock))
+    pairs = []
+    for profile, index, offset in (("v1", indexes[0], 0), ("v2", indexes[1], 2)):
+        freezes = (
+            freeze(Strategy.TOMORROW, sequence=1 + offset),
+            freeze(Strategy.D25, sequence=2 + offset),
+        )
+        overlays = tuple(
+            FreezeOverlay(
+                item.strategy,
+                item.trade_date,
+                item.version,
+                item.observed_at,
+                (item.items[0].quote,),
+                sequence=1,
+            )
+            for item in freezes
+        )
+        pairs.append(UnifiedProfilePair(profile, index, freezes, overlays, (None, None)))
+
+    rejected = replace(pairs[1], expected_versions=("missing", None))
+    result = UnifiedFreezeIndex.publish_scored_batch((pairs[0], rejected))
+
+    assert not result.accepted and result.reason == "cas_mismatch"
+    assert all(index.snapshot(strategy).current is None for index in indexes for strategy in (Strategy.TOMORROW, Strategy.D25))
+    expired = UnifiedFreezeIndex.publish_scored_batch((pairs[0], pairs[1]), lambda: False)
+    assert not expired.accepted and expired.reason == "round_timeout"
+    assert all(index.snapshot(strategy).current is None for index in indexes for strategy in (Strategy.TOMORROW, Strategy.D25))
+    accepted = UnifiedFreezeIndex.publish_scored_batch((pairs[0], pairs[1]))
+    assert accepted.accepted
+    assert tuple(profile for profile, _events in accepted.events) == ("v1", "v2")
 
 
 def test_hybrid_requires_the_current_same_strategy_local_parent() -> None:

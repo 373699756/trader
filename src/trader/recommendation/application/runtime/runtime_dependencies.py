@@ -50,7 +50,7 @@ class RuntimeDependencies:
     settlement: SettlementPort
     research_factory: ResearchRuntimeFactoryPort
     publish_freeze: Callable[[FreezeCommitted], object]
-    publish_overlay: OverlayPublisher
+    publish_overlay: OverlayPublisher | None = None
     latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
     publication_io: PublicationIoTracker | None = None
     monotonic: Callable[[], float] = time.monotonic

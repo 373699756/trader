@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
@@ -37,6 +38,22 @@ class UnifiedPairedPublishResult:
     accepted: bool
     reason: str
     events: tuple[FreezeCommitted, ...] = ()
+
+
+@dataclass(frozen=True)
+class UnifiedProfilePair:
+    profile: str
+    index: UnifiedFreezeIndex
+    freezes: tuple[ScoredFreeze, ScoredFreeze]
+    overlays: tuple[FreezeOverlay, FreezeOverlay]
+    expected_versions: tuple[str | None, str | None]
+
+
+@dataclass(frozen=True)
+class UnifiedProfiledPublishResult:
+    accepted: bool
+    reason: str
+    events: tuple[tuple[str, tuple[FreezeCommitted, FreezeCommitted]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -81,8 +98,8 @@ class _ScoredPublishCheck:
 class UnifiedFreezeIndex:
     """Expected-version CAS for scored currents, overlays, and formal records."""
 
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
+    def __init__(self, *, transaction_lock: threading.RLock | None = None) -> None:
+        self._lock = transaction_lock or threading.RLock()
         self._current: dict[Strategy, FreezeIdentity] = {}
         self._overlays: dict[Strategy, FreezeOverlay] = {}
         self._seals: dict[Strategy, _UnifiedFreezeSeal] = {}
@@ -165,33 +182,81 @@ class UnifiedFreezeIndex:
             raise ValueError("paired publication requires tomorrow and d25 in order")
         if freezes[0].trade_date != freezes[1].trade_date:
             raise ValueError("paired publication requires one trade date")
-        with self._lock:
-            for freeze, overlay, expected_version in zip(freezes, overlays, expected_versions, strict=True):
-                rejection = _scored_rejection(
-                    _ScoredPublishCheck(
-                        self._current.get(freeze.strategy),
-                        self._seals.get(freeze.strategy),
-                        self._closed.get(freeze.strategy),
-                        freeze,
-                        overlay,
-                        expected_version,
-                    )
+        result = self.publish_scored_batch((UnifiedProfilePair("default", self, freezes, overlays, expected_versions),))
+        if not result.accepted:
+            return UnifiedPairedPublishResult(False, result.reason)
+        return UnifiedPairedPublishResult(True, result.reason, result.events[0][1])
+
+    @staticmethod
+    def publish_scored_batch(
+        pairs: tuple[UnifiedProfilePair, ...],
+        publish_allowed: Callable[[], bool] = lambda: True,
+    ) -> UnifiedProfiledPublishResult:
+        """Validate and replace every profile pair under one reader-visible lock."""
+
+        if not pairs or len({pair.profile for pair in pairs}) != len(pairs):
+            raise ValueError("profiled publication requires unique profiles")
+        transaction_lock = pairs[0].index._lock
+        if any(pair.index._lock is not transaction_lock for pair in pairs):
+            raise ValueError("profiled publication requires one transaction lock")
+        with transaction_lock:
+            for pair in pairs:
+                rejection = pair.index._paired_rejection_locked(
+                    pair.freezes, pair.overlays, pair.expected_versions
                 )
                 if rejection is not None:
-                    return UnifiedPairedPublishResult(False, rejection)
-            events = tuple(
-                BuildFreezeCommitted(freeze, projection_version=f"{freeze.version}+{overlay.version}")
-                for freeze, overlay in zip(freezes, overlays, strict=True)
+                    return UnifiedProfiledPublishResult(False, rejection)
+            if not publish_allowed():
+                return UnifiedProfiledPublishResult(False, "round_timeout")
+            published: list[tuple[str, tuple[FreezeCommitted, FreezeCommitted]]] = []
+            for pair in pairs:
+                events = pair.index._apply_scored_pair_locked(pair.freezes, pair.overlays)
+                published.append((pair.profile, events))
+            return UnifiedProfiledPublishResult(True, "accepted", tuple(published))
+
+    def _paired_rejection_locked(
+        self,
+        freezes: tuple[ScoredFreeze, ScoredFreeze],
+        overlays: tuple[FreezeOverlay, FreezeOverlay],
+        expected_versions: tuple[str | None, str | None],
+    ) -> str | None:
+        if tuple(freeze.strategy for freeze in freezes) != (Strategy.TOMORROW, Strategy.D25):
+            raise ValueError("paired publication requires tomorrow and d25 in order")
+        if freezes[0].trade_date != freezes[1].trade_date:
+            raise ValueError("paired publication requires one trade date")
+        for freeze, overlay, expected_version in zip(freezes, overlays, expected_versions, strict=True):
+            rejection = _scored_rejection(
+                _ScoredPublishCheck(
+                    self._current.get(freeze.strategy),
+                    self._seals.get(freeze.strategy),
+                    self._closed.get(freeze.strategy),
+                    freeze,
+                    overlay,
+                    expected_version,
+                )
             )
-            for freeze, overlay in zip(freezes, overlays, strict=True):
-                current = self._current.get(freeze.strategy)
-                self._current[freeze.strategy] = freeze
-                self._overlays[freeze.strategy] = overlay
-                if current is not None and freeze.trade_date > current.trade_date:
-                    self._seals.pop(freeze.strategy, None)
-                    self._formal.pop(freeze.strategy, None)
-                    self._closed.pop(freeze.strategy, None)
-            return UnifiedPairedPublishResult(True, "accepted", (events[0], events[1]))
+            if rejection is not None:
+                return rejection
+        return None
+
+    def _apply_scored_pair_locked(
+        self,
+        freezes: tuple[ScoredFreeze, ScoredFreeze],
+        overlays: tuple[FreezeOverlay, FreezeOverlay],
+    ) -> tuple[FreezeCommitted, FreezeCommitted]:
+        events = tuple(
+            BuildFreezeCommitted(freeze, projection_version=f"{freeze.version}+{overlay.version}")
+            for freeze, overlay in zip(freezes, overlays, strict=True)
+        )
+        for freeze, overlay in zip(freezes, overlays, strict=True):
+            current = self._current.get(freeze.strategy)
+            self._current[freeze.strategy] = freeze
+            self._overlays[freeze.strategy] = overlay
+            if current is not None and freeze.trade_date > current.trade_date:
+                self._seals.pop(freeze.strategy, None)
+                self._formal.pop(freeze.strategy, None)
+                self._closed.pop(freeze.strategy, None)
+        return events[0], events[1]
 
     def publish_overlay(
         self,
@@ -504,6 +569,8 @@ __all__ = [
     "UnifiedFreezeIndex",
     "UnifiedFreezePublishResult",
     "UnifiedPairedPublishResult",
+    "UnifiedProfilePair",
+    "UnifiedProfiledPublishResult",
     "UnifiedFreezeSealResult",
     "UnifiedFreezeSnapshot",
     "UnifiedOverlayPublishResult",

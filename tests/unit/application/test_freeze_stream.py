@@ -39,6 +39,29 @@ def test_unified_stream_replays_monotonic_cross_strategy_events() -> None:
     stream.unsubscribe(subscription.queue)
 
 
+def test_profiled_batch_is_one_full_replacement_event() -> None:
+    stream = UnifiedFreezeEventStream()
+    events = tuple(
+        (
+            profile,
+            (
+                BuildFreezeCommitted(_freeze(Strategy.TOMORROW, sequence)),
+                BuildFreezeCommitted(_freeze(Strategy.D25, sequence + 1)),
+            ),
+        )
+        for profile, sequence in (("v1", 1), ("v2", 3), ("v3", 5), ("v5", 7))
+    )
+
+    published = stream.publish_batch(11, events)
+    payload = SerializeEvent(published)
+
+    assert published.event_type == "batch"
+    assert stream.last_sequence() == 1
+    assert payload["round_sequence"] == 11
+    assert set(payload["profiles"]) == {"v1", "v2", "v3", "v5"}
+    assert all(set(profile) == {"tomorrow", "d25"} for profile in payload["profiles"].values())
+
+
 def test_scored_freeze_event_serializes_complete_replace_patch_without_snapshot_get() -> None:
     base = _freeze(Strategy.TOMORROW, 1)
     keys = (

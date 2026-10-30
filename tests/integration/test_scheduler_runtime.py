@@ -463,7 +463,11 @@ def test_round_refreshes_candidates_after_auxiliary_inputs_before_scoring(monkey
         return True
 
     monkeypatch.setattr(runtime, "_execute_pipeline_task", execute)
-    monkeypatch.setattr(runtime, "_process_score_wave", lambda _task: executed.append(PipelineTask.SCORE))
+    monkeypatch.setattr(
+        runtime,
+        "_execute_score_pair",
+        lambda _task, **_kwargs: executed.append(PipelineTask.SCORE),
+    )
     runtime._process_recommendation_round(replace(tasks[0], round_sequence=admission.sequence, round_tasks=tasks))
     assert set(executed[:-2]) == {PipelineTask.FULL_MARKET, PipelineTask.INTRADAY_TAIL, PipelineTask.INDUSTRY_HEAT}
     assert executed[-2:] == [PipelineTask.CANDIDATE_QUOTES, PipelineTask.SCORE]
@@ -628,10 +632,8 @@ def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_fre
     snapshot = index.snapshot(Strategy.TOMORROW)
     assert snapshot.formal == record
     assert snapshot.current == record.freeze
-    assert snapshot.overlay is not None
-    assert snapshot.overlay.parent_version == record.freeze.version
-    assert snapshot.overlay.quotes[0].price == (source_quote.price or 0.0) + 1.0
-    assert overlay_events == [snapshot.overlay]
+    assert snapshot.overlay is None
+    assert overlay_events == []
 
 
 def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_rescoring() -> None:
@@ -705,16 +707,13 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
         shutdown_timeout_seconds=2.0,
     )
 
-    assert runtime._selected_overlay_codes(MarketPhase.BEFORE_CLOSE) == ("600001",)
-    assert runtime._selected_overlay_codes(MarketPhase.BEFORE_CLOSE) == ("600001",)
     runtime.start()
     runtime.submit_due(frozen_at)
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    topk = next(request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES)
-    assert topk.selected_codes == ("600001",)
-    assert topk.observed_at in freezes.overlay_times
+    assert not [request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES]
+    assert freezes.overlay_times == []
     assert not [
         request
         for request in data.requests
@@ -722,11 +721,10 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
     ]
     snapshot = index.snapshot(Strategy.TOMORROW)
     assert snapshot.formal == record
-    assert snapshot.overlay is not None
-    assert snapshot.overlay.quotes[0].price == (anchor.price or 0.0) + 1.0
+    assert snapshot.overlay is None
 
 
-def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
+def test_scheduler_does_not_run_retired_shortline_overlay_refresh() -> None:
     observed_at = datetime(2026, 8, 11, 13, 5, tzinfo=SHANGHAI)
     clock = FixedClock(observed_at)
     index = UnifiedFreezeIndex()
@@ -764,7 +762,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=DataRefresh(),
-            freezes=FailingOnceOverlayFreezes(),
+            freezes=Freezes(),
             reviews=SharedReviews(),
             index=index,
             observer=AsyncFreezeObserver((), capacity=4, thread_name="test-overlay-recovery-observer"),
@@ -793,9 +791,8 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
     runtime.start()
     runtime.submit_cycle(first)
     assert runtime.wait_idle(2.0)
-    failed = runtime.status()
-    assert failed.overlay_failure_count == 1
-    assert any(issue.stage == "overlay" and issue.recovery_status == "active" for issue in failed.recent_errors)
+    first_status = runtime.status()
+    assert first_status.overlay_failure_count == 0
 
     clock.current = second_at
     runtime.submit_cycle(second)
@@ -803,8 +800,8 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
     recovered = runtime.status()
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert recovered.overlay_publish_count >= 1
-    assert any(issue.stage == "overlay" and issue.recovery_status == "recovered" for issue in recovered.recent_errors)
+    assert recovered.overlay_publish_count == 0
+    assert not [issue for issue in recovered.recent_errors if issue.stage == "overlay"]
     assert dict(recovered.strategy_error_codes).get("tomorrow") is None
 
 
@@ -1918,8 +1915,7 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
     runtime.stop(ShutdownDeadline.start(2.0))
 
     assert PipelineTask.CLOSE_QUOTES not in {request.task for request in data.task_requests}
-    topk = next(request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES)
-    assert set(topk.selected_codes) == {"600001"}
+    assert not [request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES]
     assert settlement.calls == [after_close]
     assert {strategy: index.snapshot(strategy).formal for strategy in existing} == existing
     assert index.snapshot(Strategy.LONG).current is not None

@@ -714,6 +714,7 @@ def test_current_cache_and_performance_configuration_rejects_missing_unknown_or_
 
 def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(tmp_path) -> None:
     raw = _runtime_document()
+    raw["pipeline"]["round_timeout_seconds"] = 119
     raw["pipeline"]["shutdown_timeout_seconds"] = 17.5
     raw["pipeline"]["cadence_seconds"]["candidate_quotes"]["before_close"] = 11
     raw["market_data"]["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] = 11000
@@ -732,6 +733,7 @@ def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(
 
     runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
+    assert runtime.pipeline.round_timeout_seconds == 119
     assert runtime.pipeline.shutdown_timeout_seconds == 17.5
     assert runtime.pipeline.cadence_seconds["candidate_quotes"]["before_close"] == 11
     assert runtime.market_data.cache_policy.datasets["candidate_quotes"].capacity == 11000
@@ -746,6 +748,14 @@ def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(
     assert runtime.performance_budgets.relative_regression_percent == 6
     assert runtime.performance_budgets.database.hdd.minimum_wins == 3
     assert runtime.storage_policy.hdd.read_window_rows == 513
+
+
+def test_runtime_rejects_round_timeout_above_business_limit(tmp_path) -> None:
+    raw = _runtime_document()
+    raw["pipeline"]["round_timeout_seconds"] = 120.001
+
+    with pytest.raises(ConfigurationError, match="round_timeout_seconds"):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
 
 def test_storage_policy_changes_do_not_invalidate_feature_identity(tmp_path) -> None:

@@ -175,7 +175,7 @@ class LocalFreezeBuilder(FreezeBuilderPort):
                 self._policy,
                 sequence=sequence,
                 context=LocalScoringContext(
-                    model_context=_model_scoring_context(request, batch, self._now()),
+                    model_context=_model_scoring_context(request, batch, self._now(), self._monotonic),
                     candidate_stage_counts=batch.candidate_stage_counts,
                     preselection_transient_invalid=batch.preselection_transient_invalid,
                     quality_batch=QualityScoringBatch(quality_stage, native_input),

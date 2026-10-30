@@ -52,6 +52,7 @@ class PipelineSettings:
     normalization_workers: int
     strategy_workers: int
     deepseek_workers: int
+    round_timeout_seconds: float
     shutdown_timeout_seconds: float
     history_preload: HistoryPreloadSettings
     cadence_seconds: Mapping[str, Mapping[str, float]]

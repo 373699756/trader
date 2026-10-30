@@ -5,13 +5,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from trader.recommendation.application.pipeline.freeze_publish.current_publisher import (
+    PrepareCurrentPair,
     PublishCurrentPair,
     PublishCurrentSnapshot,
 )
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
     FreezeCommitted,
 )
-from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import FreezeOverlayRefresher
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -50,8 +50,8 @@ class CycleExecutionHooks:
     local_lane: Callable[[Strategy], LatestWinsWorker[CycleRequest]]
     hybrid_lane: Callable[[Strategy], LatestWinsWorker[HybridUpgradeRequest]]
     failure: Callable[[str, str, Strategy | None], None]
-    overlay_success: Callable[[Strategy, bool], None]
     published: Callable[[bool, FreezeCommitted | None, FreezeIdentity], None]
+    batch_published: Callable[[FreezeCommitted, FreezeIdentity], None]
     rejected: Callable[[str, Strategy], None]
 
 
@@ -62,13 +62,11 @@ class RecommendationCycleExecutor:
         self,
         dependencies: RuntimeDependencies,
         *,
-        overlay_refresher: FreezeOverlayRefresher,
         close_control: CloseControlCoordinator,
         research: ResearchRuntimePort,
         hooks: CycleExecutionHooks,
     ) -> None:
         self._dependencies = dependencies
-        self._overlay_refresher = overlay_refresher
         self._close_control = close_control
         self._research = research
         self._hooks = hooks
@@ -102,6 +100,58 @@ class RecommendationCycleExecutor:
             for request in requests:
                 self._dependencies.data.release_scoring_input(request)
 
+    def execute_round_pair(
+        self,
+        requests: tuple[CycleRequest, CycleRequest],
+        *,
+        round_sequence: int,
+    ) -> None:
+        """Stage this profile and continue only after the complete batch commits."""
+
+        if (requests[0].strategy, requests[1].strategy) != (Strategy.TOMORROW, Strategy.D25):
+            raise ValueError("paired cycle requires tomorrow and d25")
+        try:
+            with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
+                pass
+            freezes = self._build_pair(requests)
+            if freezes is None or self._dependencies.rounds.cancelled(round_sequence):
+                return
+            if ShanghaiNow(self._dependencies.clock.now()) >= requests[0].review_deadline:
+                return
+            expected = tuple(
+                current.version if current is not None else None
+                for current in (self._dependencies.index.snapshot(item.strategy).current for item in freezes)
+            )
+            prepared = PrepareCurrentPair(
+                self._dependencies.round_profile,
+                self._dependencies.index,
+                self._dependencies.freezes,
+                freezes,
+                expected_versions=(expected[0], expected[1]),
+                publication_io=self._dependencies.publication_io,
+            )
+            publish_started = time.perf_counter()
+            result = self._dependencies.rounds.stage(
+                self._dependencies.round_profile,
+                round_sequence,
+                prepared,
+            )
+            self._record_latency("freeze_publish", publish_started)
+            if not result.accepted:
+                for request in requests:
+                    self._hooks.rejected(result.reason, request.strategy)
+                return
+            for request, local, event in zip(requests, freezes, result.events, strict=True):
+                if request.session is not None:
+                    request.session.remember(local.version)
+                self._hooks.batch_published(event, local)
+                self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
+        except StaleSessionError:
+            return
+        finally:
+            for request in requests:
+                self._dependencies.data.release_scoring_input(request)
+
     def _build_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> tuple[ScoredFreeze, ScoredFreeze] | None:
         started_at = time.perf_counter()
         try:
@@ -110,8 +160,6 @@ class RecommendationCycleExecutor:
             with SessionGuard(requests[0].session):
                 self._hooks.failure("refresh", FailureCode(exc, "refresh_unavailable"), None)
             return None
-        for request in requests:
-            self._refresh_overlay(request)
         self._record_latency("scoring_data_prepare", started_at)
         started_at = time.perf_counter()
         tomorrow = self._build_local(requests[0])
@@ -263,15 +311,7 @@ class RecommendationCycleExecutor:
     def _prepare_cycle_data(self, request: CycleRequest) -> bool:
         if not self._refresh_data(request):
             return False
-        self._refresh_overlay(request)
         return True
-
-    def _refresh_overlay(self, request: CycleRequest) -> None:
-        for outcome in self._overlay_refresher.refresh(request):
-            if outcome.status == "failed":
-                self._hooks.failure("overlay", outcome.error_code, outcome.strategy)
-            elif outcome.status != "skipped":
-                self._hooks.overlay_success(outcome.strategy, outcome.status == "published")
 
     def _build_local(self, request: CycleRequest) -> FreezeIdentity | None:
         try:

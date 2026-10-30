@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import datetime, time, timedelta
+import time as monotonic_time
 from typing import TYPE_CHECKING
 
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
@@ -85,6 +86,8 @@ def MergeOverlayQuote(quotes: dict[str, FreezeQuote], feature: FeatureSnapshot, 
 
 
 def TaskDeadline(request: PipelineTaskRequest) -> datetime | None:
+    if request.round_deadline is not None:
+        return request.round_deadline
     budget_task = (
         PipelineTask.CLOSE_QUOTES
         if request.preview_context is not None
@@ -139,12 +142,22 @@ def FreezeObservedAt(batch: InputBatch) -> datetime:
     return max(value.astimezone(target_zone) for value in values)
 
 
-def BuildModelScoringContext(request: CycleRequest, batch: InputBatch, now: datetime) -> ModelScoringContext:
+def BuildModelScoringContext(
+    request: CycleRequest,
+    batch: InputBatch,
+    now: datetime,
+    monotonic: Callable[[], float] = monotonic_time.monotonic,
+) -> ModelScoringContext:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("model scoring clock must be timezone-aware")
     local_now = now.astimezone(SHANGHAI)
     input_at = FreezeObservedAt(batch).astimezone(SHANGHAI)
     input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
+    if request.round_deadline_monotonic is not None:
+        return ModelScoringContext(
+            time_budget_seconds=max(0.0, request.round_deadline_monotonic - monotonic()),
+            input_age_seconds=input_age_seconds,
+        )
     if request.preview_context is not None:
         return ModelScoringContext(
             time_budget_seconds=TaskExecutionBudgetSeconds(PipelineTask.SCORE),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack, suppress
 from dataclasses import replace
@@ -111,7 +112,6 @@ from trader.recommendation.application.runtime.runtime_dependencies import Runti
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.domain.market.eligibility import SelectQuotePopulation
-from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -704,6 +704,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     owns_shared_runtime: bool = True,
     shared_inputs: composition_inputs.SharedRecommendationInputs | None = None,
     recommendation_rounds: RecommendationRounds | None = None,
+    publication_lock: threading.RLock | None = None,
+    freeze_events: UnifiedFreezeEventStream | None = None,
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     budget_path = settings.runtime_dir / "deepseek/state.json"
@@ -833,6 +835,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         ),
         publication_io=publication_io,
         production_authority=bool((profile_status := model_scoring.status()) and profile_status.production_authority),
+        publication_lock=publication_lock,
+        freeze_events=freeze_events,
     )
     native_data = source_router.MarketInputCoordinator(
         market_data,
@@ -863,12 +867,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     deepseek = DeepSeekAdapter(reviewer, policy, freeze_builder, ScoreFusionService(), now=ShanghaiClock(now).now)
 
-    def publish_overlay_event(overlay: FreezeOverlay) -> object:
-        current = publication.tomorrow_index.snapshot(overlay.strategy).current
-        if not isinstance(current, ScoredFreeze) or current.version != overlay.parent_version:
-            raise ValueError("overlay event parent freeze is unavailable")
-        return publication.freeze_events.publish_overlay(overlay, parent_version=current.version)
-
     scheduler = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=context.workers.control_pool,
@@ -888,13 +886,20 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 ),
             ),
             research_factory=ResearchRuntime,
-            publish_freeze=publication.freeze_events.publish_committed,
-            publish_overlay=publish_overlay_event,
+            publish_freeze=partial(publication.freeze_events.publish_committed, profile=profile_id),
+            publish_overlay=None,
             latency=latency,
             publication_io=publication_io,
             run_scope=run_scope,
             long_quotes=publication.long_runtime,
-            rounds=recommendation_rounds if recommendation_rounds is not None else RecommendationRounds(),
+            rounds=(
+                recommendation_rounds
+                if recommendation_rounds is not None
+                else RecommendationRounds(
+                    round_timeout_seconds=settings.pipeline.round_timeout_seconds,
+                    publish_batch_event=publication.freeze_events.publish_batch,
+                )
+            ),
             round_profile=profile_id,
         ),
         config_version=effective_config_version,
@@ -989,9 +994,23 @@ def BuildProfiledSystem(
     profiles = ParseProfileSelection(",".join(profiles))
     settings = LoadRuntimeSettings(config_path)
     default_profile = "v2" if "v2" in profiles else profiles[0]
-    rounds = RecommendationRounds()
+    publication_lock = threading.RLock()
+    freeze_events = UnifiedFreezeEventStream(
+        history_size=settings.api.sse_history_size,
+        client_queue_size=settings.api.sse_client_queue_size,
+        subscriber_limit=settings.api.sse_max_clients,
+    )
+    rounds = RecommendationRounds(
+        round_timeout_seconds=settings.pipeline.round_timeout_seconds,
+        publish_batch_event=freeze_events.publish_batch,
+    )
     primary = BuildSystem(
-        config_path, scoring_profile=default_profile, runtime_scope=default_profile, recommendation_rounds=rounds,
+        config_path,
+        scoring_profile=default_profile,
+        runtime_scope=default_profile,
+        recommendation_rounds=rounds,
+        publication_lock=publication_lock,
+        freeze_events=freeze_events,
     )
     shared = composition_inputs.SharedRecommendationInputs(
         primary.workers,
@@ -1003,7 +1022,13 @@ def BuildProfiledSystem(
         primary.eligibility,
     )
     build_secondary = partial(
-        BuildSystem, config_path, owns_shared_runtime=False, shared_inputs=shared, recommendation_rounds=rounds,
+        BuildSystem,
+        config_path,
+        owns_shared_runtime=False,
+        shared_inputs=shared,
+        recommendation_rounds=rounds,
+        publication_lock=publication_lock,
+        freeze_events=freeze_events,
     )
     systems = [primary]
     for profile in profiles:
@@ -1271,11 +1296,13 @@ def _build_publication(
     *,
     publication_io: PublicationIoTracker,
     production_authority: bool,
+    publication_lock: threading.RLock | None,
+    freeze_events: UnifiedFreezeEventStream | None,
 ) -> composition_inputs.RuntimePublicationContext:
     settings, records, market_data = context.settings, dependencies.records, dependencies.market_data
-    tomorrow_freezes = UnifiedFreezeIndex()
+    tomorrow_freezes = UnifiedFreezeIndex(transaction_lock=publication_lock)
     freeze_drafts = UnifiedFreezeDraftIndex()
-    freeze_events = UnifiedFreezeEventStream(
+    freeze_events = freeze_events or UnifiedFreezeEventStream(
         history_size=settings.api.sse_history_size,
         client_queue_size=settings.api.sse_client_queue_size,
         subscriber_limit=settings.api.sse_max_clients,

@@ -6,78 +6,69 @@ from trader.recommendation.application.runtime.recommendation_round import Recom
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase
 
 
-def test_all_profiles_finish_collection_and_publication_before_next_wave() -> None:
-    rounds = RecommendationRounds()
+def _tasks() -> tuple[ScheduledPipelineTask, ...]:
+    return (
+        ScheduledPipelineTask(
+            PipelineTask.FULL_MARKET,
+            datetime(2026, 8, 12, 10, tzinfo=SHANGHAI),
+            MarketPhase.BEFORE_CLOSE,
+        ),
+    )
+
+
+def test_all_profiles_share_one_admission_and_absolute_deadline() -> None:
+    now = [10.0]
+    rounds = RecommendationRounds(monotonic=lambda: now[0])
     for profile in ("v1", "v2", "v3", "v5"):
         rounds.register(profile)
-    tasks = (ScheduledPipelineTask(PipelineTask.FULL_MARKET, datetime(2026, 8, 12, 10, tzinfo=SHANGHAI), MarketPhase.BEFORE_CLOSE),)
-    admissions = [rounds.enter(profile, tasks) for profile in ("v1", "v2", "v3", "v5")]
+    admissions = [rounds.enter(profile, _tasks()) for profile in ("v1", "v2", "v3", "v5")]
     first = admissions[0]
     assert first is not None and all(item is first for item in admissions)
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        waiting = [pool.submit(rounds.collected, profile, first.sequence, timeout_seconds=2) for profile in ("v1", "v2", "v3")]
-        assert not any(result.done() for result in waiting)
-        assert rounds.collected("v5", first.sequence, timeout_seconds=2)
-        assert all(result.result(timeout=2) for result in waiting)
-    for profile in ("v1", "v2", "v3"):
-        rounds.finish(profile, first.sequence)
-        assert rounds.enter(profile, tasks) is None
-    rounds.finish("v5", first.sequence)
-    following = rounds.enter("v1", tasks)
-    assert following is not None and following.sequence > first.sequence
-    rounds.finish("v1", first.sequence)
-    assert rounds.enter("v1", tasks) is None
+    assert first.started_monotonic == 10.0
+    assert first.deadline_monotonic == 130.0
+    now[0] = 129.0
+    assert rounds.remaining_seconds(first.sequence) == 1.0
 
 
-def test_candidate_refresh_waits_for_every_profiles_slow_preparation() -> None:
+def test_collection_waits_for_every_profile_without_resetting_deadline() -> None:
     rounds = RecommendationRounds()
     rounds.register("v2")
     rounds.register("v3")
-    tasks = (ScheduledPipelineTask(PipelineTask.FULL_MARKET, datetime(2026, 8, 12, 10, tzinfo=SHANGHAI), MarketPhase.BEFORE_CLOSE),)
-    first = rounds.enter("v2", tasks)
+    first = rounds.enter("v2", _tasks())
     assert first is not None
-    rounds.enter("v3", tasks)
+    assert rounds.enter("v3", _tasks()) is first
     with ThreadPoolExecutor(max_workers=1) as pool:
-        waiting = pool.submit(rounds.prepared, "v2", first.sequence, timeout_seconds=2)
+        waiting = pool.submit(rounds.prepared, "v2", first.sequence)
         assert not waiting.done()
-        assert rounds.prepared("v3", first.sequence, timeout_seconds=2)
+        assert rounds.prepared("v3", first.sequence)
         assert waiting.result(timeout=2)
-    rounds.withdraw("v3")
-    assert rounds.cancelled(first.sequence)
-    assert rounds.enter("v2", tasks) is None
-    rounds.finish("v2", first.sequence)
-    rounds.finish("v3", first.sequence)
-    assert rounds.enter("v2", tasks) is not None
 
 
-def test_collection_timeout_does_not_overlap_a_still_running_profile() -> None:
-    rounds = RecommendationRounds()
-    for profile in ("v1", "v2", "v3"):
-        rounds.register(profile)
-    tasks = (ScheduledPipelineTask(PipelineTask.FULL_MARKET, datetime(2026, 8, 12, 10, tzinfo=SHANGHAI), MarketPhase.BEFORE_CLOSE),)
-    first = rounds.enter("v1", tasks)
-    assert first is not None
-    rounds.enter("v2", tasks)
-    assert not rounds.collected("v1", first.sequence, timeout_seconds=0)
-    rounds.finish("v1", first.sequence)
-    assert rounds.enter("v1", tasks) is None
-    assert not rounds.collected("v2", first.sequence, timeout_seconds=0)
-    rounds.finish("v2", first.sequence)
-    assert rounds.enter("v1", tasks) is not None
-
-
-def test_unavailable_profile_does_not_hold_failed_wave_forever() -> None:
+def test_timeout_revokes_publish_eligibility_but_does_not_overlap_running_profile() -> None:
     now = [0.0]
     rounds = RecommendationRounds(monotonic=lambda: now[0])
+    for profile in ("v1", "v2", "v3"):
+        rounds.register(profile)
+    first = rounds.enter("v1", _tasks())
+    assert first is not None
+    assert rounds.enter("v2", _tasks()) is first
+    now[0] = 120.0
+    assert not rounds.collected("v1", first.sequence)
+    rounds.finish("v1", first.sequence)
+    assert rounds.enter("v1", _tasks()) is None
+    rounds.finish("v2", first.sequence)
+    following = rounds.enter("v1", _tasks())
+    assert following is not None and following.sequence > first.sequence
+
+
+def test_withdrawn_profile_releases_cancelled_round_after_running_work_exits() -> None:
+    rounds = RecommendationRounds()
     rounds.register("v1")
     rounds.register("v5")
-    tasks = (ScheduledPipelineTask(PipelineTask.FULL_MARKET, datetime(2026, 8, 12, 10, tzinfo=SHANGHAI), MarketPhase.BEFORE_CLOSE),)
-    first = rounds.enter("v1", tasks)
+    first = rounds.enter("v1", _tasks())
     assert first is not None
-    rounds.finish("v1", first.sequence)
-    assert rounds.enter("v1", tasks) is None
-    now[0] = 61.0
-    following = rounds.enter("v1", tasks)
-    assert following is not None and following.sequence != first.sequence
     rounds.withdraw("v5")
-    assert rounds.collected("v1", following.sequence, timeout_seconds=0)
+    assert not rounds.cancelled(first.sequence)
+    rounds.finish("v1", first.sequence)
+    following = rounds.enter("v1", _tasks())
+    assert following is not None and following.sequence > first.sequence

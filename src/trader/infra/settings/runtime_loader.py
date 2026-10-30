@@ -135,6 +135,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "normalization_workers",
         "strategy_workers",
         "deepseek_workers",
+        "round_timeout_seconds",
         "shutdown_timeout_seconds",
         "history_preload",
         "cadence_seconds",
@@ -240,6 +241,9 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             normalization_workers=_integer(pipeline_raw, "normalization_workers", minimum=1),
             strategy_workers=_integer(pipeline_raw, "strategy_workers", minimum=1),
             deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
+            round_timeout_seconds=_number(
+                pipeline_raw, "round_timeout_seconds", minimum=0.1, maximum=120.0
+            ),
             shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
             history_preload=HistoryPreloadSettings(
                 warn_after_seconds=_number(preload_raw, "warn_after_seconds", minimum=0.001, maximum=3600),

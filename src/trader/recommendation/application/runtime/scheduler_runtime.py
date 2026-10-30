@@ -13,7 +13,6 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_events imp
     FreezeCommitted,
     FreezeObservation,
 )
-from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import FreezeOverlayRefresher
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
     ObservePublicationIo,
     PublicationIoTarget,
@@ -67,9 +66,7 @@ from trader.recommendation.application.runtime.status import SchedulerRuntimeSta
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError, TradingSession
 from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.freeze_identity import (
-    DisplayQuoteCodes,
     FreezeIdentity,
-    IdentityCodes,
     LongProjection,
     ScoredFreeze,
 )
@@ -112,12 +109,6 @@ class SchedulerRuntime:
             raise ValueError("scheduler runtime requires the shared 168-request DeepSeek boundary")
         self._dependencies = dependencies
         dependencies.rounds.register(dependencies.round_profile)
-        self._overlay_refresher = FreezeOverlayRefresher(
-            dependencies.index,
-            dependencies.freezes,
-            dependencies.publish_overlay,
-            FailureCode,
-        )
         self._research = dependencies.research_factory()
         self._config_version = config_version
         self._shutdown_timeout_seconds = shutdown_timeout_seconds
@@ -213,15 +204,16 @@ class SchedulerRuntime:
         )
         self._cycles = RecommendationCycleExecutor(
             dependencies,
-            overlay_refresher=self._overlay_refresher,
             close_control=self._close_control,
             research=self._research,
             hooks=CycleExecutionHooks(
                 lambda strategy: self._lanes[strategy],
                 lambda strategy: self._hybrid_lanes[strategy],
                 self._record_failure,
-                lambda strategy, published: self._record_overlay_success(strategy, published=published),
                 lambda hybrid, event, identity: self._record_publish(hybrid=hybrid, event=event, identity=identity),
+                lambda event, identity: self._record_publish(
+                    hybrid=False, event=event, identity=identity, publish_event=False
+                ),
                 self._record_publish_rejection,
             ),
         )
@@ -340,8 +332,16 @@ class SchedulerRuntime:
         admission = rounds.enter(profile, tasks)
         if admission is None:
             return False
+        round_deadline = ShanghaiNow(self._dependencies.clock.now()) + timedelta(
+            seconds=max(0.0, admission.deadline_monotonic - self._dependencies.monotonic())
+        )
         if self._submit_scoring(replace(
-            scheduled, round_sequence=admission.sequence, round_tasks=admission.tasks,
+            scheduled,
+            round_sequence=admission.sequence,
+            round_tasks=admission.tasks,
+            round_started_monotonic=admission.started_monotonic,
+            round_deadline_monotonic=admission.deadline_monotonic,
+            round_deadline=round_deadline,
         )):
             return True
         rounds.finish(profile, admission.sequence)
@@ -482,6 +482,14 @@ class SchedulerRuntime:
         if scheduled.round_sequence is not None:
             self._process_recommendation_round(scheduled)
             return
+        self._execute_score_pair(scheduled)
+
+    def _execute_score_pair(
+        self,
+        scheduled: ScheduledPipelineTask,
+        *,
+        round_sequence: int | None = None,
+    ) -> None:
         try:
             with SessionGuard(scheduled.session):
                 pass
@@ -500,10 +508,15 @@ class SchedulerRuntime:
                 replace(
                     self._scheduled_request(strategy, scheduled.scheduled_at, CyclePhase(strategy, freeze.phase)),
                     session=scheduled.session,
+                    round_started_monotonic=scheduled.round_started_monotonic,
+                    round_deadline_monotonic=scheduled.round_deadline_monotonic,
                 )
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
             )
-            self._cycles.execute_pair((requests[0], requests[1]))
+            if round_sequence is None:
+                self._cycles.execute_pair((requests[0], requests[1]))
+            else:
+                self._cycles.execute_round_pair((requests[0], requests[1]), round_sequence=round_sequence)
         except StaleSessionError:
             return
 
@@ -513,7 +526,17 @@ class SchedulerRuntime:
             raise ValueError("recommendation round identity is missing")
         rounds = self._dependencies.rounds
         profile = self._dependencies.round_profile
-        tasks = {task.task: replace(task, session=scheduled.session, round_sequence=sequence) for task in scheduled.round_tasks}
+        tasks = {
+            task.task: replace(
+                task,
+                session=scheduled.session,
+                round_sequence=sequence,
+                round_started_monotonic=scheduled.round_started_monotonic,
+                round_deadline_monotonic=scheduled.round_deadline_monotonic,
+                round_deadline=scheduled.round_deadline,
+            )
+            for task in scheduled.round_tasks
+        }
         if PipelineTask.FULL_MARKET in tasks and PipelineTask.CANDIDATE_QUOTES not in tasks:
             tasks[PipelineTask.CANDIDATE_QUOTES] = replace(
                 scheduled, task=PipelineTask.CANDIDATE_QUOTES, round_tasks=(),
@@ -542,7 +565,7 @@ class SchedulerRuntime:
                 changed = changed or (outcome_changed and task in _SCORING_INPUT_TASKS)
             # Finish slow auxiliary inputs across profiles before refreshing the
             # final candidate quote cut, so their wait does not age that cut.
-            if not rounds.prepared(profile, sequence, timeout_seconds=60.0):
+            if not rounds.prepared(profile, sequence):
                 self._record_failure("refresh", "round_collection_timeout")
                 return
             candidate = tasks.get(PipelineTask.CANDIDATE_QUOTES)
@@ -557,14 +580,19 @@ class SchedulerRuntime:
                 if candidate_changed is None:
                     return
                 changed = changed or candidate_changed
-            if not rounds.collected(profile, sequence, timeout_seconds=60.0):
+            if not rounds.collected(profile, sequence):
                 self._record_failure("refresh", "round_collection_timeout")
                 return
             if changed:
-                self._process_score_wave(replace(
-                    scheduled, scheduled_at=ShanghaiNow(self._dependencies.clock.now()),
-                    round_sequence=None, round_tasks=(),
-                ))
+                self._execute_score_pair(
+                    replace(
+                        scheduled,
+                        scheduled_at=ShanghaiNow(self._dependencies.clock.now()),
+                        round_sequence=None,
+                        round_tasks=(),
+                    ),
+                    round_sequence=sequence,
+                )
         except StaleSessionError:
             return
         finally:
@@ -604,14 +632,15 @@ class SchedulerRuntime:
         if scheduled.task is PipelineTask.CLOSE_QUOTES:
             self._close_control.process_close_recovery(scheduled)
             return None
-        selected_codes = (
-            self._selected_overlay_codes(scheduled.phase) if scheduled.task is PipelineTask.TOPK_QUOTES else ()
-        )
+        if scheduled.task is PipelineTask.TOPK_QUOTES:
+            return False
+        selected_codes: tuple[str, ...] = ()
         request = PipelineTaskRequest(
             scheduled.task,
             ShanghaiNow(self._dependencies.clock.now()),
             selected_codes,
             session=scheduled.session,
+            round_deadline=scheduled.round_deadline,
         )
         try:
             outcome = self._dependencies.data.refresh_task(request)
@@ -625,8 +654,6 @@ class SchedulerRuntime:
                 self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
             return None
         with SessionGuard(scheduled.session):
-            if scheduled.task is PipelineTask.TOPK_QUOTES and outcome.changed:
-                self._refresh_selected_overlays(scheduled, request.observed_at)
             with self._lock:
                 self._resolve_issues_locked(stages=frozenset({"refresh"}), task=scheduled.task)
             self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
@@ -644,34 +671,6 @@ class SchedulerRuntime:
             {"-": result},
             at=ShanghaiNow(self._dependencies.clock.now()),
         )
-
-    def _selected_overlay_codes(self, phase: MarketPhase) -> tuple[str, ...]:
-        codes: list[str] = []
-        visible_six = phase is MarketPhase.BEFORE_CLOSE
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
-            snapshot = self._dependencies.index.snapshot(strategy)
-            identity = snapshot.formal.freeze if snapshot.formal is not None else snapshot.current
-            if isinstance(identity, ScoredFreeze):
-                codes.extend(sorted(DisplayQuoteCodes(identity) if visible_six else IdentityCodes(identity)))
-        return tuple(dict.fromkeys(codes))
-
-    def _refresh_selected_overlays(self, scheduled: ScheduledPipelineTask, observed_at: datetime) -> None:
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
-            snapshot = self._dependencies.index.snapshot(strategy)
-            if (
-                not isinstance(snapshot.current, ScoredFreeze)
-                or snapshot.current.trade_date != scheduled.scheduled_at.date()
-            ):
-                continue
-            request = replace(
-                self._scheduled_request(strategy, observed_at, "quote_overlay"), session=scheduled.session
-            )
-            for outcome in self._overlay_refresher.refresh(request):
-                if outcome.status == "failed":
-                    self._record_failure("overlay", outcome.error_code, outcome.strategy)
-                elif outcome.status != "skipped":
-                    self._record_overlay_success(outcome.strategy, published=outcome.status == "published")
-            break
 
     def wait_idle(self, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout_seconds)
@@ -823,6 +822,7 @@ class SchedulerRuntime:
         hybrid: bool,
         event: FreezeCommitted | None,
         identity: FreezeIdentity,
+        publish_event: bool = True,
     ) -> None:
         strategy = identity.strategy
         with self._lock:
@@ -834,7 +834,7 @@ class SchedulerRuntime:
                 strategy=strategy,
                 stages=frozenset({"refresh", "freeze", "review", "publish"}),
             )
-        if event is not None:
+        if event is not None and publish_event:
             try:
                 assert isinstance(identity, ScoredFreeze)
                 with ObservePublicationIo(

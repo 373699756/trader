@@ -36,7 +36,7 @@ ResyncReason = Literal[
     "schema_mismatch",
     "identity_mismatch",
 ]
-EventType = Literal["freeze", "overlay", "resync_required"]
+EventType = Literal["batch", "freeze", "overlay", "resync_required"]
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,7 @@ class FreezeEventPayload:
     content_hash: str | None
     stage: str
     replacement: FreezeReplacementPatch | None
+    profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class OverlayEventPayload:
     content_hash: str | None
     projection_version: str
     quotes: tuple[FreezeQuote, ...]
+    profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +83,19 @@ class ResyncEventPayload:
     reason: ResyncReason
 
 
-UnifiedEventPayload = FreezeEventPayload | OverlayEventPayload | ResyncEventPayload
+@dataclass(frozen=True)
+class ProfileFreezeBatch:
+    profile: str
+    freezes: tuple[FreezeEventPayload, FreezeEventPayload]
+
+
+@dataclass(frozen=True)
+class FreezeBatchPayload:
+    round_sequence: int
+    profiles: tuple[ProfileFreezeBatch, ...]
+
+
+UnifiedEventPayload = FreezeBatchPayload | FreezeEventPayload | OverlayEventPayload | ResyncEventPayload
 
 
 @dataclass(frozen=True)
@@ -129,36 +143,30 @@ class UnifiedFreezeEventStream:
         self._sequence = 0
         self._slow_subscriber_drops = 0
 
-    def publish_committed(self, event: FreezeCommitted) -> UnifiedPublishedEvent:
-        freeze = event.projection
-        replacement = None
-        if freeze is not None:
-            top_scores = VisibleScoredSeats(freeze)
-            selected = top_scores
-            replacement = FreezeReplacementPatch(
-                event.projection_version or event.freeze_version,
-                freeze.observed_at,
-                freeze.strategy_version,
-                freeze.input_versions,
-                freeze.stage,
-                ScoredFreezeCoverage(freeze),
-                freeze.selection_diagnostics,
-                freeze.degraded_reasons,
-                selected,
-                top_scores,
-                freeze.pipeline,
-                freeze.preview_context,
-            )
-        payload = FreezeEventPayload(
-            event.strategy,
-            event.trade_date.isoformat(),
-            event.freeze_version,
-            event.freeze_hash,
-            event.stage,
-            replacement,
-        )
+    def publish_committed(self, event: FreezeCommitted, *, profile: str | None = None) -> UnifiedPublishedEvent:
+        payload = _freeze_payload(event, profile=profile)
         with self._lock:
             return self._publish_locked("freeze", payload)
+
+    def publish_batch(
+        self,
+        round_sequence: int,
+        events: tuple[tuple[str, tuple[FreezeCommitted, FreezeCommitted]], ...],
+    ) -> UnifiedPublishedEvent:
+        if round_sequence < 1 or not events:
+            raise ValueError("freeze batch requires a positive round and profile events")
+        payload = FreezeBatchPayload(
+            round_sequence,
+            tuple(
+                ProfileFreezeBatch(
+                    profile,
+                    (_freeze_payload(items[0], profile=profile), _freeze_payload(items[1], profile=profile)),
+                )
+                for profile, items in events
+            ),
+        )
+        with self._lock:
+            return self._publish_locked("batch", payload)
 
     def publish_projection(self, projection: LongProjection) -> UnifiedPublishedEvent:
         payload = FreezeEventPayload(
@@ -177,6 +185,7 @@ class UnifiedFreezeEventStream:
         overlay: FreezeOverlay,
         *,
         parent_version: str,
+        profile: str | None = None,
     ) -> UnifiedPublishedEvent:
         projection_version = f"{parent_version}+{overlay.version}"
         payload = OverlayEventPayload(
@@ -187,6 +196,7 @@ class UnifiedFreezeEventStream:
             None,
             projection_version,
             overlay.quotes,
+            profile,
         )
         with self._lock:
             return self._publish_locked("overlay", payload)
@@ -258,6 +268,37 @@ class UnifiedFreezeEventStream:
         if tuple(event.sequence for event in replay) != tuple(range(after_sequence + 1, self._sequence + 1)):
             return (), "cursor_gap"
         return replay, None
+
+
+def _freeze_payload(event: FreezeCommitted, *, profile: str | None = None) -> FreezeEventPayload:
+    freeze = event.projection
+    replacement = None
+    if freeze is not None:
+        top_scores = VisibleScoredSeats(freeze)
+        selected = top_scores
+        replacement = FreezeReplacementPatch(
+            event.projection_version or event.freeze_version,
+            freeze.observed_at,
+            freeze.strategy_version,
+            freeze.input_versions,
+            freeze.stage,
+            ScoredFreezeCoverage(freeze),
+            freeze.selection_diagnostics,
+            freeze.degraded_reasons,
+            selected,
+            top_scores,
+            freeze.pipeline,
+            freeze.preview_context,
+        )
+    return FreezeEventPayload(
+        event.strategy,
+        event.trade_date.isoformat(),
+        event.freeze_version,
+        event.freeze_hash,
+        event.stage,
+        replacement,
+        profile,
+    )
 
 
 __all__ = [

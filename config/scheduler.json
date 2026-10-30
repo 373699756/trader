@@ -6,6 +6,7 @@
     "normalization_workers": 2,
     "strategy_workers": 3,
     "deepseek_workers": 4,
+    "round_timeout_seconds": 120,
     "shutdown_timeout_seconds": 30,
     "history_preload": {
       "warn_after_seconds": 300

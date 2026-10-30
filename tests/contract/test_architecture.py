@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import subprocess
-from dataclasses import MISSING, fields
+from dataclasses import fields
 from functools import cache
 from pathlib import Path
 
@@ -354,17 +354,16 @@ def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
     assert runtime_modules <= reachable
 
 
-def test_bootstrap_wires_overlay_events_into_the_unified_scheduler() -> None:
+def test_bootstrap_does_not_wire_retired_shortline_overlay_events() -> None:
     source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
-    assert "def publish_overlay_event(overlay: FreezeOverlay)" in source
-    assert "parent_version=current.version" in source
-    assert "publish_overlay=publish_overlay_event" in source
+    assert "def publish_overlay_event(overlay: FreezeOverlay)" not in source
+    assert "publish_overlay=publish_overlay_event" not in source
 
 
-def test_overlay_publisher_and_input_quality_are_required_typed_runtime_boundaries() -> None:
+def test_retired_overlay_boundary_is_inert_and_input_quality_remains_typed() -> None:
     publisher = next(field for field in fields(RuntimeDependencies) if field.name == "publish_overlay")
 
-    assert publisher.default is MISSING
+    assert publisher.default is None
     assert "input_quality_status" in FreezeBuilderPort.__dict__
 
 

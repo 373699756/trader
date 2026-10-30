@@ -47,6 +47,8 @@ class CycleRequest:
     review_deadline: datetime
     session: SessionLease | None = None
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
+    round_started_monotonic: float | None = field(default=None, kw_only=True)
+    round_deadline_monotonic: float | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         _require_shanghai(self.observed_at, "cycle observed_at")
@@ -66,6 +68,7 @@ class PipelineTaskRequest:
     selected_codes: tuple[str, ...] = ()
     session: SessionLease | None = None
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
+    round_deadline: datetime | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         _require_shanghai(self.observed_at, "pipeline task observed_at")
