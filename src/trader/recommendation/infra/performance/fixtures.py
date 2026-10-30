@@ -91,19 +91,21 @@ def BuildPerformanceFixtures(
     """Build every profile's complete synthetic workload outside measured operations."""
 
     now = datetime(2026, 8, 25, 14, 50, tzinfo=SHANGHAI)
-    row_count = budgets.workload.market_rows if rows is None else rows
+    market_rows = budgets.workload.market_rows if rows is None else rows
+    candidate_rows = budgets.workload.candidate_rows if rows is None else rows
     if history_sessions < 1:
         raise ValueError("performance fixture history sessions must be positive")
-    if not 1 <= row_count <= budgets.workload.market_rows:
+    if not 1 <= market_rows <= budgets.workload.market_rows or not 1 <= candidate_rows <= market_rows:
         raise ValueError("performance fixture rows must be within the configured population")
     industries = _shared_industries(profile)
     market = tuple(
-        replace(_quote_input(index, now), industry=industries[index % len(industries)]) for index in range(row_count)
+        replace(_quote_input(index, now), industry=industries[index % len(industries)]) for index in range(market_rows)
     )
     quotes = tuple(_complete_quote(BuildMarketQuote(item), now) for item in market)
     days = _completed_dates(now.date(), history_sessions)
     candidates = tuple(
-        _model_feature(quote, index, now, days, profile, history_sessions) for index, quote in enumerate(quotes)
+        _model_feature(quote, index, now, days, profile, history_sessions)
+        for index, quote in enumerate(quotes[:candidate_rows])
     )
     return market, quotes, candidates
 

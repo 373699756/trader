@@ -156,3 +156,15 @@ def test_full_market_fixture_quote_structure_is_valid_on_all_boards():
         quote.low <= quote.open_price <= quote.high and quote.low <= quote.price <= quote.high for quote in quotes
     )
     assert all(quote.pct_change == pytest.approx((quote.price / quote.previous_close - 1) * 100) for quote in quotes)
+
+
+def test_performance_fixture_uses_configured_market_and_candidate_populations():
+    budgets = replace(_budgets(), workload=PerformanceWorkloadSettings(12, 5))
+
+    inputs, quotes, features = BuildPerformanceFixtures(
+        budgets, _profile("v3"), history_sessions=_history_sessions("v3")
+    )
+
+    assert len(inputs) == len(quotes) == 12
+    assert len(features) == 5
+    assert tuple(feature.quote.code for feature in features) == tuple(quote.code for quote in quotes[:5])

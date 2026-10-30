@@ -691,20 +691,8 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
             "estimator must be canonical_json_utf8",
         ),
         (
-            lambda raw: raw["performance_budgets"]["workload"].update({"market_rows": 5499}),
-            "performance workload",
-        ),
-        (
-            lambda raw: raw["performance_budgets"]["workload"].update({"candidate_rows": 1079}),
-            "performance workload",
-        ),
-        (
             lambda raw: raw["performance_budgets"]["memory"].update({"cache_total_bytes": 268435456}),
             "performance_budgets.memory contains unknown keys",
-        ),
-        (
-            lambda raw: raw["performance_budgets"]["memory"].update({"cache_logical_bytes": 268435456}),
-            "fixed 512/2048 MiB",
         ),
         (
             lambda raw: raw["market_data"].update({"single_flight": False}),
@@ -721,6 +709,67 @@ def test_current_cache_and_performance_configuration_rejects_missing_unknown_or_
 
     with pytest.raises(ConfigurationError, match=message):
         LoadRuntimeSettings(changed_path)
+
+
+def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(tmp_path) -> None:
+    raw = _runtime_document()
+    raw["pipeline"]["cadence_seconds"]["candidate_quotes"]["before_close"] = 11
+    raw["market_data"]["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] = 11000
+    raw["performance_budgets"]["workload"].update({"market_rows": 5499, "candidate_rows": 1079})
+    raw["performance_budgets"]["rounds"].update({"warmup": 2, "measurement": 4})
+    raw["performance_budgets"]["latency_p95_ms"]["market_normalization"] = 251
+    raw["performance_budgets"]["data_age_p95_seconds"]["candidate_main"] = 6
+    raw["performance_budgets"]["memory"].update(
+        {"process_peak_rss_bytes": 2147483649, "growth_percent": 21}
+    )
+    raw["performance_budgets"]["relative_regression_percent"] = 6
+    raw["performance_budgets"]["database"].update(
+        {"sqlite_improvement_percent": 11, "parquet_improvement_percent": 16, "minimum_wins": 3}
+    )
+
+    runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+    assert runtime.pipeline.cadence_seconds["candidate_quotes"]["before_close"] == 11
+    assert runtime.market_data.cache_policy.datasets["candidate_quotes"].capacity == 11000
+    assert runtime.performance_budgets.workload.market_rows == 5499
+    assert runtime.performance_budgets.workload.candidate_rows == 1079
+    assert runtime.performance_budgets.rounds.warmup == 2
+    assert runtime.performance_budgets.rounds.measurement == 4
+    assert runtime.performance_budgets.latency_p95_ms["market_normalization"] == 251
+    assert runtime.performance_budgets.data_age_p95_seconds["candidate_main"] == 6
+    assert runtime.performance_budgets.memory.process_peak_rss_bytes == 2147483649
+    assert runtime.performance_budgets.memory.growth_percent == 21
+    assert runtime.performance_budgets.relative_regression_percent == 6
+    assert runtime.performance_budgets.database.minimum_wins == 3
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda raw: raw["performance_budgets"]["workload"].update(
+                {"market_rows": 100, "candidate_rows": 101}
+            ),
+            "candidate rows cannot exceed market rows",
+        ),
+        (
+            lambda raw: raw["pipeline"]["cadence_seconds"].pop("candidate_quotes"),
+            "complete task and phase set",
+        ),
+        (
+            lambda raw: raw["performance_budgets"]["latency_p95_ms"].pop("market_normalization"),
+            "complete metric set",
+        ),
+    ],
+)
+def test_runtime_tuning_rejects_invalid_relationships_or_incomplete_metric_sets(
+    tmp_path, mutate, message
+) -> None:
+    raw = _runtime_document()
+    mutate(raw)
+
+    with pytest.raises(ConfigurationError, match=message):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
 
 def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_schema(tmp_path) -> None:

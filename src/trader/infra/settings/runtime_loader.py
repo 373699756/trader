@@ -387,9 +387,9 @@ def _configuration_identity(label: str, raw: Mapping[str, object]) -> str:
 
 
 def _validate_runtime_settings(settings: RuntimeSettings) -> None:
+    _validate_cadence_settings(settings.pipeline.cadence_seconds)
     _validate_pipeline_runtime(settings)
     _validate_deepseek_runtime(settings)
-    _validate_cadence_settings(settings.pipeline.cadence_seconds)
 
 
 def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
@@ -403,6 +403,13 @@ def _validate_pipeline_runtime(settings: RuntimeSettings) -> None:
         raise ConfigurationError("market_data.single_flight must remain enabled")
     if settings.market_data.cache_policy.total_bytes != settings.performance_budgets.memory.cache_logical_bytes:
         raise ConfigurationError("cache logical and performance logical byte budgets must match")
+    cadence_tasks = {
+        policy.cadence_task
+        for policy in settings.market_data.cache_policy.datasets.values()
+        if policy.cadence_task is not None
+    }
+    if not cadence_tasks.issubset(settings.pipeline.cadence_seconds):
+        raise ConfigurationError("cache cadence tasks must reference configured pipeline tasks")
 
 
 def _validate_deepseek_runtime(settings: RuntimeSettings) -> None:
@@ -501,13 +508,13 @@ def _validate_cadence_settings(
     cadence: Mapping[str, Mapping[str, float]],
 ) -> None:
     expected = {
-        "full_market": {"before_close": 10},
-        "candidate_quotes": {"before_close": 10},
-        "topk_quotes": {"before_close": 10, "after_close": 10},
-        "long_quotes": {"before_close": 10, "after_close": 10},
-        "score": {"before_close": 10},
-        "intraday_tail": {"afternoon": 10, "final_review": 10},
-        "industry_heat": {"warmup": 120, "morning": 60, "afternoon": 60, "final_review": 60},
+        "full_market": {"before_close"},
+        "candidate_quotes": {"before_close"},
+        "topk_quotes": {"before_close", "after_close"},
+        "long_quotes": {"before_close", "after_close"},
+        "score": {"before_close"},
+        "intraday_tail": {"afternoon", "final_review"},
+        "industry_heat": {"warmup", "morning", "afternoon", "final_review"},
     }
-    if cadence != expected:
-        raise ConfigurationError("pipeline cadence_seconds must match the fixed section 6 cadence table")
+    if set(cadence) != set(expected) or any(set(cadence[task]) != bands for task, bands in expected.items()):
+        raise ConfigurationError("pipeline cadence_seconds must define the complete task and phase set")
