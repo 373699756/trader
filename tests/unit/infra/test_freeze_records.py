@@ -9,6 +9,8 @@ import pytest
 
 from tests.unit.domain.test_freeze_identity import NOW, freeze, pipeline, stage_snapshots
 from trader.http_api.response.freeze_projection import SerializeEvent, SerializeFreezeView
+from trader.infra.cache import BoundedLruCache
+from trader.infra.cache_contracts import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
@@ -174,13 +176,14 @@ def test_unversioned_legacy_database_is_rejected(tmp_path):
         SQLiteFreezeRecords(path).initialize()
 
 
-def test_failed_transaction_does_not_leave_partial_payload_or_index(tmp_path):
+@pytest.mark.parametrize("cached", (False, True))
+def test_failed_transaction_does_not_leave_partial_payload_or_index(tmp_path, cached):
     def fail(point):
         if point == "before_commit":
             raise KeyboardInterrupt
 
     path = tmp_path / "freeze.sqlite3"
-    records = SQLiteFreezeRecords(path, fault_injector=fail)
+    records = SQLiteFreezeRecords(path, fault_injector=fail, cache=_read_cache() if cached else None)
     records.initialize()
     with pytest.raises(KeyboardInterrupt):
         records.commit(record())
@@ -289,3 +292,115 @@ def test_invalid_index_identity_is_quarantined_without_rewriting_payload(tmp_pat
         assert connection.run("SELECT record_bytes FROM freeze_record").require_one()[0] == before
     with pytest.raises(FreezeRecordUnavailableError):
         records.load(Strategy.TOMORROW, NOW.date())
+
+
+def _read_cache(*, capacity: int = 72, group_bytes: int = 1_000_000) -> BoundedLruCache[object]:
+    policy = CachePolicy(
+        datasets={
+            dataset: CacheDatasetPolicy(
+                86400,
+                86400,
+                None,
+                None,
+                60,
+                capacity,
+                "projection",
+                False,
+            )
+            for dataset in ("published_recommendation_view", "published_date_index")
+        },
+        groups={"projection": CacheGroupPolicy(group_bytes)},
+        total_bytes=group_bytes,
+        runtime_reserve_bytes=1024,
+        pool_total_bytes=group_bytes + 1024,
+        estimator="canonical_json_utf8",
+    )
+    return BoundedLruCache(policy, wall_clock=lambda: NOW)
+
+
+def test_startup_skips_integrity_scan_and_historical_payload_decoding(tmp_path, monkeypatch):
+    path = tmp_path / "freeze.sqlite3"
+    records = SQLiteFreezeRecords(path)
+    records.initialize()
+    records.commit(record())
+    records.commit(record(Strategy.D25))
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE freeze_record SET record_bytes=? WHERE strategy='d25'", (b"corrupt",))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("normal startup must not scan or decode historical records")
+
+    restarted = SQLiteFreezeRecords(path, cache=_read_cache(), wall_clock=lambda: NOW)
+    with monkeypatch.context() as startup:
+        startup.setattr(freeze_records_module, "CheckSqliteIntegrity", unexpected)
+        startup.setattr(restarted, "_load_record", unexpected)
+        restarted.initialize()
+    assert restarted.load(Strategy.TOMORROW, NOW.date()) == record()
+    with pytest.raises(FreezeRecordUnavailableError, match="hash mismatch"):
+        restarted.load(Strategy.D25, NOW.date())
+    with SqliteSession(path) as connection:
+        assert connection.run("SELECT status FROM freeze_record WHERE strategy='d25'").require_one()[0] == "committed"
+
+
+def test_repeated_record_and_date_queries_reuse_memory_without_database_access(tmp_path, monkeypatch):
+    cache = _read_cache()
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=cache, wall_clock=lambda: NOW)
+    records.initialize()
+    expected = record()
+    records.commit(expected)
+    assert records.load(Strategy.TOMORROW, NOW.date()) == expected
+    assert records.list_dates(Strategy.TOMORROW, limit=1) == (NOW.date(),)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("repeated freeze queries must not open a database or decode a payload")
+
+    monkeypatch.setattr(freeze_records_module, "SqliteSession", unexpected)
+    monkeypatch.setattr(freeze_records_module, "CommittedRecordFromBytes", unexpected)
+    for _ in range(5):
+        assert records.load(Strategy.TOMORROW, NOW.date()) == expected
+        assert records.list_dates(Strategy.TOMORROW, limit=366) == (NOW.date(),)
+    assert sum(item.estimated_bytes for sources in cache.status().datasets.values() for item in sources.values()) > 0
+
+
+def test_commit_updates_cached_dates_without_allowing_a_conflicting_winner(tmp_path):
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=_read_cache(), wall_clock=lambda: NOW)
+    records.initialize()
+    assert records.list_dates(Strategy.TOMORROW) == ()
+    assert records.load(Strategy.TOMORROW, NOW.date()) is None
+    records.commit(record())
+    assert records.list_dates(Strategy.TOMORROW) == (NOW.date(),)
+    assert records.load(Strategy.TOMORROW, NOW.date()) == record()
+    with pytest.raises(FreezeRecordConflictError):
+        records.commit(record(sequence=2))
+    assert records.load(Strategy.TOMORROW, NOW.date()) == record()
+
+
+@pytest.mark.parametrize("group_bytes", (100, 1_000_000))
+def test_cache_capacity_and_eviction_preserve_verified_reads(tmp_path, group_bytes):
+    cache = _read_cache(capacity=1, group_bytes=group_bytes)
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=cache, wall_clock=lambda: NOW)
+    records.initialize()
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        records.commit(record(strategy))
+    for strategy in (Strategy.TOMORROW, Strategy.D25, Strategy.TOMORROW):
+        assert records.load(strategy, NOW.date()) == record(strategy)
+    assert sum(item.estimated_bytes for sources in cache.status().datasets.values() for item in sources.values()) <= group_bytes
+
+
+def test_shared_cache_isolates_profiles_and_recovery_invalidates_only_its_database(tmp_path):
+    cache = _read_cache()
+    first = SQLiteFreezeRecords(tmp_path / "v1.sqlite3", cache=cache, wall_clock=lambda: NOW)
+    second = SQLiteFreezeRecords(tmp_path / "v2.sqlite3", cache=cache, wall_clock=lambda: NOW)
+    for records, expected in ((first, record()), (second, record(sequence=2))):
+        records.initialize()
+        records.commit(expected)
+        assert records.load(Strategy.TOMORROW, NOW.date()) == expected
+        assert records.list_dates(Strategy.TOMORROW) == (NOW.date(),)
+    with SqliteSession(tmp_path / "v1.sqlite3") as connection, SqliteTransaction(connection):
+        connection.run("UPDATE freeze_record SET record_bytes=?", (b"corrupt",))
+    assert first.recover().quarantined == 1
+    assert first.list_dates(Strategy.TOMORROW) == ()
+    with pytest.raises(FreezeRecordUnavailableError, match="quarantined"):
+        first.load(Strategy.TOMORROW, NOW.date())
+    assert second.load(Strategy.TOMORROW, NOW.date()) == record(sequence=2)
+    assert second.list_dates(Strategy.TOMORROW) == (NOW.date(),)

@@ -177,6 +177,13 @@ class BoundedLruCache(Generic[_T]):
         )
         return self._insert_entry(identity, entry)
 
+    def discard_scope(self, dataset: str, source: str) -> None:
+        """Remove cached values for one owner; callers serialize their loaders and writes."""
+        with self._lock:
+            identities = tuple(key for key in self._entries if key.dataset == dataset and key.source == source)
+            for identity in identities:
+                self._remove_locked(identity)
+
     def put_negative(self, identity: CacheIdentity, *, error_code: str) -> bool:
         normalized = error_code.strip()
         if not normalized:

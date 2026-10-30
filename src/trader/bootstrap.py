@@ -1159,7 +1159,9 @@ def _build_persistence(
 ) -> composition_inputs.RuntimePersistenceContext:
     settings = context.settings
     profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
-    records = SQLiteFreezeRecords(profile_root / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(
+        profile_root / "freeze.sqlite3", cache=context.workers.market_cache, wall_clock=context.now
+    )
     outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records)
     budget = shared_budget or DeepSeekBudgetLedger(
         BudgetStateFile(budget_path, ProcessLock(settings.data_paths.root / ".deepseek.lock", label="DeepSeek")),
