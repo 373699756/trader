@@ -245,6 +245,21 @@ def AuditCompanyStorage(
         retry_columns = {
             str(row[1]) for row in connection.run("PRAGMA table_info(document_retries)").fetchall()
         }
+        ocr_diagnostics: list[dict[str, object]] = []
+        if "ocr_diagnostic" in retry_columns:
+            for row in connection.run(
+                "SELECT failure,attempted_at,ocr_timeout_attempts,ocr_diagnostic FROM document_retries "
+                "WHERE ocr_diagnostic IS NOT NULL ORDER BY attempted_at DESC LIMIT 10"
+            ):
+                diagnostic = json.loads(row[3])
+                if not isinstance(diagnostic, dict):
+                    raise ValueError("company_ocr_diagnostic_invalid")
+                ocr_diagnostics.append({
+                    "failure": row[0], "attempted_at": row[1], "timeout_attempts": row[2],
+                    "diagnostic": {key: diagnostic.get(key) for key in (
+                        "phase", "page", "pages", "characters", "confidence", "segmentation_mode"
+                    )},
+                })
         if "payload_hash" in retry_columns:
             retry_payload_hashes = connection.run(
                 "SELECT COUNT(*) FROM document_retries WHERE payload_hash IS NOT NULL"
@@ -300,6 +315,7 @@ def AuditCompanyStorage(
                     {"class": name, "documents": count} for name, count in sorted(failure_classes.items())
                 ],
                 "retry_payload_hashes": retry_payload_hashes,
+                "ocr_diagnostics": ocr_diagnostics,
                 "document_extractions": extraction_methods,
             }
         },

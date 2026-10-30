@@ -20,6 +20,7 @@ from trader.download.domain.company_evidence import (
     CompanyDocumentRouteForFailure,
     CompanyDocumentTask,
     CompanyDocumentWorkload,
+    CompanyOcrDiagnostic,
     CompanyEvidenceRequest,
     CompanyEvidenceSyncResult,
     CompanySourceFailure,
@@ -91,7 +92,10 @@ class CompanyEvidenceIndex(Protocol):
         attempted_at: datetime,
         retry_after: datetime,
         payload_hash: bytes | None = None,
+        diagnostic: CompanyOcrDiagnostic | None = None,
+        ocr_policy: str = "",
     ) -> None: ...
+    def document_ocr_timeouts(self, item: Disclosure, policy: str) -> int: ...
     def component_due(self, component: str, scope: str, observed_at: datetime) -> bool: ...
     def component_since(self, component: str, scope: str, observed_at: datetime) -> date: ...
     def structured_cursor(self, query: StructuredCompanyQuery) -> StructuredCompanyQuery: ...
@@ -740,6 +744,10 @@ class _DocumentRun:
     def failed(self, item: Disclosure, exc: BaseException) -> None:
         self.failed_identities.add((item.source, item.identity, item.digest))
         failure = _failure(exc)
+        if failure == "disclosure_document_ocr_timeout" and self.dependencies.index.document_ocr_timeouts(
+            item, self.policies.ocr
+        ) >= 1:
+            failure = "disclosure_document_ocr_timeout_exhausted"
         self.state.failed_documents += 1
         self.state.failures = tuple(dict.fromkeys((*self.state.failures, f"risk_documents:{failure}")))
         now = self.now()
@@ -754,6 +762,8 @@ class _DocumentRun:
             now,
             now + timedelta(seconds=retry_seconds),
             payload_hash,
+            exc.diagnostic if isinstance(exc, CompanyDocumentFailure) else None,
+            self.policies.ocr,
         )
         if self.circuit.failed(exc):
             self.stopped = True

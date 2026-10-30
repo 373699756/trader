@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -16,6 +17,7 @@ from trader.download.domain.company_evidence import (
     CompanyDocumentPolicies,
     CompanyDocumentTask,
     CompanyDocumentWorkload,
+    CompanyOcrDiagnostic,
     CompanyListing,
     CompanyStockProgress,
     Disclosure,
@@ -163,6 +165,13 @@ class SQLiteCompanyEvidenceIndex:
                             "ALTER TABLE document_retries ADD COLUMN payload_hash BLOB "
                             "CHECK(payload_hash IS NULL OR length(payload_hash)=32)"
                         )
+                    for column, declaration in (
+                        ("ocr_diagnostic", "TEXT"),
+                        ("ocr_policy_id", "TEXT NOT NULL DEFAULT ''"),
+                        ("ocr_timeout_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                    ):
+                        if column not in retry_columns:
+                            connection.run(f"ALTER TABLE document_retries ADD COLUMN {column} {declaration}")
                     connection.run(DOCUMENT_EXTRACTION_SCHEMA)
                     for statement in DISCLOSURE_QUERY_SCHEMA:
                         connection.run(statement)
@@ -726,6 +735,15 @@ class SQLiteCompanyEvidenceIndex:
             ).fetchone()
         return DocumentRetry(row[0], datetime.fromisoformat(row[1])) if row else None
 
+    def document_ocr_timeouts(self, item: Disclosure, policy: str) -> int:
+        with self._connect() as connection:
+            row = connection.run(
+                "SELECT r.ocr_timeout_attempts FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
+                "WHERE d.source=? AND d.source_key=? AND d.record_hash=? AND r.record_hash=d.record_hash AND r.ocr_policy_id=?",
+                (item.source, item.identity, item.digest, policy),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def document_failure(
         self,
         item: Disclosure,
@@ -734,13 +752,25 @@ class SQLiteCompanyEvidenceIndex:
         attempted_at: datetime,
         retry_after: datetime,
         payload_hash: bytes | None = None,
+        diagnostic: CompanyOcrDiagnostic | None = None,
+        ocr_policy: str = "",
     ) -> None:
+        encoded = json.dumps({
+            "phase": diagnostic.phase, "page": diagnostic.page, "pages": diagnostic.pages,
+            "characters": diagnostic.characters, "confidence": diagnostic.confidence,
+            "segmentation_mode": diagnostic.segmentation_mode,
+        }, separators=(",", ":"), allow_nan=False) if diagnostic is not None else None
+        timeout = int(failure in {"disclosure_document_ocr_timeout", "disclosure_document_ocr_timeout_exhausted"})
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             connection.run(
-                "INSERT INTO document_retries(disclosure_id,record_hash,retry_policy_id,failure,attempted_at,retry_at,attempts,payload_hash) "
-                "SELECT id,record_hash,?,?,?,?,1,? FROM disclosures WHERE source=? AND source_key=? AND record_hash=? "
+                "INSERT INTO document_retries(disclosure_id,record_hash,retry_policy_id,failure,attempted_at,retry_at,attempts,payload_hash,ocr_diagnostic,ocr_policy_id,ocr_timeout_attempts) "
+                "SELECT id,record_hash,?,?,?,?,1,?,?,?,? FROM disclosures WHERE source=? AND source_key=? AND record_hash=? "
                 "ON CONFLICT(disclosure_id) DO UPDATE SET record_hash=excluded.record_hash,retry_policy_id=excluded.retry_policy_id,failure=excluded.failure,"
                 "attempted_at=excluded.attempted_at,retry_at=excluded.retry_at,payload_hash=excluded.payload_hash,"
+                "ocr_diagnostic=excluded.ocr_diagnostic,ocr_policy_id=excluded.ocr_policy_id,"
+                "ocr_timeout_attempts=CASE WHEN document_retries.record_hash=excluded.record_hash "
+                "AND document_retries.ocr_policy_id=excluded.ocr_policy_id THEN document_retries.ocr_timeout_attempts+excluded.ocr_timeout_attempts "
+                "ELSE excluded.ocr_timeout_attempts END,"
                 "attempts=CASE WHEN document_retries.record_hash=excluded.record_hash THEN document_retries.attempts+1 ELSE 1 END",
                 (
                     policy,
@@ -748,6 +778,9 @@ class SQLiteCompanyEvidenceIndex:
                     attempted_at.isoformat(),
                     retry_after.isoformat(),
                     payload_hash,
+                    encoded,
+                    ocr_policy,
+                    timeout,
                     item.source,
                     item.identity,
                     item.digest,

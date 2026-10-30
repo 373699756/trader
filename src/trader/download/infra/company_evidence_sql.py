@@ -103,7 +103,10 @@ CREATE TABLE IF NOT EXISTS document_retries (
   disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,
   record_hash TEXT NOT NULL, retry_policy_id TEXT NOT NULL, failure TEXT NOT NULL, attempted_at TEXT NOT NULL,
   retry_at TEXT NOT NULL, attempts INTEGER NOT NULL,
-  payload_hash BLOB CHECK(payload_hash IS NULL OR length(payload_hash)=32)
+  payload_hash BLOB CHECK(payload_hash IS NULL OR length(payload_hash)=32),
+  ocr_diagnostic TEXT,
+  ocr_policy_id TEXT NOT NULL DEFAULT '',
+  ocr_timeout_attempts INTEGER NOT NULL DEFAULT 0
 )
 """
 

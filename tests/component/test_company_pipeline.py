@@ -19,6 +19,49 @@ from trader.infra.workers import BoundedExecutor
 NOW = fixtures.NOW
 
 
+def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    from trader.download.application.company_evidence import _DocumentRun, _SourceCircuit, _SyncState
+    from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
+
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    policies = fixtures._TEST_DOCUMENT_POLICIES
+    run = _DocumentRun.__new__(_DocumentRun)
+    run.dependencies = SimpleNamespace(index=index, monotonic=lambda: 0.0)
+    run.failed_identities = set()
+    run.state = _SyncState()
+    run.policies = policies
+    run.configuration = fixtures._TEST_COMPANY_CONFIGURATION
+    run.observed_at, run.started = NOW, 0.0
+    run.circuit = _SourceCircuit()
+    diagnostic = CompanyOcrDiagnostic("recognition", 2, 3, 91, 24.0, 3)
+    failure = CompanyDocumentFailure("disclosure_document_ocr_timeout", payload_hash=b"a" * 32, diagnostic=diagnostic)
+    run.failed(item, failure)
+    assert index.document_ocr_timeouts(item, policies.ocr) == 1
+    assert index.document_workload(("600001",), NOW, policies).cooling == 1
+    assert index.document_workload(("600001",), NOW + timedelta(minutes=16), policies).due == 1
+    run.failed(item, TimeoutError("download"))
+    assert index.document_ocr_timeouts(item, policies.ocr) == 1
+    run.failed(item, failure)
+    assert index.document_ocr_timeouts(item, policies.ocr) == 2
+    workload = index.document_workload(("600001",), NOW + timedelta(days=1), policies)
+    assert workload.due == workload.cooling == 0 and workload.unextractable == 1
+    with SqliteSession(index.path) as connection:
+        row = connection.run("SELECT failure,ocr_diagnostic FROM document_retries").require_one()
+        assert row[0] == "disclosure_document_ocr_timeout_exhausted"
+        assert json.loads(row[1])["phase"] == "recognition"
+    from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
+
+    audit = AuditCompanyStorage(index.path, now=NOW, budget_seconds=5)
+    assert audit["summary"]["local_storage"]["ocr_diagnostics"][0]["diagnostic"]["phase"] == "recognition"
+    changed = replace(policies, ocr="next-ocr-policy")
+    assert index.document_workload(("600001",), NOW, changed).due == 1
+    assert index.document_ocr_timeouts(item, changed.ocr) == 0
+
+
 @pytest.mark.parametrize("route,failure", [("ocr", "disclosure_document_no_text"), ("limits", "disclosure_document_page_limit")])
 def test_targeted_document_repair_publishes_risk_and_releases_body(tmp_path, route, failure):
     from trader.download.application.company_evidence import SyncCompanyEvidence

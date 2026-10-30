@@ -11,11 +11,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from scripts.runtime_diagnostics.company_pagination_audit import AuditCompanyPagination
 from scripts.runtime_diagnostics.company_pipeline_audit import AuditCompanyPipeline
+from scripts.runtime_diagnostics.company_ocr_audit import AuditCompanyOcr
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries, AuditCompanyStorage
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
@@ -68,16 +69,13 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         excluded: Sequence[tuple[str, str, str]] = (),
         repair: Literal["ocr", "limits"] | None = None,
     ) -> tuple[CompanyDocumentTask, ...]:
-        return cast(
-            tuple[CompanyDocumentTask, ...],
-            super().pending_documents(
-                codes,
-                observed_at,
-                limit=min(limit or 32, 32),
-                policies=policies,
-                excluded=excluded,
-                repair=repair,
-            ),
+        return super().pending_documents(
+            codes,
+            observed_at,
+            limit=min(limit or 32, 32),
+            policies=policies,
+            excluded=excluded,
+            repair=repair,
         )
 
 
@@ -218,6 +216,7 @@ def Main() -> int:
     audit.add_argument("--storage-only", action="store_true")
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
+    audit.add_argument("--ocr-only", action="store_true")
     args = parser.parse_args()
     implementation = hashlib.sha256()
     for relative in (
@@ -265,6 +264,11 @@ def Main() -> int:
     if not args.directory.is_absolute() or directory == _ROOT or _ROOT in directory.parents:
         parser.error("external absolute directory required")
     directory.mkdir(parents=True, exist_ok=True)
+    if args.ocr_only:
+        report = AuditCompanyOcr(source_path, budget_seconds=min(150.0, args.budget_seconds))
+        (directory / "ocr-result.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
     if args.pipeline_only:
         print(
             json.dumps(

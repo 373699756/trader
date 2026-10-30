@@ -95,6 +95,54 @@ def test_unavailable_ocr_fails_without_starting_a_process():
         engine.extract(payload, hashlib.sha256(payload).digest())
 
 
+def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monkeypatch):
+    engine = CompanyOcrEngine(
+        CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
+        timeout_seconds=2, max_pages=2, dpi=150,
+    )
+    modes = []
+
+    def run(command, *args, **kwargs):
+        if command[0] == "pdfinfo":
+            return b"Pages: 2\nPage 1 size: 200 x 200 pts\nPage 2 size: 200 x 200 pts\n"
+        return b"image"
+
+    def recognize(image, deadline, digest, mode):
+        modes.append(mode)
+        return ("short", [10.0]) if mode == 6 else ("recovered " * 12, [92.0])
+
+    monkeypatch.setattr(engine, "_run", run)
+    monkeypatch.setattr(engine, "_recognize", recognize)
+    text, quality = engine.extract(b"pdf", b"a" * 32)
+    assert "recovered" in text and quality == 51
+    assert modes == [6, 3, 6]
+
+    monkeypatch.setattr(engine, "_recognize", lambda *args: ("short", [10.0]))
+    with pytest.raises(CompanyDocumentFailure) as caught:
+        engine.extract(b"pdf", b"a" * 32)
+    diagnostic = caught.value.diagnostic
+    assert diagnostic.phase == "quality" and diagnostic.pages == 2
+    assert diagnostic.characters == 10 and diagnostic.confidence == 10
+
+
+def test_timeout_records_render_phase_and_page(monkeypatch):
+    engine = CompanyOcrEngine(
+        CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
+        timeout_seconds=2, max_pages=2, dpi=150,
+    )
+
+    def run(command, *args, **kwargs):
+        if command[0] == "pdfinfo":
+            return b"Pages: 1\nPage 1 size: 200 x 200 pts\n"
+        raise CompanyDocumentFailure("disclosure_document_ocr_timeout")
+
+    monkeypatch.setattr(engine, "_run", run)
+    with pytest.raises(CompanyDocumentFailure) as caught:
+        engine.extract(b"pdf", b"a" * 32)
+    assert caught.value.diagnostic.phase == "render"
+    assert caught.value.diagnostic.page == caught.value.diagnostic.pages == 1
+
+
 def test_page_limit_is_checked_before_renderer_starts(tmp_path):
     renderer = _executable(tmp_path / "renderer", "raise AssertionError('must not render')\n")
     engine = CompanyOcrEngine(

@@ -277,6 +277,7 @@ def _failure_text(failure: str) -> str:
         "disclosure_document_ocr_unavailable": "本机OCR工具不可用",
         "disclosure_document_ocr_language_unavailable": "OCR中文语言包不可用",
         "disclosure_document_ocr_timeout": "OCR超时",
+        "disclosure_document_ocr_timeout_exhausted": "OCR两次超时，自动重试已用尽",
         "disclosure_document_ocr_unreadable": "OCR无法读取PDF",
         "disclosure_document_ocr_low_quality": "OCR文字或置信度不足",
         "disclosure_document_ocr_page_limit": "PDF超过OCR页数上限",

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
-from trader.download.domain.company_evidence import CompanyDocumentFailure
+from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
 from trader.download.infra.company_document_process import CaptureDocumentTool
 from trader.infra.http_contracts import HttpCancelled
 
@@ -94,6 +94,7 @@ class CompanyOcrEngine:
         self._lock = Lock()
 
     def extract(self, payload: bytes, payload_hash: bytes) -> tuple[str, float]:
+        diagnostic = CompanyOcrDiagnostic("metadata", 0, 0, 0, None, 6)
         if not self.capability.available:
             raise CompanyDocumentFailure(self.capability.failure or "disclosure_document_ocr_unavailable", payload_hash=payload_hash)
         while not self._lock.acquire(timeout=0.1):
@@ -115,14 +116,17 @@ class CompanyOcrEngine:
                 pages = next((line.split(":", 1)[1].strip() for line in metadata.decode("utf-8", errors="replace").splitlines() if line.startswith("Pages:")), "")
                 if not pages.isdigit() or int(pages) < 1:
                     raise CompanyDocumentFailure("disclosure_document_ocr_unreadable", payload_hash=payload_hash)
+                diagnostic = CompanyOcrDiagnostic("metadata", 0, int(pages), 0, None, 6)
                 if int(pages) > self._max_pages:
                     raise CompanyDocumentFailure("disclosure_document_ocr_page_limit", payload_hash=payload_hash)
                 edges = _render_edges(metadata, int(pages), self._dpi, payload_hash)
                 texts: list[str] = []
                 confidence_sum = 0.0
                 confidence_count = characters = rendered_bytes = 0
+                fallback_used = False
                 image = root / "page.png"
                 for page, edge in enumerate(edges, start=1):
+                    diagnostic = CompanyOcrDiagnostic("render", page, int(pages), characters, None, 6)
                     rendered = self._run(
                         (
                             self.capability.pdftoppm or "pdftoppm", "-png", "-singlefile",
@@ -139,23 +143,26 @@ class CompanyOcrEngine:
                     rendered_bytes += len(rendered)
                     image.write_bytes(rendered)
                     del rendered
-                    output = self._run(
-                        (
-                            self.capability.tesseract or "tesseract",
-                            str(image),
-                            "stdout",
-                            "-l",
-                            self.capability.languages,
-                            "--psm",
-                            "6",
-                            "tsv",
-                        ),
-                        deadline,
-                        payload_hash,
-                        "disclosure_document_ocr_unreadable",
-                    )
+                    diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), characters, None, 6)
+                    text, confidence = self._recognize(image, deadline, payload_hash, 6)
+                    page_characters = len("".join(text.split()))
+                    quality = sum(confidence) / len(confidence) if confidence else 0.0
+                    if not fallback_used and (page_characters < 80 or quality < _MIN_CONFIDENCE):
+                        fallback_used = True
+                        diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, 3)
+                        alternative, alternative_confidence = self._recognize(image, deadline, payload_hash, 3)
+                        alternative_characters = len("".join(alternative.split()))
+                        alternative_quality = (
+                            sum(alternative_confidence) / len(alternative_confidence) if alternative_confidence else 0.0
+                        )
+                        if (
+                            alternative_characters >= 80 and alternative_quality >= _MIN_CONFIDENCE
+                            or alternative_characters >= page_characters and alternative_quality >= quality
+                        ):
+                            text, confidence = alternative, alternative_confidence
+                        else:
+                            diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, 6)
                     image.unlink()
-                    text, confidence = _read_tsv(output)
                     characters += len(text) + 1
                     if characters > _MAX_TEXT_CHARACTERS:
                         raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash)
@@ -164,11 +171,28 @@ class CompanyOcrEngine:
                     confidence_count += len(confidence)
             result = "\n".join(texts).strip()
             quality = confidence_sum / confidence_count if confidence_count else 0.0
+            diagnostic = CompanyOcrDiagnostic(
+                "quality", int(pages), int(pages), len("".join(result.split())), quality, diagnostic.segmentation_mode
+            )
             if len("".join(result.split())) < 80 or quality < _MIN_CONFIDENCE:
                 raise CompanyDocumentFailure("disclosure_document_ocr_low_quality", payload_hash=payload_hash)
             return result, quality
+        except CompanyDocumentFailure as exc:
+            raise CompanyDocumentFailure(exc.reason, payload_hash=payload_hash, diagnostic=diagnostic) from exc
         finally:
             self._lock.release()
+
+    def _recognize(
+        self, image: Path, deadline: float, payload_hash: bytes, mode: int
+    ) -> tuple[str, list[float]]:
+        output = self._run(
+            (self.capability.tesseract or "tesseract", str(image), "stdout", "-l", self.capability.languages,
+             "--psm", str(mode), "tsv"),
+            deadline,
+            payload_hash,
+            "disclosure_document_ocr_unreadable",
+        )
+        return _read_tsv(output)
 
     def _run(
         self,
@@ -226,7 +250,7 @@ def _read_tsv(payload: bytes) -> tuple[str, list[float]]:
             confidence = float(columns[10])
         except ValueError:
             continue
-        if confidence < 0:
+        if not math.isfinite(confidence) or not 0 <= confidence <= 100:
             continue
         words.append(columns[11].strip())
         confidences.append(confidence)

@@ -324,12 +324,25 @@ class CompanyDocumentExtraction:
             raise ValueError("company_document_extraction_invalid")
 
 
+@dataclass(frozen=True)
+class CompanyOcrDiagnostic:
+    phase: Literal["metadata", "render", "recognition", "quality"]
+    page: int
+    pages: int
+    characters: int
+    confidence: float | None
+    segmentation_mode: int
+
+
 class CompanyDocumentFailure(ValueError):
-    def __init__(self, reason: str, *, payload_hash: bytes | None = None) -> None:
+    def __init__(
+        self, reason: str, *, payload_hash: bytes | None = None, diagnostic: CompanyOcrDiagnostic | None = None
+    ) -> None:
         if not reason.startswith("disclosure_document_") or (payload_hash is not None and len(payload_hash) != 32):
             raise ValueError("company_document_failure_invalid")
         self.reason = reason
         self.payload_hash = payload_hash
+        self.diagnostic = diagnostic
         super().__init__(reason)
 
 
@@ -517,6 +530,7 @@ _OCR_FAILURES = frozenset(
         "disclosure_document_ocr_unavailable",
         "disclosure_document_ocr_language_unavailable",
         "disclosure_document_ocr_timeout",
+        "disclosure_document_ocr_timeout_exhausted",
         "disclosure_document_ocr_unreadable",
         "disclosure_document_ocr_low_quality",
         "disclosure_document_ocr_page_limit",
@@ -533,6 +547,7 @@ _LIMIT_FAILURES = frozenset(
 )
 _TRANSIENT_FAILURES = frozenset(
     {
+        "disclosure_document_ocr_timeout",
         "timeout",
         "HttpConnectionError",
         "http_408",
@@ -581,7 +596,7 @@ def BuildCompanyDocumentPolicies(
             f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
         ),
         ocr=(
-            f"ocr_2:edge4096:{ocr_identity}:{configuration.document_ocr_timeout_seconds:g}:"
+            f"ocr_3:psm6_3:retry2:edge4096:{ocr_identity}:{configuration.document_ocr_timeout_seconds:g}:"
             f"{configuration.document_ocr_max_pages}:{configuration.document_ocr_dpi}:"
             f"{configuration.document_ocr_languages}"
         ),
@@ -609,6 +624,7 @@ __all__ = [
     "BuildCompanyDocumentPolicies",
     "CompanyDocumentExtraction",
     "CompanyDocumentFailure",
+    "CompanyOcrDiagnostic",
     "CompanyDocumentFailureRules",
     "CompanyDocumentPolicies",
     "CompanyDocumentRouteForFailure",

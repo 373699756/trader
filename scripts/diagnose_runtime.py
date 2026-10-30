@@ -118,6 +118,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--company-pagination-audit", action="store_true", help="read-only CNInfo page-size comparison")
+    parser.add_argument("--company-ocr-audit", action="store_true", help="one failed announcement OCR probe without active writes")
     parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup CPU profile")
     parser.add_argument(
         "--company-pipeline-audit", action="store_true", help="isolated same-PDF serial/parallel comparison"
@@ -415,6 +416,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
                 args.company_storage_audit,
                 args.company_pagination_audit,
                 args.company_pipeline_audit,
+                args.company_ocr_audit,
             )
         )
         > 1
@@ -526,6 +528,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             history_preload_audit=args.history_preload_audit,
             company_pagination_audit=args.company_pagination_audit,
             company_pipeline_audit=args.company_pipeline_audit,
+            company_ocr_audit=args.company_ocr_audit,
             v5_kernel_probe=args.v5_kernel_probe,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
@@ -1022,6 +1025,7 @@ def build_commands(
                 *(("--storage-only",) if options.company_storage_audit else ()),
                 *(("--pagination-only",) if options.company_pagination_audit else ()),
                 *(("--pipeline-only",) if options.company_pipeline_audit else ()),
+                *(("--ocr-only",) if options.company_ocr_audit else ()),
             ),
             common_timeout,
         ),
@@ -1690,6 +1694,12 @@ def _company_resume_details(
         )
     }
     runs = summary.get("runs")
+    ocr = _mapping(summary.get("ocr_audit"))
+    if ocr:
+        selected["ocr_audit"] = {key: ocr.get(key) for key in (
+            "sample_size", "active_writes", "policy", "passed", "characters", "confidence", "same_pdf",
+            "failure", "diagnostic", "seconds", "reason",
+        )}
     pipeline = _mapping(summary.get("pipeline_audit"))
     if pipeline:
         pipeline_runs = pipeline.get("runs")
@@ -1748,6 +1758,7 @@ def _company_resume_details(
                 "stored_retry_ready",
                 "deterministic_failures",
                 "retry_payload_hashes",
+                "ocr_diagnostics",
             )
         }
         tables = storage.get("table_bytes")

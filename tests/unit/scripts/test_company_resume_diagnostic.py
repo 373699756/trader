@@ -45,15 +45,16 @@ def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_p
     assert index.path.read_bytes() == before
 
 
-def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_path):
+@pytest.mark.parametrize("mode", ("pipeline", "ocr"))
+def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_path, mode):
     with pytest.raises(ValueError, match="company-replay-directory"):
-        _validate(_parser().parse_args(["--profile", "company-resume", "--company-pipeline-audit"]))
+        _validate(_parser().parse_args(["--profile", "company-resume", f"--company-{mode}-audit"]))
     options, _ = _validate(
         _parser().parse_args(
-            ["--profile", "company-resume", "--company-pipeline-audit", "--company-replay-directory", str(tmp_path)]
+            ["--profile", "company-resume", f"--company-{mode}-audit", "--company-replay-directory", str(tmp_path)]
         )
     )
-    assert "--pipeline-only" in build_commands(options)[0].argv
+    assert f"--{mode}-only" in build_commands(options)[0].argv
 
 
 def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, monkeypatch):

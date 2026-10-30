@@ -45,7 +45,7 @@ from trader.infra.http_contracts import (
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_DOCUMENT_LIMITS = CompanyDocumentLimits()
 _DEFAULT_EXTENDED_LIMITS = CompanyDocumentLimits(64 * 1024 * 1024, 1000, 2_000_000)
-_DEFAULT_POLICIES = CompanyDocumentPolicies("text_4:poppler-path", "ocr_2:unavailable", "limits_1:default")
+_DEFAULT_POLICIES = CompanyDocumentPolicies("text_4:poppler-path", "ocr_3:unavailable", "limits_1:default")
 _DEFAULT_TEXT_CAPABILITY = CompanyTextCapability("poppler-path", "pdftotext", "pdfinfo")
 
 
