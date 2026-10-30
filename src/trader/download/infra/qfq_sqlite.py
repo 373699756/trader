@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from datetime import date
 from pathlib import Path
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 from uuid import uuid4
 
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
@@ -17,7 +17,7 @@ from trader.download.domain.published_history import PublishedHistoryManifest, P
 from trader.download.domain.price_repair import PriceIssue
 from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PRICE_SOURCE_CHECK_SQL, PriceRepairAttempts, RecordTencentCheck, TencentRecheckDue
 from trader.download.infra.published_history_codec import EncodePublishedHistoryCell, DecodePublishedHistoryCellPayload
-from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
+from trader.download.domain.qfq_window import QfqWindowConfiguration, QfqWindowSnapshot, QfqWindowState
 from trader.download.infra.history_sqlite_read_connection import WatchHistoryRead
 from trader.download.infra.price_columns import (
     PRICE_COLUMNS,
@@ -90,12 +90,11 @@ def _digest(rows: _Rows) -> str:
 class SQLiteQfqWindowCache:
     """Profile view; construction and absent reads have no filesystem side effects."""
 
-    def __init__(self, path: Path, profile: str) -> None:
-        if profile not in dict(QFQ_WINDOWS):
+    def __init__(self, path: Path, profile: Literal["v2", "v3"]) -> None:
+        if profile not in ("v2", "v3"):
             raise ValueError("qfq_profile_invalid")
         self.path = path
         self.profile = profile
-        self.sessions = dict(QFQ_WINDOWS)[profile]
 
     def _connection(self, *, write: bool = False) -> SqliteConnection:
         if self.path.is_symlink() or self.path.is_dir():
@@ -229,9 +228,17 @@ class SQLiteQfqWindowCache:
                 (code, identity[1], identity[2]),
             )
         )
-        if len(rows) > self.sessions or _digest(rows) != DecodeHash(identity[0]):
+        if len(rows) > self._session_limit(connection) or _digest(rows) != DecodeHash(identity[0]):
             raise RuntimeError("qfq_code_identity_mismatch")
         return rows
+
+    def _session_limit(self, connection: SqliteConnection) -> int:
+        value = connection.run(
+            "SELECT COUNT(*) FROM window_calendar WHERE profile=?", (self.profile,)
+        ).require_one()[0]
+        if not isinstance(value, int) or value < 1:
+            raise RuntimeError("qfq_calendar_missing")
+        return value
 
     def _batch_rows(self, connection: SqliteConnection, codes: tuple[str, ...]) -> tuple[tuple[str, _Rows], ...]:
         placeholders = ",".join("?" for _ in codes)
@@ -252,10 +259,11 @@ class SQLiteQfqWindowCache:
         ):
             grouped[str(code)].append((day, tuple(values)))
         result = []
+        session_limit = self._session_limit(connection) if identities else 0
         for code in codes:
             rows = tuple(grouped.get(code, ()))
             digest = identities.get(code)
-            if digest is not None and (len(rows) > self.sessions or _digest(rows) != digest):
+            if digest is not None and (len(rows) > session_limit or _digest(rows) != digest):
                 raise RuntimeError("qfq_code_identity_mismatch")
             result.append((code, rows))
         return tuple(result)
@@ -336,6 +344,7 @@ class SQLiteQfqWindowCache:
         peer: SQLiteQfqWindowCache,
         targets: tuple[tuple[str, _Rows], ...],
         source: str,
+        configuration: QfqWindowConfiguration,
         calendar: tuple[date, ...],
         completed_day: date | None,
     ) -> bool:
@@ -353,7 +362,7 @@ class SQLiteQfqWindowCache:
                     if actual != target:
                         return False
                 for cache in (self, peer):
-                    days = calendar[-cache.sessions :]
+                    days = calendar[-configuration.sessions_for(cache.profile) :]
                     if tuple(
                         row[0]
                         for row in connection.run(
@@ -392,6 +401,7 @@ class SQLiteQfqWindowCache:
         peer: QfqWindowPort,
         windows: tuple[PublishedHistoryWindow, ...],
         source_identity: str,
+        configuration: QfqWindowConfiguration,
         *,
         calendar: tuple[date, ...],
         completed_day: date | None,
@@ -402,7 +412,11 @@ class SQLiteQfqWindowCache:
             or {self.profile, peer.profile} != {"v2", "v3"}
         ):
             raise ValueError("qfq_pair_layout_invalid")
-        if not calendar or calendar != tuple(sorted(set(calendar))) or len(calendar) > 251:
+        if (
+            not calendar
+            or calendar != tuple(sorted(set(calendar)))
+            or len(calendar) > configuration.maximum_sessions
+        ):
             raise ValueError("qfq_calendar_invalid")
         if completed_day is not None and completed_day != calendar[-1]:
             raise ValueError("qfq_completion_day_invalid")
@@ -424,7 +438,9 @@ class SQLiteQfqWindowCache:
                 )
                 for window in windows
             )
-            if not self.price_issues() and self._matches_windows(peer, targets, source_identity, calendar, completed_day):
+            if not self.price_issues() and self._matches_windows(
+                peer, targets, source_identity, configuration, calendar, completed_day
+            ):
                 return (), 0
             with self._write_connection() as connection:
                 for code, target in targets:
@@ -466,7 +482,7 @@ class SQLiteQfqWindowCache:
                                 tuple(value for day, values in batch for value in (code, day, *values)),
                             )
                     for cache in (self, peer):
-                        days = calendar[-cache.sessions :]
+                        days = calendar[-configuration.sessions_for(cache.profile) :]
                         rows = tuple((day, values) for day, values in target if day >= EncodeDate(days[0]))
                         identity = (
                             EncodeHash(_digest(rows)),
@@ -493,7 +509,10 @@ class SQLiteQfqWindowCache:
                         )
                         changed = changed or cursor.rowcount > 0
                 for cache in (self, peer):
-                    encoded_days = tuple(EncodeDate(day) for day in calendar[-cache.sessions :])
+                    encoded_days = tuple(
+                        EncodeDate(day)
+                        for day in calendar[-configuration.sessions_for(cache.profile) :]
+                    )
                     previous_days = tuple(
                         row[0]
                         for row in connection.run(
@@ -623,7 +642,7 @@ class SQLiteQfqWindowCache:
             raise ValueError("qfq_read_window_invalid")
         return tuple(
             PublishedHistoryWindow(window.code, tuple(cell for cell in window.cells if start <= cell.trade_date <= end))
-            for window in self.read_windows(manifest, codes, sessions=self.sessions, check=check)
+            for window in self.read_windows(manifest, codes, sessions=len(manifest.calendar_dates), check=check)
         )
 
     def _read_windows(
@@ -635,7 +654,7 @@ class SQLiteQfqWindowCache:
         allowed: frozenset[str],
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
-        if not 1 <= sessions <= self.sessions:
+        if not 1 <= sessions <= len(manifest.calendar_dates):
             raise ValueError("qfq_read_window_invalid")
         requested = tuple(sorted(set(codes) & allowed))
         for code in requested:

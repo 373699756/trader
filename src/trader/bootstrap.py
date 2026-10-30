@@ -27,7 +27,7 @@ from trader.download.domain import company_evidence
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.prepared_reference import PreparedReference
-from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowConfiguration
 from trader.download.entrypoints import company_evidence_progress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import company_document_files, company_facts_reader
@@ -41,7 +41,11 @@ from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIn
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadHistorySyncConfiguration
+from trader.download.infra.download_settings import (
+    LoadCompanySyncConfiguration,
+    LoadHistorySyncConfiguration,
+    LoadQfqWindowConfiguration,
+)
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
@@ -211,7 +215,23 @@ def ExecuteSync(
     progress = company_evidence_progress.CompanyEvidenceProgress()
     history_progress = StderrHistorySyncProgress()
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
+    qfq_configuration = (
+        LoadQfqWindowConfiguration(settings.project_root) if target in ("all", "market") else None
+    )
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
+
+    def sync_market(reference: PreparedReference) -> QfqUpdateResult:
+        if qfq_configuration is None:
+            raise RuntimeError("qfq_configuration_unavailable")
+        return ExecuteQfqDownload(
+            paths,
+            configuration,
+            qfq_configuration,
+            reference=reference,
+            cancel_requested=cancel_requested,
+            repair_only=repair_source is not None,
+        )
+
     return SyncData(
         prepare=lambda: _prepare_reference(paths.reference, clock.now(), progress, cancel_requested=cancel_requested),
         history=lambda reference: ExecuteHistoryDownload(
@@ -222,7 +242,7 @@ def ExecuteSync(
             storage_medium=settings.storage_medium,
             repair_only=repair_source is not None,
         ),
-        market=lambda reference: ExecuteQfqDownload(paths, reference=reference, cancel_requested=cancel_requested, repair_only=repair_source is not None),
+        market=sync_market,
         company=lambda reference: _sync_company_evidence(
             settings.data_paths,
             progress,
@@ -499,6 +519,8 @@ def ExecuteHistoryDownload(
 
 def ExecuteQfqDownload(
     paths: DataPaths,
+    history_configuration: HistorySyncConfiguration,
+    qfq_configuration: QfqWindowConfiguration,
     *,
     reference: PreparedReference | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
@@ -533,9 +555,9 @@ def ExecuteQfqDownload(
                 )
             )
             baseline = http_resources.enter_context(BaoStockHistorySupplier(
-                HistorySyncConfiguration(paths.history, paths.reference),
+                history_configuration,
                 cancel_requested=cancel_requested,
-                price_policy=BaoStockRequestPolicy(45.0, 0),
+                price_policy=BaoStockRequestPolicy(history_configuration.supplier_timeout_seconds, 0),
                 vendor_lock=ProcessLock(paths.reference / "baostock.lock", label="BaoStock"),
             ))
             repair_supplier = HistorySupplierRouter(baseline, tencent, reference)
@@ -545,6 +567,7 @@ def ExecuteQfqDownload(
                 tencent,
                 cancel_requested,
                 report,
+                qfq_configuration,
                 workers=8,
                 worker_pool=qfq_pool,
                 writer_pool=qfq_writer,

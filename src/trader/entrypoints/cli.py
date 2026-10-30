@@ -250,7 +250,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         scoring_profile=profile_override,
     )
     watchlist = LoadLongWatchlist(runtime.long_watchlist_path)
-    from trader.download.infra.download_settings import LoadHistorySyncConfiguration
+    from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
     from trader.recommendation.infra.scoring.cost_settings import (
         LoadEvaluationCostScenarios,
         LoadExecutionCostPolicy,
@@ -263,6 +263,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
 
     config_dir = runtime.config_path.parent
     download = LoadHistorySyncConfiguration(runtime.project_root, runtime.data_paths)
+    qfq = LoadQfqWindowConfiguration(runtime.project_root)
     training_v2 = LoadProfileTrainingSettings(runtime.project_root, "v2")
     training_v3 = LoadProfileTrainingSettings(runtime.project_root, "v3")
     training_v1 = LoadV1TrainingSettings(runtime.project_root)
@@ -283,6 +284,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "runtime_dir": str(runtime.runtime_dir),
         "data_dir": str(runtime.data_paths.root),
         "history_sessions": download.sessions,
+        "qfq_sessions": {"v2": qfq.v2_sessions, "v3": qfq.v3_sessions},
         "training_fit_dates": fit_dates,
         "v5_training_configuration": TcnConfigurationDocument(training_v5.fit_dates, training_v5.fitting),
         "research_arms": len(research.ablation_arms),

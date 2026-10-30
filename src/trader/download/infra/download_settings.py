@@ -6,7 +6,7 @@ from pathlib import Path
 
 from trader.download.domain.company_evidence import CompanyDocumentLimits, CompanySyncConfiguration
 from trader.download.domain.history_sync import HistorySyncConfiguration
-from trader.download.domain.qfq_window import QFQ_WINDOWS
+from trader.download.domain.qfq_window import QfqWindowConfiguration
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.settings.parser import (
     ConfigurationError,
@@ -39,20 +39,6 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
         },
         "download.history",
     )
-    qfq = RequireMapping(document, "online_qfq")
-    RequireExactKeys(qfq, {"profiles"}, "download.online_qfq")
-    windows = tuple(
-        (
-            profile_id,
-            Integer(
-                ProfileMapping(qfq.get("profiles"), profile_id, "download.online_qfq.profiles"),
-                "sessions",
-            ),
-        )
-        for profile_id in ("v2", "v3")
-    )
-    if windows != QFQ_WINDOWS:
-        raise ConfigurationError("online qfq windows must match the active feature contracts")
     return HistorySyncConfiguration(
         history_root=paths.history,
         reference_root=paths.reference,
@@ -67,6 +53,26 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
         cancellation_grace_seconds=Number(history, "cancellation_grace_seconds", minimum=0.001),
         progress_heartbeat_seconds=Number(history, "progress_heartbeat_seconds", minimum=0.001),
     )
+
+
+def LoadQfqWindowConfiguration(project_root: Path) -> QfqWindowConfiguration:
+    document = _download_document(project_root)
+    qfq = RequireMapping(document, "online_qfq")
+    RequireExactKeys(qfq, {"profiles"}, "download.online_qfq")
+    profiles = qfq.get("profiles")
+    if not isinstance(profiles, list) or len(profiles) != 2:
+        raise ConfigurationError("download.online_qfq.profiles must define only v2 and v3")
+    v2 = ProfileMapping(profiles, "v2", "download.online_qfq.profiles")
+    v3 = ProfileMapping(profiles, "v3", "download.online_qfq.profiles")
+    RequireExactKeys(v2, {"sessions"}, "download.online_qfq.profiles.v2")
+    RequireExactKeys(v3, {"sessions"}, "download.online_qfq.profiles.v3")
+    try:
+        return QfqWindowConfiguration(
+            v2_sessions=Integer(v2, "sessions", minimum=1),
+            v3_sessions=Integer(v3, "sessions", minimum=1),
+        )
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
 
 
 def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration:
@@ -132,4 +138,4 @@ def _download_document(project_root: Path) -> dict[str, object]:
     return document
 
 
-__all__ = ["LoadCompanySyncConfiguration", "LoadHistorySyncConfiguration"]
+__all__ = ["LoadCompanySyncConfiguration", "LoadHistorySyncConfiguration", "LoadQfqWindowConfiguration"]

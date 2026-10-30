@@ -7,6 +7,7 @@ import math
 import sqlite3
 import time
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from functools import partial
@@ -26,6 +27,7 @@ from trader.download.domain.published_history import PublishedHistorySide, Publi
 from trader.download.domain.qfq_window import CompletedDailyCutoff
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
+from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_daily import DecodeTencentDailyPayload
@@ -39,6 +41,7 @@ from trader.infra.http_contracts import HttpError, HttpRequest, HttpResponse, Ht
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 
+from .diagnostic_types import PROJECT_ROOT
 from .reporting import emit_report
 
 
@@ -57,7 +60,12 @@ class _SampleSupplier:
 def _benchmark(
     supplier: TencentQfqSupplier, context: HistorySupplierContext, size: int, workers: int, observed_at: datetime
 ) -> dict[str, object]:
-    eligible = tuple(item for item in context.universe if len(context.calendar.expected_dates(item)) == 251)
+    configuration = LoadQfqWindowConfiguration(PROJECT_ROOT)
+    eligible = tuple(
+        item
+        for item in context.universe
+        if len(context.calendar.expected_dates(item)) == configuration.maximum_sessions
+    )
     if len(eligible) < size:
         raise ValueError("benchmark universe is insufficient")
     # Spread the sample across the official ordered universe, rather than measuring one exchange only.
@@ -82,6 +90,7 @@ def _benchmark(
                 sample_supplier,
                 lambda: False,
                 feedback,
+                configuration,
                 workers=workers,
                 worker_pool=pool,
                 writer_pool=writer,
@@ -90,7 +99,8 @@ def _benchmark(
             result = updater.execute(observed_at)
             elapsed = time.monotonic() - started
             paired = sum(
-                len(updater.v2.read_code(item.code).cells) == 251 and len(updater.v3.read_code(item.code).cells) == 61
+                len(updater.v2.read_code(item.code).cells) == configuration.v2_sessions
+                and len(updater.v3.read_code(item.code).cells) == configuration.v3_sessions
                 for item in subset
             )
             initial_failures = dict(failures)
@@ -208,7 +218,8 @@ def main() -> int:
             TencentQfqOptions(timeout_seconds=args.timeout_seconds, history_host=args.tencent_history_host),
         )
         started = time.monotonic()
-        context = supplier.load_qfq_context(CompletedDailyCutoff(observed_at), 251)
+        configuration = LoadQfqWindowConfiguration(PROJECT_ROOT)
+        context = supplier.load_qfq_context(CompletedDailyCutoff(observed_at), configuration.maximum_sessions)
         context_elapsed = time.monotonic() - started
         experiments = [_benchmark(supplier, context, size, args.workers, observed_at) for size in args.sizes]
         complete = all(
@@ -352,7 +363,10 @@ def _observe_history_response(
     }
     try:
         payload = DecodeTencentDailyPayload(response.text)
-        stock = payload["data"][param[0]]
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        stock = data.get(param[0]) if isinstance(data, Mapping) else None
+        if not isinstance(stock, Mapping):
+            raise ValueError("invalid response stock container")
         row_kind = "qfqday" if param[5] == "qfq" and "qfqday" in stock else "day"
         rows = stock.get(row_kind, [])
         if not isinstance(rows, list):

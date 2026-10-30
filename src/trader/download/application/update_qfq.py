@@ -28,6 +28,7 @@ from trader.download.domain.qfq_window import (
     CompletedDailyCutoff,
     MergeDailyTail,
     QfqUpdateResult,
+    QfqWindowConfiguration,
     QfqWindowSnapshot,
     QfqPendingReason,
 )
@@ -75,6 +76,7 @@ class QfqWindowPort(Protocol):
         peer: QfqWindowPort,
         windows: tuple[PublishedHistoryWindow, ...],
         source_identity: str,
+        configuration: QfqWindowConfiguration,
         *,
         calendar: tuple[date, ...],
         completed_day: date | None,
@@ -133,6 +135,7 @@ class UpdateQfqWindows:
     supplier: QfqSupplierPort
     cancel_requested: Callable[[], bool]
     report: Callable[[ProgressMessage], None]
+    configuration: QfqWindowConfiguration
     workers: int = 8
     worker_pool: WorkerExecutor | None = None
     writer_pool: WorkerExecutor | None = None
@@ -155,10 +158,20 @@ class UpdateQfqWindows:
             if self.cancel_requested():
                 break
             bounded = PublishedHistoryWindow(
-                window.code, tuple(cell for cell in window.cells if cell.trade_date in calendar[-251:])
+                window.code,
+                tuple(
+                    cell
+                    for cell in window.cells
+                    if cell.trade_date in calendar[-self.configuration.maximum_sessions :]
+                ),
             )
             files, delta = self.v2.replace_paired_windows(
-                self.v3, (bounded,), identity, calendar=calendar[-251:], completed_day=None
+                self.v3,
+                (bounded,),
+                identity,
+                self.configuration,
+                calendar=calendar[-self.configuration.maximum_sessions :],
+                completed_day=None,
             )
             changed.update(files)
             rows += delta
@@ -178,7 +191,9 @@ class UpdateQfqWindows:
         self.report(QfqMessage(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
         try:
             cutoff = self.v2.repair_cutoff() if self.repair_only else None
-            context = self.supplier.load_qfq_context(cutoff or CompletedDailyCutoff(observed_at), 251)
+            context = self.supplier.load_qfq_context(
+                cutoff or CompletedDailyCutoff(observed_at), self.configuration.maximum_sessions
+            )
         except (RuntimeError, OSError, ValueError) as exc:
             cancelled = self.cancel_requested()
             stage = "已取消" if cancelled else "准备失败"
@@ -227,7 +242,9 @@ class UpdateQfqWindows:
             failure_reason = None
         else:
             plans = iter(self._plans(context, progress, v2_snapshot, v3_snapshot))
-            failure_reason = self._download_rolling(plans, progress, context.calendar.open_dates[-251:])
+            failure_reason = self._download_rolling(
+                plans, progress, context.calendar.open_dates[-self.configuration.maximum_sessions :]
+            )
         if self.repair_supplier is not None and failure_reason is None and not self.cancel_requested():
             self._repair(context, progress)
         return progress.finish(self.cancel_requested(), failure_reason=failure_reason)
@@ -246,7 +263,7 @@ class UpdateQfqWindows:
             security = securities.get(issue.code)
             if security is None:
                 continue
-            dates = context.calendar.expected_dates(security)[-251:]
+            dates = context.calendar.expected_dates(security)[-self.configuration.maximum_sessions :]
             issue = PriceIssue(issue.code, tuple(day for day in issue.dates if day in dates), issue.reason)
             if not issue.dates or not self.v2.reserve_repair(issue, batch, explicit=self.repair_only):
                 continue
@@ -261,7 +278,14 @@ class UpdateQfqWindows:
                 if candidate is None:
                     candidate = self.repair_supplier.fetch_baostock_window(security, dates)
                 candidate = QualifyReplacementWindow(dates, self.v2.repair_reference(issue.code), candidate)
-                files, rows = self.v2.replace_paired_windows(self.v3, (candidate,), f"baostock:{progress.source}", calendar=context.calendar.open_dates[-251:], completed_day=progress.day)
+                files, rows = self.v2.replace_paired_windows(
+                    self.v3,
+                    (candidate,),
+                    f"baostock:{progress.source}",
+                    self.configuration,
+                    calendar=context.calendar.open_dates[-self.configuration.maximum_sessions :],
+                    completed_day=progress.day,
+                )
                 progress.changed.update(files)
                 progress.rows += rows
                 progress.publish("BaoStock补缺", f"{issue.code} | 整窗发布成功 | {len(dates)} 股日")
@@ -289,7 +313,7 @@ class UpdateQfqWindows:
         for security in context.universe:
             if self.cancel_requested():
                 return
-            dates = context.calendar.expected_dates(security)[-251:]
+            dates = context.calendar.expected_dates(security)[-self.configuration.maximum_sessions :]
             try:
                 plan = self._prepare_plan(security, dates, progress, v2_snapshot, v3_snapshot)
             except (RuntimeError, OSError, ValueError) as exc:
@@ -329,7 +353,12 @@ class UpdateQfqWindows:
             and bool(v2_state.dates)
             and v2_state.dates[-1] == dates[-1]
             and v3_state is not None
-            and v3_state.dates == tuple(day for day in v2_state.dates if day >= dates[-min(61, len(dates))])
+            and v3_state.dates
+            == tuple(
+                day
+                for day in v2_state.dates
+                if day >= dates[-min(self.configuration.v3_sessions, len(dates))]
+            )
         ):
             progress.completed += 1
             progress.skipped += 1
@@ -385,7 +414,11 @@ class UpdateQfqWindows:
                 buffered = len(downloaded) + len(write_batch) + len(futures)
                 cells = sum(len(window.cells) for _, window in (*downloaded, *write_batch))
                 cells += sum(len(job.dates) for job in futures.values())
-                capacity = min(self.workers - len(futures), max(0, 32 - buffered), max(0, (8192 - cells) // 251))
+                capacity = min(
+                    self.workers - len(futures),
+                    max(0, 32 - buffered),
+                    max(0, (8192 - cells) // self.configuration.maximum_sessions),
+                )
                 plan_batch = tuple(islice(remaining, capacity)) if not exhausted else ()
                 if capacity and len(plan_batch) < capacity:
                     exhausted = True
@@ -453,7 +486,12 @@ class UpdateQfqWindows:
         started = self.monotonic()
         try:
             files, rows = self.v2.replace_paired_windows(
-                self.v3, tuple(window for _, window in batch), source, calendar=calendar, completed_day=calendar[-1]
+                self.v3,
+                tuple(window for _, window in batch),
+                source,
+                self.configuration,
+                calendar=calendar,
+                completed_day=calendar[-1],
             )
             return _WriteReceipt(
                 tuple(window.code for _, window in batch), files, rows, write_seconds=self.monotonic() - started

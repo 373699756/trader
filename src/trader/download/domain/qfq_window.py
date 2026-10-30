@@ -6,13 +6,39 @@ import re
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 
-QFQ_WINDOWS = (("v2", 251), ("v3", 61))
 DAILY_READY_AT = time(15, 15)
+MAX_QFQ_WINDOW_SESSIONS = 2000
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+@dataclass(frozen=True, slots=True)
+class QfqWindowConfiguration:
+    """Configured profile windows used by the writer; persisted calendars own reads."""
+
+    v2_sessions: int
+    v3_sessions: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.v2_sessions) is not int
+            or type(self.v3_sessions) is not int
+            or self.v3_sessions < 1
+            or self.v2_sessions < self.v3_sessions
+            or self.v2_sessions > MAX_QFQ_WINDOW_SESSIONS
+        ):
+            raise ValueError("qfq window configuration is invalid")
+
+    @property
+    def maximum_sessions(self) -> int:
+        return self.v2_sessions
+
+    def sessions_for(self, profile: Literal["v2", "v3"]) -> int:
+        return self.v2_sessions if profile == "v2" else self.v3_sessions
 
 
 class QfqWindowIncompleteError(RuntimeError):

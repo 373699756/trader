@@ -7,6 +7,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from tests.helpers.qfq import QFQ_CONFIGURATION
 from trader.download.application.update_qfq import QfqPairPublicationError
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
@@ -41,7 +42,9 @@ def test_batched_reads_scan_publication_contents_once(tmp_path, monkeypatch):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     windows = tuple(_window(f"600{number:03d}") for number in range(65))
-    primary.replace_paired_windows(peer, windows, "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    primary.replace_paired_windows(
+        peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
+    )
     scans = []
     original = SqliteConnection.run
 
@@ -53,7 +56,7 @@ def test_batched_reads_scan_publication_contents_once(tmp_path, monkeypatch):
     monkeypatch.setattr(SqliteConnection, "run", observed)
     manifest = primary.manifest()
     assert manifest is not None
-    assert tuple(primary.iter_windows(manifest, sessions=251)) == windows
+    assert tuple(primary.iter_windows(manifest, sessions=len(_DAYS))) == windows
     assert len(scans) == 1
     assert SQLiteQfqWindowCache(primary.path, "v2").manifest() == manifest
 
@@ -61,7 +64,9 @@ def test_batched_reads_scan_publication_contents_once(tmp_path, monkeypatch):
 def test_publication_failure_rolls_back_prices_both_profiles_and_checkpoint(tmp_path, monkeypatch):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
-    primary.replace_paired_windows(peer, (_window("600001"),), "old", calendar=_DAYS, completed_day=_DAYS[-1])
+    primary.replace_paired_windows(
+        peer, (_window("600001"),), "old", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
+    )
     manifests = (primary.manifest(), peer.manifest())
     original = SqliteConnection.run
 
@@ -73,7 +78,12 @@ def test_publication_failure_rolls_back_prices_both_profiles_and_checkpoint(tmp_
     monkeypatch.setattr(SqliteConnection, "run", interrupted)
     with pytest.raises(QfqPairPublicationError):
         primary.replace_paired_windows(
-            peer, (_window("600001", price=12.0),), "new", calendar=_DAYS, completed_day=_DAYS[-1]
+            peer,
+            (_window("600001", price=12.0),),
+            "new",
+            QFQ_CONFIGURATION,
+            calendar=_DAYS,
+            completed_day=_DAYS[-1],
         )
     assert (primary.manifest(), peer.manifest()) == manifests
     assert primary.read_code("600001") == peer.read_code("600001") == _window("600001")
@@ -88,14 +98,18 @@ def test_numeric_types_and_negative_zero_keep_window_identity_after_restart(tmp_
     first = original.cells[0]
     raw = replace(first.unadjusted, open_price=10, volume=100, pct_change=-0.0)
     window = replace(original, cells=(replace(first, unadjusted=raw), *original.cells[1:]))
-    primary.replace_paired_windows(peer, (window,), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    primary.replace_paired_windows(
+        peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
+    )
     manifest = primary.manifest()
     fresh = SQLiteQfqWindowCache(primary.path, "v2")
     assert fresh.manifest() == manifest
     decoded = fresh.read_code(window.code).cells[0].unadjusted
     assert type(decoded.open_price) is int
     assert math.copysign(1, decoded.pct_change) == -1
-    fresh.replace_paired_windows(peer, (window,), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    fresh.replace_paired_windows(
+        peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
+    )
     assert fresh.manifest() == manifest
     with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price SET number_flags=0")
@@ -108,7 +122,9 @@ def test_old_publication_is_rejected_after_each_identity_change(tmp_path, change
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     windows = (_window("600001"), _window("600002"))
-    primary.replace_paired_windows(peer, windows, "old", calendar=_DAYS, completed_day=_DAYS[-1])
+    primary.replace_paired_windows(
+        peer, windows, "old", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
+    )
     manifest = primary.manifest()
     assert manifest is not None
     if change == "remove":
@@ -119,14 +135,17 @@ def test_old_publication_is_rejected_after_each_identity_change(tmp_path, change
             peer,
             windows,
             "new" if change == "source" else "old",
+            QFQ_CONFIGURATION,
             calendar=calendar,
             completed_day=calendar[-1],
         )
     with pytest.raises(RuntimeError, match="qfq_publication_changed"):
-        primary.read_windows(manifest, ("600001",), sessions=251)
+        primary.read_windows(manifest, ("600001",), sessions=len(manifest.calendar_dates))
     current = primary.manifest()
     assert current is not None and current != manifest
-    assert tuple(primary.iter_windows(current, sessions=251)) == (windows[1:] if change == "remove" else windows)
+    assert tuple(primary.iter_windows(current, sessions=len(current.calendar_dates))) == (
+        windows[1:] if change == "remove" else windows
+    )
 
 
 @pytest.mark.parametrize(
@@ -141,21 +160,30 @@ def test_old_publication_is_rejected_after_each_identity_change(tmp_path, change
 def test_cold_manifest_rejects_unpublished_or_corrupt_metadata(tmp_path, mutation):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
-    primary.replace_paired_windows(peer, (_window("600001"),), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    primary.replace_paired_windows(
+        peer,
+        (_window("600001"),),
+        "fixture",
+        QFQ_CONFIGURATION,
+        calendar=_DAYS,
+        completed_day=_DAYS[-1],
+    )
     with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
         connection.run(mutation)
     with pytest.raises(RuntimeError):
         fresh = SQLiteQfqWindowCache(primary.path, "v2")
         manifest = fresh.manifest()
         assert manifest is not None
-        tuple(fresh.iter_windows(manifest, sessions=251))
+        tuple(fresh.iter_windows(manifest, sessions=len(manifest.calendar_dates)))
 
 
 def test_removing_last_code_clears_only_its_profile_publication(tmp_path):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     window = _window("600001")
-    primary.replace_paired_windows(peer, (window,), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    primary.replace_paired_windows(
+        peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
+    )
     peer_manifest = peer.manifest()
     primary.retain_codes(frozenset())
     assert primary.manifest() is None
@@ -169,7 +197,14 @@ def test_removing_last_code_clears_only_its_profile_publication(tmp_path):
 def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
-    primary.replace_paired_windows(peer, (_window("600001"),), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+    primary.replace_paired_windows(
+        peer,
+        (_window("600001"),),
+        "fixture",
+        QFQ_CONFIGURATION,
+        calendar=_DAYS,
+        completed_day=_DAYS[-1],
+    )
     with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
         connection.run("DROP TABLE window_publication")
         connection.run("PRAGMA user_version=1")
@@ -177,5 +212,12 @@ def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
     with pytest.raises(RuntimeError, match="qfq_manifest_unavailable"):
         primary.manifest()
     with pytest.raises(QfqPairPublicationError):
-        primary.replace_paired_windows(peer, (_window("600001"),), "fixture", calendar=_DAYS, completed_day=_DAYS[-1])
+        primary.replace_paired_windows(
+            peer,
+            (_window("600001"),),
+            "fixture",
+            QFQ_CONFIGURATION,
+            calendar=_DAYS,
+            completed_day=_DAYS[-1],
+        )
     assert primary.path.read_bytes() == before

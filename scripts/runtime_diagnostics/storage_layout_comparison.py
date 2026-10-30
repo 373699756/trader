@@ -227,6 +227,13 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
     from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
     from trader.infra.sqlite_connection import SqliteConnection
 
+    try:
+        from trader.download.infra.download_settings import LoadQfqWindowConfiguration
+
+        qfq_configuration = LoadQfqWindowConfiguration(checkout)
+    except ImportError:
+        qfq_configuration = None
+
     scans = 0
     original = SqliteConnection.run
 
@@ -304,19 +311,27 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
 
         def publish() -> None:
             for start in range(0, size, 32):
-                primary.replace_paired_windows(
-                    peer,
-                    tuple(window(number) for number in range(start, min(start + 32, size))),
-                    "fixture",
-                    calendar=days,
-                    completed_day=days[-1],
-                )
+                windows = tuple(window(number) for number in range(start, min(start + 32, size)))
+                if qfq_configuration is None:
+                    primary.replace_paired_windows(
+                        peer, windows, "fixture", calendar=days, completed_day=days[-1]
+                    )  # type: ignore[call-arg]  # Retired checkout API.
+                else:
+                    primary.replace_paired_windows(
+                        peer,
+                        windows,
+                        "fixture",
+                        qfq_configuration,
+                        calendar=days,
+                        completed_day=days[-1],
+                    )
 
         def read(cache: SQLiteQfqWindowCache) -> None:
             manifest = cache.manifest()
             assert manifest is not None
-            assert sum(len(item.cells) for item in cache.iter_windows(manifest, sessions=cache.sessions)) == (
-                size * min(sessions, cache.sessions)
+            profile_sessions = len(manifest.calendar_dates)
+            assert sum(len(item.cells) for item in cache.iter_windows(manifest, sessions=profile_sessions)) == (
+                size * min(sessions, profile_sessions)
             )
 
         measure("initial_write", publish)
@@ -327,12 +342,20 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
         def update() -> None:
             nonlocal changed_price
             changed_price += 1.0
-            assert (
-                primary.replace_paired_windows(
+            if qfq_configuration is None:
+                changed = primary.replace_paired_windows(
                     peer, (window(0, changed_price),), "fixture", calendar=days, completed_day=days[-1]
-                )[1]
-                == sessions
-            )
+                )  # type: ignore[call-arg]  # Retired checkout API.
+            else:
+                changed = primary.replace_paired_windows(
+                    peer,
+                    (window(0, changed_price),),
+                    "fixture",
+                    qfq_configuration,
+                    calendar=days,
+                    completed_day=days[-1],
+                )
+            assert changed[1] == sessions
 
         measure("incremental_write", update, repetitions=11)
         _sqlite_adapter_cases(root, min(size, 1000), measure, checkout=checkout)
@@ -518,6 +541,11 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             config = HistorySyncConfiguration(
                 history, reference_root=root / "reference", sessions=2000, minimum_free_bytes=0
             )
+        qfq_configuration = None
+        if layout == "annual":
+            from trader.download.infra.download_settings import LoadQfqWindowConfiguration
+
+            qfq_configuration = LoadQfqWindowConfiguration(checkout)
         stopped = Event()
         wal_peak = 0
 
@@ -577,20 +605,32 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             daily = root / "daily_window.sqlite3" if layout == "annual" else root / "qfq"
             primary, secondary = (SQLiteQfqWindowCache(daily, profile) for profile in ("v2", "v3"))
             context = supplier.load_context(supplier.days[-1], 2000)
-            calendar = supplier.days[-251:]
+            maximum_sessions = qfq_configuration.maximum_sessions if qfq_configuration is not None else 251
+            calendar = supplier.days[-maximum_sessions:]
             windows = tuple(supplier.fetch_tencent_window(security, calendar) for security in context.universe)
 
             def publish() -> object:
                 if layout == "annual":
+                    assert qfq_configuration is not None
                     return primary.replace_paired_windows(
-                        secondary, windows, "fixture", calendar=calendar, completed_day=calendar[-1]
+                        secondary,
+                        windows,
+                        "fixture",
+                        qfq_configuration,
+                        calendar=calendar,
+                        completed_day=calendar[-1],
                     )
                 return primary.replace_paired_windows(secondary, windows, "fixture")  # type: ignore[call-arg]  # Retired API.
 
             measure("window_initial_write", publish)
 
             def projection() -> None:
-                for cache, length in ((primary, 251), (secondary, 61)):
+                configured_sessions = (
+                    (qfq_configuration.v2_sessions, qfq_configuration.v3_sessions)
+                    if qfq_configuration is not None
+                    else (251, 61)
+                )
+                for cache, length in zip((primary, secondary), configured_sessions, strict=True):
                     manifest = cache.manifest()
                     assert manifest is not None
                     loaded = cache.read_codes(codes)

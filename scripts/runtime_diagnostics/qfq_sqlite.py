@@ -31,7 +31,7 @@ def AuditQfqDatabase(path: Path) -> dict[str, object]:
             failures.append("profile_empty")
             continue
         rows = 0
-        for window in cache.iter_windows(manifest, sessions=cache.sessions):
+        for window in cache.iter_windows(manifest, sessions=len(manifest.calendar_dates)):
             rows += len(window.cells)
         profiles.append({"profile": cache.profile, "codes": len(manifest.universe_codes), "rows": rows})
     with (

@@ -31,7 +31,7 @@ from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
-from trader.download.infra.download_settings import LoadHistorySyncConfiguration
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
@@ -146,6 +146,7 @@ class _SyncFixture:
             self.supplier,
             cancel_requested=lambda: False,
             report=lambda _progress: None,
+            configuration=LoadQfqWindowConfiguration(PROJECT_ROOT),
         )
         runner = QfqUpdateRunner(
             ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history)),

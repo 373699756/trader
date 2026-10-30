@@ -17,7 +17,7 @@ from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadQfqWindowConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 from trader.infra.settings import LoadRuntimeSettings
@@ -185,7 +185,13 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
         )
         assert result.state == "completed", result.reason
     else:
-        result = bootstrap.ExecuteQfqDownload(DataPaths(tmp_path / "data"), now=lambda: NOW)
+        paths = DataPaths(tmp_path / "data")
+        result = bootstrap.ExecuteQfqDownload(
+            paths,
+            bootstrap.LoadHistorySyncConfiguration(_ROOT, paths),
+            LoadQfqWindowConfiguration(_ROOT),
+            now=lambda: NOW,
+        )
         assert result.completed_codes == 3
         assert not result.needs_retry
     assert set(downloaded) == {"600001", "600005", "600007"}

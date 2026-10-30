@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 
 from scripts.runtime_diagnostics.qfq_sqlite import AuditQfqDatabase, ClassifyQfqDiagnosticError
-from tests.helpers.qfq import qfq_window
+from tests.helpers.qfq import QFQ_CONFIGURATION, qfq_window
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -19,7 +19,12 @@ def _seed(path, *, complete=True):
     window = replace(window, cells=window.cells[-251:])
     days = tuple(cell.trade_date for cell in window.cells)
     primary.replace_paired_windows(
-        peer, (window,), "fixture", calendar=days, completed_day=days[-1] if complete else None
+        peer,
+        (window,),
+        "fixture",
+        QFQ_CONFIGURATION,
+        calendar=days,
+        completed_day=days[-1] if complete else None,
     )
 
 

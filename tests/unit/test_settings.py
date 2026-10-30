@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.infra.settings.runtime_loader as runtime_loader
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadQfqWindowConfiguration
 from trader.infra.settings import (
     ConfigurationError,
     LoadLongWatchlist,
@@ -814,6 +814,51 @@ def test_company_sync_request_and_document_limits(tmp_path) -> None:
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="max_bytes must be at most"):
         LoadCompanySyncConfiguration(tmp_path)
+
+
+def test_qfq_windows_are_loaded_from_download_configuration(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text(encoding="utf-8"))
+    document["online_qfq"]["profiles"] = [
+        {"profile": "v2", "sessions": 200},
+        {"profile": "v3", "sessions": 50},
+    ]
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+
+    settings = LoadQfqWindowConfiguration(tmp_path)
+
+    assert settings.v2_sessions == 200
+    assert settings.v3_sessions == 50
+    assert settings.maximum_sessions == 200
+
+
+def test_qfq_windows_reject_short_profile_larger_than_long_profile(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text(encoding="utf-8"))
+    document["online_qfq"]["profiles"] = [
+        {"profile": "v2", "sessions": 50},
+        {"profile": "v3", "sessions": 51},
+    ]
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="qfq window configuration is invalid"):
+        LoadQfqWindowConfiguration(tmp_path)
+
+
+def test_qfq_windows_reject_supplier_limit_overflow(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text(encoding="utf-8"))
+    document["online_qfq"]["profiles"] = [
+        {"profile": "v2", "sessions": 2001},
+        {"profile": "v3", "sessions": 61},
+    ]
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="qfq window configuration is invalid"):
+        LoadQfqWindowConfiguration(tmp_path)
 
 
 @pytest.mark.parametrize(

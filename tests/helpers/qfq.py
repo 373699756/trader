@@ -5,7 +5,10 @@ from datetime import date, timedelta
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
+from trader.download.domain.qfq_window import QfqWindowConfiguration
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+
+QFQ_CONFIGURATION = QfqWindowConfiguration(251, 61)
 
 
 def publish_windows(cache: SQLiteQfqWindowCache, windows: tuple[PublishedHistoryWindow, ...], source: str):
@@ -15,7 +18,9 @@ def publish_windows(cache: SQLiteQfqWindowCache, windows: tuple[PublishedHistory
         for window in windows
     )
     peer = SQLiteQfqWindowCache(cache.path, "v3" if cache.profile == "v2" else "v2")
-    return cache.replace_paired_windows(peer, clipped, source, calendar=calendar, completed_day=None)
+    return cache.replace_paired_windows(
+        peer, clipped, source, QFQ_CONFIGURATION, calendar=calendar, completed_day=None
+    )
 
 
 def qfq_window(code: str) -> PublishedHistoryWindow:

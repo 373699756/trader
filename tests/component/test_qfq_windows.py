@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.helpers.qfq import publish_windows
+from tests.helpers.qfq import QFQ_CONFIGURATION, publish_windows
 from tests.reference_fixtures import PreparedFixture
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -35,8 +35,10 @@ from trader.download.domain.published_history import (
 from trader.download.domain.qfq_window import (
     QfqPendingReason,
     QfqUpdateResult,
+    QfqWindowConfiguration,
     QfqWindowIncompleteError,
 )
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
@@ -66,6 +68,10 @@ def _install_download_config(project_root: Path) -> None:
     config_root = project_root / "config"
     config_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(PROJECT_ROOT / "config/download.json", config_root / "download.json")
+
+
+def _qfq_download_configuration(project_root: Path, paths: DataPaths):
+    return LoadHistorySyncConfiguration(project_root, paths), LoadQfqWindowConfiguration(project_root)
 
 
 def _cell(code: str, day: date, *, price: float = 10.0) -> BaoStockDailyCell:
@@ -113,7 +119,7 @@ def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_pat
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     windows = (_window(days=DAYS[-251:]), _window("300001", days=DAYS[-251:]))
     changed, rows = primary.replace_paired_windows(
-        peer, windows, "fixture", calendar=DAYS[-251:], completed_day=DAYS[-1]
+        peer, windows, "fixture", QFQ_CONFIGURATION, calendar=DAYS[-251:], completed_day=DAYS[-1]
     )
     assert changed == ("daily_window.sqlite3",) and rows == 502
     assert len(primary.read_code("600001").cells) == 251
@@ -122,7 +128,9 @@ def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_pat
     assert not primary.completed(DAYS[-1], "600001", "other")
     assert len(tuple(tmp_path.glob("*.sqlite3"))) == 1
     before = _fingerprints(tmp_path)
-    assert primary.replace_paired_windows(peer, windows, "fixture", calendar=DAYS[-251:], completed_day=DAYS[-1]) == (
+    assert primary.replace_paired_windows(
+        peer, windows, "fixture", QFQ_CONFIGURATION, calendar=DAYS[-251:], completed_day=DAYS[-1]
+    ) == (
         (),
         0,
     )
@@ -176,7 +184,12 @@ def test_pair_failure_rolls_back_prices_both_identities_and_checkpoint(tmp_path,
     monkeypatch.setattr(SqliteConnection, "run", fail)
     with pytest.raises(QfqPairPublicationError) as error:
         primary.replace_paired_windows(
-            peer, (_window(days=DAYS[-251:], price=12.0),), "new", calendar=DAYS[-251:], completed_day=DAYS[-1]
+            peer,
+            (_window(days=DAYS[-251:], price=12.0),),
+            "new",
+            QFQ_CONFIGURATION,
+            calendar=DAYS[-251:],
+            completed_day=DAYS[-1],
         )
     assert error.value.codes == () and error.value.rows == 0
     assert primary.source_identity("600001") == peer.source_identity("600001") == "old"
@@ -188,7 +201,9 @@ def test_sparse_windows_use_market_calendar_not_last_traded_rows(tmp_path):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
     peer = SQLiteQfqWindowCache(primary.path, "v3")
     window = _window(days=tuple(day for index, day in enumerate(DAYS[-251:]) if index % 3 == 0))
-    primary.replace_paired_windows(peer, (window,), "fixture", calendar=DAYS[-251:], completed_day=DAYS[-1])
+    primary.replace_paired_windows(
+        peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=DAYS[-251:], completed_day=DAYS[-1]
+    )
     assert peer.read_code("600001").cells == tuple(cell for cell in window.cells if cell.trade_date >= DAYS[-61])
     assert len(peer.read_code("600001").cells) < 61
 
@@ -245,6 +260,7 @@ def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, mo
             peer,
             (_window(days=DAYS[-251:], price=12.0),),
             "new",
+            QFQ_CONFIGURATION,
             calendar=DAYS[-251:],
             completed_day=DAYS[-1],
         )
@@ -266,10 +282,11 @@ class Supplier:
     codes: tuple[str, ...] = ("600001",)
     conflict: bool = False
     fail: bool = False
+    requested_sessions: int = 251
     calls: list[tuple[str, tuple[date, ...]]] = field(default_factory=list)
 
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
-        assert sessions == 251
+        assert sessions == self.requested_sessions
         return HistorySupplierContext(
             BaoStockCalendar(self.days),
             tuple(BaoStockSecurity(code, "fixture", "main", DAYS[0], None, "fixture") for code in self.codes),
@@ -291,7 +308,34 @@ def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
         supplier,
         lambda: False,
         lambda _message: None,
+        QFQ_CONFIGURATION,
     )
+
+
+def test_non_default_configuration_controls_supplier_and_both_published_windows(tmp_path) -> None:
+    configuration = QfqWindowConfiguration(200, 50)
+    supplier = Supplier(requested_sessions=200)
+    updater = UpdateQfqWindows(
+        SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2"),
+        SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v3"),
+        supplier,
+        lambda: False,
+        lambda _message: None,
+        configuration,
+    )
+
+    result = updater.execute(
+        datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    )
+
+    assert result.completed_codes == 1
+    assert supplier.calls == [("600001", DAYS[-200:])]
+    assert len(updater.v2.read_code("600001").cells) == 200
+    assert len(updater.v3.read_code("600001").cells) == 50
+    v2_manifest = updater.v2.manifest()
+    v3_manifest = updater.v3.manifest()
+    assert v2_manifest is not None and len(v2_manifest.calendar_dates) == 200
+    assert v3_manifest is not None and len(v3_manifest.calendar_dates) == 50
 
 
 @pytest.mark.parametrize("cancel_during_write", (False, True))
@@ -705,8 +749,9 @@ def test_302_stock_download_publication_and_restart(tmp_path) -> None:
         assert cache.codes() == frozenset({"302132"})
         manifest = cache.manifest()
         assert manifest is not None
-        assert cache.read_windows(manifest, ("302132",), sessions=cache.sessions) == (
-            _window("302132", DAYS[-cache.sessions :]),
+        sessions = QFQ_CONFIGURATION.sessions_for(cache.profile)
+        assert cache.read_windows(manifest, ("302132",), sessions=sessions) == (
+            _window("302132", DAYS[-sessions:]),
         )
         assert cache.source_identity("302132") == expected_source
     resumed = updater.execute(observed)
@@ -753,6 +798,7 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
         supplier,
         lambda: False,
         lambda message: logs.append(_plain_feedback(message)),
+        QFQ_CONFIGURATION,
     )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
@@ -790,6 +836,7 @@ def test_incomplete_supplier_gap_preserves_only_returned_pairs(tmp_path) -> None
         supplier,
         lambda: False,
         lambda message: logs.append(_plain_feedback(message)),
+        QFQ_CONFIGURATION,
     )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
@@ -891,15 +938,20 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
             raise RuntimeError("supplier_query_failed")
 
     _install_download_config(tmp_path)
+    paths = DataPaths(tmp_path / "data")
+    history_configuration, qfq_configuration = _qfq_download_configuration(tmp_path, paths)
+    history_configuration = replace(history_configuration, supplier_timeout_seconds=12.5)
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
-    monkeypatch.setattr(
-        bootstrap,
-        "BaoStockHistorySupplier",
-        lambda *_args, **_kwargs: Bao(),
-    )
+    def baostock(configuration, **options):
+        assert options["price_policy"].timeout_seconds == configuration.supplier_timeout_seconds == 12.5
+        return Bao()
+
+    monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", baostock)
     with HistoryMaintenanceLock(tmp_path / "data/market/.history.lock"):
         result = bootstrap.ExecuteQfqDownload(
-            DataPaths(tmp_path / "data"),
+            paths,
+            history_configuration,
+            qfq_configuration,
             reference=_reference(("600001", "600002")),
             report=lambda _message: None,
             now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
@@ -944,12 +996,14 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
         return StSource()
 
     _install_download_config(tmp_path)
+    paths = DataPaths(tmp_path / "data")
     monkeypatch.setattr(bootstrap, "SQLitePublishedHistorySnapshot", lambda _root: HistoryPublication())
     monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
     monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: (eligible, excluded))
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
     result = bootstrap.ExecuteQfqDownload(
-        DataPaths(tmp_path / "data"),
+        paths,
+        *_qfq_download_configuration(tmp_path, paths),
         reference=PreparedFixture(
             datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI),
             (eligible, excluded),
@@ -976,11 +1030,13 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
             raise AssertionError("locked qfq must not load supplier context")
 
     _install_download_config(tmp_path)
+    paths = DataPaths(tmp_path / "data")
     supplier = Tencent()
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: supplier)
     with HistoryMaintenanceLock(tmp_path / "data/market/daily_window.lock"):
         result = bootstrap.ExecuteQfqDownload(
-            DataPaths(tmp_path / "data"),
+            paths,
+            *_qfq_download_configuration(tmp_path, paths),
             reference=_reference(),
             report=lambda _message: None,
         )
@@ -1015,10 +1071,12 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     _install_download_config(tmp_path)
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent())
     root = tmp_path / "data/history"
+    paths = DataPaths(tmp_path / "data")
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(
             bootstrap.ExecuteQfqDownload,
-            DataPaths(tmp_path / "data"),
+            paths,
+            *_qfq_download_configuration(tmp_path, paths),
             reference=_reference(),
             report=lambda _message: None,
             now=lambda: observed,
@@ -1137,9 +1195,9 @@ def test_bounded_parallel_downloads_single_writer_and_cancelled_results_not_publ
     updater = _updater(tmp_path, supplier)
     original = updater.v2.replace_paired_windows
 
-    def write(peer, windows, identity, **kwargs):
+    def write(peer, windows, identity, configuration, **kwargs):
         assert threading.get_ident() == writer_ident
-        return original(peer, windows, identity, **kwargs)
+        return original(peer, windows, identity, configuration, **kwargs)
 
     monkeypatch.setattr(updater.v2, "replace_paired_windows", write)
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-fixture")
@@ -1202,8 +1260,8 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
     updater = _updater(tmp_path, supplier)
     original = updater.v2.replace_paired_windows
 
-    def write(peer, windows, identity, **kwargs):
-        result = original(peer, windows, identity, **kwargs)
+    def write(peer, windows, identity, configuration, **kwargs):
+        result = original(peer, windows, identity, configuration, **kwargs)
         writes.extend(window.code for window in windows)
         return result
 

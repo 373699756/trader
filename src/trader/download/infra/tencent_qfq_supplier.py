@@ -21,6 +21,7 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError, HistorySupplierPendingReason
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
+from trader.download.domain.qfq_window import MAX_QFQ_WINDOW_SESSIONS
 from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
 from trader.infra.http_contracts import HttpError, HttpTransport
 
@@ -127,8 +128,8 @@ class TencentQfqSupplier:
         self._options = options or TencentQfqOptions()
 
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
-        if not 1 <= sessions <= 251:
-            raise ValueError("Tencent qfq context is limited to 251 sessions")
+        if not 1 <= sessions <= MAX_QFQ_WINDOW_SESSIONS:
+            raise ValueError(f"Tencent qfq context sessions must be within 1..{MAX_QFQ_WINDOW_SESSIONS}")
         self._check_cancel()
         universe = self._dependencies.load_universe(as_of)
         return self.load_history_context(as_of, sessions, universe)
@@ -161,8 +162,8 @@ class TencentQfqSupplier:
 
     def load_calendar(self, as_of: date, sessions: int) -> BaoStockCalendar:
         """Read exchange index dates; never infer sessions from weekday arithmetic."""
-        if not 1 <= sessions <= 2000:
-            raise ValueError("Tencent calendar sessions must be within 1..2000")
+        if not 1 <= sessions <= MAX_QFQ_WINDOW_SESSIONS:
+            raise ValueError(f"Tencent calendar sessions must be within 1..{MAX_QFQ_WINDOW_SESSIONS}")
         count = sessions
         query = TencentDailyQuery("sh000001", as_of - timedelta(days=count * 2), as_of, "bfq", count)
         try:
@@ -185,7 +186,11 @@ class TencentQfqSupplier:
         allow_interior_padding: bool = False,
     ) -> PublishedHistoryWindow:
         count = len(dates) if request_count is None else request_count
-        if not 1 <= len(dates) <= 2000 or not 1 <= count <= 2000 or dates != tuple(sorted(set(dates))):
+        if (
+            not 1 <= len(dates) <= MAX_QFQ_WINDOW_SESSIONS
+            or not 1 <= count <= MAX_QFQ_WINDOW_SESSIONS
+            or dates != tuple(sorted(set(dates)))
+        ):
             raise ValueError("Tencent request requires ordered unique dates and a bounded row count")
         symbol = security.source_code.replace(".", "")
         query = _WindowQuery(symbol, dates, count, allow_interior_padding)
