@@ -1869,6 +1869,7 @@ def _company_resume_details(
             for key in (
                 "available", "observed_at", "scope", "publication_hash", "extraction_hash", "published_at",
                 "population_stocks", "published_stocks", "unpublished_stocks", "dirty_stocks", "stable_read",
+                "outside_population_dirty_stocks",
             )
         }
         for name, keys in (
@@ -1972,6 +1973,7 @@ def _company_resume_details(
                         "outside_codes",
                         "same_issuer",
                         "b_share_rows",
+                        "code_prefixes",
                         "failure",
                         "order",
                     )

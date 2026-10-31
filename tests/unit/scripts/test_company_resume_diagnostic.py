@@ -315,7 +315,7 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
                 },
                 "query_audit": {
                     "read_only": True,
-                    "pages": [{"total": 93, "outside_codes": 2, "same_issuer": 2, "raw_response": "must-not-project"}],
+                    "pages": [{"total": 93, "outside_codes": 2, "same_issuer": 2, "code_prefixes": ["302"], "raw_response": "must-not-project"}],
                     "totals": [{"parent_total": 100, "group_total": 102, "private": "must-not-project"}],
                     "private": "must-not-project",
                 },
@@ -330,6 +330,7 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
     assert summary["selected_slices"] == summary["completed_slices"] == 6
     assert summary["runs"][0]["pages"] == 100 and summary["saved_pages_replayed"] == 0
     assert summary["query_audit"]["pages"][0]["same_issuer"] == 2
+    assert summary["query_audit"]["pages"][0]["code_prefixes"] == ["302"]
     assert summary["local_storage"]["extracted_bodies"] == 2
     assert summary["local_storage"]["retained_bodies"] == 1
     assert "body_characters" not in summary["local_storage"]
@@ -365,3 +366,4 @@ def test_query_capture_distinguishes_an_issuer_alias_from_an_unrelated_response(
     )
     capture.inspect(request, response)
     assert capture.total == 2 and capture.outside_codes == 2 and capture.same_issuer == 1
+    assert capture.code_prefixes == {"600"}

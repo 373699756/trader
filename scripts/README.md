@@ -57,6 +57,8 @@ and does not mean the whole year or all pending PDFs are complete.
 Adding `--company-query-audit` to that profile performs a read-only count/filter audit instead of a backup or replay.
 It samples up to three failed dates and three failed child cursors, at most 192 logical page queries and 300 seconds (transport retries remain bounded). Reports contain counts and issuer-match diagnostics, never stock identities or source payloads. Matching sampled totals alone does not prove full date coverage.
 
+目录查询报告保留页面出现的三位证券代码前缀，用于核对供应商板块分类；不输出完整证券代码。公司发布审计的`dirty_stocks`只计当前采集人口，`outside_population_dirty_stocks`单列总体外标记，不将其报告为当前人口待发布。
+
 `--profile company-resume --company-storage-audit --output -` counts local announcement metadata, processing receipts, retained temporary text and retry reasons without network access or a replay directory. In the check summary, `local_storage.retained_bodies` reports retained text count; `local_storage.formal` separately reports facts availability, file bytes, stocks and table bytes. `--company-collection-database` selects the raw collection index and `--company-evidence-database` selects the separate compact facts database. PDFs are parsed in bounded memory; compressed text under `data/company/raw/text` is deleted after every affected issuer is published and receipts are committed. Publication row counts do not establish complete risk coverage.
 
 `local_storage.publication`进一步核对采集人口与已发布人口、待发布股票、四类资料状态、公告覆盖起止、当前日期的180日解禁范围、持续风险及待核实原因。正文回执必须匹配公告版本、提取身份及全部相关采集股票；已释放正文缺回执单列。两库使用只读事务，读取期间检测到外部提交则标记`stable_read=false`及降级。缺正式发布、资料不完整或待核实不能因下载队列为空判为通过。报告只含聚合数量、日期和摘要，不输出证券、标题、正文或证据键；这些本地记录不能证明供应商目录无遗漏、事件提取准确或历史风险已完整回溯，也不以自然日比较代替交易日日历判断公告时效。

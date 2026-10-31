@@ -147,6 +147,37 @@ def test_cninfo_historical_code_alias_requires_matching_official_issuer():
         source.fetch(partition)
 
 
+def test_chinext_302_announcements_and_issuer_groups_use_the_same_board():
+    row = {
+        "announcementId": "chinext",
+        "secCode": "302001",
+        "orgId": "issuer",
+        "announcementTitle": "公告",
+        "announcementTime": NOW.timestamp() * 1000,
+        "adjunctUrl": "",
+    }
+
+    class ListedSession(Session):
+        def get(self, url, **kwargs):
+            return HttpResponse(200, json.dumps({"stockList": [
+                {"code": "302001", "orgId": "issuer"},
+                {"code": "000001", "orgId": "main"},
+            ]}).encode())
+
+    source = CninfoMarketDisclosureSource(
+        ListedSession({"totalRecordNum": 1, "hasMore": False, "announcements": [row]}),
+        monotonic=lambda: 0,
+        sleeper=lambda _: None,
+    )
+    partition = DisclosurePartition("szse", NOW.date(), NOW.date(), query=DisclosureQuery("szcy"))
+    assert source.fetch(partition).rows[0].codes == ("302001",)
+    assert source.split_queries(partition) == (
+        DisclosureQuery("szcy", (DisclosureSecurity("302001", "issuer"),)),
+    )
+    with pytest.raises(ValueError, match="cninfo_query_filter_ignored"):
+        source.fetch(DisclosurePartition("szse", NOW.date(), NOW.date(), query=DisclosureQuery("szmb")))
+
+
 def test_historical_issuer_discovery_keeps_known_members_and_stops_when_gap_is_found():
     row = {
         "announcementId": "old",

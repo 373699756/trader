@@ -93,6 +93,22 @@ def test_unlock_horizon_ages_and_long_lived_risks_remain_visible(tmp_path):
     assert _audit(index, fixtures.NOW + timedelta(days=366))["ongoing_risks"]["older_than_year"] == 1
 
 
+def test_dirty_codes_outside_population_are_not_reported_as_unpublished_current_stocks(tmp_path):
+    index = _published(tmp_path)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("INSERT OR IGNORE INTO company_dirty_codes VALUES('900901')")
+    result = _audit(index)
+    assert result["dirty_stocks"] == 0
+    assert result["outside_population_dirty_stocks"] == 1
+    assert "company_publication_dirty" not in result["findings"]
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("INSERT OR IGNORE INTO company_population VALUES('900901')")
+    result = _audit(index)
+    assert result["dirty_stocks"] == 1
+    assert result["outside_population_dirty_stocks"] == 0
+    assert "company_publication_dirty" in result["findings"]
+
+
 def test_empty_collection_without_formal_publication_cannot_pass(tmp_path):
     index = fixtures._index(tmp_path)
     result = AuditCompanyStorage(index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10, sqlite_policy=SqlitePolicyFixture())

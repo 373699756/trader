@@ -394,7 +394,7 @@ def _plate(code: str) -> str:
         return "shkcp" if code.startswith(("688", "689")) else "shmb"
     if code.startswith(("4", "8", "9")):
         return "bj"
-    return "szcy" if code.startswith(("300", "301")) else "szmb"
+    return "szcy" if code.startswith(("300", "301", "302")) else "szmb"
 
 
 def _repair_groups(members: list[DisclosureSecurity]) -> tuple[DisclosureQuery, ...]:

@@ -37,7 +37,8 @@ def AuditCompanyPublication(
             identity = ReadCompanyPublicationIdentity(formal)
             population = {row[0] for row in raw.run("SELECT code FROM company_population")}
             published = {row[0] for row in formal.run("SELECT code FROM company_facts")}
-            dirty = raw.run("SELECT COUNT(*) FROM company_dirty_codes").require_one()[0]
+            dirty_codes = {row[0] for row in raw.run("SELECT code FROM company_dirty_codes")}
+            dirty = len(dirty_codes.intersection(population))
             states = [
                 {"component": component, "state": label, "stocks": row[1]}
                 for component, column in (
@@ -111,6 +112,7 @@ def AuditCompanyPublication(
                 "published_at": identity.published_at.isoformat() if identity else None,
                 "population_stocks": len(population), "published_stocks": len(published),
                 "unpublished_stocks": len(population - published), "dirty_stocks": dirty,
+                "outside_population_dirty_stocks": len(dirty_codes - population),
                 "component_states": states,
                 "coverage": {
                     **{name: str(DecodeCompanyDate(value)) if value is not None else None

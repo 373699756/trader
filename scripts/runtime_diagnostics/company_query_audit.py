@@ -37,6 +37,7 @@ class _Capture:
         self.outside_codes = 0
         self.same_issuer = 0
         self.b_shares = 0
+        self.code_prefixes: set[str] = set()
 
     def inspect(self, request: HttpRequest, response: HttpResponse) -> None:
         if request.method != "POST" or not request.url.endswith("/hisAnnouncement/query"):
@@ -58,6 +59,7 @@ class _Capture:
             if not isinstance(row, Mapping):
                 continue
             codes = set(str(row.get("secCode") or "").split(","))
+            self.code_prefixes.update(code[:3] for code in codes if len(code) == 6 and code.isascii() and code.isdigit())
             self.b_shares += int(any(code.startswith(("900", "200")) for code in codes))
             if selected and not selected.intersection(codes):
                 self.outside_codes += 1
@@ -108,6 +110,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float, sqlite_policy: Sql
                 return None
             capture.total = None
             capture.rows = capture.outside_codes = capture.same_issuer = capture.b_shares = 0
+            capture.code_prefixes.clear()
             failure = ""
             try:
                 source.fetch(partition, order=order)
@@ -129,6 +132,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float, sqlite_policy: Sql
                     "outside_codes": capture.outside_codes,
                     "same_issuer": capture.same_issuer,
                     "b_share_rows": capture.b_shares,
+                    "code_prefixes": sorted(capture.code_prefixes),
                     "failure": failure,
                 }
             )
