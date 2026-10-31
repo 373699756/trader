@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import cast
 
 import numpy as np
@@ -69,8 +71,21 @@ class TcnNetwork(nn.Module):
             return np.asarray(predicted.numpy(), dtype=np.float64)
 
 
+@contextmanager
+def PreserveTcnRuntime() -> Iterator[None]:
+    """Restore native policy only after the owning training job has joined its workers."""
+    threads = torch.get_num_threads()
+    deterministic = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        yield
+    finally:
+        torch.set_num_threads(threads)
+        torch.use_deterministic_algorithms(deterministic, warn_only=warn_only)
+
+
 def ConfigureTcnRuntime(*, training: bool, compute_threads: int = 2) -> None:
-    """The composition entrypoint owns process-wide compute settings."""
+    """Apply the caller's granted thread count in the thread that executes the network."""
     available = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
     if training and (type(compute_threads) is not int or not 1 <= compute_threads <= min(4, available)):
         raise ValueError("V5 compute_threads exceeds available CPU capacity")
@@ -78,4 +93,4 @@ def ConfigureTcnRuntime(*, training: bool, compute_threads: int = 2) -> None:
     torch.use_deterministic_algorithms(True)
 
 
-__all__ = ["TcnNetwork", "ConfigureTcnRuntime"]
+__all__ = ["TcnNetwork", "ConfigureTcnRuntime", "PreserveTcnRuntime"]

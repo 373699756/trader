@@ -124,9 +124,10 @@ def test_training_selection_prepares_history_once_and_runs_only_selected_profile
     monkeypatch.setattr("trader.download.entrypoints.commands.RunDownload", download)
     monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda **_kwargs: None)
 
-    def train(runtime, selected, *, executor, memory_admission, paths, sqlite_policy):
+    def train(runtime, selected, *, executor, memory_admission, cpu_budget, paths, sqlite_policy):
         assert executor.status().workers == len(selected)
         assert sqlite_policy == bootstrap.BuildSqlitePolicy(runtime)
+        assert cpu_budget.capacity <= cpu_budget.available_cpus
         calls.extend(selected)
         return 0
 

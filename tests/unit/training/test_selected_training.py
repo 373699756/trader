@@ -167,7 +167,7 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
 
     executors = []
 
-    def train(request, executor):
+    def train(request, executor, *, sqlite_policy):
         executors.append(executor._workers)
         assert executor._workers.status().workers == 2
         future = executor.submit(
@@ -220,7 +220,7 @@ def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_pa
     previous = signal.getsignal(signal.SIGTERM)
     workers = []
 
-    def train(request, executor):
+    def train(request, executor, *, sqlite_policy):
         workers.append(executor._workers)
         signal.raise_signal(signal.SIGTERM)
         assert request.cancelled()

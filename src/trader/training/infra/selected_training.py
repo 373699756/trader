@@ -12,6 +12,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date
 from functools import partial
+from threadpoolctl import ThreadpoolController
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
@@ -43,6 +44,7 @@ from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from trader.training.infra.cpu_admission import TrainingCpuBudget
 
 SelectedProfileResult = TrainingRunResult | V1TrainingResult
 
@@ -59,6 +61,18 @@ def _failed(reason: str, _rows: Iterator[HistoryTrainingRow]) -> SelectedProfile
     raise ValueError(reason)
 
 
+def _run_with_native_limits(
+    execute: Callable[[Iterator[HistoryTrainingRow]], SelectedProfileResult],
+    controller: ThreadpoolController,
+    threads: int,
+    rows: Iterator[HistoryTrainingRow],
+) -> SelectedProfileResult:
+    # OpenMP limits may be thread-local. All workers use the same baseline;
+    # only the owning thread restores process-wide limits after the fan-out joins.
+    controller.limit(limits=threads)
+    return execute(rows)
+
+
 @dataclass(frozen=True)
 class SelectedTrainingRequest:
     runtime: RuntimeSettings
@@ -67,6 +81,7 @@ class SelectedTrainingRequest:
     cancelled: Callable[[], bool]
     memory_admission: TrainingMemoryAdmission
     paths: TrainingLocations
+    cpu_budget: TrainingCpuBudget = field(kw_only=True)
     on_outcome: Callable[[SelectedTrainingOutcome[SelectedProfileResult]], None] | None = None
 
 
@@ -80,7 +95,7 @@ def TrainSelectedProfiles(
             scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
         RequireHistoryRepackIdle(paths.history)
         history = SQLiteHistoryTrainingInputSnapshot.open(paths.history, sqlite_policy=sqlite_policy)
-        factory = _TrainingTaskFactory(request, history, sqlite_policy=sqlite_policy)
+        factory = _TrainingTaskFactory(request, history, scope, sqlite_policy=sqlite_policy)
         tasks = tuple(
             factory.prepare(profile, progress)
             for profile, progress in zip(request.profiles, request.progresses, strict=True)
@@ -99,7 +114,11 @@ def TrainSelectedProfiles(
                 source_rows(readable), tuple(sorted(readable)), history.snapshot.listing_intervals
             )
 
-        run = RunSelectedTrainingTasks(tasks, read_rows, executor, request.cancelled, on_outcome=request.on_outcome)
+        with request.cpu_budget.native_runtime() as controller:
+            tasks = tuple(replace(task, execute=partial(
+                _run_with_native_limits, task.execute, controller, request.cpu_budget.native_threads
+            )) for task in tasks)
+            run = RunSelectedTrainingTasks(tasks, read_rows, executor, request.cancelled, on_outcome=request.on_outcome)
         return replace(run, history_rows_read=physical_rows)
 
 
@@ -107,6 +126,7 @@ def TrainSelectedProfiles(
 class _TrainingTaskFactory:
     selection: SelectedTrainingRequest
     history: SQLiteHistoryTrainingInputSnapshot
+    resources: ExitStack
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
@@ -142,6 +162,7 @@ class _TrainingTaskFactory:
             progress=progress,
             cancel_requested=selection.cancelled,
             memory_admission=selection.memory_admission,
+            cpu_admission=selection.cpu_budget,
             sqlite_policy=self.sqlite_policy,
         )
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
@@ -158,9 +179,10 @@ class _TrainingTaskFactory:
         )
         settings = LoadProfileTrainingSettings(selection.runtime.project_root, profile)
         if isinstance(settings.fitting, TcnFittingParameters):
-            from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+            # Load the optional native library before capturing job-wide thread limits.
+            from trader.training.infra.profile.v5.network import PreserveTcnRuntime
 
-            ConfigureTcnRuntime(training=True, compute_threads=settings.fitting.compute_threads)
+            self.resources.enter_context(PreserveTcnRuntime())
             logging.getLogger(__name__).warning(
                 "V5训练配置 | 拟合日 %s | 隐藏通道 %s | 精度 %s | 线程 %s | 最大轮数 %s "
                 "| 早停耐心 %s | 相对改善阈值 %s",
@@ -183,6 +205,7 @@ class _TrainingTaskFactory:
                 progress,
                 sample_root=paths.samples,
                 memory_admission=selection.memory_admission,
+                cpu_admission=selection.cpu_budget,
             ), sqlite_policy=self.sqlite_policy,
         )
         if reused is not None:

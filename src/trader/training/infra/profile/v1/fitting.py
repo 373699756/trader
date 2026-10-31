@@ -38,10 +38,13 @@ def FitLearnedRankHead(
     partitions: LearnedRankPartitions,
     settings: V1TrainingSettings,
     *,
+    compute_threads: int,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> LearnedRankHead:
     """Read validation only after fitting, early stopping and past calibration finish."""
 
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_compute_threads_invalid")
     fitting, early, calibration, validation = (
         partitions.fitting,
         partitions.early_stopping,
@@ -80,7 +83,7 @@ def FitLearnedRankHead(
             "seed": settings.seed,
             "deterministic": True,
             "force_col_wise": True,
-            "num_threads": 2,
+            "num_threads": compute_threads,
             "verbosity": -1,
         },
         lgb.Dataset(
@@ -111,7 +114,7 @@ def FitLearnedRankHead(
     slope = covariance / (variance + 1e-12)
     calibration_intercept = y_mean - slope * x_mean
     predicted = calibration_intercept + slope * (intercept + validation.features @ coefficients)
-    rank_raw = np.asarray(booster.predict(validation.features, num_threads=2), dtype=np.float64)
+    rank_raw = np.asarray(booster.predict(validation.features, num_threads=compute_threads), dtype=np.float64)
     metrics = _metrics(validation, predicted, rank_raw)
     return LearnedRankHead(
         strategy,

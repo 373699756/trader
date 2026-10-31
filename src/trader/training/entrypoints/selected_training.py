@@ -5,6 +5,7 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import json
+import logging
 import time
 from concurrent.futures import CancelledError
 from contextlib import ExitStack
@@ -26,6 +27,7 @@ from trader.training.entrypoints.profile_training import (
 )
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 from trader.training.infra.engine import TrainingRunResult
+from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -44,10 +46,11 @@ def RunSelectedTraining(
     *,
     executor: ManagedWorkerExecutor,
     memory_admission: TrainingMemoryAdmission,
+    cpu_budget: TrainingCpuBudget,
     paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
-        return _run_selected_training(runtime, profiles, executor, memory_admission, paths, cancelled, sqlite_policy=sqlite_policy)
+        return _run_selected_training(runtime, profiles, executor, memory_admission, paths, cancelled, cpu_budget=cpu_budget, sqlite_policy=sqlite_policy)
 
 
 def _run_selected_training(
@@ -56,9 +59,13 @@ def _run_selected_training(
     executor: ManagedWorkerExecutor,
     memory_admission: TrainingMemoryAdmission,
     paths: TrainingLocations,
-    cancelled: Event, *, sqlite_policy: SqliteIoPolicy,
+    cancelled: Event, *, cpu_budget: TrainingCpuBudget, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     started = time.monotonic()
+    logging.getLogger(__name__).warning(
+        "训练CPU预算 | 可用CPU %s | 拟合总线程 %s | 原生库基线线程 %s | 档位 %s",
+        cpu_budget.available_cpus, cpu_budget.capacity, cpu_budget.native_threads, ",".join(profiles),
+    )
     try:
         executor.start()
         with ExitStack() as scope:
@@ -85,7 +92,8 @@ def _run_selected_training(
 
             run = TrainSelectedProfiles(
                 SelectedTrainingRequest(
-                    runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome
+                    runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome,
+                    cpu_budget=cpu_budget,
                 ),
                 WorkerFutureExecutor(executor), sqlite_policy=sqlite_policy,
             )
@@ -135,6 +143,10 @@ def _run_selected_training(
                         "status": "cancelled" if code == 130 else "failed" if code else "completed",
                         "profiles": profiles,
                         "worker_capacity": len(profiles),
+                        "available_cpus": cpu_budget.available_cpus,
+                        "fitting_cpu_capacity": cpu_budget.capacity,
+                        "native_threads": cpu_budget.native_threads,
+                        "peak_reserved_cpu_threads": cpu_budget.peak_reserved_threads,
                         "history_scan_passes": run.history_scan_passes,
                         "history_rows_read": run.history_rows_read,
                         "elapsed_seconds": round(time.monotonic() - started, 3),

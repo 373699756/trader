@@ -313,7 +313,7 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
 
-    def fit(_samples, _split, contracts, algorithm, *_args, progress):
+    def fit(_samples, _split, contracts, algorithm, *_args, progress, compute_threads):
         del progress
         fitted.extend(contract.strategy for contract in contracts)
         return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
@@ -379,7 +379,7 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
 
-    def fit(_samples, _split, contracts, algorithm, *_args, progress):
+    def fit(_samples, _split, contracts, algorithm, *_args, progress, compute_threads):
         del progress
         fitted.extend(contract.strategy for contract in contracts)
         return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
@@ -611,6 +611,7 @@ def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, cal
         split,
         (TOMORROW_HEAD_CONTRACT,),
         RidgeFittingParameters(20_000, 1.0),
+        compute_threads=2,
         progress=progress,  # type: ignore[arg-type]
     )
 

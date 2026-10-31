@@ -33,7 +33,7 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
-from trader.training.application.resources import TrainingMemoryAdmission
+from trader.training.application.resources import TrainingCpuAdmission, TrainingMemoryAdmission
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
@@ -176,6 +176,7 @@ class ProfileTrainingRequest:
     progress: TomorrowTrainingProgressPort | None = None
     expected_history_snapshot_hash: str | None = None
     memory_admission: TrainingMemoryAdmission | None = None
+    cpu_admission: TrainingCpuAdmission | None = None
 
     def __post_init__(self) -> None:
         strategies = tuple(contract.strategy for contract in self.contracts)
@@ -383,6 +384,13 @@ def _run_locked(
             ) as samples,
             ExitStack() as fitting_resources,
         ):
+            requested_threads = request.settings.fitting.compute_threads if isinstance(request.settings.fitting, TcnFittingParameters) else TOMORROW_TRAINING_COMPUTE_THREADS
+            compute_threads = requested_threads
+            if request.cpu_admission is not None:
+                compute_threads = fitting_resources.enter_context(request.cpu_admission.reserve(
+                    requested_threads,
+                    lambda: _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1)),
+                ))
             if request.memory_admission is not None:
                 counts = tuple(item for contract in request.contracts for item in samples.industry_counts(contract))
                 matrix_bytes = max(
@@ -400,7 +408,7 @@ def _run_locked(
                     )
                 )
             prepared: list[tuple[Strategy, Path]] = []
-            fitted_heads = FitIndustryModels(samples, split, tuple(plan.contract for plan in plans), request.settings.fitting, progress=request.progress)
+            fitted_heads = FitIndustryModels(samples, split, tuple(plan.contract for plan in plans), request.settings.fitting, progress=request.progress, compute_threads=compute_threads)
             for plan, fitted in zip(plans, fitted_heads, strict=True):
                 result, staging = _fit_and_prepare_head(
                     _HeadFitRequest(

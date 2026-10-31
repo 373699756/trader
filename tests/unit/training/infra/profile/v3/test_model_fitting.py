@@ -27,8 +27,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[6]
 
 
 @pytest.mark.parametrize("contract", (*V2_HEAD_CONTRACTS, *HEAD_CONTRACTS), ids=lambda item: item.model_id)
+@pytest.mark.parametrize("compute_threads", (1, 2))
 def test_industry_fitting_matches_after_complete_cache_reopen(
-    tmp_path: Path, monkeypatch, contract: TrainedHeadContract
+    tmp_path: Path, monkeypatch, contract: TrainedHeadContract, compute_threads: int
 ) -> None:
     profile = V2_TRAINING_PROFILE if contract in V2_HEAD_CONTRACTS else V3_TRAINING_PROFILE
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_500))
@@ -51,22 +52,22 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
         expected_early = (data.early_stopping.features - means) / scales
         reference_fit = model_fitting._fit_lightgbm
 
-        def checked_fit(training, early, parameters, heartbeat):
+        def checked_fit(training, early, parameters, heartbeat, compute_threads):
             assert training.features.dtype == early.features.dtype == np.float64
             np.testing.assert_array_equal(training.features, expected_training)
             np.testing.assert_array_equal(early.features, expected_early)
-            return reference_fit(training, early, parameters, heartbeat)
+            return reference_fit(training, early, parameters, heartbeat, compute_threads)
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, = FitIndustryModels(repository, split, (contract,), settings.fitting)
+        first, = FitIndustryModels(repository, split, (contract,), settings.fitting, compute_threads=compute_threads)
         cache.seal(repository)
 
     with cache.open() as repository, ExitStack() as resources:
         assert cache.reused
-        second, = FitIndustryModels(repository, split, (contract,), settings.fitting)
+        second, = FitIndustryModels(repository, split, (contract,), settings.fitting, compute_threads=compute_threads)
         if profile.algorithm == "ridge":
-            paired = FitIndustryModels(repository, split, HEAD_CONTRACTS, settings.fitting)
+            paired = FitIndustryModels(repository, split, HEAD_CONTRACTS, settings.fitting, compute_threads=compute_threads)
             assert paired[HEAD_CONTRACTS.index(contract)] == first
 
     assert TOMORROW_TRAINING_COMPUTE_THREADS == 2
@@ -75,7 +76,7 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
     assert first.validation_rows == second.validation_rows
     fitted = next(item.model for item in first.models if item.industry == "银行")
     if profile.algorithm == "lightgbm":
-        assert "[num_threads: 2]" in fitted.lightgbm_model
+        assert f"[num_threads: {compute_threads}]" in fitted.lightgbm_model
         assert "[force_col_wise: 1]" in fitted.lightgbm_model
     else:
         assert len(fitted.ridge_coefficients) == len(contract.feature_positions)
@@ -143,7 +144,7 @@ def test_validation_keeps_sorted_industry_calls_batch_membership_and_metric_row_
 
     monkeypatch.setattr(model_fitting._ValidationPredictor, "predict", observed)
     heartbeats = []
-    actual = model_fitting._evaluate_validation(Samples(), HEAD_CONTRACTS[0], models, lambda: heartbeats.append(True))
+    actual = model_fitting._evaluate_validation(Samples(), HEAD_CONTRACTS[0], models, lambda: heartbeats.append(True), 2)
 
     assert len(heartbeats) == 2
     assert [intercept for intercept, _ in calls] == [1.0, 2.0, 1.0, 2.0]

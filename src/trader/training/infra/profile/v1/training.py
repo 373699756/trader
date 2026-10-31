@@ -21,8 +21,9 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.application.resources import TrainingMemoryAdmission
+from trader.training.application.resources import TrainingCpuAdmission, TrainingMemoryAdmission
 from trader.training.application.tomorrow_training import (
+    TOMORROW_TRAINING_COMPUTE_THREADS,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingProgressState,
@@ -126,6 +127,7 @@ def RunV1Training(
     cancel_requested: Callable[[], bool] | None = None,
     aligned_rows: Iterator[HistoryTrainingRow] | None = None,
     memory_admission: TrainingMemoryAdmission | None = None, sqlite_policy: SqliteIoPolicy,
+    cpu_admission: TrainingCpuAdmission | None = None,
 ) -> V1TrainingResult:
     """Consume a pinned input; all disposable writes stay in the selected sample root."""
 
@@ -185,6 +187,8 @@ def RunV1Training(
                 ) * 512 + 256 * 1024**2
                 with (
                     closing(LearnedRankSampleIndex(sample_path, read_only=True, sqlite_policy=sqlite_policy)) as index,
+                    cpu_admission.reserve(TOMORROW_TRAINING_COMPUTE_THREADS, lambda: CheckV1Cancellation(cancel_requested))
+                    if cpu_admission is not None else nullcontext(TOMORROW_TRAINING_COMPUTE_THREADS) as compute_threads,
                     memory_admission.reserve(required_bytes, lambda: CheckV1Cancellation(cancel_requested))
                     if memory_admission is not None else nullcontext(),
                     ExitStack() as resources,
@@ -203,7 +207,7 @@ def RunV1Training(
                         heads.append(
                             FitLearnedRankHead(
                                 strategy, split, LearnedRankPartitions(*matrices[number * 4:number * 4 + 4]),
-                                settings, cancel_requested=cancel_requested,
+                                settings, cancel_requested=cancel_requested, compute_threads=compute_threads,
                             )
                         )
                         _progress(progress, "model_fit", "completed", strategy)

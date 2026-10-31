@@ -458,6 +458,7 @@ def ExecuteSelectedTraining(
     from trader.training.application.selected_training import TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
+    from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
     if history_root is not None or training_root is not None:
         ConfigureStorage(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
@@ -473,6 +474,7 @@ def ExecuteSelectedTraining(
             worker_count=len(scoring_profiles), queue_capacity=0, thread_name_prefix="profile-training"
         ),
         memory_admission=TrainingMemoryBudget(FittingMemoryCapacity()),
+        cpu_budget=TrainingCpuBudget(AvailableTrainingCpus()),
         paths=paths, sqlite_policy=BuildSqlitePolicy(runtime),
     )
 

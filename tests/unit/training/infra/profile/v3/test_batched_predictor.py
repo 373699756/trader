@@ -172,7 +172,7 @@ def test_ridge_batches_preserve_exact_cost_and_adjacent_float_eligibility(strate
 
     assert predicted == expected
     assert tuple(value - cost > 0.0 for value in predicted) == (boundary == "above",) * 3
-    validation = _ValidationPredictor(model).predict(
+    validation = _ValidationPredictor(model, 2).predict(
         np.asarray(tuple(item.alpha_features for item in inputs), dtype=np.float64)
     )
     np.testing.assert_array_equal(validation, np.asarray(predicted))

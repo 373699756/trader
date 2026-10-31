@@ -13,7 +13,6 @@ import lightgbm as lgb
 import numpy as np
 
 from trader.training.application.tomorrow_training import (
-    TOMORROW_TRAINING_COMPUTE_THREADS,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TrainingFitDetail,
@@ -109,8 +108,15 @@ def FitIndustryModels(
     contracts: tuple[TrainedHeadContract, ...],
     parameters: ModelFittingParameters,
     *,
+    compute_threads: int,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> tuple[IndustryFitResult, ...]:
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_compute_threads_invalid")
+    if isinstance(parameters, TcnFittingParameters):
+        from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+
+        ConfigureTcnRuntime(training=True, compute_threads=compute_threads)
     samples.require_split(split)
     for contract in contracts:
         if progress is not None:
@@ -141,8 +147,8 @@ def FitIndustryModels(
                 industry_counts = next((item for item in state.workloads if item.industry == industry), None)
                 if industry_counts is None:
                     continue
-                _fit_head_industry(samples, state, industry_counts, parameters, progress)
-    return tuple(_finish_head_fit(samples, state, progress) for state in states)
+                _fit_head_industry(samples, state, industry_counts, parameters, progress, compute_threads)
+    return tuple(_finish_head_fit(samples, state, progress, compute_threads) for state in states)
 
 
 @dataclass
@@ -159,13 +165,14 @@ def _fit_head_industry(
     counts: TrainingIndustryCounts,
     parameters: ModelFittingParameters,
     progress: TomorrowTrainingProgressPort | None,
+    compute_threads: int,
 ) -> None:
     contract = state.contract
     position = state.workloads.index(counts) + 1
     detail = TrainingFitDetail(counts.industry, counts.training, "preparation")
     observer = _IndustryProgress(progress, contract, _FitProgress("running", position - 1, len(state.workloads), len(state.models), detail))
     observer.heartbeat()
-    model, failure = _attempt_industry_fit(samples, counts, contract, parameters, observer.heartbeat, observer.publish)
+    model, failure = _attempt_industry_fit(samples, counts, contract, parameters, observer.heartbeat, observer.publish, compute_threads)
     if model is not None:
         state.models.append(model)
     if failure:
@@ -175,12 +182,12 @@ def _fit_head_industry(
 
 
 def _finish_head_fit(
-    samples: SQLiteTrainingSampleIndex, state: _HeadFitState, progress: TomorrowTrainingProgressPort | None,
+    samples: SQLiteTrainingSampleIndex, state: _HeadFitState, progress: TomorrowTrainingProgressPort | None, compute_threads: int,
 ) -> IndustryFitResult:
     contract, workloads, models, failures = state.contract, state.workloads, state.models, state.failures
     heartbeat = partial(_publish, progress, contract, _FitProgress("running", len(workloads), len(workloads), len(models)))
     if models:
-        metrics, industry_metrics = _evaluate_validation(samples, contract, tuple(models), heartbeat)
+        metrics, industry_metrics = _evaluate_validation(samples, contract, tuple(models), heartbeat, compute_threads)
         expected = {item.industry: item.validation for item in workloads}
         if any(value.predicted_rows != expected[industry] for industry, value in industry_metrics):
             raise ValueError("validation_sample_coverage_changed")
@@ -198,6 +205,7 @@ def _attempt_industry_fit(
     parameters: ModelFittingParameters,
     heartbeat: Callable[[], None],
     report: Callable[[TrainingFitDetail], None],
+    compute_threads: int,
 ) -> tuple[FittedIndustryModel | None, str]:
     failure = IndustryCoverageFailure(counts, parameters)
     if failure:
@@ -208,7 +216,7 @@ def _attempt_industry_fit(
 
             return FitTcnIndustry(samples, counts, contract, parameters, heartbeat, report=report), ""
         report(TrainingFitDetail(counts.industry, counts.training, "training"))
-        fitted = _fit_industry(samples, counts, contract, parameters, heartbeat)
+        fitted = _fit_industry(samples, counts, contract, parameters, heartbeat, compute_threads)
         heartbeat()
         return fitted, ""
     except CalibrationUnavailableError as exc:
@@ -252,6 +260,7 @@ def _fit_industry(
     contract: TrainedHeadContract,
     parameters: LightGBMFittingParameters | RidgeFittingParameters,
     heartbeat: Callable[[], None],
+    compute_threads: int,
 ) -> FittedIndustryModel:
     with samples.industry_data(counts, contract) as data:
         train = data.training
@@ -268,9 +277,9 @@ def _fit_industry(
             early_features = data.early_stopping.features
             early_features -= means
             early_features /= scales
-            booster = _fit_lightgbm(train, data.early_stopping, parameters, heartbeat)
+            booster = _fit_lightgbm(train, data.early_stopping, parameters, heartbeat, compute_threads)
             predicted = np.asarray(
-                booster.predict(calibration_features, num_iteration=booster.best_iteration, num_threads=2)
+                booster.predict(calibration_features, num_iteration=booster.best_iteration, num_threads=compute_threads)
             )
         else:
             coefficients = _ridge_coefficients(normalized, train.labels, parameters.penalty)
@@ -296,7 +305,8 @@ def _fit_industry(
 
 
 class _ValidationPredictor:
-    def __init__(self, model: FittedModelSnapshot) -> None:
+    def __init__(self, model: FittedModelSnapshot, compute_threads: int) -> None:
+        self._compute_threads = compute_threads
         self._model = model
         self._means = np.asarray(model.transformer_means)
         self._scales = np.asarray(model.transformer_scales)
@@ -318,7 +328,7 @@ class _ValidationPredictor:
         model = self._model
         if isinstance(model, TrainedLightGBMModelSnapshot) and self._booster is not None:
             predicted = np.asarray(
-                self._booster.predict(values, num_iteration=model.lightgbm_best_iteration, num_threads=2)
+                self._booster.predict(values, num_iteration=model.lightgbm_best_iteration, num_threads=self._compute_threads)
             )
         elif isinstance(model, TrainedRidgeModelSnapshot) and self._coefficients is not None:
             predicted = PredictRidgeBatch(values, self._coefficients, intercept=model.ridge_intercept)
@@ -334,8 +344,9 @@ def _evaluate_validation(
     contract: TrainedHeadContract,
     models: tuple[FittedIndustryModel, ...],
     heartbeat: Callable[[], None],
+    compute_threads: int,
 ) -> tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]]:
-    predictors = {item.industry: _ValidationPredictor(item.model) for item in models}
+    predictors = {item.industry: _ValidationPredictor(item.model, compute_threads) for item in models}
     overall = PredictionMetricsAccumulator()
     industries = {item.industry: PredictionMetricsAccumulator() for item in models}
     for batch in samples.iter_validation_batches(contract):
@@ -382,6 +393,7 @@ def _fit_lightgbm(
     early: TrainingSampleMatrix,
     parameters: LightGBMFittingParameters,
     heartbeat: Callable[[], None],
+    compute_threads: int,
 ) -> lgb.Booster:
     booster = lgb.train(
         {
@@ -397,7 +409,7 @@ def _fit_lightgbm(
             "feature_fraction_seed": parameters.seed,
             "bagging_seed": parameters.seed,
             "data_random_seed": parameters.seed,
-            "num_threads": TOMORROW_TRAINING_COMPUTE_THREADS,
+            "num_threads": compute_threads,
             "force_col_wise": True,
             "histogram_pool_size": parameters.histogram_pool_mib,
             "verbosity": -1,

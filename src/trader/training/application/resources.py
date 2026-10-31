@@ -7,3 +7,7 @@ from typing import Protocol
 
 class TrainingMemoryAdmission(Protocol):
     def reserve(self, required_bytes: int, heartbeat: Callable[[], None]) -> AbstractContextManager[None]: ...
+
+
+class TrainingCpuAdmission(Protocol):
+    def reserve(self, requested_threads: int, heartbeat: Callable[[], None]) -> AbstractContextManager[int]: ...
