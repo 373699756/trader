@@ -799,8 +799,12 @@ def _live_browser(url: str) -> dict[str, object]:
         chrome.set_viewport(1440, 1100)
         chrome.navigate(url)
         _wait(lambda: bool(chrome.execute("return !!window.TraderDashboardDiagnostics;")), timeout_seconds=15)
+        profiles = chrome.execute("return Array.from(document.querySelectorAll('.profile-tab'), b => b.dataset.profile);")
+        if not isinstance(profiles, list) or not profiles or any(p not in ("v1", "v2", "v3", "v5") for p in profiles):
+            raise RuntimeError("live browser has no valid enabled profiles")
         results = []
-        for strategy in ("tomorrow", "d25"):
+        for profile, strategy in ((p, s) for p in profiles for s in ("tomorrow", "d25")):
+            chrome.execute(f"document.querySelector('.profile-tab[data-profile={profile}]').click(); return true;")
             chrome.execute(f"document.querySelector('.strategy-tab[data-strategy={strategy}]').click(); return true;")
             result: object = None
             deadline = time.monotonic() + 15
@@ -819,14 +823,19 @@ def _live_browser(url: str) -> dict[str, object]:
                     stream: document.querySelector('#streamStatus')?.textContent,
                     browser_errors: window.TraderDashboardDiagnostics.snapshot().browserErrors.length};
                 })();""")
-                if isinstance(result, dict) and result.get("matched") and result.get("stream") == "实时":
+                if (isinstance(result, dict) and result.get("matched") and result.get("stream") == "实时"
+                        and result.get("profile") == profile and result.get("strategy") == strategy
+                        and result.get("status") == "ready"):
                     break
                 time.sleep(0.1)
+            if isinstance(result, dict):
+                result["requested_view_matched"] = result.get("profile") == profile and result.get("strategy") == strategy
             results.append(result)
         passed = all(isinstance(row, dict) and row.get("matched") and row.get("browser_errors") == 0
-                     and row.get("stream") == "实时" for row in results)
+                     and row.get("stream") == "实时" and row.get("requested_view_matched")
+                     and row.get("status") == "ready" for row in results)
         return {"schema_version": "web-live-browser", "passed": passed,
-                "summary": {"fixture": False, "strategies": results}}
+                "summary": {"fixture": False, "profiles": profiles, "strategies": results}}
     finally:
         chrome.close()
 

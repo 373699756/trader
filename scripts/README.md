@@ -20,7 +20,11 @@ unknown结果附带实际runtime配置文件和单项`storage`修改示例：`"s
 
 `--profile tencent-transport`只读加载本地证券参考人口，以同一120只分片、3路并发分别测量直接HTTP和可复用隔离HTTP；两组各12秒采集预算，外层仍受统一命令超时控制。真实请求腾讯，输出总体请求/返回数、物理尝试与失败数、单次及整批耗时，不保存供应商载荷或改动活动数据。单次对照不能证明长期尾延迟或完整推荐轮次；直连组的不可协作DNS等阻塞仍可能超过其本地采集预算。`runtime`报告另外保留预览状态、失败码与最多64项阶段计时，用于区分行情等待和下游阻断。
 
-`--profile browser-live --base-url http://127.0.0.1:5000`用独立临时Chrome会话读取实际服务，切换Tomorrow/D25并比较DOM证券顺序与同档位current，记录数量、预览状态、SSE连通和浏览器错误数；不启动fixture、不修改业务数据、不输出证券内容。复用既有桌面CDP控制器，每页等待上限15秒，整体受统一命令超时控制；检查完成关闭Chrome并清理临时浏览器目录。该模式不替代全部档位、历史、布局或连续五轮验收。
+`--profile browser-live --base-url http://127.0.0.1:5000`用独立临时Chrome会话读取实际服务，遍历界面启用的全部档位及Tomorrow/D25，比较DOM证券顺序与同档位current，记录数量、预览状态、SSE连通和浏览器错误数。实际选中视图必须与请求一致、current必须ready；两边都为空但未就绪不能算通过。不启动fixture、不修改业务数据、不输出证券内容。复用既有桌面CDP控制器，每页等待上限15秒，四档可设置`--command-timeout-seconds 180`；检查完成关闭Chrome并清理临时浏览器目录。该模式不替代历史、布局或连续五轮验收。
+
+`runtime`报告的`latest_runtime.recommendation_round`保留服务端轮次序号、实际启用档位、结果、总耗时/撤销后清理耗时和任务状态，以及本地链连接尝试、SQL提交、子任务在途/峰值计数。只保留当前或最近一轮；重复HTTP采样同一sequence不算多个完整轮次。零SQL要求轮次完成、实际发布且在途为0，资料等待或超时空跑的零计数不构成通过；启动预读、独立异步写入、DeepSeek、Long、正式冻结和历史查询需另计。
+
+`--profile performance --performance-steady-only --command-timeout-seconds 600`直接复用现有100 tick模型稳态测量，加载所选实模及相同完整fixture人口，跳过其它冷启动/单股变化/剖析负载。起点、缓存复用、GC与RSS采样规则沿用原测量；报告单列`model_steady_only`，不产生延迟通过结论，也不代表供应商到发布的整链100轮或发布门禁。不能与连续replay、CPU tracing或延迟baseline混用。
 
 `--profile v5-samples --training-probe-directory /absolute/new/external/directory`
 隔离比较V5宽表与float64紧凑序列块的大小、构建、封存及双头批量读取，逐值检查顺序和标签。

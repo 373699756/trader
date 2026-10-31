@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
@@ -138,9 +139,10 @@ class LatestRequestLane:
         normalized_identity = identity.strip() if isinstance(identity, str) else identity
         _validate_request(normalized_identity, observed_at)
         created: Future[object] = Future()
+        context = copy_context()
 
         def call() -> object:
-            return function(*args, **kwargs)
+            return context.run(function, *args, **kwargs)
 
         with self._condition:
             existing = self._existing_future(normalized_identity, observed_at, call, created)

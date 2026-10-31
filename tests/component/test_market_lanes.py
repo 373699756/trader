@@ -37,6 +37,40 @@ from tests.component.market_data_test_support import (
 )
 
 
+def test_queued_source_request_uses_its_own_sqlite_observation():
+    from trader.infra.sqlite_connection import SqliteSession
+    from trader.infra.sqlite_observation import SqliteObservation
+
+    pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="source-observation")
+    pool.start()
+    lane = LatestRequestLane("tencent_market", pool)
+    started, release = threading.Event(), threading.Event()
+    first, second = SqliteObservation(), SqliteObservation()
+
+    def query(block):
+        if block:
+            started.set()
+            assert release.wait(3)
+        with SqliteSession(":memory:") as connection:
+            connection.run("SELECT 1").close()
+
+    try:
+        with first.bind():
+            running = lane.submit("first", NOW, query, True)
+        assert started.wait(2)
+        with second.bind():
+            pending = lane.submit("second", NOW + timedelta(seconds=1), query, False)
+        release.set()
+        running.result(timeout=3)
+        pending.result(timeout=3)
+        assert first.snapshot().connection_attempts == second.snapshot().connection_attempts == 1
+        assert first.snapshot().statements == second.snapshot().statements == 2
+    finally:
+        release.set()
+        assert lane.stop(timeout_seconds=3).completed
+        assert pool.stop().completed
+
+
 def test_source_lane_coalesces_running_identity_and_keeps_only_latest_pending_request() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     pool.start()

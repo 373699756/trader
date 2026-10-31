@@ -12,6 +12,37 @@ from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, Stag
 _MAX_REASON_COUNTS = 32
 
 
+def _parse_round(payload: Mapping[str, object]) -> RoundSnapshot:
+    database = _mapping(payload.get("database"))
+    return RoundSnapshot(
+        _nonnegative_int(payload.get("sequence")), _text_tuple(payload.get("profiles"), limit=4),
+        _text(payload.get("outcome")), payload.get("finished") is True,
+        _nonnegative_number(payload.get("elapsed_ms")), _nonnegative_number(payload.get("cleanup_ms")),
+        _text_tuple(payload.get("pending_profiles"), limit=4),
+        _text_tuple(payload.get("running_profiles"), limit=4),
+        _text_tuple(payload.get("staged_profiles"), limit=4),
+        _nonnegative_int(database.get("connection_attempts")), _nonnegative_int(database.get("statements")),
+        _nonnegative_int(database.get("worker_inflight")), _nonnegative_int(database.get("worker_peak")),
+    )
+
+
+@dataclass(frozen=True)
+class RoundSnapshot:
+    sequence: int | None
+    profiles: tuple[str, ...]
+    outcome: str | None
+    finished: bool
+    elapsed_ms: float | None
+    cleanup_ms: float | None
+    pending_profiles: tuple[str, ...]
+    running_profiles: tuple[str, ...]
+    staged_profiles: tuple[str, ...]
+    connection_attempts: int | None
+    statements: int | None
+    worker_inflight: int | None
+    worker_peak: int | None
+
+
 @dataclass(frozen=True)
 class FetchIssue:
     endpoint: str
@@ -321,6 +352,7 @@ class StatusSnapshot:
     preview_error: str | None = None
     preview_started_at: str | None = None
     stage_timings: tuple[RuntimeStageTiming, ...] = ()
+    recommendation_round: RoundSnapshot | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "strategies", MappingProxyType(dict(self.strategies)))
@@ -381,7 +413,9 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
         for strategy, raw in _mapping(scheduler.get("input_quality")).items()
         if (value := _mapping_or_none(raw)) is not None
     }
+    round_payload = _mapping_or_none(scheduler.get("recommendation_round"))
     return StatusSnapshot(
+        recommendation_round=_parse_round(round_payload) if round_payload is not None else None,
         deepseek_enabled=deepseek.get("enabled") is True,
         deepseek_available=budget.get("available") is True,
         deepseek_budget_date=_text(budget.get("budget_date")),

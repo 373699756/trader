@@ -6,11 +6,13 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass
 from functools import partial
 from typing import ParamSpec, Protocol, TypeVar, cast
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.sqlite_observation import CurrentSqliteObservation
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -204,9 +206,14 @@ class BoundedExecutor:
                         if not use_urgent_lane:
                             self._normal_running_count -= 1
 
+            observation = CurrentSqliteObservation()
+            if observation is not None:
+                observation.worker_submitted()
             try:
-                future = executor.submit(run_tracked)
+                future = executor.submit(copy_context().run, run_tracked)
             except BaseException:
+                if observation is not None:
+                    observation.worker_finished()
                 self._submitted_count -= 1
                 self._inflight -= 1
                 if use_urgent_lane:
@@ -216,6 +223,8 @@ class BoundedExecutor:
                 raise
             self._futures.add(cast(Future[object], future))
         future.add_done_callback(partial(self._complete, urgent=use_urgent_lane))
+        if observation is not None:
+            future.add_done_callback(lambda _future: observation.worker_finished())
         return future
 
     def stop(

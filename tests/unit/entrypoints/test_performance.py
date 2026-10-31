@@ -25,6 +25,29 @@ def test_missing_model_produces_bounded_performance_report(tmp_path, monkeypatch
     assert "private model path" not in captured.out + captured.err
 
 
+def test_steady_only_uses_existing_100_tick_measurement_without_claiming_pipeline_latency(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    settings = replace(performance.LoadRuntimeSettings(Path("config/runtime.json")), performance_budgets=_budgets())
+    monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _: settings)
+    monkeypatch.setattr(performance, "LoadScoringProfile", lambda profile, **_: _workload(profile).profile)
+    monkeypatch.setattr(performance, "_operations", lambda *_: pytest.fail("steady-only must not run cold pipeline probes"))
+    report = performance.Run(Path("config/runtime.json"), scoring_profile="v1,v2,v3,v5", steady_only=True)
+    assert report["workload"]["tick_count"] == 100
+    assert report["workload"]["model_heads"] == 8
+    assert report["memory"]["rss_before_bytes"] > 0
+    assert report["measurements"] == {}
+    assert report["hot_path_baseline"]["status"] == "unverified"
+    baseline = tmp_path / "steady.json"
+    baseline.write_text(json.dumps(report))
+    identity = dict(report["identity"])
+    identity.pop("measurement_scope")
+    with pytest.raises(ValueError, match="measurement scope"):
+        performance._baseline(baseline, identity)
+    with pytest.raises(ValueError, match="steady-only"):
+        performance.Run(Path("config/runtime.json"), steady_only=True, replay_ticks=1)
+
+
 @pytest.mark.parametrize("skip_pipeline", (False, True))
 def test_full_four_profile_report_runs_real_scoring_and_never_claims_unmeasured_equivalence(monkeypatch, skip_pipeline):
     import socket

@@ -88,7 +88,7 @@ class _Market:
         self.market_fetch_count += 1
         return self._features
 
-    def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None):
+    def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None, round_inputs=None):
         features = tuple(self.fetch_market_features(observed_at, force=force, deadline=deadline))
         return observed_market_batch(features, observed_at)
 
@@ -112,7 +112,7 @@ class _Market:
             completed_at=observed_at,
         )
 
-    def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
+    def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None, round_inputs=None):
         del force, deadline
         self.candidate_quote_refresh_count += 1
         self.requested_codes = tuple(codes)
@@ -149,7 +149,7 @@ class _Market:
         requested = set(codes)
         return tuple(feature for feature in self._features if feature.quote.code in requested)
 
-    def refresh_intraday_tail(self, codes, _observed_at, *, deadline=None):
+    def refresh_intraday_tail(self, codes, _observed_at, *, deadline=None, round_inputs=None):
         del codes
         raise AssertionError("the local freeze path must not wait for an intraday network refresh")
 
@@ -157,6 +157,21 @@ class _Market:
 class _LongRuntime:
     def offer_refresh(self, _request):
         return True
+
+
+def test_shared_collection_cancellation_keeps_its_type_for_preview_retry(application_feature_factory):
+    from trader.recommendation.application.runtime.round_inputs import RoundInputCancelled
+
+    class CancelledMarket(_Market):
+        def fetch_market_features(self, _observed_at, *, force=False, deadline=None):
+            raise RoundInputCancelled("round_input_cancelled")
+
+    adapter = build_cycle_fixture(
+        CancelledMarket((application_feature_factory("600001", TEST_NOW),)),
+        config_version="test-config", freeze_build=_freeze_build(),
+    )
+    with pytest.raises(RoundInputCancelled, match="round_input_cancelled"):
+        adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, TEST_NOW))
 
 
 def test_loading_local_history_is_pending_without_a_refresh_failure(application_feature_factory, caplog) -> None:
@@ -1175,7 +1190,7 @@ def test_tomorrow_scores_a_content_addressed_snapshot_when_tail_changes_during_c
                 callback()
             return super().read_candidate_features(codes, read_at, **options)
 
-        def refresh_intraday_tail(self, codes, _observed_at, *, deadline=None):
+        def refresh_intraday_tail(self, codes, _observed_at, *, deadline=None, round_inputs=None):
             assert tuple(codes) == ("600001",)
             return IntradayRefreshResult(
                 (IntradayInputIdentity("600001", "minute:updated", (), _observed_at, _observed_at),),
@@ -1210,7 +1225,7 @@ def test_intraday_changes_invalidate_scoring_only_for_content_or_qualification(a
         content = "facts:first"
         restrictions = ()
 
-        def refresh_intraday_tail(self, codes, checked_at, *, deadline=None):
+        def refresh_intraday_tail(self, codes, checked_at, *, deadline=None, round_inputs=None):
             return IntradayRefreshResult(
                 tuple(
                     IntradayInputIdentity(code, self.content, self.restrictions, observed_at, checked_at)
@@ -1321,7 +1336,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_freeze_time(
         features.append(replace(feature, quote=replace(feature.quote, board=board)))
 
     class AdvancingMarket(_Market):
-        def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None, round_inputs=None):
             result = super().refresh_candidate_quotes(codes, _observed_at, force=force, deadline=deadline)
             completed = tuple(
                 replace(
@@ -1458,7 +1473,7 @@ def test_qualification_precedes_one_complete_quote_request_without_refill(
     )
 
     class MissingFirstQuoteMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             self.candidate_quote_refresh_count += 1
             self.requested_codes = tuple(codes)
             self.candidate_requests.append(tuple(codes))
@@ -1501,7 +1516,7 @@ def test_all_121_inputs_are_requested_once_even_when_first_quote_fails(
     )
 
     class RankOneFailureMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             refreshed = super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
             if self.candidate_quote_refresh_count == 1:
                 return tuple(item for item in refreshed if item.quote.code != "600000")
@@ -1533,7 +1548,7 @@ def test_candidate_refresh_keeps_population_watermark_but_checks_raw_quote_age(
     features = tuple(application_feature_factory(f"600{index:03d}", observed_at) for index in range(121))
 
     class LaterQuotesMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             return tuple(
                 replace(
                     feature,
@@ -1579,7 +1594,7 @@ def test_candidate_refresh_checks_quotes_at_receipt_time_without_accepting_futur
     current_time = [requested_at]
 
     class LaterCandidateMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             current_time[0] = received_at
             return tuple(
                 replace(
@@ -1658,7 +1673,7 @@ def test_deadline_stops_refresh_and_preserves_the_last_complete_candidate_batch(
     )
 
     class DeadlineMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             refreshed = super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
             if self.candidate_quote_refresh_count == 2:
                 assert deadline is not None
@@ -1707,7 +1722,7 @@ def test_candidate_quote_exhaustion_is_reported_as_transient_empty(
     )
 
     class EmptyCandidateMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             self.candidate_quote_refresh_count += 1
             self.candidate_requests.append(tuple(codes))
             return ()
@@ -1748,7 +1763,7 @@ def test_unrequested_vendor_candidate_is_discarded_before_scoring(
     extra = replace(feature, quote=replace(feature.quote, code="600999"))
 
     class ExtraCandidateMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             return (
                 *super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline),
                 extra,
@@ -1843,7 +1858,7 @@ def test_stale_candidate_quote_stays_pending_without_a_replacement(
     successor = ranked("600004", 80.0)
 
     class StaleFirstCandidateMarket(_Market):
-        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
             self.candidate_quote_refresh_count += 1
             self.candidate_requests.append(tuple(codes))
             requested = set(codes)

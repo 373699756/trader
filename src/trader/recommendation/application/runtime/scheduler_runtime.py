@@ -525,6 +525,13 @@ class SchedulerRuntime:
         sequence = scheduled.round_sequence
         if sequence is None:
             raise ValueError("recommendation round identity is missing")
+        with self._dependencies.rounds.observe(sequence):
+            self._execute_recommendation_round(scheduled)
+
+    def _execute_recommendation_round(self, scheduled: ScheduledPipelineTask) -> None:
+        sequence = scheduled.round_sequence
+        if sequence is None:
+            raise ValueError("recommendation round identity is missing")
         rounds = self._dependencies.rounds
         profile = self._dependencies.round_profile
         tasks = {
@@ -750,6 +757,7 @@ class SchedulerRuntime:
                 preview = replace(preview, error=issues.last_error_code or preview.error)
             return SchedulerRuntimeStatus(
                 running=self._running,
+                recommendation_round=self._dependencies.rounds.status(),
                 phase=self._phase,
                 config_version=self._config_version,
                 lanes=lanes,

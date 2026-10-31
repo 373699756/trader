@@ -51,7 +51,7 @@ from trader.recommendation.application.pipeline.data_source.source_quality impor
     UsesFallback as _uses_fallback,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputCancelled
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
     AssessCandidateInputStage,
     HasTransientCandidateGap,
@@ -282,7 +282,7 @@ class MarketInputCoordinator(DataRefreshPort):
             outcome = self._run_refresh_task(request, deadline)
         except MarketDataPendingError as exc:
             raise DataRefreshPendingError(_failure_code(exc)) from exc
-        except DataRefreshUnavailableError:
+        except (DataRefreshUnavailableError, RoundInputCancelled):
             raise
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             reason = _failure_code(exc)

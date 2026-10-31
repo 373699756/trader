@@ -16,6 +16,7 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
+from trader.recommendation.application.runtime.round_inputs import RoundInputCancelled
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.application.runtime.schedule_requests import FailureCode
 from trader.recommendation.application.runtime.trading_session import SessionGuard
@@ -62,6 +63,9 @@ class PreviewCycleRunner:
         except DataRefreshPendingError as exc:
             self._defer(sequence, exc)
             return
+        except RoundInputCancelled:
+            self._collection_cancelled(sequence)
+            return
         except (DataRefreshUnavailableError, OSError, RuntimeError, ValueError) as exc:
             self._set_status("failed", FailureCode(exc, "preview_inputs_unavailable"))
             return
@@ -90,6 +94,9 @@ class PreviewCycleRunner:
         except DataRefreshPendingError as exc:
             self._defer(sequence, exc)
             return
+        except RoundInputCancelled:
+            self._collection_cancelled(sequence)
+            return
         except (DataRefreshUnavailableError, OSError, RuntimeError, ValueError) as exc:
             self._set_status("failed", FailureCode(exc, "preview_run_failed"))
             return
@@ -110,6 +117,12 @@ class PreviewCycleRunner:
             raise DataRefreshUnavailableError("preview_round_cancelled")
         with SessionGuard(scheduled.session):
             pass
+
+    def _collection_cancelled(self, sequence: int) -> None:
+        if self._dependencies.rounds.inputs_pending(sequence):
+            self._defer(sequence, DataRefreshPendingError("preview_inputs_pending"))
+        else:
+            self._set_status("failed", "round_input_cancelled")
 
     def _defer(self, sequence: int, failure: DataRefreshPendingError) -> None:
         state: Literal["waiting_inputs", "failed"] = (

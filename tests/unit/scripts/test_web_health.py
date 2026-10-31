@@ -24,6 +24,12 @@ def test_runtime_report_retains_preview_failure_and_bounded_stage_timings():
         status_payload={
             "run_mode": "preview", "preview_state": "failed", "preview_error": "round_input_cancelled",
             "preview_started_at": "2026-10-31T09:00:00+08:00",
+            "scheduler": {"recommendation_round": {
+                "sequence": 7, "profiles": ["v1", "v5"], "outcome": "published", "finished": True,
+                "elapsed_ms": 18500, "cleanup_ms": 0, "pending_profiles": [], "running_profiles": [],
+                "staged_profiles": ["v1", "v5"], "database": {"connection_attempts": 0, "statements": 0},
+                "sql": "private",
+            }},
             "market_data": {"latency_waterfall": {"stages": {
                 "preview:full_market": {"maximum_ms": 120000, "p50_ms": 120000, "sample_count": 1,
                                         "raw_payload": "private"},
@@ -38,6 +44,9 @@ def test_runtime_report_retains_preview_failure_and_bounded_stage_timings():
         "stage": "preview:full_market", "maximum_ms": 120000, "p50_ms": 120000, "sample_count": 1,
     }]
     assert "private" not in str(report)
+    assert summary["recommendation_round"]["sequence"] == 7
+    assert summary["recommendation_round"]["statements"] == 0
+    assert summary["recommendation_round"]["profiles"] == ("v1", "v5")
 
 
 def test_runtime_report_includes_only_deepseek_recovery_summary():

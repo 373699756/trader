@@ -864,6 +864,16 @@ def test_research_status_projection_rejects_unsupported_schema() -> None:
     assert report["findings"][0]["code"] == "research_status_shape_invalid"
 
 
+def test_model_steady_only_routes_to_existing_performance_owner():
+    options, _ = _validate(_parser().parse_args(["--profile", "performance", "--performance-steady-only"]))
+    command = build_commands(options, python_executable="python3")[0]
+    assert "--steady-only" in command.argv
+    for args in (["--profile", "runtime", "--performance-steady-only"],
+                 ["--profile", "performance", "--performance-steady-only", "--performance-replay-ticks", "1"]):
+        with pytest.raises(ValueError, match="steady-only"):
+            _validate(_parser().parse_args(args))
+
+
 def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloads() -> None:
     results = (
         DiagnosticResult(
@@ -878,6 +888,9 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
                 "samples": [
                     {
                         "degraded_reasons": ["observer:ResearchTraceCapacityError"],
+                        "recommendation_round": {"sequence": 17, "profiles": ["v1", "v5"],
+                                                 "statements": 0, "worker_inflight": 0,
+                                                 "sql": "must-not-escape"},
                         "scoring_profile": {
                             "profile_id": "v2",
                             "heads": {
@@ -960,6 +973,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
     assert "999.0" not in rendered
     assert "secret vendor payload" not in rendered
     assert "must-not-escape" not in rendered
+    assert report["checks"][0]["latest_runtime"]["recommendation_round"]["sequence"] == 17
     assert report["checks"][0]["latest_runtime"]["candidate_quote_age"]["p95_seconds"] == 2.0
     issue = report["checks"][0]["latest_runtime"]["recent_errors"][0]
     assert issue["count"] == 7 and issue["recovery_status"] == "recovered"

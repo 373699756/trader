@@ -112,6 +112,7 @@ def BuildParser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", choices=("v1", "v2", "v3", "v5", "v1,v2,v3,v5"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--steady-only", action="store_true", help="only the existing 100-tick model RSS measurement")
     parser.add_argument("--cpu-profile-dir", type=Path, help="instrumented replay evidence; not a latency gate")
     parser.add_argument("--cpu-profile-mode", choices=("functions", "gc"), default="functions")
     parser.add_argument(
@@ -134,7 +135,10 @@ def Run(
     replay_ticks: int = 0,
     replay_rows: int | None = None,
     trace: PerformanceCpuTrace | None = None,
+    steady_only: bool = False,
 ) -> dict[str, object]:
+    if steady_only and (replay_ticks or replay_rows is not None or trace is not None or baseline_path is not None):
+        raise ValueError("steady-only cannot be combined with replay, tracing or a latency baseline")
     if not 0 <= replay_ticks <= 1000:
         raise ValueError("replay ticks must be within 0..1000")
     if replay_rows is not None and (replay_rows < 1 or not replay_ticks):
@@ -200,6 +204,8 @@ def Run(
         "instrumented": trace is not None,
     }
     baseline = _baseline(baseline_path, identity)
+    if steady_only:
+        return _steady_report(settings, prepared, identity)
     if replay_ticks:
         return _continuous_report(settings, prepared, identity, replay_ticks, baseline, trace)
     context = _OperationContext(settings.config_version, first.policy, first.scoring())
@@ -301,6 +307,43 @@ class _ProfileLoad:
     reason: str | None
     input_count: int = 0
     models: tuple[tuple[str, str], ...] = ()
+
+
+def _steady_report(
+    settings: RuntimeSettings, prepared: _PerformancePreparation, identity: dict[str, object],
+) -> dict[str, object]:
+    workers = BuildPerformanceExecutor(2 * len(prepared.workloads))
+    workers.start()
+    try:
+        steady = MeasureSteadyState(prepared.workloads, WorkerFutureExecutor(workers), ReadPerformanceMemory)
+    finally:
+        stopped = workers.stop(wait=True, cancel_futures=True,
+                               deadline=ShutdownDeadline.start(settings.pipeline.shutdown_timeout_seconds))
+        if not stopped.completed:
+            raise RuntimeError("steady-state workers did not stop")
+    budgets = settings.performance_budgets.memory
+    failures = []
+    if steady.peak_rss_bytes > budgets.process_peak_rss_bytes:
+        failures.append("process_peak_rss:absolute_budget")
+    if steady.growth_percent > budgets.growth_percent:
+        failures.append("process_rss_growth:absolute_budget")
+    return {
+        "schema_version": "production_performance",
+        "status": "failed" if failures else "passed",
+        "identity": {**identity, "measurement_scope": "model_steady_only"},
+        "workload": {"profiles": [item.profile.profile_id for item in prepared.workloads],
+                     "model_heads": 2 * len(prepared.workloads), "tick_count": steady.ticks,
+                     "evidence_scope": "generated_fixture_real_loaded_models_no_release_authority",
+                     "candidate_rows_per_profile": {item.profile.profile_id: len(item.features) for item in prepared.workloads}},
+        "memory": {"rss_before_bytes": steady.rss_before_bytes, "rss_after_bytes": steady.rss_after_bytes,
+                   "peak_rss_bytes": steady.peak_rss_bytes, "maximum_current_rss_bytes": steady.maximum_current_rss_bytes,
+                   "growth_percent": steady.growth_percent, "peak_budget_bytes": budgets.process_peak_rss_bytes,
+                   "growth_budget_percent": budgets.growth_percent, "sampling": "existing_100_tick_model_steady_state"},
+        "measurements": {},
+        "network_calls": 0,
+        "failures": failures,
+        "hot_path_baseline": {"status": "unverified", "reason": "only_model_cache_residency_measured"},
+    }
 
 
 @dataclass(frozen=True)
@@ -477,6 +520,7 @@ def Main(argv: list[str] | None = None) -> int:
                 replay_ticks=args.replay_ticks,
                 replay_rows=args.replay_rows,
                 trace=trace,
+                steady_only=args.steady_only,
             )
     except ScoringModelsUnavailableError:
         report = _unavailable_report("model_unavailable")
@@ -890,6 +934,8 @@ def _baseline(path: Path | None, identity: dict[str, object]) -> dict[str, objec
     if not isinstance(raw, dict) or not isinstance(raw.get("measurements"), dict):
         raise ValueError("performance baseline must contain measurements")
     previous_identity = raw.get("identity")
+    if isinstance(previous_identity, dict) and previous_identity.get("measurement_scope") != identity.get("measurement_scope"):
+        raise ValueError("performance baseline measurement scope does not match")
     if identity.get("instrumented") or isinstance(previous_identity, dict) and previous_identity.get("instrumented"):
         raise ValueError("instrumented replay cannot be a latency baseline")
     if isinstance(previous_identity, dict) and previous_identity.get("replay_rows") != identity.get("replay_rows"):

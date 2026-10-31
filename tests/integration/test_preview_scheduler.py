@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from itertools import combinations
+
 import threading
 from dataclasses import replace
 from datetime import timedelta
@@ -42,8 +44,62 @@ class RejectResearch(NoopResearchRuntime):
         raise AssertionError("preview must not start persistent company research")
 
 
+def test_peer_waiting_in_shared_collection_retries_when_other_profile_inputs_are_pending():
+    entered = threading.Event()
+    deferred = [False]
+    rounds = RecommendationRounds()
+    transaction = threading.RLock()
+    events = []
+    runtimes = []
+
+    class SharedData(PreviewData):
+        def __init__(self, profile):
+            super().__init__()
+            self.profile = profile
+
+        def prepare_preview(self, context):
+            if self.profile == "v5" and not deferred[0]:
+                assert entered.wait(3)
+                deferred[0] = True
+                raise DataRefreshPendingError("history_projection_pending")
+            super().prepare_preview(context)
+
+        def refresh_task(self, request):
+            if request.task is PipelineTask.FULL_MARKET:
+                entered.set()
+                request.round_inputs.inputs.market.collect(self.profile, (), lambda _codes: ())
+            return super().refresh_task(request)
+
+    for profile in ("v1", "v5"):
+        deps = dependencies(SharedData(profile))
+        scope = RecommendationRunScope(True, lambda: None, lambda: (MARKET_DATE,), deps.clock.now, lambda: "preview-a")
+        deps = replace(deps, rounds=rounds, round_profile=profile, freezes=PreviewFreezes(), run_scope=scope,
+                       index=UnifiedFreezeIndex(transaction_lock=transaction), publish_freeze=events.append)
+        runtimes.append(SchedulerRuntime(deps, config_version="shared", shutdown_timeout_seconds=2))
+    try:
+        for runtime in runtimes:
+            runtime.start()
+            runtime.submit_due()
+        assert all(runtime.wait_idle(3) for runtime in runtimes)
+        assert all(runtime.status().preview_state == "waiting_inputs" for runtime in runtimes)
+        assert rounds.status().finished and rounds.status().outcome == "waiting_inputs"
+        for runtime in runtimes:
+            runtime.submit_due()
+        assert all(runtime.wait_idle(3) for runtime in runtimes)
+        assert all(runtime.status().preview_state == "ready" for runtime in runtimes), [
+            (runtime.status().preview_state, runtime.status().preview_error) for runtime in runtimes
+        ]
+        assert rounds.status().finished and rounds.status().outcome == "published"
+    finally:
+        for runtime in runtimes:
+            assert runtime.stop(ShutdownDeadline.start(3)).completed
+
+
 @pytest.mark.parametrize("outcome", ("ready", "failed", "timeout", "pending"))
-def test_preview_subset_publishes_only_a_complete_round(outcome):
+@pytest.mark.parametrize("profiles", [
+    group for size in range(1, 5) for group in combinations(("v1", "v2", "v3", "v5"), size)
+])
+def test_preview_subset_publishes_only_a_complete_round(outcome, profiles):
     elapsed = [0.0]
     events = []
     rounds = RecommendationRounds(
@@ -73,7 +129,8 @@ def test_preview_subset_publishes_only_a_complete_round(outcome):
             return super().build_local(request)
 
     runtimes = []
-    for profile, builder in (("v1", FastFreezes()), ("v5", SlowFreezes())):
+    for profile in profiles:
+        builder = SlowFreezes() if profile == profiles[-1] else FastFreezes()
         deps = dependencies(PreviewData())
         scope = RecommendationRunScope(
             True, lambda: None, lambda: (MARKET_DATE,), deps.clock.now, lambda: "preview-a"
@@ -89,7 +146,9 @@ def test_preview_subset_publishes_only_a_complete_round(outcome):
         for runtime in runtimes:
             runtime.start()
             runtime.submit_due()
-        assert fast_ready.wait(3.0) and slow_ready.wait(3.0)
+        assert slow_ready.wait(3.0)
+        if len(profiles) > 1:
+            assert fast_ready.wait(3.0)
         assert not events
         for runtime in runtimes:
             assert all(runtime._dependencies.index.snapshot(strategy).current is None for strategy in (Strategy.TOMORROW, Strategy.D25))
@@ -98,6 +157,11 @@ def test_preview_subset_publishes_only_a_complete_round(outcome):
         release.set()
         assert all(runtime.wait_idle(3.0) for runtime in runtimes)
         assert len(events) == (1 if outcome == "ready" else 0)
+        round_status = rounds.status()
+        assert round_status.finished
+        assert round_status.profiles == profiles
+        assert round_status.database.connection_attempts == round_status.database.statements == 0
+        assert round_status.database.worker_inflight == 0
         for runtime in runtimes:
             expected_state = "waiting_inputs" if outcome == "pending" else "ready" if outcome == "ready" else "failed"
             assert runtime.status().preview_state == expected_state
@@ -108,7 +172,7 @@ def test_preview_subset_publishes_only_a_complete_round(outcome):
             requests = runtime._dependencies.data.preview_requests
             assert all(request.round_deadline == STARTED_AT + timedelta(seconds=120) for request in requests)
         if events:
-            assert {profile for profile, _ in events[0][1]} == {"v1", "v5"}
+            assert {profile for profile, _ in events[0][1]} == set(profiles)
         if outcome == "pending":
             for runtime in runtimes:
                 runtime.submit_due()

@@ -31,6 +31,7 @@ def test_reservations_finish_before_round_deadline_starts_and_old_inputs_are_rel
     rounds.register("v1", prepare)
     rounds.register("v5", prepare)
     retained = []
+    observations = []
     for _ in range(100):
         before = now[0]
         admission = rounds.enter("v1", _tasks())
@@ -38,11 +39,14 @@ def test_reservations_finish_before_round_deadline_starts_and_old_inputs_are_rel
         assert rounds.enter("v5", _tasks()) is admission
         context = rounds.inputs("v1", admission.sequence)
         retained.append(weakref.ref(context.inputs))
+        observations.append(weakref.ref(rounds._observation))
         rounds.finish("v1", admission.sequence)
         rounds.finish("v5", admission.sequence)
         del context
     gc.collect()
     assert all(reference() is None for reference in retained)
+    assert all(reference() is None for reference in observations[:-1])
+    assert rounds.status().database.connection_attempts == rounds.status().database.statements == 0
 
 
 def test_all_profiles_share_one_admission_and_absolute_deadline() -> None:
@@ -147,3 +151,68 @@ def test_failure_wakes_waiting_peers_without_waiting_for_deadline() -> None:
         rounds.finish("v1", admission.sequence)
     following = rounds.enter("v1", _tasks())
     assert following is not None and following.sequence > admission.sequence
+
+
+def test_status_keeps_timeout_and_cleanup_separate_and_read_does_not_expire_work():
+    now = [0.0]
+    rounds = RecommendationRounds(monotonic=lambda: now[0])
+    rounds.register("v1")
+    rounds.register("v5")
+    admission = rounds.enter("v1", _tasks())
+    rounds.enter("v5", _tasks())
+    now[0] = 120.0
+    assert rounds.status().outcome == "running"
+    assert rounds.cancelled(admission.sequence)
+    rounds.finish("v1", admission.sequence)
+    assert rounds.status().running_profiles == ("v5",)
+    now[0] = 122.0
+    rounds.finish("v5", admission.sequence)
+    status = rounds.status()
+    assert status.finished and status.outcome == "timeout"
+    assert status.elapsed_ms == 122000 and status.cleanup_ms == 2000
+    assert not status.running_profiles and not status.pending_profiles
+    now[0] = 140
+    assert rounds.status() == status
+    following = rounds.enter("v5", _tasks())
+    assert following.sequence == admission.sequence + 1
+    assert rounds.status().outcome == "running"
+    assert rounds.status().cleanup_ms == 0
+
+
+def test_cancelled_round_waits_for_descendant_worker_and_counts_its_late_sql():
+    from threading import Event
+    from trader.infra.sqlite_connection import SqliteSession
+    from trader.infra.workers import BoundedExecutor, SubmitOrReject
+
+    rounds = RecommendationRounds()
+    rounds.register("v1")
+    admission = rounds.enter("v1", _tasks())
+    release = Event()
+    workers = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="round-child")
+    workers.start()
+
+    def child():
+        assert release.wait(3)
+        with SqliteSession(":memory:") as connection:
+            connection.run("SELECT 1").close()
+
+    try:
+        with rounds.observe(admission.sequence):
+            future = SubmitOrReject(workers, child)
+        rounds.finish("v1", admission.sequence)
+        assert not rounds.status().finished
+        assert rounds.status().database.worker_inflight == 1
+        assert rounds.enter("v1", _tasks()) is None
+        release.set()
+        future.result(timeout=3)
+        assert workers.stop().completed
+        with rounds._condition:
+            assert rounds._condition.wait_for(lambda: rounds.status().finished, timeout=2)
+        status = rounds.status()
+        assert status.database.worker_inflight == 0
+        assert status.database.connection_attempts == 1
+        assert status.database.statements == 2
+        assert rounds.enter("v1", _tasks()).sequence == admission.sequence + 1
+    finally:
+        release.set()
+        workers.stop()

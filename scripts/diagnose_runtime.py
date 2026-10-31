@@ -182,6 +182,7 @@ def _parser() -> argparse.ArgumentParser:
         help="one of v1/v2/v3/v5, or all four comma-separated profiles for performance",
     )
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
+    parser.add_argument("--performance-steady-only", action="store_true", help="only the existing 100-tick model RSS measurement")
     parser.add_argument(
         "--performance-replay-ticks",
         type=int,
@@ -336,6 +337,10 @@ def _scoring_profile_selection(value: str) -> ScoringProfileSelection:
 
 
 def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
+    if args.performance_steady_only and (
+        args.profile != "performance" or args.performance_replay_ticks or args.cpu_profile_dir is not None
+    ):
+        raise ValueError("--performance-steady-only requires performance without replay or CPU tracing")
     if args.profile == "database-baseline" and args.download_sizes == (10, 50, 100):
         args.download_sizes = (8,)
     if args.database_probe_directory is not None and not args.database_probe_directory.expanduser().is_absolute():
@@ -549,6 +554,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database else None,
             scoring_profile=args.scoring_profile,
             performance_replay_ticks=args.performance_replay_ticks,
+            performance_steady_only=args.performance_steady_only,
             performance_replay_rows=args.performance_replay_rows,
             market_sources=tuple(args.market_sources),
             market_profiles=tuple(args.market_profiles),
@@ -1112,6 +1118,7 @@ def build_commands(
                 str(options.runtime_config),
                 "--replay-ticks",
                 str(options.performance_replay_ticks),
+                *(("--steady-only",) if options.performance_steady_only else ()),
                 "--cpu-profile-mode",
                 options.cpu_profile_mode,
                 *(("--cpu-profile-dir", str(options.cpu_profile_dir)) if options.cpu_profile_dir is not None else ()),
@@ -1389,6 +1396,12 @@ def _web_health_details(_result: DiagnosticResult, source: Mapping[str, object],
             "preview_state": latest.get("preview_state"),
             "preview_error": latest.get("preview_error"),
             "preview_started_at": latest.get("preview_started_at"),
+            "recommendation_round": {
+                key: value for key, value in latest["recommendation_round"].items()
+                if key in {"sequence", "profiles", "outcome", "finished", "elapsed_ms", "cleanup_ms",
+                           "pending_profiles", "running_profiles", "staged_profiles", "connection_attempts",
+                           "statements", "worker_inflight", "worker_peak"}
+            } if isinstance(latest.get("recommendation_round"), dict) else None,
             "stage_timings": [
                 {key: timing.get(key) for key in ("stage", "maximum_ms", "p50_ms", "sample_count")}
                 for timing in latest.get("stage_timings", [])[:64]

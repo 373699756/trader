@@ -13,6 +13,7 @@ from trader.recommendation.application.ports.runtime import ResearchRuntimeStatu
 from trader.recommendation.application.runtime.cadence import CadencePlannerStatus
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRoundStatus
 from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.application.runtime.trading_session import TradingSessionStatus
 from trader.recommendation.domain.publication.preview import PreviewContext
@@ -59,6 +60,7 @@ class SchedulerRuntimeStatus:
     strategy_error_codes: tuple[tuple[str, str], ...]
     recent_errors: tuple[RuntimeIssue, ...]
     input_quality: tuple[InputQualityStatus, ...]
+    recommendation_round: RecommendationRoundStatus | None = None
     preview_context: PreviewContext | None = None
     preview_state: Literal["waiting_inputs", "running", "ready", "failed"] | None = None
     preview_error: str | None = None

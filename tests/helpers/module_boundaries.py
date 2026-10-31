@@ -15,6 +15,7 @@ _SHARED_APPLICATION_MODULES = frozenset(
         "trader.infra.shutdown",
         "trader.infra.workers",
         "trader.infra.cache_contracts",
+        "trader.infra.sqlite_observation",
         "trader.infra.serialization.canonical_codec",
     }
 )
@@ -29,6 +30,8 @@ _SHARED_APPLICATION_SYMBOLS = {
         }
     ),
     "trader.infra.shutdown": frozenset({"ShutdownDeadline", "ShutdownStep"}),
+    # Context-local counters and lifecycle accounting; no database access capability.
+    "trader.infra.sqlite_observation": frozenset({"SqliteActivity", "SqliteObservation", "IndependentSqliteWork"}),
 }
 _READ_ONLY_MODULES = frozenset(
     {

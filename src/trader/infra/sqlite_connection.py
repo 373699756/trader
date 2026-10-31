@@ -13,6 +13,8 @@ from time import monotonic, sleep
 from types import TracebackType
 from typing import Literal, TypeAlias, cast
 
+from trader.infra.sqlite_observation import CurrentSqliteObservation, ObserveSqliteConnection, ObserveSqliteStatement
+
 SqliteParameter: TypeAlias = str | int | float | bytes | None
 SqliteParameters: TypeAlias = Sequence[object] | Mapping[str, object]
 
@@ -70,10 +72,20 @@ class SqliteConnection:
         driver.row_factory = sqlite3.Row
 
     def run(self, sql: str, parameters: SqliteParameters = ()) -> SqliteResult:
+        ObserveSqliteStatement()
         return SqliteResult(self._driver.execute(sql, _parameters(parameters)))
 
     def run_many(self, sql: str, parameters: Iterable[SqliteParameters]) -> SqliteResult:
-        return SqliteResult(self._driver.executemany(sql, (_parameters(row) for row in parameters)))
+        observation = CurrentSqliteObservation()
+        if observation is None:
+            return SqliteResult(self._driver.executemany(sql, (_parameters(row) for row in parameters)))
+
+        def rows() -> Iterator[tuple[SqliteParameter, ...] | dict[str, SqliteParameter]]:
+            for row in parameters:
+                observation.record_statement()
+                yield _parameters(row)
+
+        return SqliteResult(self._driver.executemany(sql, rows()))
 
     @property
     def in_transaction(self) -> bool:
@@ -157,14 +169,19 @@ class SqliteConnectionOptions:
 _DEFAULT_OPTIONS = SqliteConnectionOptions()
 
 
+def _configure_statement(connection: sqlite3.Connection, sql: str) -> sqlite3.Cursor:
+    ObserveSqliteStatement()
+    return connection.execute(sql)
+
+
 def _set_journal_mode(connection: sqlite3.Connection, options: SqliteConnectionOptions) -> None:
     deadline = monotonic() + options.timeout_seconds
     try:
         while True:
             remaining = max(0.0, deadline - monotonic())
-            connection.execute(f"PRAGMA busy_timeout={int(remaining * 1000)}")
+            _configure_statement(connection, f"PRAGMA busy_timeout={int(remaining * 1000)}")
             try:
-                actual = connection.execute(f"PRAGMA journal_mode={options.journal_mode}").fetchone()[0]
+                actual = _configure_statement(connection, f"PRAGMA journal_mode={options.journal_mode}").fetchone()[0]
             except sqlite3.OperationalError as exc:
                 remaining = deadline - monotonic()
                 # SQLite can reject a concurrent journal-mode change without waiting for busy_timeout.
@@ -176,21 +193,21 @@ def _set_journal_mode(connection: sqlite3.Connection, options: SqliteConnectionO
                 raise sqlite3.OperationalError("sqlite_journal_mode_unavailable")
             return
     finally:
-        connection.execute(f"PRAGMA busy_timeout={int(options.timeout_seconds * 1000)}")
+        _configure_statement(connection, f"PRAGMA busy_timeout={int(options.timeout_seconds * 1000)}")
 
 
 def _configure_database(connection: sqlite3.Connection, options: SqliteConnectionOptions) -> None:
     query_only = options.query_only if options.query_only is not None else options.read_only
     if query_only:
-        connection.execute("PRAGMA query_only=ON")
+        _configure_statement(connection, "PRAGMA query_only=ON")
     if not options.read_only:
         if options.page_size is not None:
-            connection.execute(f"PRAGMA page_size={options.page_size}")
+            _configure_statement(connection, f"PRAGMA page_size={options.page_size}")
         if options.journal_mode is not None:
             _set_journal_mode(connection, options)
-        connection.execute("PRAGMA synchronous=FULL" if options.durability == "durable" else "PRAGMA synchronous=OFF")
+        _configure_statement(connection, "PRAGMA synchronous=FULL" if options.durability == "durable" else "PRAGMA synchronous=OFF")
     if options.foreign_keys:
-        connection.execute("PRAGMA foreign_keys=ON")
+        _configure_statement(connection, "PRAGMA foreign_keys=ON")
 
 
 def OpenSqliteConnection(
@@ -201,6 +218,7 @@ def OpenSqliteConnection(
     statement_trace: Callable[[str], None] | None = None,
 ) -> SqliteConnection:
     """Caller closes the handle; immutable is only for offline, unchanging copies."""
+    ObserveSqliteConnection()
     connection = sqlite3.connect(
         _connection_target(path, options),
         uri=options.read_only,
@@ -215,11 +233,11 @@ def OpenSqliteConnection(
         if statement_trace is not None:
             connection.set_trace_callback(statement_trace)
         if options.cache_kib is not None:
-            connection.execute(f"PRAGMA cache_size=-{options.cache_kib}")
+            _configure_statement(connection, f"PRAGMA cache_size=-{options.cache_kib}")
         if options.mmap_bytes is not None:
-            connection.execute(f"PRAGMA mmap_size={options.mmap_bytes}")
+            _configure_statement(connection, f"PRAGMA mmap_size={options.mmap_bytes}")
         if options.temp_storage is not None:
-            connection.execute(f"PRAGMA temp_store={options.temp_storage}")
+            _configure_statement(connection, f"PRAGMA temp_store={options.temp_storage}")
         return SqliteConnection(connection)
     except BaseException:
         connection.close()

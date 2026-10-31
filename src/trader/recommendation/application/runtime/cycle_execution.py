@@ -4,6 +4,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from trader.infra.sqlite_observation import IndependentSqliteWork
+
 from trader.recommendation.application.pipeline.freeze_publish.current_publisher import (
     PrepareCurrentPair,
     PublishCurrentPair,
@@ -93,7 +95,8 @@ class RecommendationCycleExecutor:
             if freezes is None or not self._publish_local_pair(requests, freezes):
                 return
             for request, local in zip(requests, freezes, strict=True):
-                self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
+                with IndependentSqliteWork():
+                    self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
         except StaleSessionError:
             return
         finally:
@@ -149,7 +152,8 @@ class RecommendationCycleExecutor:
                 if request.session is not None:
                     request.session.remember(local.version)
                 self._hooks.batch_published(event, local)
-                self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
+                with IndependentSqliteWork():
+                    self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
         except StaleSessionError:
             return
         finally:

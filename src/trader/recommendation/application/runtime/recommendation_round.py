@@ -6,8 +6,10 @@ import math
 import threading
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
+from trader.infra.sqlite_observation import SqliteActivity, SqliteObservation
 from trader.recommendation.application.pipeline.freeze_publish.current_publisher import (
     PreparedCurrentPair,
     PublishCurrentBatch,
@@ -28,6 +30,20 @@ class RoundAdmission:
     tasks: tuple[ScheduledPipelineTask, ...]
     started_monotonic: float
     deadline_monotonic: float
+
+
+@dataclass(frozen=True)
+class RecommendationRoundStatus:
+    sequence: int
+    profiles: tuple[str, ...]
+    outcome: str
+    finished: bool
+    elapsed_ms: float
+    cleanup_ms: float
+    pending_profiles: tuple[str, ...]
+    running_profiles: tuple[str, ...]
+    staged_profiles: tuple[str, ...]
+    database: SqliteActivity
 
 
 class RecommendationRounds:
@@ -59,6 +75,11 @@ class RecommendationRounds:
         self._cancelled = False
         self._inputs_pending = False
         self._inputs: RoundInputs | None = None
+        self._observation = SqliteObservation()
+        self._round_profiles: tuple[str, ...] = ()
+        self._outcome = "running"
+        self._revoked_at: float | None = None
+        self._last_status: RecommendationRoundStatus | None = None
         self._monotonic = monotonic
         self._round_timeout_seconds = round_timeout_seconds
         self._publish_batch = publish_batch
@@ -77,6 +98,7 @@ class RecommendationRounds:
             if profile not in self._profiles:
                 return None
             self._expire_locked()
+            self._close_finished_locked()
             if self._active is None:
                 if not tasks:
                     return None
@@ -91,6 +113,10 @@ class RecommendationRounds:
                     started + self._round_timeout_seconds,
                 )
                 self._pending = set(self._profiles)
+                self._round_profiles = tuple(self._profiles)
+                self._observation = SqliteObservation(on_drained=self._workers_drained)
+                self._outcome = "running"
+                self._revoked_at = None
                 self._cancelled = False
                 self._inputs_pending = False
                 self._staged.clear()
@@ -104,6 +130,30 @@ class RecommendationRounds:
             self._preparing.add(profile)
             self._running.add(profile)
             return self._active
+
+    def observe(self, sequence: int) -> AbstractContextManager[None]:
+        with self._condition:
+            if self._active is None or self._active.sequence != sequence:
+                raise ValueError("round_observation_identity_missing")
+            return self._observation.bind()
+
+    def status(self) -> RecommendationRoundStatus | None:
+        with self._condition:
+            # Observing status must not expire work or mutate scheduler state.
+            return self._snapshot_locked() if self._active is not None else self._last_status
+
+    def _snapshot_locked(self, *, finished: bool = False) -> RecommendationRoundStatus:
+        admission = self._active
+        if admission is None:
+            raise RuntimeError("round_status_identity_missing")
+        now = self._monotonic()
+        return RecommendationRoundStatus(
+            admission.sequence, self._round_profiles, self._outcome, finished,
+            max(0.0, now - admission.started_monotonic) * 1000,
+            max(0.0, now - self._revoked_at) * 1000 if self._revoked_at is not None else 0.0,
+            tuple(sorted(self._pending)), tuple(sorted(self._running)), tuple(sorted(self._staged)),
+            self._observation.snapshot(),
+        )
 
     def inputs(self, profile: str, sequence: int | None) -> ProfileRoundInputs | None:
         with self._condition:
@@ -134,7 +184,7 @@ class RecommendationRounds:
             if not self._matches_locked(sequence):
                 return False
             self._inputs_pending = True
-            self._cancel_locked()
+            self._cancel_locked("waiting_inputs")
             return True
 
     def inputs_pending(self, sequence: int) -> bool:
@@ -149,7 +199,12 @@ class RecommendationRounds:
 
     def stage(self, profile: str, sequence: int, pair: PreparedCurrentPair) -> UnifiedPairedPublishResult:
         with self._condition:
-            if pair.profile != profile or not self._matches_locked(sequence):
+            if (
+                pair.profile != profile
+                or profile not in self._running
+                or profile in self._staged
+                or not self._matches_locked(sequence)
+            ):
                 return UnifiedPairedPublishResult(False, "round_cancelled")
             self._staged[profile] = pair
             if len(self._staged) == len(self._profiles):
@@ -158,7 +213,7 @@ class RecommendationRounds:
             while self._publication is None and self._matches_locked(sequence):
                 remaining = self._remaining_locked()
                 if remaining <= 0.0:
-                    self._cancel_locked()
+                    self._cancel_locked("timeout")
                     break
                 self._condition.wait(remaining)
             publication = self._publication
@@ -173,11 +228,12 @@ class RecommendationRounds:
 
     def _commit_locked(self, sequence: int) -> None:
         if not self._matches_locked(sequence) or self._remaining_locked() <= 0.0:
-            self._cancel_locked()
+            self._cancel_locked("timeout")
             return
         pairs = tuple(self._staged[profile] for profile in self._profiles)
         publication = self._publish_batch(pairs, lambda: self._remaining_locked() > 0.0)
         self._publication = publication
+        self._outcome = "published" if publication.accepted else publication.reason
         if publication.accepted and self._publish_batch_event is not None:
             self._publish_batch_event(sequence, publication.events)
 
@@ -190,7 +246,7 @@ class RecommendationRounds:
             while self._pending or remaining_profiles:
                 remaining = self._remaining_locked()
                 if remaining <= 0.0:
-                    self._cancel_locked()
+                    self._cancel_locked("timeout")
                     return False
                 self._condition.wait(remaining)
                 if not self._matches_locked(sequence):
@@ -201,6 +257,8 @@ class RecommendationRounds:
         with self._condition:
             if self._active is None or self._active.sequence != sequence:
                 return
+            if self._remaining_locked() <= 0.0:
+                self._cancel_locked("timeout")
             if profile in self._running and profile not in self._staged:
                 self._cancel_locked()
             self._pending.discard(profile)
@@ -231,21 +289,32 @@ class RecommendationRounds:
 
     def _expire_locked(self) -> None:
         if self._active is not None and self._remaining_locked() <= 0.0:
-            self._cancel_locked()
+            self._cancel_locked("timeout")
             self._close_finished_locked()
 
-    def _cancel_locked(self) -> None:
+    def _cancel_locked(self, reason: str = "cancelled") -> None:
+        if not self._cancelled and self._outcome != "published":
+            self._outcome = reason
+            self._revoked_at = self._monotonic()
         self._cancelled = True
         self._pending.clear()
         self._condition.notify_all()
 
     def _close_finished_locked(self) -> None:
-        if not self._pending and not self._running:
+        if not self._pending and not self._running and self._observation.snapshot().worker_inflight == 0:
+            if self._active is not None:
+                self._last_status = self._snapshot_locked(finished=True)
             self._active = None
             self._inputs = None
+            self._collecting.clear()
+            self._preparing.clear()
             self._staged.clear()
             self._publication = None
         self._condition.notify_all()
 
+    def _workers_drained(self) -> None:
+        with self._condition:
+            self._close_finished_locked()
 
-__all__ = ["ROUND_TIMEOUT_SECONDS", "RecommendationRounds", "RoundAdmission"]
+
+__all__ = ["ROUND_TIMEOUT_SECONDS", "RecommendationRounds", "RecommendationRoundStatus", "RoundAdmission"]

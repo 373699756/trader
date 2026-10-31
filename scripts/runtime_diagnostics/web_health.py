@@ -8,7 +8,7 @@ import json
 import time
 import urllib.parse
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Literal
@@ -1172,6 +1172,8 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
         "preview_state": status.preview_state if status is not None else None,
         "preview_error": status.preview_error if status is not None else None,
         "preview_started_at": status.preview_started_at if status is not None else None,
+        "recommendation_round": asdict(status.recommendation_round)
+        if status is not None and status.recommendation_round is not None else None,
         "stage_timings": [
             {"stage": timing.stage, "maximum_ms": timing.maximum_ms,
              "p50_ms": timing.p50_ms, "sample_count": timing.sample_count}

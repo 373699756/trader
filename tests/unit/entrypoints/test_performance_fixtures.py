@@ -89,7 +89,7 @@ def _budgets() -> PerformanceBudgetSettings:
         {},
         PerformanceMemorySettings(536870912, 2147483648, 5.0),
         10.0,
-        DatabasePerformanceSettings(10.0, 15.0, 4),
+        DatabasePerformanceSettings(10.0, 15.0),
     )
 
 

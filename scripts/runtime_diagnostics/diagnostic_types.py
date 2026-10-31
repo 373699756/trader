@@ -130,6 +130,7 @@ class DiagnosticOptions:
     v5_sample_root: Path | None = None
     v5_candidate_config: Path | None = None
     performance_replay_ticks: int = 0
+    performance_steady_only: bool = False
     performance_replay_rows: int | None = None
     database_probe_directory: Path | None = None
     database_rounds: int = 5

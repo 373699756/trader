@@ -10,6 +10,7 @@ from trader.recommendation.application.ports.loaded_profile import ScoringHeadRu
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.recommendation.application.runtime.cadence import CadencePlannerStatus
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRoundStatus
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus
 from trader.recommendation.domain.evidence.pipeline import (
@@ -90,6 +91,7 @@ def RuntimeStatus(
         "observer": observer,
         "scheduler": {
             "config_version": status.config_version,
+            "recommendation_round": _round_payload(status.recommendation_round),
             "lanes": [asdict(lane) for lane in status.lanes],
             "hybrid_lanes": [asdict(lane) for lane in status.hybrid_lanes],
             "task_lanes": [asdict(lane) for lane in status.task_lanes],
@@ -127,6 +129,28 @@ def RuntimeStatus(
             "settlement_failure_count": status.settlement_failure_count,
             "input_quality": InputQualityPayload(status.input_quality),
             "publication_io": [PublicationIoPayload(item) for item in status.publication_io],
+        },
+    }
+
+
+def _round_payload(status: RecommendationRoundStatus | None) -> dict[str, object] | None:
+    if status is None:
+        return None
+    return {
+        "sequence": status.sequence,
+        "profiles": list(status.profiles),
+        "outcome": status.outcome,
+        "finished": status.finished,
+        "elapsed_ms": status.elapsed_ms,
+        "cleanup_ms": status.cleanup_ms,
+        "pending_profiles": list(status.pending_profiles),
+        "running_profiles": list(status.running_profiles),
+        "staged_profiles": list(status.staged_profiles),
+        "database": {
+            "connection_attempts": status.database.connection_attempts,
+            "statements": status.database.statements,
+            "worker_inflight": status.database.worker_inflight,
+            "worker_peak": status.database.worker_peak,
         },
     }
 
