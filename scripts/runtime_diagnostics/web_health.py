@@ -1168,6 +1168,15 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             "error": status.deepseek_error if status else None,
         },
         "runtime_version": status.runtime_version if status is not None else None,
+        "run_mode": status.run_mode if status is not None else None,
+        "preview_state": status.preview_state if status is not None else None,
+        "preview_error": status.preview_error if status is not None else None,
+        "preview_started_at": status.preview_started_at if status is not None else None,
+        "stage_timings": [
+            {"stage": timing.stage, "maximum_ms": timing.maximum_ms,
+             "p50_ms": timing.p50_ms, "sample_count": timing.sample_count}
+            for timing in status.stage_timings
+        ] if status is not None else [],
         "phase": status.phase if status is not None else None,
         "degraded_reasons": list(status.degraded_reasons) if status is not None else [],
         "recent_errors": [

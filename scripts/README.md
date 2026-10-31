@@ -18,6 +18,10 @@ module and profile there; it is not added as another top-level script.
 可重复使用`--storage-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
 unknown结果附带实际runtime配置文件和单项`storage`修改示例：`"storage": "hdd"`或`"storage": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
 
+`--profile tencent-transport`只读加载本地证券参考人口，以同一120只分片、3路并发分别测量直接HTTP和可复用隔离HTTP；两组各12秒采集预算，外层仍受统一命令超时控制。真实请求腾讯，输出总体请求/返回数、物理尝试与失败数、单次及整批耗时，不保存供应商载荷或改动活动数据。单次对照不能证明长期尾延迟或完整推荐轮次；直连组的不可协作DNS等阻塞仍可能超过其本地采集预算。`runtime`报告另外保留预览状态、失败码与最多64项阶段计时，用于区分行情等待和下游阻断。
+
+`--profile browser-live --base-url http://127.0.0.1:5000`用独立临时Chrome会话读取实际服务，切换Tomorrow/D25并比较DOM证券顺序与同档位current，记录数量、预览状态、SSE连通和浏览器错误数；不启动fixture、不修改业务数据、不输出证券内容。复用既有桌面CDP控制器，每页等待上限15秒，整体受统一命令超时控制；检查完成关闭Chrome并清理临时浏览器目录。该模式不替代全部档位、历史、布局或连续五轮验收。
+
 `--profile v5-samples --training-probe-directory /absolute/new/external/directory`
 隔离比较V5宽表与float64紧凑序列块的大小、构建、封存及双头批量读取，逐值检查顺序和标签。
 默认使用8192条合成样本；附加`--wide-sample-source /absolute/samples.sqlite3`可只读抽取格式2具名宽表一个行业前4096行、最多500个日期，源查询限30秒。

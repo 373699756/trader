@@ -24,6 +24,18 @@ from trader.training.infra.research.tomorrow_research_evidence import TomorrowRe
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_server_import_for_spawn_does_not_load_composition_or_model_stack() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import sys; import trader.entrypoints.server; "
+            "assert 'trader.bootstrap' not in sys.modules; "
+            "assert 'numpy' not in sys.modules; assert 'torch' not in sys.modules"
+        )],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _runtime_config(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
     shutil.copytree(ROOT / "config", config_dir, dirs_exist_ok=True)
@@ -711,7 +723,7 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
     def forbidden_build(*args, **kwargs):
         raise AssertionError("duplicate server must be rejected before loading resources")
 
-    monkeypatch.setattr(server_module, "BuildSystem", forbidden_build)
+    monkeypatch.setattr("trader.bootstrap.BuildSystem", forbidden_build)
     monkeypatch.setattr(server_module, "LoadRuntimeSettings", lambda _path: settings)
     monkeypatch.setattr(server_module, "ProcessLock", _LockedProcess)
 

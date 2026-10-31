@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from trader.infra.cache import BoundedLruCache
+from trader.infra.isolated_http import IsolatedHttpExecutor
 from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
 from trader.infra.workers import BoundedExecutor
@@ -48,6 +49,7 @@ class RuntimeWorkerResources:
     company_pool: BoundedExecutor
     source_lanes: SourceLaneScheduler
     market_cache: BoundedLruCache[object]
+    http_executor: IsolatedHttpExecutor
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,8 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             self.quote_pool,
             self.market_quote_pool,
             self.minute_pool,
-            (self.long_runtime, *((self.eligibility, self.input_preloader) if self.owns_shared_resources else ())),
+            (*((self.workers.http_executor,) if self.owns_shared_resources else ()),
+             self.long_runtime, *((self.eligibility, self.input_preloader) if self.owns_shared_resources else ())),
             self.market_cache,
             self.owns_shared_resources,
         )

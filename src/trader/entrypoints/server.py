@@ -17,7 +17,6 @@ from typing import Protocol, cast
 from flask import Flask
 from werkzeug.serving import BaseWSGIServer, make_server
 
-from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.shutdown import (
@@ -71,7 +70,7 @@ def Main(argv: list[str] | None = None) -> int:
     except ProcessLockError as exc:
         raise SystemExit(_running_service_message(exc, settings)) from None
     with lock:
-        from trader.bootstrap import PrepareRuntimeStorage
+        from trader.bootstrap import BuildProfiledSystem, BuildSystem, PrepareRuntimeStorage
 
         PrepareRuntimeStorage(settings, choose=True, report=False)
         system = (

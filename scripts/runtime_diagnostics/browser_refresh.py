@@ -267,6 +267,7 @@ def _research_factory() -> _NoopResearchRuntime:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--live-url", help="read-only Chrome check of an already-running service, without fixtures")
     parser.add_argument("--duration-seconds", type=float, default=65.0, help="measurement duration (default: 65)")
     parser.add_argument("--minimum-updates", type=int, default=3, help="minimum DOM price changes required to pass")
     parser.add_argument(
@@ -787,11 +788,58 @@ def _run(
     }
 
 
+def _live_browser(url: str) -> dict[str, object]:
+    from tests.performance.run_desktop_dashboard import _ChromeSession
+
+    binary = shutil.which("google-chrome") or shutil.which("chromium")
+    if binary is None:
+        raise RuntimeError("Chrome is required for the live browser check")
+    chrome = _ChromeSession(binary, _free_port())
+    try:
+        chrome.set_viewport(1440, 1100)
+        chrome.navigate(url)
+        _wait(lambda: bool(chrome.execute("return !!window.TraderDashboardDiagnostics;")), timeout_seconds=15)
+        results = []
+        for strategy in ("tomorrow", "d25"):
+            chrome.execute(f"document.querySelector('.strategy-tab[data-strategy={strategy}]').click(); return true;")
+            result: object = None
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                result = chrome.execute("""return (async () => {
+                  const profile = document.querySelector('.profile-tab[aria-selected=true]')?.dataset.profile;
+                  const strategy = document.querySelector('.strategy-tab[aria-selected=true]')?.dataset.strategy;
+                  const response = await fetch(`/api/freezes/${strategy}/current?profile=${profile}`);
+                  if (!response.ok) return {matched: false};
+                  const current = await response.json();
+                  const codes = Array.from(document.querySelectorAll('#tableBody tr[data-code]'), r => r.dataset.code);
+                  const expected = (current.items || []).map(item => item.code);
+                  return {profile, strategy, status: current.status, rows: codes.length,
+                    expected_rows: expected.length, matched: JSON.stringify(codes) === JSON.stringify(expected),
+                    publication: document.querySelector('#publicationStatus')?.textContent,
+                    stream: document.querySelector('#streamStatus')?.textContent,
+                    browser_errors: window.TraderDashboardDiagnostics.snapshot().browserErrors.length};
+                })();""")
+                if isinstance(result, dict) and result.get("matched") and result.get("stream") == "实时":
+                    break
+                time.sleep(0.1)
+            results.append(result)
+        passed = all(isinstance(row, dict) and row.get("matched") and row.get("browser_errors") == 0
+                     and row.get("stream") == "实时" for row in results)
+        return {"schema_version": "web-live-browser", "passed": passed,
+                "summary": {"fixture": False, "strategies": results}}
+    finally:
+        chrome.close()
+
+
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
     report: dict[str, object]
     try:
+        if args.live_url:
+            report = _live_browser(args.live_url)
+            emit_report(report)
+            return 0 if report["passed"] else 1
         simulated_start = _validate(args)
         settings = LoadRuntimeSettings(args.runtime_config)
         report = _run(

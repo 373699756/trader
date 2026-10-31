@@ -32,6 +32,7 @@ def test_explicit_v1_build_is_lazy_authorized_and_binds_complete_published_histo
     group = BuildProfiledSystem(path, profiles=("v1", "v5"))
     assert tuple(item.profile_id for item in group.systems) == ("v1", "v5")
     assert group.systems[0].workers.market_cache is group.systems[1].workers.market_cache
+    assert group.systems[0].workers.http_executor is group.systems[1].workers.http_executor
     assert group.systems[0].budget is group.systems[1].budget
     assert group.systems[0].review_cache is group.systems[1].review_cache
     assert group.systems[0].input_preloader is group.systems[1].input_preloader

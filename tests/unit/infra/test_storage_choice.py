@@ -116,7 +116,7 @@ def test_server_entrypoint_saves_choice_before_build(tmp_path, monkeypatch):
         assert LoadRuntimeSettings(path).storage_medium == "hdd"
         return SimpleNamespace(settings=SimpleNamespace(pipeline=SimpleNamespace(shutdown_timeout_seconds=30)))
 
-    monkeypatch.setattr(server, "BuildSystem", build)
+    monkeypatch.setattr(bootstrap, "BuildSystem", build)
     monkeypatch.setattr(server, "_run_system", lambda _system, *, timeout_seconds: 0)
 
     assert server.Main(["--config", str(path), "v2"]) == 0

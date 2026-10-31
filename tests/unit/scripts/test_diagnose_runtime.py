@@ -413,6 +413,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("history", "history_sources"),
         ("security-master", "exchange_security_master"),
         ("tencent", "tencent_quotes"),
+        ("tencent-transport", "tencent_transport"),
         ("tushare", "tushare_daily"),
         ("history-daily-capability", "history_daily_capability"),
         ("baostock-concurrency", "baostock_concurrency"),
@@ -426,6 +427,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("research", "research_readiness"),
         ("long-watchlist", "long_watchlist_admission"),
         ("browser", "browser_refresh"),
+        ("browser-live", "browser_live"),
         ("performance", "production_performance:v1,v2,v3,v5"),
     ],
 )

@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -15,7 +15,10 @@ from .reporting import emit_report, summarize_latency_ms
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.bootstrap import OpenExternalHttp  # noqa: E402
+from trader.infra.http_contracts import HttpAttempt, HttpError, HttpTransport  # noqa: E402
+from trader.infra.http_transport import RequestsHttpTransport  # noqa: E402
+from trader.infra.isolated_http import IsolatedHttpExecutor  # noqa: E402
+from trader.infra.workers import BoundedExecutor  # noqa: E402
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -27,6 +30,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=5, help="number of samples (default: 5)")
     parser.add_argument("--interval-seconds", type=float, default=2.0, help="wall-clock delay between samples")
     parser.add_argument("--timeout-seconds", type=float, default=3.0, help="timeout for each Tencent HTTP request")
+    parser.add_argument("--transport-audit", action="store_true")
+    parser.add_argument("--runtime-config", type=Path, default=PROJECT_ROOT / "config/runtime.json")
     return parser
 
 
@@ -48,6 +53,8 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, object]:
+    from trader.bootstrap import OpenExternalHttp
+
     client = TencentClient(worker_pool=None, session_factory=OpenExternalHttp, timeout_seconds=args.timeout_seconds)
     samples: list[dict[str, object]] = []
     latencies: list[float] = []
@@ -91,13 +98,61 @@ def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, obje
     }
 
 
+def _audit_transport(args: argparse.Namespace) -> dict[str, object]:
+    from trader.infra.settings import LoadRuntimeSettings
+    from .market_factor_inputs import ReadReferences
+
+    settings = LoadRuntimeSettings(args.runtime_config)
+    references = ReadReferences(settings.data_paths.reference, datetime.now(_SHANGHAI))
+    codes = tuple(sorted({row.subject_key for row in references.observations}))
+    rows: list[dict[str, object]] = []
+    pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="tencent-audit")
+    pool.start()
+    executor = IsolatedHttpExecutor(worker_count=3, transport_factory=RequestsHttpTransport)
+    executor.start()
+    try:
+        for isolated in (False, True):
+            attempts: list[HttpAttempt] = []
+
+            def open_transport() -> HttpTransport:
+                return RequestsHttpTransport(
+                    observe=attempts.append,
+                    execute_request=executor.execute if isolated else None,
+                )
+
+            client = TencentClient(worker_pool=pool, session_factory=open_transport,
+                                   timeout_seconds=args.timeout_seconds)
+            started = time.monotonic()
+            error = ""
+            quotes = ()
+            try:
+                quotes = client.fetch_quotes(codes, deadline=datetime.now(_SHANGHAI) + timedelta(seconds=12))
+            except (OSError, RuntimeError, HttpError) as exc:
+                error = type(exc).__name__
+            rows.append({
+                "transport": "isolated" if isolated else "direct", "requested": len(codes),
+                "returned": len(quotes), "elapsed_ms": round((time.monotonic() - started) * 1000, 2),
+                "attempts": len(attempts), "failed_attempts": sum(bool(item.failure) for item in attempts),
+                "attempt_latency": _latency_summary([item.elapsed_seconds * 1000 for item in attempts]),
+                "error": error,
+            })
+    finally:
+        pool.stop(wait=True, cancel_futures=True)
+        executor.stop()
+    return {
+        "schema_version": "tencent-transport-audit",
+        "status": "degraded" if any(row["error"] or row["returned"] != row["requested"] for row in rows) else "passed",
+        "summary": {"measurements": rows},
+    }
+
+
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
     report: dict[str, object]
     try:
         codes = _validate(args)
-        report = _collect(codes, args)
+        report = _audit_transport(args) if args.transport_audit else _collect(codes, args)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
             "schema_version": "tencent-quote-sampling",

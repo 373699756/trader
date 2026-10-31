@@ -366,18 +366,20 @@ class PublishedHistoryCache:
         self, entries: dict[str, tuple[DailyBar, ...]], observed_at: datetime
     ) -> dict[str, tuple[DailyBar, ...]]:
         assert self._open_dates is not None
-        if self._preview_context is not None:
-            day = self._preview_context.market_trade_date.isoformat()
-            return {code: bars for code, bars in entries.items() if bars and bars[-1].trade_date == day}
         try:
             observed_at = observed_at.astimezone(SHANGHAI)
             dates = self._open_dates()
-            completed = tuple(day for day in dates if day < observed_at.date())
-            if not completed or not dates or dates[-1] < observed_at.date():
+            signal_day = self._preview_context.market_trade_date if self._preview_context else observed_at.date()
+            completed = tuple(day for day in dates if day < signal_day)
+            if not completed or not dates or dates[-1] < signal_day:
                 return {}
         except (OSError, RuntimeError, ValueError):
             return {}
-        previous, today = completed[-1].isoformat(), observed_at.date().isoformat()
+        previous, today = completed[-1].isoformat(), signal_day.isoformat()
+        if self._preview_context is not None:
+            # The close quote supplies D; historical factors/model windows use
+            # completed sessions before D, just as in the trading-day path.
+            return {code: bars for code, bars in entries.items() if bars and previous <= bars[-1].trade_date <= today}
         with self._lock:
             observed_dates = {
                 code: entry.latest_observed_date.isoformat() if entry.latest_observed_date is not None else ""
@@ -464,8 +466,6 @@ class PublishedHistoryCache:
         if entry.context.sample_count < required_sessions:
             failure = "history_window_insufficient"
         elif entry.context.latest_trade_date > day.isoformat():
-            failure = "history_model_date_mismatch"
-        elif self._preview_context is not None and entry.context.latest_trade_date != day.isoformat():
             failure = "history_model_date_mismatch"
         elif previous is not None and entry.context.latest_trade_date < previous.isoformat():
             failure = "history_model_date_mismatch"

@@ -55,6 +55,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "history": ("history_sources",),
     "security-master": ("exchange_security_master",),
     "tencent": ("tencent_quotes",),
+    "tencent-transport": ("tencent_transport",),
     "tushare": ("tushare_daily",),
     "history-daily-capability": ("history_daily_capability",),
     "baostock-concurrency": ("baostock_concurrency",),
@@ -85,6 +86,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "research": ("research_readiness",),
     "long-watchlist": ("long_watchlist_admission",),
     "browser": ("browser_refresh",),
+    "browser-live": ("browser_live",),
     "performance": ("production_performance",),
     "runtime": ("web_health",),
     "sources": (
@@ -850,6 +852,13 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "tencent_transport": DiagnosticCommand(
+            "tencent_transport",
+            (python_executable, "-m", "scripts.runtime_diagnostics.tencent_quotes",
+             "--transport-audit", "--runtime-config", str(options.runtime_config),
+             "--timeout-seconds", str(options.source_timeout_seconds)),
+            common_timeout,
+        ),
         "tushare_daily": DiagnosticCommand(
             "tushare_daily",
             (
@@ -964,6 +973,11 @@ def build_commands(
                 "--runtime-config",
                 str(options.runtime_config),
             ),
+            common_timeout,
+        ),
+        "browser_live": DiagnosticCommand(
+            "browser_live",
+            (python_executable, "-m", "scripts.runtime_diagnostics.browser_refresh", "--live-url", options.base_url),
             common_timeout,
         ),
         "history_write_benchmark": DiagnosticCommand(
@@ -1371,6 +1385,15 @@ def _web_health_details(_result: DiagnosticResult, source: Mapping[str, object],
         payload["latest_runtime"] = {
             "runtime_status": latest.get("runtime_status"),
             "runtime_version": latest.get("runtime_version"),
+            "run_mode": latest.get("run_mode"),
+            "preview_state": latest.get("preview_state"),
+            "preview_error": latest.get("preview_error"),
+            "preview_started_at": latest.get("preview_started_at"),
+            "stage_timings": [
+                {key: timing.get(key) for key in ("stage", "maximum_ms", "p50_ms", "sample_count")}
+                for timing in latest.get("stage_timings", [])[:64]
+                if isinstance(timing, dict)
+            ] if isinstance(latest.get("stage_timings"), list) else [],
             "phase": latest.get("phase"),
             "degraded_reasons": _safe_string_list(latest.get("degraded_reasons"), limit=32),
             "recent_errors": [
@@ -1952,6 +1975,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "qfq_sqlite_audit": _security_master_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
+    "tencent_transport": _security_master_details,
     "tushare_daily": _tushare_details,
     "history_daily_capability": _history_daily_capability_details,
     "baostock_concurrency": _baostock_concurrency_details,
@@ -1970,6 +1994,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "baostock_qfq_shadow": _baostock_qfq_shadow_details,
     "research_readiness": _research_details,
     "browser_refresh": _browser_details,
+    "browser_live": _security_master_details,
     "production_performance": _performance_details,
 }
 

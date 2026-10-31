@@ -282,6 +282,14 @@ class WebRuntimeIssue:
 
 
 @dataclass(frozen=True)
+class RuntimeStageTiming:
+    stage: str
+    maximum_ms: float | None
+    p50_ms: float | None
+    sample_count: int | None
+
+
+@dataclass(frozen=True)
 class StatusSnapshot:
     schema_version: str | None
     release_freeze_schema: str | None
@@ -308,6 +316,11 @@ class StatusSnapshot:
     deepseek_used: int | None = None
     deepseek_remaining: int | None = None
     deepseek_error: str | None = None
+    run_mode: str | None = None
+    preview_state: str | None = None
+    preview_error: str | None = None
+    preview_started_at: str | None = None
+    stage_timings: tuple[RuntimeStageTiming, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "strategies", MappingProxyType(dict(self.strategies)))
@@ -380,6 +393,18 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
         runtime_status=_text(payload.get("status")),
         runtime_started=payload.get("runtime_started") is True,
         runtime_version=_text(payload.get("runtime_version")),
+        run_mode=_text(payload.get("run_mode")),
+        preview_state=_text(payload.get("preview_state")),
+        preview_error=_text(payload.get("preview_error")),
+        preview_started_at=_text(payload.get("preview_started_at")),
+        stage_timings=tuple(
+            RuntimeStageTiming(
+                str(stage), _nonnegative_number(_mapping(value).get("maximum_ms")),
+                _nonnegative_number(_mapping(value).get("p50_ms")),
+                _nonnegative_int(_mapping(value).get("sample_count")),
+            )
+            for stage, value in list(_mapping(_mapping(market.get("latency_waterfall")).get("stages")).items())[:64]
+        ),
         phase=_text(payload.get("phase")),
         degraded_reasons=_text_tuple(payload.get("degraded_reasons"), limit=32),
         event_sequence=_nonnegative_int(events.get("sequence")),

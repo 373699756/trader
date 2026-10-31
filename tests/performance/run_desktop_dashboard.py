@@ -196,7 +196,9 @@ class _PreviewBrowserFixtures:
 
     def _input_versions(self, profile: str) -> tuple[tuple[str, str], ...]:
         if profile != "v1":
-            identity = (("score_scale", "weighted_evidence_quality_0_100"), ("score_model", f"{profile}:browser"))
+            identity: tuple[tuple[str, str], ...] = (
+                ("score_scale", "weighted_evidence_quality_0_100"), ("score_model", f"{profile}:browser")
+            )
             if profile == "v5":
                 identity += (("execution_mode", "shadow"), ("production_authority", "false"))
             return identity
@@ -980,7 +982,7 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
 
 def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
     pipeline = _browser_pipeline(empty=empty)
-    return InputQualityPayload(
+    payload: dict[str, object] = InputQualityPayload(
         tuple(
             InputQualityStatus(
                 strategy,
@@ -998,6 +1000,7 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
             for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
     )
+    return payload
 
 
 def _browser_pipeline(*, empty: bool = False) -> RecommendationPipelineStatus:

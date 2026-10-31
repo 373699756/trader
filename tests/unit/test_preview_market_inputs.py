@@ -336,3 +336,33 @@ def test_preview_history_uses_signal_day_for_all_profiles(sessions, rank, sequen
     )
     cache.prepare_preview(None)
     assert cache.completed_model_inputs(("600001",), observed) != actual or not (rank or sequence)
+
+
+@pytest.mark.parametrize(
+    "sessions,rank,sequence", ((251, True, False), (251, False, False), (61, False, False), (61, False, True))
+)
+@pytest.mark.parametrize("offset", (-2, -1, 0, 1))
+def test_preview_history_admits_previous_session_without_requiring_signal_day_bar(sessions, rank, sequence, offset):
+    source = HistoryInput(252, 0, ("600001",))
+    cutoff = NOW.date() + timedelta(days=offset)
+    source.current = replace(
+        source.current, data_cutoff=cutoff, calendar_dates=tuple(day for day in CALENDAR if day <= cutoff)
+    )
+    cache = _cache(source, sessions, rank=rank, sequence=sequence)
+    cache.initialize(cancelled=lambda: False)
+    expected = cache.completed_model_inputs(("600001",), NOW)
+    observed = NOW + timedelta(days=2)
+    cache.prepare_preview(PreviewContext("previous-session-preview", NOW.date(), observed))
+    actual = cache.completed_model_inputs(("600001",), observed)
+    assert actual == expected
+    restrictions = {}
+    histories = cache.load(("600001",), observed_at=observed, action_restrictions=restrictions)
+    if offset in (-1, 0):
+        assert actual[0].quality.failure is None
+        assert histories["600001"][-1].trade_date == cutoff.isoformat()
+        assert cache.summaries(histories, observed)["600001"].profile.median_amount_20d is not None
+        assert restrictions == {}
+    else:
+        assert actual[0].quality.failure == "history_model_date_mismatch"
+        assert histories == {}
+        assert restrictions == {"600001": {"history_data_pending"}}

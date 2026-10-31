@@ -18,6 +18,28 @@ _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"
 
 
+def test_runtime_report_retains_preview_failure_and_bounded_stage_timings():
+    sample = parse_web_sample(
+        1, "2026-10-31T10:00:00+08:00",
+        status_payload={
+            "run_mode": "preview", "preview_state": "failed", "preview_error": "round_input_cancelled",
+            "preview_started_at": "2026-10-31T09:00:00+08:00",
+            "market_data": {"latency_waterfall": {"stages": {
+                "preview:full_market": {"maximum_ms": 120000, "p50_ms": 120000, "sample_count": 1,
+                                        "raw_payload": "private"},
+            }}},
+        }, freeze_payloads={},
+    )
+    report = build_report("http://localhost", (sample,), (), strategies=(), consecutive_zero_threshold=1)
+    summary = report["samples"][0]
+    assert summary["preview_error"] == "round_input_cancelled"
+    assert summary["preview_state"] == "failed"
+    assert summary["stage_timings"] == [{
+        "stage": "preview:full_market", "maximum_ms": 120000, "p50_ms": 120000, "sample_count": 1,
+    }]
+    assert "private" not in str(report)
+
+
 def test_runtime_report_includes_only_deepseek_recovery_summary():
     sample = parse_web_sample(
         1, "2026-10-29T10:00:00+08:00",
