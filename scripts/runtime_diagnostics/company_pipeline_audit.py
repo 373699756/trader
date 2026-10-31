@@ -15,6 +15,7 @@ from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import (
+    BuildCompanyDocumentPolicies,
     CompanyEvidenceRequest,
     Disclosure,
     DisclosurePage,
@@ -25,6 +26,8 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
+from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
+from trader.download.infra.company_document_parser import DetectCompanyText
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -70,12 +73,17 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
     codes = tuple(sorted({code for item in items for code in item.codes}))
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     configuration = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
+    ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
+    text_capability = DetectCompanyText()
+    policies = BuildCompanyDocumentPolicies(configuration, ocr_capability.identity, text_identity=text_capability.identity)
     event_policy = LoadStrategySettings(
         Path(__file__).resolve().parents[2] / "config" / "strategy.json"
     ).company_scoring.events
     deadline = time.monotonic() + budget_seconds
     runs: list[dict[str, object]] = []
     signatures: list[str] = []
+    document_signatures: list[str] = []
+    payload_signatures: list[str] = []
     for count in (1, 2):
         database = directory / f"pipeline-{count}.sqlite3"
         if database.exists():
@@ -114,6 +122,13 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
             def cancelled() -> bool:
                 return time.monotonic() >= deadline
 
+            engine = CompanyOcrEngine(
+                ocr_capability,
+                timeout_seconds=configuration.document_ocr_timeout_seconds,
+                max_pages=configuration.document_ocr_max_pages,
+                dpi=configuration.document_ocr_dpi,
+                cancel_requested=cancelled,
+            )
             sources = tuple(
                 CninfoMarketDisclosureSource(
                     session,
@@ -125,6 +140,9 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                     extended_document_limits=configuration.extended_document_limits,
                     request_interval_seconds=configuration.request_interval_seconds,
                     cancel_requested=cancelled,
+                    ocr_engine=engine,
+                    document_policies=policies,
+                    text_capability=text_capability,
                 )
                 for session in sessions
             )
@@ -144,6 +162,8 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                 cancelled,
                 document_sources=sources,
                 document_executor=workers,
+                ocr_identity=ocr_capability.identity,
+                text_identity=text_capability.identity,
             )
             result = SyncCompanyEvidence(
                 dependencies,
@@ -173,6 +193,31 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
         )
         signature = hashlib.sha256(repr(comparable).encode()).hexdigest()
         signatures.append(signature)
+        with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+            documents = tuple(tuple(row) for row in connection.run(
+                "SELECT d.source,d.source_key,d.record_hash,d.body_checked,d.body_hash,e.payload_hash "
+                "FROM disclosures d LEFT JOIN document_extractions e ON e.disclosure_id=d.id "
+                "AND e.record_hash=d.record_hash WHERE d.kind='announcement' ORDER BY d.source,d.source_key"
+            ))
+            failure_counts = [
+                {"failure": row[0], "documents": row[1]}
+                for row in connection.run(
+                    "SELECT r.failure,COUNT(*) FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
+                    "AND d.record_hash=r.record_hash GROUP BY r.failure ORDER BY r.failure"
+                )
+            ]
+            extraction_methods = [
+                {"method": row[0], "documents": row[1]}
+                for row in connection.run(
+                    "SELECT e.method,COUNT(*) FROM document_extractions e JOIN disclosures d ON d.id=e.disclosure_id "
+                    "AND d.record_hash=e.record_hash GROUP BY e.method ORDER BY e.method"
+                )
+            ]
+        document_signature = hashlib.sha256(repr(tuple(row[:5] for row in documents)).encode()).hexdigest()
+        payload_signature = hashlib.sha256(repr(tuple((*row[:3], row[5]) for row in documents)).encode()).hexdigest()
+        document_signatures.append(document_signature)
+        payload_signatures.append(payload_signature)
+        extracted = sum(row[3] == 1 and row[4] is not None and row[5] is not None for row in documents)
         runs.append(
             {
                 "workers": count,
@@ -187,13 +232,25 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                 "resume_attempts": attempts,
                 "failures": result.failures,
                 "facts_digest": signature,
+                "extracted_documents": extracted,
+                "pending_ocr_documents": result.ocr_documents,
+                "unextractable_documents": result.unextractable_documents,
+                "document_failures": failure_counts,
+                "document_extractions": extraction_methods,
+                "documents_digest": document_signature,
+                "payloads_digest": payload_signature,
             }
         )
         if time.monotonic() >= deadline:
             break
     equivalent = len(signatures) == 2 and signatures[0] == signatures[1]
-    passed = equivalent and all(
+    equivalent_documents = len(document_signatures) == 2 and document_signatures[0] == document_signatures[1]
+    equivalent_payloads = len(payload_signatures) == 2 and payload_signatures[0] == payload_signatures[1]
+    passed = equivalent and equivalent_documents and equivalent_payloads and all(
         row["pending_documents"] == 0
+        and row["extracted_documents"] == len(items)
+        and row["pending_ocr_documents"] == row["unextractable_documents"] == 0
+        and not row["failures"]
         and row["attempts"] == len(items)
         and row["resume_changed_rows"] == 0
         and row["resume_attempts"] == 0
@@ -203,6 +260,8 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
     return {
         "schema_version": "company-resume",
         "status": "passed" if passed else "degraded",
-        "summary": {"pipeline_audit": {"isolated_sample": True, "equivalent_facts": equivalent, "runs": runs}},
+        "summary": {"pipeline_audit": {"isolated_sample": True, "equivalent_facts": equivalent,
+                                       "equivalent_documents": equivalent_documents,
+                                       "equivalent_payloads": equivalent_payloads, "runs": runs}},
         "findings": [] if passed else ["company_pipeline_probe_incomplete"],
     }

@@ -3,6 +3,7 @@
 import json
 import sys
 import time
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -13,7 +14,7 @@ from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
 from scripts.runtime_diagnostics.company_resume import Main, _compact_storage, _copy, _saved_pages
 from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import NOW
-from trader.download.domain.company_evidence import DisclosurePage, DisclosureQuery
+from trader.download.domain.company_evidence import CompanyDocumentFailure, DisclosurePage, DisclosureQuery
 from tests.helpers.configuration import (
     CompanyDocumentFilesFixture as CompanyDocumentFiles,
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
@@ -75,8 +76,34 @@ def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, 
     result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
     assert result["status"] == "passed"
     assert result["summary"]["pipeline_audit"]["equivalent_facts"]
+    assert result["summary"]["pipeline_audit"]["equivalent_documents"]
+    assert result["summary"]["pipeline_audit"]["equivalent_payloads"]
     for run in result["summary"]["pipeline_audit"]["runs"]:
         assert run["attempts"] == 2 and run["resume_attempts"] == run["resume_changed_rows"] == 0
+        assert run["extracted_documents"] == 2
+        assert run["document_extractions"] == [{"method": "text", "documents": 2}]
+        assert run["pending_ocr_documents"] == 0
+
+
+def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(tmp_path, monkeypatch):
+    now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
+    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _: (fixtures._disclosure("changed", "收到立案告知书", when=now),))
+    clients = []
+
+    class Source:
+        def __init__(self, *args, **kwargs):
+            self.digest = b"a" * 32 if not clients else b"b" * 32
+            clients.append(self)
+
+        def document(self, item):
+            return replace(fixtures._extraction("本公司收到中国证监会立案告知书。"), payload_hash=self.digest)
+
+    monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
+    summary = report["summary"]["pipeline_audit"]
+    assert summary["equivalent_facts"] and summary["equivalent_documents"]
+    assert not summary["equivalent_payloads"] and report["status"] == "degraded"
+    assert all(run["extracted_documents"] == 1 for run in summary["runs"])
 
 
 def test_company_profile_requires_explicit_external_directory(tmp_path):
@@ -102,6 +129,28 @@ def test_company_profile_requires_explicit_external_directory(tmp_path):
         )
     )
     assert "--audit-only" in build_commands(audit)[0].argv
+
+
+def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_failures(tmp_path, monkeypatch):
+    now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
+    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _: (fixtures._disclosure("failure", "收到立案告知书", when=now),))
+    capabilities = []
+
+    class Source:
+        def __init__(self, *args, **kwargs):
+            capabilities.append((kwargs["ocr_engine"], kwargs["text_capability"], kwargs["document_policies"]))
+
+        def document(self, item):
+            raise CompanyDocumentFailure("disclosure_document_ocr_low_quality", payload_hash=b"x" * 32)
+
+    monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
+    assert capabilities and all(all(item is not None for item in row) for row in capabilities)
+    assert report["status"] == "degraded"
+    assert report["summary"]["pipeline_audit"]["equivalent_facts"]
+    for run in report["summary"]["pipeline_audit"]["runs"]:
+        assert run["pending_documents"] == run["resume_attempts"] == run["extracted_documents"] == 0
+        assert run["document_failures"] == [{"failure": "disclosure_document_ocr_low_quality", "documents": 1}]
 
 
 def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_unchanged(tmp_path, monkeypatch, capsys):

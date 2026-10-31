@@ -1770,6 +1770,8 @@ def _company_resume_details(
         selected["pipeline_audit"] = {
             "isolated_sample": pipeline.get("isolated_sample"),
             "equivalent_facts": pipeline.get("equivalent_facts"),
+            "equivalent_documents": pipeline.get("equivalent_documents"),
+            "equivalent_payloads": pipeline.get("equivalent_payloads"),
             "runs": [
                 {
                     key: row.get(key)
@@ -1786,7 +1788,19 @@ def _company_resume_details(
                         "resume_attempts",
                         "failures",
                         "facts_digest",
+                        "extracted_documents",
+                        "pending_ocr_documents",
+                        "unextractable_documents",
+                        "documents_digest",
+                        "payloads_digest",
                     )
+                } | {
+                    name: [
+                        {label: entry.get(label), "documents": entry.get("documents")}
+                        for entry in (row.get(name, [])[:64] if isinstance(row.get(name, []), list) else [])
+                        if isinstance(entry, dict)
+                    ]
+                    for name, label in (("document_failures", "failure"), ("document_extractions", "method"))
                 }
                 for row in (pipeline_runs[:2] if isinstance(pipeline_runs, list) else [])
                 if isinstance(row, dict)
@@ -1840,6 +1854,44 @@ def _company_resume_details(
             if isinstance(row, dict)
         ]
         projected_storage["formal"] = projected_formal
+        publication = _mapping(storage.get("publication"))
+        projected_publication = {
+            key: publication.get(key)
+            for key in (
+                "available", "observed_at", "scope", "publication_hash", "extraction_hash", "published_at",
+                "population_stocks", "published_stocks", "unpublished_stocks", "dirty_stocks", "stable_read",
+            )
+        }
+        for name, keys in (
+            ("coverage", ("announcement_start_min", "announcement_start_max", "announcement_end_min",
+                          "announcement_end_max", "unlock_end_min", "unlock_end_max", "unlock_required_end",
+                          "unlock_incomplete_stocks", "pending_document_references")),
+            ("ongoing_risks", ("events", "stocks", "older_than_year", "missing_evidence_events")),
+            ("receipts", ("checked", "awaiting_publication_documents", "released_without_receipts")),
+        ):
+            fields = _mapping(publication.get(name))
+            projected_publication[name] = {key: fields.get(key) for key in keys}
+        for name, keys, limit in (
+            ("component_states", ("component", "state", "stocks"), 12),
+            ("reviews", ("scope", "reason", "records", "stocks"), 125),
+        ):
+            rows = publication.get(name)
+            projected_publication[name] = [
+                {key: row.get(key) for key in keys}
+                for row in (rows[:limit] if isinstance(rows, list) else [])
+                if isinstance(row, dict)
+            ]
+        findings = publication.get("findings")
+        projected_publication["findings"] = [
+            item for item in (findings[:16] if isinstance(findings, list) else [])
+            if isinstance(item, str) and item in {
+                "company_formal_unavailable", "company_publication_missing", "company_population_empty",
+                "company_population_unpublished", "company_publication_dirty", "company_components_incomplete",
+                "company_unlock_180_days_incomplete", "company_reviews_pending", "company_risk_evidence_missing",
+                "company_released_body_receipt_missing", "company_audit_concurrent_change",
+            }
+        ]
+        projected_storage["publication"] = projected_publication
         for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
             rows = storage.get(name)
             projected_storage[name] = [

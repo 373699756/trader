@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import parse_qs
 
+from scripts.runtime_diagnostics.company_publication_audit import AuditCompanyPublication
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import (
@@ -283,7 +284,10 @@ def AuditCompanyStorage(
             ]
     formal: dict[str, object] = {"available": False}
     if facts_path is not None and facts_path.exists():
-        with SqliteSession(facts_path, SqliteConnectionOptions(read_only=True)) as connection:
+        with SqliteSession(
+            facts_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
+            cancel_requested=lambda: time.monotonic() >= deadline,
+        ) as connection, SqliteTransaction(connection):
             formal = {
                 "available": True,
                 "database_bytes": facts_path.stat().st_size,
@@ -295,9 +299,13 @@ def AuditCompanyStorage(
                     )
                 ],
             }
+    publication = AuditCompanyPublication(path, facts_path, now=now, deadline=deadline)
+    publication_findings = publication["findings"]
+    if not isinstance(publication_findings, list):
+        raise ValueError("company_publication_findings_invalid")
     return {
         "schema_version": "company-resume",
-        "status": "degraded" if partitions or pending else "passed",
+        "status": "degraded" if partitions or pending or publication_findings else "passed",
         "summary": {
             "local_storage": {
                 "read_only": True,
@@ -309,6 +317,7 @@ def AuditCompanyStorage(
                 "extracted_bodies": totals[1] or 0,
                 "retained_bodies": totals[2],
                 "formal": formal,
+                "publication": publication,
                 "pending_ranges": partitions,
                 "pending_documents": pending,
                 "stored_retry_cooling": cooling,
@@ -329,6 +338,7 @@ def AuditCompanyStorage(
         "findings": (
             (["company_download_pending"] if partitions or ready or cooling else [])
             + (["company_documents_deterministic_failure"] if deterministic else [])
+            + publication_findings
         ),
     }
 
