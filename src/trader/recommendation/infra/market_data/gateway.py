@@ -7,6 +7,7 @@ import time
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures import wait
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import TypedDict
@@ -15,6 +16,7 @@ from polars.exceptions import PolarsError
 from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import BoundedCache
+from trader.infra.cancellation import CancellationEvent
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.references.security_references import SecurityReferenceObservations
 from trader.infra.workers import BoundedExecutor
@@ -119,6 +121,7 @@ class _TargetQuoteRequest:
     urgent: bool = False
     max_observation_age_seconds: float | None = None
     preview_context: PreviewContext | None = None
+    cancelled: Callable[[], bool] | None = None
 
 
 class MarketDataGateway:
@@ -231,6 +234,7 @@ class MarketDataGateway:
         observed_at: datetime | None = None,
         force: bool = False,
         deadline: datetime | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Sequence[MarketQuote]:
         requested_at = observed_at or self._wall_clock()
         trace_id = self._versions.advance("full_market")
@@ -242,6 +246,7 @@ class MarketDataGateway:
                     requested_at,
                     force=force,
                     deadline=deadline,
+                    cancelled=cancelled,
                     max_observation_age_seconds=300.0 if observed_at is not None else None,
                 ),
                 key=(ShanghaiNow(requested_at).date(), PhaseAt(ShanghaiNow(requested_at), is_trading_day=True), force),
@@ -268,10 +273,12 @@ class MarketDataGateway:
         force: bool,
         deadline: datetime | None,
         max_observation_age_seconds: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Sequence[MarketQuote]:
         results = self._sources.fetch_market_sources(
-            observed_at, force=force or self._preview_context is not None, deadline=deadline
+            observed_at, force=force or self._preview_context is not None, deadline=deadline, cancelled=cancelled,
         )
+        _require_current_round(cancelled)
         successes = tuple(result for result in results if result.status == "success")
         outcome = _market_route_outcome(results)
         completed_at = max(observed_at, self._wall_clock())
@@ -299,6 +306,7 @@ class MarketDataGateway:
         security_references = SecurityReferenceObservations(observations)
         with self._state_lock:
             previous = self._latest_snapshot
+            _require_current_round(cancelled)
             self._remember_observations_locked(observations, completed_at)
             self._update_reference_observations_locked(security_references)
             references = tuple(
@@ -321,6 +329,7 @@ class MarketDataGateway:
         # columnar projection on every overlay can starve full-market publication.
         with self._state_lock:
             latest = self._latest_snapshot
+            _require_current_round(cancelled)
             commit_snapshot = _preserve_newer_quotes(
                 snapshot, latest, merge_epoch=self._versions.advance("market_commit")
             )
@@ -353,6 +362,7 @@ class MarketDataGateway:
         observed_at: datetime | None = None,
         force: bool = False,
         deadline: datetime | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Sequence[MarketQuote]:
         if not codes:
             return ()
@@ -369,6 +379,7 @@ class MarketDataGateway:
                         force,
                         deadline,
                         max_observation_age_seconds=300.0 if observed_at is not None else None,
+                        cancelled=cancelled,
                     )
                 )
             else:
@@ -380,6 +391,7 @@ class MarketDataGateway:
                             force,
                             deadline,
                             max_observation_age_seconds=300.0 if observed_at is not None else None,
+                            cancelled=cancelled,
                         )
                     )
         except MarketDataDeadlineExceededError:
@@ -483,18 +495,22 @@ class MarketDataGateway:
                 physical_source=physical_source,
             )
         except FutureTimeoutError:
+            _require_current_round(request.cancelled)
             self._mark_snapshot_degraded("tencent:late", max(requested_at, self._wall_clock()))
             with self._state_lock:
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
         except SourceRequestSupersededError:
+            _require_current_round(request.cancelled)
             self._mark_snapshot_degraded("tencent:superseded", requested_at)
             with self._state_lock:
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
         except Exception as exc:
+            _require_current_round(request.cancelled)
             self._mark_snapshot_degraded(f"tencent:{_cache_error_code(exc)}", requested_at)
             with self._state_lock:
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
         completed_at = max(requested_at, self._wall_clock())
+        _require_current_round(request.cancelled)
         if deadline is not None and completed_at >= deadline:
             self._mark_snapshot_degraded("tencent:late", completed_at)
             with self._state_lock:
@@ -532,6 +548,7 @@ class MarketDataGateway:
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         with self._state_lock:
+            _require_current_round(request.cancelled)
             return self._commit_candidate_snapshot_locked(observations, snapshot, completed_at, codes)
 
     def _target_quote_observations(
@@ -542,6 +559,7 @@ class MarketDataGateway:
         physical_source: str,
     ) -> Sequence[SourceObservation]:
         quote_request = {"codes": normalized_codes, "fields": ["realtime_quote"]}
+        cancellation = CancellationEvent(request.cancelled)
         observation_request = SourceObservationRequest(
             physical_source,
             request.dataset,
@@ -550,6 +568,7 @@ class MarketDataGateway:
             lambda: self._tencent.fetch_quotes(
                 normalized_codes,
                 timeout_seconds=_target_quote_timeout_seconds(request.deadline, self._wall_clock),
+                cancel_event=cancellation,
             ),
             request.requested_at,
             request.force
@@ -558,6 +577,7 @@ class MarketDataGateway:
             request.deadline,
             1,
             request.isolated,
+            cancellation=cancellation,
         )
         if self._source_lanes is None or request.isolated:
             return self._sources.fetch_source_observations(observation_request)
@@ -586,7 +606,9 @@ class MarketDataGateway:
         try:
             return lane_future.result(timeout=remaining)
         except FutureTimeoutError:
-            lane_future.cancel()
+            cancellation.set()
+            if not lane_future.cancel():
+                wait((lane_future,))
             raise
 
     def _commit_candidate_snapshot_locked(
@@ -829,6 +851,7 @@ class MarketDataGateway:
         source: str,
         fetcher: Callable[[], Sequence[MarketQuote]],
         minimum_rows: int,
+        cancellation: threading.Event | None = None,
     ) -> tuple[Sequence[MarketQuote], float]:
         if self._is_open(source):
             self._record_skipped_open(source)
@@ -838,13 +861,16 @@ class MarketDataGateway:
         try:
             quotes = tuple(fetcher())
         except MarketDataNoDataError as exc:
+            _require_current_round(cancellation.is_set if cancellation is not None else None)
             self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
             self._record(source, False, started, str(exc))
             raise
         except Exception as exc:
+            _require_current_round(cancellation.is_set if cancellation is not None else None)
             self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
             self._record(source, False, started, str(exc))
             raise MarketDataFailedError(source, str(exc)) from exc
+        _require_current_round(cancellation.is_set if cancellation is not None else None)
         self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
         if len(quotes) < minimum_rows:
             error = MarketDataNoDataError(f"{source}: only {len(quotes)} market rows")
@@ -1015,6 +1041,11 @@ def _with_snapshot_degradation(
         failure_categories=tuple(sorted(categories)),
         status=status,
     )
+
+
+def _require_current_round(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise MarketDataDeadlineExceededError("round_input_cancelled")
 
 
 __all__ = ["MarketDataGateway"]

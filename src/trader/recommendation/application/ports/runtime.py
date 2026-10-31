@@ -13,6 +13,7 @@ from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.application.ports.clock import TradingCalendarPort
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, ResearchAuditIdentity
 from trader.recommendation.application.runtime.cadence import PipelineTask
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs
 from trader.recommendation.application.runtime.trading_session import SessionLease
 from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity, FreezeOverlay, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
@@ -69,6 +70,7 @@ class PipelineTaskRequest:
     session: SessionLease | None = None
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
     round_deadline: datetime | None = field(default=None, kw_only=True)
+    round_inputs: ProfileRoundInputs | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         _require_shanghai(self.observed_at, "pipeline task observed_at")

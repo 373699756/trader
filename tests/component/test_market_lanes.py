@@ -327,7 +327,7 @@ def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
     assert [feature.quote.code for feature in refreshed] == ["600001"]
 
 
-def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> None:
+def test_full_market_source_lane_deadline_cancels_and_drains_source_io() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneScheduler(pool)
     eastmoney = BlockingMarketClient((replace(_quote(), source="eastmoney"),))
@@ -335,6 +335,7 @@ def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> 
         eastmoney,
         StaticMarketClient((replace(_quote(), source="sina"),)),
         StaticTencentClient(()),
+        full_market_fetchers={"tencent_market": lambda deadline, event: eastmoney.fetch_market(cancel_event=event)},
         minimum_market_rows=1,
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,

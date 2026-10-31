@@ -58,3 +58,4 @@ class RuntimeDependencies:
     long_quotes: LongRefreshPort | None = None
     rounds: RecommendationRounds = field(default_factory=RecommendationRounds)
     round_profile: str = "default"
+    prepare_publication: Callable[[], None] | None = None

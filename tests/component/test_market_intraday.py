@@ -471,7 +471,7 @@ def test_intraday_health_requires_complete_tail_signals_for_coverage() -> None:
     assert service.health()["intraday_tail_last_error"] == "intraday_series_incomplete"
 
 
-def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request(market_worker_pool) -> None:
+def test_intraday_batch_deadline_cancels_and_drains_inflight_requests(market_worker_pool) -> None:
     intraday = BlockingIntradayClient()
     service = _service(
         StaticGateway((_quote(),)),
@@ -494,6 +494,7 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request(marke
         intraday.release.set()
 
     assert time.monotonic() - started < 0.5
+    assert intraday.finished.is_set()
     assert result[0].values["tail_return_30m"] is None
     assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
 

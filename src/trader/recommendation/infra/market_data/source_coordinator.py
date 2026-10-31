@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import Future
+from concurrent.futures import Future, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -18,6 +18,7 @@ from trader.infra.cache_contracts import (
     CacheRequestKey,
     RequestKey,
 )
+from trader.infra.cancellation import CancellationEvent
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
@@ -113,6 +114,7 @@ class MarketSourceTelemetry(Protocol):
         source: str,
         fetcher: Callable[[], Sequence[MarketQuote]],
         minimum_rows: int,
+        cancellation: threading.Event | None = None,
     ) -> tuple[Sequence[MarketQuote], float]: ...
 
     def record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None: ...
@@ -150,8 +152,9 @@ class MarketSourceCoordinator:
         *,
         force: bool,
         deadline: datetime | None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> tuple[_SourceFetch, ...]:
-        cancellation = {"tencent_market": threading.Event(), "sina": threading.Event()}
+        cancellation = {"tencent_market": CancellationEvent(cancelled), "sina": CancellationEvent(cancelled)}
         fetchers = {
             "tencent_market": self._full_market_fetcher("tencent_market", deadline, cancellation["tencent_market"]),
             "sina": self._full_market_fetcher("sina", deadline, cancellation["sina"]),
@@ -169,7 +172,7 @@ class MarketSourceCoordinator:
         primary = self._route_source("tencent_market", context, deadline=primary_deadline)
         if primary.status == "success":
             return (primary, _SourceFetch("sina", "skipped", error="backup_not_needed", skipped=True))
-        if self._remaining_seconds(context.deadline) == 0.0:
+        if self._remaining_seconds(context.deadline) == 0.0 or context.cancellation["sina"].is_set():
             return (primary, _SourceFetch("sina", "skipped", error="deadline", skipped=True))
         return (primary, self._route_source("sina", context))
 
@@ -184,7 +187,8 @@ class MarketSourceCoordinator:
             return future.result(timeout=self._remaining_seconds(deadline))
         except FutureTimeoutError:
             context.cancellation[source].set()
-            future.cancel()
+            if not future.cancel():
+                wait((future,))
             self._telemetry.record_deadline(source)
             return _SourceFetch(source, "failed", error="deadline")
         except SourceRequestSupersededError:
@@ -285,6 +289,8 @@ class MarketSourceCoordinator:
     ) -> tuple[SourceObservation, ...]:
         source = request.source
         observed_at = request.observed_at
+        if request.cancellation is not None and request.cancellation.is_set():
+            raise MarketDataFailedError(source, "cancelled")
         self._telemetry.record_planned(source)
         if not _before_deadline(self._wall_clock(), request.deadline):
             if request.cancellation is None or not request.cancellation.is_set():
@@ -317,6 +323,7 @@ class MarketSourceCoordinator:
                 self._cache is not None
                 and not request.bypass_cache
                 and _before_deadline(self._wall_clock(), request.deadline)
+                and (request.cancellation is None or not request.cancellation.is_set())
             ):
                 self._cache.put_negative(identity, error_code=_cache_error_code(exc))
             raise
@@ -325,7 +332,9 @@ class MarketSourceCoordinator:
         self, request: SourceObservationRequest, identity: CacheIdentity
     ) -> tuple[SourceObservation, ...]:
         source = request.source
-        quotes, started = self._telemetry.fetch_physical(source, request.fetcher, request.minimum_rows)
+        quotes, started = self._telemetry.fetch_physical(source, request.fetcher, request.minimum_rows, request.cancellation)
+        if request.cancellation is not None and request.cancellation.is_set():
+            raise MarketDataFailedError(source, "cancelled")
         completed_at = max(request.observed_at, self._wall_clock())
         normalization_started = self._monotonic()
         observations = tuple(ObservationFromQuote(quote, source=source, observed_at=completed_at) for quote in quotes)

@@ -73,6 +73,7 @@ from trader.infra.http_contracts import HttpAttempt, HttpParameter, HttpRequest,
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.initialization import InitializeIfAvailable as _initialize_if_available
 from trader.infra.isolated_call import RunIsolatedCall
+from trader.infra.isolated_http import ExecuteIsolatedHttp
 from trader.infra.process_lock import ProcessLock
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.serialization.canonical import ContentHash
@@ -164,6 +165,10 @@ from trader.web import CreateApp
 
 if TYPE_CHECKING:
     from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
+
+
+def _open_recommendation_http() -> HttpTransport:
+    return RequestsHttpTransport(execute_request=partial(ExecuteIsolatedHttp, transport_factory=RequestsHttpTransport))
 
 
 def OpenExternalHttp(
@@ -901,6 +906,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 )
             ),
             round_profile=profile_id,
+            prepare_publication=lambda: run_scope.run_live(lambda: persistence.sequence.prepare(
+                width=8, minimum=publication.tomorrow_index.next_scored_sequence,
+            )),
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -1129,7 +1137,7 @@ def _build_market_data(
     )
     if shared_market is None:
         intraday_client = EastmoneyClient(
-            session_factory=OpenExternalHttp,
+            session_factory=_open_recommendation_http,
             timeout_seconds=settings.market_data.candidate_timeout_seconds,
             worker_pool=workers.minute_pool,
             cancel_requested=lambda: source_lanes.is_stopped("eastmoney_intraday"),
@@ -1138,13 +1146,13 @@ def _build_market_data(
         )
         sina = SinaClient(
             worker_pool=workers.quote_pool,
-            session_factory=OpenExternalHttp,
+            session_factory=_open_recommendation_http,
             timeout_seconds=settings.market_data.sina_timeout_seconds,
             cancel_requested=lambda: source_lanes.is_stopped("sina"),
             wall_clock=now,
         )
         tencent = TencentClient(
-            session_factory=OpenExternalHttp,
+            session_factory=_open_recommendation_http,
             timeout_seconds=settings.market_data.candidate_timeout_seconds,
             cancel_requested=lambda: source_lanes.is_stopped("tencent"),
             wall_clock=now,
@@ -1159,7 +1167,7 @@ def _build_market_data(
             )
 
         tencent_market_client = TencentClient(
-            session_factory=OpenExternalHttp,
+            session_factory=_open_recommendation_http,
             timeout_seconds=settings.market_data.candidate_timeout_seconds,
             cancel_requested=lambda: source_lanes.is_stopped("tencent_market"),
             wall_clock=now,

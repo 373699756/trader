@@ -128,6 +128,9 @@ class PreviewCycleRunner:
                     session=scheduled.session,
                     preview_context=context,
                     round_deadline=scheduled.round_deadline,
+                    round_inputs=self._dependencies.rounds.inputs(
+                        self._dependencies.round_profile, scheduled.round_sequence,
+                    ),
                 )
             )
             self._check_round(scheduled)

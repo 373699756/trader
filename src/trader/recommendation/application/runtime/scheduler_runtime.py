@@ -108,7 +108,7 @@ class SchedulerRuntime:
         if contract.daily_physical_limit != 168 or not contract.shared_cache or not contract.shared_single_flight:
             raise ValueError("scheduler runtime requires the shared 168-request DeepSeek boundary")
         self._dependencies = dependencies
-        dependencies.rounds.register(dependencies.round_profile)
+        dependencies.rounds.register(dependencies.round_profile, dependencies.prepare_publication)
         self._research = dependencies.research_factory()
         self._config_version = config_version
         self._shutdown_timeout_seconds = shutdown_timeout_seconds
@@ -297,6 +297,8 @@ class SchedulerRuntime:
                 return 30.0
             if scope.is_preview:
                 return self._submit_preview(observed_at)
+        if self._dependencies.prepare_publication is not None:
+            self._dependencies.prepare_publication()
         session = self._session.capture()
         if session.generation != self._planned_generation:
             self._dependencies.cadence.rotate_session(observed_at, reason=self._session.status().discontinuity_reason)
@@ -644,6 +646,7 @@ class SchedulerRuntime:
             selected_codes,
             session=scheduled.session,
             round_deadline=scheduled.round_deadline,
+            round_inputs=self._dependencies.rounds.inputs(self._dependencies.round_profile, scheduled.round_sequence),
         )
         try:
             outcome = self._dependencies.data.refresh_task(request)

@@ -34,6 +34,10 @@ const sandbox = {
   document: {
     addEventListener() {},
     createElement() { return {}; },
+    querySelectorAll(selector) {
+      assert.strictEqual(selector, ".profile-tab");
+      return ["v1", "v5"].map((profile) => ({ dataset: { profile } }));
+    },
     querySelector(selector) {
       const content = {
         'meta[name="trader-web-snapshot-retention-ms"]': "35000",
@@ -2356,11 +2360,18 @@ async function verifyAtomicBatchCache() {
   let resolveResponse;
   sandbox.fetch = () => new Promise((resolve) => { resolveResponse = resolve; });
   const request = dashboard.requestRecommendations("d25", "", "current");
-  const old = ui.payloads.get("v1:d25:current");
+  const oldBatch = {
+    schema_version: "freeze_current_batch",
+    profiles: Object.fromEntries(["v1", "v5"].map((profile) => [profile,
+      Object.fromEntries(["tomorrow", "d25"].map((strategy) => [strategy, {
+        ...ui.payloads.get(`${profile}:${strategy}:current`), schema_version: "freeze_view", view: "current",
+      }])),
+    ])),
+  };
   assert.strictEqual(dashboard.applyRecommendationBatch(batch(4)), true);
   resolveResponse({
     ok: true, status: 200,
-    json: async () => ({ ...old, schema_version: "freeze_view" }),
+    json: async () => oldBatch,
     headers: { get: () => '"old-etag"' },
   });
   const returned = await request;
@@ -2382,6 +2393,28 @@ async function verifyAtomicBatchCache() {
   mixedDate.profiles.v1.tomorrow.trade_date = "2026-07-25";
   assert.strictEqual(dashboard.applyRecommendationBatch(mixedDate), false);
   for (const value of ui.payloads.values()) assert.strictEqual(value.round_sequence, 6);
+
+  const responseBatch = structuredClone(oldBatch);
+  for (const pair of Object.values(responseBatch.profiles)) {
+    for (const value of Object.values(pair)) value.trade_date = "2026-07-26";
+  }
+  let fetches = 0;
+  sandbox.fetch = async (url) => {
+    assert.strictEqual(url, "/api/freezes/current");
+    fetches += 1;
+    return { ok: true, json: async () => responseBatch };
+  };
+  const [tomorrow, d25] = await Promise.all([
+    dashboard.requestRecommendations("tomorrow", "", "current"),
+    dashboard.requestRecommendations("d25", "", "current"),
+  ]);
+  assert.strictEqual(fetches, 1, "short strategies must share one complete HTTP response");
+  assert.strictEqual(tomorrow.trade_date, "2026-07-26");
+  assert.strictEqual(d25.trade_date, tomorrow.trade_date);
+  const completeCache = ui.payloads;
+  delete responseBatch.profiles.v5.d25;
+  await assert.rejects(dashboard.requestRecommendations("tomorrow", "", "current"));
+  assert.strictEqual(ui.payloads, completeCache, "malformed HTTP batch must not replace any cache");
 }
 
 verifyAtomicBatchCache().then(() => console.log("dashboard state contract passed")).catch((error) => {

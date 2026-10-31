@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from tests.component.market_data_test_support import (
@@ -39,6 +40,44 @@ from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputs
+
+
+def test_profile_candidate_features_share_one_quote_cut_without_hot_database_connections(monkeypatch):
+    class Gateway(StaticGateway):
+        def __init__(self):
+            super().__init__(tuple(_quote(code=code) for code in ("600001", "600002", "600003")))
+            self.requests = []
+
+        def fetch_candidates(self, codes, **kwargs):
+            self.requests.append(codes)
+            return super().fetch_candidates(codes, **kwargs)
+
+    gateway = Gateway()
+    profiles = ("v1", "v2", "v3", "v5")
+    services = tuple(
+        _service(gateway, StaticHistoryClient(), FeatureBuilder(
+            NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY,
+        )) for _ in profiles
+    )
+    requested = ((), ("600001",), ("600001", "600002"), ("600003",))
+    inputs = RoundInputs(profiles, lambda: 10.0)
+
+    def no_database(*args, **kwargs):
+        pytest.fail("candidate hot path opened a database")
+
+    monkeypatch.setattr("sqlite3.connect", no_database)
+
+    def refresh(index):
+        return services[index].refresh_candidate_quotes(
+            requested[index], NOW, round_inputs=ProfileRoundInputs(profiles[index], inputs),
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        features = tuple(pool.map(refresh, range(4)))
+    assert gateway.requests == [("600001", "600002", "600003")]
+    assert tuple(tuple(feature.quote.code for feature in group) for group in features) == requested
+    assert features[1][0].quote == features[2][0].quote
 
 
 def test_current_model_industry_enriches_features_and_replaces_display_sector() -> None:

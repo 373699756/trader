@@ -114,7 +114,7 @@ def test_candidate_request_reserves_deadline_for_normalization_and_commit() -> N
             super().__init__((quote,))
             self.timeout_seconds: float | None = None
 
-        def fetch_quotes(self, codes, *, timeout_seconds=None):
+        def fetch_quotes(self, codes, *, timeout_seconds=None, cancel_event=None):
             self.timeout_seconds = timeout_seconds
             return super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
 

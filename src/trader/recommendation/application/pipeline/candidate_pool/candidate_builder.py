@@ -156,9 +156,7 @@ def RefreshQualifiedInputs(
     if requested and not can_refresh():
         return CandidateRefreshPlan((), initial_plans, deadline_reached=True)
     requested_codes = frozenset(requested)
-    features = (
-        tuple(item for item in refresh_quotes(requested) if item.quote.code in requested_codes) if requested else ()
-    )
+    features = tuple(item for item in refresh_quotes(requested) if item.quote.code in requested_codes)
     missing = requested_codes - {item.quote.code for item in features}
     # Preserve the complete requested population. Missing observations belong to
     # the quality boundary and never trigger a reserve or a replacement request.

@@ -370,6 +370,12 @@
 
   async function requestRecommendations(strategy, selectedDate, view) {
     const key = recommendationKey(strategy, selectedDate, view);
+    if (!selectedDate && strategy !== "long") {
+      await requestCurrentBatch();
+      const payload = state.payloads.get(key);
+      if (!payload) throw new Error("整批推荐快照不可用");
+      return payload;
+    }
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const cachedAtRequest = state.payloads.get(key);
@@ -418,6 +424,54 @@
     } finally {
       if (state.inflight.get(key) === request) state.inflight.delete(key);
     }
+  }
+
+  async function requestCurrentBatch() {
+    const key = "current_batch";
+    const pending = state.inflight.get(key);
+    if (pending) return pending;
+    const before = new Map(state.payloads);
+    const request = (async () => {
+      diagnostics.recommendationRequests += 1;
+      const response = await fetch("/api/freezes/current", { cache: "no-store" });
+      const raw = await response.json();
+      if (!response.ok || raw.schema_version !== "freeze_current_batch" || !raw.profiles) {
+        throw new Error("整批推荐快照读取失败");
+      }
+      const profiles = Object.entries(raw.profiles);
+      if (!completeBatchProfiles(raw.profiles)) throw new Error("整批推荐档位不匹配");
+      const replacements = new Map();
+      for (const [profile, pair] of profiles) {
+        for (const strategy of ["tomorrow", "d25"]) {
+          const value = pair[strategy];
+          const compatibility = releaseContract.freezePayloadCompatibility(value);
+          if (!compatibility.compatible) throw releaseContract.mismatchError(compatibility.reason);
+          if (value.scoring_profile !== profile || value.strategy !== strategy || value.view !== "current") {
+            throw new Error("整批推荐快照身份不匹配");
+          }
+          const cacheKey = `${profile}:${strategy}:current`;
+          replacements.set(cacheKey, normalizeFreezePayload(value, strategy, "", "current"));
+        }
+      }
+      // An SSE update received during the request wins for the whole batch.
+      if ([...replacements.keys()].some((cacheKey) => state.payloads.get(cacheKey) !== before.get(cacheKey))) return;
+      state.payloads = new Map([...state.payloads, ...replacements]);
+      for (const cacheKey of replacements.keys()) state.etags.delete(cacheKey);
+      diagnostics.recommendationFullResponses += 1;
+      diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(raw));
+    })();
+    state.inflight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (state.inflight.get(key) === request) state.inflight.delete(key);
+    }
+  }
+
+  function completeBatchProfiles(profiles) {
+    const expected = Array.from(document.querySelectorAll(".profile-tab"), (button) => button.dataset.profile);
+    return expected.length > 0 && expected.length === Object.keys(profiles).length
+      && expected.every((profile) => Object.hasOwn(profiles, profile));
   }
 
   function recommendationKey(strategy, selectedDate, view) {
@@ -885,7 +939,7 @@
   function applyRecommendationBatch(batch) {
     if (batch.schema_version !== "freeze_event" || !Number.isInteger(batch.round_sequence)
       || batch.round_sequence < 1 || !batch.profiles || typeof batch.profiles !== "object"
-      || !Object.keys(batch.profiles).length) {
+      || !completeBatchProfiles(batch.profiles)) {
       requestRecommendationResync("batch_schema_mismatch");
       return false;
     }

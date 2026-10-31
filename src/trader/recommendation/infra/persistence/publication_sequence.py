@@ -61,19 +61,31 @@ class PublicationSequence:
             self._initialized = True
 
     def allocate(self, *, width: int = 1, minimum: int = 1) -> int:
+        """Allocate only from memory; callers replenish before dispatching work."""
+        self._validate_request(width, minimum)
+        with self._lock:
+            if not self._initialized:
+                raise RuntimeError("publication_sequence_not_initialized")
+            value = max(self._next, minimum)
+            if value + width > self._limit:
+                raise RuntimeError("publication_sequence_reservation_exhausted")
+            self._next = value + width
+            return value
+
+    def prepare(self, *, width: int = 1, minimum: int = 1) -> None:
+        """Reserve durable capacity on the control path before a round starts."""
+        self._validate_request(width, minimum)
+        with self._lock:
+            if not self._initialized:
+                raise RuntimeError("publication_sequence_not_initialized")
+            if max(self._next, minimum) + width > self._limit:
+                self._reserve(minimum=minimum)
+
+    def _validate_request(self, width: int, minimum: int) -> None:
         if not 1 <= width <= self._block_size:
             raise ValueError("publication sequence allocation width is invalid")
         if minimum < 1 or minimum > 2**63 - 1 - self._block_size:
             raise ValueError("publication sequence minimum is invalid")
-        with self._lock:
-            if not self._initialized:
-                raise RuntimeError("publication_sequence_not_initialized")
-            self._next = max(self._next, minimum)
-            if self._next + width > self._limit:
-                self._reserve(minimum=minimum)
-            value = self._next
-            self._next += width
-            return value
 
     def _reserve(self, *, minimum: int = 1, allow_create: bool = False) -> None:
         try:

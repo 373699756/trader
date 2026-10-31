@@ -296,6 +296,19 @@ class UnifiedFreezeIndex:
                 self._formal.get(strategy),
             )
 
+    @staticmethod
+    def snapshot_batch(
+        indexes: tuple[UnifiedFreezeIndex, ...],
+    ) -> tuple[tuple[UnifiedFreezeSnapshot, UnifiedFreezeSnapshot], ...]:
+        """Capture immutable references under the same transaction as publication."""
+        if not indexes or any(index._lock is not indexes[0]._lock for index in indexes):
+            raise ValueError("current_batch_requires_shared_transaction")
+        with indexes[0]._lock:
+            return tuple(
+                (index.snapshot(Strategy.TOMORROW), index.snapshot(Strategy.D25))
+                for index in indexes
+            )
+
     def is_sealed(self, strategy: Strategy, trade_date: date) -> bool:
         with self._lock:
             seal = self._seals.get(strategy)

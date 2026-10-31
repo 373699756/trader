@@ -462,10 +462,13 @@ class BlockingMarketClient(StaticMarketClient):
         self.started = threading.Event()
         self.release = threading.Event()
 
-    def fetch_market(self):
+    def fetch_market(self, *, cancel_event=None):
         self.calls += 1
         self.started.set()
-        self.release.wait(1.0)
+        started = time.monotonic()
+        while not self.release.wait(0.01) and time.monotonic() - started < 1.0:
+            if cancel_event is not None and cancel_event.is_set():
+                break
         return super().fetch_market()
 
 
@@ -508,7 +511,7 @@ class StaticTencentClient:
     def __init__(self, quotes) -> None:
         self._quotes = quotes
 
-    def fetch_quotes(self, _codes, *, timeout_seconds=None):
+    def fetch_quotes(self, _codes, *, timeout_seconds=None, cancel_event=None):
         del timeout_seconds
         return self._quotes
 
@@ -518,8 +521,10 @@ class BlockingTencentClient(StaticTencentClient):
         super().__init__(quotes)
         self.release = threading.Event()
 
-    def fetch_quotes(self, codes, *, timeout_seconds=None):
-        self.release.wait(1.0)
+    def fetch_quotes(self, codes, *, timeout_seconds=None, cancel_event=None):
+        while not self.release.wait(0.01):
+            if cancel_event is not None and cancel_event.is_set():
+                break
         return super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
 
 
@@ -528,7 +533,7 @@ class FailFirstTencentClient(StaticTencentClient):
         super().__init__(quotes)
         self.calls = 0
 
-    def fetch_quotes(self, codes, *, timeout_seconds=None):
+    def fetch_quotes(self, codes, *, timeout_seconds=None, cancel_event=None):
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("long quote failure")
@@ -793,7 +798,9 @@ class BlockingIntradayClient:
     def fetch_intraday_minutes(self, code, *, now, deadline=None, cancelled=None):
         self.calls.append(code)
         self.started.set()
-        self.release.wait(2.0)
+        while not self.release.wait(0.01):
+            if cancelled is not None and cancelled():
+                break
         self.finished.set()
         return _tail_minute_bars()
 

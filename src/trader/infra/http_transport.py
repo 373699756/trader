@@ -7,6 +7,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from urllib.parse import urlencode, urlsplit
 
 import requests
@@ -36,10 +37,12 @@ class RequestsHttpTransport:
         monotonic: Callable[[], float] = time.monotonic,
         observe: Callable[[HttpAttempt], None] | None = None,
         inspect_response: Callable[[HttpRequest, HttpResponse], None] | None = None,
+        execute_request: Callable[[HttpRequest], HttpResponse] | None = None,
     ) -> None:
         self._monotonic = monotonic
         self._observe = observe
         self._inspect_response = inspect_response
+        self._execute_request = execute_request
         self._lock = threading.Lock()
         self._session: requests.Session | None = None
         self._closed = False
@@ -130,12 +133,37 @@ class RequestsHttpTransport:
             self._check(request, deadline)
             if self._closed:
                 raise HttpError("http_transport_closed")
+            if self._execute_request is not None:
+                return self._injected_attempt(request, started, deadline)
             if self._session is None:
                 self._session = requests.Session()
                 self._session.trust_env = False
             return self._attempt(request, started, deadline)
         finally:
             self._lock.release()
+
+    def _injected_attempt(self, request: HttpRequest, started: float, deadline: float) -> HttpResponse:
+        assert self._execute_request is not None
+        response: HttpResponse | None = None
+        failure = ""
+        try:
+            response = self._execute_request(replace(request, deadline=deadline))
+            self._check(request, deadline)
+            if self._inspect_response is not None:
+                self._inspect_response(request, response)
+            return response
+        except HttpError as exc:
+            failure = type(exc).__name__
+            raise
+        finally:
+            if self._observe is not None:
+                self._observe(HttpAttempt(
+                    urlsplit(request.url).hostname or "", request.method,
+                    self._monotonic() - started,
+                    len(response.content) if response is not None else 0,
+                    response.status_code if response is not None else None,
+                    failure or (f"http_{response.status_code}" if response is not None and response.status_code >= 300 else ""),
+                ))
 
     def _attempt(self, request: HttpRequest, started: float, deadline: float) -> HttpResponse:
         assert self._session is not None

@@ -832,7 +832,7 @@ def test_gateway_primary_success_does_not_start_sina_backup() -> None:
     assert gateway.health().route.results[1].error == "backup_not_needed"
 
 
-def test_gateway_starts_sina_after_primary_timeout_without_waiting_for_slow_primary() -> None:
+def test_gateway_starts_sina_after_primary_timeout_and_cancellation_cleanup() -> None:
     eastmoney = BlockingMarketClient((replace(_quote(), source="eastmoney"),))
     sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
@@ -848,6 +848,7 @@ def test_gateway_starts_sina_after_primary_timeout_without_waiting_for_slow_prim
         worker_pool=pool,
         source_lanes=lanes,
         full_market_primary_timeout_seconds=0.02,
+        full_market_fetchers={"tencent_market": lambda deadline, event: eastmoney.fetch_market(cancel_event=event)},
         wall_clock=lambda: NOW,
     )
 

@@ -51,6 +51,7 @@ from trader.recommendation.application.pipeline.data_source.source_quality impor
     UsesFallback as _uses_fallback,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
     AssessCandidateInputStage,
     HasTransientCandidateGap,
@@ -159,6 +160,7 @@ class MarketReader(Protocol):
         *,
         force: bool = False,
         deadline: datetime | None = None,
+        round_inputs: ProfileRoundInputs | None = None,
     ) -> FullMarketFeatureBatch: ...
 
     def refresh_topk_quotes(
@@ -177,11 +179,15 @@ class MarketReader(Protocol):
         *,
         force: bool = False,
         deadline: datetime | None = None,
+        round_inputs: ProfileRoundInputs | None = None,
     ) -> Sequence[FeatureSnapshot]: ...
 
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
 
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> IntradayRefreshResult: ...
+    def refresh_intraday_tail(
+        self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None,
+        round_inputs: ProfileRoundInputs | None = None,
+    ) -> IntradayRefreshResult: ...
 
     def read_candidate_features(
         self,
@@ -328,7 +334,9 @@ class MarketInputCoordinator(DataRefreshPort):
         deadline: datetime | None,
     ) -> RefreshOutcome:
         started = self._monotonic()
-        market_batch = self._market.fetch_market_feature_batch(request.observed_at, force=True, deadline=deadline)
+        market_batch = self._market.fetch_market_feature_batch(
+            request.observed_at, force=True, deadline=deadline, round_inputs=request.round_inputs,
+        )
         features = market_batch.features
         issuer_eligibility = market_batch.issuer_eligibility
         data_version = self._versions.features("market", features)
@@ -415,6 +423,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 request.observed_at,
                 force=True,
                 deadline=deadline,
+                round_inputs=request.round_inputs,
             ),
             can_refresh=lambda: deadline is None or self._now() < deadline,
         )
@@ -619,10 +628,13 @@ class MarketInputCoordinator(DataRefreshPort):
         deadline: datetime | None,
     ) -> RefreshOutcome:
         requested = self._requested_codes()
-        if not requested and request.preview_context is not None:
+        if not requested and request.preview_context is not None and request.round_inputs is None:
             return RefreshOutcome(request.task, False, "intraday:empty", (), request.observed_at, False)
-        _require_codes(requested, "intraday_universe_unavailable")
-        refreshed = self._market.refresh_intraday_tail(requested, request.observed_at, deadline=deadline)
+        if request.round_inputs is None:
+            _require_codes(requested, "intraday_universe_unavailable")
+        refreshed = self._market.refresh_intraday_tail(
+            requested, request.observed_at, deadline=deadline, round_inputs=request.round_inputs,
+        )
         with SessionGuard(request.session), self._lock:
             previous = self._intraday_refresh
             if previous is not None and refreshed.checked_at < previous.checked_at:

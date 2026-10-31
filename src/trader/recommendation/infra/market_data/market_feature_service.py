@@ -19,6 +19,7 @@ from trader.recommendation.application.ports.market_data import (
     MarketSnapshotMetadata,
 )
 from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs
 from trader.recommendation.domain.market.eligibility import (
     EligibilityFactsFromQuote,
     IssuerEligibilityFact,
@@ -164,6 +165,7 @@ class MarketFeatureService:
         *,
         force: bool = False,
         deadline: datetime | None = None,
+        round_inputs: ProfileRoundInputs | None = None,
     ) -> FullMarketFeatureBatch:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("market observation time must be timezone aware")
@@ -171,7 +173,7 @@ class MarketFeatureService:
         self.history.require_projection()
         reference_epoch = self.reference_version()
         with self._eligibility_lock:
-            cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
+            cached = self.quotes.cached_market_features(force=force or round_inputs is not None, reference_epoch=reference_epoch)
             original_quotes = self._latest_market_quotes
         static_started = self._monotonic()
         eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline.observe(
@@ -218,15 +220,23 @@ class MarketFeatureService:
             )
             return FullMarketFeatureBatch(features, eligibility_batch, static_stages, dynamic)
         acquisition_started = self._monotonic()
-        quotes = tuple(
-            self.runner.run_data_task_until(
-                deadline,
-                False,
-                self.quotes.gateway.fetch_market,
-                observed_at=observed_at,
-                force=force,
-                deadline=deadline,
+
+        def fetch_market(_codes: tuple[str, ...]) -> tuple[MarketQuote, ...]:
+            return tuple(
+                self.runner.run_data_task_until(
+                    deadline,
+                    False,
+                    self.quotes.gateway.fetch_market,
+                    observed_at=observed_at,
+                    force=force,
+                    deadline=deadline,
+                    cancelled=round_inputs.inputs.cancelled if round_inputs is not None else None,
+                )
             )
+
+        quotes = (
+            round_inputs.inputs.market.collect(round_inputs.profile, (), fetch_market)
+            if round_inputs is not None else fetch_market(())
         )
         collection_ms = self._elapsed_ms(acquisition_started)
         raw_quotes = quotes
@@ -343,21 +353,33 @@ class MarketFeatureService:
         *,
         force: bool = False,
         deadline: datetime | None = None,
+        round_inputs: ProfileRoundInputs | None = None,
     ) -> Sequence[FeatureSnapshot]:
         normalized = _normalize_codes(codes)
-        if not normalized:
-            return ()
-        fetched = tuple(
-            self.runner.run_data_task_until(
-                deadline,
-                True,
-                self.quotes.gateway.fetch_candidates,
-                normalized,
-                observed_at=observed_at,
-                force=force,
-                deadline=deadline,
+
+        def fetch_candidates(requested: tuple[str, ...]) -> tuple[MarketQuote, ...]:
+            if not requested:
+                return ()
+            return tuple(
+                self.runner.run_data_task_until(
+                    deadline,
+                    True,
+                    self.quotes.gateway.fetch_candidates,
+                    requested,
+                    observed_at=observed_at,
+                    force=force,
+                    deadline=deadline,
+                    cancelled=round_inputs.inputs.cancelled if round_inputs is not None else None,
+                )
             )
+
+        shared = (
+            round_inputs.inputs.candidates.collect(round_inputs.profile, normalized, fetch_candidates)
+            if round_inputs is not None else fetch_candidates(normalized)
         )
+        requested_codes = frozenset(normalized)
+        fetched = tuple(quote for quote in shared if quote.code in requested_codes)
+        self.runner.ensure_before_deadline(deadline)
         self._record_quote_eligibility(fetched, observed_at)
         self.quotes.update_candidate_quotes(fetched, candidate_cycle=observed_at)
         resolved = self.quotes.candidate_snapshot(normalized)
@@ -468,8 +490,21 @@ class MarketFeatureService:
         eligible = set(self._eligible_codes(tuple(feature.quote.code for feature in features), observed_at))
         return tuple(feature for feature in features if feature.quote.code in eligible)
 
-    def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> IntradayRefreshResult:
-        return self.intraday.refresh(self._eligible_codes(codes, observed_at), observed_at, deadline=deadline)
+    def refresh_intraday_tail(
+        self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None,
+        round_inputs: ProfileRoundInputs | None = None,
+    ) -> IntradayRefreshResult:
+        eligible = self._eligible_codes(codes, observed_at)
+        if round_inputs is None:
+            return self.intraday.refresh(eligible, observed_at, deadline=deadline)
+        shared = round_inputs.inputs.minutes.collect(
+            round_inputs.profile, tuple(eligible),
+            lambda union: self.intraday.refresh(
+                union, observed_at, deadline=deadline, cancelled=round_inputs.inputs.cancelled,
+            ),
+        )
+        requested = frozenset(eligible)
+        return replace(shared, inputs=tuple(item for item in shared.inputs if item.code in requested))
 
     def prepare_scoring_features(
         self,

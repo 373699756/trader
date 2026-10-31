@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from itertools import combinations
+import gc
+import weakref
 
 import pytest
 
@@ -17,6 +19,30 @@ def _tasks() -> tuple[ScheduledPipelineTask, ...]:
             MarketPhase.BEFORE_CLOSE,
         ),
     )
+
+
+def test_reservations_finish_before_round_deadline_starts_and_old_inputs_are_released():
+    now = [0.0]
+    rounds = RecommendationRounds(monotonic=lambda: now[0])
+
+    def prepare():
+        now[0] += 5.0
+
+    rounds.register("v1", prepare)
+    rounds.register("v5", prepare)
+    retained = []
+    for _ in range(100):
+        before = now[0]
+        admission = rounds.enter("v1", _tasks())
+        assert admission.started_monotonic == before + 10.0
+        assert rounds.enter("v5", _tasks()) is admission
+        context = rounds.inputs("v1", admission.sequence)
+        retained.append(weakref.ref(context.inputs))
+        rounds.finish("v1", admission.sequence)
+        rounds.finish("v5", admission.sequence)
+        del context
+    gc.collect()
+    assert all(reference() is None for reference in retained)
 
 
 def test_all_profiles_share_one_admission_and_absolute_deadline() -> None:
@@ -71,7 +97,7 @@ def test_withdrawn_profile_releases_cancelled_round_after_running_work_exits() -
     first = rounds.enter("v1", _tasks())
     assert first is not None
     rounds.withdraw("v5")
-    assert not rounds.cancelled(first.sequence)
+    assert rounds.cancelled(first.sequence)
     rounds.finish("v1", first.sequence)
     following = rounds.enter("v1", _tasks())
     assert following is not None and following.sequence > first.sequence

@@ -170,6 +170,16 @@ def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
     )
     client = CreateApp(services=services).test_client()
 
+    batch_response = client.get("/api/freezes/current")
+    batch = batch_response.get_json()
+    assert batch_response.status_code == 200
+    assert batch_response.headers["Cache-Control"] == "no-store"
+    assert batch["schema_version"] == "freeze_current_batch"
+    assert set(batch["profiles"]) == {"v2", "v3"}
+    for profile, pair in batch["profiles"].items():
+        assert set(pair) == {"tomorrow", "d25"}
+        assert all(view["scoring_profile"] == profile for view in pair.values())
+
     assert client.get("/api/freezes/tomorrow/current").get_json()["scoring_profile"] == "v3"
     assert client.get("/api/freezes/tomorrow/current?profile=v2").get_json()["scoring_profile"] == "v2"
     assert client.get("/api/freezes/long/current?profile=v3").get_json()["scoring_profile"] == "v2"

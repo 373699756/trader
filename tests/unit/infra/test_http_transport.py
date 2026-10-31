@@ -19,6 +19,28 @@ from trader.infra.http_contracts import (
 )
 
 
+def test_injected_attempt_inherits_absolute_deadline_and_reports_observation():
+    requests = []
+    observations = []
+    inspected = []
+
+    def execute(request):
+        requests.append(request)
+        return HttpResponse(200, b"ok")
+
+    with driver.RequestsHttpTransport(
+        monotonic=lambda: 20.0, execute_request=execute,
+        observe=observations.append, inspect_response=lambda request, response: inspected.append(response),
+    ) as transport:
+        assert transport.get("https://example.invalid", timeout=5, deadline=22).content == b"ok"
+    assert requests[0].deadline == 22
+    assert len(observations) == len(inspected) == 1
+    assert observations[0].status_code == 200
+    assert observations[0].response_bytes == 2
+    with pytest.raises(HttpError, match="closed"):
+        transport.get("https://example.invalid", timeout=5)
+
+
 class _Raw:
     status_code = 200
     encoding = "utf-8"

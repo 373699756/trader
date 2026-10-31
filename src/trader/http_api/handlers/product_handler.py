@@ -17,6 +17,7 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
     FREEZE_VIEW_SCHEMA_VERSION,
     FreezeView,
+    UnifiedFreezeQueries,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
@@ -47,6 +48,7 @@ def RegisterRoutes(app: Flask, services: WebServices | None) -> None:
 def _create_product_blueprint(services: WebServices | None) -> Blueprint:
     blueprint = Blueprint("product", __name__)
     blueprint.add_url_rule("/", "root", partial(_root, services))
+    blueprint.add_url_rule("/api/freezes/current", "freeze_current_batch", partial(_current_batch, services))
     blueprint.add_url_rule(
         "/api/freezes/<strategy_name>/current",
         "freeze_current",
@@ -92,6 +94,29 @@ def _root(services: WebServices | None) -> str:
         default_scoring_profile=default_profile,
         long_scoring_profile=long_profile,
     )
+
+
+def _current_batch(services: WebServices | None) -> RouteResponse:
+    if services is None:
+        return _not_ready()
+    profiles = (
+        tuple((profile, lane.queries) for profile, lane in services.profiles.items())
+        if isinstance(services, ProfiledWebServices)
+        else ((services.profile_id, services.queries),)
+    )
+    batch = UnifiedFreezeQueries.current_batch(profiles)
+    response = jsonify({
+        "schema_version": "freeze_current_batch",
+        "profiles": {
+            profile: {
+                view.strategy.value: {**SerializeFreezeView(view), "scoring_profile": profile}
+                for view in pair
+            }
+            for profile, pair in batch
+        },
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _current(services: WebServices | None, strategy_name: str) -> RouteResponse:

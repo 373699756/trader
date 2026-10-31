@@ -33,6 +33,7 @@ class CandidateQuoteSource(Protocol):
         codes: Sequence[str],
         *,
         timeout_seconds: float | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> Sequence[MarketQuote]: ...
 
 

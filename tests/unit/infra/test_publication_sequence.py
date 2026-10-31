@@ -30,6 +30,7 @@ def test_recovered_legacy_coordinate_advances_the_persistent_reservation(tmp_pat
     first = PublicationSequence(path, block_size=8)
     first.initialize()
     legacy = 10_000
+    first.prepare(width=2, minimum=legacy + 1)
     new = first.allocate(width=2, minimum=legacy + 1)
     assert new > legacy
     restarted = PublicationSequence(path, block_size=8)
@@ -42,12 +43,34 @@ def test_concurrent_instances_and_exhausted_blocks_never_reuse_coordinates(tmp_p
     instances = [PublicationSequence(path, block_size=8) for _ in range(4)]
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(lambda sequence: sequence.initialize(), instances))
-        values = list(pool.map(lambda index: instances[index % 4].allocate(width=2), range(200)))
+        def allocate_pair(sequence):
+            sequence.prepare(width=2)
+            return sequence.allocate(width=2)
+
+        values = []
+        for _ in range(50):
+            values.extend(pool.map(allocate_pair, instances))
     reserved = {number for start in values for number in (start, start + 1)}
     assert len(reserved) == 400
     restarted = PublicationSequence(path, block_size=8)
     restarted.initialize()
     assert restarted.allocate() > max(reserved)
+
+
+def test_exhaustion_does_not_open_sqlite_or_consume_coordinates(tmp_path, monkeypatch):
+    sequence = PublicationSequence(tmp_path / "sequence.sqlite3", block_size=2)
+    sequence.initialize()
+    assert sequence.allocate(width=2) == 1
+
+    def unexpected_database(*args, **kwargs):
+        pytest.fail("hot publication path opened SQLite")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("trader.recommendation.infra.persistence.publication_sequence.SqliteSession", unexpected_database)
+        with pytest.raises(RuntimeError, match="reservation_exhausted"):
+            sequence.allocate()
+    sequence.prepare(width=2)
+    assert sequence.allocate(width=2) == 3
 
 
 @pytest.mark.parametrize("reserved_until", [-1, "corrupt", 2**63 - 1])

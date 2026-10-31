@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheIdentity
+from trader.infra.cancellation import CancellationEvent
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.workers import (
     SubmitOrReject,
@@ -59,6 +60,7 @@ class _IntradayLoadRequest:
     action_restrictions: dict[str, set[str]] | None
     deadline: float
     preview_context: PreviewContext | None = None
+    cancelled: Callable[[], bool] | None = None
 
 
 @dataclass
@@ -111,10 +113,13 @@ class IntradayLoader:
                 self._entries.clear()
                 self._preview_context = context
 
-    def refresh(self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None) -> IntradayRefreshResult:
+    def refresh(
+        self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> IntradayRefreshResult:
         observed_at = observed_at.astimezone(_SHANGHAI)
         requested = tuple(sorted(set(codes)))
-        self.load(requested, observed_at, deadline=deadline)
+        self.load(requested, observed_at, deadline=deadline, cancelled=cancelled)
         completed_at = max(observed_at, self._runner.wall_clock()).astimezone(_SHANGHAI)
         restrictions: dict[str, set[str]] = {}
         # Use the same retained view as the scoring reader, including expiry/fallback qualification.
@@ -139,6 +144,7 @@ class IntradayLoader:
         *,
         action_restrictions: dict[str, set[str]] | None = None,
         deadline: datetime | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         request = _IntradayLoadRequest(
             tuple(codes),
@@ -146,6 +152,7 @@ class IntradayLoader:
             action_restrictions,
             self._monotonic() + min(self._batch_timeout_seconds, max(0.0, (deadline - self._runner.wall_clock()).total_seconds())) if deadline is not None else self._monotonic() + self._batch_timeout_seconds,
             self._preview_context,
+            cancelled,
         )
         source_lanes = self._runner.source_lanes
         if source_lanes is not None and not source_lanes.owns_current_thread("eastmoney_intraday"):
@@ -180,6 +187,8 @@ class IntradayLoader:
         except FutureTimeoutError:
             # Another profile may have joined or refreshed this queued request.
             # Its own batch deadline stops expired I/O when the lane reaches it.
+            if not lane_future.cancel():
+                wait((lane_future,))
             return self._retain_after_batch_failure(request)
         except SourceRequestSupersededError:
             return self._retain_after_batch_failure(request, reason="intraday_request_superseded")
@@ -196,6 +205,8 @@ class IntradayLoader:
         *,
         reason: str = "intraday_batch_deadline",
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
+        if request.cancelled is not None and request.cancelled():
+            raise RuntimeError("round_input_cancelled")
         with self._lock:
             now = self._monotonic()
             fallback = {
@@ -274,14 +285,14 @@ class IntradayLoader:
     ) -> None:
         source_lanes = self._runner.source_lanes
         batch_deadline = state.request.deadline
-        cancelled = threading.Event()
+        cancelled = CancellationEvent(state.request.cancelled)
         futures: dict[Future[tuple[MinuteBar, ...]], str] = {}
         remaining = iter(dict.fromkeys(missing))
         exhausted = False
         assert self._client is not None
         try:
             while not exhausted or futures:
-                if self._monotonic() >= batch_deadline or (
+                if cancelled.is_set() or self._monotonic() >= batch_deadline or (
                     source_lanes is not None and source_lanes.is_stopped("eastmoney_intraday")
                 ):
                     break
@@ -303,13 +314,16 @@ class IntradayLoader:
                     timeout=min(0.05, max(0.0, batch_deadline - self._monotonic())),
                     return_when=FIRST_COMPLETED,
                 )
-                if self._monotonic() >= batch_deadline:
+                if cancelled.is_set() or self._monotonic() >= batch_deadline:
                     break
                 for future in completed:
                     self._consume_intraday_future(state, futures.pop(future), future)
         finally:
             cancelled.set()
             timed_out = tuple(code for future, code in futures.items() if not future.cancel())
+            wait(tuple(future for future in futures if not future.cancelled()))
+        if state.request.cancelled is not None and state.request.cancelled():
+            raise RuntimeError("round_input_cancelled")
         self._consume_intraday_timeouts(state, timed_out)
         if not timed_out and (futures or not exhausted):
             with self._lock:

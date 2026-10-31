@@ -217,6 +217,23 @@ class UnifiedFreezeQueries:
     def current(self, strategy: Strategy) -> FreezeView:
         now = self._clock.now()
         snapshot = self._index.snapshot(strategy)
+        return self._current_view(strategy, snapshot, now)
+
+    @staticmethod
+    def current_batch(
+        profiles: tuple[tuple[str, UnifiedFreezeQueries], ...],
+    ) -> tuple[tuple[str, tuple[FreezeView, FreezeView]], ...]:
+        snapshots = UnifiedFreezeIndex.snapshot_batch(tuple(query._index for _, query in profiles))
+        now = profiles[0][1]._clock.now()
+        return tuple(
+            (profile, (
+                query._current_view(Strategy.TOMORROW, pair[0], now),
+                query._current_view(Strategy.D25, pair[1], now),
+            ))
+            for (profile, query), pair in zip(profiles, snapshots, strict=True)
+        )
+
+    def _current_view(self, strategy: Strategy, snapshot: UnifiedFreezeSnapshot, now: datetime) -> FreezeView:
         if strategy is Strategy.LONG:
             return _long_current(snapshot, now)
         freeze, formal = _current_scored(snapshot, strategy, now)

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.http_contracts import HttpError, HttpTransport
+from trader.infra.http_contracts import HttpError, HttpTimeout, HttpTransport
 from trader.infra.workers import (
     BoundedExecutor,
     InjectedExecutor,
@@ -224,7 +224,7 @@ class SinaClient:
                             url,
                             params=dict(params),
                             headers={"User-Agent": "Mozilla/5.0"},
-                            timeout=self._timeout_seconds,
+                            timeout=self._remaining_timeout(request.deadline),
                             cancel_requested=lambda: (
                                 self._cancel_requested()
                                 or (request.cancel_event is not None and request.cancel_event.is_set())
@@ -237,7 +237,7 @@ class SinaClient:
                         url,
                         params=dict(params),
                         headers={"User-Agent": "Mozilla/5.0"},
-                        timeout=self._timeout_seconds,
+                        timeout=self._remaining_timeout(request.deadline),
                         cancel_requested=lambda: (
                             self._cancel_requested()
                             or (request.cancel_event is not None and request.cancel_event.is_set())
@@ -251,6 +251,14 @@ class SinaClient:
             self._ensure_running(request.deadline, request.cancel_event)
             return result
         raise RuntimeError(f"sina request failed after {_REQUEST_ATTEMPTS} attempts: {last_error}") from last_error
+
+    def _remaining_timeout(self, deadline: datetime | None) -> float:
+        if deadline is None:
+            return self._timeout_seconds
+        remaining = min(self._timeout_seconds, (deadline - self._wall_clock()).total_seconds())
+        if remaining <= 0:
+            raise HttpTimeout("sina_deadline_exceeded")
+        return remaining
 
     def _ensure_running(
         self,

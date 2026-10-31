@@ -17,6 +17,7 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
     UnifiedProfiledPublishResult,
 )
 from trader.recommendation.application.runtime.cadence import ScheduledPipelineTask
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputs
 
 ROUND_TIMEOUT_SECONDS = 120.0
 
@@ -46,6 +47,7 @@ class RecommendationRounds:
             raise ValueError("recommendation round timeout must be within 120 seconds")
         self._condition = threading.Condition()
         self._profiles: list[str] = []
+        self._prepare_publication: dict[str, Callable[[], None]] = {}
         self._sequence = 0
         self._active: RoundAdmission | None = None
         self._pending: set[str] = set()
@@ -56,16 +58,19 @@ class RecommendationRounds:
         self._publication: UnifiedProfiledPublishResult | None = None
         self._cancelled = False
         self._inputs_pending = False
+        self._inputs: RoundInputs | None = None
         self._monotonic = monotonic
         self._round_timeout_seconds = round_timeout_seconds
         self._publish_batch = publish_batch
         self._publish_batch_event = publish_batch_event
 
-    def register(self, profile: str) -> None:
+    def register(self, profile: str, prepare_publication: Callable[[], None] | None = None) -> None:
         with self._condition:
             if self._active is not None or profile in self._profiles:
                 raise ValueError("recommendation round profile registration is invalid")
             self._profiles.append(profile)
+            if prepare_publication is not None:
+                self._prepare_publication[profile] = prepare_publication
 
     def enter(self, profile: str, tasks: tuple[ScheduledPipelineTask, ...]) -> RoundAdmission | None:
         with self._condition:
@@ -75,6 +80,8 @@ class RecommendationRounds:
             if self._active is None:
                 if not tasks:
                     return None
+                for prepare in self._prepare_publication.values():
+                    prepare()
                 self._sequence += 1
                 started = self._monotonic()
                 self._active = RoundAdmission(
@@ -88,6 +95,8 @@ class RecommendationRounds:
                 self._inputs_pending = False
                 self._staged.clear()
                 self._publication = None
+                sequence = self._sequence
+                self._inputs = RoundInputs(tuple(self._profiles), lambda: self.remaining_seconds(sequence))
             if self._cancelled or profile not in self._pending:
                 return None
             self._pending.remove(profile)
@@ -95,6 +104,14 @@ class RecommendationRounds:
             self._preparing.add(profile)
             self._running.add(profile)
             return self._active
+
+    def inputs(self, profile: str, sequence: int | None) -> ProfileRoundInputs | None:
+        with self._condition:
+            if sequence is None:
+                return None
+            if self._active is None or self._active.sequence != sequence or self._inputs is None:
+                raise ValueError("round_input_identity_missing")
+            return ProfileRoundInputs(profile, self._inputs)
 
     def cancelled(self, sequence: int) -> bool:
         with self._condition:
@@ -196,8 +213,10 @@ class RecommendationRounds:
         with self._condition:
             if profile in self._profiles:
                 self._profiles.remove(profile)
+            self._prepare_publication.pop(profile, None)
+            admitted = profile in self._pending or profile in self._running
             self._pending.discard(profile)
-            if profile in self._running:
+            if admitted:
                 self._cancel_locked()
             self._close_finished_locked()
 
@@ -223,6 +242,7 @@ class RecommendationRounds:
     def _close_finished_locked(self) -> None:
         if not self._pending and not self._running:
             self._active = None
+            self._inputs = None
             self._staged.clear()
             self._publication = None
         self._condition.notify_all()

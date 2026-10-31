@@ -79,6 +79,13 @@ def test_profiled_batch_rejects_every_profile_before_any_partial_write() -> None
     accepted = UnifiedFreezeIndex.publish_scored_batch((pairs[0], pairs[1]))
     assert accepted.accepted
     assert tuple(profile for profile, _events in accepted.events) == ("v1", "v2")
+    captured = UnifiedFreezeIndex.snapshot_batch(indexes)
+    assert tuple(tuple(snapshot.current for snapshot in pair) for pair in captured) == tuple(pair.freezes for pair in pairs)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with lock:
+            reader = executor.submit(UnifiedFreezeIndex.snapshot_batch, indexes)
+            assert not reader.done()
+        assert reader.result(timeout=2) == captured
 
 
 def test_hybrid_requires_the_current_same_strategy_local_parent() -> None:
