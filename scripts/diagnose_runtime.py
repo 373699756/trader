@@ -69,6 +69,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "training-alignment": ("training_alignment",),
     "training-coverage": ("training_coverage",),
     "training-performance": ("training_alignment",),
+    "training-resources": ("training_resources",),
     "model-inputs": ("model_inputs",),
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
@@ -731,6 +732,14 @@ def build_commands(
                 ),
             ),
             common_timeout,
+        ),
+        "training_resources": DiagnosticCommand(
+            "training_resources",
+            (
+                python_executable, "-m", "scripts.runtime_diagnostics.training_resources",
+                "--profiles", ",".join(options.training_profiles),
+            ),
+            min(common_timeout, 30.0),
         ),
         "configuration": DiagnosticCommand("configuration", cli + ("validate-config",), common_timeout),
         "history_maintenance": DiagnosticCommand(
@@ -2034,6 +2043,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tencent_history_window": _security_master_details,
     "v5_training": _security_master_details,
     "training_alignment": _security_master_details,
+    "training_resources": _security_master_details,
     "training_samples": _history_sqlite_performance_details,
     "training_coverage": _security_master_details,
     "model_inputs": _security_master_details,

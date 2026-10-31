@@ -70,6 +70,7 @@ It samples up to three failed dates and three failed child cursors, at most 192 
 `--profile training-coverage` audits format-2 sample caches read-only through named statistics. Older formats require an explicit rebuild; no legacy wide-row fallback is retained. `observed_label_projection` reports the per-horizon observed-return rule's T+1 coverage and a conservative D25 lower bound from missing-return counts; it does not refit, rewrite the cache, or certify a trained model.
 Add `--training-signal-date YYYY-MM-DD` to inspect the five future price horizons of a V5 signal with observed T+1 samples.
 The report contains population counts, missing dates and source status counts; it does not repair data or generate labels.
+`--profile training-resources`检查当前进程可用CPU、共享拟合名额、原生线程限制、排队取消和退出后的恢复；裸机与容器使用同一入口。可用`--training-profiles v1,v5`选择任意非空档位组合。诊断只用固定线程申请与64×64矩阵乘法，不读取训练配置或历史，不训练模型、不写业务数据、不联网；子进程最多30秒。预约峰值包含故意占满名额的取消探测，不能当成真实拟合峰值；通过不代表全量训练耗时、内存、磁盘或所有原生库已验收。CPU预算也不是操作系统级资源隔离，不能保证同时运行其它程序时桌面不卡顿。
 `--profile training-alignment --history-root /external/history --training-probe-directory /external/new-output`
 runs the shared four-profile training pipeline only on an external history copy.
 `--profile training-performance` uses the same required paths and compares serial, shared parallel, then serial runs in fresh subprocesses.

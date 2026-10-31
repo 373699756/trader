@@ -33,6 +33,7 @@ Profile = Literal[
     "training-alignment",
     "training-coverage",
     "training-performance",
+    "training-resources",
     "model-inputs",
     "history-sqlite",
     "history-source-compare",
