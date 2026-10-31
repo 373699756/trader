@@ -66,6 +66,7 @@ class MarketDataSettings:
     eastmoney_timeout_seconds: float
     sina_timeout_seconds: float
     full_market_primary_timeout_seconds: float
+    full_market_quote_attempts: int
     candidate_timeout_seconds: float
     minimum_market_rows: int
     single_flight: bool

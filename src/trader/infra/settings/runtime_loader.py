@@ -155,7 +155,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "tushare",
         "cache_policy",
     }
-    market_keys.update({"sina_timeout_seconds", "full_market_primary_timeout_seconds"})
+    market_keys.update({"sina_timeout_seconds", "full_market_primary_timeout_seconds", "full_market_quote_attempts"})
     _require_exact_keys(market_raw, market_keys, "market_data")
     _require_exact_keys(
         deepseek_raw,
@@ -261,6 +261,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
                 maximum=120.0,
             ),
             candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
+            full_market_quote_attempts=_integer(market_raw, "full_market_quote_attempts", minimum=1, maximum=5),
             minimum_market_rows=_integer(market_raw, "minimum_market_rows", minimum=1),
             single_flight=_boolean(market_raw, "single_flight"),
             circuit_breaker_failures=_integer(market_raw, "circuit_breaker_failures", minimum=1),

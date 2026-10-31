@@ -37,6 +37,7 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_norm
     NormalizeCandidateDiscoveryPopulation,
 )
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.candidate.filters import LevelOneFilterRules
 from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
@@ -96,6 +97,34 @@ def test_preview_tail_uses_market_day_and_actual_receipt_cutoff():
     assert DeriveTailSignals(delivered, observed_at=observed, policy=POLICY).valid_bar_count == 0
     future = tuple(replace(bar, received_time=observed + timedelta(seconds=1)) for bar in delivered)
     assert DeriveTailSignals(future, observed_at=observed, policy=POLICY, preview_context=context).valid_bar_count == 0
+
+
+@pytest.mark.parametrize("source_offset", (-timedelta(minutes=1), -timedelta(days=1), timedelta(days=2)))
+def test_preview_rejects_unqualified_full_market_before_replacing_valid_snapshot(application_feature_factory, source_offset):
+    observed = NOW + timedelta(days=2)
+    context = PreviewContext("failed-close-collection", NOW.date(), observed)
+    quote = replace(
+        application_feature_factory("600001", observed).quote,
+        source_time=context.market_as_of,
+        received_time=observed,
+    )
+    primary = StaticMarketClient((quote,))
+    gateway = MarketDataGateway(
+        primary,
+        StaticMarketClient(()),
+        StaticTencentClient(()),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: observed,
+    )
+    gateway.prepare_preview(context)
+    valid = tuple(gateway.fetch_market(observed_at=observed))
+    assert len(valid) == 1
+    primary._quotes = (replace(quote, source_time=context.market_as_of + source_offset),)
+    with pytest.raises(MarketDataUnavailableError, match="preview_close_quotes_unavailable"):
+        gateway.fetch_market(observed_at=observed, force=True)
+    assert tuple(gateway.current_quotes((quote.code,))) == valid
 
 
 def test_preview_compares_close_quotes_collected_at_different_real_times():

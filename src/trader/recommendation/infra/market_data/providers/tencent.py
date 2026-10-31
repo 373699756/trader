@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from typing_extensions import NotRequired, Unpack
 
 from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
-from trader.infra.http_contracts import HttpError, HttpTransport
+from trader.infra.http_contracts import HttpConnectionError, HttpError, HttpStatusError, HttpTimeout, HttpTransport
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import (
     BoundedExecutor,
@@ -65,7 +65,10 @@ class TencentClient:
         timeout_seconds: float | None = None,
         deadline: datetime | None = None,
         cancel_event: threading.Event | None = None,
+        request_attempts: int = 1,
     ) -> tuple[MarketQuote, ...]:
+        if type(request_attempts) is not int or not 1 <= request_attempts <= 5:
+            raise ValueError("Tencent quote attempts must be an integer from 1 to 5")
         normalized = tuple(sorted({code for code in codes if len(code) == 6 and code.isdigit()}))
         if not normalized:
             return ()
@@ -93,6 +96,7 @@ class TencentClient:
                     timeout_seconds,
                     monotonic_deadline,
                     cancel_event,
+                    request_attempts,
                 ): shard
                 for shard in wave
             }
@@ -114,11 +118,14 @@ class TencentClient:
         *,
         deadline: datetime | None = None,
         cancel_event: threading.Event | None = None,
+        request_attempts: int = 1,
     ) -> tuple[MarketQuote, ...]:
         requested = tuple(sorted(set(codes)))
         if not requested:
             raise RuntimeError("official market universe is unavailable")
-        quotes = self.fetch_quotes(requested, deadline=deadline, cancel_event=cancel_event)
+        quotes = self.fetch_quotes(
+            requested, deadline=deadline, cancel_event=cancel_event, request_attempts=request_attempts
+        )
         if len({quote.code for quote in quotes}) < len(requested) * 0.99:
             raise RuntimeError("tencent full-market quote coverage is incomplete")
         completed_at = self._wall_clock()
@@ -131,6 +138,31 @@ class TencentClient:
         )
 
     def _fetch_quote_shard(
+        self,
+        codes: tuple[str, ...],
+        received_at: datetime | None,
+        timeout_seconds: float | None,
+        monotonic_deadline: float | None,
+        cancel_event: threading.Event | None,
+        request_attempts: int,
+    ) -> tuple[MarketQuote, ...]:
+        for attempt in range(request_attempts):
+            try:
+                return self._request_quote_shard(
+                    codes,
+                    received_at,
+                    timeout_seconds,
+                    monotonic_deadline,
+                    cancel_event,
+                )
+            except (HttpConnectionError, HttpTimeout, HttpStatusError) as exc:
+                if attempt + 1 == request_attempts:
+                    raise
+                if isinstance(exc, HttpStatusError) and exc.status_code not in {408, 429, 500, 502, 503, 504}:
+                    raise
+        raise AssertionError("validated Tencent quote attempts exhausted without a result")
+
+    def _request_quote_shard(
         self,
         codes: tuple[str, ...],
         received_at: datetime | None,
@@ -256,9 +288,12 @@ class TencentClient:
 class TencentFullMarketSource:
     """Bind the official stock population to Tencent's code-based quote API."""
 
-    def __init__(self, client: TencentClient, universe_codes: Callable[[], Sequence[str]]) -> None:
+    def __init__(
+        self, client: TencentClient, universe_codes: Callable[[], Sequence[str]], *, request_attempts: int
+    ) -> None:
         self._client = client
         self._universe_codes = universe_codes
+        self._request_attempts = request_attempts
 
     def fetch_market(
         self,
@@ -270,6 +305,7 @@ class TencentFullMarketSource:
             self._universe_codes(),
             deadline=deadline,
             cancel_event=cancel_event,
+            request_attempts=self._request_attempts,
         )
 
     def probe_market(self) -> None:

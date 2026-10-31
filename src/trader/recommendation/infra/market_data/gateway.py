@@ -302,6 +302,13 @@ class MarketDataGateway:
                 return cached
             raise MarketDataUnavailableError("market data unavailable: " + _market_route_error_message(results))
         observations = tuple(observation for result in successes for observation in result.observations)
+        if self._preview_context is not None and not any(
+            self._preview_context.accepts_quote(observation.source_time, completed_at)
+            for observation in observations
+        ):
+            with self._state_lock:
+                self._last_route_outcome = outcome
+            raise MarketDataUnavailableError("preview_close_quotes_unavailable")
         observed_codes = {observation.subject_key for observation in observations}
         security_references = SecurityReferenceObservations(observations)
         with self._state_lock:

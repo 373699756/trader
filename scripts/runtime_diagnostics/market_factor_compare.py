@@ -905,7 +905,11 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
         timeout_seconds=args.timeout_seconds, session_factory=OpenExternalHttp, worker_pool=None
     )
     reference_gateway = MarketDataGateway(
-        TencentFullMarketSource(reference_tencent, lambda: tuple(item.subject_key for item in official)),
+        TencentFullMarketSource(
+            reference_tencent,
+            lambda: tuple(item.subject_key for item in official),
+            request_attempts=settings.market_data.full_market_quote_attempts,
+        ),
         SinaClient(timeout_seconds=args.timeout_seconds, session_factory=OpenExternalHttp, worker_pool=None),
         reference_tencent,
         minimum_market_rows=1,

@@ -1185,7 +1185,9 @@ def _build_market_data(
             wall_clock=now,
             worker_pool=workers.market_quote_pool,
         )
-        tencent_market = TencentFullMarketSource(tencent_market_client, official_quote_codes)
+        tencent_market = TencentFullMarketSource(
+            tencent_market_client, official_quote_codes, request_attempts=settings.market_data.full_market_quote_attempts
+        )
         gateway = MarketDataGateway(
             tencent_market,
             sina,

@@ -46,7 +46,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
-from trader.infra.http_contracts import HttpStatusError, HttpTimeout
+from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpStatusError, HttpTimeout
 from trader.recommendation.infra.market_data.providers.tencent import TencentFullMarketSource
 from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 
@@ -194,13 +194,13 @@ def test_tencent_full_market_preserves_supplier_time_and_uses_completion_only_fo
 def test_tencent_full_market_requires_official_universe_and_stops_on_cancel() -> None:
     session = FakeSession([])
     client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
-    unavailable = TencentFullMarketSource(client, lambda: ())
+    unavailable = TencentFullMarketSource(client, lambda: (), request_attempts=2)
     with pytest.raises(RuntimeError, match="official market universe is unavailable"):
         unavailable.fetch_market()
 
     cancelled = threading.Event()
     cancelled.set()
-    source = TencentFullMarketSource(client, lambda: ("600001",))
+    source = TencentFullMarketSource(client, lambda: ("600001",), request_attempts=2)
     with pytest.raises(RuntimeError, match="hedge cancelled"):
         source.fetch_market(cancel_event=cancelled)
     assert not session.calls
@@ -231,6 +231,96 @@ def test_tencent_full_market_deadline_uses_monotonic_time() -> None:
     with pytest.raises(RuntimeError, match="deadline exceeded"):
         client.fetch_market(("600001",), deadline=NOW + timedelta(seconds=1))
     assert len(session.calls) == 1
+
+
+def test_tencent_full_market_retries_only_failed_shard_without_rewriting_close() -> None:
+    counts = {}
+
+    class RecoveringSession(FakeSession):
+        def get(self, url, **kwargs):
+            symbols = url.split("q=", 1)[1].split(",")
+            first = symbols[0]
+            counts[first] = counts.get(first, 0) + 1
+            if first == "sh600120" and counts[first] < 3:
+                raise HttpTimeout("fixture transient transport failure")
+            records = []
+            for symbol in symbols:
+                fields = [""] * 50
+                fields[1:5] = ["测试股份", symbol[2:], "12.00", "11.65"]
+                fields[30] = "20260716150000"
+                records.append(f'v_{symbol}="{"~".join(fields)}";')
+            return FakeResponse("".join(records).encode("gb18030"))
+
+    received = NOW + timedelta(days=2)
+    client = TencentClient(
+        worker_pool=None,
+        timeout_seconds=2,
+        session_factory=lambda: RecoveringSession([]),
+        wall_clock=lambda: received,
+    )
+    codes = tuple(f"{600000 + index:06d}" for index in range(241))
+    source = TencentFullMarketSource(client, lambda: codes, request_attempts=3)
+    quotes = source.fetch_market(deadline=received + timedelta(seconds=12))
+    assert len(quotes) == 241
+    assert counts == {"sh600000": 1, "sh600120": 3, "sh600240": 1}
+    close = NOW.astimezone(ZoneInfo("Asia/Shanghai")).replace(hour=15)
+    assert all(quote.source_time == close and quote.received_time == received for quote in quotes)
+
+
+@pytest.mark.parametrize("failure,expected_attempts", [
+    (HttpConnectionError("fixture connection"), 2),
+    (HttpTimeout("fixture timeout"), 2),
+    (HttpStatusError(503), 2),
+    (HttpStatusError(403), 1),
+    (HttpCancelled("fixture cancelled"), 1),
+])
+def test_tencent_full_market_bounds_retries_and_does_not_retry_permanent_failure(failure, expected_attempts):
+    session = FakeSession([failure, failure, failure])
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
+    with pytest.raises(RuntimeError, match="all Tencent quote shards failed"):
+        client.fetch_market(("600001",), request_attempts=2)
+    assert len(session.calls) == expected_attempts
+
+
+@pytest.mark.parametrize("stop", ("deadline", "cancel", "recover"))
+def test_tencent_retry_preserves_monotonic_deadline_and_cancellation(stop):
+    monotonic = [100.0]
+    wall = [NOW]
+    cancelled = threading.Event()
+    fields = [""] * 50
+    fields[1:5] = ["测试股份", "600001", "12.00", "11.65"]
+    fields[30] = "20260716100000"
+    body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
+
+    class MovingClockSession(FakeSession):
+        def get(self, *args, **kwargs):
+            if not self.calls:
+                monotonic[0] += 3.0 if stop == "deadline" else 0.5
+                wall[0] -= timedelta(hours=1)
+                if stop == "cancel":
+                    cancelled.set()
+            return super().get(*args, **kwargs)
+
+    session = MovingClockSession([HttpTimeout("fixture transient"), body])
+    client = TencentClient(
+        worker_pool=None,
+        timeout_seconds=3,
+        session_factory=lambda: session,
+        wall_clock=lambda: wall[0],
+        monotonic=lambda: monotonic[0],
+    )
+    if stop == "recover":
+        assert len(client.fetch_market(
+            ("600001",), deadline=NOW + timedelta(seconds=3), cancel_event=cancelled, request_attempts=2
+        )) == 1
+        assert [call[1]["deadline"] for call in session.calls] == [103.0, 103.0]
+        assert [call[1]["timeout"] for call in session.calls] == [3.0, 2.5]
+    else:
+        with pytest.raises(RuntimeError, match="deadline exceeded|hedge cancelled"):
+            client.fetch_market(
+                ("600001",), deadline=NOW + timedelta(seconds=3), cancel_event=cancelled, request_attempts=2
+            )
+        assert len(session.calls) == 1
 
 
 def test_tencent_receipt_time_is_captured_after_the_response() -> None:

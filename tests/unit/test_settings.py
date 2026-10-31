@@ -113,6 +113,14 @@ def _write_strategy_config(tmp_path: Path, raw: dict[str, object]) -> Path:
     return _write_split_config(tmp_path, "strategy.json", raw, _STRATEGY_FILES)
 
 
+@pytest.mark.parametrize("attempts", (0, 6, True, 1.5))
+def test_configuration_rejects_invalid_full_market_quote_attempts(tmp_path, attempts):
+    raw = _runtime_document()
+    raw["market_data"]["full_market_quote_attempts"] = attempts
+    with pytest.raises(ConfigurationError):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
 def test_configuration_contract_is_valid() -> None:
     runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
     strategy = LoadStrategySettings(runtime.strategy_config_path)
@@ -129,6 +137,7 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.market_data.eastmoney_timeout_seconds == 8
     assert runtime.market_data.sina_timeout_seconds == 8
     assert runtime.market_data.full_market_primary_timeout_seconds == 12
+    assert runtime.market_data.full_market_quote_attempts == 2
     assert runtime.pipeline.market_workers == 5
     assert runtime.api.web_snapshot_retention_seconds == 35
     assert runtime.market_data.tushare.timeout_seconds == 8

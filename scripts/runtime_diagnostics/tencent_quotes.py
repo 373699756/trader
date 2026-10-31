@@ -21,6 +21,7 @@ from trader.infra.http_contracts import HttpAttempt, HttpError, HttpTransport  #
 from trader.infra.http_transport import RequestsHttpTransport  # noqa: E402
 from trader.infra.isolated_http import IsolatedHttpExecutor  # noqa: E402
 from trader.infra.workers import BoundedExecutor  # noqa: E402
+from trader.recommendation.domain.market.models import MarketQuote  # noqa: E402
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -126,15 +127,21 @@ def _audit_transport(args: argparse.Namespace, *, sqlite_policy: SqliteIoPolicy)
                                    timeout_seconds=args.timeout_seconds)
             started = time.monotonic()
             error = ""
-            quotes = ()
+            quotes: tuple[MarketQuote, ...] = ()
             try:
-                quotes = client.fetch_quotes(codes, deadline=datetime.now(_SHANGHAI) + timedelta(seconds=12))
+                quotes = client.fetch_market(
+                    codes,
+                    deadline=datetime.now(_SHANGHAI)
+                    + timedelta(seconds=settings.market_data.full_market_primary_timeout_seconds),
+                    request_attempts=settings.market_data.full_market_quote_attempts,
+                )
             except (OSError, RuntimeError, HttpError) as exc:
                 error = type(exc).__name__
             rows.append({
                 "transport": "isolated" if isolated else "direct", "requested": len(codes),
                 "returned": len(quotes), "elapsed_ms": round((time.monotonic() - started) * 1000, 2),
                 "attempts": len(attempts), "failed_attempts": sum(bool(item.failure) for item in attempts),
+                "maximum_shard_attempts": settings.market_data.full_market_quote_attempts,
                 "attempt_latency": _latency_summary([item.elapsed_seconds * 1000 for item in attempts]),
                 "error": error,
             })
