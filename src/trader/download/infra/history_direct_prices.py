@@ -262,11 +262,10 @@ class HistoryDirectPrices:
         dates: tuple[date, ...],
         progress: Callable[[Literal["started", "completed"], int, int, str], None],
     ) -> tuple[HistorySnapshotPartition, ...]:
-        months = set(self._previous) | {(day.year, day.month) for day in dates}
-        references = []
-        for index, (year, month) in enumerate(sorted(months), 1):
+        months = tuple(sorted(set(self._previous) | {(day.year, day.month) for day in dates}))
+        references: dict[tuple[int, int], HistorySnapshotPartition] = {}
+        for year, month in months:
             self._activity.tick()
-            progress("started", index - 1, len(months), f"{year:04d}-{month:02d}")
             target = self._month(year, month)
             # Resume detects changes from persisted observation sequences, not an in-memory flag.
             if not (self._root / f"prices_{year:04d}.sqlite3").exists():
@@ -274,11 +273,37 @@ class HistoryDirectPrices:
             if (year, month) in self._previous and not target.has_observations_after(
                 self._previous[(year, month)].sequence
             ):
-                references.append(self._previous[(year, month)])
-            else:
-                references.append(target.seal(self._sequence))
-            progress("completed", index, len(months), f"{year:04d}-{month:02d}")
-        return tuple(references)
+                references[(year, month)] = self._previous[(year, month)]
+
+        index = 0
+        while index < len(months):
+            year, month = months[index]
+            if (year, month) in references:
+                label = f"{year:04d}-{month:02d}"
+                progress("started", index, len(months), label)
+                index += 1
+                progress("completed", index, len(months), label)
+                continue
+            run = [(year, month)]
+            while index + len(run) < len(months):
+                candidate = months[index + len(run)]
+                if candidate in references or candidate != (year, run[-1][1] + 1):
+                    break
+                run.append(candidate)
+            label = (
+                f"{year:04d}-{run[0][1]:02d}"
+                if len(run) == 1
+                else f"{year:04d}-{run[0][1]:02d}..{year:04d}-{run[-1][1]:02d}"
+            )
+            progress("started", index, len(months), label)
+            sealed = self._month(year, run[0][1]).seal_months(
+                tuple(selected_month for _, selected_month in run),
+                self._sequence,
+            )
+            references.update(zip(run, sealed, strict=True))
+            index += len(run)
+            progress("completed", index, len(months), label)
+        return tuple(references[month] for month in months)
 
 
 __all__ = ["HistoryDirectPrices", "HistoryPriceContext", "HistoryPriceResult"]

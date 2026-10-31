@@ -212,6 +212,23 @@ def test_partition_sealing_prints_only_completed_month_with_elapsed_time(capsys)
     )
 
 
+def test_partition_sealing_batch_prints_month_range_and_batch_elapsed_time(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0, 106.0))
+
+    progress.publish(
+        HistorySyncProgress("sealing_partitions", "started", 72, 100, current_item="2024-01..2024-12")
+    )
+    progress.publish(
+        HistorySyncProgress("sealing_partitions", "completed", 84, 100, current_item="2024-01..2024-12")
+    )
+
+    assert (
+        _compact_log(capsys.readouterr().err)
+        == "00:00:06 | 发布内容校验 | 完成 | 84/100 (84.00%) | "
+        "月份 2024-01..2024-12 | 本批耗时 00:00:05\n"
+    )
+
+
 def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 0.0, 1.0, 6.0, 7.0))
 

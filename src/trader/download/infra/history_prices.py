@@ -20,7 +20,7 @@ from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellSta
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
-from trader.download.infra.history_partition_proof import CalculateHistoryProof
+from trader.download.infra.history_partition_proof import CalculateHistoryProof, CalculateHistoryProofs
 from trader.download.infra.history_revision_codec import (
     PublishedCellFromPriceColumns,
     RevisionColumnValues,
@@ -265,6 +265,12 @@ class HistoryPricePartitionConflictError(HistoryPricePartitionError):
     """An immutable logical row conflicts with an existing revision."""
 
 
+def _month_bounds(calendar_year: int, calendar_month: int) -> tuple[int, int]:
+    start = date(calendar_year, calendar_month, 1)
+    end = date(calendar_year + (calendar_month == 12), calendar_month % 12 + 1, 1)
+    return EncodeDate(start), EncodeDate(end)
+
+
 class HistoryPricePartition:
     def __init__(  # noqa: PLR0913 - physical identity and optional diagnostic/cancellation boundaries
         self,
@@ -285,9 +291,7 @@ class HistoryPricePartition:
         self._activity = activity
 
     def _month_bounds(self) -> tuple[int, int]:
-        start = date(self._calendar_year, self._calendar_month, 1)
-        end = date(self._calendar_year + (self._calendar_month == 12), self._calendar_month % 12 + 1, 1)
-        return EncodeDate(start), EncodeDate(end)
+        return _month_bounds(self._calendar_year, self._calendar_month)
 
     def _clip_range(self, start: date, end: date) -> tuple[date, date]:
         first, after = self._month_bounds()
@@ -715,6 +719,18 @@ class HistoryPricePartition:
 
     def seal(self, sequence: int | None = None) -> HistorySnapshotPartition:
         """Produce a logical proof without copying, renaming or freezing the database."""
+        return self.seal_months((self._calendar_month,), sequence)[0]
+
+    def seal_months(
+        self,
+        calendar_months: tuple[int, ...],
+        sequence: int | None = None,
+    ) -> tuple[HistorySnapshotPartition, ...]:
+        """Produce multiple monthly proofs through one ordered annual query."""
+        if not calendar_months or tuple(sorted(set(calendar_months))) != calendar_months or any(
+            not 1 <= month <= 12 for month in calendar_months
+        ):
+            raise ValueError("history proof months are invalid")
         try:
             with (
                 closing(self._read_connection()) as connection,
@@ -727,24 +743,27 @@ class HistoryPricePartition:
                     sequence = connection.run(
                         "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_price_observation"
                     ).require_one()[0]
-                proof = CalculateHistoryProof(
+                proofs = CalculateHistoryProofs(
                     connection,
                     sequence,
                     # Typed writes already validate the new values. Publication seals
                     # visible identities; cold readers and offline audits verify payloads.
                     validate_payloads=False,
-                    dates=self._month_bounds(),
+                    date_ranges=tuple(_month_bounds(self._calendar_year, month) for month in calendar_months),
                     heartbeat=lambda count: self._activity.tick() if self._activity else None,
                 )
-                return HistorySnapshotPartition(
-                    f"prices_{self._calendar_year:04d}.sqlite3",
-                    proof.logical_hash,
-                    proof.row_count,
-                    self._calendar_month,
-                    sequence,
+                return tuple(
+                    HistorySnapshotPartition(
+                        f"prices_{self._calendar_year:04d}.sqlite3",
+                        proof.logical_hash,
+                        proof.row_count,
+                        month,
+                        sequence,
+                    )
+                    for month, proof in zip(calendar_months, proofs, strict=True)
                 )
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryPricePartitionError("history month logical proof failed") from exc
+            raise HistoryPricePartitionError("history monthly logical proofs failed") from exc
 
     @classmethod
     def verify(

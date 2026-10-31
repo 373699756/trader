@@ -225,6 +225,29 @@ class ProgressRecorder:
         self.values.append(progress)
 
 
+def test_initial_cross_month_sync_batches_publication_proofs(tmp_path: Path) -> None:
+    dates = (date(2026, 1, 30), date(2026, 2, 2), date(2026, 2, 3))
+    progress = ProgressRecorder()
+    observed = datetime(2026, 2, 3, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    result = RunHistoryFixture(
+        _configuration(tmp_path),
+        FakeSupplier(dates),
+        clock=lambda: observed,
+        progress=progress,
+    )
+
+    assert result.state == "completed"
+    sealing = tuple(value for value in progress.values if value.stage == "sealing_partitions")
+    assert tuple(
+        (value.state, value.completed_units, value.total_units, value.current_item) for value in sealing
+    ) == (
+        ("started", 0, 2, "2026-01..2026-02"),
+        ("completed", 2, 2, "2026-01..2026-02"),
+    )
+    assert tuple(item.calendar_month for item in _snapshot(tmp_path).partitions) == (1, 2)
+
+
 def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

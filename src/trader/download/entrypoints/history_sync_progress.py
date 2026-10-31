@@ -244,6 +244,12 @@ class StderrHistorySyncProgress:
         if not progress.stage.startswith("supplier_"):
             if progress.stage == "tencent_history":
                 label = "总计"
+            elif (
+                progress.stage == "sealing_partitions"
+                and progress.current_item is not None
+                and ".." in progress.current_item
+            ):
+                label = "本批耗时"
             else:
                 label = "本月耗时" if monthly else "阶段耗时"
             parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")

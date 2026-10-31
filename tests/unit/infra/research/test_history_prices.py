@@ -625,6 +625,40 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
         HistoryPricePartition.verify(sealed_path, reference, sqlite_policy=SqlitePolicyFixture())
 
 
+def test_multi_month_seal_uses_one_latest_observation_query_and_matches_individual_proofs(tmp_path: Path) -> None:
+    path = tmp_path / "prices_2026.sqlite3"
+    writer = HistoryPricePartition(path, 2026, 1, sqlite_policy=SqlitePolicyFixture())
+    writer.initialize()
+    writer.save_revisions(
+        (
+            _revision(date(2026, 1, 30), 1, 10.0),
+            _revision(date(2026, 2, 2), 1, 20.0),
+        )
+    )
+    writer.save_revisions((_revision(date(2026, 1, 30), 2, 11.0),))
+    expected = tuple(
+        HistoryPricePartition(path, 2026, month, sqlite_policy=SqlitePolicyFixture()).seal(2)
+        for month in (1, 2)
+    )
+    statements: list[str] = []
+    reader = HistoryPricePartition(
+        path,
+        2026,
+        1,
+        statement_trace=statements.append,
+        sqlite_policy=SqlitePolicyFixture(),
+    )
+
+    actual = reader.seal_months((1, 2), 2)
+
+    assert actual == expected
+    assert tuple((item.logical_hash, item.row_count) for item in actual) == (
+        ("f9efaa89afeea6c4be4b9ff847e23d9a51b1f0da23d8e2ddcbeabdb6df9fce68", 1),
+        ("3d133527f01ba1482409ab3224f800ef220514456457b9eb80e471d5ed9e381a", 1),
+    )
+    assert sum("WITH latest AS" in statement for statement in statements) == 1
+
+
 def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_rename(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
