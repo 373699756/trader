@@ -217,7 +217,11 @@ class SchedulerRuntime:
                 self._record_publish_rejection,
             ),
         )
-        self._preview = PreviewCycleRunner(dependencies, self._cycles.execute_pair, self._scheduled_request)
+        self._preview = PreviewCycleRunner(
+            dependencies,
+            lambda requests, sequence: self._cycles.execute_round_pair(requests, round_sequence=sequence),
+            self._scheduled_request,
+        )
 
     def start(self) -> bool:
         with self._lock:
@@ -368,14 +372,13 @@ class SchedulerRuntime:
             return 30.0
         lane = self._score_lane.status()
         if not lane.running and not lane.pending:
-            self._score_lane.offer(
-                ScheduledPipelineTask(
-                    PipelineTask.SCORE,
-                    observed_at,
-                    MarketPhase.BEFORE_CLOSE,
-                    session=self._session.capture(),
-                )
+            scheduled = ScheduledPipelineTask(
+                PipelineTask.SCORE,
+                observed_at,
+                MarketPhase.BEFORE_CLOSE,
+                session=self._session.capture(),
             )
+            self._submit_round_tasks((scheduled,), scheduled)
         return 1.0
 
     def _calendar_freeze(self, observed_at: datetime) -> tuple[bool | None, float]:
@@ -493,10 +496,6 @@ class SchedulerRuntime:
         try:
             with SessionGuard(scheduled.session):
                 pass
-            scope = self._dependencies.run_scope
-            if scope is not None and scope.preview is not None:
-                self._preview.execute(scope.preview, scheduled.session)
-                return
             now = ShanghaiNow(self._dependencies.clock.now())
             if now.date() != scheduled.scheduled_at.date() or now.time() >= wall_time(15, 0):
                 return
@@ -543,6 +542,10 @@ class SchedulerRuntime:
             )
         changed = PipelineTask.SCORE in tasks
         try:
+            scope = self._dependencies.run_scope
+            if scope is not None and scope.preview is not None:
+                self._preview.execute(scope.preview, scheduled)
+                return
             for task in _DATA_LANES:
                 if task not in tasks or task is PipelineTask.CANDIDATE_QUOTES:
                     continue

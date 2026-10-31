@@ -11,7 +11,8 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
     for statement in (
         "活动产品代码只在src/trader，组合根为bootstrap.py",
         "不保留旧策略页面或带项目版本前缀的兼容路由",
-        "runtime_dir承载锁、日志和可丢弃临时产物",
+        "runtime_dir承载锁、日志和临时产物",
+        "DeepSeek预算状态必须可靠持久化，不能当可丢弃缓存清理",
         "数据回退必须完整release配合匹配数据副本",
         "缺数据或模型时只读Web仍可启动并报告未就绪",
         "GET /api/freezes/<strategy>/current",

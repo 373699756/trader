@@ -9,7 +9,7 @@
   function create(dependencies) {
     const {
       state, els, patches, formatters, diagnostics, patchToPaintSamples,
-      loadRecommendations, loadStatus, applyRecommendationPatch, applyOverlayPatch,
+      loadRecommendations, loadStatus, applyRecommendationPatch, applyRecommendationBatch, applyOverlayPatch,
       requestRecommendationResync, recordBrowserError,
     } = dependencies;
 
@@ -78,9 +78,7 @@
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
         const payload = eventPayload(event);
-        const profileBatch = payload && payload.profiles && payload.profiles[state.profile];
-        const replacement = profileBatch && profileBatch[state.strategy];
-        if (!state.date && replacement && eventMatchesCurrent(replacement) && applyRecommendationPatch(replacement)) {
+        if (payload && applyRecommendationBatch(payload)) {
           recordPatchPaint(receivedAt);
         }
       };

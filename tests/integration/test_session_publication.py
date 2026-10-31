@@ -1,6 +1,7 @@
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from threading import Event
+from threading import Event, RLock
 
 import pytest
 
@@ -14,6 +15,7 @@ from tests.integration.test_scheduler_runtime import (
     SharedReviews,
     TradingCalendar,
     _cadence,
+    _round_cleanup_runtime,
     noop_research_factory,
 )
 from trader.infra.shutdown import ShutdownDeadline
@@ -22,9 +24,83 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_observers 
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.runtime import CycleRequest
 from trader.recommendation.application.runtime.latest_wins import LatestWinsOffer
+from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
+from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.domain.publication.models import Strategy
+
+
+@pytest.mark.parametrize("jump", (-1, 60, 86400))
+def test_round_rechecks_session_after_preparing_overlays(monkeypatch, jump):
+    runtime = _round_cleanup_runtime()
+    deps = runtime._dependencies
+    requests = tuple(
+        replace(runtime._scheduled_request(strategy, NOW, "before_close"), allow_review=False)
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
+    )
+    admission = deps.rounds.enter(
+        deps.round_profile, (ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE),)
+    )
+    assert admission is not None
+    original = deps.freezes.initial_overlay
+
+    def rotate_session(identity):
+        overlay = original(identity)
+        if identity.strategy is Strategy.D25:
+            deps.clock.current = NOW + timedelta(seconds=jump)
+            runtime._session.capture()
+        return overlay
+
+    monkeypatch.setattr(deps.freezes, "initial_overlay", rotate_session)
+    runtime._cycles.execute_round_pair(requests, round_sequence=admission.sequence)
+    assert runtime._session.status().generation == 2
+    assert all(deps.index.snapshot(strategy).current is None for strategy in (Strategy.TOMORROW, Strategy.D25))
+    assert runtime.status().local_publish_count == 0
+    deps.rounds.finish(deps.round_profile, admission.sequence)
+
+
+@pytest.mark.parametrize("invalid_profile", (None, "v1", "v5"))
+def test_batch_checks_every_session_after_waiting_for_other_profiles(invalid_profile):
+    events = []
+    rounds = RecommendationRounds(publish_batch_event=lambda sequence, batch: events.append((sequence, batch)))
+    transaction = RLock()
+    template = _round_cleanup_runtime()._dependencies
+    runtimes = {
+        profile: SchedulerRuntime(
+            replace(template, clock=FixedClock(NOW), rounds=rounds, round_profile=profile,
+                    index=UnifiedFreezeIndex(transaction_lock=transaction)),
+            config_version="session-batch", shutdown_timeout_seconds=2.0,
+        )
+        for profile in ("v1", "v5")
+    }
+    requests = {
+        profile: tuple(
+            replace(runtime._scheduled_request(strategy, NOW, "before_close"), allow_review=False)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
+        )
+        for profile, runtime in runtimes.items()
+    }
+    tasks = (ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE),)
+    admission = rounds.enter("v1", tasks)
+    assert admission is not None and rounds.enter("v5", tasks) is admission
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(runtimes["v1"]._cycles.execute_round_pair, requests["v1"], round_sequence=admission.sequence)
+        with rounds._condition:
+            assert rounds._condition.wait_for(lambda: "v1" in rounds._staged, timeout=2.0)
+        if invalid_profile is not None:
+            runtime = runtimes[invalid_profile]
+            runtime._dependencies.clock.current -= timedelta(seconds=1)
+            runtime._session.capture()
+        runtimes["v5"]._cycles.execute_round_pair(requests["v5"], round_sequence=admission.sequence)
+        rounds.finish("v5", admission.sequence)
+        first.result(timeout=2.0)
+    assert len(events) == (1 if invalid_profile is None else 0)
+    for profile, runtime in runtimes.items():
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
+            assert (runtime._dependencies.index.snapshot(strategy).current is not None) == (invalid_profile is None)
+        rounds.finish(profile, admission.sequence)
 
 
 @pytest.mark.parametrize("jump", (-60, 60, 301, 86400))

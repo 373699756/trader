@@ -55,6 +55,7 @@ class RecommendationRounds:
         self._staged: dict[str, PreparedCurrentPair] = {}
         self._publication: UnifiedProfiledPublishResult | None = None
         self._cancelled = False
+        self._inputs_pending = False
         self._monotonic = monotonic
         self._round_timeout_seconds = round_timeout_seconds
         self._publish_batch = publish_batch
@@ -84,6 +85,7 @@ class RecommendationRounds:
                 )
                 self._pending = set(self._profiles)
                 self._cancelled = False
+                self._inputs_pending = False
                 self._staged.clear()
                 self._publication = None
             if self._cancelled or profile not in self._pending:
@@ -104,6 +106,23 @@ class RecommendationRounds:
             if self._active is None or self._active.sequence != sequence or self._cancelled:
                 return 0.0
             return max(0.0, self._active.deadline_monotonic - self._monotonic())
+
+    def defer(self, sequence: int) -> bool:
+        """Cancel a pending-input attempt so every admitted preview can retry."""
+        with self._condition:
+            if self._active is None or self._active.sequence != sequence:
+                return False
+            if self._inputs_pending:
+                return True
+            if not self._matches_locked(sequence):
+                return False
+            self._inputs_pending = True
+            self._cancel_locked()
+            return True
+
+    def inputs_pending(self, sequence: int) -> bool:
+        with self._condition:
+            return self._active is not None and self._active.sequence == sequence and self._inputs_pending
 
     def prepared(self, profile: str, sequence: int) -> bool:
         return self._wait_for_collection(profile, sequence, self._preparing)
@@ -165,6 +184,8 @@ class RecommendationRounds:
         with self._condition:
             if self._active is None or self._active.sequence != sequence:
                 return
+            if profile in self._running and profile not in self._staged:
+                self._cancel_locked()
             self._pending.discard(profile)
             self._collecting.discard(profile)
             self._preparing.discard(profile)
@@ -192,6 +213,7 @@ class RecommendationRounds:
     def _expire_locked(self) -> None:
         if self._active is not None and self._remaining_locked() <= 0.0:
             self._cancel_locked()
+            self._close_finished_locked()
 
     def _cancel_locked(self) -> None:
         self._cancelled = True

@@ -116,7 +116,10 @@ class RecommendationCycleExecutor:
             freezes = self._build_pair(requests)
             if freezes is None or self._dependencies.rounds.cancelled(round_sequence):
                 return
-            if ShanghaiNow(self._dependencies.clock.now()) >= requests[0].review_deadline:
+            if (
+                requests[0].preview_context is None
+                and ShanghaiNow(self._dependencies.clock.now()) >= requests[0].review_deadline
+            ):
                 return
             expected = tuple(
                 current.version if current is not None else None
@@ -129,6 +132,7 @@ class RecommendationCycleExecutor:
                 freezes,
                 expected_versions=(expected[0], expected[1]),
                 publication_io=self._dependencies.publication_io,
+                sessions=(requests[0].session, requests[1].session),
             )
             publish_started = time.perf_counter()
             result = self._dependencies.rounds.stage(

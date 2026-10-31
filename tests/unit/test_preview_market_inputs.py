@@ -25,6 +25,7 @@ from tests.component.market_data_test_support import (
     _tail_minute_bars,
 )
 from tests.component.test_candidate_history_tail import CALENDAR, NOW, HistoryInput
+from tests.helpers.configuration import HardFilterPolicyFixture
 from tests.unit.application.scoring_helpers import profile_for
 from tests.unit.application.test_tomorrow_production_model import _model_feature
 from tests.unit.application.test_v5_model_filtering import _SequencePredictor
@@ -67,7 +68,10 @@ def test_preview_accepts_only_its_close_without_rewriting_quote_age(application_
     assert quote.source_time == close and quote.received_time == observed
     assert snapshot.source_ages_seconds["tencent"] == (observed - close).total_seconds()
     feature = replace(application_feature_factory(quote.code, observed), quote=quote, preview_context=context)
-    rule = next(rule for rule in LevelOneFilterRules(max_age_seconds=30) if rule.name == "invalid_quote_time")
+    rule = next(
+        rule for rule in LevelOneFilterRules(max_age_seconds=30, policy=HardFilterPolicyFixture())
+        if rule.name == "invalid_quote_time"
+    )
     assert rule.predicate(feature, observed) is None
     assert NormalizeCandidateDiscoveryPopulation((feature,), observed)[0].quote.source_time == close
     health = DynamicSourceHealth((feature,), observed)

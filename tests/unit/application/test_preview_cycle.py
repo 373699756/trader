@@ -32,10 +32,12 @@ from trader.recommendation.application.ports.runtime import (
     PipelineTaskRequest,
     RefreshOutcome,
 )
-from trader.recommendation.application.runtime.cadence import PipelineTask
+from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.recommendation.application.runtime.preview_cycle import PreviewCycleRunner
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
-from trader.recommendation.application.runtime.trading_session import TradingSession
+from trader.recommendation.application.runtime.schedule import MarketPhase
+from trader.recommendation.application.runtime.trading_session import SessionLease, TradingSession
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 
@@ -92,6 +94,7 @@ def dependencies(data: PreviewData) -> RuntimeDependencies:
         publish_freeze=lambda _event: pytest.fail("runner published a freeze directly"),
         publish_overlay=lambda _overlay: pytest.fail("runner published an overlay directly"),
         monotonic=lambda: 0.0,
+        rounds=RecommendationRounds(monotonic=lambda: 0.0),
     )
 
 
@@ -108,8 +111,8 @@ def request_builder(strategy: Strategy, observed_at: datetime, phase: str) -> Cy
     )
 
 
-def publish_pair(deps: RuntimeDependencies) -> Callable[[tuple[CycleRequest, CycleRequest]], None]:
-    def execute(requests: tuple[CycleRequest, CycleRequest]) -> None:
+def publish_pair(deps: RuntimeDependencies) -> Callable[[tuple[CycleRequest, CycleRequest], int], None]:
+    def execute(requests: tuple[CycleRequest, CycleRequest], sequence: int) -> None:
         for request in requests:
             current = preview_freeze(strategy=request.strategy)
             assert current.preview_context == request.preview_context
@@ -119,6 +122,19 @@ def publish_pair(deps: RuntimeDependencies) -> Callable[[tuple[CycleRequest, Cyc
     return execute
 
 
+def _scheduled(deps: RuntimeDependencies, session: SessionLease | None = None) -> ScheduledPipelineTask:
+    task = ScheduledPipelineTask(PipelineTask.SCORE, STARTED_AT, MarketPhase.BEFORE_CLOSE, session=session)
+    admission = deps.rounds.enter(deps.round_profile, (task,))
+    assert admission is not None
+    return replace(
+        task,
+        round_sequence=admission.sequence,
+        round_started_monotonic=admission.started_monotonic,
+        round_deadline_monotonic=admission.deadline_monotonic,
+        round_deadline=STARTED_AT + timedelta(seconds=120),
+    )
+
+
 def test_preview_runner_refreshes_fresh_inputs_and_executes_both_strategies_once() -> None:
     data = PreviewData()
     deps = dependencies(data)
@@ -126,12 +142,14 @@ def test_preview_runner_refreshes_fresh_inputs_and_executes_both_strategies_once
     context = PreviewContext("preview-a", MARKET_DATE, STARTED_AT)
     calls: list[tuple[CycleRequest, CycleRequest]] = []
 
-    def execute(requests: tuple[CycleRequest, CycleRequest]) -> None:
+    def execute(requests: tuple[CycleRequest, CycleRequest], sequence: int) -> None:
         calls.append(requests)
-        publish_pair(deps)(requests)
+        publish_pair(deps)(requests, sequence)
 
     runner = PreviewCycleRunner(deps, execute, request_builder)
-    runner.execute(context, session)
+    deps.rounds.register(deps.round_profile)
+    scheduled = _scheduled(deps, session)
+    runner.execute(context, scheduled)
     assert runner.status().state == "ready" and runner.status().error is None
     assert [request.task for request in data.preview_requests] == [
         PipelineTask.FULL_MARKET,
@@ -148,7 +166,9 @@ def test_preview_runner_refreshes_fresh_inputs_and_executes_both_strategies_once
         and request.session is session
         for request in calls[0]
     )
-    runner.execute(context, session)
+    assert all(request.round_deadline == scheduled.round_deadline for request in data.preview_requests)
+    assert all(request.round_deadline_monotonic == scheduled.round_deadline_monotonic for request in calls[0])
+    runner.execute(context, scheduled)
     assert data.contexts == [context] and len(calls) == 1
     assert not deps.control_pool.status().running and not deps.observer.status().running
 
@@ -164,17 +184,20 @@ def test_pending_preview_inputs_retry_without_computing_or_persisting(task: Pipe
     context = PreviewContext("preview-a", MARKET_DATE, STARTED_AT)
     calls: list[tuple[CycleRequest, CycleRequest]] = []
 
-    def execute(requests: tuple[CycleRequest, CycleRequest]) -> None:
+    def execute(requests: tuple[CycleRequest, CycleRequest], sequence: int) -> None:
         calls.append(requests)
-        publish_pair(deps)(requests)
+        publish_pair(deps)(requests, sequence)
 
     runner = PreviewCycleRunner(deps, execute, request_builder)
-    runner.execute(context, None)
+    deps.rounds.register(deps.round_profile)
+    scheduled = _scheduled(deps)
+    runner.execute(context, scheduled)
     assert runner.status().state == "waiting_inputs"
     assert runner.status().error == "history_projection_pending"
     assert not calls and deps.index.snapshot(Strategy.TOMORROW).current is None
+    deps.rounds.finish(deps.round_profile, scheduled.round_sequence)
     data.failure = None
-    runner.execute(context, None)
+    runner.execute(context, _scheduled(deps))
     assert runner.status().state == "ready" and len(calls) == 1
 
 
@@ -187,14 +210,16 @@ def test_failed_preview_retains_old_currents_and_does_not_repeat(failure: Except
     deps = dependencies(data)
     old = freeze()
     assert deps.index.publish(old, expected_version=None).accepted
-    runner = PreviewCycleRunner(deps, lambda _requests: pytest.fail("failed inputs scored"), request_builder)
+    runner = PreviewCycleRunner(deps, lambda _requests, _sequence: pytest.fail("failed inputs scored"), request_builder)
     context = PreviewContext("preview-a", MARKET_DATE, STARTED_AT)
-    runner.execute(context, None)
+    deps.rounds.register(deps.round_profile)
+    scheduled = _scheduled(deps)
+    runner.execute(context, scheduled)
     assert runner.status().state == "failed"
     assert runner.status().error in {"close_quote_unavailable", "preview_run_failed"}
     assert deps.index.snapshot(Strategy.TOMORROW).current is old
     count = len(data.preview_requests)
-    runner.execute(context, None)
+    runner.execute(context, scheduled)
     assert len(data.preview_requests) == count
 
 
@@ -203,11 +228,12 @@ def test_preview_is_ready_only_when_both_current_freezes_belong_to_the_run() -> 
     other = preview_freeze(run_id="another-run", strategy=Strategy.D25)
     assert deps.index.publish(other, expected_version=None).accepted
 
-    def execute(_requests: tuple[CycleRequest, CycleRequest]) -> None:
+    def execute(_requests: tuple[CycleRequest, CycleRequest], _sequence: int) -> None:
         assert deps.index.publish(preview_freeze(), expected_version=None).accepted
 
     runner = PreviewCycleRunner(deps, execute, request_builder)
-    runner.execute(PreviewContext("preview-a", MARKET_DATE, STARTED_AT), None)
+    deps.rounds.register(deps.round_profile)
+    runner.execute(PreviewContext("preview-a", MARKET_DATE, STARTED_AT), _scheduled(deps))
     assert runner.status().state == "failed"
     assert runner.status().error == "preview_freeze_unavailable"
 
@@ -217,19 +243,21 @@ def test_running_preview_claim_rejects_duplicate_concurrent_execution() -> None:
     entered, release = threading.Event(), threading.Event()
     calls: list[tuple[CycleRequest, CycleRequest]] = []
 
-    def execute(requests: tuple[CycleRequest, CycleRequest]) -> None:
+    def execute(requests: tuple[CycleRequest, CycleRequest], sequence: int) -> None:
         calls.append(requests)
         entered.set()
         assert release.wait(2.0)
-        publish_pair(deps)(requests)
+        publish_pair(deps)(requests, sequence)
 
     context = PreviewContext("preview-a", MARKET_DATE, STARTED_AT)
     runner = PreviewCycleRunner(deps, execute, request_builder)
+    deps.rounds.register(deps.round_profile)
+    scheduled = _scheduled(deps)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(runner.execute, context, None)
+        future = pool.submit(runner.execute, context, scheduled)
         assert entered.wait(2.0)
         assert runner.status().state == "running"
-        runner.execute(context, None)
+        runner.execute(context, scheduled)
         release.set()
         future.result(timeout=2.0)
     assert runner.status().state == "ready" and len(calls) == 1
@@ -240,6 +268,37 @@ def test_preview_refresh_latency_uses_milliseconds() -> None:
     ticks = iter((1.0, 1.25, 2.0, 2.25, 3.0, 3.25, 4.0, 4.25))
     deps = replace(dependencies(data), monotonic=lambda: next(ticks))
     runner = PreviewCycleRunner(deps, publish_pair(deps), request_builder)
-    runner.execute(PreviewContext("preview-a", MARKET_DATE, STARTED_AT), None)
+    deps.rounds.register(deps.round_profile)
+    runner.execute(PreviewContext("preview-a", MARKET_DATE, STARTED_AT), _scheduled(deps))
     assert runner.status().state == "ready"
     assert deps.latency.status().stages["preview:full_market"].p50_ms == 250.0
+
+
+@pytest.mark.parametrize("expire_at", ("queue", "prepare", "full_market"))
+def test_preview_stops_dispatching_when_the_shared_deadline_expires(expire_at):
+    elapsed = [0.0]
+
+    class SlowInputs(PreviewData):
+        def prepare_preview(self, context):
+            super().prepare_preview(context)
+            if expire_at == "prepare":
+                elapsed[0] = 120.0
+
+        def refresh_task(self, request):
+            result = super().refresh_task(request)
+            elapsed[0] = 120.0
+            return result
+
+    data = SlowInputs()
+    deps = replace(dependencies(data), rounds=RecommendationRounds(monotonic=lambda: elapsed[0]))
+    deps.rounds.register(deps.round_profile)
+    scheduled = _scheduled(deps)
+    runner = PreviewCycleRunner(deps, lambda _requests, _sequence: pytest.fail("expired preview scored"), request_builder)
+    if expire_at == "queue":
+        elapsed[0] = 120.0
+    runner.execute(PreviewContext("preview-a", MARKET_DATE, STARTED_AT), scheduled)
+    assert runner.status().state == "failed"
+    assert runner.status().error == "preview_round_cancelled"
+    assert len(data.preview_requests) == (1 if expire_at == "full_market" else 0)
+    assert deps.index.snapshot(Strategy.TOMORROW).current is None
+    assert deps.index.snapshot(Strategy.D25).current is None

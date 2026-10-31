@@ -61,6 +61,7 @@
       snapshot_id: patch.snapshot_id,
       projection_version: patch.projection_version || patch.snapshot_id,
       strategy: patch.strategy,
+      scoring_profile: patch.scoring_profile,
       trade_date: patch.trade_date,
       requested_date: null,
       current_trade_date: patch.current_trade_date || patch.trade_date,

@@ -93,7 +93,7 @@
   }
   const streamController = (window.TraderDashboardStream || fallbackDashboardStream()).create({
     state, els, patches, formatters, diagnostics, patchToPaintSamples,
-    loadRecommendations, loadStatus, applyRecommendationPatch, applyOverlayPatch,
+    loadRecommendations, loadStatus, applyRecommendationPatch, applyRecommendationBatch, applyOverlayPatch,
     requestRecommendationResync, recordBrowserError,
   });
   window.TraderDashboardDiagnostics = Object.freeze({
@@ -206,8 +206,6 @@
       button.setAttribute("aria-selected", isSelected ? "true" : "false");
     });
     state.payload = null;
-    state.payloads.clear();
-    state.etags.clear();
     state.inflight.clear();
     state.lastEventId = 0;
     state.projectionVersion = "";
@@ -374,6 +372,7 @@
     const key = recommendationKey(strategy, selectedDate, view);
     const pending = state.inflight.get(key);
     if (pending) return pending;
+    const cachedAtRequest = state.payloads.get(key);
     const request = (async () => {
       const query = freezeProfileQuery(strategy);
       const endpoint = selectedDate
@@ -406,6 +405,8 @@
       diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(payload));
       if (payload.strategy !== strategy) throw new Error("推荐快照策略不匹配");
       if (!cacheIdentityValid(payload, strategy, selectedDate, view)) throw new Error("推荐快照身份不匹配");
+      const latest = state.payloads.get(key);
+      if (!selectedDate && latest && latest !== cachedAtRequest) return latest;
       const etag = response.headers.get("ETag");
       if (etag) state.etags.set(key, etag);
       state.payloads.set(key, payload);
@@ -880,6 +881,61 @@
   }
 
   function connectStream() { streamController.connect(); }
+
+  function applyRecommendationBatch(batch) {
+    if (batch.schema_version !== "freeze_event" || !Number.isInteger(batch.round_sequence)
+      || batch.round_sequence < 1 || !batch.profiles || typeof batch.profiles !== "object"
+      || !Object.keys(batch.profiles).length) {
+      requestRecommendationResync("batch_schema_mismatch");
+      return false;
+    }
+    const replacements = new Map();
+    const etags = new Map(state.etags);
+    let tradeDate = null;
+    for (const [profile, pair] of Object.entries(batch.profiles)) {
+      for (const strategy of ["tomorrow", "d25"]) {
+        const patch = pair && pair[strategy];
+        const key = `${profile}:${strategy}:current`;
+        if (!patch || patch.scoring_profile !== profile || patch.replace !== true) {
+          requestRecommendationResync("batch_identity_mismatch");
+          return false;
+        }
+        if (tradeDate !== null && patch.trade_date !== tradeDate) {
+          requestRecommendationResync("batch_identity_mismatch");
+          return false;
+        }
+        tradeDate = patch.trade_date;
+        const cached = state.payloads.get(key);
+        if (cached && cached.trade_date > tradeDate) return false;
+        const current = cached && cached.trade_date === tradeDate ? cached : null;
+        const verdict = patches.recommendationPatchFreeze(
+          patch, current, patches.projectionVersion(current), strategy, "current",
+        );
+        if (verdict === "ignore_late_draft") return false;
+        if (verdict !== "apply" || !patches.topKValid(patch.upserts, strategy)) {
+          requestRecommendationResync(verdict === "apply" ? "topk_mismatch" : verdict);
+          return false;
+        }
+        replacements.set(key, {
+          ...patches.replacementPayload(current || {}, patch, patch.upserts),
+          round_sequence: batch.round_sequence,
+        });
+        etags.delete(key);
+      }
+    }
+    // Validate the whole event before replacing any strategy cache or painting.
+    state.payloads = new Map([...state.payloads, ...replacements]);
+    state.etags = etags;
+    diagnostics.recommendationPatchesApplied += replacements.size;
+    const visible = !state.date && replacements.get(recommendationKey(state.strategy, "", state.view));
+    if (!visible) return false;
+    state.requestSequence += 1;
+    state.payload = visible;
+    state.projectionVersion = patches.projectionVersion(visible);
+    els.refreshButton.classList.remove("is-busy");
+    renderPayload(visible);
+    return true;
+  }
 
   function applyRecommendationPatch(patch) {
     const currentVersion = state.projectionVersion || patches.projectionVersion(state.payload);

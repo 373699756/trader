@@ -1,5 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from itertools import combinations
+
+import pytest
 
 from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
@@ -72,3 +75,49 @@ def test_withdrawn_profile_releases_cancelled_round_after_running_work_exits() -
     rounds.finish("v1", first.sequence)
     following = rounds.enter("v1", _tasks())
     assert following is not None and following.sequence > first.sequence
+
+
+@pytest.mark.parametrize("elapsed", (0.0, 121.0, 1000.0))
+def test_failed_profile_and_absent_peer_do_not_permanently_block_recovery(elapsed: float) -> None:
+    now = [0.0]
+    rounds = RecommendationRounds(monotonic=lambda: now[0])
+    rounds.register("v1")
+    rounds.register("v5")
+    first = rounds.enter("v1", _tasks())
+    assert first is not None
+    rounds.finish("v1", first.sequence)
+    now[0] = elapsed
+    following = rounds.enter("v5", _tasks())
+    assert following is not None and following.sequence > first.sequence
+    assert rounds.enter("v1", _tasks()) is following
+
+
+@pytest.mark.parametrize(
+    "profiles", [group for size in range(1, 5) for group in combinations(("v1", "v2", "v3", "v5"), size)]
+)
+def test_only_enabled_profiles_participate_in_collection(profiles: tuple[str, ...]) -> None:
+    rounds = RecommendationRounds()
+    for profile in profiles:
+        rounds.register(profile)
+    admissions = [rounds.enter(profile, _tasks()) for profile in profiles]
+    first = admissions[0]
+    assert first is not None and all(item is first for item in admissions)
+    with ThreadPoolExecutor(max_workers=len(profiles)) as pool:
+        futures = [pool.submit(rounds.collected, profile, first.sequence) for profile in profiles]
+        assert all(future.result(timeout=2.0) for future in futures)
+
+
+def test_failure_wakes_waiting_peers_without_waiting_for_deadline() -> None:
+    rounds = RecommendationRounds()
+    for profile in ("v1", "v5"):
+        rounds.register(profile)
+    admission = rounds.enter("v1", _tasks())
+    assert admission is not None and rounds.enter("v5", _tasks()) is admission
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        waiting = pool.submit(rounds.prepared, "v1", admission.sequence)
+        rounds.finish("v5", admission.sequence)
+        assert waiting.result(timeout=2.0) is False
+        assert rounds.enter("v5", _tasks()) is None
+        rounds.finish("v1", admission.sequence)
+    following = rounds.enter("v1", _tasks())
+    assert following is not None and following.sequence > admission.sequence

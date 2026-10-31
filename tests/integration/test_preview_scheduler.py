@@ -13,14 +13,18 @@ from tests.unit.domain.test_preview_identity import MARKET_DATE, STARTED_AT, pre
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
+    DataRefreshPendingError,
     DataRefreshUnavailableError,
+    FreezeUnavailableError,
     ReviewUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.domain.publication.freeze_identity import LongProjection, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 
 
 class PreviewFreezes(Freezes):
@@ -36,6 +40,85 @@ class PreviewFreezes(Freezes):
 class RejectResearch(NoopResearchRuntime):
     def observe(self, intent, request) -> bool:
         raise AssertionError("preview must not start persistent company research")
+
+
+@pytest.mark.parametrize("outcome", ("ready", "failed", "timeout", "pending"))
+def test_preview_subset_publishes_only_a_complete_round(outcome):
+    elapsed = [0.0]
+    events = []
+    rounds = RecommendationRounds(
+        monotonic=lambda: elapsed[0], publish_batch_event=lambda sequence, batch: events.append((sequence, batch))
+    )
+    transaction = threading.RLock()
+    fast_ready, slow_ready, release = threading.Event(), threading.Event(), threading.Event()
+    pending_once = [True]
+
+    class FastFreezes(PreviewFreezes):
+        def initial_overlay(self, identity):
+            result = super().initial_overlay(identity)
+            if identity.strategy is Strategy.D25:
+                fast_ready.set()
+            return result
+
+    class SlowFreezes(PreviewFreezes):
+        def build_local(self, request):
+            if request.strategy is Strategy.D25:
+                slow_ready.set()
+                assert release.wait(3.0)
+                if outcome == "failed":
+                    raise FreezeUnavailableError("preview_model_unavailable")
+                if outcome == "pending" and pending_once[0]:
+                    pending_once[0] = False
+                    raise DataRefreshPendingError("preview_inputs_pending")
+            return super().build_local(request)
+
+    runtimes = []
+    for profile, builder in (("v1", FastFreezes()), ("v5", SlowFreezes())):
+        deps = dependencies(PreviewData())
+        scope = RecommendationRunScope(
+            True, lambda: None, lambda: (MARKET_DATE,), deps.clock.now, lambda: "preview-a"
+        )
+        deps = replace(
+            deps, rounds=rounds, round_profile=profile, freezes=builder, run_scope=scope,
+            index=UnifiedFreezeIndex(transaction_lock=transaction),
+            publish_freeze=lambda _: None,
+        )
+        runtime = SchedulerRuntime(deps, config_version="preview-subset", shutdown_timeout_seconds=2.0)
+        runtimes.append(runtime)
+    try:
+        for runtime in runtimes:
+            runtime.start()
+            runtime.submit_due()
+        assert fast_ready.wait(3.0) and slow_ready.wait(3.0)
+        assert not events
+        for runtime in runtimes:
+            assert all(runtime._dependencies.index.snapshot(strategy).current is None for strategy in (Strategy.TOMORROW, Strategy.D25))
+        if outcome == "timeout":
+            elapsed[0] = 120.0
+        release.set()
+        assert all(runtime.wait_idle(3.0) for runtime in runtimes)
+        assert len(events) == (1 if outcome == "ready" else 0)
+        for runtime in runtimes:
+            expected_state = "waiting_inputs" if outcome == "pending" else "ready" if outcome == "ready" else "failed"
+            assert runtime.status().preview_state == expected_state
+            for strategy in (Strategy.TOMORROW, Strategy.D25):
+                snapshot = runtime._dependencies.index.snapshot(strategy)
+                assert (snapshot.current is not None) == (outcome == "ready")
+                assert snapshot.formal is None
+            requests = runtime._dependencies.data.preview_requests
+            assert all(request.round_deadline == STARTED_AT + timedelta(seconds=120) for request in requests)
+        if events:
+            assert {profile for profile, _ in events[0][1]} == {"v1", "v5"}
+        if outcome == "pending":
+            for runtime in runtimes:
+                runtime.submit_due()
+            assert all(runtime.wait_idle(3.0) for runtime in runtimes)
+            assert all(runtime.status().preview_state == "ready" for runtime in runtimes)
+            assert len(events) == 1
+    finally:
+        release.set()
+        for runtime in runtimes:
+            assert runtime.stop(ShutdownDeadline.start(3.0)).completed
 
 
 @pytest.mark.parametrize("model_ready", (False, True))
@@ -105,6 +188,7 @@ def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_arch
         freezes=PreviewFreezes(),
         research_factory=RejectResearch,
         publish_freeze=published.append,
+        rounds=RecommendationRounds(monotonic=lambda: 0.0, publish_batch_event=lambda _sequence, events: published.append(events)),
         run_scope=scope,
     )
     runtime = SchedulerRuntime(deps, config_version="preview-fixture", shutdown_timeout_seconds=2.0)
@@ -135,10 +219,10 @@ def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_arch
         assert isinstance(deps.settlement, Settlement) and not deps.settlement.calls
         assert status.freeze_completed_count == status.settlement_completed_count == 0
         assert status.observer.accepted_count == status.observer.completed_count == 0
-        assert len(published) == 4
+        assert len(published) == 3
         assert runtime.submit_due() == 30.0
         assert runtime.wait_idle(3.0)
-        assert len(data.contexts) == 1 and len(published) == 4
+        assert len(data.contexts) == 1 and len(published) == 3
     finally:
         assert runtime.stop(ShutdownDeadline.start(3.0)).completed
 

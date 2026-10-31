@@ -29,6 +29,7 @@ assert(source.endsWith(suffix), "dashboard.js must retain its IIFE boundary");
 
 const sandbox = {
   URLSearchParams,
+  TextEncoder,
   console,
   document: {
     addEventListener() {},
@@ -62,7 +63,17 @@ vm.runInNewContext(fs.readFileSync(errorDrawerPath, "utf8"), sandbox, { filename
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
-vm.runInNewContext(source.replace(suffix, "\n  window.TraderDashboardTest = Object.freeze({ normalizeFreezePayload, configuredScoringProfile });\n})();"), sandbox, { filename: dashboardPath });
+vm.runInNewContext(source.replace(suffix, `
+  window.TraderDashboardTest = Object.freeze({
+    normalizeFreezePayload, configuredScoringProfile, state,
+    applyRecommendationBatch, requestRecommendations,
+    configureBatchTest(paint, resync) {
+      renderPayload = paint;
+      requestRecommendationResync = resync;
+      els.refreshButton = { classList: { remove() {} } };
+    },
+  });
+})();`), sandbox, { filename: dashboardPath });
 const missingPatchSandbox = {
   URLSearchParams,
   console,
@@ -340,7 +351,7 @@ assert.deepStrictEqual(
 );
 assert(patchesSource.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
 assert(
-  source.includes("loadRecommendations, loadStatus, applyRecommendationPatch, applyOverlayPatch"),
+  source.includes("loadRecommendations, loadStatus, applyRecommendationPatch, applyRecommendationBatch, applyOverlayPatch"),
   "dashboard must inject the direct recommendation patch handler into the SSE controller",
 );
 assert(
@@ -2291,4 +2302,89 @@ assert(!overlayPatchBody[1].includes("renderPayload(state.payload)"), "overlay p
 assert(overlayPatchBody[1].includes("top_scores: (state.payload.top_scores || []).map(updateQuotedItem)"),
   "overlay patches must update visible six-seat quote details without changing score identity");
 
-console.log("dashboard state contract passed");
+async function verifyAtomicBatchCache() {
+  const dashboard = sandbox.window.TraderDashboardTest;
+  const ui = dashboard.state;
+  const painted = [], resyncs = [];
+  dashboard.configureBatchTest((value) => painted.push(value), (reason) => resyncs.push(reason));
+  ui.profile = "v1";
+  ui.strategy = "tomorrow";
+  ui.date = "";
+  ui.view = "current";
+  ui.payloads.clear();
+  const batch = (sequence) => ({
+    schema_version: "freeze_event", round_sequence: sequence,
+    profiles: Object.fromEntries(["v1", "v5"].map((profile) => [profile,
+      Object.fromEntries(["tomorrow", "d25"].map((strategy) => {
+        const version = `${profile}-${strategy}-${sequence}`;
+        return [strategy, {
+          ...coveragePatch, strategy, scoring_profile: profile,
+          base_projection_version: "", base_snapshot_id: "",
+          publication_id: version, snapshot_id: version, projection_version: version,
+        }];
+      })),
+    ])),
+  });
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(1)), true);
+  assert.strictEqual(painted.length, 1);
+  assert.strictEqual(ui.payloads.size, 4);
+  for (const value of ui.payloads.values()) assert.strictEqual(value.round_sequence, 1);
+  assert.strictEqual(ui.payloads.get("v1:d25:current").snapshot_id, "v1-d25-1");
+  assert.strictEqual(ui.payloads.get("v5:d25:current").scoring_profile, "v5");
+
+  const before = ui.payloads;
+  const incomplete = batch(2);
+  delete incomplete.profiles.v5.d25;
+  assert.strictEqual(dashboard.applyRecommendationBatch(incomplete), false);
+  assert.strictEqual(ui.payloads, before, "invalid final branch must leave every cache unchanged");
+  assert.strictEqual(painted.length, 1);
+  assert.strictEqual(resyncs.length, 1);
+
+  ui.date = "2026-07-22";
+  const historical = ui.payload;
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(2)), false);
+  assert.strictEqual(ui.payload, historical, "background batch must not replace the selected history");
+  assert.strictEqual(painted.length, 1);
+  for (const value of ui.payloads.values()) assert.strictEqual(value.round_sequence, 2);
+
+  ui.date = "";
+  ui.strategy = "long";
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(3)), false);
+  assert.strictEqual(painted.length, 1, "Long must retain its independent display");
+
+  ui.strategy = "tomorrow";
+  let resolveResponse;
+  sandbox.fetch = () => new Promise((resolve) => { resolveResponse = resolve; });
+  const request = dashboard.requestRecommendations("d25", "", "current");
+  const old = ui.payloads.get("v1:d25:current");
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(4)), true);
+  resolveResponse({
+    ok: true, status: 200,
+    json: async () => ({ ...old, schema_version: "freeze_view" }),
+    headers: { get: () => '"old-etag"' },
+  });
+  const returned = await request;
+  assert.strictEqual(returned.snapshot_id, "v1-d25-4", "late HTTP response must yield the newer batch cache");
+  assert.strictEqual(ui.payloads.get("v1:d25:current"), returned);
+  assert.strictEqual(ui.etags.has("v1:d25:current"), false);
+  const protectedCache = ui.payloads;
+  ui.payloads.set("v1:d25:current", { ...returned, frozen: true });
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(5)), false);
+  assert.strictEqual(ui.payloads, protectedCache, "late draft batch must not replace a formal freeze");
+  assert.strictEqual(ui.payload.snapshot_id, "v1-tomorrow-4");
+  const nextDay = batch(6);
+  for (const pair of Object.values(nextDay.profiles)) {
+    for (const item of Object.values(pair)) item.trade_date = "2026-07-24";
+  }
+  assert.strictEqual(dashboard.applyRecommendationBatch(nextDay), true, "previous-day formal cache must not block a new trading day");
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(5)), false, "old-day replay must not roll back the new batch");
+  const mixedDate = batch(7);
+  mixedDate.profiles.v1.tomorrow.trade_date = "2026-07-25";
+  assert.strictEqual(dashboard.applyRecommendationBatch(mixedDate), false);
+  for (const value of ui.payloads.values()) assert.strictEqual(value.round_sequence, 6);
+}
+
+verifyAtomicBatchCache().then(() => console.log("dashboard state contract passed")).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

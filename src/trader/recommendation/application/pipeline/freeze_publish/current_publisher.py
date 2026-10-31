@@ -19,6 +19,7 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
     UnifiedProfiledPublishResult,
 )
 from trader.recommendation.application.ports.runtime import FreezeBuilderPort
+from trader.recommendation.application.runtime.trading_session import SessionGuard, SessionLease, StaleSessionError
 from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity, FreezeOverlay, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
@@ -32,6 +33,7 @@ class PreparedCurrentPair:
     overlays: tuple[FreezeOverlay, FreezeOverlay]
     expected_versions: tuple[str | None, str | None]
     publication_io: PublicationIoTracker | None
+    sessions: tuple[SessionLease | None, SessionLease | None]
 
 
 def PrepareCurrentPair(
@@ -42,6 +44,7 @@ def PrepareCurrentPair(
     *,
     expected_versions: tuple[str | None, str | None],
     publication_io: PublicationIoTracker | None,
+    sessions: tuple[SessionLease | None, SessionLease | None],
 ) -> PreparedCurrentPair:
     if tuple(freeze.strategy for freeze in freezes) != (Strategy.TOMORROW, Strategy.D25):
         raise ValueError("paired publication requires tomorrow and d25")
@@ -52,6 +55,7 @@ def PrepareCurrentPair(
         (builder.initial_overlay(freezes[0]), builder.initial_overlay(freezes[1])),
         expected_versions,
         publication_io,
+        sessions,
     )
 
 
@@ -60,6 +64,12 @@ def PublishCurrentBatch(
     publish_allowed: Callable[[], bool] = lambda: True,
 ) -> UnifiedProfiledPublishResult:
     with ExitStack() as stack:
+        try:
+            for pair in sorted(pairs, key=lambda item: item.profile):
+                for session in pair.sessions:
+                    stack.enter_context(SessionGuard(session))
+        except StaleSessionError:
+            return UnifiedProfiledPublishResult(False, "stale_session_generation")
         observations = tuple(
             (
                 pair,
