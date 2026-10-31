@@ -256,6 +256,17 @@ def AuditCompanyStorage(
             else:
                 ready += 1
         retry_payload_hashes = 0
+        recent_failures = [
+            {
+                "disclosure_id": row[0], "failure": row[1], "attempted_at": row[2],
+                "retry_at": row[3], "payload_hash": row[4].hex() if row[4] is not None else None,
+            }
+            for row in connection.run(
+                "SELECT r.disclosure_id,r.failure,r.attempted_at,r.retry_at,r.payload_hash "
+                "FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
+                "AND d.record_hash=r.record_hash ORDER BY r.attempted_at DESC LIMIT 10"
+            )
+        ]
         retry_columns = {
             str(row[1]) for row in connection.run("PRAGMA table_info(document_retries)").fetchall()
         }
@@ -330,6 +341,7 @@ def AuditCompanyStorage(
                 "stored_retry_ready": ready,
                 "deterministic_failures": deterministic,
                 "partition_failures": partition_failures,
+                "recent_document_failures": recent_failures,
                 "document_failures": [
                     {"failure": failure, "documents": count} for failure, count in sorted(failures.items())
                 ],

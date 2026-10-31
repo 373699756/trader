@@ -173,6 +173,10 @@ def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_u
     assert storage["free_bytes"] >= 0
     assert any(row["name"] == "disclosures" and row["bytes"] > 0 for row in storage["table_bytes"])
     assert storage["document_failures"] == [{"failure": "disclosure_document_no_text", "documents": 1}]
+    recent = storage["recent_document_failures"]
+    assert len(recent) == 1 and recent[0]["disclosure_id"] > 0
+    assert recent[0]["failure"] == "disclosure_document_no_text"
+    assert recent[0]["attempted_at"] == fixtures.NOW.isoformat()
     options, _ = _validate(_parser().parse_args(["--profile", "company-resume", "--company-storage-audit"]))
     command = build_commands(options)[0]
     assert "--storage-only" in command.argv and "--directory" not in command.argv

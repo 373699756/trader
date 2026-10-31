@@ -62,6 +62,35 @@ def test_history_waits_for_tencent_and_replaces_entire_basis(tmp_path):
     assert HistoryPriceRepair(config.history_root, sqlite_policy=SqlitePolicyFixture()).source("600001", snapshot.sequence) == "baostock"
 
 
+def test_explicit_repair_reuses_unchanged_month_proofs(tmp_path):
+    from tests.unit.infra.research.test_history_sync import ProgressRecorder
+
+    days = (date(2026, 1, 5), date(2026, 2, 5), date(2026, 3, 5))
+
+    class SameBasis(RepairHistory):
+        def fetch_baostock_window(self, security, dates):
+            if self.fail_repair:
+                raise RuntimeError("supplier_query_failed")
+            return PublishedHistoryWindow(security.code, tuple(
+                ProjectHistoryCell(cell) for cell in _download(security.code, dates, 0.5).batch.cells
+            ))
+
+    supplier = SameBasis(days)
+    supplier.fail_repair = True
+    config = _config(tmp_path, days)
+    RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+    control = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    previous = control.load_state().published_snapshot
+    supplier.fail_repair = False
+    progress = ProgressRecorder()
+    result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), repair_only=True, progress=progress)
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    current = control.load_state().published_snapshot
+    assert current.partitions[1:] == previous.partitions[1:]
+    sealed = [item for item in progress.values if item.stage == "sealing_partitions" and item.state == "completed"]
+    assert [(item.current_item, item.total_units) for item in sealed] == [("2026-01", 1)]
+
+
 def test_old_gap_is_not_retried_until_explicit_and_old_snapshot_is_immutable(tmp_path):
     days = (date(2026, 1, 2), date(2026, 1, 5))
     supplier = RepairHistory(days)

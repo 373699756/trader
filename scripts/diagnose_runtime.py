@@ -1910,6 +1910,12 @@ def _company_resume_details(
                 if isinstance(row, dict)
             ]
         classes = storage.get("document_failure_classes")
+        recent_failures = storage.get("recent_document_failures")
+        projected_storage["recent_document_failures"] = [
+            {key: row.get(key) for key in ("disclosure_id", "failure", "attempted_at", "retry_at", "payload_hash")}
+            for row in (recent_failures[:10] if isinstance(recent_failures, list) else [])
+            if isinstance(row, dict)
+        ]
         projected_storage["document_failure_classes"] = [
             {"class": row.get("class"), "documents": row.get("documents")}
             for row in (classes[:16] if isinstance(classes, list) else [])

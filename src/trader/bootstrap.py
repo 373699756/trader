@@ -527,7 +527,9 @@ def ExecuteHistoryDownload(
         history_writer.start()
         with BaoStockHistorySupplier(configuration, progress=progress, cancel_requested=cancel_requested,
                                      vendor_lock=ProcessLock(configuration.reference_root / "baostock.lock", label="BaoStock"),
-                                     price_policy=BaoStockRequestPolicy(configuration.supplier_timeout_seconds, 0)) as baseline:
+                                     price_policy=BaoStockRequestPolicy(
+                                         configuration.supplier_timeout_seconds, configuration.supplier_retries
+                                     )) as baseline:
             http_pool = TencentSessionPool(
                 tuple(
                     http_resources.enter_context(OpenExternalHttp()) for _index in range(configuration.history_workers)
@@ -619,7 +621,9 @@ def ExecuteQfqDownload(
             baseline = http_resources.enter_context(BaoStockHistorySupplier(
                 history_configuration,
                 cancel_requested=cancel_requested,
-                price_policy=BaoStockRequestPolicy(history_configuration.supplier_timeout_seconds, 0),
+                price_policy=BaoStockRequestPolicy(
+                    history_configuration.supplier_timeout_seconds, history_configuration.supplier_retries
+                ),
                 vendor_lock=ProcessLock(paths.reference / "baostock.lock", label="BaoStock"),
             ))
             repair_supplier = HistorySupplierRouter(baseline, tencent, reference)

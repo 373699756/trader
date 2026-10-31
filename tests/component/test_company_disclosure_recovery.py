@@ -18,7 +18,7 @@ from tests.helpers.configuration import (
     CompanyDocumentFilesFixture as CompanyDocumentFiles,
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
 )
-from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpTimeout
+from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpError, HttpTimeout
 from trader.infra.sqlite_connection import SqliteSession
 
 NOW = fixtures.NOW
@@ -114,7 +114,8 @@ def test_cancellation_preserves_cursor_without_source_circuit_or_retry_cooldown(
 
 
 @pytest.mark.parametrize(
-    "failure", (ValueError("disclosure_document_no_text"), TimeoutError("disclosure_document_parse_timeout"))
+    "failure", (ValueError("disclosure_document_no_text"), TimeoutError("disclosure_document_parse_timeout"),
+        HttpError("http_transport_failed"), HttpError("http_compressed_body_invalid"), HttpError("HttpError"))
 )
 def test_document_failure_retains_retry_and_reason(tmp_path, monkeypatch, failure):
     index, _ = _scope(tmp_path, monkeypatch)
@@ -134,7 +135,9 @@ def test_document_failure_retains_retry_and_reason(tmp_path, monkeypatch, failur
     result = fixtures._sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: clock[0], events.append), ("600001",), NOW
     )
-    transient = str(failure) == "disclosure_document_parse_timeout"
+    transient = str(failure) in {
+        "disclosure_document_parse_timeout", "http_transport_failed", "http_compressed_body_invalid", "HttpError"
+    }
     assert result.pending_documents == int(transient)
     expected = (f"risk_documents:{failure}", "risk_documents:pending") if transient else ()
     assert result.failures == expected
@@ -326,7 +329,8 @@ def test_date_completion_removes_only_withdrawn_links_in_its_market_and_day(tmp_
     assert linked == {"000001", "920001", "yesterday"}
 
 
-@pytest.mark.parametrize("error", [HttpTimeout("fixture"), HttpConnectionError("fixture")])
+@pytest.mark.parametrize("error", [HttpTimeout("fixture"), HttpConnectionError("fixture"),
+    HttpError("http_transport_failed"), HttpError("http_compressed_body_invalid")])
 def test_one_announcement_network_failure_does_not_block_other_slices_and_is_cooled(tmp_path, error):
     index = fixtures._index(tmp_path)
     target = index.partitions(("sse",), NOW)[0]

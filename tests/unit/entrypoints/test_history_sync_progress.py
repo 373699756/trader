@@ -608,7 +608,7 @@ def test_missing_dates_keep_bounded_preview_in_tail() -> None:
     assert "2026-10-09" not in line and "2026-10-10" not in line
 
 
-def test_history_summary_retains_partial_warning_without_changing_result(monkeypatch) -> None:
+def test_history_summary_uses_final_gap_state_after_repair(monkeypatch) -> None:
     stream = _Terminal(True)
     monkeypatch.setattr("sys.stderr", stream)
     monkeypatch.delenv("NO_COLOR", raising=False)
@@ -629,7 +629,7 @@ def test_history_summary_retains_partial_warning_without_changing_result(monkeyp
     status = replace(_failed_status("fixture"), state="completed", reason=None)
     reporter.publish_result(status)
     last = stream.getvalue().splitlines()[-1]
-    assert "\x1b[33m同步完成" in last and "本轮有不完整或待重试记录" in last
+    assert "\x1b[32m同步完成" in last and "待重试记录" not in last
     assert status.state == "completed" and status.unresolved_price_cells == 0
 
 

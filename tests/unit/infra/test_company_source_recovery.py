@@ -8,7 +8,7 @@ import pytest
 
 from trader.download.domain.company_evidence import CompanySourceFailure, Disclosure, DisclosurePartition
 from tests.helpers.configuration import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource
-from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpResponse, HttpTimeout
+from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpError, HttpResponse, HttpTimeout
 
 _DAY = date(2026, 10, 18)
 _EMPTY = HttpResponse(200, json.dumps({"totalRecordNum": 0, "hasMore": False, "announcements": []}).encode())
@@ -49,6 +49,8 @@ class _Transport:
     [
         HttpTimeout("fixture"),
         HttpConnectionError("fixture"),
+        HttpError("http_transport_failed"),
+        HttpError("http_compressed_body_invalid"),
         *[HttpResponse(code, b"") for code in (408, 500, 502, 503, 504)],
     ],
 )
@@ -89,6 +91,15 @@ def test_rejection_is_not_retried(status, category):
     with pytest.raises(CompanySourceFailure) as caught:
         source.fetch(DisclosurePartition("sse", _DAY, _DAY))
     assert caught.value.category == category
+    assert len(transport.calls) == 1 and not clock.waits
+
+
+def test_unsupported_encoding_is_not_retried():
+    clock = _Clock()
+    transport = _Transport(clock, [(HttpError("http_content_encoding_unsupported"), 0.1)])
+    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
+    with pytest.raises(HttpError, match="http_content_encoding_unsupported"):
+        source.fetch(DisclosurePartition("sse", _DAY, _DAY))
     assert len(transport.calls) == 1 and not clock.waits
 
 

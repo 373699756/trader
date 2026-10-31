@@ -370,6 +370,37 @@ def test_supplier_keeps_context_and_price_request_policies_separate(tmp_path, mo
     ]
 
 
+@pytest.mark.parametrize("recovers", (False, True))
+def test_price_timeout_restarts_session_with_bounded_retries(tmp_path, monkeypatch, recovers):
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+    from tests.unit.infra.research.test_history_sync import _download
+
+    supplier = BaoStockHistorySupplier(HistorySyncConfiguration(
+        history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=2
+    ))
+    attempts, closes = [], []
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    days = (date(2026, 10, 9),)
+
+    def request(command, state, attempt, timeout):
+        attempts.append(attempt.number)
+        if recovers and attempt.number == 2:
+            return supplier_module._AttemptResult(
+                supplier_module._Response(download=_download(security.code, days, 1)), state, None
+            )
+        return supplier_module._AttemptResult(None, state, "supplier_daily_raw_timeout")
+
+    monkeypatch.setattr(supplier, "_request_once", request)
+    monkeypatch.setattr(supplier, "close", lambda: closes.append(True))
+    if recovers:
+        assert supplier.fetch_code(security, days).batch.cells
+        assert attempts == [1, 2] and len(closes) == 1
+    else:
+        with pytest.raises(RuntimeError, match="supplier_daily_raw_timeout"):
+            supplier.fetch_code(security, days)
+        assert attempts == [1, 2, 3] and len(closes) == 3
+
+
 def test_supplier_login_timeout_does_not_repeat_the_slow_start(tmp_path, monkeypatch) -> None:
     from trader.download.infra import baostock_sync_supplier as supplier_module
 

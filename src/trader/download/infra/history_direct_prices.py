@@ -275,18 +275,13 @@ class HistoryDirectPrices:
             ):
                 references[(year, month)] = self._previous[(year, month)]
 
+        changed_months = tuple(month for month in months if month not in references)
         index = 0
-        while index < len(months):
-            year, month = months[index]
-            if (year, month) in references:
-                label = f"{year:04d}-{month:02d}"
-                progress("started", index, len(months), label)
-                index += 1
-                progress("completed", index, len(months), label)
-                continue
+        while index < len(changed_months):
+            year, month = changed_months[index]
             run = [(year, month)]
-            while index + len(run) < len(months):
-                candidate = months[index + len(run)]
+            while index + len(run) < len(changed_months):
+                candidate = changed_months[index + len(run)]
                 if candidate in references or candidate != (year, run[-1][1] + 1):
                     break
                 run.append(candidate)
@@ -295,14 +290,14 @@ class HistoryDirectPrices:
                 if len(run) == 1
                 else f"{year:04d}-{run[0][1]:02d}..{year:04d}-{run[-1][1]:02d}"
             )
-            progress("started", index, len(months), label)
+            progress("started", index, len(changed_months), label)
             sealed = self._month(year, run[0][1]).seal_months(
                 tuple(selected_month for _, selected_month in run),
                 self._sequence,
             )
             references.update(zip(run, sealed, strict=True))
             index += len(run)
-            progress("completed", index, len(months), label)
+            progress("completed", index, len(changed_months), label)
         return tuple(references[month] for month in months)
 
 

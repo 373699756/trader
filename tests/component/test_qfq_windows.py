@@ -1572,7 +1572,8 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
             raise AssertionError("online qfq must not inspect full history")
 
     supplier = Supplier(codes=("600001",))
-    updater = _updater(tmp_path, supplier)
+    messages = []
+    updater = replace(_updater(tmp_path, supplier), report=lambda message: messages.append(_plain_feedback(message)))
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     runner = QfqUpdateRunner(
         UnavailableHistory(), updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed
@@ -1581,6 +1582,22 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
     assert result.completed_codes == 1
     assert len(updater.v2.read_code("600001").cells) == 251
     assert len(updater.v3.read_code("600001").cells) == 61
+    assert result.failure_reason is None
+    assert any("发布内容校验" in message and "完成" in message for message in messages)
+
+
+def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
+    updater = _updater(tmp_path, Supplier(codes=("600001",)))
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.failure_reason is None
+    with SqliteSession(tmp_path / "daily_window.sqlite3") as connection, SqliteTransaction(connection, immediate=True):
+        connection.run("DELETE FROM window_binding WHERE profile='v3'")
+    monkeypatch.setattr(UpdateQfqWindows, "execute", lambda *_args: result)
+    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed)
+    checked = runner.execute()
+    assert checked.failure_reason == "qfq_publication_membership_mismatch"
+    assert checked.changed_rows == result.changed_rows and checked.changed_files == result.changed_files
 
 
 @pytest.mark.parametrize(

@@ -346,7 +346,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert baseline.calls == []
     assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
     assert supplier_settings["configuration"].supplier_retries == 2
-    assert supplier_settings["price_policy"].retries == 0
+    assert supplier_settings["price_policy"].retries == 2
     assert supplier_settings["vendor_lock"] is not None
     snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert snapshot is not None

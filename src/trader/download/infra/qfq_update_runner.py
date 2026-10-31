@@ -35,7 +35,12 @@ class QfqUpdateRunner:
             with HistoryMaintenanceLock(self.lock_path):
                 self.v2.verify_integrity()
                 if not seed_only:
-                    return self.updater.execute(self.now())
+                    result = self.updater.execute(self.now())
+                    changed.update(result.changed_files)
+                    rows += result.changed_rows
+                    if result.failure_reason is None and not self.updater.cancel_requested():
+                        self._verify_publication(started)
+                    return result
                 manifest = self.history.manifest()
                 if manifest is not None:
                     for cache in (self.v2, self.v3):
@@ -76,3 +81,20 @@ class QfqUpdateRunner:
                 QfqMessage(self.updater.monotonic() - started, "更新失败", reason, level=ProgressLevel.ERROR)
             )
             return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)
+
+    def _verify_publication(self, started: float) -> None:
+        self.updater.report(QfqMessage(self.updater.monotonic() - started, "发布内容校验", "开始 | 整库及两档配对"))
+        self.v2.verify_integrity()
+        codes = self.v2.codes() | self.v3.codes()
+        v2 = self.v2.inspect_windows(codes)
+        v3 = self.v3.inspect_windows(codes)
+        if tuple(state.code for state in v2.states) != tuple(state.code for state in v3.states):
+            raise RuntimeError("qfq_publication_membership_mismatch")
+        for left, right in zip(v2.states, v3.states, strict=True):
+            if not left.verified or not right.verified:
+                raise RuntimeError("qfq_publication_content_invalid")
+            if left.source != right.source or right.dates != left.dates[-self.updater.configuration.v3_sessions :]:
+                raise RuntimeError("qfq_publication_pair_mismatch")
+        self.updater.report(QfqMessage(
+            self.updater.monotonic() - started, "发布内容校验", f"完成 | 整库完整 | 两档配对 {len(v2.states)} 股"
+        ))

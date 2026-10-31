@@ -945,6 +945,10 @@ def _failure(exc: BaseException) -> str:
         if exc.category == "http_error" and exc.status_code is not None:
             return f"http_{exc.status_code}"
         return exc.category
+    if isinstance(exc, OSError) and str(exc) in {
+        "http_transport_failed", "http_compressed_body_invalid", "http_content_encoding_unsupported",
+    }:
+        return str(exc)
     if isinstance(exc, (ValueError, TimeoutError, RuntimeError)) and re.fullmatch(
         r"(?:cninfo|company|disclosure|structured|financial|pledge|news)_[a-z_]{1,60}", str(exc)
     ):
@@ -960,7 +964,7 @@ def _transient(exc: BaseException) -> bool:
 
 def _transport_failure(exc: BaseException) -> bool:
     failure = _failure(exc)
-    return failure in {"timeout", "HttpConnectionError"} or failure.startswith("http_")
+    return failure in {"timeout", "HttpConnectionError", "HttpError"} or failure.startswith("http_")
 
 
 def _failure_requires_retry(failure: str) -> bool:

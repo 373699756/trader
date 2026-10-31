@@ -36,6 +36,7 @@ from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import (
     HttpCancelled,
     HttpConnectionError,
+    HttpError,
     HttpResponse,
     HttpResponseTooLarge,
     HttpTimeout,
@@ -212,8 +213,14 @@ class CninfoMarketDisclosureSource:
                 CheckCompanyResponse(response)
                 self._check_cancelled()
                 return response
-            except (HttpTimeout, HttpConnectionError, CompanySourceFailure) as exc:
+            except (HttpError, CompanySourceFailure) as exc:
                 if isinstance(exc, CompanySourceFailure) and exc.status_code not in {408, 500, 502, 503, 504}:
+                    raise
+                if (
+                    isinstance(exc, HttpError)
+                    and not isinstance(exc, (HttpTimeout, HttpConnectionError))
+                    and str(exc) not in {"http_transport_failed", "http_compressed_body_invalid"}
+                ):
                     raise
                 self._check_cancelled()
                 if attempt == 2:

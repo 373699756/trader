@@ -8,7 +8,6 @@ from threading import Lock
 
 from trader.download.application.progress_message import (
     FormatProgressField,
-    HighestProgressLevel,
     ProgressLevel,
     ProgressMessage,
     ProgressNumber,
@@ -198,7 +197,6 @@ class StderrHistorySyncProgress:
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._lock = Lock()
         self._output = TerminalDownloadProgress()
-        self._observed_level = ProgressLevel.NORMAL
         self._monotonic = monotonic
         self._started_at = monotonic()
         self._stock_counts: tuple[int, int] | None = None
@@ -235,9 +233,6 @@ class StderrHistorySyncProgress:
             and progress.failure_detail is None
         ):
             message = self._stock_download_line(progress, now)
-            self._observed_level = HighestProgressLevel(
-                self._observed_level, *(field.level for field in message.fields)
-            )
             self._output(message)
             return
         parts = self._progress_parts(progress, now)
@@ -254,7 +249,6 @@ class StderrHistorySyncProgress:
                 label = "本月耗时" if monthly else "阶段耗时"
             parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
         level = _progress_level(progress)
-        self._observed_level = HighestProgressLevel(self._observed_level, level)
         self._output(
             ProgressMessage(
                 tuple(
@@ -446,12 +440,8 @@ class StderrHistorySyncProgress:
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:
         parts = self._result_parts(status)
-        level = HighestProgressLevel(_maintenance_result_level(status), self._observed_level)
-        if status.state in {"completed", "already_current"} and not status.unresolved_price_cells:
-            if level is ProgressLevel.ERROR:
-                parts.append("本轮有失败记录")
-            elif level is ProgressLevel.WARNING:
-                parts.append("本轮有不完整或待重试记录")
+        # Final persisted gap state supersedes recoverable per-attempt failures.
+        level = _maintenance_result_level(status)
         self._output(
             ProgressMessage(
                 tuple(
