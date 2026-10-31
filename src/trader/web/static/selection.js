@@ -138,7 +138,7 @@
   }
 
   function strategyLabel(strategy) {
-    return ({ tomorrow: "明", d25: "D25", long: "长期" })[strategy] || strategy;
+    return ({ tomorrow: "明天", d25: "D25", long: "长期" })[strategy] || strategy;
   }
 
   function appendOption(select, value, text) {
