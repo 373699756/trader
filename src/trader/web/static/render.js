@@ -272,22 +272,22 @@
   }
 
   function currentTable(snapshot) {
-    const finalLabel = scorePresentation(snapshot).learnedRank ? "模型排序" : "最终";
+    const scoreLabel = scorePresentation(snapshot).learnedRank ? "本地评分 / 模型排名" : "最终评分 / 加减分";
     return {
       columns: [
-        '<col style="width:56px">',
-        '<col style="width:86px">',
-        '<col style="width:131px">',
-        '<col style="width:161px">',
-        '<col style="width:80px">',
+        '<col style="width:48px">',
+        '<col style="width:70px">',
+        '<col style="width:120px">',
+        '<col style="width:136px">',
+        '<col style="width:74px">',
+        '<col style="width:82px">',
+        '<col style="width:74px">',
+        '<col style="width:84px">',
         '<col style="width:88px">',
-        '<col style="width:85px">',
-        '<col style="width:95px">',
-        '<col style="width:100px">',
-        '<col style="width:185px">',
-        '<col style="width:185px">',
+        '<col style="width:210px">',
+        '<col style="width:210px">',
       ].join(""),
-      head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>板块行业</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>${finalLabel}评分 / 加减分 / 复核</th><th class="reason-heading">原因</th></tr>`,
+      head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>板块行业</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>${scoreLabel}</th><th class="reason-heading">原因 / 风险复核</th></tr>`,
     };
   }
 
@@ -360,7 +360,12 @@
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const review = reviewStatus(item);
-    const finalLabel = scorePresentation(snapshot).finalLabel;
+    const presentation = scorePresentation(snapshot);
+    const primaryLabel = presentation.learnedRank ? "本地评分" : presentation.finalLabel;
+    const primaryScore = presentation.learnedRank ? scores.local_score : scores.final_score;
+    const modelRank = presentation.learnedRank
+      ? `<span aria-label="模型排名百分位" title="同轮模型排名的相对位置，不是上涨概率；动作仍由本地分和风险条件决定">模型排名百分位 ${number(scores.final_score, 2)}</span>`
+      : "";
     const ledger = scores.ledger;
     const scoreDetail = ledger
       ? `基础 ${number(ledger.weighted_base_score, 2)} · +${number(ledger.applied_bonus, 2)} · −${number(ledger.applied_risk_penalty, 2)}`
@@ -375,8 +380,8 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span aria-label="${finalLabel}"><b>${number(scores.final_score, 2)}</b></span><span aria-label="加减分明细">${scoreDetail}</span><span aria-label="风险复核">${finalLabel === "模型排序分" ? `本地 ${number(scores.local_score, 2)} · ` : ""}${review}</span></div></td>
-      <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
+      <td><div class="score-stack"><span aria-label="${primaryLabel}"><b>${primaryLabel} ${number(primaryScore, 2)}</b></span><span aria-label="加减分明细">${scoreDetail}</span>${modelRank}</div></td>
+      <td class="reason-cell"><div class="reason-stack"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span><span class="review-status" aria-label="风险复核">风险复核：${review}</span></div></td>
     </tr>`;
   }
 

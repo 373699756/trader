@@ -218,8 +218,12 @@ const rankItem = {
   code: "600001", rank: 1, action: "observe", tier: "watch", review_outcome: "applied",
   scores: { local_score: 65, final_score: 99.5 },
 };
-assert.match(sandbox.window.TraderRender.tableDefinition(rankSnapshot).head, /模型排序/);
-assert.match(sandbox.window.TraderRender.tableRows([rankItem], rankSnapshot), /aria-label="模型排序分"/);
+assert.match(sandbox.window.TraderRender.tableDefinition(rankSnapshot).head, /本地评分 \/ 模型排名/);
+const rankRow = sandbox.window.TraderRender.tableRows([rankItem], rankSnapshot);
+assert.match(rankRow, /aria-label="本地评分"><b>本地评分 65\.00<\/b>/);
+assert.match(rankRow, /aria-label="模型排名百分位"[^>]*>模型排名百分位 99\.50/);
+assert.doesNotMatch(rankRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0], /风险复核/);
+assert.match(rankRow, /class="reason-cell">[\s\S]*风险复核：已复核/);
 const rankDrawer = state.drawer(rankItem, rankSnapshot);
 assert.match(rankDrawer, /模型排序分/);
 assert.match(rankDrawer, /本地评分/);
@@ -244,7 +248,7 @@ const productionRankSnapshot = {
   input_versions: { ...rankSnapshot.input_versions, execution_mode: "production", production_authority: "true" },
 };
 assert.strictEqual(sandbox.window.TraderRender.scorePresentation(productionRankSnapshot).shadow, false);
-assert.match(sandbox.window.TraderRender.tableDefinition(productionRankSnapshot).head, /模型排序/);
+assert.match(sandbox.window.TraderRender.tableDefinition(productionRankSnapshot).head, /本地评分 \/ 模型排名/);
 assert(!state.drawer(rankItem, productionRankSnapshot).includes("Shadow"));
 assert(!JSON.stringify(state.snapshotNotice(productionRankSnapshot, null)).includes("Shadow"));
 const v5Snapshot = {
@@ -266,7 +270,11 @@ const v5Item = {
 };
 assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).shadow, false);
 assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).learnedRank, true);
-assert.match(sandbox.window.TraderRender.tableDefinition(v5Snapshot).head, /模型排序/);
+assert.match(sandbox.window.TraderRender.tableDefinition(v5Snapshot).head, /本地评分 \/ 模型排名/);
+const v5Row = sandbox.window.TraderRender.tableRows([v5Item], v5Snapshot);
+assert.match(v5Row, /<b>本地评分 80\.00<\/b>/);
+assert.match(v5Row, /模型排名百分位 95\.00/);
+assert.doesNotMatch(v5Row, /<b>[^<]*95\.00/);
 const v5Drawer = state.drawer(v5Item, v5Snapshot);
 assert.match(v5Drawer, /模型排序分/);
 assert(!v5Drawer.includes("Shadow 仅供观察"));
@@ -693,10 +701,10 @@ assert.strictEqual(summaryElements.inputQualityStatus.textContent, "已评分 80
 assert.strictEqual(summaryElements.inputQualityMeta.textContent, "最高 82.00 · 阶段范围与门槛未保存");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "阶段观测不可用");
 assert.strictEqual(summaryElements.funnelStages.textContent, "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗");
-assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "明");
+assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "明天");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
-assert.strictEqual(summaryElements.publicationMeta.textContent, "明 15:00 固化");
+assert.strictEqual(summaryElements.publicationMeta.textContent, "明天 15:00 固化");
 const persistedPipelineElements = summaryFixture();
 state.renderSummary(
   persistedPipelineElements,
@@ -954,7 +962,7 @@ assert.strictEqual(emptyTomorrowElements.quoteSource.textContent, "腾讯行情"
 assert.strictEqual(emptyTomorrowElements.quoteAge.textContent, "1分 5秒");
 assert.strictEqual(emptyTomorrowElements.inputQualityScoreTime.textContent, "评分于 11:19:00 完成");
 assert.strictEqual(emptyTomorrowElements.publicationStatus.textContent, "实时滚动");
-assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "明 15:00 固化");
+assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "明天 15:00 固化");
 state.renderPublicationStatus(
   emptyTomorrowElements,
   { status: "ready", strategy: "d25", frozen: true },
@@ -1185,7 +1193,7 @@ assert.deepStrictEqual(
     readiness_reason: "snapshot_not_published",
   }))),
   {
-    message: "明策略当前快照尚未发布",
+    message: "明天策略当前快照尚未发布",
     notice: "当前策略快照尚未形成，等待本地评分发布",
     level: "idle",
   },
@@ -1551,7 +1559,8 @@ sandbox.window.TraderStatusView.renderBudgetSummary(
 );
 assert.strictEqual(budgetVisibility.budgetPanel.hidden, true);
 assert.strictEqual(budgetVisibility.threeColumns, true);
-assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /最终评分 \/ 加减分 \/ 复核/);
+assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /最终评分 \/ 加减分/);
+assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /原因 \/ 风险复核/);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head,
   /今日涨跌<\/th><th>换手率<\/th><th>成交额<\/th>/);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head,
