@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import hashlib
 import json
@@ -29,9 +31,9 @@ from .history_parquet import ParquetHistoryProjection
 from .history_write_benchmark import HistoryFixtureSupplier
 
 
-def PrepareTrainingHistory(root: Path, *, size: int, sessions: int) -> Path:
+def PrepareTrainingHistory(root: Path, *, size: int, sessions: int, sqlite_policy: SqliteIoPolicy) -> Path:
     days = tuple(date(2024, 1, 1) + timedelta(days=i) for i in range(sessions))
-    supplier = HistoryFixtureSupplier(days, size, varying_prices=True)
+    supplier = HistoryFixtureSupplier(days, size, varying_prices=True, sqlite_policy=sqlite_policy)
     project = Path(__file__).resolve().parents[2]
     config = replace(
         LoadHistorySyncConfiguration(project, DataPaths(root)), sessions=sessions,
@@ -39,20 +41,20 @@ def PrepareTrainingHistory(root: Path, *, size: int, sessions: int) -> Path:
     )
     supplier.publish_reference(config.reference_root / "company_st.sqlite3", days[-1], sessions)
     now = datetime.combine(days[-1], datetime.min.time(), ZoneInfo("Asia/Shanghai")).replace(hour=20, minute=30)
-    status = RunHistorySync(config, supplier, clock=lambda: now)
+    status = RunHistorySync(config, supplier, clock=lambda: now, sqlite_policy=sqlite_policy)
     if status.state != "completed":
         raise RuntimeError(f"training_probe_history_incomplete:{status.reason}")
-    history = LoadPublishedHistorySnapshot(config.history_root)
+    history = LoadPublishedHistorySnapshot(config.history_root, sqlite_policy=sqlite_policy)
     reference = history.snapshot.partitions[-1]
     partition = HistoryPricePartition(
-        config.history_root / reference.relative_path, reference.calendar_year, reference.calendar_month
+        config.history_root / reference.relative_path, reference.calendar_year, reference.calendar_month, sqlite_policy=sqlite_policy
     )
     source = supplier.fetch_baostock_prices(supplier.load_context(days[-1], sessions).universe[0], (days[-1],)).batch.cells[0]
     assert source.qfq is not None and source.qfq.amount is not None
     cell = replace(source, qfq=replace(source.qfq, amount=source.qfq.amount + 1234))
     partition.save_revisions((HistoryRevision(2, "main", cell, False, "fixture", "fixture"),))
     second = replace(history.snapshot, sequence=2, partitions=(*history.snapshot.partitions[:-1], partition.seal(2)))
-    HistoryControlIndex(config.history_root / "catalog.sqlite3").publish_snapshot(second)
+    HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy).publish_snapshot(second)
     # A third committed revision is deliberately not published and must be invisible.
     hidden = replace(source, qfq=replace(source.qfq, amount=source.qfq.amount + 9876))
     partition.save_revisions((HistoryRevision(3, "main", hidden, False, "fixture", "fixture"),))
@@ -74,10 +76,10 @@ def TrainingRowsHash(rows: Iterable[HistoryTrainingRow]) -> tuple[str, int]:
     return digest.hexdigest(), count
 
 
-def MeasurePreparation(history_root: Path, output: Path, mode: str) -> dict[str, object]:
-    initial = LoadPublishedHistorySnapshot(history_root, sequence=1)
-    updated = LoadPublishedHistorySnapshot(history_root, sequence=2)
-    projection = ParquetHistoryProjection(output)
+def MeasurePreparation(history_root: Path, output: Path, mode: str, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    initial = LoadPublishedHistorySnapshot(history_root, sequence=1, sqlite_policy=sqlite_policy)
+    updated = LoadPublishedHistorySnapshot(history_root, sequence=2, sqlite_policy=sqlite_policy)
+    projection = ParquetHistoryProjection(output, sqlite_policy=sqlite_policy)
     cases = {}
     first_files: set[str] = set()
     reused = 0
@@ -98,7 +100,7 @@ def MeasurePreparation(history_root: Path, output: Path, mode: str) -> dict[str,
         codes = tuple(item.code for item in history.universe.securities)
         rows = (
             projection.iter_rows(history, dates) if mode == "parquet"
-            else HistorySnapshotReader(history.root).iter_training_rows(history.snapshot, dates, codes)
+            else HistorySnapshotReader(history.root, sqlite_policy=sqlite_policy).iter_training_rows(history.snapshot, dates, codes)
         )
         fingerprint, count = TrainingRowsHash(AlignTrainingRows(rows, dates))
         cases[name] = {
@@ -117,4 +119,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("sqlite", "parquet"), required=True)
     args = parser.parse_args()
-    print(json.dumps(MeasurePreparation(args.history, args.output, args.mode)))
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
+    print(json.dumps(MeasurePreparation(args.history, args.output, args.mode, sqlite_policy=sqlite_policy)))

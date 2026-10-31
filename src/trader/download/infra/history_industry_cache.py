@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from dataclasses import field
+
 import json
 import logging
 from dataclasses import dataclass
@@ -21,13 +24,15 @@ class HistoryIndustryQueryCache:
 
     path: Path
 
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+
     def prepare(self, source: str, dates: tuple[date, ...]) -> None:
         if not source or not dates or len(dates) > 64 or len(set(dates)) != len(dates):
             raise ValueError("industry_cache_dates_invalid")
-        SQLiteIndustryQueryIndex(self.path, _CONTRACT).prepare()
+        SQLiteIndustryQueryIndex(self.path, _CONTRACT, sqlite_policy=self.sqlite_policy).prepare()
 
     def read(self, source: str, day: date, as_of: date) -> tuple[BaoStockIndustryInterval, ...] | None:
-        query = SQLiteIndustryQueryIndex(self.path, _CONTRACT).read(day, as_of, source=source)
+        query = SQLiteIndustryQueryIndex(self.path, _CONTRACT, sqlite_policy=self.sqlite_policy).read(day, as_of, source=source)
         if query is None:
             return None
         try:
@@ -47,7 +52,8 @@ class HistoryIndustryQueryCache:
         _decode(payload, day)
         if as_of < day:
             raise ValueError("industry_cache_observation_invalid")
-        SQLiteIndustryQueryIndex(self.path, _CONTRACT).save(source, day, as_of, payload)
+        SQLiteIndustryQueryIndex(self.path, _CONTRACT, sqlite_policy=self.sqlite_policy).save(source, day, as_of, payload)
+
 
 
 def _decode(payload: str, day: date) -> tuple[BaoStockIndustryInterval, ...]:

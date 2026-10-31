@@ -6,6 +6,9 @@ import argparse
 import json
 from pathlib import Path
 
+from trader.bootstrap import BuildSqlitePolicy
+from trader.infra.settings import LoadRuntimeSettings
+
 from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeSpec
 from trader.training.infra.research.h1_point_in_time_snapshot import (
     H1PointInTimeSnapshotConflictError,
@@ -16,8 +19,9 @@ from trader.training.infra.research.h1_point_in_time_snapshot import (
 def Main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m trader.training.entrypoints.h1_point_in_time")
     parser.add_argument("--runtime-dir", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=Path("config/runtime.json").resolve())
     args = parser.parse_args(argv)
-    snapshot = SQLiteH1PointInTimeSnapshot(args.runtime_dir)
+    snapshot = SQLiteH1PointInTimeSnapshot(args.runtime_dir, sqlite_policy=BuildSqlitePolicy(LoadRuntimeSettings(args.config)))
     audits: list[dict[str, object]] = []
     failed = False
     for strategy in ("tomorrow", "d25"):

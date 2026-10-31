@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -51,7 +53,7 @@ def test_shadow_never_checkpoints_freezes_or_enters_official_history(
 ) -> None:
     now = NOW.replace(hour=hour, minute=minute)
     shadow = _shadow(now)
-    records = SQLiteFreezeRecords(tmp_path / "v1/freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "v1/freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     if not cold:

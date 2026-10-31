@@ -1,5 +1,7 @@
 """Benchmark isolation, direct supervision, and honest comparison admission."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -302,7 +304,7 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
         }
 
     monkeypatch.setattr(training_alignment, "_train_once", train_once)
-    report = training_alignment._probe(tmp_path / "history", tmp_path / "work", ("v1",))
+    report = training_alignment._probe(tmp_path / "history", tmp_path / "work", ("v1",), sqlite_policy=SqlitePolicyFixture())
     assert len(calls) == (2 if initial_complete else 1)
     assert all(call == (tmp_path / "history", tmp_path / "work", ("v1",)) for call in calls)
     assert report["status"] == ("passed" if initial_complete else "degraded")

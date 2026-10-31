@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 
 import pytest
@@ -76,10 +78,10 @@ def test_initial_history_projection_defers_market_io(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr(gateway, "fetch_market", fetch_market)
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())),
         lookback_sessions=61,
         monotonic=time.monotonic,
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.record_maintenance("loading", stage="reading_published_snapshot")
     service = _service(

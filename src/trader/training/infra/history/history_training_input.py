@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import date
@@ -88,13 +90,14 @@ class SQLiteHistoryTrainingInputSnapshot:
         current_snapshot: HistorySnapshot,
         calendar: BaoStockCalendar,
         universe: tuple[BaoStockSecurity, ...],
-        descriptor: FrozenDailyInputDescriptor,
+        descriptor: FrozenDailyInputDescriptor, *, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self._root = root
         self._published_snapshot = current_snapshot
         self._calendar = calendar
         self._universe = universe
-        self._history = HistorySnapshotReader(root)
+        self._history = HistorySnapshotReader(root, sqlite_policy=self._sqlite_policy)
         self._codes = frozenset(item.code for item in universe)
         self._descriptor = descriptor
         self.snapshot = replace(
@@ -103,9 +106,9 @@ class SQLiteHistoryTrainingInputSnapshot:
         )
 
     @classmethod
-    def open(cls, root: Path) -> SQLiteHistoryTrainingInputSnapshot:
+    def open(cls, root: Path, *, sqlite_policy: SqliteIoPolicy) -> SQLiteHistoryTrainingInputSnapshot:
         history_root = root
-        control = HistoryControlIndex(history_root / "catalog.sqlite3")
+        control = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
         try:
             state = control.load_published_state()
         except HistoryControlError as exc:
@@ -129,7 +132,7 @@ class SQLiteHistoryTrainingInputSnapshot:
             frozen=True,
             production_authority=False,
         )
-        return cls(history_root, current_snapshot, calendar, universe, descriptor)
+        return cls(history_root, current_snapshot, calendar, universe, descriptor, sqlite_policy=sqlite_policy)
 
     @property
     def published_snapshot(self) -> HistorySnapshot:

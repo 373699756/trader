@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from datetime import date
 
 import pytest
@@ -22,7 +24,7 @@ def _completion(tmp_path):
             H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 8000000, 500, 0.1),
         )
     )
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive")
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive", sqlite_policy=SqlitePolicyFixture())
     return CompleteH1Research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),

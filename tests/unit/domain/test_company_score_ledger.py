@@ -1,5 +1,7 @@
 """Money-independent score arithmetic, event verification and temporal boundaries."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -290,11 +292,11 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
         )
     )
     event_policy = CompanyEventPolicy()
-    index = SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3", event_policy=event_policy)
+    index = SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3", event_policy=event_policy, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     sources = {key: "cninfo" for event in (*facts.risk_events, *facts.positive_events) for key in event.evidence_ids}
     index.publish((facts,), sources, None, AT)
-    reader = SQLiteCompanyEvidenceReader(index.path, event_policy=event_policy)
+    reader = SQLiteCompanyEvidenceReader(index.path, event_policy=event_policy, sqlite_policy=SqlitePolicyFixture())
     restored = reader.read((facts.code,))[0]
     assert restored == replace(
         facts,

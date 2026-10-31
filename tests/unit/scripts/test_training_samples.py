@@ -1,5 +1,7 @@
 """The offline columnar candidate cannot change publication visibility or input values."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 
 import pytest
@@ -16,19 +18,19 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
 @pytest.fixture(scope="module")
 def history_root(tmp_path_factory):
-    return PrepareTrainingHistory(tmp_path_factory.mktemp("training-input"), size=4, sessions=64)
+    return PrepareTrainingHistory(tmp_path_factory.mktemp("training-input"), size=4, sessions=64, sqlite_policy=SqlitePolicyFixture())
 
 
 def _sqlite_rows(history):
-    return HistorySnapshotReader(history.root).iter_training_rows(
+    return HistorySnapshotReader(history.root, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(
         history.snapshot, history.calendar.open_dates, tuple(item.code for item in history.universe.securities)
     )
 
 
 def test_month_reuse_atomic_failure_and_unpublished_revision_isolation(history_root, tmp_path, monkeypatch):
-    first = LoadPublishedHistorySnapshot(history_root, sequence=1)
-    second = LoadPublishedHistorySnapshot(history_root, sequence=2)
-    projection = ParquetHistoryProjection(tmp_path)
+    first = LoadPublishedHistorySnapshot(history_root, sequence=1, sqlite_policy=SqlitePolicyFixture())
+    second = LoadPublishedHistorySnapshot(history_root, sequence=2, sqlite_policy=SqlitePolicyFixture())
+    projection = ParquetHistoryProjection(tmp_path, sqlite_policy=SqlitePolicyFixture())
     old = projection.publish(first)
     manifest = (tmp_path / "manifest.json").read_bytes()
     before = TrainingRowsHash(_sqlite_rows(first))
@@ -55,9 +57,9 @@ def test_month_reuse_atomic_failure_and_unpublished_revision_isolation(history_r
 
 
 def test_missing_price_and_zero_amount_keep_nulls_and_exact_float_values(history_root, tmp_path):
-    history = LoadPublishedHistorySnapshot(history_root, sequence=2)
+    history = LoadPublishedHistorySnapshot(history_root, sequence=2, sqlite_policy=SqlitePolicyFixture())
     reference = history.snapshot.partitions[-1]
-    partition = HistoryPricePartition(history.root / reference.relative_path, reference.calendar_year, reference.calendar_month)
+    partition = HistoryPricePartition(history.root / reference.relative_path, reference.calendar_year, reference.calendar_month, sqlite_policy=SqlitePolicyFixture())
     day = history.calendar.open_dates[-1]
     original = partition.read_code("600000", day, day, snapshot_sequence=2)[0]
     missing = replace(original.cell, status="qfq_missing", qfq=None)
@@ -72,9 +74,9 @@ def test_missing_price_and_zero_amount_keep_nulls_and_exact_float_values(history
         HistoryRevision(4, "main", zero, False, "fixture", "fixture"),
     ))
     snapshot = replace(history.snapshot, sequence=4, partitions=(*history.snapshot.partitions[:-1], partition.seal(4)))
-    HistoryControlIndex(history.root / "catalog.sqlite3").publish_snapshot(snapshot)
-    updated = LoadPublishedHistorySnapshot(history.root, sequence=4)
-    projection = ParquetHistoryProjection(tmp_path)
+    HistoryControlIndex(history.root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_snapshot(snapshot)
+    updated = LoadPublishedHistorySnapshot(history.root, sequence=4, sqlite_policy=SqlitePolicyFixture())
+    projection = ParquetHistoryProjection(tmp_path, sqlite_policy=SqlitePolicyFixture())
     projection.publish(updated)
     rows = tuple(projection.iter_rows(updated, updated.calendar.open_dates))
     assert TrainingRowsHash(rows) == TrainingRowsHash(_sqlite_rows(updated))

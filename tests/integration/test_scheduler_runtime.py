@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import threading
 import time
 from dataclasses import replace
@@ -327,7 +329,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
         operation = "freeze_event" if failure == "event" else "observer_enqueue"
     payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["health"]["issue_count"] > 0
-    repository = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    repository = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     repository.initialize()
     queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), repository, clock)
     stream = UnifiedFreezeEventStream()
@@ -1502,10 +1504,10 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
 ) -> None:
     after_close = datetime(2026, 8, 11, hour, minute, second, tzinfo=SHANGHAI)
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())),
         lookback_sessions=61,
         monotonic=time.monotonic,
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.record_maintenance("loading", stage="reading_published_snapshot")
 

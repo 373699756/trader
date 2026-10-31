@@ -1,5 +1,7 @@
 """Named V1 columns preserve exact doubles, target masks and matrix lifetimes."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import math
 import sqlite3
 from contextlib import ExitStack, closing
@@ -43,7 +45,7 @@ def test_matrix_preserves_bits_order_groups_and_independent_missing_targets_acro
 ) -> None:
     records = _records()
     expected = sorted((r for r in records if r[target_position] is not None), key=lambda r: (r[0], r[1]))
-    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
         with SqliteTransaction(index._connection):
             index._connection.run_many(_INSERT, reversed(records))
         with ExitStack() as resources:
@@ -64,7 +66,7 @@ def test_matrix_preserves_bits_order_groups_and_independent_missing_targets_acro
 
 
 def test_named_features_reject_missing_values_and_invalid_negative_zero_flags(tmp_path):
-    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
         with SqliteTransaction(index._connection):
             index._connection.run_many(_INSERT, _records())
             with pytest.raises(sqlite3.IntegrityError):
@@ -75,7 +77,7 @@ def test_named_features_reject_missing_values_and_invalid_negative_zero_flags(tm
 
 
 def test_dual_head_matrices_share_one_scan_but_have_independent_writable_features(tmp_path):
-    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
         with SqliteTransaction(index._connection):
             index._connection.run_many(_INSERT, _records())
         statements = []
@@ -94,7 +96,7 @@ def test_dual_head_matrices_share_one_scan_but_have_independent_writable_feature
 
 
 def test_matrix_rejects_rows_between_nonconsecutive_partition_dates(tmp_path: Path) -> None:
-    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
         with SqliteTransaction(index._connection):
             index._connection.run_many(_INSERT, _records())
         with ExitStack() as resources, pytest.raises(ValueError, match="sample crossed a date partition"):
@@ -106,7 +108,7 @@ def test_matrix_rejects_rows_between_nonconsecutive_partition_dates(tmp_path: Pa
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_matrix_rejects_a_partition_without_a_target(tmp_path: Path, strategy: Strategy) -> None:
-    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3")) as index:
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
         with SqliteTransaction(index._connection):
             index._connection.run(_INSERT, _record(_FIRST_DAY, 1, _features(1), None, None))
         with ExitStack() as resources, pytest.raises(ValueError, match="learned_rank_sample_partition_empty"):

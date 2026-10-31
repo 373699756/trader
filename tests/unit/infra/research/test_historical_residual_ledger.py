@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 import json
 from dataclasses import replace
 from datetime import date
@@ -54,7 +56,7 @@ def _outcome() -> HistoricalOutcomeRecord:
 
 
 def test_sqlite_ledger_is_append_only_idempotent_and_detects_conflicts(tmp_path) -> None:
-    ledger = SQLiteHistoricalResidualLedger(tmp_path / "ledger.sqlite3")
+    ledger = SQLiteHistoricalResidualLedger(tmp_path / "ledger.sqlite3", sqlite_policy=SqlitePolicyFixture())
     prediction = _prediction()
     outcome = _outcome()
 
@@ -72,7 +74,7 @@ def test_sqlite_ledger_is_append_only_idempotent_and_detects_conflicts(tmp_path)
 
 
 def test_sqlite_ledger_does_not_join_different_parent_split(tmp_path) -> None:
-    ledger = SQLiteHistoricalResidualLedger(tmp_path / "ledger.sqlite3")
+    ledger = SQLiteHistoricalResidualLedger(tmp_path / "ledger.sqlite3", sqlite_policy=SqlitePolicyFixture())
     ledger.append_predictions((_prediction(),))
     ledger.append_outcomes((replace(_outcome(), parent_split_hash=_HASH_B),))
 
@@ -81,7 +83,7 @@ def test_sqlite_ledger_does_not_join_different_parent_split(tmp_path) -> None:
 
 def test_sqlite_ledger_rejects_prediction_payload_tampering(tmp_path) -> None:
     path = tmp_path / "ledger.sqlite3"
-    ledger = SQLiteHistoricalResidualLedger(path)
+    ledger = SQLiteHistoricalResidualLedger(path, sqlite_policy=SqlitePolicyFixture())
     ledger.append_predictions((_prediction(),))
     ledger.append_outcomes((_outcome(),))
     with SqliteSession(path) as connection, SqliteTransaction(connection):
@@ -93,7 +95,7 @@ def test_sqlite_ledger_rejects_prediction_payload_tampering(tmp_path) -> None:
 
 def test_sqlite_ledger_rejects_unknown_payload_fields(tmp_path) -> None:
     path = tmp_path / "ledger.sqlite3"
-    ledger = SQLiteHistoricalResidualLedger(path)
+    ledger = SQLiteHistoricalResidualLedger(path, sqlite_policy=SqlitePolicyFixture())
     ledger.append_predictions((_prediction(),))
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         payload = json.loads(connection.run("SELECT prediction_json FROM historical_prediction").fetchone()[0])

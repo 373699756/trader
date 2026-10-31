@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import hashlib
 import json
 import re
@@ -114,8 +116,8 @@ def _reference(codes=("600001",)):
 
 
 def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_path):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     windows = (_window(days=DAYS[-251:]), _window("300001", days=DAYS[-251:]))
     changed, rows = primary.replace_paired_windows(
         peer, windows, "fixture", QFQ_CONFIGURATION, calendar=DAYS[-251:], completed_day=DAYS[-1]
@@ -139,7 +141,7 @@ def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_pat
 def test_batch_iteration_opens_once_per_32_codes_and_closes_before_yield(tmp_path, monkeypatch):
     from trader.download.infra import qfq_sqlite as module
 
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
     windows = tuple(_window(f"600{number:03d}", days=DAYS[-5:]) for number in range(65))
     publish_windows(primary, windows, "fixture")
     manifest = primary.manifest()
@@ -170,8 +172,8 @@ def test_batch_iteration_opens_once_per_32_codes_and_closes_before_yield(tmp_pat
 def test_pair_failure_rolls_back_prices_both_identities_and_checkpoint(tmp_path, monkeypatch):
     from trader.infra.sqlite_connection import SqliteConnection
 
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     publish_windows(primary, (_window(),), "old")
     original = SqliteConnection.run
 
@@ -197,8 +199,8 @@ def test_pair_failure_rolls_back_prices_both_identities_and_checkpoint(tmp_path,
 
 
 def test_sparse_windows_use_market_calendar_not_last_traded_rows(tmp_path):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     window = _window(days=tuple(day for index, day in enumerate(DAYS[-251:]) if index % 3 == 0))
     primary.replace_paired_windows(
         peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=DAYS[-251:], completed_day=DAYS[-1]
@@ -209,7 +211,7 @@ def test_sparse_windows_use_market_calendar_not_last_traded_rows(tmp_path):
 
 @pytest.mark.parametrize("code", ("123", "../000001", "ABCDEF"))
 def test_invalid_code_creates_no_database(tmp_path, code):
-    cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
     with pytest.raises(ValueError):
         cache.read_code(code)
     assert not cache.path.exists()
@@ -217,7 +219,7 @@ def test_invalid_code_creates_no_database(tmp_path, code):
 
 @pytest.mark.parametrize("corrupt_price", (999, b"invalid"))
 def test_corrupt_prices_fail_closed(tmp_path, corrupt_price):
-    cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
     publish_windows(cache, (_window(),), "fixture")
     with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price SET qfq_close=? WHERE code='600001'", (corrupt_price,))
@@ -232,8 +234,8 @@ def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, mo
 
     from trader.download.infra import qfq_sqlite as module
 
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     publish_windows(primary, (_window(),), "old")
     manifest = primary.manifest()
     assert manifest is not None
@@ -302,8 +304,8 @@ class Supplier:
 
 def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
     return UpdateQfqWindows(
-        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2"),
-        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()),
         supplier,
         lambda: False,
         lambda _message: None,
@@ -315,8 +317,8 @@ def test_non_default_configuration_controls_supplier_and_both_published_windows(
     configuration = replace(QFQ_CONFIGURATION, v2_sessions=200, v3_sessions=50)
     supplier = Supplier(requested_sessions=200)
     updater = UpdateQfqWindows(
-        SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2"),
-        SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v3"),
+        SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()),
+        SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()),
         supplier,
         lambda: False,
         lambda _message: None,
@@ -573,7 +575,7 @@ def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, pr
 
 
 def test_unchanged_eligibility_does_not_scan_price_rows(tmp_path, monkeypatch):
-    cache = SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2")
+    cache = SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
     publish_windows(cache, (_window("600001"), _window("600002")), "fixture")
     read = cache._connection
     statements = []
@@ -589,7 +591,7 @@ def test_unchanged_eligibility_does_not_scan_price_rows(tmp_path, monkeypatch):
     assert _fingerprints(cache.path.parent) == before
     assert not any("bars" in sql for sql in statements)
     assert cache.retain_codes(frozenset(("600001",))) == (("daily_window.sqlite3",), 0)
-    peer = SQLiteQfqWindowCache(cache.path, "v3")
+    peer = SQLiteQfqWindowCache(cache.path, "v3", sqlite_policy=SqlitePolicyFixture())
     assert peer.retain_codes(frozenset(("600001",))) == (("daily_window.sqlite3",), 251)
     assert cache.codes() == frozenset(("600001",))
     assert len(cache.read_code("600001").cells) == 251
@@ -795,8 +797,8 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
     )
     logs = []
     updater = UpdateQfqWindows(
-        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2"),
-        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()),
         supplier,
         lambda: False,
         lambda message: logs.append(_plain_feedback(message)),
@@ -833,8 +835,8 @@ def test_incomplete_supplier_gap_preserves_only_returned_pairs(tmp_path) -> None
     supplier.fetch_window = incomplete
     logs = []
     updater = UpdateQfqWindows(
-        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2"),
-        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()),
         supplier,
         lambda: False,
         lambda message: logs.append(_plain_feedback(message)),
@@ -961,11 +963,11 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
             shutdown_timeout_seconds=2.0,
             reference=_reference(("600001", "600002")),
             report=lambda _message: None,
-            now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
+            now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16), sqlite_policy=SqlitePolicyFixture(),
         )
     assert result.completed_codes == 0 and result.pending_codes == 2
     assert events == ["tencent", "tencent", "baostock", "baostock"]
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2").codes() == frozenset()
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
 
 
 def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_path, monkeypatch) -> None:
@@ -1004,7 +1006,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
 
     _install_download_config(tmp_path)
     paths = DataPaths(tmp_path / "data")
-    monkeypatch.setattr(bootstrap, "SQLitePublishedHistorySnapshot", lambda _root: HistoryPublication())
+    monkeypatch.setattr(bootstrap, "SQLitePublishedHistorySnapshot", lambda _root, *, sqlite_policy: HistoryPublication())
     monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
     monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: (eligible, excluded))
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
@@ -1018,14 +1020,14 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
             open_dates=DAYS,
         ),
         report=lambda _message: None,
-        now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
+        now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16), sqlite_policy=SqlitePolicyFixture(),
     )
 
     assert result.completed_codes == 1 and result.pending_codes == 0
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2").codes() == frozenset(
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
         {eligible.code}
     )
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v3").codes() == frozenset(
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
         {eligible.code}
     )
 
@@ -1047,12 +1049,12 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
             *_qfq_download_configuration(tmp_path, paths),
             shutdown_timeout_seconds=2.0,
             reference=_reference(),
-            report=lambda _message: None,
+            report=lambda _message: None, sqlite_policy=SqlitePolicyFixture(),
         )
     assert result.failure_reason == "HistoryMaintenanceAlreadyRunningError"
     assert supplier.calls == []
     assert not (tmp_path / "data/qfq/.checkpoint.json").exists()
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2").codes() == frozenset()
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
 
 
 def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, monkeypatch) -> None:
@@ -1090,6 +1092,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
             reference=_reference(),
             report=lambda _message: None,
             now=lambda: observed,
+            sqlite_policy=SqlitePolicyFixture(),
         )
         history_result = RunHistoryFixture(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
         qfq_result = pending.result(timeout=15)
@@ -1100,7 +1103,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     assert (root / "catalog.sqlite3").exists()
     assert (tmp_path / "data/market/daily_window.sqlite3").exists()
     for profile, sessions in (("v2", 251), ("v3", 61)):
-        cache = SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", profile)
+        cache = SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", profile, sqlite_policy=SqlitePolicyFixture())
         assert len(cache.read_code("600001").cells) == sessions
 
 
@@ -1152,7 +1155,7 @@ def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repa
     assert not updater.v2.completed(DAYS[-1], "600001", source)
     assert updater.v2.read_code("600001").cells == ()
     assert updater.v3.read_code("600001").cells == ()
-    restarted = SQLiteQfqWindowCache(updater.v2.path, "v2")
+    restarted = SQLiteQfqWindowCache(updater.v2.path, "v2", sqlite_policy=SqlitePolicyFixture())
     restarted.verify_integrity()
     assert restarted.manifest() is None
     assert restarted.codes() == frozenset()
@@ -1350,7 +1353,7 @@ def test_tencent_diagnostic_counts_pending_with_new_batch_feedback():
     supplier = _IncompleteSupplier(codes=("600001", "600002"))
     context = supplier.load_qfq_context(DAYS[-1], 251)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-    report = _benchmark(supplier, context, 2, 2, observed)
+    report = _benchmark(supplier, context, 2, 2, observed, sqlite_policy=SqlitePolicyFixture())
     assert report["completed"] == report["pending"] == 1
     assert report["failure_categories"] == {"qfq_incomplete_raw_4_qfq_4": 1}
     assert report["restart_failure_categories"] == report["failure_categories"]
@@ -1526,11 +1529,11 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
     assert loaded == expected
     assert projection.summaries(loaded, NOW) == original.summaries(expected, NOW)
     missing = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache((tmp_path / "missing") / "daily_window.sqlite3", "v2")),
+        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache((tmp_path / "missing") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())),
         lookback_sessions=251,
         outcome_history=reader,
         monotonic=time.monotonic,
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLiteQfqWindowCache((tmp_path / "missing") / "daily_window.sqlite3", "v2")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLiteQfqWindowCache((tmp_path / "missing") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     missing.initialize(cancelled=lambda: False)
     assert missing.read_outcome_bars(("600001",), NOW) == original.read_outcome_bars(("600001",), NOW)

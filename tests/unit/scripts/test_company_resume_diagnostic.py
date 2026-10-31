@@ -1,5 +1,7 @@
 """The public company diagnostic isolates writes and retains bounded recovery evidence."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 import sys
 import time
@@ -41,7 +43,7 @@ def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_p
 
     monkeypatch.setattr(company_pagination_audit, "CninfoMarketDisclosureSource", Source)
     before = index.path.read_bytes()
-    result = company_pagination_audit.AuditCompanyPagination(index.path, budget_seconds=5)
+    result = company_pagination_audit.AuditCompanyPagination(index.path, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
     rows = result["summary"]["query_audit"]["pagination"]
     assert [row["equivalent"] for row in rows] == [True, False, False]
     assert all(row["failure"] == "cninfo_requested_page_size_ignored" for row in rows[1:])
@@ -63,7 +65,7 @@ def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_
 def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, monkeypatch):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
     items = tuple(fixtures._disclosure(str(i), "本公司收到立案告知书", when=now) for i in range(2))
-    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _: items)
+    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: items)
 
     class Source:
         def __init__(self, *args, **kwargs):
@@ -73,7 +75,7 @@ def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, 
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
+    result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
     assert result["status"] == "passed"
     assert result["summary"]["pipeline_audit"]["equivalent_facts"]
     assert result["summary"]["pipeline_audit"]["equivalent_documents"]
@@ -87,7 +89,7 @@ def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, 
 
 def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(tmp_path, monkeypatch):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
-    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _: (fixtures._disclosure("changed", "收到立案告知书", when=now),))
+    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("changed", "收到立案告知书", when=now),))
     clients = []
 
     class Source:
@@ -99,7 +101,7 @@ def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(t
             return replace(fixtures._extraction("本公司收到中国证监会立案告知书。"), payload_hash=self.digest)
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
     summary = report["summary"]["pipeline_audit"]
     assert summary["equivalent_facts"] and summary["equivalent_documents"]
     assert not summary["equivalent_payloads"] and report["status"] == "degraded"
@@ -133,7 +135,7 @@ def test_company_profile_requires_explicit_external_directory(tmp_path):
 
 def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_failures(tmp_path, monkeypatch):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
-    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _: (fixtures._disclosure("failure", "收到立案告知书", when=now),))
+    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("failure", "收到立案告知书", when=now),))
     capabilities = []
 
     class Source:
@@ -144,7 +146,7 @@ def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_fai
             raise CompanyDocumentFailure("disclosure_document_ocr_low_quality", payload_hash=b"x" * 32)
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30)
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
     assert capabilities and all(all(item is not None for item in row) for row in capabilities)
     assert report["status"] == "degraded"
     assert report["summary"]["pipeline_audit"]["equivalent_facts"]
@@ -163,7 +165,7 @@ def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_u
     )
     index.publish(("600001",), fixtures.NOW)
     before = index.path.read_bytes()
-    report = AuditCompanyStorage(index.path, now=fixtures.NOW, budget_seconds=5)
+    report = AuditCompanyStorage(index.path, now=fixtures.NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
     storage = report["summary"]["local_storage"]
     assert storage["announcement_records"] == storage["pending_documents"] == storage["deterministic_failures"] == 1
     assert storage["stored_retry_cooling"] == storage["stored_retry_ready"] == 0
@@ -191,7 +193,7 @@ def test_backup_preserves_source_and_is_independently_writable(tmp_path):
     # A stale intermediate name must never let the backup write through a source hard link.
     stale = replica.with_suffix(".copying.sqlite3")
     stale.hardlink_to(source)
-    _copy(source, replica, deadline=time.monotonic() + 5)
+    _copy(source, replica, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
     with SqliteSession(replica) as connection, SqliteTransaction(connection):
         connection.run("UPDATE facts SET value=9")
     assert source.read_bytes() == before and stale.samefile(source)
@@ -210,7 +212,7 @@ def test_company_compaction_retains_failed_range_members_facts_bodies_and_retry_
             (complete.market, str(complete.start), str(complete.end), "done", "600001"),
         )
     before = index.path.read_bytes()
-    report = _compact_storage(index.path, tmp_path / "isolated", budget_seconds=10)
+    report = _compact_storage(index.path, tmp_path / "isolated", budget_seconds=10, sqlite_policy=SqlitePolicyFixture())
     assert report["removed_completed_members"] == 1 and report["retained_data_equal"]
     with SqliteSession(tmp_path / "isolated/company_compacted.sqlite3") as connection:
         assert connection.run("SELECT source_key FROM partition_rows").require_one()[0] == "pending"
@@ -226,7 +228,7 @@ def test_backup_includes_committed_wal_without_changing_the_source(tmp_path):
         wal = source.with_name(source.name + "-wal")
         before = (source.read_bytes(), wal.read_bytes())
         assert before[1]
-        _copy(source, replica, deadline=time.monotonic() + 5)
+        _copy(source, replica, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
         with SqliteSession(replica) as connection:
             assert connection.run("SELECT value FROM facts").require_one()[0] == 7
             connection.run("UPDATE facts SET value=9")
@@ -242,7 +244,7 @@ def test_backup_timeout_preserves_previous_replica_and_removes_partial_file(tmp_
         connection.run("CREATE TABLE previous(value INTEGER)")
     before = replica.read_bytes()
     with pytest.raises(TimeoutError, match="sqlite_backup_deadline_exceeded"):
-        _copy(source, replica, deadline=time.monotonic() - 1)
+        _copy(source, replica, deadline=time.monotonic() - 1, sqlite_policy=SqlitePolicyFixture())
     assert replica.read_bytes() == before
     assert list(tmp_path.glob(".company-copy-*")) == []
 
@@ -259,7 +261,7 @@ def test_discovery_response_is_not_counted_as_a_saved_page_replayed_by_parent_ve
     index.commit_page(child, DisclosurePage((), 0, False), NOW)
     parent_key = (root.market, str(root.start), str(root.end), "", 1)
     child_key = (child.market, str(child.start), str(child.end), child.query.key, 1)
-    assert _saved_pages(index.path, [parent_key, child_key]) == {child_key}
+    assert _saved_pages(index.path, [parent_key, child_key], sqlite_policy=SqlitePolicyFixture()) == {child_key}
 
 
 def test_replay_rejects_hard_link_to_source_database_before_any_write(tmp_path, monkeypatch):

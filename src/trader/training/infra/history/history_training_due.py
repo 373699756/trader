@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import calendar as month_calendar
 import threading
 from collections.abc import Callable
@@ -68,7 +70,7 @@ class HistoryTrainingDueQuery:
     inspected_invalid: bool = False
 
 
-def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainingDueEvaluation | None:
+def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery, *, sqlite_policy: SqliteIoPolicy) -> HistoryTrainingDueEvaluation | None:
     """Read and persist one immutable due observation.
 
     A missing published snapshot is intentionally returned as ``None``: callers
@@ -80,8 +82,8 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     profile = query.profile
     strategy = query.strategy
     expected_training_contract_hash = query.expected_training_contract_hash
-    control = HistoryControlIndex(history_root / "catalog.sqlite3")
-    maintenance = TrainingMaintenanceIndex(history_root / "catalog.sqlite3")
+    control = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
+    maintenance = TrainingMaintenanceIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
     try:
         state = control.load_state()
     except HistoryControlError:
@@ -131,7 +133,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
                 baseline,
                 current_snapshot,
                 calendar.open_dates,
-                bundle.label_cutoff,
+                bundle.label_cutoff, sqlite_policy=sqlite_policy,
             )
         except (HistorySnapshotReadError, OSError, ValueError):
             data_complete = False
@@ -206,7 +208,7 @@ def _revised_dates_since_bundle(
     baseline: HistorySnapshot,
     current_snapshot: HistorySnapshot,
     calendar_dates: tuple[date, ...],
-    baseline_label_cutoff: date,
+    baseline_label_cutoff: date, *, sqlite_policy: SqliteIoPolicy,
 ) -> tuple[date, ...]:
     start = calendar_dates[0]
     end = min(baseline_label_cutoff, baseline.data_cutoff, current_snapshot.data_cutoff)
@@ -214,7 +216,7 @@ def _revised_dates_since_bundle(
         return ()
     baseline_months = {(item.calendar_year, item.calendar_month): item for item in baseline.partitions}
     current_months = {(item.calendar_year, item.calendar_month): item for item in current_snapshot.partitions}
-    history = HistorySnapshotReader(history_root)
+    history = HistorySnapshotReader(history_root, sqlite_policy=sqlite_policy)
     revisions: set[date] = set()
     for year, month in RouteHistoryMonths(start, end):
         if (year, month) not in baseline_months or (year, month) not in current_months:
@@ -273,7 +275,7 @@ def EvaluateAllHistoryTrainingDue(
     training_root: Path,
     observed_at: datetime,
     *,
-    selected_profile: TrainedProfileContract | None = None,
+    selected_profile: TrainedProfileContract | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> tuple[HeadTrainingStatus, ...]:
     results: list[HeadTrainingStatus] = []
     for profile in (selected_profile,) if selected_profile is not None else (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
@@ -290,7 +292,7 @@ def EvaluateAllHistoryTrainingDue(
                         strategy,
                         inspected=heads,
                         inspected_invalid=failure not in (None, "missing"),
-                    )
+                    ), sqlite_policy=sqlite_policy
                 )
                 if failure != "publication_busy"
                 else None
@@ -317,8 +319,9 @@ class PublishedTrainingState:
         loaded: tuple[ModelPublicationIdentity, ...],
         *,
         owned_profile: ScoringProfileId,
-        wall_clock: Callable[[], datetime],
+        wall_clock: Callable[[], datetime], sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self._history_root = history_root
         self._training_root = training_root
         self._loaded = loaded
@@ -337,7 +340,7 @@ class PublishedTrainingState:
             self._initialize()
 
     def _initialize(self) -> None:
-        control = HistoryControlIndex(self._history_root / "catalog.sqlite3")
+        control = HistoryControlIndex(self._history_root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy)
         try:
             history = control.load_published_state()
         except HistoryControlError:
@@ -368,7 +371,7 @@ class PublishedTrainingState:
                         invalid=failure not in (None, "missing"),
                     )
                     try:
-                        due = TrainingMaintenanceIndex(self._history_root / "catalog.sqlite3").read_due_state(
+                        due = TrainingMaintenanceIndex(self._history_root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy).read_due_state(
                             identity, latest=True
                         )
                     except TrainingMaintenanceError:

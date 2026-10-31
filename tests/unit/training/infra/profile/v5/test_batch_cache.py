@@ -1,5 +1,7 @@
 """Float64 batch identity and lifetime for memory and file-backed TCN caches."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from datetime import date, timedelta
 
 import numpy as np
@@ -24,7 +26,7 @@ def test_cache_reads_two_partitions_once_and_preserves_batches(tmp_path, monkeyp
         history_sessions=61,
         history_excludes_signal=True,
     )
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", contract.feature_manifest.names) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", contract.feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as samples:
         samples.add_final(
             TrainingSample(f"{i:06d}", day, "main", "bank", 1e8, tuple(float(j + i) for j in range(width)), (0.01,) * 6)
             for day in (split.model_fit_dates[0], split.early_stopping_dates[0])

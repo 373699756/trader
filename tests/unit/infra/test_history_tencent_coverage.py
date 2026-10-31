@@ -1,5 +1,7 @@
 """Published history and short-window feedback must reflect actual supplier coverage."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -76,7 +78,7 @@ def test_history_sends_failed_stock_to_baostock_after_single_tencent_summary(tmp
     assert "Tencent下载 | 重试 |" not in logs
     assert sum("发布内容校验" in line for line in logs.splitlines()) == 1
     assert result.unresolved_price_cells == (0 if recovers else 3)
-    assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3").gaps_by_code() == ({} if recovers else {"600001": days})
+    assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gaps_by_code() == ({} if recovers else {"600001": days})
 
 
 def test_history_baostock_replaces_partial_tencent_window_before_publication(tmp_path):
@@ -110,9 +112,9 @@ def test_history_baostock_replaces_partial_tencent_window_before_publication(tmp
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert prices.calls == [days]
     assert baseline.calls == [("600001", days)]
-    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert current_snapshot is not None
-    first_day = HistorySnapshotReader(tmp_path).read_day(days[0], current_snapshot)
+    first_day = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], current_snapshot)
     assert len(first_day) == 1 and first_day[0].cell.status == "complete"
     assert first_day[0].cell.qfq.close_price == days[0].day + 2.0
 
@@ -148,7 +150,7 @@ def test_history_next_run_excludes_deferred_qfq_dates(tmp_path):
 
     assert result.state == "completed" and result.unresolved_price_cells == 1
     assert prices.calls == [days, days[1:]]
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     assert index.gaps_by_code() == {"600001": days[:1]}
     assert index.gaps_by_code(days) == {}
 
@@ -187,7 +189,7 @@ def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reload
     result = RunHistoryFixture(config, supplier, clock=lambda: NOW, progress=progress)
     assert result.state == "completed", result.reason
     assert result.reason == "history_price_gaps_remaining" and result.unresolved_price_cells == 1
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     assert index.gaps_by_code() == {"600001": days[:1]}
     assert index.gaps_by_code(days) == {}
     summary = next(item.tencent_summary for item in progress.values if item.tencent_summary is not None)
@@ -237,25 +239,25 @@ def test_activity_revision_fills_gap_without_changing_old_snapshot(tmp_path, amo
     )
     first = RunHistoryFixture(config, supplier, clock=lambda: _at(days[-1]))
     assert first.unresolved_price_cells == 1
-    original = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    original = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert original is not None
-    old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], original)
+    old_rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], original)
 
     prices.refined = True
     retried = RunHistoryFixture(config, supplier, clock=lambda: _at(days[-1]))
 
     assert retried.state == "completed" and retried.unresolved_price_cells == (0 if accepted else 1)
-    assert HistorySnapshotReader(tmp_path).read_day(days[-1], original) == old_rows
-    latest = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    assert HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], original) == old_rows
+    latest = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert latest is not None
     expected_status = "complete" if accepted else "qfq_missing"
-    rows = HistorySnapshotReader(tmp_path).read_day(days[-1], latest)
+    rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], latest)
     assert all(row.cell.status == expected_status for row in rows)
     if accepted:
         assert all(row.cell.unadjusted.amount == amount and row.cell.unadjusted.volume == volume for row in rows)
-        assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3").gaps_by_code() == {}
+        assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gaps_by_code() == {}
     else:
-        tasks = HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks()
+        tasks = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks()
         assert tasks and all(task.failure == "history_tail_raw_price_conflict" for task in tasks)
 
 
@@ -302,8 +304,8 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
             assert "其中待重试 2 股" in logs
     else:
         assert "完整 2 股" in logs if mode == "complete" else "失败 2 股" in logs
-    previous = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
-    old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
+    previous = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    old_rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], previous)
     baseline.calls.clear()
     retry_prices = Prices()
     retried = RunHistoryFixture(config, _router(baseline, retry_prices), clock=lambda: _at(days[-1]))
@@ -315,7 +317,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
         assert retried.state == "already_current"
         assert retried.reason == "history_price_gaps_remaining"
         assert retry_prices.calls == []
-    assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous) == old_rows
+    assert HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], previous) == old_rows
 
 
 @pytest.mark.parametrize("repair_retryable", (False, True))
@@ -352,11 +354,11 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
     )
     first = RunHistoryFixture(config, supplier, clock=lambda: NOW)
     assert first.state == "completed" and first.unresolved_price_cells == 3
-    control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    control = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     previous = control.load_state().published_snapshot
     assert previous is not None
-    reader = HistorySnapshotReader(tmp_path)
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     old_rows = reader.read_day(days[0], previous)
     prices.repair = repair_retryable
     prices.requested_codes.clear()

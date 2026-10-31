@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import hashlib
 import json
@@ -72,12 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[1] / "config/runtime.json"))
     try:
         if args.action == "build":
-            manifest = migrate(args.source, args.target, default_profile=args.default_profile)
+            manifest = migrate(args.source, args.target, default_profile=args.default_profile, sqlite_policy=sqlite_policy)
             result = {"state": "candidate_verified", **ProjectManifest(manifest)}
         elif args.action == "verify":
-            result = {"state": "verified", **ProjectManifest(inspect_layout(args.source))}
+            result = {"state": "verified", **ProjectManifest(inspect_layout(args.source, sqlite_policy=sqlite_policy))}
         else:
             rollback(args.target, args.backup)
             result = {"state": "rolled_back"}
@@ -89,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationManifest:
+def migrate(source: Path, target: Path, *, default_profile: str, sqlite_policy: SqliteIoPolicy) -> MigrationManifest:
     source = _external_path(source)
     target = _external_path(target)
     if default_profile not in ("v2", "v3"):
@@ -102,7 +107,7 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
     with ProcessLock(target.with_name("." + target.name + ".migration.lock")):
         if target.exists() or staging.exists():
             raise MigrationError("migration_target_or_staging_exists")
-        before, _count, _size = _fingerprint(source, validate=True)
+        before, _count, _size = _fingerprint(source, validate=True, sqlite_policy=sqlite_policy)
         staging.mkdir(parents=True)
         runtime = source / ".runtime/trader"
         # Company facts require a fresh extraction; legacy evidence is never copied into the new contract.
@@ -110,10 +115,10 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
         # initialization day, preserving the next-Shanghai-day safety boundary.
         # Freeze records, outcomes, traces and research schemas start empty.
         # Old evidence stays in the source release; no import can grant new formal authority.
-        after, _count, _size = _fingerprint(source, validate=True)
+        after, _count, _size = _fingerprint(source, validate=True, sqlite_policy=sqlite_policy)
         if after != before:
             raise MigrationError("migration_source_changed")
-        digest, count, size = _fingerprint(staging, validate=True)
+        digest, count, size = _fingerprint(staging, validate=True, sqlite_policy=sqlite_policy)
         cleanup = tuple(
             name
             for name in ("evidence_cache", "runtime.sqlite3", "preregistered", "historical_research_baseline")
@@ -141,7 +146,7 @@ def migrate(source: Path, target: Path, *, default_profile: str) -> MigrationMan
             cleanup,
         )
         (staging / MANIFEST_NAME).write_text(json.dumps(ProjectManifest(manifest), sort_keys=True, indent=2) + "\n")
-        inspect_layout(staging)
+        inspect_layout(staging, sqlite_policy=sqlite_policy)
         _flush_candidate(staging)
         os.replace(staging, target)
         _fsync_directory(target.parent)
@@ -159,12 +164,12 @@ def _flush_candidate(root: Path) -> None:
     _fsync_directory(root)
 
 
-def inspect_layout(source: Path) -> MigrationManifest:
+def inspect_layout(source: Path, *, sqlite_policy: SqliteIoPolicy) -> MigrationManifest:
     root = _external_path(source)
     raw = json.loads((root / MANIFEST_NAME).read_text())
     if raw.get("schema_version") != "trader_data_layout_migration":
         raise MigrationError("migration_manifest_invalid")
-    digest, count, size = _fingerprint(root, validate=True)
+    digest, count, size = _fingerprint(root, validate=True, sqlite_policy=sqlite_policy)
     if (raw["candidate_hash"], raw["file_count"], raw["total_bytes"]) != (digest, count, size):
         raise MigrationError("migration_candidate_digest_changed")
     return MigrationManifest(
@@ -186,13 +191,13 @@ def _files(root: Path) -> tuple[Path, ...]:
     return tuple(files)
 
 
-def _fingerprint(root: Path, *, validate: bool) -> tuple[str, int, int]:
+def _fingerprint(root: Path, *, validate: bool, sqlite_policy: SqliteIoPolicy) -> tuple[str, int, int]:
     digest = hashlib.sha256()
     files = _files(root)
     size = 0
     for path in files:
         if validate and path.suffix == ".sqlite3":
-            ValidateDatabase(path)
+            ValidateDatabase(path, sqlite_policy=sqlite_policy)
         length = path.stat().st_size
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(length.to_bytes(8, "big"))

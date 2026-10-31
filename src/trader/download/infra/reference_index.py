@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
@@ -27,7 +29,8 @@ from trader.infra.sqlite_connection import (
 
 
 class SQLiteReferenceIndex:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self.path = path
 
     @contextmanager
@@ -52,7 +55,7 @@ class SQLiteReferenceIndex:
     def _open(self, *, write: bool) -> SqliteConnection:
         # Short reference writes use SQLite's rollback journal and FULL durability.
         # Avoid repeated WAL creation/checkpointing when each batch closes its handle.
-        return OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=not write, foreign_keys=True))
+        return OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=not write, foreign_keys=True), sqlite_policy=self._sqlite_policy)
 
     def read_st(self) -> tuple[HistoryStEvidence, ...]:
         if not self.path.is_file():

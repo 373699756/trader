@@ -13,17 +13,22 @@ from contextlib import redirect_stdout
 from datetime import datetime
 from datetime import time as daytime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 from zoneinfo import ZoneInfo
 
 from .reporting import emit_report
 
 if TYPE_CHECKING:
     from trader.infra.settings import RuntimeSettings
+    from trader.infra.sqlite_policy import SqliteIoPolicy
     from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
-def _inputs(history: Path, runtime_config: Path) -> dict[str, object]:
+class _StorageArguments(TypedDict, total=False):
+    sqlite_policy: SqliteIoPolicy
+
+
+def _inputs(history: Path, runtime_config: Path, *, sqlite_policy: SqliteIoPolicy | None) -> dict[str, object]:
     from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
     from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
     from trader.infra.settings import LoadRuntimeSettings
@@ -32,7 +37,10 @@ def _inputs(history: Path, runtime_config: Path) -> dict[str, object]:
 
     started = time.monotonic()
     settings = LoadRuntimeSettings(runtime_config)
-    source = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history))
+    storage_arguments: _StorageArguments = {}
+    if sqlite_policy is not None:
+        storage_arguments["sqlite_policy"] = sqlite_policy
+    source = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history, **storage_arguments))
     manifest = source.manifest()
     if manifest is None:
         raise ValueError("history_manifest_unavailable")
@@ -81,7 +89,7 @@ def _probe(
     work: Path,
     profiles: tuple[ScoringProfileId, ...] | None = None,
     *,
-    runtime_config: Path | None = None,
+    runtime_config: Path | None = None, sqlite_policy: SqliteIoPolicy | None,
 ) -> dict[str, object]:
     from trader.infra.settings import LoadRuntimeSettings
     from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
@@ -96,7 +104,10 @@ def _probe(
         raise ValueError("training_alignment_requires_external_history_copy")
     if work.exists() or history.is_relative_to(work) or work.is_relative_to(history):
         raise ValueError("training_alignment_requires_new_separate_output")
-    source = SQLiteHistoryTrainingInputSnapshot.open(history)
+    storage_arguments: _StorageArguments = {}
+    if sqlite_policy is not None:
+        storage_arguments["sqlite_policy"] = sqlite_policy
+    source = SQLiteHistoryTrainingInputSnapshot.open(history, **storage_arguments)
     identity = source.snapshot.snapshot_hash
     work.mkdir(parents=True)
     started = time.monotonic()
@@ -112,7 +123,7 @@ def _probe(
     ConfigureTrainingResources()
     initial = _train_once(runtime, history, work, profiles)
     repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
-    unchanged = SQLiteHistoryTrainingInputSnapshot.open(history).snapshot.snapshot_hash == identity
+    unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **storage_arguments).snapshot.snapshot_hash == identity
     complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged)
     equal = repeat is not None and initial["numeric_fingerprints"] == repeat["numeric_fingerprints"]
     return {
@@ -254,11 +265,19 @@ def main() -> int:
         from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
         from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 
+        runtime_config = args.runtime_config or product / "config/runtime.json"
+        sqlite_policy = None
+        # Explicit historical checkouts predate the injected storage policy.
+        if (product / "src/trader/infra/sqlite_policy.py").is_file():
+            from trader.bootstrap import BuildSqlitePolicy
+            from trader.infra.settings import LoadRuntimeSettings
+
+            sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(runtime_config))
         profiles = ParseProfileSelection(args.profiles) if args.profiles is not None else SCORING_PROFILE_IDS
         if args.inputs_only:
-            report = _inputs(args.history_root, args.runtime_config or product / "config/runtime.json")
+            report = _inputs(args.history_root, runtime_config, sqlite_policy=sqlite_policy)
         elif args.work_root is not None:
-            report = _probe(args.history_root, args.work_root, profiles, runtime_config=args.runtime_config)
+            report = _probe(args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy)
             report["benchmark_mode"] = args.benchmark_mode
             report["product_checkout"] = str(product)
         else:

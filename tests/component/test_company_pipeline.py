@@ -1,5 +1,7 @@
 """Bounded company batches preserve checkpoints, document identity and publications."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import timedelta
 from threading import Barrier, Event, get_ident
@@ -58,7 +60,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
         assert json.loads(row[1])["phase"] == "recognition"
     from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
 
-    audit = AuditCompanyStorage(index.path, now=NOW, budget_seconds=5)
+    audit = AuditCompanyStorage(index.path, now=NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
     assert audit["summary"]["local_storage"]["ocr_diagnostics"][0]["diagnostic"]["phase"] == "recognition"
     changed = replace(policies, ocr="next-ocr-policy")
     assert index.document_workload(("600001",), NOW, changed).due == 1

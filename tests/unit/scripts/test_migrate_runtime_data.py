@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import hashlib
 import json
 from datetime import timedelta
@@ -68,8 +70,8 @@ def test_candidate_keeps_old_formal_evidence_isolated_and_requests_rebuild(tmp_p
     _legacy_freeze(source)
     before = _fingerprint(source)
     target = tmp_path / "candidate"
-    manifest = migrate(source, target, default_profile="v2")
-    assert inspect_layout(target) == manifest
+    manifest = migrate(source, target, default_profile="v2", sqlite_policy=SqlitePolicyFixture())
+    assert inspect_layout(target, sqlite_policy=SqlitePolicyFixture()) == manifest
     assert _fingerprint(source) == before
     assert not (target / "recommendation").exists()
     assert not (target / "research").exists()
@@ -86,7 +88,7 @@ def test_uncheckpointed_source_never_publishes_or_changes_source(tmp_path):
     before = _fingerprint(source)
     target = tmp_path / "candidate"
     with pytest.raises((ValueError, MigrationError)):
-        migrate(source, target, default_profile="v2")
+        migrate(source, target, default_profile="v2", sqlite_policy=SqlitePolicyFixture())
     assert not target.exists()
     assert _fingerprint(source) == before
 
@@ -99,11 +101,12 @@ def test_old_budget_and_sequences_are_not_imported(tmp_path):
         with SqliteSession(root / "deepseek-budget.sqlite3") as connection, SqliteTransaction(connection):
             connection.run("CREATE TABLE calls(identity TEXT PRIMARY KEY,used INTEGER)")
             connection.run("INSERT INTO calls VALUES(?,?)", (str(index), 84))
-        sequence = PublicationSequence(root / "publication-sequence.sqlite3", block_size=10)
+        sequence = PublicationSequence(root / "publication-sequence.sqlite3", block_size=10, sqlite_policy=SqlitePolicyFixture())
         sequence.initialize()
+        sequence.prepare(minimum=100 * (index + 1))
         sequence.allocate(minimum=100 * (index + 1))
     target = tmp_path / "candidate"
-    migrate(source, target, default_profile="v2")
+    migrate(source, target, default_profile="v2", sqlite_policy=SqlitePolicyFixture())
     assert not (target / "recommendation/shared/deepseek_budget.sqlite3").exists()
     assert not (target / "recommendation/v2").exists()
 
@@ -114,10 +117,10 @@ def test_conflicting_budget_identity_stops_instead_of_resetting(tmp_path):
         with SqliteSession(path) as connection, SqliteTransaction(connection):
             connection.run("CREATE TABLE calls(identity TEXT PRIMARY KEY,used INTEGER)")
             connection.run("INSERT INTO calls VALUES('same',?)", (used,))
-    MergeDatabase(first, target)
+    MergeDatabase(first, target, sqlite_policy=SqlitePolicyFixture())
     before = target.read_bytes()
     with pytest.raises(ValueError, match="identity_conflict"):
-        MergeDatabase(second, target)
+        MergeDatabase(second, target, sqlite_policy=SqlitePolicyFixture())
     assert target.read_bytes() == before
 
 
@@ -127,10 +130,10 @@ def test_existing_target_and_repository_paths_are_rejected(tmp_path):
     target.mkdir()
     (target / "sentinel").write_bytes(b"retained")
     with pytest.raises(MigrationError):
-        migrate(source, target, default_profile="v2")
+        migrate(source, target, default_profile="v2", sqlite_policy=SqlitePolicyFixture())
     assert (target / "sentinel").read_bytes() == b"retained"
     with pytest.raises(MigrationError, match="outside_repository"):
-        migrate(Path(__file__).resolve().parents[3], tmp_path / "other", default_profile="v2")
+        migrate(Path(__file__).resolve().parents[3], tmp_path / "other", default_profile="v2", sqlite_policy=SqlitePolicyFixture())
 
 
 def test_legacy_company_exclusions_are_not_imported(tmp_path):
@@ -175,6 +178,6 @@ def test_legacy_company_exclusions_are_not_imported(tmp_path):
         )
     )
     target = tmp_path / "candidate"
-    migrate(source, target, default_profile="v2")
+    migrate(source, target, default_profile="v2", sqlite_policy=SqlitePolicyFixture())
     assert not (target / "company/eligibility.sqlite3").exists()
     assert not (target / "company/company_facts.sqlite3").exists()

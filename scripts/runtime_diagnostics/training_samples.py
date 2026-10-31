@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import json
 import os
@@ -68,7 +70,7 @@ def _compare(
     return comparison
 
 
-def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int, sessions: int) -> dict[str, object]:
+def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int, sessions: int, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     project = Path(__file__).resolve().parents[2]
     baseline = baseline.resolve(strict=True)
     if baseline.is_relative_to(project) or not (baseline / "src/trader").is_dir():
@@ -96,7 +98,7 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
             ), checkout, work))
     sample_comparison = _compare(runs, "baseline", "candidate", budget.relative_regression_percent)
     (work / "sample-results.json").write_text(json.dumps({"runs": runs, "comparison": sample_comparison}))
-    history = PrepareTrainingHistory(work / "history-input", size=size, sessions=sessions)
+    history = PrepareTrainingHistory(work / "history-input", size=size, sessions=sessions, sqlite_policy=sqlite_policy)
     reads: dict[str, list[_Run]] = {"sqlite": [], "parquet": []}
     for number in range(rounds):
         for mode in (("sqlite", "parquet") if number % 2 == 0 else ("parquet", "sqlite")):
@@ -163,7 +165,10 @@ def Main() -> int:
     parser.add_argument("--size", type=int, default=64)
     parser.add_argument("--sessions", type=int, default=750)
     args = parser.parse_args()
-    report = ProbeTrainingSamples(args.work_root, args.baseline_checkout, args.config, size=args.size, sessions=args.sessions)
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
+    report = ProbeTrainingSamples(args.work_root, args.baseline_checkout, args.config, size=args.size, sessions=args.sessions, sqlite_policy=sqlite_policy)
     print(json.dumps(report))
     return 0 if report["status"] == "passed" else 1
 

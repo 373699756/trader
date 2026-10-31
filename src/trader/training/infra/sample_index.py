@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import math
 import mmap
 from collections.abc import Callable, Iterable, Iterator
@@ -124,8 +126,9 @@ class SQLiteTrainingSampleIndex:
         feature_names: tuple[str, ...],
         *,
         prepared_split_hash: str | None = None,
-        sequence_layout: SampleSequenceLayout | None = None,
+        sequence_layout: SampleSequenceLayout | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self._feature_hash = SampleFeatureHash(feature_names, sequence_layout)
         self._path = path
         self._feature_names = feature_names
@@ -145,7 +148,7 @@ class SQLiteTrainingSampleIndex:
                 cache_kib=TRAINING_SAMPLE_CACHE_MIB * 1024,
                 mmap_bytes=TRAINING_SAMPLE_MMAP_BYTES,
                 temp_storage="FILE",
-            ),
+            ), sqlite_policy=self._sqlite_policy,
         )
         self._transaction = SqliteTransaction(self._connection, immediate=True)
         self._sequence_writer = SampleSequenceWriter(self._connection, sequence_layout) if sequence_layout else None

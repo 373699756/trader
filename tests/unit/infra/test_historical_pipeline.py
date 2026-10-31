@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 from dataclasses import replace
 
@@ -177,11 +179,11 @@ def test_historical_recovery_preserves_database_bytes_and_get_sse_projection(tmp
             return NOW
 
     encoded = _historical_bytes(strategy)
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.import_record_bytes(encoded)
     _disable_production_audit(monkeypatch)
-    restarted = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    restarted = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     assert restarted.recover().quarantined == 0
     restored = restarted.load(strategy, NOW.date())
     assert restored is not None
@@ -326,7 +328,7 @@ def test_production_formal_publication_still_persists_only_six_rows(tmp_path, st
         ),
     )
     formal = CommittedFreezeRecord(FormalScoredFreeze(current), NOW.replace(hour=15, minute=0), "scheduled")
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(formal)
     loaded = records.load(strategy, NOW.date())
@@ -340,7 +342,7 @@ def test_production_formal_publication_still_persists_only_six_rows(tmp_path, st
 
 
 def test_historical_payload_limit_is_still_eight_mib(tmp_path):
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     with pytest.raises(FreezeRecordUnavailableError, match="bounded limit"):
         records.import_record_bytes(b" " * (8 * 1024 * 1024 + 1))

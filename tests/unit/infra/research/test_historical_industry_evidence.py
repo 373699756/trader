@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -98,7 +100,7 @@ def test_monthly_source_audit_covers_three_boards_and_keeps_missing_query_time_f
     cells = tuple(cell for security in context.universe for cell in supplier.fetch_code(security, dates).batch.cells)
     publish_history_fixture(root, context, cells, NOW)
 
-    report = AuditPublishedHistoricalIndustryFacts(tmp_path / "history", tushare_access_points=120)
+    report = AuditPublishedHistoricalIndustryFacts(tmp_path / "history", tushare_access_points=120, sqlite_policy=SqlitePolicyFixture())
 
     baostock, tushare = report.sources
     assert report.daily_manifest_hash == baostock.contract.source_version

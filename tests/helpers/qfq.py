@@ -1,5 +1,7 @@
 """Immutable price windows for isolated qfq persistence tests."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,7 +25,7 @@ def publish_windows(cache: SQLiteQfqWindowCache, windows: tuple[PublishedHistory
         replace(window, cells=tuple(cell for cell in window.cells if cell.trade_date >= calendar[0]))
         for window in windows
     )
-    peer = SQLiteQfqWindowCache(cache.path, "v3" if cache.profile == "v2" else "v2")
+    peer = SQLiteQfqWindowCache(cache.path, "v3" if cache.profile == "v2" else "v2", sqlite_policy=SqlitePolicyFixture())
     return cache.replace_paired_windows(
         peer, clipped, source, QFQ_CONFIGURATION, calendar=calendar, completed_day=None
     )

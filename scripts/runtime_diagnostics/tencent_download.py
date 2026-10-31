@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import math
 import sqlite3
@@ -58,7 +60,7 @@ class _SampleSupplier:
 
 
 def _benchmark(
-    supplier: TencentQfqSupplier, context: HistorySupplierContext, size: int, workers: int, observed_at: datetime
+    supplier: TencentQfqSupplier, context: HistorySupplierContext, size: int, workers: int, observed_at: datetime, *, sqlite_policy: SqliteIoPolicy
 ) -> dict[str, object]:
     configuration = LoadQfqWindowConfiguration(PROJECT_ROOT)
     eligible = tuple(
@@ -85,8 +87,8 @@ def _benchmark(
                     failures[message.stock_failure_code] += 1
 
             updater = UpdateQfqWindows(
-                SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v2"),
-                SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v3"),
+                SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v2", sqlite_policy=sqlite_policy),
+                SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v3", sqlite_policy=sqlite_policy),
                 sample_supplier,
                 lambda: False,
                 feedback,
@@ -153,9 +155,9 @@ def compare_windows(reference: PublishedHistoryWindow, incoming: PublishedHistor
 
 
 def _shadow(
-    supplier: TencentQfqSupplier, context: HistorySupplierContext, args: argparse.Namespace
+    supplier: TencentQfqSupplier, context: HistorySupplierContext, args: argparse.Namespace, *, sqlite_policy: SqliteIoPolicy
 ) -> dict[str, object]:
-    reader = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(args.history_root))
+    reader = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(args.history_root, sqlite_policy=sqlite_policy))
     manifest = reader.manifest()
     if manifest is None:
         return {"status": "unavailable", "reason": "history_snapshot_unavailable"}
@@ -194,6 +196,9 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if args.whole_window:
         return _whole_window_probe(args)
     sessions: tuple[HttpTransport, ...] = ()
@@ -224,7 +229,7 @@ def main() -> int:
         started = time.monotonic()
         context = supplier.load_qfq_context(CompletedDailyCutoff(observed_at), configuration.maximum_sessions)
         context_elapsed = time.monotonic() - started
-        experiments = [_benchmark(supplier, context, size, args.workers, observed_at) for size in args.sizes]
+        experiments = [_benchmark(supplier, context, size, args.workers, observed_at, sqlite_policy=sqlite_policy) for size in args.sizes]
         complete = all(
             item["completed"] == item["stocks"]
             and item["pending"] == 0
@@ -241,7 +246,7 @@ def main() -> int:
                 "universe_rows": len(context.universe),
                 "calendar_cutoff": context.calendar.open_dates[-1].isoformat(),
                 "experiments": experiments,
-                "history_shadow": _shadow(supplier, context, args),
+                "history_shadow": _shadow(supplier, context, args, sqlite_policy=sqlite_policy),
                 "history_cutover_eligible": False,
                 "history_blockers": [
                     "2000_session_contract_unverified",

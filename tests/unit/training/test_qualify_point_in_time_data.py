@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 from datetime import date
 from pathlib import Path
@@ -59,8 +61,8 @@ def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_p
         command_evidence, "AuditPublishedHistoricalIndustryFacts", lambda _root, **_kw: _industry_report()
     )
     report = QualifyPointInTimeData(
-        lambda: InspectHistorySnapshot(tmp_path, verify_partitions=True),
-        HistoricalIndustryEvidenceReader(tmp_path),
+        lambda: InspectHistorySnapshot(tmp_path, verify_partitions=True, sqlite_policy=SqlitePolicyFixture()),
+        HistoricalIndustryEvidenceReader(tmp_path, sqlite_policy=SqlitePolicyFixture()),
         FreeSourceH1CapabilityProbe(FreeHistorySourceCapability(_Session()), timeout_seconds=1.0),
     ).execute(
         code="600519",

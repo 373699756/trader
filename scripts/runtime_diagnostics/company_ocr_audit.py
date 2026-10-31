@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -15,8 +17,8 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 
-def AuditCompanyOcr(path: Path, *, budget_seconds: float) -> dict[str, object]:
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3)) as connection:
+def AuditCompanyOcr(path: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3), sqlite_policy=sqlite_policy) as connection:
         row = connection.run(
             "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code,r.payload_hash "
             "FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "

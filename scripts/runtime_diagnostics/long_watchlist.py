@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import json
 import math
@@ -90,11 +92,11 @@ def financial_admission(code: str, history: tuple[FinancialReport, ...], complet
     )
 
 
-def historical_exclusions(paths: tuple[Path, ...], observed_at: datetime) -> dict[str, tuple[str, ...]]:
+def historical_exclusions(paths: tuple[Path, ...], observed_at: datetime, *, sqlite_policy: SqliteIoPolicy) -> dict[str, tuple[str, ...]]:
     """Read historical fact databases without migrating or writing active state."""
     evidence: dict[str, list[str]] = {}
     for path in paths:
-        with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection, SqliteTransaction(connection):
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection, SqliteTransaction(connection):
             for code, reason, effective_at, evidence_id in connection.run(
                 "SELECT code, reason, effective_at, evidence_id FROM issuer_eligibility_facts"
             ):
@@ -118,12 +120,12 @@ def audit_code(
     timeout: float,
     exclusions: dict[str, tuple[str, ...]],
     evidence_database: Path,
-    open_dates: tuple[date, ...],
+    open_dates: tuple[date, ...], sqlite_policy: SqliteIoPolicy,
 ) -> Admission:
     if code in exclusions:
         return Admission(code, "excluded", ("existing_permanent_exclusion",), exclusions[code])
     reader = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(evidence_database, event_policy=company_policy.events),
+        SQLiteCompanyEvidenceReader(evidence_database, event_policy=company_policy.events, sqlite_policy=sqlite_policy),
         wall_clock=lambda: observed_at,
         open_dates=lambda: open_dates,
         monotonic=time.monotonic,
@@ -165,6 +167,8 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--timeout-seconds", type=float, default=5)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
     if not 1 <= args.workers <= 8 or not 0 < args.timeout_seconds <= 15:
         parser.error("workers must be 1..8 and request timeout must be >0..15 seconds")
     if args.evidence_output:
@@ -175,8 +179,8 @@ def main() -> int:
     watchlist = LoadLongWatchlist(args.watchlist)
     strategy = LoadStrategySettings(args.strategy)
     policy = strategy.long_research
-    exclusions = historical_exclusions(tuple(args.eligibility_evidence), observed_at)
-    reference = SQLiteReferenceIndex(LoadRuntimeSettings(args.runtime_config).data_paths.reference_database).read()
+    exclusions = historical_exclusions(tuple(args.eligibility_evidence), observed_at, sqlite_policy=sqlite_policy)
+    reference = SQLiteReferenceIndex(LoadRuntimeSettings(args.runtime_config).data_paths.reference_database, sqlite_policy=sqlite_policy).read()
     open_dates = reference.open_dates if reference else ()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = tuple(
@@ -189,7 +193,7 @@ def main() -> int:
                     timeout=args.timeout_seconds,
                     exclusions=exclusions,
                     evidence_database=args.company_evidence_database,
-                    open_dates=open_dates,
+                    open_dates=open_dates, sqlite_policy=sqlite_policy,
                 ),
                 watchlist.items,
             )

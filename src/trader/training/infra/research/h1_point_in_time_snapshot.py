@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -66,7 +68,8 @@ class _H1RecordAudit:
 
 
 class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
-    def __init__(self, runtime_dir: Path) -> None:
+    def __init__(self, runtime_dir: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._root = runtime_dir / "experiments/h1_point_in_time"
         self._database = self._root / "samples.sqlite3"
         self._lock = threading.RLock()
@@ -74,7 +77,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def _initialize(self) -> None:
         self._root.mkdir(parents=True, exist_ok=True)
         with SqliteSession(
-            self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)
+            self._database, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy
         ) as connection:
             EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
 
@@ -84,7 +87,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if len({item.code for item in ordered}) != len(ordered):
             raise ValueError("H1 universe contains duplicate codes")
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             self._register_spec(connection, spec)
@@ -122,7 +125,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if not self._database.is_file():
             return ()
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -139,7 +142,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if not self._database.is_file():
             return frozenset()
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -159,7 +162,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if any(item.code != code or item.strategy != spec.strategy for item in ordered):
             raise ValueError("H1 record set identity mismatch")
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             self._register_spec(connection, spec)
@@ -226,7 +229,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             raise ValueError("H1 failure code is invalid")
         self._initialize()
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             self._register_spec(connection, spec)
@@ -254,7 +257,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                 spec.source_cutoff,
             )
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -327,7 +330,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
 
     def _manifest_snapshot(self, spec: H1PointInTimeSpec) -> _H1ManifestSnapshot:
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -368,7 +371,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if not self._database.is_file():
             return H1PointInTimeSnapshotStatus(strategy=spec.strategy)
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)

@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -41,7 +43,7 @@ def _fetch(sdk, cache, dates=DATES, universe=UNIVERSE, progress=None):
 
 
 def test_same_day_reuses_complete_dates_and_new_universe_is_filtered_at_read(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     sdk = _IndustrySdk()
     original = _fetch(sdk, cache)
     assert len(sdk.calls) == 4
@@ -58,7 +60,7 @@ def test_same_day_reuses_complete_dates_and_new_universe_is_filtered_at_read(tmp
 
 
 def test_failed_date_resumes_without_requerying_successful_dates(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     sdk = _IndustrySdk()
     sdk.fail_on = DATES[2].isoformat()
     with pytest.raises(RuntimeError, match="supplier_industry_timeout"):
@@ -70,7 +72,7 @@ def test_failed_date_resumes_without_requerying_successful_dates(tmp_path):
 
 
 def test_calendar_roll_keeps_historical_queries_and_only_fetches_new_dates(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     sdk = _IndustrySdk()
     _fetch(sdk, cache)
     sdk.calls.clear()
@@ -87,7 +89,7 @@ def test_calendar_roll_keeps_historical_queries_and_only_fetches_new_dates(tmp_p
 
 @pytest.mark.parametrize("kind", ("empty", "future"))
 def test_empty_or_future_only_responses_are_not_cached(tmp_path, kind):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     sdk = _IndustrySdk()
     setattr(sdk, kind, True)
     assert _fetch(sdk, cache) == ()
@@ -97,7 +99,7 @@ def test_empty_or_future_only_responses_are_not_cached(tmp_path, kind):
 
 
 def test_corrupt_cached_payload_requeries_only_that_date_and_source_change_invalidates(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     sdk = _IndustrySdk()
     original = _fetch(sdk, cache)
     with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
@@ -112,7 +114,7 @@ def test_corrupt_cached_payload_requeries_only_that_date_and_source_change_inval
 
 
 def test_pagination_failure_never_creates_a_complete_query(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
 
     class BrokenPage(_IndustrySdk):
         def query_stock_industry(self, **kwargs):
@@ -132,7 +134,7 @@ def test_pagination_failure_never_creates_a_complete_query(tmp_path):
 
 
 def test_recent_fixed_anchor_is_reused_when_cutoff_advances(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     sdk = _IndustrySdk()
     dates = (date(2026, 7, 1), date(2026, 10, 9))
     _fetch(sdk, cache, dates)
@@ -145,7 +147,7 @@ def test_recent_fixed_anchor_is_reused_when_cutoff_advances(tmp_path):
 
 
 def test_unreadable_sqlite_cache_has_explicit_failure_and_is_not_deleted(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     cache.path.write_bytes(b"not a database")
     with pytest.raises(RuntimeError, match="industry_query_cache_unavailable"):
         _fetch(_IndustrySdk(), cache)
@@ -153,7 +155,7 @@ def test_unreadable_sqlite_cache_has_explicit_failure_and_is_not_deleted(tmp_pat
 
 
 def test_missing_listed_security_reuses_full_market_query_without_inventing_industry(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     sdk = _IndustrySdk()
     _fetch(sdk, cache)
     sdk.calls.clear()

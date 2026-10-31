@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -60,11 +62,11 @@ def PartitionDate(path: Path) -> date | None:
         return None
 
 
-def InitializeDatabase(database: Path, initialized: set[Path]) -> None:
+def InitializeDatabase(database: Path, initialized: set[Path], *, sqlite_policy: SqliteIoPolicy) -> None:
     if database in initialized:
         return
     database.parent.mkdir(parents=True, exist_ok=True)
-    with SqliteSession(database, SqliteConnectionOptions(journal_mode="WAL")) as conn:
+    with SqliteSession(database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=sqlite_policy) as conn:
         EnsureSqliteSchema(conn, SCHEMA, allow_create=True)
     initialized.add(database)
 

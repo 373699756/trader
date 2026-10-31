@@ -20,6 +20,7 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.download.infra.tushare import TushareClient
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings, StrategySettings
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.recommendation.domain.candidate.filters import HardFilterPolicy
 from trader.recommendation.domain.scoring.company import CompanyScoringPolicy
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
@@ -29,6 +30,11 @@ from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+@lru_cache(maxsize=1)
+def SqlitePolicyFixture() -> SqliteIoPolicy:
+    return LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").storage_policy.hdd
 
 
 @lru_cache(maxsize=1)
@@ -88,18 +94,21 @@ def CompanyEvidenceRequestFixture(
 class SQLiteCompanyEvidenceIndexFixture(SQLiteCompanyEvidenceIndex):
     def __init__(self, *args: object, **options: object) -> None:
         options.setdefault("event_policy", CompanyEventPolicyFixture())
+        options.setdefault("sqlite_policy", SqlitePolicyFixture())
         super().__init__(*args, **options)
 
 
 class SQLiteCompanyFactsIndexFixture(SQLiteCompanyFactsIndex):
     def __init__(self, *args: object, **options: object) -> None:
         options.setdefault("event_policy", CompanyEventPolicyFixture())
+        options.setdefault("sqlite_policy", SqlitePolicyFixture())
         super().__init__(*args, **options)
 
 
 class SQLiteCompanyEvidenceReaderFixture(SQLiteCompanyEvidenceReader):
     def __init__(self, *args: object, **options: object) -> None:
         options.setdefault("event_policy", CompanyEventPolicyFixture())
+        options.setdefault("sqlite_policy", SqlitePolicyFixture())
         super().__init__(*args, **options)
 
 

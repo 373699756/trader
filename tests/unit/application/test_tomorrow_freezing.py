@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 import shutil
 from dataclasses import dataclass, replace
@@ -62,7 +64,7 @@ def _publish(index: UnifiedFreezeIndex, value: ScoredFreeze) -> None:
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_cold_start_requires_close_fallback_without_a_formal_record(tmp_path: Path, strategy: Strategy) -> None:
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     clock = _Clock(_at(15, 5))
@@ -126,7 +128,7 @@ def _assert_formal_current_and_history(
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 @pytest.mark.parametrize("cold_read", (False, True), ids=("hot", "cold"))
 def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Strategy, cold_read: bool) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     drafts = UnifiedFreezeDraftIndex()
@@ -165,7 +167,7 @@ def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Str
     assert result.record.freeze.is_formal is True
     assert result.record.freeze.content_hash != current.content_hash
     if cold_read:
-        records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+        records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
         index = UnifiedFreezeIndex()
         coordinator = _coordinator(index, records, clock, strategy)
         assert UnifiedFreezeQueries(index, drafts, records, clock).current(strategy).status == "not_ready"
@@ -192,7 +194,7 @@ def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Str
 def test_close_fallback_admission_and_recovered_formal_reads(
     tmp_path: Path, strategy: Strategy, cold_start: bool, recovery_minute: int
 ) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     current = replace(freeze(strategy), observed_at=_at(14, 59, 59))
@@ -222,7 +224,7 @@ def test_close_fallback_admission_and_recovered_formal_reads(
     assert dict(result.record.freeze.input_versions)["official_close"] == "official-close:20260811"
     _assert_formal_current_and_history(index, records, clock, result.record)
 
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     restored = UnifiedFreezeIndex()
     coordinator = _coordinator(restored, records, clock, strategy)
     duplicate = coordinator.freeze_close_fallback(
@@ -262,7 +264,7 @@ def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_p
 
 
 def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     empty = replace(freeze(), observed_at=_at(14, 59, 50), items=())
@@ -282,7 +284,7 @@ def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(t
 
 
 def test_close_fallback_requires_official_close_and_never_overwrites(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     current = replace(freeze(), observed_at=_at(14, 49, 50))
@@ -318,7 +320,7 @@ def test_close_fallback_requires_official_close_and_never_overwrites(tmp_path: P
 
 
 def test_d25_freeze_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     current = replace(
@@ -342,7 +344,7 @@ def test_d25_freeze_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
 
 
 def test_d25_freeze_close_fallback_persists_d25_formal_record(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     current = replace(
@@ -372,7 +374,7 @@ def test_d25_freeze_close_fallback_persists_d25_formal_record(tmp_path: Path) ->
 
 
 def test_d25_empty_formal_and_tomorrow_formal_are_isolated_by_strategy(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     tomorrow = replace(freeze(Strategy.TOMORROW), observed_at=_at(14, 59, 50))
@@ -393,7 +395,7 @@ def test_d25_empty_formal_and_tomorrow_formal_are_isolated_by_strategy(tmp_path:
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_close_fallback_rejects_pending_scheduled_seal(tmp_path: Path, strategy: Strategy) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     current = replace(freeze(strategy), observed_at=_at(14, 49, 50))

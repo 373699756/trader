@@ -1,5 +1,7 @@
 """Read and publish the existing immutable research evidence formats."""
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from pathlib import Path
 
 from trader.training.application.capability_completion import CapabilityPublication
@@ -20,12 +22,13 @@ from trader.training.infra.research.tomorrow_point_in_time_holdout_reports impor
 
 
 class HistoricalIndustryEvidenceReader:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._root = root
 
     def audit(self, *, required_sample_codes: int, tushare_access_points: int) -> HistoricalIndustryDatasetReport:
         return AuditPublishedHistoricalIndustryFacts(
-            self._root, required_sample_codes=required_sample_codes, tushare_access_points=tushare_access_points
+            self._root, required_sample_codes=required_sample_codes, tushare_access_points=tushare_access_points, sqlite_policy=self._sqlite_policy
         )
 
 

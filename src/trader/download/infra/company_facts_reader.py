@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -25,8 +27,9 @@ class SQLiteCompanyEvidenceReader:
     """Only the published, indexed projection is visible to recommendation."""
 
     def __init__(
-        self, path: Path, *, event_policy: CompanyEventPolicy, raw_path: Path | None = None
+        self, path: Path, *, event_policy: CompanyEventPolicy, raw_path: Path | None = None, sqlite_policy: SqliteIoPolicy
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self.path = path
         self._raw_path = raw_path
         self._extraction_hash = CompanyExtractionHash(event_policy)
@@ -48,7 +51,7 @@ class SQLiteCompanyEvidenceReader:
             raise RuntimeError("company_evidence_links_unavailable")
         try:
             with SqliteSession(
-                self._raw_path, SqliteConnectionOptions(read_only=True, timeout_seconds=2)
+                self._raw_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy
             ) as connection:
                 EnsureSqliteSchema(connection, SCHEMA)
                 rows = connection.run(
@@ -73,7 +76,7 @@ class SQLiteCompanyEvidenceReader:
         if not self.path.exists():
             return ""
         try:
-            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2)) as connection:
+            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 return self._publication_version(connection)
         except sqlite3.Error as exc:
             raise RuntimeError("company_snapshot_unreadable") from exc
@@ -90,7 +93,7 @@ class SQLiteCompanyEvidenceReader:
         captured: list[CompanyFacts] = []
         try:
             with SqliteSession(
-                self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2), cancel_requested=cancel_requested
+                self.path, SqliteConnectionOptions(read_only=True), cancel_requested=cancel_requested, sqlite_policy=self._sqlite_policy
             ) as connection:
                 with SqliteTransaction(connection):
                     if not self._publication_version(connection):

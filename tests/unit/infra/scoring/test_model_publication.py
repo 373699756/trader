@@ -1,5 +1,7 @@
 """Published pairs are atomic at load time and model failures have explicit categories."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 import threading
 import time
@@ -90,7 +92,7 @@ def test_model_publication_state_is_fixed_until_restart_without_constructing_new
     loaded = LoadScoringProfile("v3", training_root=tmp_path)
     now = datetime(2026, 10, 20, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
     projection = PublishedTrainingState(
-        tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", wall_clock=lambda: now
+        tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", wall_clock=lambda: now, sqlite_policy=SqlitePolicyFixture()
     )
     projection.initialize()
     before = projection.status()
@@ -116,7 +118,7 @@ def test_model_publication_state_is_fixed_until_restart_without_constructing_new
     updated = LoadScoringProfile("v3", training_root=tmp_path)
     assert updated.publications != loaded.publications
     restarted = PublishedTrainingState(
-        tmp_path / "history", tmp_path, updated.publications, owned_profile="v3", wall_clock=lambda: now
+        tmp_path / "history", tmp_path, updated.publications, owned_profile="v3", wall_clock=lambda: now, sqlite_policy=SqlitePolicyFixture()
     )
     restarted.initialize()
     assert tuple(head.disk for head in restarted.status() if head.owned) == updated.publications

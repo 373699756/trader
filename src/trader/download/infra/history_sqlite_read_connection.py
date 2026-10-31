@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import os
 import sqlite3
 import time
@@ -50,7 +52,7 @@ def OpenHistoryPriceReader(
     *,
     statement_trace: Callable[[str], None] | None,
     mmap_bytes: int,
-    activity: HistorySqliteActivity | None,
+    activity: HistorySqliteActivity | None, sqlite_policy: SqliteIoPolicy,
 ) -> SqliteConnection:
     """Retry only SQLite lock contention; always close a failed connection."""
     for attempt in range(3):
@@ -60,7 +62,7 @@ def OpenHistoryPriceReader(
                 SqliteConnectionOptions(
                     read_only=True, foreign_keys=True, cache_kib=8192, mmap_bytes=mmap_bytes, temp_storage="FILE"
                 ),
-                statement_trace=statement_trace,
+                statement_trace=statement_trace, sqlite_policy=sqlite_policy,
             )
         except sqlite3.Error as exc:
             if not _retryable_lock(exc) or attempt == 2:

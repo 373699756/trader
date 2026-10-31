@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import platform
 import time
@@ -45,11 +47,12 @@ from .reporting import emit_report
 
 
 class _FrozenSubsetSupplier:
-    def __init__(self, source: Path, snapshot: HistorySnapshot, context: HistorySupplierContext) -> None:
+    def __init__(self, source: Path, snapshot: HistorySnapshot, context: HistorySupplierContext, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._context = context
         if len(context.universe) > 40 or len(context.calendar.open_dates) > 2000:
             raise ValueError("V5 isolated export exceeds its bounded input")
-        index = HistorySnapshotReader(source).reference_index(snapshot)
+        index = HistorySnapshotReader(source, sqlite_policy=self._sqlite_policy).reference_index(snapshot)
         grouped: dict[str, list[HistoryRevision]] = {item.code: [] for item in context.universe}
         for reference in snapshot.partitions:
             dates = tuple(
@@ -60,7 +63,7 @@ class _FrozenSubsetSupplier:
             if not dates:
                 continue
             partition = HistoryPricePartition(
-                source / reference.relative_path, reference.calendar_year, reference.calendar_month
+                source / reference.relative_path, reference.calendar_year, reference.calendar_month, sqlite_policy=self._sqlite_policy
             )
             keys = tuple((code, day) for day in dates for code in sorted(grouped))
             for row in partition.read_price_keys(keys, reference.sequence):
@@ -91,7 +94,7 @@ class _FrozenSubsetSupplier:
         return tuple(row for row in self._revisions[code] if row.trade_date in allowed)
 
 
-def _probe(source: Path, work: Path) -> dict[str, object]:
+def _probe(source: Path, work: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     import resource
 
     project = Path(__file__).resolve().parents[2]
@@ -100,11 +103,11 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
         raise ValueError("V5 probe output must be outside the repository and source")
     if work.exists():
         raise ValueError("V5 probe output directory must not exist")
-    state = HistoryControlIndex(source / "catalog.sqlite3").load_published_state()
+    state = HistoryControlIndex(source / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
     if state is None:
         raise ValueError("V5 probe requires a published history")
-    published = HistoryControlIndex(source / "catalog.sqlite3").read_universe_reference(state.universe.content_hash)
-    reference = ReadBoundHistoryReference(source, state.source.supplier_contract)
+    published = HistoryControlIndex(source / "catalog.sqlite3", sqlite_policy=sqlite_policy).read_universe_reference(state.universe.content_hash)
+    reference = ReadBoundHistoryReference(source, state.source.supplier_contract, sqlite_policy=sqlite_policy)
     groups: dict[str, set[str]] = defaultdict(set)
     for interval in reference.industry_intervals:
         if interval.effective_to is None:
@@ -142,16 +145,16 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
         minimum_free_bytes=0,
     )
     subset = replace(published, official_universe=universe, st_evidence=context.st_evidence)
-    SQLiteReferenceIndex(configuration.reference_root / "company_st.sqlite3").publish(subset, subset.st_evidence)
+    SQLiteReferenceIndex(configuration.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy).publish(subset, subset.st_evidence)
     context = replace(context, reference_id=subset.identity)
     export_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as workers:
         exported = RunHistorySync(
             configuration,
-            _FrozenSubsetSupplier(source, state.snapshot, context),
+            _FrozenSubsetSupplier(source, state.snapshot, context, sqlite_policy=sqlite_policy),
             worker_pool=workers,
             storage_kind=StorageProbe().inspect(configuration.history_root).kind,
-            clock=lambda: datetime.combine(state.snapshot.data_cutoff, daytime(20, 30), ZoneInfo("Asia/Shanghai")),
+            clock=lambda: datetime.combine(state.snapshot.data_cutoff, daytime(20, 30), ZoneInfo("Asia/Shanghai")), sqlite_policy=sqlite_policy,
         )
     if exported.snapshot_hash is None:
         raise ValueError("V5 isolated source export did not publish")
@@ -166,14 +169,14 @@ def _probe(source: Path, work: Path) -> dict[str, object]:
             V5_TRAINING_PROFILE.heads,
             settings,
             sample_root=work / "samples",
-        )
+        ), sqlite_policy=sqlite_policy
     )
     if result.status == "engineering_ready":
         loaded = LoadScoringProfile("v5", training_root=work / "models")
         reloaded = len(loaded.heads) == 2
     else:
         reloaded = False
-    after = HistoryControlIndex(source / "catalog.sqlite3").load_published_state()
+    after = HistoryControlIndex(source / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
     return {
         "schema_version": "v5-training-diagnostic",
         "status": "passed" if reloaded and after and after.snapshot == state.snapshot else "degraded",
@@ -213,6 +216,9 @@ def main() -> int:
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--kernel-probe", action="store_true")
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     try:
         if args.kernel_probe:
             from .v5_kernels import ProbeV5Kernels
@@ -221,7 +227,7 @@ def main() -> int:
         else:
             if args.history_root is None or args.work_root is None:
                 raise ValueError("V5 training probe requires history and output directories")
-            report = _probe(args.history_root, args.work_root)
+            report = _probe(args.history_root, args.work_root, sqlite_policy=sqlite_policy)
     except (OSError, RuntimeError, ValueError, AssertionError) as exc:
         report = {
             "schema_version": "v5-training-diagnostic",

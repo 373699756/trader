@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -75,14 +77,14 @@ class FactorInputs:
     history_sessions: int
 
 
-def ReadReferences(reference_root: Path, at: datetime) -> FixedReferences:
+def ReadReferences(reference_root: Path, at: datetime, *, sqlite_policy: SqliteIoPolicy) -> FixedReferences:
     """Read the same fixed publications as recommendation, without supplier clients."""
     started = time.monotonic()
-    publication = SQLiteReferenceIndex(reference_root / "company_st.sqlite3")
+    publication = SQLiteReferenceIndex(reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy)
     references = PublishedReferences(
         publication.read,
         publication.identity,
-        CurrentIndustryCache(reference_root / "industry.sqlite3").load,
+        CurrentIndustryCache(reference_root / "industry.sqlite3", sqlite_policy=sqlite_policy).load,
         max_age_seconds=30 * 86400,
     )
     references.initialize()
@@ -100,13 +102,13 @@ def ReadReferences(reference_root: Path, at: datetime) -> FixedReferences:
 
 
 def LoadFactorInputs(
-    config: Path, qfq_database: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime
+    config: Path, qfq_database: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime, *, sqlite_policy: SqliteIoPolicy
 ) -> FactorInputs:
     started = time.monotonic()
     settings = LoadRuntimeSettings(config)
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile)
     training = LoadProfileTrainingSettings(settings.project_root, profile)
-    cache = SQLiteQfqWindowCache(qfq_database, profile)
+    cache = SQLiteQfqWindowCache(qfq_database, profile, sqlite_policy=sqlite_policy)
     manifest = cache.manifest()
     if manifest is None:
         raise RuntimeError("qfq_snapshot_unavailable")

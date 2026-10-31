@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date, timedelta
@@ -98,7 +100,7 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
     )
     assert result.state == "completed"
     assert baseline.calls == []
-    published = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_published_state()
+    published = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_published_state()
     assert tuple(item.code for item in published.universe.securities) == ("600001",)
 
 
@@ -124,9 +126,9 @@ def test_unknown_tencent_date_breaks_training_window_and_is_refetched(tmp_path):
     )
     result = RunHistoryFixture(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 1
-    control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
+    control = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     snapshot = control.load_state().published_snapshot
-    reader = HistorySnapshotReader(tmp_path)
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     rows = tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
     assert next(row for row in rows if row.trade_date == gap).point is None
     assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
@@ -171,10 +173,10 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
     path = tmp_path / "catalog.sqlite3"
     reference_path = tmp_path / "company_st.sqlite3"
     publication_id = PublishHistoryReferenceFixture(reference_path, reference)
-    control = HistoryControlIndex(path, reference_path=reference_path)
+    control = HistoryControlIndex(path, reference_path=reference_path, sqlite_policy=SqlitePolicyFixture())
     control.initialize()
     control.save_reference(reference, publication_id)
-    assert ReadHistoryReference(path, reference.content_hash) == reference
+    assert ReadHistoryReference(path, reference.content_hash, sqlite_policy=SqlitePolicyFixture()) == reference
     with SqliteSession(path) as connection:
         rows = connection.run(
             "SELECT code,start_date,end_date,industry,classification FROM history_industry ORDER BY start_date"
@@ -186,7 +188,7 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE history_industry SET industry='changed'")
     with pytest.raises(ValueError):
-        ReadHistoryReference(path, reference.content_hash)
+        ReadHistoryReference(path, reference.content_hash, sqlite_policy=SqlitePolicyFixture())
 
 
 def test_reference_index_requires_a_continuous_industry_window() -> None:
@@ -241,7 +243,7 @@ def test_st_checkpoints_cache_clear_and_permanently_keep_ever_st(tmp_path):
         return Response("*ST曾用 正常公司" if "600002" in url else "正常公司")
 
     source = HistoryStNameSource(
-        SQLiteReferenceIndex(tmp_path / "company_st.sqlite3"),
+        SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()),
         lambda: nullcontext(SimpleNamespace(get=get)),
         InjectedExecutor(None),
         lambda: False,
@@ -264,16 +266,16 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
         tmp_path, sessions=65, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
     )
     assert RunHistoryFixture(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
-    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_published_state().snapshot
-    reader = HistorySnapshotReader(tmp_path)
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_published_state().snapshot
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     assert tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
-    source = HistoryControlIndex(tmp_path / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
+    source = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).read_source(snapshot.source_identity_hash)
     with SqliteSession(tmp_path / "catalog.sqlite3") as connection, SqliteTransaction(connection):
         connection.run(
             "DELETE FROM reference_binding WHERE reference_hash=?", (EncodeHash(source.supplier_contract[12:76]),)
         )
     with pytest.raises(HistorySnapshotReadError, match="history_reference_unavailable"):
-        tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, {"600001"}))
+        tuple(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(snapshot, dates, {"600001"}))
 
 
 def test_pinned_history_reuses_verified_catalog_and_rejects_reference_changes_in_wal(tmp_path, monkeypatch):
@@ -292,7 +294,7 @@ def test_pinned_history_reuses_verified_catalog_and_rejects_reference_changes_in
         return load(*args, **kwargs)
 
     monkeypatch.setattr(publication, "LoadPublishedHistorySnapshot", observed)
-    reader = SQLitePublishedHistorySnapshot(tmp_path)
+    reader = SQLitePublishedHistorySnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     manifest = reader.manifest()
     assert manifest is not None
     first = reader.read_windows(manifest, ("600001",), sessions=2)
@@ -331,8 +333,8 @@ def test_tencent_missing_dates_publish_sparse_rows_for_every_stock(tmp_path):
     result = RunHistoryFixture(config, supplier, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 4
     assert supplier.calls == []
-    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
-    rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(dates[-1], snapshot)
     assert [(row.code, row.cell.obtained) for row in rows] == [("600001", False), ("600002", False)]
 
 
@@ -361,7 +363,7 @@ def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
     reports = []
     try:
         source = HistoryStNameSource(
-            SQLiteReferenceIndex(tmp_path / "company_st.sqlite3"),
+            SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()),
             lambda: nullcontext(SimpleNamespace(get=get)),
             executor,
             lambda: False,
@@ -405,7 +407,7 @@ def test_st_checks_wait_for_transient_worker_capacity(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         worker = RejectOnce(pool)
         source = HistoryStNameSource(
-            SQLiteReferenceIndex(tmp_path / "company_st.sqlite3"),
+            SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()),
             lambda: nullcontext(SimpleNamespace(get=lambda *_args, **_kwargs: Response())),
             worker,
             lambda: False,
@@ -446,7 +448,7 @@ def test_st_checks_refill_available_worker_without_waiting_for_slowest_stock(tmp
     executor.start()
     try:
         source = HistoryStNameSource(
-            SQLiteReferenceIndex(tmp_path / "company_st.sqlite3"),
+            SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()),
             lambda: nullcontext(SimpleNamespace(get=get)),
             executor,
             lambda: False,
@@ -471,15 +473,15 @@ def test_sync_recovers_missing_reference_binding_without_redownloading_prices(tm
         root, sessions=2, reread_sessions=2, minimum_free_bytes=0, reference_root=(root).parent / "reference"
     )
     assert RunHistoryFixture(config, supplier, clock=lambda: NOW).state == "completed"
-    snapshot = HistoryControlIndex(root / "catalog.sqlite3").load_published_state().snapshot
-    HistorySnapshotReader(root).reference_index(snapshot)
-    HistoryControlIndex(root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
+    snapshot = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_published_state().snapshot
+    HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture()).reference_index(snapshot)
+    HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).read_source(snapshot.source_identity_hash)
     with SqliteSession(root / "catalog.sqlite3") as connection, SqliteTransaction(connection):
         if damage == "missing":
             connection.run("DELETE FROM reference_binding")
         else:
             connection.run("UPDATE reference_binding SET publication_id='missing'")
-    assert InspectHistorySnapshot(root, verify_partitions=True).reason == "history_reference_unavailable"
+    assert InspectHistorySnapshot(root, verify_partitions=True, sqlite_policy=SqlitePolicyFixture()).reason == "history_reference_unavailable"
     supplier.calls.clear()
     result = RunHistoryFixture(config, supplier, clock=lambda: NOW)
     if damage == "tampered":
@@ -487,7 +489,7 @@ def test_sync_recovers_missing_reference_binding_without_redownloading_prices(tm
         return
     assert result.state == "already_current"
     assert supplier.calls == []
-    assert InspectHistorySnapshot(root, verify_partitions=True).state == "published"
+    assert InspectHistorySnapshot(root, verify_partitions=True, sqlite_policy=SqlitePolicyFixture()).state == "published"
 
 
 def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
@@ -518,8 +520,8 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
             )
 
     assert RunHistoryFixture(config, Excluding(dates, industry="bank"), clock=lambda: NOW).state == "completed"
-    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_published_state().snapshot
-    reader = HistorySnapshotReader(config.history_root)
+    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_published_state().snapshot
+    reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
     assert {item.code for item in reader.read_day(dates[0], snapshot)} == {"600001"}
     assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(dates)
     assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600002",)) == 0
@@ -528,7 +530,7 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
     assert {item.code for item in reader.iter_range(dates[0], dates[-1], snapshot)} == {"600001"}
     assert {item.code for item in reader.iter_range_by_code(dates[0], dates[-1], snapshot)} == {"600001"}
     assert {item.code for item in reader.iter_snapshot_revisions(snapshot)} == {"600001"}
-    published = SQLitePublishedHistorySnapshot(config.history_root)
+    published = SQLitePublishedHistorySnapshot(config.history_root, sqlite_policy=SqlitePolicyFixture())
     manifest = published.manifest()
     assert manifest.universe_codes == ("600001",)
     assert [item.code for item in published.read_windows(manifest, ("600001", "600002"), sessions=2)] == ["600001"]

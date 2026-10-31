@@ -1,5 +1,7 @@
 """Every download filters current and historical ST before business requests."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import timedelta
 from io import StringIO
@@ -87,7 +89,7 @@ def st_sources(monkeypatch):
 
 
 def _seed_st(path):
-    SQLiteReferenceIndex(path).merge_st(
+    SQLiteReferenceIndex(path, sqlite_policy=SqlitePolicyFixture()).merge_st(
         (
             HistoryStEvidence("600001", NOW.date(), "clear"),
             HistoryStEvidence("600002", NOW.date(), "clear"),
@@ -117,7 +119,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     if not existing_cache:
         expected_queries |= {"600001", "600003"}
 
-    def download(root, progress, request, *, cancel_requested):
+    def download(root, progress, request, *, cancel_requested, sqlite_policy):
         codes, observed_at = request.codes, request.observed_at
         assert request.configuration.source_timeout_seconds == 8.0
         assert set(calls) == expected_queries
@@ -136,7 +138,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     assert result.tasks[0].company.requested_codes == 3
     assert events == ["business_download"]
     assert set(calls) == expected_queries
-    assert {item.code for item in SQLiteReferenceIndex(evidence_path).read_st() if item.status == "ever_st"} == {
+    assert {item.code for item in SQLiteReferenceIndex(evidence_path, sqlite_policy=SqlitePolicyFixture()).read_st() if item.status == "ever_st"} == {
         "600002",
         "600003",
         "600006",
@@ -183,7 +185,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
             ),
             qfq_configuration=LoadQfqWindowConfiguration(_ROOT),
             shutdown_timeout_seconds=2.0,
-            clock=lambda: NOW,
+            clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
         )
         assert result.state == "completed", result.reason
     else:
@@ -193,7 +195,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
             bootstrap.LoadHistorySyncConfiguration(_ROOT, paths),
             LoadQfqWindowConfiguration(_ROOT),
             shutdown_timeout_seconds=2.0,
-            now=lambda: NOW,
+            now=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
         )
         assert result.completed_codes == 3
         assert not result.needs_retry

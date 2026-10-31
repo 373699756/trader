@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[1] / "config/runtime.json"))
     os.nice(10)
     before = _peak_rss_bytes()
     settings = LoadProfileTrainingSettings(Path(__file__).resolve().parents[1], "v3")
@@ -57,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
             sample_root=args.sample_root.resolve(),
             settings=settings,
             progress=progress,
-            expected_history_snapshot_hash=args.expected_history_snapshot_hash,
+            expected_history_snapshot_hash=args.expected_history_snapshot_hash, sqlite_policy=sqlite_policy,
         )
         stage_durations = progress.stage_durations
         repeated = RunRepackV3Training(
@@ -66,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             sample_root=args.sample_root.resolve(),
             settings=settings,
             progress=progress,
-            expected_history_snapshot_hash=args.expected_history_snapshot_hash,
+            expected_history_snapshot_hash=args.expected_history_snapshot_hash, sqlite_policy=sqlite_policy,
         )
     peak = _peak_rss_bytes()
     budget = args.max_rss_mib * 1024 * 1024

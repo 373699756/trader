@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 import sqlite3
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -34,7 +36,7 @@ def _record(close: float = 10.2):
 
 
 def test_h1_snapshot_is_idempotent_and_detects_tampering(tmp_path):
-    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     spec = H1PointInTimeSpec("tomorrow")
     snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     snapshot.save_records(spec, "600001", (_record(),))
@@ -53,14 +55,14 @@ def test_h1_snapshot_is_idempotent_and_detects_tampering(tmp_path):
 
 
 def test_h1_snapshot_audit_marks_insufficient_without_opening_holdout(tmp_path):
-    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     audit = snapshot.audit(H1PointInTimeSpec("d25"))
     assert audit.manifest.state == "historical_data_insufficient"
     assert audit.terminal_holdout_opened is False
 
 
 def test_h1_snapshot_preserves_utc_observation_identity(tmp_path):
-    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     spec = H1PointInTimeSpec("tomorrow")
     snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     original = _record()
@@ -74,7 +76,7 @@ def test_h1_snapshot_preserves_utc_observation_identity(tmp_path):
 
 
 def test_h1_reader_rejects_unsupported_schema_without_writing(tmp_path):
-    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     spec = H1PointInTimeSpec("tomorrow")
     snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
@@ -88,7 +90,7 @@ def test_h1_reader_rejects_unsupported_schema_without_writing(tmp_path):
 
 
 def test_h1_snapshot_rejects_retired_spec_identity_without_migration(tmp_path):
-    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     spec = H1PointInTimeSpec("tomorrow")
     snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
@@ -100,7 +102,7 @@ def test_h1_snapshot_rejects_retired_spec_identity_without_migration(tmp_path):
 
 
 def test_h1_snapshot_rejects_direct_identity_mismatch_and_universe_tampering(tmp_path):
-    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path)
+    snapshot = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     spec = H1PointInTimeSpec("tomorrow")
     snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     with pytest.raises(ValueError, match="identity"):

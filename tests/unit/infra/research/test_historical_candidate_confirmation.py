@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 import json
 from datetime import date
 
@@ -27,7 +29,7 @@ def _batch(tmp_path, *, failure: str = "eastmoney_historical_minute_probe_failed
         ),
         probe_failures=(failure,),
     )
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive")
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive", sqlite_policy=SqlitePolicyFixture())
     completion = CompleteH1Research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),

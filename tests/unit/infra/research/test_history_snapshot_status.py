@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -88,7 +90,7 @@ class _Supplier:
 def test_missing_history_is_read_only_and_reports_the_current_snapshot_boundary(tmp_path: Path) -> None:
     root = tmp_path / "history"
 
-    status = InspectHistorySnapshot(root)
+    status = InspectHistorySnapshot(root, sqlite_policy=SqlitePolicyFixture())
 
     assert status.state == "unavailable"
     assert status.reason == "history_snapshot_unavailable"
@@ -105,7 +107,7 @@ def test_published_monthly_snapshot_projects_typed_counts_and_optional_full_veri
     )
     assert RunHistoryFixture(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
-    status = InspectHistorySnapshot(root, verify_partitions=True)
+    status = InspectHistorySnapshot(root, verify_partitions=True, sqlite_policy=SqlitePolicyFixture())
 
     assert status.state == "published"
     assert status.calendar_sessions == 3
@@ -129,7 +131,7 @@ def test_legacy_nested_history_is_not_discovered(tmp_path: Path) -> None:
     )
     assert RunHistoryFixture(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
-    status = InspectHistorySnapshot(tmp_path / "history")
+    status = InspectHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
 
     assert status.state == "unavailable"
     assert status.reason == "history_snapshot_unavailable"
@@ -142,12 +144,12 @@ def test_partition_tamper_fails_closed_without_losing_the_snapshot_identity(tmp_
         root, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(root).parent / "reference"
     )
     assert RunHistoryFixture(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
-    current_snapshot = InspectHistorySnapshot(root)
+    current_snapshot = InspectHistorySnapshot(root, sqlite_policy=SqlitePolicyFixture())
     partition = next(root.glob("prices_*.sqlite3"))
     with SqliteSession(partition) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price_revision SET content_hash=?", (bytes(32),))
 
-    verified = InspectHistorySnapshot(root, verify_partitions=True)
+    verified = InspectHistorySnapshot(root, verify_partitions=True, sqlite_policy=SqlitePolicyFixture())
 
     assert current_snapshot.state == "published"
     assert verified.state == "invalid"

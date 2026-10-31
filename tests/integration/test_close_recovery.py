@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -83,7 +85,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             if failure == "settlement" and len(self.calls) == 1:
                 raise SettlementUnavailableError("controlled_settlement_failure")
 
-    records = RecoverableFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = RecoverableFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(
@@ -257,7 +259,7 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
     at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     clock, data, index = FixedClock(at), DataRefresh(), UnifiedFreezeIndex()
     cadence, settlement = _cadence(at), Settlement()
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(

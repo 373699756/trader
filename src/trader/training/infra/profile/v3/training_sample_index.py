@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
 
 from trader.training.infra.sample_index import (
@@ -34,8 +36,8 @@ from trader.training.infra.sample_index import (
 
 
 class SQLiteV3TrainingSampleIndex(SQLiteTrainingSampleIndex):
-    def __init__(self, path: Path) -> None:
-        super().__init__(path, TOMORROW_HEAD_CONTRACT.feature_manifest.names)
+    def __init__(self, path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        super().__init__(path, TOMORROW_HEAD_CONTRACT.feature_manifest.names, sqlite_policy=sqlite_policy)
 
 
 __all__ = [

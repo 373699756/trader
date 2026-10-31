@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import platform
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -123,7 +125,7 @@ def RunV1Training(
     progress: TomorrowTrainingProgressPort | None = None,
     cancel_requested: Callable[[], bool] | None = None,
     aligned_rows: Iterator[HistoryTrainingRow] | None = None,
-    memory_admission: TrainingMemoryAdmission | None = None,
+    memory_admission: TrainingMemoryAdmission | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> V1TrainingResult:
     """Consume a pinned input; all disposable writes stay in the selected sample root."""
 
@@ -153,7 +155,7 @@ def RunV1Training(
             )
             with TemporaryTrainingSamples(sample_root, "v1") as directory:
                 sample_path = directory / "samples.sqlite3"
-                with closing(LearnedRankSampleIndex(sample_path)) as index:
+                with closing(LearnedRankSampleIndex(sample_path, sqlite_policy=sqlite_policy)) as index:
                     counts = BuildLearnedRankSamples(
                         source,
                         splits,
@@ -182,7 +184,7 @@ def RunV1Training(
                     sum(item.rows for item in coverage if item.strategy is strategy) for strategy in strategies
                 ) * 512 + 256 * 1024**2
                 with (
-                    closing(LearnedRankSampleIndex(sample_path, read_only=True)) as index,
+                    closing(LearnedRankSampleIndex(sample_path, read_only=True, sqlite_policy=sqlite_policy)) as index,
                     memory_admission.reserve(required_bytes, lambda: CheckV1Cancellation(cancel_requested))
                     if memory_admission is not None else nullcontext(),
                     ExitStack() as resources,

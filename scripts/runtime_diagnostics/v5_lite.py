@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import hashlib
 import json
@@ -103,7 +105,7 @@ def _peak_rss_mib() -> float | None:
     return value / (1024**2 if sys.platform == "darwin" else 1024)
 
 
-def _prepare(source: Path, work: Path, deadline: float, fit_dates: int) -> tuple[Path, Path]:
+def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlite_policy: SqliteIoPolicy) -> tuple[Path, Path]:
     manifest = AtomicReadJson(source / "complete.json")
     if not isinstance(manifest, dict) or manifest.get("storage") != SampleStorageId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)):
         raise ValueError("V5 comparison requires a sealed compact sample cache")
@@ -122,7 +124,7 @@ def _prepare(source: Path, work: Path, deadline: float, fit_dates: int) -> tuple
     if _digest(baseline, deadline) != manifest.get("sha256") or _digest(candidate, deadline) != manifest.get("sha256"):
         raise ValueError("V5 sample snapshot digest mismatch")
     for path in (baseline, candidate):
-        with SqliteSession(path, SqliteConnectionOptions(timeout_seconds=1)) as connection:
+        with SqliteSession(path, SqliteConnectionOptions(timeout_seconds=1), sqlite_policy=sqlite_policy) as connection:
             days = connection.run(
                 "SELECT trade_date FROM sample_split_dates WHERE split_name='training' ORDER BY trade_date"
             ).fetchall()
@@ -178,7 +180,7 @@ def _quality(
     work: Path,
     deadline: float,
     baseline: tuple[int, TcnFittingParameters],
-    candidate: tuple[int, TcnFittingParameters],
+    candidate: tuple[int, TcnFittingParameters], *, sqlite_policy: SqliteIoPolicy,
 ) -> dict[str, object]:
     if baseline[0] != candidate[0] or baseline[1].minimum_industry_training_rows != candidate[1].minimum_industry_training_rows:
         raise ValueError("V5 compute comparison requires identical fit dates and industry thresholds")
@@ -186,22 +188,22 @@ def _quality(
     from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
 
     prepared = time.monotonic()
-    paths = _prepare(source, work, deadline, baseline[0])
+    paths = _prepare(source, work, deadline, baseline[0], sqlite_policy=sqlite_policy)
     preparation_seconds = time.monotonic() - prepared
     reference, options = baseline[1], candidate[1]
     summaries: list[dict[str, object]] = []
 
     split_hashes = []
     for path in paths:
-        with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
             split_hashes.append(connection.run("SELECT split_hash FROM sample_contract WHERE singleton=1").require_one()[0].hex())
     feature_names = V5_TRAINING_PROFILE.heads[0].feature_manifest.names
     with (
         SQLiteTrainingSampleIndex(
-            paths[0], feature_names, prepared_split_hash=split_hashes[0], sequence_layout=SampleSequenceLayout(6, 60, 6)
+            paths[0], feature_names, prepared_split_hash=split_hashes[0], sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy
         ) as old,
         SQLiteTrainingSampleIndex(
-            paths[1], feature_names, prepared_split_hash=split_hashes[1], sequence_layout=SampleSequenceLayout(6, 60, 6)
+            paths[1], feature_names, prepared_split_hash=split_hashes[1], sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy
         ) as new,
     ):
         by_head = [{count.industry: count for count in new.industry_counts(head)} for head in V5_TRAINING_PROFILE.heads]
@@ -293,6 +295,9 @@ def Main() -> int:
     parser.add_argument("--sample-root", type=Path)
     parser.add_argument("--candidate-config", type=Path)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     work = args.work_root.resolve()
     project = Path(__file__).resolve().parents[2]
     if work.exists() or work.is_relative_to(project):
@@ -320,7 +325,7 @@ def Main() -> int:
         AtomicWriteJson(work / "result.json", report)
         if args.sample_root is not None and candidate is not None:
             summary["quality"] = quality = _quality(
-                args.sample_root.resolve(), work, time.monotonic() + 3 * 3600, baseline, candidate
+                args.sample_root.resolve(), work, time.monotonic() + 3 * 3600, baseline, candidate, sqlite_policy=sqlite_policy
             )
             report["status"] = "passed" if quality["passed"] else "degraded"
         else:

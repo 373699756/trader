@@ -1,5 +1,7 @@
 """Exercise terminal Ctrl+C through run.sh against disposable local work only."""
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import os
 import select
 import shlex
@@ -100,7 +102,7 @@ def _child_main():
                     reserve_bytes=configuration.temporary_disk_reserve_bytes,
                 ),
                 event_policy=event_policy,
-                cancel_requested=cancelled.is_set,
+                cancel_requested=cancelled.is_set, sqlite_policy=SqliteIoPolicy(0.1, 7, 3, "PASSIVE"),
             )
             index.initialize()
             with index._connect() as connection, SqliteTransaction(connection):

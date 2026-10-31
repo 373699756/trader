@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import math
 import sqlite3
 from dataclasses import replace
@@ -39,8 +41,8 @@ def _window(code: str, *, price: float = 10.0) -> PublishedHistoryWindow:
 
 
 def test_batched_reads_scan_publication_contents_once(tmp_path, monkeypatch):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     windows = tuple(_window(f"600{number:03d}") for number in range(65))
     primary.replace_paired_windows(
         peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
@@ -58,12 +60,12 @@ def test_batched_reads_scan_publication_contents_once(tmp_path, monkeypatch):
     assert manifest is not None
     assert tuple(primary.iter_windows(manifest, sessions=len(_DAYS))) == windows
     assert len(scans) == 1
-    assert SQLiteQfqWindowCache(primary.path, "v2").manifest() == manifest
+    assert SQLiteQfqWindowCache(primary.path, "v2", sqlite_policy=SqlitePolicyFixture()).manifest() == manifest
 
 
 def test_publication_failure_rolls_back_prices_both_profiles_and_checkpoint(tmp_path, monkeypatch):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     primary.replace_paired_windows(
         peer, (_window("600001"),), "old", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
     )
@@ -92,8 +94,8 @@ def test_publication_failure_rolls_back_prices_both_profiles_and_checkpoint(tmp_
 
 
 def test_numeric_types_and_negative_zero_keep_window_identity_after_restart(tmp_path):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     original = _window("600001")
     first = original.cells[0]
     raw = replace(first.unadjusted, open_price=10, volume=100, pct_change=-0.0)
@@ -102,7 +104,7 @@ def test_numeric_types_and_negative_zero_keep_window_identity_after_restart(tmp_
         peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
     )
     manifest = primary.manifest()
-    fresh = SQLiteQfqWindowCache(primary.path, "v2")
+    fresh = SQLiteQfqWindowCache(primary.path, "v2", sqlite_policy=SqlitePolicyFixture())
     assert fresh.manifest() == manifest
     decoded = fresh.read_code(window.code).cells[0].unadjusted
     assert type(decoded.open_price) is int
@@ -119,8 +121,8 @@ def test_numeric_types_and_negative_zero_keep_window_identity_after_restart(tmp_
 
 @pytest.mark.parametrize("change", ("source", "calendar", "remove"))
 def test_old_publication_is_rejected_after_each_identity_change(tmp_path, change):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     windows = (_window("600001"), _window("600002"))
     primary.replace_paired_windows(
         peer, windows, "old", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
@@ -158,8 +160,8 @@ def test_old_publication_is_rejected_after_each_identity_change(tmp_path, change
     ),
 )
 def test_cold_manifest_rejects_unpublished_or_corrupt_metadata(tmp_path, mutation):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     primary.replace_paired_windows(
         peer,
         (_window("600001"),),
@@ -171,15 +173,15 @@ def test_cold_manifest_rejects_unpublished_or_corrupt_metadata(tmp_path, mutatio
     with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
         connection.run(mutation)
     with pytest.raises(RuntimeError):
-        fresh = SQLiteQfqWindowCache(primary.path, "v2")
+        fresh = SQLiteQfqWindowCache(primary.path, "v2", sqlite_policy=SqlitePolicyFixture())
         manifest = fresh.manifest()
         assert manifest is not None
         tuple(fresh.iter_windows(manifest, sessions=len(manifest.calendar_dates)))
 
 
 def test_removing_last_code_clears_only_its_profile_publication(tmp_path):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     window = _window("600001")
     primary.replace_paired_windows(
         peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
@@ -195,8 +197,8 @@ def test_removing_last_code_clears_only_its_profile_publication(tmp_path):
 
 
 def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
-    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
-    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     primary.replace_paired_windows(
         peer,
         (_window("600001"),),

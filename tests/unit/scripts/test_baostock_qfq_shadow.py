@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from datetime import date
 from types import SimpleNamespace
 
@@ -40,7 +42,7 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
         ),
     )
 
-    report = shadow.build_shadow_report(archive.root)
+    report = shadow.build_shadow_report(archive.root, sqlite_policy=SqlitePolicyFixture())
 
     assert report["status"] == "degraded"
     assert report["production_eligible"] is False
@@ -62,7 +64,7 @@ def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch
         ),
     )
 
-    report = shadow.build_shadow_report(archive.root)
+    report = shadow.build_shadow_report(archive.root, sqlite_policy=SqlitePolicyFixture())
 
     assert report["raw_qfq_integrity"]["qfq_missing_rows"] == 1
     assert report["raw_qfq_integrity"]["pair_complete_rate"] == 0.0
@@ -75,4 +77,4 @@ def test_missing_published_snapshot_fails_closed(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", unavailable)
 
     with pytest.raises(HistorySnapshotInspectionError):
-        shadow.build_shadow_report(None)  # type: ignore[arg-type]
+        shadow.build_shadow_report(None, sqlite_policy=SqlitePolicyFixture())  # type: ignore[arg-type]

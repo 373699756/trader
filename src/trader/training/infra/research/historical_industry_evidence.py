@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from datetime import date
 from pathlib import Path
 
@@ -30,13 +32,13 @@ def AuditPublishedHistoricalIndustryFacts(
     history_root: Path,
     *,
     required_sample_codes: int = 300,
-    tushare_access_points: int = 0,
+    tushare_access_points: int = 0, sqlite_policy: SqliteIoPolicy,
 ) -> HistoricalIndustryDatasetReport:
     """Audit the immutable published snapshot without changing its partitions."""
 
-    history = LoadPublishedHistorySnapshot(history_root)
-    VerifyPublishedHistorySnapshot(history)
-    reference = HistorySnapshotReader(history.root).reference_index(history.snapshot).reference
+    history = LoadPublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy)
+    VerifyPublishedHistorySnapshot(history, sqlite_policy=sqlite_policy)
+    reference = HistorySnapshotReader(history.root, sqlite_policy=sqlite_policy).reference_index(history.snapshot).reference
     facts = _industry_facts(reference, history.snapshot.content_hash)
     windows = tuple(
         _stock_window(item.code, item.board, item.listed_on, item.delisted_on, history.calendar.open_dates)

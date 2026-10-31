@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from dataclasses import field
+
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -25,8 +28,10 @@ class CurrentIndustryPublication:
     client: BaoStockIndustryClient
     minimum_rows: int = 4_000
 
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+
     def fetch(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
-        cache = CurrentIndustryCache(self.path, self.minimum_rows)
+        cache = CurrentIndustryCache(self.path, self.minimum_rows, sqlite_policy=self.sqlite_policy)
         query = cache.latest(observed_at)
         if query is not None and (observed_at.astimezone(_SHANGHAI).date() - query.day).days < _REFRESH_DAYS:
             return _query_observations(query)
@@ -43,7 +48,7 @@ class CurrentIndustryPublication:
         if len(rows) < self.minimum_rows:
             raise ValueError("industry_reference_snapshot_incomplete")
         day = observed_at.astimezone(_SHANGHAI).date()
-        SQLiteIndustryQueryIndex(self.path, _CONTRACT, _CURRENT_TABLE).save(
+        SQLiteIndustryQueryIndex(self.path, _CONTRACT, _CURRENT_TABLE, sqlite_policy=self.sqlite_policy).save(
             "baostock_current_industry",
             day,
             day,
@@ -52,10 +57,13 @@ class CurrentIndustryPublication:
         return cache.load(observed_at)
 
 
+
 @dataclass(frozen=True)
 class CurrentIndustryCache:
     path: Path
     minimum_rows: int = 4_000
+
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
     def load(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
         query = self.latest(observed_at)
@@ -64,7 +72,7 @@ class CurrentIndustryCache:
     def latest(self, observed_at: datetime) -> IndustryQuery | None:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("industry query time must be timezone-aware")
-        return self._latest_valid_query(SQLiteIndustryQueryIndex(self.path, _CONTRACT, _CURRENT_TABLE), observed_at)
+        return self._latest_valid_query(SQLiteIndustryQueryIndex(self.path, _CONTRACT, _CURRENT_TABLE, sqlite_policy=self.sqlite_policy), observed_at)
 
     def _latest_valid_query(self, cache: SQLiteIndustryQueryIndex, observed_at: datetime) -> IndustryQuery | None:
         cursor = observed_at.astimezone(_SHANGHAI).date()
@@ -82,6 +90,7 @@ class CurrentIndustryCache:
                 return None
             cursor = query.day - timedelta(days=1)
         return None
+
 
 
 def _query_observations(query: IndustryQuery) -> tuple[SourceObservation, ...]:

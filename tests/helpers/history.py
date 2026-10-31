@@ -1,5 +1,7 @@
 """Explicit reference publication before isolated history synchronization fixtures."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from pathlib import Path
@@ -35,7 +37,7 @@ class _PublishedSupplier:
                 datetime.combine(checked_on, time(20), ZoneInfo("Asia/Shanghai")),
                 tuple(sorted({*context.calendar.open_dates, checked_on})),
             )
-        SQLiteReferenceIndex(self.reference_path).publish(reference, reference.st_evidence)
+        SQLiteReferenceIndex(self.reference_path, sqlite_policy=SqlitePolicyFixture()).publish(reference, reference.st_evidence)
         return replace(context, reference_id=reference.identity)
 
     def fetch_tencent_window(self, security, dates):
@@ -49,5 +51,5 @@ def RunHistoryFixture(configuration, supplier, **options):
     return RunHistorySync(
         configuration,
         _PublishedSupplier(supplier, configuration.reference_root / "company_st.sqlite3"),
-        **options,
+        **options, sqlite_policy=SqlitePolicyFixture(),
     )

@@ -1,5 +1,7 @@
 """V3-owned 61-session training and archive-repack command adapters."""
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from pathlib import Path
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
@@ -20,7 +22,7 @@ def RunTomorrowTraining(
     *,
     settings: ProfileTrainingSettings,
     sample_root: Path,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TomorrowTrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> HeadTrainingResult:
     return RunProfileTraining(
         ProfileTrainingRequest(
@@ -31,7 +33,7 @@ def RunTomorrowTraining(
             settings,
             progress,
             sample_root=sample_root,
-        )
+        ), sqlite_policy=sqlite_policy
     ).heads[0]
 
 
@@ -41,7 +43,7 @@ def RunV3Training(
     *,
     settings: ProfileTrainingSettings,
     sample_root: Path,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TomorrowTrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
     return RunProfileTraining(
         ProfileTrainingRequest(
@@ -52,7 +54,7 @@ def RunV3Training(
             settings,
             progress,
             sample_root=sample_root,
-        )
+        ), sqlite_policy=sqlite_policy
     )
 
 
@@ -63,7 +65,7 @@ def RunRepackTomorrowTraining(
     settings: ProfileTrainingSettings,
     sample_root: Path,
     expected_history_snapshot_hash: str,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TomorrowTrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> HeadTrainingResult:
     return RunRepackProfileTraining(
         ProfileTrainingRequest(
@@ -75,7 +77,7 @@ def RunRepackTomorrowTraining(
             progress,
             sample_root=sample_root,
             expected_history_snapshot_hash=expected_history_snapshot_hash,
-        )
+        ), sqlite_policy=sqlite_policy
     ).heads[0]
 
 
@@ -86,7 +88,7 @@ def RunRepackV3Training(
     settings: ProfileTrainingSettings,
     sample_root: Path,
     expected_history_snapshot_hash: str,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TomorrowTrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
     return RunRepackProfileTraining(
         ProfileTrainingRequest(
@@ -98,7 +100,7 @@ def RunRepackV3Training(
             progress,
             sample_root=sample_root,
             expected_history_snapshot_hash=expected_history_snapshot_hash,
-        )
+        ), sqlite_policy=sqlite_policy
     )
 
 

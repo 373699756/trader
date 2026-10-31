@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import cProfile
 import hashlib
@@ -881,13 +883,13 @@ def _official_references(
         return previous, "cached_exchange_degraded"
 
 
-def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) -> dict[str, object]:
+def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     budget = DiagnosticBudget(args.source_loop_seconds, args.task_seconds)
     settings = LoadRuntimeSettings(args.config)
     strategy_settings = LoadStrategySettings(settings.strategy_config_path)
     at = _now()
     started = time.monotonic()
-    local_references = ReadReferences(settings.data_paths.reference, at)
+    local_references = ReadReferences(settings.data_paths.reference, at, sqlite_policy=sqlite_policy)
     base_references = local_references
     baostock_capability: BaostockCapability | None = None
     comparison_references = base_references
@@ -916,7 +918,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
     official_codes = SelectCodes(official, 0)
     eligibility_index = CreateCompanyEligibilityReader(
         settings.data_paths.company,
-        strategy_settings.company_scoring.events,
+        strategy_settings.company_scoring.events, sqlite_policy=sqlite_policy,
     )
     eligibility_status = eligibility_index.status()
     if not eligibility_status.integrity_ok:
@@ -934,7 +936,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
     input_codes = tuple(dict.fromkeys(code for size in args.sizes for code in SelectCodes(official, size)))
     for profile in args.profiles:
         try:
-            inputs = LoadFactorInputs(args.config, args.qfq_database, profile, input_codes, at)
+            inputs = LoadFactorInputs(args.config, args.qfq_database, profile, input_codes, at, sqlite_policy=sqlite_policy)
             profiles.append(inputs)
             preparation.append(
                 {
@@ -971,7 +973,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) ->
             auxiliary_pool,
             company_database=settings.data_paths.company,
             open_dates=local_references.open_dates,
-            company_policy=strategy_settings.company_scoring,
+            company_policy=strategy_settings.company_scoring, sqlite_policy=sqlite_policy,
         )
         for size in args.sizes:
             codes = SelectCodes(official, size)
@@ -1181,6 +1183,9 @@ def main() -> int:
     parser.add_argument("--source-loop-seconds", type=float, default=MARKET_SOURCE_LOOP_LIMIT_SECONDS)
     parser.add_argument("--task-seconds", type=float, default=MARKET_TASK_LIMIT_SECONDS)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
     if (
         not 1 <= args.rounds <= 100
         or len(args.sizes) > 3
@@ -1206,7 +1211,7 @@ def main() -> int:
         os.dup2(2, 1)
         try:
             with redirect_stdout(sys.stderr):
-                report = Collect(args, cpu_profile_dir=args.cpu_profile_dir)
+                report = Collect(args, cpu_profile_dir=args.cpu_profile_dir, sqlite_policy=sqlite_policy)
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             report = {
                 "schema_version": "market-factor-comparison",

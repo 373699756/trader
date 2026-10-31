@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import logging
 import re
 import sqlite3
@@ -92,12 +94,13 @@ class _WriteResult:
 
 
 class HistoryDownloadFlow:
-    def __init__(self, resources: HistoryDownloadResources) -> None:
+    def __init__(self, resources: HistoryDownloadResources, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._resources = resources
         self._reused_codes: set[str] = set()
         self._stopped = Event()
-        self._baostock_codes = HistoryPriceRepair(resources.configuration.history_root).baostock_codes()
-        self._recheck_codes = HistoryPriceRepair(resources.configuration.history_root).recheck_due(self._baostock_codes, resources.context.calendar.open_dates)
+        self._baostock_codes = HistoryPriceRepair(resources.configuration.history_root, sqlite_policy=self._sqlite_policy).baostock_codes()
+        self._recheck_codes = HistoryPriceRepair(resources.configuration.history_root, sqlite_policy=self._sqlite_policy).recheck_due(self._baostock_codes, resources.context.calendar.open_dates)
 
     def _check(self) -> None:
         if self._stopped.is_set() or self._resources.cancel():
@@ -275,7 +278,7 @@ class HistoryDownloadFlow:
         dates = tuple(sorted(missing | set(sorted(obtained)[-5:]))) if missing else ()
         if uses_baostock and missing and task.code in self._recheck_codes:
             dates = task.dates
-            HistoryPriceRepair(self._resources.configuration.history_root).record_tencent_check(task.code, dates[-1])
+            HistoryPriceRepair(self._resources.configuration.history_root, sqlite_policy=self._sqlite_policy).record_tencent_check(task.code, dates[-1])
         empty = PublishedHistoryWindow(task.code, ())
         if not dates:
             started = time.monotonic()

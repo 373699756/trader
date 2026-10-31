@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -89,16 +91,16 @@ def _save_all(index: HistoryControlIndex, values) -> HistoryControlState:
     index.save_calendar(calendar, publication_id)
     index.save_universe(universe, publication_id)
     index.save_checkpoint(checkpoint)
-    TrainingMaintenanceIndex(index._path).save_due_state(due)
-    TrainingMaintenanceIndex(index._path).claim_reminder(reminder_claim)
-    TrainingMaintenanceIndex(index._path).save_reminder(reminder)
+    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).save_due_state(due)
+    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).claim_reminder(reminder_claim)
+    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).save_reminder(reminder)
     index.publish_snapshot(snapshot, reference=REFERENCE)
     return index.load_state()
 
 
 def test_input_batch_rolls_back_reference_and_parents_when_universe_disagrees(tmp_path: Path) -> None:
     path = tmp_path / "company_st.sqlite3"
-    index = HistoryControlIndex(tmp_path / "catalog.sqlite3", reference_path=path)
+    index = HistoryControlIndex(tmp_path / "catalog.sqlite3", reference_path=path, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     source, calendar, universe, *_ = _values()
     publication_id = PublishHistoryReferenceFixture(
@@ -125,7 +127,7 @@ def test_input_batch_rolls_back_reference_and_parents_when_universe_disagrees(tm
 
 
 def test_same_day_reference_change_keeps_each_calendar_and_universe_bound(tmp_path: Path) -> None:
-    index = HistoryControlIndex(tmp_path / "catalog.sqlite3", reference_path=tmp_path / "company_st.sqlite3")
+    index = HistoryControlIndex(tmp_path / "catalog.sqlite3", reference_path=tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     first = _save_all(index, _values())
     source, calendar, universe, *_ = _values()
@@ -147,7 +149,7 @@ def test_same_day_reference_change_keeps_each_calendar_and_universe_bound(tmp_pa
 
 def test_control_index_round_trips_typed_state_and_replays_same_content(tmp_path: Path) -> None:
     index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3"
+        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
     )
     index.initialize()
     values = _values()
@@ -157,8 +159,8 @@ def test_control_index_round_trips_typed_state_and_replays_same_content(tmp_path
 
     assert replayed == expected
     assert replayed.published_snapshot == values[-1]
-    assert TrainingMaintenanceIndex(index._path).load_state().reminder_claims == (values[-3],)
-    automation = TrainingMaintenanceIndex(index._path).load_state()
+    assert TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state().reminder_claims == (values[-3],)
+    automation = TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state()
     assert index.load_published_state().snapshot == values[-1]
     assert automation.due_states == (values[4],)
     assert automation.reminder_claims == (values[5],)
@@ -168,7 +170,7 @@ def test_control_index_round_trips_typed_state_and_replays_same_content(tmp_path
 
 def test_failed_catalog_seed_leaves_no_tables_and_retry_creates_all_consumers(tmp_path, monkeypatch):
     path = tmp_path / "catalog.sqlite3"
-    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     original = index._initialize_metadata
 
     def interrupt(connection):
@@ -189,9 +191,9 @@ def test_failed_catalog_seed_leaves_no_tables_and_retry_creates_all_consumers(tm
 
 def test_training_owner_retains_logical_hashes_and_replays_without_rewriting(tmp_path):
     path = tmp_path / "catalog.sqlite3"
-    HistoryControlIndex(path).initialize()
+    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
     values = _values()
-    index = TrainingMaintenanceIndex(path)
+    index = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
     index.save_due_state(values[4])
     index.claim_reminder(values[5])
     index.save_reminder(values[6])
@@ -213,14 +215,14 @@ def test_training_owner_retains_logical_hashes_and_replays_without_rewriting(tmp
 
 def test_corrupt_training_record_does_not_invalidate_published_download_facts(tmp_path):
     path = tmp_path / "catalog.sqlite3"
-    history = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    history = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     history.initialize()
     original = _save_all(history, _values())
     with SqliteSession(path) as connection, SqliteTransaction(connection, immediate=True):
         connection.run("UPDATE training_due SET matured_days=matured_days+1")
     assert history.load_state() == original
     with pytest.raises(maintenance_module.TrainingMaintenanceError):
-        TrainingMaintenanceIndex(path).load_state()
+        TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state()
 
 
 @pytest.mark.parametrize("catalog_state", ("published", "missing", "corrupt_training"))
@@ -237,7 +239,7 @@ def test_reminder_cli_reads_training_records_without_calculation_or_writes(
     settings = replace(LoadRuntimeSettings(config), data_paths=DataPaths(tmp_path / "data"))
     path = settings.data_paths.history / "catalog.sqlite3"
     if catalog_state != "missing":
-        history = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+        history = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
         history.initialize()
         _save_all(history, _values())
         if catalog_state == "corrupt_training":
@@ -287,7 +289,7 @@ def test_missing_due_projection_is_unavailable_instead_of_data_incomplete():
 
 def test_published_control_decodes_only_published_snapshot_and_three_parents(tmp_path, monkeypatch):
     index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3"
+        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
     )
     index.initialize()
     old = _values()
@@ -316,7 +318,7 @@ def test_published_control_decodes_only_published_snapshot_and_three_parents(tmp
 @pytest.mark.parametrize("kind", ("snapshot", "source", "calendar", "universe"))
 def test_published_control_rejects_tampered_required_record(tmp_path, kind):
     path = tmp_path / "catalog.sqlite3"
-    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     _save_all(index, _values())
     table, column = {
@@ -334,7 +336,7 @@ def test_published_control_rejects_tampered_required_record(tmp_path, kind):
 
 def test_published_control_without_published_snapshot_is_unavailable(tmp_path):
     index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3"
+        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
     )
     index.initialize()
     assert index.load_published_state() is None
@@ -342,7 +344,7 @@ def test_published_control_without_published_snapshot_is_unavailable(tmp_path):
 
 def test_control_index_round_trips_training_contract_due(tmp_path: Path) -> None:
     index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3"
+        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
     )
     index.initialize()
     due = TrainingDueState(
@@ -355,14 +357,14 @@ def test_control_index_round_trips_training_contract_due(tmp_path: Path) -> None
         NOW,
     )
 
-    TrainingMaintenanceIndex(index._path).save_due_state(due)
+    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).save_due_state(due)
 
-    assert TrainingMaintenanceIndex(index._path).load_state().due_states == (due,)
+    assert TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state().due_states == (due,)
 
 
 def test_automation_state_decodes_only_bounded_status_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3"
+        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
     )
     index.initialize()
     _save_all(index, _values())
@@ -375,14 +377,14 @@ def test_automation_state_decodes_only_bounded_status_records(tmp_path: Path, mo
 
     monkeypatch.setattr(maintenance_module, "_decode", track_decode)
 
-    TrainingMaintenanceIndex(index._path).load_state()
+    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state()
 
     assert set(decoded_kinds) == {"due", "reminder_claim", "reminder"}
 
 
 def test_control_index_rejects_same_identity_with_different_content(tmp_path: Path) -> None:
     index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3"
+        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
     )
     index.initialize()
     values = _values()
@@ -395,13 +397,13 @@ def test_control_index_rejects_same_identity_with_different_content(tmp_path: Pa
 
 def test_snapshot_publication_recovers_after_interruption_without_pointer_regression(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
-    first_index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    first_index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     first_index.initialize()
     first = _values()
     _save_all(first_index, first)
     second_values = _values(2, date(2026, 9, 11))
     second = second_values[-1]
-    interrupted = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    interrupted = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     interrupted.save_calendar(second_values[1], _publication(interrupted, second_values[1], second_values[2]))
     interrupted.save_universe(second_values[2], _publication(interrupted, second_values[1], second_values[2]))
 
@@ -410,14 +412,14 @@ def test_snapshot_publication_recovers_after_interruption_without_pointer_regres
             raise RuntimeError("simulated power loss")
 
     interrupted = HistoryControlIndex(
-        path, reference_path=(path).parent / "company_st.sqlite3", fault_injector=interrupt
+        path, reference_path=(path).parent / "company_st.sqlite3", fault_injector=interrupt, sqlite_policy=SqlitePolicyFixture()
     )
     with pytest.raises(RuntimeError, match="power loss"):
         interrupted.publish_snapshot(second)
     assert interrupted.load_state().published_snapshot == first[-1]
     assert second not in interrupted.load_state().snapshots
 
-    recovered = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    recovered = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     recovered.publish_snapshot(second)
     assert recovered.load_state().published_snapshot == second
     with pytest.raises(HistoryControlRegressionError, match="regress"):
@@ -426,7 +428,7 @@ def test_snapshot_publication_recovers_after_interruption_without_pointer_regres
 
 def test_snapshot_publication_rejects_unsealed_parent_identities(tmp_path: Path) -> None:
     index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3"
+        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
     )
     index.initialize()
     snapshot = _values()[-1]
@@ -437,15 +439,15 @@ def test_snapshot_publication_rejects_unsealed_parent_identities(tmp_path: Path)
 
 def test_reminder_claim_is_atomic_across_restart_and_dates(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
-    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     index.initialize()
-    TrainingMaintenanceIndex(path).save_due_state(
+    TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).save_due_state(
         TrainingDueState("due-20260910", "initial_training_required", None, NOW.date(), 0, False, NOW)
     )
     first = TrainingReminderClaim("due-20260910", date(2026, 9, 10), NOW)
 
-    assert TrainingMaintenanceIndex(index._path).claim_reminder(first) is True
-    restarted = TrainingMaintenanceIndex(path)
+    assert TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).claim_reminder(first) is True
+    restarted = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
     assert restarted.claim_reminder(first) is False
 
     next_day_at = NOW.replace(day=11)
@@ -456,7 +458,7 @@ def test_reminder_claim_is_atomic_across_restart_and_dates(tmp_path: Path) -> No
 
 def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
-    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     expected = _save_all(index, _values())
     publication_id = _publication(index, _values()[1], _values()[2])
@@ -464,10 +466,10 @@ def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: P
     inputs = HistoryRebuildInput(
         expected, path.parent / "company_st.sqlite3", ((REFERENCE, publication_id),), reference_ids
     )
-    maintenance = TrainingMaintenanceIndex(path).load_state()
+    maintenance = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state()
 
     def copy_related(target: Path) -> None:
-        TrainingMaintenanceIndex(target).copy_state(maintenance)
+        TrainingMaintenanceIndex(target, sqlite_policy=SqlitePolicyFixture()).copy_state(maintenance)
 
     for candidate in (Path(f"{path}-wal"), Path(f"{path}-shm")):
         candidate.unlink(missing_ok=True)
@@ -485,20 +487,20 @@ def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: P
             path,
             inputs,
             copy_related_records=copy_related,
-            fault_injector=interrupt,
+            fault_injector=interrupt, sqlite_policy=SqlitePolicyFixture(),
         )
     assert path.read_bytes() == corrupt_bytes
 
     HistoryControlIndex.rebuild(
         path,
         inputs,
-        copy_related_records=copy_related,
+        copy_related_records=copy_related, sqlite_policy=SqlitePolicyFixture(),
     )
 
-    rebuilt = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3")
+    rebuilt = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     assert rebuilt.integrity().state == "healthy"
     assert rebuilt.load_state() == expected
-    assert TrainingMaintenanceIndex(path).load_state() == maintenance
+    assert TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state() == maintenance
 
 
 def test_history_lock_and_disk_preflight_are_bounded_and_typed(tmp_path: Path) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import math
 import resource
@@ -88,7 +90,7 @@ class HistoryFixtureSupplier:
             datetime.combine(as_of, daytime(20, 30), ZoneInfo("Asia/Shanghai")),
             self.days,
         )
-        SQLiteReferenceIndex(path).publish(reference, reference.st_evidence)
+        SQLiteReferenceIndex(path, sqlite_policy=self.sqlite_policy).publish(reference, reference.st_evidence)
         self.reference_id = reference.identity
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
@@ -164,6 +166,8 @@ class HistoryFixtureSupplier:
         )
         return BaoStockDailyCell(code, day, "complete", raw, qfq)
 
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+
 
 @dataclass
 class _StageTimes:
@@ -225,7 +229,7 @@ def _measure_case(
     config: HistorySyncConfiguration,
     supplier: HistoryFixtureSupplier,
     tuning: HistoryWriteTuning | None,
-    storage_kind: StorageKind | None,
+    storage_kind: StorageKind | None, *, sqlite_policy: SqliteIoPolicy,
 ) -> dict[str, object]:
     supplier.requests.clear()
     now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
@@ -239,16 +243,16 @@ def _measure_case(
             clock=_clock(now),
             write_tuning=tuning,
             progress=stage_times,
-            storage_kind=storage_kind or StorageProbe().inspect(config.history_root).kind,
+            storage_kind=storage_kind or StorageProbe().inspect(config.history_root).kind, sqlite_policy=sqlite_policy,
         )
     rows = 0
     for path in config.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
         with (
-            SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             rows += connection.run("SELECT COUNT(*) FROM daily_price_revision").require_one()[0]
-    manifest = SQLitePublishedHistorySnapshot(config.history_root).manifest()
+    manifest = SQLitePublishedHistorySnapshot(config.history_root, sqlite_policy=sqlite_policy).manifest()
     return {
         "case": name,
         "seconds": round(time.monotonic() - started, 3),
@@ -267,10 +271,10 @@ def _measure_case(
 
 
 def MeasureHistoryWrites(
-    size: int, sessions: int, tuning: HistoryWriteTuning | None = None, *, storage_kind: StorageKind | None = None
+    size: int, sessions: int, tuning: HistoryWriteTuning | None = None, *, storage_kind: StorageKind | None = None, sqlite_policy: SqliteIoPolicy
 ) -> dict[str, object]:
     days = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(sessions))
-    supplier = HistoryFixtureSupplier(days, size)
+    supplier = HistoryFixtureSupplier(days, size, sqlite_policy=sqlite_policy)
     results = []
     with TemporaryDirectory(prefix="trader-history-write-") as scratch:
         root = Path(scratch) / "history"
@@ -285,7 +289,7 @@ def MeasureHistoryWrites(
         for name, added in (("initial", 0), ("next_day", 1), ("two_weeks", 10), ("same_day", 0)):
             if added:
                 supplier.days += tuple(supplier.days[-1] + timedelta(days=i + 1) for i in range(added))
-            results.append(_measure_case(name, config, supplier, tuning, storage_kind))
+            results.append(_measure_case(name, config, supplier, tuning, storage_kind, sqlite_policy=sqlite_policy))
         # Seed committed annual rows without publishing the first snapshot.
         # The measured restart includes disjoint stocks, unlike an empty-file write probe.
         resume_config = replace(config, history_root=Path(scratch) / "resume")
@@ -299,11 +303,11 @@ def MeasureHistoryWrites(
             cancel_requested=lambda: interrupted.cancelled,
             write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions),
             progress=interrupted,
-            storage_kind=storage_kind or StorageProbe().inspect(resume_config.history_root).kind,
+            storage_kind=storage_kind or StorageProbe().inspect(resume_config.history_root).kind, sqlite_policy=sqlite_policy,
         )
         if seeded.state != "cancelled":
             raise RuntimeError("history_write_resume_seed_failed")
-        results.append(_measure_case("initial_resume", resume_config, supplier, tuning, storage_kind))
+        results.append(_measure_case("initial_resume", resume_config, supplier, tuning, storage_kind, sqlite_policy=sqlite_policy))
         storage_kind = storage_kind or StorageProbe().inspect(root).kind
     return {
         "schema_version": "history-write-benchmark",
@@ -334,6 +338,9 @@ def main() -> int:
     parser.add_argument("--flush-cells", type=int)
     parser.add_argument("--storage-kind", choices=("ssd", "hdd", "unknown"), default=None)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if args.baseline_checkout is not None:
         from .storage_layout_comparison import CompareLayouts
 
@@ -353,7 +360,7 @@ def main() -> int:
         if args.flush_codes is not None
         else None
     )
-    report = MeasureHistoryWrites(args.size, args.sessions, tuning, storage_kind=args.storage_kind)
+    report = MeasureHistoryWrites(args.size, args.sessions, tuning, storage_kind=args.storage_kind, sqlite_policy=sqlite_policy)
     emit_report(report)
     return int(report["status"] != "passed")
 

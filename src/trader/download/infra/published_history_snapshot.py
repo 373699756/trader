@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -33,9 +35,10 @@ class _CatalogSnapshot:
 
 
 class SQLitePublishedHistorySnapshot:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._root = root
-        self._reader = HistorySnapshotReader(self._root)
+        self._reader = HistorySnapshotReader(self._root, sqlite_policy=self._sqlite_policy)
         self._cached: _CatalogSnapshot | None = None
 
     def _catalog_stamp(self, reference_path: Path) -> tuple[tuple[int, int, int, int, int] | None, ...]:
@@ -43,7 +46,7 @@ class SQLitePublishedHistorySnapshot:
 
     def _reference_path(self) -> Path:
         try:
-            return HistoryControlIndex(self._root / "catalog.sqlite3").reference_path()
+            return HistoryControlIndex(self._root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy).reference_path()
         except (HistoryControlError, OSError, ValueError) as exc:
             raise HistorySnapshotInspectionError("history_reference_unavailable") from exc
 
@@ -57,7 +60,7 @@ class SQLitePublishedHistorySnapshot:
             return cached.history
         reference_path = self._reference_path()
         stamp = self._catalog_stamp(reference_path)
-        history = LoadPublishedHistorySnapshot(self._root, sequence=sequence)
+        history = LoadPublishedHistorySnapshot(self._root, sequence=sequence, sqlite_policy=self._sqlite_policy)
         if stamp == self._catalog_stamp(reference_path):
             self._cached = _CatalogSnapshot(history, reference_path, stamp, False)
         return history
@@ -73,7 +76,7 @@ class SQLitePublishedHistorySnapshot:
                 # A historical pinned load cannot define the latest sequence.
                 reference_path = self._reference_path()
                 stamp = self._catalog_stamp(reference_path)
-                history = LoadPublishedHistorySnapshot(self._root)
+                history = LoadPublishedHistorySnapshot(self._root, sqlite_policy=self._sqlite_policy)
                 if stamp == self._catalog_stamp(reference_path):
                     self._cached = _CatalogSnapshot(history, reference_path, stamp, True)
         except HistorySnapshotInspectionError as exc:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import os
 import subprocess
 import sys
@@ -254,7 +256,7 @@ def test_timeout_terminates_nested_probe_workers(tmp_path: Path) -> None:
 
 
 def test_real_sync_adapters_preserve_joint_single_restart_and_memory_reads(tmp_path: Path) -> None:
-    result = MeasureSyncBaseline(tmp_path, size=2, sessions=61, storage_kind="unknown")
+    result = MeasureSyncBaseline(tmp_path, size=2, sessions=61, storage_kind="unknown", sqlite_policy=SqlitePolicyFixture())
     assert result["joint_single_equivalent"] is True
     assert result["independent_targets"] is True
     targets = result["targets"]

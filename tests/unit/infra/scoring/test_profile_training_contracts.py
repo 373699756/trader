@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -123,7 +125,7 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
             progress(0)
             return iter(())
 
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V2_TRAINING_PROFILE.heads[0].feature_manifest.names) as repository:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V2_TRAINING_PROFILE.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as repository:
         BuildTrainingSamples(
             TrainingSampleBuildRequest(
                 Archive(),  # type: ignore[arg-type]
@@ -181,7 +183,7 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
     source = HistorySourceFixture()
 
     def build(profile, window, prefix, rows=None):
-        with SQLiteTrainingSampleIndex(tmp_path / f"{prefix}-{profile.profile_id}.sqlite3", profile.heads[0].feature_manifest.names) as index:
+        with SQLiteTrainingSampleIndex(tmp_path / f"{prefix}-{profile.profile_id}.sqlite3", profile.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as index:
             BuildTrainingSamples(
                 TrainingSampleBuildRequest(source, ("600000",), window, index, profile), aligned_rows=rows
             )

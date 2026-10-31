@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -96,8 +98,9 @@ class SQLiteCompanyFactsIndex:
         path: Path,
         *,
         event_policy: CompanyEventPolicy,
-        cancel_requested: Callable[[], bool] | None = None,
+        cancel_requested: Callable[[], bool] | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self.path = path
         self.extraction_hash = CompanyExtractionHash(event_policy)
         self._cancel_requested = cancel_requested
@@ -107,7 +110,7 @@ class SQLiteCompanyFactsIndex:
         with SqliteSession(
             self.path,
             SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True),
-            cancel_requested=self._cancel_requested,
+            cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
         ) as connection:
             EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, allow_create=True)
 
@@ -121,8 +124,8 @@ class SQLiteCompanyFactsIndex:
         with (
             SqliteSession(
                 self.path,
-                SqliteConnectionOptions(foreign_keys=True, timeout_seconds=8),
-                cancel_requested=self._cancel_requested,
+                SqliteConnectionOptions(foreign_keys=True),
+                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
             ) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
@@ -143,7 +146,7 @@ class SQLiteCompanyFactsIndex:
         if not self.path.exists():
             return ()
         with (
-            SqliteSession(self.path, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             ReadCompanyPublicationIdentity(connection)
@@ -168,8 +171,8 @@ class SQLiteCompanyFactsIndex:
         with (
             SqliteSession(
                 self.path,
-                SqliteConnectionOptions(foreign_keys=True, timeout_seconds=8),
-                cancel_requested=self._cancel_requested,
+                SqliteConnectionOptions(foreign_keys=True),
+                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
             ) as connection,
             SqliteTransaction(connection, immediate=True),
         ):

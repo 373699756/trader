@@ -7,6 +7,8 @@ mocked durability, but does not repeat per-stock network/checkpoint orchestratio
 
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +59,7 @@ def publish_history_fixture(
     partitions: list[HistorySnapshotPartition] = []
     for (year, month), revisions in sorted(grouped.items()):
         revisions.sort(key=lambda item: (item.trade_date, item.code, item.first_seen_sequence, item.revision_id))
-        prices = HistoryPricePartition(root / f"prices_{year:04d}.sqlite3", year, month)
+        prices = HistoryPricePartition(root / f"prices_{year:04d}.sqlite3", year, month, sqlite_policy=SqlitePolicyFixture())
         prices.initialize()
         prices.save_revisions(tuple(revisions))
         partitions.append(prices.seal())
@@ -68,7 +70,7 @@ def publish_history_fixture(
         securities=context.universe,
         open_dates=tuple(sorted({*context.calendar.open_dates, observed_at.date()})),
     )
-    control = HistoryControlIndex(root / "catalog.sqlite3", reference_path=reference_path)
+    control = HistoryControlIndex(root / "catalog.sqlite3", reference_path=reference_path, sqlite_policy=SqlitePolicyFixture())
     control.initialize()
     control.save_source(source)
     control.save_reference(reference, publication_id)

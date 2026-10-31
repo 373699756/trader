@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import json
 import time
@@ -40,7 +42,7 @@ def ProbeV5Samples(
     *,
     days: int = 256,
     codes: int = 32,
-    wide_source: Path | None = None,
+    wide_source: Path | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> dict[str, object]:
     project = Path(__file__).resolve().parents[2]
     work = work.expanduser().resolve()
@@ -50,7 +52,7 @@ def ProbeV5Samples(
     work.mkdir(parents=True)
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
     source_started = time.perf_counter()
-    source_samples = _read_wide_samples(wide_source) if wide_source else ()
+    source_samples = _read_wide_samples(wide_source, sqlite_policy=sqlite_policy) if wide_source else ()
     source_seconds = time.perf_counter() - source_started
     if wide_source:
         observed_dates = tuple(sorted({sample.trade_date for sample in source_samples}))
@@ -72,7 +74,7 @@ def ProbeV5Samples(
         for name, layout in (("wide", None), ("compact", SampleSequenceLayout(6, 60, 6))):
             cache = TrainingSampleCache(
                 work / name, "synthetic-v5-samples", V5_TRAINING_PROFILE.heads[0].feature_manifest.names,
-                split.content_hash, sequence_layout=layout
+                split.content_hash, sequence_layout=layout, sqlite_policy=sqlite_policy
             )
             measurements.append(_Measurement(name, cache, scope.enter_context(cache.open())))
         for index, batch in enumerate(source_batches):
@@ -147,8 +149,9 @@ def Main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--wide-sample-source", type=Path)
     args = parser.parse_args()
-    LoadRuntimeSettings(args.config)
-    report = ProbeV5Samples(args.work_root, wide_source=args.wide_sample_source)
+    from trader.bootstrap import BuildSqlitePolicy
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
+    report = ProbeV5Samples(args.work_root, wide_source=args.wide_sample_source, sqlite_policy=sqlite_policy)
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report["status"] == "passed" else 1
 
@@ -170,12 +173,12 @@ def _synthetic_batches(days: tuple[date, ...], codes: int) -> Iterator[tuple[Tra
         )
 
 
-def _read_wide_samples(path: Path) -> tuple[TrainingSample, ...]:
+def _read_wide_samples(path: Path, *, sqlite_policy: SqliteIoPolicy) -> tuple[TrainingSample, ...]:
     """Diagnostic-only import of a bounded wide-table prefix; never a product cache fallback."""
     deadline = time.monotonic() + 30.0
     result = []
     dates: set[date] = set()
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=1.0)) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=1.0), sqlite_policy=sqlite_policy) as connection:
         connection.observe_progress(lambda: int(time.monotonic() >= deadline), 1000)
         industry = connection.run("SELECT industry FROM samples ORDER BY trade_date,code LIMIT 1").require_one()[0]
         fields = ",".join(V5_TRAINING_PROFILE.heads[0].feature_manifest.names)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -195,7 +197,7 @@ def test_history_router_forwards_the_explicit_industry_query_cache(tmp_path) -> 
     dates = (date(2026, 10, 8), date(2026, 10, 9))
     baseline = Baseline(dates)
     universe = _current_universe("600001")
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
     router = HistorySupplierRouter(baseline, Prices(), _prepared(universe, dates), cache)
     router.load_context(dates[-1], len(dates))
     assert baseline.industry_cache is cache
@@ -269,8 +271,8 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
     assert (
         RunHistoryFixture(config, _router(Baseline(dates), Prices()), clock=lambda: _at(dates[-1])).state == "completed"
     )
-    before = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
-    rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], before)
+    before = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(dates[-1], before)
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline = Baseline(new_dates)
     result = RunHistoryFixture(
@@ -278,17 +280,17 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
         _router(baseline, Prices(shift=1.0, missing=incoming == "missing", conflict=incoming == "raw")),
         clock=lambda: _at(new_dates[-1]),
     )
-    state = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state()
+    state = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state()
     if incoming == "raw":
         assert result.state == "completed" and result.unresolved_price_cells == 2
-        assert HistorySnapshotReader(tmp_path).read_day(dates[-1], before) == rows
+        assert HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(dates[-1], before) == rows
         return
     assert result.state == "completed" and result.unresolved_price_cells == (2 if incoming == "missing" else 0)
     assert state.published_snapshot != before
     assert not any(code == "raw" for code, _dates in baseline.calls)
     assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
-    current = HistorySnapshotReader(tmp_path)
+    current = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     assert current.read_day(dates[-1], state.published_snapshot)[0].cell == rows[0].cell
     tail = current.read_day(new_dates[-1], state.published_snapshot)[0].cell
     if incoming == "missing":
@@ -326,7 +328,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         lambda *_args: _current_universe("600001", "600002"),
     )
     reference = replace(_prepared(_current_universe("600001", "600002"), dates), industry_version="fixture")
-    SQLiteReferenceIndex(tmp_path.parent / "reference" / "company_st.sqlite3").publish(reference, reference.st_evidence)
+    SQLiteReferenceIndex(tmp_path.parent / "reference" / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish(reference, reference.st_evidence)
     result = ExecuteHistoryDownload(
         HistorySyncConfiguration(
             tmp_path,
@@ -338,7 +340,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         qfq_configuration=LoadQfqWindowConfiguration(Path(__file__).resolve().parents[3]),
         shutdown_timeout_seconds=2.0,
         reference=reference,
-        clock=lambda: _at(dates[-1]),
+        clock=lambda: _at(dates[-1]), sqlite_policy=SqlitePolicyFixture(),
     )
     assert result.state == "completed"
     assert baseline.calls == []
@@ -346,9 +348,9 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert supplier_settings["configuration"].supplier_retries == 2
     assert supplier_settings["price_policy"].retries == 0
     assert supplier_settings["vendor_lock"] is not None
-    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert snapshot is not None
-    rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
+    rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(dates[-1], snapshot)
     assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
 
@@ -367,9 +369,9 @@ def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     assert result.state == "completed"
     assert prices.calls == [new_dates, new_dates]
     assert baseline.calls == []
-    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert snapshot.sequence == 2
-    assert len(HistorySnapshotReader(tmp_path).read_day(new_dates[-1], snapshot)) == 2
+    assert len(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(new_dates[-1], snapshot)) == 2
 
 
 def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None:
@@ -395,7 +397,7 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     )
 
     assert result.state == "completed"
-    history = SQLitePublishedHistorySnapshot(config.history_root)
+    history = SQLitePublishedHistorySnapshot(config.history_root, sqlite_policy=SqlitePolicyFixture())
     manifest = history.manifest()
     assert manifest is not None
     assert manifest.universe_codes == ("600001",)
@@ -403,17 +405,17 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     assert tuple(window.code for window in history.read_windows(manifest, ("600001", "600002"), sessions=61)) == (
         "600001",
     )
-    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot
+    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert snapshot is not None
-    assert tuple(row.code for row in HistorySnapshotReader(config.history_root).read_day(dates[-1], snapshot)) == (
+    assert tuple(row.code for row in HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_day(dates[-1], snapshot)) == (
         "600001",
     )
-    training = SQLiteHistoryTrainingInputSnapshot.open(config.history_root)
+    training = SQLiteHistoryTrainingInputSnapshot.open(config.history_root, sqlite_policy=SqlitePolicyFixture())
     assert training.snapshot.training_codes == ("600001",)
     training_rows = tuple(training.iter_training_rows(frozenset(dates)))
     assert len(training_rows) == len(dates)
     assert {row.code for row in training_rows} == {"600001"}
-    industry_report = AuditPublishedHistoricalIndustryFacts(config.history_root)
+    industry_report = AuditPublishedHistoricalIndustryFacts(config.history_root, sqlite_policy=SqlitePolicyFixture())
     assert industry_report.sources[0].sampled_codes == 1
     assert len(industry_report.merged_fact_hashes) == 1
 
@@ -446,9 +448,9 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     context = router.load_context(dates[-1], 2000)
     new_stock = replace(context.universe[1], listed_on=dates[-639])
     context = replace(context, universe=(context.universe[0], new_stock))
-    control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
+    control = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     control.initialize()
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     tasks = _download_tasks(context, None, frozenset(), index, 5)
     assert tasks[0].dates == dates
     assert tasks[1].dates == dates[-639:]

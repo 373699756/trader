@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -117,7 +119,7 @@ def _history(tmp_path: Path) -> tuple[Path, Path, HistorySnapshot]:
     source = tmp_path / "data/history"
     target = tmp_path / "data/history-repacked"
     month = source / "prices_2026.sqlite3"
-    index = HistoryPricePartition(month, 2026, 9)
+    index = HistoryPricePartition(month, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     index.save_revisions(
         (
@@ -160,7 +162,7 @@ def _history(tmp_path: Path) -> tuple[Path, Path, HistorySnapshot]:
             for item in universe.securities
         ),
     )
-    control = HistoryControlIndex(source / "catalog.sqlite3", reference_path=reference_path)
+    control = HistoryControlIndex(source / "catalog.sqlite3", reference_path=reference_path, sqlite_policy=SqlitePolicyFixture())
     control.initialize()
     control.save_source(source_identity)
     control.save_reference(bound_reference, publication_id)
@@ -182,7 +184,7 @@ def _requirements() -> HistoryPartitionRepackRequirements:
 
 def test_repack_build_is_resumable_and_preserves_revision_replay(tmp_path: Path) -> None:
     source, target, original = _history(tmp_path)
-    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
 
     first = coordinator.build()
     repeated = coordinator.build()
@@ -193,10 +195,10 @@ def test_repack_build_is_resumable_and_preserves_revision_replay(tmp_path: Path)
     with SqliteSession(target / "prices_2026.sqlite3") as connection, SqliteTransaction(connection):
         assert tuple(connection.run("PRAGMA page_size").fetchone()) == (8192,)
         assert tuple(connection.run("PRAGMA freelist_count").fetchone()) == (0,)
-    target_state = HistoryControlIndex(target / "catalog.sqlite3").load_state()
+    target_state = HistoryControlIndex(target / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state()
     assert target_state.published_snapshot is not None
     assert target_state.published_snapshot.sequence == original.sequence
-    target_month = HistoryPricePartition(target / "prices_2026.sqlite3", 2026, 9)
+    target_month = HistoryPricePartition(target / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=1)[0]) == 10.0
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=2)[0]) == 11.0
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=3)[0]) == 10.0
@@ -215,10 +217,10 @@ def test_repack_build_recovers_outputs_written_before_their_state_commit(tmp_pat
             source,
             target,
             requirements=_requirements(),
-            fault_injector=interrupt,
+            fault_injector=interrupt, sqlite_policy=SqlitePolicyFixture(),
         ).build()
 
-    completed = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).build()
+    completed = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture()).build()
 
     assert completed.state == "completed"
     assert (target / "catalog.sqlite3").is_file()
@@ -227,7 +229,7 @@ def test_repack_build_recovers_outputs_written_before_their_state_commit(tmp_pat
 
 def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp_path: Path) -> None:
     source, target, original = _history(tmp_path)
-    HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).build()
+    HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture()).build()
 
     def interrupt(stage: str) -> None:
         if stage == "old_root_moved":
@@ -237,24 +239,24 @@ def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp
         source,
         target,
         requirements=_requirements(),
-        fault_injector=interrupt,
+        fault_injector=interrupt, sqlite_policy=SqlitePolicyFixture(),
     )
     with pytest.raises(RuntimeError, match="power loss"):
         interrupted.activate()
 
-    recovered = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).activate()
+    recovered = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture()).activate()
     assert recovered.state == "rolled_back"
-    assert HistoryControlIndex(source / "catalog.sqlite3").load_state().published_snapshot == original
+    assert HistoryControlIndex(source / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot == original
     assert (target / "catalog.sqlite3").is_file()
 
-    activated = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).activate()
+    activated = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture()).activate()
     assert activated.state == "verified"
     with pytest.raises(HistoryPartitionRepackFenceError, match="activation_pending"):
         RequireHistoryRepackIdle(source)
 
-    rolled_back = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).rollback()
+    rolled_back = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture()).rollback()
     assert rolled_back.state == "rolled_back"
-    assert HistoryControlIndex(source / "catalog.sqlite3").load_state().published_snapshot == original
+    assert HistoryControlIndex(source / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot == original
     RequireHistoryRepackIdle(source)
 
 
@@ -262,7 +264,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source, target, _original = _history(tmp_path)
-    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
     built = coordinator.build()
     coordinator.activate()
     assert built.target_snapshot_hash is not None
@@ -278,7 +280,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=tmp_path / "samples",
-        expected_history_snapshot_hash=built.target_snapshot_hash,
+        expected_history_snapshot_hash=built.target_snapshot_hash, sqlite_policy=SqlitePolicyFixture(),
     )
 
     assert result is expected
@@ -288,7 +290,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=tmp_path / "samples",
-        expected_history_snapshot_hash="f" * 64,
+        expected_history_snapshot_hash="f" * 64, sqlite_policy=SqlitePolicyFixture(),
     )
     assert mismatch.status == "blocked"
     assert mismatch.failure_reasons == ("history_archive_repack_activation_pending",)
@@ -296,14 +298,14 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
 
 def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source, target, _original = _history(tmp_path)
-    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
     built = coordinator.build()
     coordinator.activate()
     assert built.target_snapshot_hash is not None
 
     captured: list[tuple[Strategy, ...]] = []
 
-    def locked(_history: object, request: SimpleNamespace) -> object:
+    def locked(_history: object, request: SimpleNamespace, *, sqlite_policy) -> object:
         captured.append(tuple(item.strategy for item in request.contracts))
         return SimpleNamespace(heads=())
 
@@ -313,7 +315,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
         tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=tmp_path / "samples",
-        expected_history_snapshot_hash=built.target_snapshot_hash,
+        expected_history_snapshot_hash=built.target_snapshot_hash, sqlite_policy=SqlitePolicyFixture(),
     )
 
     assert result.heads == ()
@@ -324,7 +326,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source, target, original = _history(tmp_path)
-    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
     built = coordinator.build()
     coordinator.activate()
     contract_hash = "9" * 64
@@ -350,7 +352,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
             NOW,
             V3_TRAINING_PROFILE,
             expected_training_contract_hash=contract_hash,
-        )
+        ), sqlite_policy=SqlitePolicyFixture()
     )
 
     assert built.target_snapshot_hash is not None
@@ -368,7 +370,7 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupted: bool
 ) -> None:
     source, target, _original = _history(tmp_path)
-    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
     built = coordinator.build()
     coordinator.activate()
     assert built.target_snapshot_hash is not None
@@ -437,7 +439,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source, target, _original = _history(tmp_path)
-    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
     built = coordinator.build()
     coordinator.activate()
     assert built.target_snapshot_hash is not None
@@ -486,7 +488,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
 
 def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source, target, _original = _history(tmp_path)
-    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
     built = coordinator.build()
     coordinator.activate()
     assert built.target_snapshot_hash is not None

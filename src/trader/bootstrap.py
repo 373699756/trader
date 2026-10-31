@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import time
 import threading
 from collections.abc import Callable, Mapping
@@ -204,6 +206,12 @@ def PrepareRuntimeStorage(settings: RuntimeSettings, *, choose: bool = False, re
     return ConfigureStorage(settings, choose=choose, report=report)
 
 
+def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
+    """Resolve the configured data medium once at composition; unknown uses conservative HDD policy."""
+    medium = settings.storage_medium or StorageProbe().inspect(settings.data_paths.root).kind
+    return settings.storage_policy.for_medium("hdd" if medium == "unknown" else medium)
+
+
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
     repair_source: Literal["baostock"] | None = None,
@@ -216,6 +224,7 @@ def ExecuteSync(
     if repair_source is not None and repair_documents is not None:
         raise ValueError("repair_modes_are_mutually_exclusive")
     settings = LoadRuntimeSettings(config_path)
+    sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
     progress = company_evidence_progress.CompanyEvidenceProgress()
@@ -234,7 +243,7 @@ def ExecuteSync(
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference,
             cancel_requested=cancel_requested,
-            repair_only=repair_source is not None,
+            repair_only=repair_source is not None, sqlite_policy=sqlite_policy,
         )
 
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
@@ -248,7 +257,7 @@ def ExecuteSync(
             progress=history_progress,
             cancel_requested=cancel_requested,
             storage_medium=settings.storage_medium,
-            repair_only=repair_source is not None,
+            repair_only=repair_source is not None, sqlite_policy=sqlite_policy,
         )
 
     return SyncData(
@@ -257,7 +266,7 @@ def ExecuteSync(
             clock.now(),
             progress,
             cancel_requested=cancel_requested,
-            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
         ),
         history=sync_history,
         market=sync_market,
@@ -271,22 +280,22 @@ def ExecuteSync(
                 LoadStrategySettings(settings.strategy_config_path).company_scoring.events,
                 news_codes=RecentPublishedNewsCodes(
                     tuple(
-                        SQLiteFreezeRecords(settings.data_paths.recommendation(profile) / "freeze.sqlite3")
+                        SQLiteFreezeRecords(settings.data_paths.recommendation(profile) / "freeze.sqlite3", sqlite_policy=sqlite_policy)
                         for profile in ("v2", "v3")
                     ),
                     clock.now(),
                 ),
                 document_repair=repair_documents,
             ),
-            cancel_requested=cancel_requested,
+            cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
         ),
         cancelled=cancel_requested,
     ).execute(target)
 
 
-def CreateCompanyEligibilityReader(path: Path, event_policy: company_events.CompanyEventPolicy) -> CompanyEligibility:
+def CreateCompanyEligibilityReader(path: Path, event_policy: company_events.CompanyEventPolicy, *, sqlite_policy: SqliteIoPolicy) -> CompanyEligibility:
     return CompanyEligibility(
-        PublishCompanyExclusions(SQLiteCompanyFactsIndex(path, event_policy=event_policy)),
+        PublishCompanyExclusions(SQLiteCompanyFactsIndex(path, event_policy=event_policy, sqlite_policy=sqlite_policy)),
         read_only=True,
     )
 
@@ -296,7 +305,7 @@ def _sync_company_evidence(
     progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
     request: company_evidence.CompanyEvidenceRequest,
     *,
-    cancel_requested: Callable[[], bool] | None = None,
+    cancel_requested: Callable[[], bool] | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> company_evidence.CompanyEvidenceSyncResult:
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
@@ -357,7 +366,7 @@ def _sync_company_evidence(
                 cancel_requested=cancel_requested,
                 event_policy=request.event_policy,
                 listings=request.listings,
-                stock_progress=partial(company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names),
+                stock_progress=partial(company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names), sqlite_policy=sqlite_policy,
             ),
             documents[0],
             structured,
@@ -379,7 +388,7 @@ def _prepare_reference(
     progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
     *,
     cancel_requested: Callable[[], bool],
-    shutdown_timeout_seconds: float,
+    shutdown_timeout_seconds: float, sqlite_policy: SqliteIoPolicy,
 ) -> PreparedReference:
     if cancel_requested():
         raise RuntimeError("reference_preparation_cancelled")
@@ -391,7 +400,7 @@ def _prepare_reference(
     resources = ExitStack()
     try:
         sessions = TencentSessionPool(tuple(resources.enter_context(OpenExternalHttp()) for _ in range(8)))
-        publication = SQLiteReferenceIndex(reference_root / "company_st.sqlite3")
+        publication = SQLiteReferenceIndex(reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy)
         source = HistoryStNameSource(
             publication,
             sessions.borrow,
@@ -403,7 +412,7 @@ def _prepare_reference(
             FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
         )
         industry = CurrentIndustryPublication(
-            reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested, vendor_lock=ProcessLock(reference_root / "baostock.lock", label="BaoStock"))
+            reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested, vendor_lock=ProcessLock(reference_root / "baostock.lock", label="BaoStock")), sqlite_policy=sqlite_policy
         )
         dependencies = ReferencePreparationDependencies(
             source.fetch,
@@ -434,7 +443,7 @@ def ExecuteDownloadTrain(
     scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
     runtime = LoadRuntimeSettings(config_path)
     ConfigureTrainingResources()
-    result = RunDownload(runtime.project_root, config_path, quiet_success=True, allow_price_gaps=True)
+    result = RunDownload(runtime.project_root, config_path, quiet_success=True, allow_price_gaps=True, sqlite_policy=BuildSqlitePolicy(runtime))
     return result or ExecuteSelectedTraining(runtime, scoring_profiles)
 
 
@@ -464,12 +473,12 @@ def ExecuteSelectedTraining(
             worker_count=len(scoring_profiles), queue_capacity=0, thread_name_prefix="profile-training"
         ),
         memory_admission=TrainingMemoryBudget(FittingMemoryCapacity()),
-        paths=paths,
+        paths=paths, sqlite_policy=BuildSqlitePolicy(runtime),
     )
 
 
 def ExecuteTrainingReminderStatus(settings: RuntimeSettings) -> TrainingReminderStatus:
-    return ReadTrainingReminderStatus(settings.data_paths.history, ShanghaiClock(_utc_now).now())
+    return ReadTrainingReminderStatus(settings.data_paths.history, ShanghaiClock(_utc_now).now(), sqlite_policy=BuildSqlitePolicy(settings))
 
 
 def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
@@ -495,7 +504,7 @@ def ExecuteHistoryDownload(
     clock: Callable[[], datetime] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
     storage_medium: StorageMedium | None = None,
-    repair_only: bool = False,
+    repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
 ) -> HistoryMaintenanceStatus:
     storage_kind = StorageProbe(storage_medium).inspect(configuration.history_root).kind
     if reference is None:
@@ -504,7 +513,7 @@ def ExecuteHistoryDownload(
             ShanghaiClock(clock or _utc_now).now(),
             None,
             cancel_requested=cancel_requested,
-            shutdown_timeout_seconds=shutdown_timeout_seconds,
+            shutdown_timeout_seconds=shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
         )
     history_pool = BoundedExecutor(
         worker_count=configuration.history_workers, queue_capacity=0, thread_name_prefix="history-download"
@@ -531,13 +540,13 @@ def ExecuteHistoryDownload(
                     retries=qfq_configuration.source_retries,
                 ),
             )
-            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, storage_kind, repair_only)).execute(
+            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, storage_kind, repair_only, sqlite_policy=sqlite_policy)).execute(
                 configuration,
                 HistorySupplierRouter(
                     baseline,
                     prices,
                     reference,
-                    industry_cache=HistoryIndustryQueryCache(configuration.reference_root / "industry.sqlite3"),
+                    industry_cache=HistoryIndustryQueryCache(configuration.reference_root / "industry.sqlite3", sqlite_policy=sqlite_policy),
                 ),
                 clock=clock,
                 progress=progress,
@@ -562,7 +571,7 @@ def ExecuteQfqDownload(
     cancel_requested: Callable[[], bool] = lambda: False,
     report: Callable[[ProgressMessage], None] | None = None,
     now: Callable[[], datetime] = _utc_now,
-    repair_only: bool = False,
+    repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
 ) -> QfqUpdateResult:
     """Compose explicit short-window maintenance without building the server."""
     if report is None:
@@ -573,12 +582,12 @@ def ExecuteQfqDownload(
             ShanghaiClock(now).now(),
             None,
             cancel_requested=cancel_requested,
-            shutdown_timeout_seconds=shutdown_timeout_seconds,
+            shutdown_timeout_seconds=shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
         )
     history_root = paths.history
-    v2 = SQLiteQfqWindowCache(paths.daily_window, "v2")
-    v3 = SQLiteQfqWindowCache(paths.daily_window, "v3")
-    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
+    v2 = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy)
+    v3 = SQLiteQfqWindowCache(paths.daily_window, "v3", sqlite_policy=sqlite_policy)
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy))
     started = time.monotonic()
     qfq_pool = BoundedExecutor(
         worker_count=qfq_configuration.workers,
@@ -639,7 +648,7 @@ def ExecuteQfqDownload(
                 )
 
 
-def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
+def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, sqlite_policy: SqliteIoPolicy) -> ResearchEvidenceResult:
     """Lazily assemble one offline research use case; never build the server runtime."""
     from trader.training.entrypoints import research_evidence
     from trader.training.infra.research.command_evidence import (
@@ -657,7 +666,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenc
     if isinstance(command, research_evidence.IndustryAuditCommand):
         from trader.training.application.historical_industry_audit import AuditHistoricalIndustry
 
-        return AuditHistoricalIndustry(HistoricalIndustryEvidenceReader(command.history_root)).execute(
+        return AuditHistoricalIndustry(HistoricalIndustryEvidenceReader(command.history_root, sqlite_policy=sqlite_policy)).execute(
             required_sample_codes=command.required_sample_codes, tushare_access_points=command.tushare_access_points
         )
     if isinstance(command, research_evidence.HoldoutCommand):
@@ -682,7 +691,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenc
 
             return CompleteCapabilityEvidence(
                 probe,
-                SQLiteH1PointInTimeSnapshot(command.runtime_dir),
+                SQLiteH1PointInTimeSnapshot(command.runtime_dir, sqlite_policy=sqlite_policy),
                 CapabilityEvidencePublisher(command.artifact_dir),
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
         if isinstance(command, research_evidence.QualificationCommand):
@@ -690,8 +699,8 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenc
             from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 
             return QualifyPointInTimeData(
-                partial(InspectHistorySnapshot, command.history_root, verify_partitions=True),
-                HistoricalIndustryEvidenceReader(command.history_root),
+                partial(InspectHistorySnapshot, command.history_root, verify_partitions=True, sqlite_policy=sqlite_policy),
+                HistoricalIndustryEvidenceReader(command.history_root, sqlite_policy=sqlite_policy),
                 probe,
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
     raise TypeError("unsupported research evidence command")
@@ -709,6 +718,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     freeze_events: UnifiedFreezeEventStream | None = None,
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
+    sqlite_policy = BuildSqlitePolicy(settings)
     budget_path = settings.runtime_dir / "deepseek/state.json"
     if runtime_scope is not None:
         settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
@@ -736,14 +746,14 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         workers,
         owns_shared_runtime,
     )
-    reference_publication = SQLiteReferenceIndex(paths.reference_database)
+    reference_publication = SQLiteReferenceIndex(paths.reference_database, sqlite_policy=sqlite_policy)
     references = (
         shared_inputs.market.references
         if shared_inputs
         else PublishedReferences(
             reference_publication.read,
             reference_publication.identity,
-            CurrentIndustryCache(paths.reference / "industry.sqlite3").load,
+            CurrentIndustryCache(paths.reference / "industry.sqlite3", sqlite_policy=sqlite_policy).load,
             max_age_seconds=_fixed_cache_ttl(settings, "security_master_calendar"),
             reserve_bytes=partial(
                 workers.market_cache.reserve_resident, "security_master_calendar", "startup_reference"
@@ -758,7 +768,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             True, references.initialize, calendar.open_dates, ShanghaiClock(now).now, lambda: uuid4().hex
         )
     )
-    persistence = _build_persistence(context, shared_inputs.budget if shared_inputs else None, budget_path=budget_path)
+    persistence = _build_persistence(
+        context, shared_inputs.budget if shared_inputs else None, budget_path=budget_path, sqlite_policy=sqlite_policy
+    )
     profile_id = strategy.scoring_profile
     model_failure = "production_model_missing"
     try:
@@ -776,7 +788,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 SQLiteCompanyFactsIndex(
                     paths.company,
                     event_policy=strategy.company_scoring.events,
-                    cancel_requested=lambda: eligibility.write_cancelled,
+                    cancel_requested=lambda: eligibility.write_cancelled, sqlite_policy=sqlite_policy,
                 )
             ),
             workers=workers.company_pool,
@@ -794,7 +806,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         references,
         eligibility=eligibility,
         training_settings=training_settings,
-        shared_market=shared_inputs.market if shared_inputs else None,
+        shared_market=shared_inputs.market if shared_inputs else None, sqlite_policy=sqlite_policy,
     )
     review_cache = (
         shared_inputs.review_cache
@@ -815,7 +827,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         paths.models,
         loaded_profile.publications if loaded_profile else (),
         owned_profile=profile_id,
-        wall_clock=ShanghaiClock(now).now,
+        wall_clock=ShanghaiClock(now).now, sqlite_policy=sqlite_policy,
     )
     model_scoring = profile_factory.BuildProfileScoring(
         profile_id,
@@ -837,7 +849,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         publication_io=publication_io,
         production_authority=bool((profile_status := model_scoring.status()) and profile_status.production_authority),
         publication_lock=publication_lock,
-        freeze_events=freeze_events,
+        freeze_events=freeze_events, sqlite_policy=sqlite_policy,
     )
     native_data = source_router.MarketInputCoordinator(
         market_data,
@@ -1097,7 +1109,7 @@ def _build_market_data(
     *,
     training_settings: ProfileTrainingSettings | V1TrainingSettings,
     eligibility: CompanyEligibility,
-    shared_market: market_feature_service.MarketFeatureService | None = None,
+    shared_market: market_feature_service.MarketFeatureService | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> market_feature_service.MarketFeatureService:
     settings, strategy = context.settings, context.strategy
     paths = settings.data_paths
@@ -1107,7 +1119,7 @@ def _build_market_data(
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
     feature_builder = FeatureBuilder.from_settings(strategy, training_settings.momentum_horizons, market_cache)
-    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history))
+    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history, sqlite_policy=sqlite_policy))
     projection_owner = (
         shared_market.history.projection_owner
         if shared_market
@@ -1208,7 +1220,8 @@ def _build_market_data(
         )
         research = PublishedCompanyResearch(
             company_facts_reader.SQLiteCompanyEvidenceReader(
-                paths.company, raw_path=paths.company_collection, event_policy=strategy.company_scoring.events
+                paths.company, raw_path=paths.company_collection, event_policy=strategy.company_scoring.events,
+                sqlite_policy=sqlite_policy,
             ),
             wall_clock=now,
             open_dates=calendar.open_dates,
@@ -1276,13 +1289,14 @@ def _build_persistence(
     shared_budget: DeepSeekBudgetLedger | None = None,
     *,
     budget_path: Path,
+    sqlite_policy: SqliteIoPolicy,
 ) -> composition_inputs.RuntimePersistenceContext:
     settings = context.settings
     profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
     records = SQLiteFreezeRecords(
-        profile_root / "freeze.sqlite3", cache=context.workers.market_cache, wall_clock=context.now
+        profile_root / "freeze.sqlite3", cache=context.workers.market_cache, wall_clock=context.now, sqlite_policy=sqlite_policy
     )
-    outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records)
+    outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records, sqlite_policy=sqlite_policy)
     budget = shared_budget or DeepSeekBudgetLedger(
         BudgetStateFile(budget_path, ProcessLock(settings.data_paths.root / ".deepseek.lock", label="DeepSeek")),
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -1292,7 +1306,7 @@ def _build_persistence(
         health_policy=DeepSeekHealthPolicy.from_settings(settings.deepseek.adaptive),
         enabled=settings.deepseek.enabled,
     )
-    sequence = PublicationSequence(profile_root / "publication_state.sqlite3")
+    sequence = PublicationSequence(profile_root / "publication_state.sqlite3", sqlite_policy=sqlite_policy)
     return composition_inputs.RuntimePersistenceContext(sequence, records, budget, outcomes)
 
 
@@ -1303,7 +1317,7 @@ def _build_publication(
     publication_io: PublicationIoTracker,
     production_authority: bool,
     publication_lock: threading.RLock | None,
-    freeze_events: UnifiedFreezeEventStream | None,
+    freeze_events: UnifiedFreezeEventStream | None, sqlite_policy: SqliteIoPolicy,
 ) -> composition_inputs.RuntimePublicationContext:
     settings, records, market_data = context.settings, dependencies.records, dependencies.market_data
     tomorrow_freezes = UnifiedFreezeIndex(transaction_lock=publication_lock)
@@ -1322,7 +1336,7 @@ def _build_publication(
     )
     research_trace = SQLiteFreezeTraceIndex(
         settings.data_paths.research(context.strategy.scoring_profile),
-        limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
+        limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)), sqlite_policy=sqlite_policy,
     )
     observer = AsyncFreezeObserver[FreezeObservation](
         (research_trace.record, *dependencies.additional_observers),

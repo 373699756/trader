@@ -1,5 +1,7 @@
 """The durable gap index distinguishes retryable gaps from source-unusable qfq dates."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -17,8 +19,8 @@ from trader.download.infra.history_download_index import (
 def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresolved(tmp_path):
     calendar = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(41))
     task = HistoryDownloadTask("600001", calendar[:2])
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
-    HistoryControlIndex(tmp_path / "catalog.sqlite3").initialize()
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).initialize()
     index.begin(HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, calendar[20]), (task,))
     index.finish((HistoryDownloadCompletion(task, task.dates, "tencent_qfq_invalid_price", (task.dates[0],)),))
 
@@ -47,8 +49,8 @@ def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresol
 @pytest.mark.parametrize("change_population", [False, True])
 def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path, change_population):
     path = tmp_path / "catalog.sqlite3"
-    HistoryControlIndex(path).initialize()
-    index = HistoryDownloadIndex(path)
+    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture())
     days = (date(2026, 10, 12), date(2026, 10, 13))
     previous = HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, days[-1])
     tasks = (HistoryDownloadTask("600001", days), HistoryDownloadTask("600002", days))

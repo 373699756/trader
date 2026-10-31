@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import ctypes
 import json
 import os
@@ -111,7 +113,7 @@ def RunResearchCommand(
     command: str,
     config_path: Path,
     runtime: RuntimeSettings,
-    options: ResearchCommandOptions,
+    options: ResearchCommandOptions, *, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     profile = options.profile or LoadStrategySettings(runtime.strategy_config_path).scoring_profile
     research_root = runtime.data_paths.research(profile)
@@ -125,12 +127,12 @@ def RunResearchCommand(
         from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
         from trader.training.domain.evaluation.selection_experiment import SELECTION_RESEARCH_IDENTITY
 
-        trace = SQLiteFreezeTraceIndex(research_root)
+        trace = SQLiteFreezeTraceIndex(research_root, sqlite_policy=sqlite_policy)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)
         screening_snapshot = SQLiteHistoricalScreeningSnapshot(
-            research_root / "experiments/historical_screening"
+            research_root / "experiments/historical_screening", sqlite_policy=sqlite_policy
         ).inspect(
             HISTORICAL_SCREENING_SPEC.research_identity
         )
@@ -144,8 +146,8 @@ def RunResearchCommand(
         )
         tomorrow_historical = _read_tomorrow_historical_status(research_root)
         tomorrow_risk = _read_tomorrow_historical_risk_status(research_root)
-        tomorrow_research = _read_tomorrow_research_status(research_root)
-        history_status = _project_history_snapshot_status(InspectHistorySnapshot(runtime.data_paths.history))
+        tomorrow_research = _read_tomorrow_research_status(research_root, sqlite_policy=sqlite_policy)
+        history_status = _project_history_snapshot_status(InspectHistorySnapshot(runtime.data_paths.history, sqlite_policy=sqlite_policy))
         print(
             json.dumps(
                 {
@@ -197,7 +199,7 @@ def RunResearchCommand(
                         },
                         "promotion_authority": False,
                     },
-                    "outcomes": asdict(SQLiteOutcomeEvidenceIndex.inspect_status(research_root)),
+                    "outcomes": asdict(SQLiteOutcomeEvidenceIndex.inspect_status(research_root, sqlite_policy=sqlite_policy)),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -254,10 +256,10 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
-def _read_tomorrow_research_status(research_root: Path) -> dict[str, object]:
+def _read_tomorrow_research_status(research_root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     evidence = TomorrowResearchEvidenceIndex(research_root / "experiments/tomorrow_research")
     try:
-        prerequisite = _tomorrow_research_prerequisite(research_root).inspect()
+        prerequisite = _tomorrow_research_prerequisite(research_root, sqlite_policy=sqlite_policy).inspect()
     except H1PointInTimeSnapshotConflictError:
         return {
             "status": "artifact_conflict",
@@ -347,8 +349,8 @@ def _tomorrow_research_result_payload(
     }
 
 
-def _tomorrow_research_prerequisite(research_root: Path) -> TomorrowLabelReadinessInspector:
-    snapshot = SQLiteH1PointInTimeSnapshot(research_root / "experiments/h1_point_in_time")
+def _tomorrow_research_prerequisite(research_root: Path, *, sqlite_policy: SqliteIoPolicy) -> TomorrowLabelReadinessInspector:
+    snapshot = SQLiteH1PointInTimeSnapshot(research_root / "experiments/h1_point_in_time", sqlite_policy=sqlite_policy)
     return TomorrowLabelReadinessInspector(HistoricalLabelPreregistrationService(snapshot))
 
 

@@ -12,12 +12,21 @@ import time
 from contextlib import ExitStack, nullcontext
 from datetime import date, timedelta
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, TypedDict, cast
+
+if TYPE_CHECKING:
+    from trader.infra.sqlite_policy import SqliteIoPolicy
 
 
-def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int) -> dict[str, object]:
+class _StorageArguments(TypedDict, total=False):
+    sqlite_policy: SqliteIoPolicy
+
+
+
+def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqlite_policy: SqliteIoPolicy | None) -> dict[str, object]:
     # The two explicitly selected offline checkouts have different physical APIs.
     # No compatibility selection is installed in the application.
+    storage_arguments: _StorageArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
     import numpy as np
     import trader.training.infra.sample_index as sample_module
 
@@ -42,8 +51,11 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int) -> dict
         counters["sql_statements"] += 1
         counters["transactions"] += int(sql.lstrip().upper().startswith("BEGIN"))
 
-    def open_connection(self: SqliteConnection, driver: sqlite3.Connection) -> None:
-        original_init(self, driver)
+    def open_connection(self: SqliteConnection, driver: sqlite3.Connection, policy: SqliteIoPolicy | None = None) -> None:
+        if policy is None:
+            original_init(self, driver)
+        else:
+            original_init(self, driver, policy)
         counters["connections"] += 1
         self.observe_statements(trace)
 
@@ -70,7 +82,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int) -> dict
         channels = np.random.default_rng(289).normal(size=(size, len(selected) + 60, 6)) if layout else None
         path = root / f"{profile.profile_id}.sqlite3"
         started = time.perf_counter()
-        with SQLiteTrainingSampleIndex(path, names if named else len(names), sequence_layout=layout) as samples:  # type: ignore[arg-type]  # Explicit historical checkout API.
+        with SQLiteTrainingSampleIndex(path, names if named else len(names), sequence_layout=layout, **storage_arguments) as samples:  # type: ignore[arg-type]  # Explicit historical checkout API.
             for index, day in enumerate(selected):
                 rows = []
                 for stock in range(size):
@@ -85,7 +97,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int) -> dict
         digest = hashlib.sha256()
         started = time.perf_counter()
         with SQLiteTrainingSampleIndex(
-            path, names if named else len(names), sequence_layout=layout, prepared_split_hash=split.content_hash  # type: ignore[arg-type]
+            path, names if named else len(names), sequence_layout=layout, prepared_split_hash=split.content_hash, **storage_arguments  # type: ignore[arg-type]
         ) as samples:
             for head in profile.heads:
                 digest.update(head.model_id.encode())
@@ -107,7 +119,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int) -> dict
     path = root / "v1.sqlite3"
     started = time.perf_counter()
     with ExitStack() as resources:
-        rank_index = LearnedRankSampleIndex(path)
+        rank_index = LearnedRankSampleIndex(path, **storage_arguments)
         resources.callback(rank_index.close)
         for number, day in enumerate(selected):
             pending = _PendingDay(day, number, {
@@ -161,4 +173,10 @@ if __name__ == "__main__":
     parser.add_argument("--size", type=int, required=True)
     parser.add_argument("--sessions", type=int, required=True)
     args = parser.parse_args()
-    print(json.dumps(MeasureSamples(args.checkout, args.root, args.size, args.sessions)))
+    sqlite_policy = None
+    if (args.checkout / "src/trader/infra/sqlite_policy.py").is_file():
+        from trader.bootstrap import BuildSqlitePolicy
+        from trader.infra.settings import LoadRuntimeSettings
+
+        sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.checkout / "config/runtime.json"))
+    print(json.dumps(MeasureSamples(args.checkout, args.root, args.size, args.sessions, sqlite_policy=sqlite_policy)))

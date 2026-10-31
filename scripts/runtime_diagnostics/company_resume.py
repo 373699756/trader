@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import hashlib
 import json
@@ -54,6 +56,7 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         *,
         facts_path: Path,
         event_policy: CompanyEventPolicy,
+        sqlite_policy: SqliteIoPolicy,
     ) -> None:
         super().__init__(
             path,
@@ -65,6 +68,7 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
                 reserve_bytes=configuration.temporary_disk_reserve_bytes,
             ),
             event_policy=event_policy,
+            sqlite_policy=sqlite_policy,
         )
         self._selection = selection
 
@@ -138,23 +142,23 @@ class _ObservedSource(CninfoMarketDisclosureSource):
         return super().document(item, route=route)
 
 
-def _copy(source: Path, destination: Path, *, deadline: float) -> None:
+def _copy(source: Path, destination: Path, *, deadline: float, sqlite_policy: SqliteIoPolicy) -> None:
     with tempfile.NamedTemporaryFile(
         prefix=".company-copy-", suffix=".sqlite3", dir=destination.parent, delete=False
     ) as temporary:
         pending = Path(temporary.name)
     try:
-        with SqliteSession(source, SqliteConnectionOptions(read_only=True, timeout_seconds=8)) as original:
-            with SqliteSession(pending, SqliteConnectionOptions(timeout_seconds=8)) as replica:
+        with SqliteSession(source, SqliteConnectionOptions(read_only=True, timeout_seconds=8), sqlite_policy=sqlite_policy) as original:
+            with SqliteSession(pending, SqliteConnectionOptions(timeout_seconds=8), sqlite_policy=sqlite_policy) as replica:
                 original.backup_to(replica, deadline=deadline, monotonic=time.monotonic)
         pending.replace(destination)
     finally:
         pending.unlink(missing_ok=True)
 
 
-def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]]) -> set[tuple[str, str, str, str, int]]:
+def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]], *, sqlite_policy: SqliteIoPolicy) -> set[tuple[str, str, str, str, int]]:
     saved = set()
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as c:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as c:
         for market, start, end, scope, page in pages:
             if scope:
                 row = c.run(
@@ -171,11 +175,11 @@ def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]]) -> set
     return saved
 
 
-def _retained_digest(path: Path, deadline: float) -> str:
+def _retained_digest(path: Path, deadline: float, *, sqlite_policy: SqliteIoPolicy) -> str:
     digest = hashlib.sha256()
     with (
         SqliteSession(
-            path, SqliteConnectionOptions(read_only=True), cancel_requested=lambda: time.monotonic() >= deadline
+            path, SqliteConnectionOptions(read_only=True), cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy
         ) as connection,
         SqliteTransaction(connection),
     ):
@@ -197,7 +201,7 @@ def _retained_digest(path: Path, deadline: float) -> str:
     return digest.hexdigest()
 
 
-def _compact_storage(source: Path, directory: Path, *, budget_seconds: float) -> dict[str, object]:
+def _compact_storage(source: Path, directory: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     if not directory.is_absolute() or directory == _ROOT or _ROOT in directory.parents:
         raise ValueError("external absolute directory required")
     directory.mkdir(parents=True, exist_ok=True)
@@ -205,10 +209,10 @@ def _compact_storage(source: Path, directory: Path, *, budget_seconds: float) ->
     if target.exists():
         raise ValueError("company_compaction_target_exists")
     deadline = time.monotonic() + budget_seconds
-    _copy(source, target, deadline=deadline)
-    before_digest = _retained_digest(target, deadline)
+    _copy(source, target, deadline=deadline, sqlite_policy=sqlite_policy)
+    before_digest = _retained_digest(target, deadline, sqlite_policy=sqlite_policy)
     before_bytes = target.stat().st_size
-    with SqliteSession(target, cancel_requested=lambda: time.monotonic() >= deadline) as connection:
+    with SqliteSession(target, cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy) as connection:
         with SqliteTransaction(connection, immediate=True):
             ReleaseCompletedCompanyQueryRows(connection)
             removed = connection.total_changes
@@ -217,7 +221,7 @@ def _compact_storage(source: Path, directory: Path, *, budget_seconds: float) ->
             raise RuntimeError("company_compaction_integrity_failed")
         if connection.run("PRAGMA foreign_key_check").fetchone() is not None:
             raise RuntimeError("company_compaction_foreign_key_failed")
-    preserved = before_digest == _retained_digest(target, deadline)
+    preserved = before_digest == _retained_digest(target, deadline, sqlite_policy=sqlite_policy)
     if not preserved:
         raise RuntimeError("company_compaction_retained_data_changed")
     return {
@@ -242,6 +246,9 @@ def Main() -> int:
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--ocr-only", action="store_true")
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     implementation = hashlib.sha256()
     for relative in (
         "scripts/runtime_diagnostics/company_resume.py",
@@ -260,26 +267,26 @@ def Main() -> int:
             source_path,
             now=datetime.now(ZoneInfo("Asia/Shanghai")),
             budget_seconds=min(180.0, args.budget_seconds),
-            facts_path=args.facts_database,
+            facts_path=args.facts_database, sqlite_policy=sqlite_policy,
         )
         if args.directory is not None:
             summary = report["summary"]
             if not isinstance(summary, dict):
                 raise ValueError("company_storage_summary_invalid")
             summary["compaction"] = _compact_storage(
-                source_path, args.directory.resolve(), budget_seconds=args.budget_seconds
+                source_path, args.directory.resolve(), budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy
             )
         print(json.dumps(report, ensure_ascii=False))
         return 0
     if args.pagination_only:
         print(
             json.dumps(
-                AuditCompanyPagination(source_path, budget_seconds=min(300.0, args.budget_seconds)), ensure_ascii=False
+                AuditCompanyPagination(source_path, budget_seconds=min(300.0, args.budget_seconds), sqlite_policy=sqlite_policy), ensure_ascii=False
             )
         )
         return 0
     if args.audit_only:
-        report = AuditCompanyQueries(source_path, budget_seconds=min(300.0, args.budget_seconds))
+        report = AuditCompanyQueries(source_path, budget_seconds=min(300.0, args.budget_seconds), sqlite_policy=sqlite_policy)
         print(json.dumps(report, ensure_ascii=False))
         return 0
     if args.directory is None:
@@ -289,14 +296,14 @@ def Main() -> int:
         parser.error("external absolute directory required")
     directory.mkdir(parents=True, exist_ok=True)
     if args.ocr_only:
-        report = AuditCompanyOcr(source_path, budget_seconds=min(150.0, args.budget_seconds))
+        report = AuditCompanyOcr(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
         (directory / "ocr-result.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False))
         return 0
     if args.pipeline_only:
         print(
             json.dumps(
-                AuditCompanyPipeline(source_path, directory, budget_seconds=args.budget_seconds), ensure_ascii=False
+                AuditCompanyPipeline(source_path, directory, budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy), ensure_ascii=False
             )
         )
         return 0
@@ -305,9 +312,9 @@ def Main() -> int:
         parser.error("source and replay database must differ")
     started = time.monotonic()
     if not destination.exists():
-        _copy(source_path, destination, deadline=started + args.budget_seconds)
+        _copy(source_path, destination, deadline=started + args.budget_seconds, sqlite_policy=sqlite_policy)
     selection_path = directory / "selection.json"
-    with SqliteSession(destination, SqliteConnectionOptions(read_only=True)) as c:
+    with SqliteSession(destination, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as c:
         codes = tuple(row[0] for row in c.run("SELECT code FROM company_population ORDER BY code"))
         if selection_path.exists():
             selection = _selection(json.loads(selection_path.read_text(encoding="utf-8")))
@@ -325,7 +332,7 @@ def Main() -> int:
         parser.error("replay requires --facts-database")
     facts_path = directory / "company_facts.sqlite3"
     if not facts_path.exists():
-        _copy(args.facts_database, facts_path, deadline=started + args.budget_seconds)
+        _copy(args.facts_database, facts_path, deadline=started + args.budget_seconds, sqlite_policy=sqlite_policy)
     configuration = replace(LoadCompanySyncConfiguration(_ROOT), document_workers=1)
     event_policy = LoadStrategySettings(_ROOT / "config" / "strategy.json").company_scoring.events
     index = _ReplayIndex(
@@ -333,7 +340,7 @@ def Main() -> int:
         selection,
         configuration,
         facts_path=facts_path,
-        event_policy=event_policy,
+        event_policy=event_policy, sqlite_policy=sqlite_policy,
     )
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     runs = []
@@ -367,7 +374,7 @@ def Main() -> int:
                 CompanyEvidenceRequest(codes, now, configuration, event_policy),
             )
             if number == 0:
-                saved = _saved_pages(destination, source.pages)
+                saved = _saved_pages(destination, source.pages, sqlite_policy=sqlite_policy)
             else:
                 replayed += len(saved.intersection(source.pages))
             runs.append(
@@ -382,7 +389,7 @@ def Main() -> int:
                 }
             )
         time.sleep(configuration.request_interval_seconds)
-    with SqliteSession(destination, SqliteConnectionOptions(read_only=True)) as c:
+    with SqliteSession(destination, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as c:
         completed = sum(
             bool(c.run("SELECT is_complete FROM partitions WHERE market=? AND start_date=? AND end_date=?", key).require_one()[0])
             for key in selection

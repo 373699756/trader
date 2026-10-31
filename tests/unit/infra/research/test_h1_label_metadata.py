@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -26,7 +28,7 @@ def _record(code: str, day: date) -> H1PointInTimeRecord:
 
 
 def test_h1_label_metadata_reads_only_common_dates_and_manifest_identity(tmp_path) -> None:
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     spec = H1PointInTimeSpec("tomorrow")
     securities = (
         HistoricalSecurity("600001", "main", "A", False, False),

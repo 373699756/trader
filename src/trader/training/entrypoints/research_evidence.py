@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import json
 import math
@@ -177,7 +179,7 @@ def _timeout(value: float) -> float:
     return value
 
 
-def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path) -> int:
+def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path, sqlite_policy: SqliteIoPolicy) -> int:
 
     from trader.bootstrap import ExecuteResearchEvidence
     from trader.training.entrypoints.research_evidence_projection import ProjectEvidenceResult
@@ -191,7 +193,7 @@ def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path) -> i
             raise ValueError("--include-details requires an external --output path")
         command = ParseEvidenceCommand(args, repository_root=repository_root)
         _validate_output_separation(command, output)
-        report = ExecuteResearchEvidence(command)
+        report = ExecuteResearchEvidence(command, sqlite_policy=sqlite_policy)
         payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
         if args.command == "research-selection" and output is not None:
             from trader.training.infra.research.selection_reports import PublishSelectionReport

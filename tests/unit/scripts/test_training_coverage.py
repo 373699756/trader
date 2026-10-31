@@ -1,5 +1,7 @@
 """A cached coverage audit uses narrow statistics and reports conservative label bounds."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import pytest
 
 from scripts.runtime_diagnostics.training_coverage import _audit
@@ -29,7 +31,7 @@ def test_statistics_audit_does_not_read_wide_samples_and_separates_projection(tm
         connection.run("INSERT INTO sample_day_diagnostics VALUES (20459, 5, 5, 5, 5, 5, 5)")
         connection.run("PRAGMA user_version=2")
     before = path.read_bytes()
-    result = _audit(path)
+    result = _audit(path, sqlite_policy=SqlitePolicyFixture())
     assert result["expected_dates"] == 3 and len(result["missing"]) == 3
     assert result["projection_is_training_result"] is False
     assert result["observed_label_projection"] == [
@@ -54,4 +56,4 @@ def test_old_cache_audit_requires_rebuild_without_compatibility_read(tmp_path):
         connection.run("INSERT INTO sample_split_dates VALUES (20458, 'training')")
         connection.run("INSERT INTO samples VALUES (20458, 0.1, NULL)")
     with pytest.raises(ValueError, match="requires_rebuild"):
-        _audit(path)
+        _audit(path, sqlite_policy=SqlitePolicyFixture())

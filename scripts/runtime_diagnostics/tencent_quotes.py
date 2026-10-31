@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import sys
 import time
@@ -98,12 +100,12 @@ def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, obje
     }
 
 
-def _audit_transport(args: argparse.Namespace) -> dict[str, object]:
+def _audit_transport(args: argparse.Namespace, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     from trader.infra.settings import LoadRuntimeSettings
     from .market_factor_inputs import ReadReferences
 
     settings = LoadRuntimeSettings(args.runtime_config)
-    references = ReadReferences(settings.data_paths.reference, datetime.now(_SHANGHAI))
+    references = ReadReferences(settings.data_paths.reference, datetime.now(_SHANGHAI), sqlite_policy=sqlite_policy)
     codes = tuple(sorted({row.subject_key for row in references.observations}))
     rows: list[dict[str, object]] = []
     pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="tencent-audit")
@@ -114,7 +116,7 @@ def _audit_transport(args: argparse.Namespace) -> dict[str, object]:
         for isolated in (False, True):
             attempts: list[HttpAttempt] = []
 
-            def open_transport() -> HttpTransport:
+            def open_transport(*, attempts: list[HttpAttempt] = attempts, isolated: bool = isolated) -> HttpTransport:
                 return RequestsHttpTransport(
                     observe=attempts.append,
                     execute_request=executor.execute if isolated else None,
@@ -149,10 +151,13 @@ def _audit_transport(args: argparse.Namespace) -> dict[str, object]:
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
     report: dict[str, object]
     try:
         codes = _validate(args)
-        report = _audit_transport(args) if args.transport_audit else _collect(codes, args)
+        report = _audit_transport(args, sqlite_policy=sqlite_policy) if args.transport_audit else _collect(codes, args)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
             "schema_version": "tencent-quote-sampling",

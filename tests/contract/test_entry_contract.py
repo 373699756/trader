@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import ast
 import json
 import os
@@ -613,14 +615,14 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
         def inspect(self) -> TomorrowResearchPrerequisiteStatus:
             return TomorrowResearchPrerequisiteStatus("ready", "a" * 64)
 
-    monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _ReadyPrerequisite())
+    monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime, *, sqlite_policy: _ReadyPrerequisite())
     monkeypatch.setattr(
         research_commands.TomorrowResearchEvidenceIndex,
         "load_graph",
         lambda _repository: (_ for _ in ()).throw(TomorrowResearchEvidenceIndexError("graph invalid")),
     )
 
-    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config).data_paths.research("v2"))
+    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config).data_paths.research("v2"), sqlite_policy=SqlitePolicyFixture())
 
     assert result["status"] == "artifact_conflict"
     assert result["input_prerequisite_status"] == "ready"
@@ -636,9 +638,9 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
         def inspect(self) -> TomorrowResearchPrerequisiteStatus:
             raise H1PointInTimeSnapshotConflictError("H1 archive invalid")
 
-    monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _BrokenPrerequisite())
+    monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime, *, sqlite_policy: _BrokenPrerequisite())
 
-    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config).data_paths.research("v2"))
+    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config).data_paths.research("v2"), sqlite_policy=SqlitePolicyFixture())
 
     assert result["status"] == "artifact_conflict"
     assert result["input_prerequisite_status"] == "artifact_conflict"

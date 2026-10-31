@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import math
 import mmap
 from collections import deque
@@ -161,7 +163,8 @@ class _RollingCode:
 class LearnedRankSampleIndex:
     """Own a disposable sample database; no production/history writes occur here."""
 
-    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._connection = OpenSqliteConnection(
             path,
             SqliteConnectionOptions(
@@ -169,7 +172,7 @@ class LearnedRankSampleIndex:
                 journal_mode=None if read_only else "OFF",
                 durability="durable" if read_only else "rebuildable",
                 cache_kib=16384,
-            ),
+            ), sqlite_policy=self._sqlite_policy,
         )
         try:
             EnsureSqliteSchema(

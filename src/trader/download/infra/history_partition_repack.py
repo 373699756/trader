@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import os
 import shutil
@@ -112,8 +114,9 @@ class HistoryPartitionRepackCoordinator:
         *,
         requirements: HistoryPartitionRepackRequirements | None = None,
         progress: RepackProgress | None = None,
-        fault_injector: FaultInjector | None = None,
+        fault_injector: FaultInjector | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         source, target = source_root.expanduser().resolve(), target_root.expanduser().resolve()
         if source.name != "history" or target != source.with_name("history-repacked"):
             raise HistoryPartitionRepackError("repack requires sibling history and history-repacked directories")
@@ -132,7 +135,7 @@ class HistoryPartitionRepackCoordinator:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root.with_name(".history.lock")):
             _require_no_activation_fence(layout.journal_path)
-            context = _load_source_context(layout.source_root, self._requirements)
+            context = _load_source_context(layout.source_root, self._requirements, sqlite_policy=self._sqlite_policy)
             _require_same_filesystem(layout)
             if layout.state_path.exists():
                 state = ReadHistoryPartitionRepackBuildState(layout.state_path)
@@ -159,7 +162,7 @@ class HistoryPartitionRepackCoordinator:
                 WriteHistoryPartitionRepackBuildState(layout.state_path, state)
                 self._inject("build_prepared")
             if state.completed:
-                _verify_candidate(layout.target_root, state, target=True)
+                _verify_candidate(layout.target_root, state, target=True, sqlite_policy=self._sqlite_policy)
                 return _status("build", "completed", state)
             completed = {item.relative_path: item for item in state.partitions}
             for reference in context.current_snapshot.partitions:
@@ -170,7 +173,7 @@ class HistoryPartitionRepackCoordinator:
                         layout.target_root,
                         reference,
                         context.current_snapshot.sequence,
-                        state.page_size,
+                        state.page_size, sqlite_policy=self._sqlite_policy,
                     )
                     self._inject(f"partition_replaced:{reference.relative_path}")
                     completed[reference.relative_path] = evidence
@@ -182,7 +185,7 @@ class HistoryPartitionRepackCoordinator:
                         self._progress(len(state.partitions), state.expected_partition_count, reference.relative_path)
                 elif _sha256_file(layout.target_root / reference.relative_path) != evidence.target_sha256:
                     raise HistoryPartitionRepackError("resumed annual file differs from committed digest")
-                HistoryPricePartition.verify(layout.target_root / reference.relative_path, reference)
+                HistoryPricePartition.verify(layout.target_root / reference.relative_path, reference, sqlite_policy=self._sqlite_policy)
             _require_source_unchanged(layout.source_root, state)
             _require_size_gate(state, self._requirements)
             target_control = layout.target_root / _CONTROL_NAME
@@ -192,7 +195,7 @@ class HistoryPartitionRepackCoordinator:
             # Physical compaction changes no logical snapshot or reference identity.
             state = replace(state, target_snapshot_hash=context.current_snapshot.content_hash, completed=True)
             WriteHistoryPartitionRepackBuildState(layout.state_path, state)
-            _verify_candidate(layout.target_root, state, target=True)
+            _verify_candidate(layout.target_root, state, target=True, sqlite_policy=self._sqlite_policy)
             self._inject("build_completed")
             return _status("build", "completed", state)
 
@@ -209,7 +212,7 @@ class HistoryPartitionRepackCoordinator:
                     raise HistoryPartitionRepackError("resume finalization before another repack operation")
                 if journal.state != "rolled_back":
                     if layout.source_root.exists() and layout.backup_root.exists() and not layout.target_root.exists():
-                        _verify_candidate(layout.source_root, state, target=True)
+                        _verify_candidate(layout.source_root, state, target=True, sqlite_policy=self._sqlite_policy)
                         WriteHistoryPartitionRepackActivationJournal(
                             layout.journal_path, replace(journal, state="verified")
                         )
@@ -218,8 +221,8 @@ class HistoryPartitionRepackCoordinator:
                     return _status("activate", "rolled_back", state)
             if layout.backup_root.exists():
                 raise HistoryPartitionRepackError("repack backup already exists")
-            _verify_candidate(layout.source_root, state, target=False)
-            _verify_candidate(layout.target_root, state, target=True)
+            _verify_candidate(layout.source_root, state, target=False, sqlite_policy=self._sqlite_policy)
+            _verify_candidate(layout.target_root, state, target=True, sqlite_policy=self._sqlite_policy)
             journal = HistoryPartitionRepackActivationJournal(
                 "prepared",
                 str(layout.source_root),
@@ -236,7 +239,7 @@ class HistoryPartitionRepackCoordinator:
             WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
             _move_path(layout.target_root, layout.source_root)
             self._inject("new_root_activated")
-            _verify_candidate(layout.source_root, state, target=True)
+            _verify_candidate(layout.source_root, state, target=True, sqlite_policy=self._sqlite_policy)
             WriteHistoryPartitionRepackActivationJournal(layout.journal_path, replace(journal, state="verified"))
             self._inject("verified")
             return _status("activate", "verified", state)
@@ -257,14 +260,14 @@ class HistoryPartitionRepackCoordinator:
     ) -> None:
         layout = self._layout
         if layout.backup_root.exists():
-            _verify_candidate(layout.backup_root, state, target=False)
+            _verify_candidate(layout.backup_root, state, target=False, sqlite_policy=self._sqlite_policy)
             if layout.source_root.exists():
-                _verify_candidate(layout.source_root, state, target=True)
+                _verify_candidate(layout.source_root, state, target=True, sqlite_policy=self._sqlite_policy)
                 if layout.target_root.exists():
                     raise HistoryPartitionRepackError("rollback target already exists")
                 _move_path(layout.source_root, layout.target_root)
             _move_path(layout.backup_root, layout.source_root)
-        _verify_candidate(layout.source_root, state, target=False)
+        _verify_candidate(layout.source_root, state, target=False, sqlite_policy=self._sqlite_policy)
         WriteHistoryPartitionRepackActivationJournal(layout.journal_path, replace(journal, state="rolled_back"))
         self._inject("rolled_back")
 
@@ -278,7 +281,7 @@ class HistoryPartitionRepackCoordinator:
                 return _status("finalize", "finalized", state)
             if journal.state not in {"verified", "finalizing"}:
                 raise HistoryPartitionRepackError("repack must be verified before finalization")
-            _verify_candidate(layout.source_root, state, target=True)
+            _verify_candidate(layout.source_root, state, target=True, sqlite_policy=self._sqlite_policy)
             snapshot_hash = state.target_snapshot_hash
             if snapshot_hash is None:
                 raise HistoryPartitionRepackError("repack target snapshot is unavailable")
@@ -286,7 +289,7 @@ class HistoryPartitionRepackCoordinator:
             if proof.snapshot_hash != state.target_snapshot_hash:
                 raise HistoryPartitionRepackError("training evidence does not match repacked prices")
             if journal.state == "verified":
-                _verify_candidate(layout.backup_root, state, target=False)
+                _verify_candidate(layout.backup_root, state, target=False, sqlite_policy=self._sqlite_policy)
                 journal = replace(journal, state="finalizing")
                 WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
             released = _directory_size(layout.backup_root) if layout.backup_root.exists() else 0
@@ -311,12 +314,12 @@ def RequireHistoryRepackIdle(history_root: Path) -> None:
     _require_no_activation_fence(history_root.resolve().with_name(_ACTIVATION_JOURNAL_NAME))
 
 
-def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, target: bool) -> None:
+def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, target: bool, sqlite_policy: SqliteIoPolicy) -> None:
     _require_clean_source(root)
     reference_base = Path(state.source_root)
-    _require_stable_snapshot(root, state.source_snapshot_hash, reference_base)
+    _require_stable_snapshot(root, state.source_snapshot_hash, reference_base, sqlite_policy=sqlite_policy)
     current_snapshot = (
-        HistoryControlIndex(root / _CONTROL_NAME).load_state(reference_base=reference_base).published_snapshot
+        HistoryControlIndex(root / _CONTROL_NAME, sqlite_policy=sqlite_policy).load_state(reference_base=reference_base).published_snapshot
     )
     if current_snapshot is None:
         raise HistoryPartitionRepackError("repack snapshot missing")
@@ -331,14 +334,14 @@ def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, ta
         if path.is_symlink() or _sha256_file(path) != (item.target_sha256 if target else item.source_sha256):
             raise HistoryPartitionRepackError("repack annual file digest mismatch")
     for reference in current_snapshot.partitions:
-        HistoryPricePartition.verify(root / reference.relative_path, reference)
+        HistoryPricePartition.verify(root / reference.relative_path, reference, sqlite_policy=sqlite_policy)
 
 
-def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequirements) -> _SourceContext:
+def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequirements, *, sqlite_policy: SqliteIoPolicy) -> _SourceContext:
     if not root.is_dir() or root.is_symlink():
         raise HistoryPartitionRepackError("history repack source archive is missing or unsafe")
     _require_clean_source(root)
-    control = HistoryControlIndex(root / _CONTROL_NAME)
+    control = HistoryControlIndex(root / _CONTROL_NAME, sqlite_policy=sqlite_policy)
     try:
         if control.integrity().state != "healthy":
             raise HistoryPartitionRepackError("history repack source control is unavailable")
@@ -444,7 +447,7 @@ def _repack_partition(
     target_root: Path,
     reference: HistorySnapshotPartition,
     snapshot_sequence: int,
-    page_size: int,
+    page_size: int, *, sqlite_policy: SqliteIoPolicy,
 ) -> HistoryPartitionRepackPartitionEvidence:
     source = source_root / reference.relative_path
     destination = target_root / reference.relative_path
@@ -455,19 +458,19 @@ def _repack_partition(
             raise HistoryPartitionRepackError("history repack pending partition is unsafe")
         pending.unlink()
     source_sha = _sha256_file(source)
-    HistoryPricePartition.verify(source, reference)
+    HistoryPricePartition.verify(source, reference, sqlite_policy=sqlite_policy)
     try:
-        with closing(_read_connection(source, copy_destination=True)) as connection:
+        with closing(_read_connection(source, copy_destination=True, sqlite_policy=sqlite_policy)) as connection:
             connection.run("PRAGMA page_size=8192")
             connection.run("VACUUM INTO ?", (str(pending),))
     except sqlite3.Error as exc:
         raise HistoryPartitionRepackError("history partition VACUUM INTO failed") from exc
     _fsync_file(pending)
-    source_facts = _partition_facts(source, snapshot_sequence)
-    target_facts = _partition_facts(pending, snapshot_sequence)
+    source_facts = _partition_facts(source, snapshot_sequence, sqlite_policy=sqlite_policy)
+    target_facts = _partition_facts(pending, snapshot_sequence, sqlite_policy=sqlite_policy)
     if source_facts != target_facts:
         raise HistoryPartitionRepackError("history repack changed logical partition content")
-    with closing(_read_connection(pending)) as connection:
+    with closing(_read_connection(pending, sqlite_policy=sqlite_policy)) as connection:
         if tuple(connection.run("PRAGMA page_size").require_one()) != (page_size,):
             raise HistoryPartitionRepackError("history repack target page size is invalid")
         if tuple(connection.run("PRAGMA freelist_count").require_one()) != (0,):
@@ -478,7 +481,7 @@ def _repack_partition(
             raise HistoryPartitionRepackError("history repack target foreign key check failed")
     target_sha = _sha256_file(pending)
     target_reference = reference
-    HistoryPricePartition.verify(pending, target_reference)
+    HistoryPricePartition.verify(pending, target_reference, sqlite_policy=sqlite_policy)
     os.replace(pending, destination)
     _fsync_directory(destination.parent)
     return HistoryPartitionRepackPartitionEvidence(
@@ -498,9 +501,9 @@ def _repack_partition(
     )
 
 
-def _partition_facts(path: Path, snapshot_sequence: int) -> _PartitionFacts:
+def _partition_facts(path: Path, snapshot_sequence: int, *, sqlite_policy: SqliteIoPolicy) -> _PartitionFacts:
     try:
-        with closing(_read_connection(path)) as connection:
+        with closing(_read_connection(path, sqlite_policy=sqlite_policy)) as connection:
             records_count, records_hash = _hash_query(connection, _TABLE_QUERIES[0][1])
             observations_count, observations_hash = _hash_query(connection, _TABLE_QUERIES[1][1])
             latest = cast(
@@ -588,10 +591,10 @@ def _optional_journal(path: Path) -> HistoryPartitionRepackActivationJournal | N
     return ReadHistoryPartitionRepackActivationJournal(path) if path.exists() else None
 
 
-def _require_stable_snapshot(root: Path, expected_hash: str, reference_base: Path) -> None:
+def _require_stable_snapshot(root: Path, expected_hash: str, reference_base: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
     try:
         current_snapshot = (
-            HistoryControlIndex(root / _CONTROL_NAME).load_state(reference_base=reference_base).published_snapshot
+            HistoryControlIndex(root / _CONTROL_NAME, sqlite_policy=sqlite_policy).load_state(reference_base=reference_base).published_snapshot
         )
     except HistoryControlError as exc:
         raise HistoryPartitionRepackError("history repack stable control is unavailable") from exc
@@ -600,9 +603,9 @@ def _require_stable_snapshot(root: Path, expected_hash: str, reference_base: Pat
     _clear_empty_control_sidecars(root / _CONTROL_NAME)
 
 
-def _stable_snapshot_hash(root: Path) -> str | None:
+def _stable_snapshot_hash(root: Path, *, sqlite_policy: SqliteIoPolicy) -> str | None:
     try:
-        current_snapshot = HistoryControlIndex(root / _CONTROL_NAME).load_state().published_snapshot
+        current_snapshot = HistoryControlIndex(root / _CONTROL_NAME, sqlite_policy=sqlite_policy).load_state().published_snapshot
     except (HistoryControlError, OSError):
         return None
     _clear_empty_control_sidecars(root / _CONTROL_NAME)
@@ -648,18 +651,17 @@ def _status(action: str, state_name: str, state: HistoryPartitionRepackBuildStat
     )
 
 
-def _read_connection(path: Path, *, copy_destination: bool = False) -> SqliteConnection:
+def _read_connection(path: Path, *, copy_destination: bool = False, sqlite_policy: SqliteIoPolicy) -> SqliteConnection:
     return OpenSqliteConnection(
         path,
         SqliteConnectionOptions(
             read_only=True,
-            timeout_seconds=30.0,
             foreign_keys=True,
             query_only=not copy_destination,
             cache_kib=8192,
             mmap_bytes=0,
             temp_storage="FILE",
-        ),
+        ), sqlite_policy=sqlite_policy,
     )
 
 

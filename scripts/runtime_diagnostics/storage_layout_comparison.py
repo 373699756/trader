@@ -25,6 +25,14 @@ from threading import Event, Thread
 from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
+if TYPE_CHECKING:
+    from trader.infra.sqlite_policy import SqliteIoPolicy
+
+
+class _StorageArguments(TypedDict, total=False):
+    sqlite_policy: SqliteIoPolicy
+
+
 
 class _MeasuredCase(TypedDict):
     milliseconds: float
@@ -201,7 +209,8 @@ def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: i
     }
 
 
-def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[str, float]]:
+def _window_worker(checkout: Path, size: int, sessions: int, *, sqlite_policy: SqliteIoPolicy | None) -> dict[str, dict[str, float]]:
+    storage_arguments: _StorageArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
     sys.path[:0] = [str(checkout / "src"), str(checkout)]
     from trader.infra import sqlite_connection
 
@@ -306,8 +315,8 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
 
     with TemporaryDirectory(prefix="trader-window-comparison-") as scratch:
         root = Path(scratch)
-        primary = SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v2")
-        peer = SQLiteQfqWindowCache(primary.path, "v3")
+        primary = SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v2", **storage_arguments)
+        peer = SQLiteQfqWindowCache(primary.path, "v3", **storage_arguments)
 
         def publish() -> None:
             for start in range(0, size, 32):
@@ -358,14 +367,15 @@ def _window_worker(checkout: Path, size: int, sessions: int) -> dict[str, dict[s
             assert changed[1] == sessions
 
         measure("incremental_write", update, repetitions=11)
-        _sqlite_adapter_cases(root, min(size, 1000), measure, checkout=checkout)
+        _sqlite_adapter_cases(root, min(size, 1000), measure, checkout=checkout, sqlite_policy=sqlite_policy)
     return result
 
 
 def _sqlite_adapter_cases(
-    root: Path, size: int, measure: Callable[[str, Callable[[], object]], None], *, checkout: Path
+    root: Path, size: int, measure: Callable[[str, Callable[[], object]], None], *, checkout: Path, sqlite_policy: SqliteIoPolicy | None
 ) -> None:
     """Exercise unchanged adapter contracts against each checkout, using identical typed inputs."""
+    storage_arguments: _StorageArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
     from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
     from trader.download.domain.company_evidence import Disclosure, DisclosurePage
     from trader.download.domain.history_revision import HistoryRevision
@@ -405,7 +415,7 @@ def _sqlite_adapter_cases(
             revisions.append(
                 HistoryRevision(1, "main", BaoStockDailyCell(code, day, "complete", raw, qfq), None, None, None)
             )
-    partition = HistoryPricePartition(root / "prices_2026.sqlite3", 2026, 1)
+    partition = HistoryPricePartition(root / "prices_2026.sqlite3", 2026, 1, **storage_arguments)
     partition.initialize()
     measure("history_batch_write", lambda: partition.save_revisions(revisions))
 
@@ -435,12 +445,12 @@ def _sqlite_adapter_cases(
     features = TOMORROW_HEAD_CONTRACT.feature_manifest.names if named else 6
 
     def build_samples() -> None:
-        with SQLiteTrainingSampleIndex(sample_path, features) as index:  # type: ignore[arg-type]  # Historical checkout only.
+        with SQLiteTrainingSampleIndex(sample_path, features, **storage_arguments) as index:  # type: ignore[arg-type]  # Historical checkout only.
             index.add_final(samples)
             index.prepare_for_model_fitting(split)
 
     def read_samples() -> None:
-        with SQLiteTrainingSampleIndex(sample_path, features, prepared_split_hash=split.content_hash) as index:  # type: ignore[arg-type]
+        with SQLiteTrainingSampleIndex(sample_path, features, prepared_split_hash=split.content_hash, **storage_arguments) as index:  # type: ignore[arg-type]
             counts = index.industry_counts(TOMORROW_HEAD_CONTRACT)
             assert len(counts) == 1
             data = index.industry_data(counts[0], TOMORROW_HEAD_CONTRACT)
@@ -455,7 +465,7 @@ def _sqlite_adapter_cases(
         root / "company.sqlite3",
         facts_path=root / "company_facts.sqlite3",
         documents=CompanyDocumentFiles(root / "text", **document_options),
-        **index_options,
+        **index_options, **storage_arguments,
     )
     company.initialize()
     disclosure_partition = company.partitions(("sse",), now)[0]
@@ -469,7 +479,7 @@ def _sqlite_adapter_cases(
         lambda: company.commit_page(disclosure_partition, DisclosurePage(disclosures, len(disclosures), False), now),
     )
     measure("company_publish", lambda: company.publish(codes, now))
-    reader = SQLiteCompanyEvidenceReader(company.facts_path, raw_path=company.path, **reader_options)
+    reader = SQLiteCompanyEvidenceReader(company.facts_path, raw_path=company.path, **reader_options, **storage_arguments)
     expected = reader.read(codes)
 
     def read_company() -> None:
@@ -478,7 +488,8 @@ def _sqlite_adapter_cases(
     measure("company_read", read_company)
 
 
-def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
+def _worker(checkout: Path, layout: str, size: int, *, sqlite_policy: SqliteIoPolicy | None) -> dict[str, object]:
+    storage_arguments: _StorageArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
     sys.path[:0] = [str(checkout / "src"), str(checkout)]
     from trader.infra import sqlite_connection
 
@@ -529,7 +540,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             evidence = tuple(replace(item, code=code) for item, code in zip(context.st_evidence, codes, strict=True))
             return replace(context, universe=universe, st_evidence=evidence)
 
-    supplier = Supplier(days, size)
+    supplier = Supplier(days, size, **storage_arguments)
     cases: dict[str, _MeasuredCase] = {}
 
     def measure(name: str, action: Callable[[], object]) -> object:
@@ -588,14 +599,14 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
                 )
                 if layout == "annual":
                     supplier.publish_reference(config.reference_root / "company_st.sqlite3", at.date(), config.sessions)
-                result = RunHistorySync(config, supplier, clock=lambda: at)
+                result = RunHistorySync(config, supplier, clock=lambda: at, **storage_arguments)
                 if result.state not in ("completed", "already_current") or result.unresolved_price_cells:
                     raise RuntimeError(f"fixture synchronization failed: {result.state}/{result.reason}")
                 return result
 
             measure("history_initial_write", sync)
-            index = HistoryControlIndex(history / ("catalog.sqlite3" if layout == "annual" else "control.sqlite3"))
-            publication = SQLitePublishedHistorySnapshot(history)
+            index = HistoryControlIndex(history / ("catalog.sqlite3" if layout == "annual" else "control.sqlite3"), **storage_arguments)
+            publication = SQLitePublishedHistorySnapshot(history, **storage_arguments)
             manifest = publication.manifest()
             assert manifest is not None
             snapshot = next(
@@ -611,7 +622,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
 
             measure("history_startup_load", load)
             measure("history_hot_read", load)
-            reader = HistorySnapshotReader(history)
+            reader = HistorySnapshotReader(history, **storage_arguments)
 
             def scan() -> None:
                 assert sum(1 for _ in reader.iter_training_rows(snapshot, days, codes)) == size * 2000
@@ -621,7 +632,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             measure("history_incremental_write", sync)
             measure("history_unchanged_reuse", sync)
             daily = root / "daily_window.sqlite3" if layout == "annual" else root / "qfq"
-            primary, secondary = (SQLiteQfqWindowCache(daily, profile) for profile in ("v2", "v3"))
+            primary, secondary = (SQLiteQfqWindowCache(daily, profile, **storage_arguments) for profile in ("v2", "v3"))
             context = supplier.load_context(supplier.days[-1], 2000)
             maximum_sessions = qfq_configuration.maximum_sessions if qfq_configuration is not None else 251
             calendar = supplier.days[-maximum_sessions:]
@@ -692,9 +703,15 @@ if __name__ == "__main__":
     parser.add_argument("--sessions", type=int, default=251)
     args = parser.parse_args()
     checkout = args.checkout.resolve(strict=True)
+    sqlite_policy = None
+    if (checkout / "src/trader/infra/sqlite_policy.py").is_file():
+        from trader.bootstrap import BuildSqlitePolicy
+        from trader.infra.settings import LoadRuntimeSettings
+
+        sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(checkout / "config/runtime.json"))
     report = (
-        _window_worker(checkout, args.size, args.sessions)
+        _window_worker(checkout, args.size, args.sessions, sqlite_policy=sqlite_policy)
         if args.worker == "window"
-        else _worker(checkout, args.worker, args.size)
+        else _worker(checkout, args.worker, args.size, sqlite_policy=sqlite_policy)
     )
     print(json.dumps(report, sort_keys=True))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import json
 import os
@@ -32,7 +34,7 @@ from .reporting import emit_report
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _measure(root: Path) -> dict[str, float | int]:
+def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, float | int]:
     usage_before = resource.getrusage(resource.RUSAGE_SELF)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
     company_configuration = LoadCompanySyncConfiguration(_PROJECT_ROOT)
@@ -48,7 +50,7 @@ def _measure(root: Path) -> dict[str, float | int]:
         root / "collection.sqlite3",
         facts_path=root / "company_facts.sqlite3",
         documents=documents,
-        event_policy=company_policy.events,
+        event_policy=company_policy.events, sqlite_policy=sqlite_policy,
     )
     index.initialize()
     partition = index.partitions(("sse",), now)[0]
@@ -61,13 +63,13 @@ def _measure(root: Path) -> dict[str, float | int]:
     index.commit_page(partition, DisclosurePage(rows, len(rows), False), now)
     # Same bounded synthetic official body for both implementations; no activity database is opened.
     body = "本公司收到证监会立案告知书。" + "本段为隔离性能样本的事实说明。" * 160
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+    with SqliteSession(index.path, sqlite_policy=sqlite_policy) as connection, SqliteTransaction(connection):
         connection.run("UPDATE disclosures SET body_hash=?,body_checked=1,body_retained=1", (documents.write(body),))
     write = time.monotonic() - started
     started = time.monotonic()
     index.publish(codes, now)
     publish = time.monotonic() - started
-    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path, event_policy=company_policy.events)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path, event_policy=company_policy.events, sqlite_policy=sqlite_policy)
     started = time.monotonic()
     cold = reader.read(codes)
     cold_read = time.monotonic() - started
@@ -78,7 +80,7 @@ def _measure(root: Path) -> dict[str, float | int]:
     index.publish(codes, now + timedelta(minutes=1))
     repeat_publish = time.monotonic() - started
     assert len(reader.read(codes)) == len(cold)
-    with SqliteSession(index.facts_path, SqliteConnectionOptions(read_only=True)) as connection:
+    with SqliteSession(index.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
         publication_bytes = connection.run("SELECT SUM(pgsize) FROM dbstat").require_one()[0]
     started = time.monotonic()
     reader.read(codes)
@@ -117,15 +119,15 @@ def _measure(root: Path) -> dict[str, float | int]:
     for _ in codes:
         BuildHistoryContext(bars, lookback_sessions=251)
     derive = time.monotonic() - started
-    gaps = HistoryDownloadIndex(root / "catalog.sqlite3")
-    HistoryControlIndex(root / "catalog.sqlite3").initialize()
-    with SqliteSession(root / "catalog.sqlite3") as connection, SqliteTransaction(connection):
+    gaps = HistoryDownloadIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
+    HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).initialize()
+    with SqliteSession(root / "catalog.sqlite3", sqlite_policy=sqlite_policy) as connection, SqliteTransaction(connection):
         connection.run_many("INSERT INTO download_gaps VALUES(?,?)", ((code, "2026-10-16") for code in codes))
     started = time.monotonic()
     # Reproduce the retired per-stock connection/query workload, only on this fixture.
     all_gaps = 0
     for code in codes:
-        with SqliteSession(root / "catalog.sqlite3") as connection:
+        with SqliteSession(root / "catalog.sqlite3", sqlite_policy=sqlite_policy) as connection:
             all_gaps += len(
                 connection.run(
                     "SELECT gap.trade_date,unusable.checked_cutoff FROM download_gaps gap "
@@ -213,13 +215,16 @@ def Main() -> int:
     parser.add_argument("--baseline-checkout", type=Path)
     parser.add_argument("--rounds", type=int, choices=(1, 3), default=3)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if args.baseline_checkout is not None:
         emit_report(_compare(args.baseline_checkout))
         return 0
     rounds = []
     for _ in range(args.rounds):
         with TemporaryDirectory(prefix="trader-download-perf-") as directory:
-            rounds.append(_measure(Path(directory)))
+            rounds.append(_measure(Path(directory), sqlite_policy=sqlite_policy))
     summary = {key: round(median(float(result[key]) for result in rounds), 6) for key in rounds[0]}
     emit_report(
         {

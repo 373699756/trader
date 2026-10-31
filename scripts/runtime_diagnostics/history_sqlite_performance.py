@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import calendar
 import cProfile
@@ -118,11 +120,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
     if args.preload_audit:
-        return _measure_preload(args.history_root.resolve(), args.runtime_config, args.preload_profiles, cpu_profile=args.preload_cpu_profile, feature_audit=args.preload_feature_audit)
+        return _measure_preload(args.history_root.resolve(), args.runtime_config, args.preload_profiles, cpu_profile=args.preload_cpu_profile, feature_audit=args.preload_feature_audit, sqlite_policy=sqlite_policy)
     if args.resume_samples:
         try:
-            return _measure_resume_reads(args.history_root.resolve(), args.resume_samples)
+            return _measure_resume_reads(args.history_root.resolve(), args.resume_samples, sqlite_policy=sqlite_policy)
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
             emit_report({"schema_version": "history_sqlite_performance", "status": "failed"})
             return 1
@@ -144,7 +149,7 @@ def main() -> int:
             args.history_root.resolve(),
             args.page_sample_count,
             args.query_rounds,
-            args.revision_write_sample_count,
+            args.revision_write_sample_count, sqlite_policy=sqlite_policy,
         )
     except (HistoryControlError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
         emit_report({"schema_version": "history_sqlite_performance", "status": "failed"})
@@ -196,18 +201,18 @@ def _measure_preload(
     selected: tuple[ScoringProfileId, ...],
     *,
     cpu_profile: bool = False,
-    feature_audit: bool = False,
+    feature_audit: bool = False, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     total_started = time.monotonic()
     settings = LoadRuntimeSettings(runtime_config)
     observed = datetime.now(ZoneInfo("Asia/Shanghai"))
     cache: BoundedLruCache[object] = BoundedLruCache(settings.market_data.cache_policy)
     reserve = partial(cache.reserve_resident, "security_master_calendar")
-    reference_index = SQLiteReferenceIndex(settings.data_paths.reference_database)
+    reference_index = SQLiteReferenceIndex(settings.data_paths.reference_database, sqlite_policy=sqlite_policy)
     references = PublishedReferences(
         reference_index.read,
         reference_index.identity,
-        CurrentIndustryCache(settings.data_paths.reference / "industry.sqlite3").load,
+        CurrentIndustryCache(settings.data_paths.reference / "industry.sqlite3", sqlite_policy=sqlite_policy).load,
         max_age_seconds=FixedCacheTtl(settings, "security_master_calendar"),
         reserve_bytes=partial(reserve, "startup_reference"),
     )
@@ -219,7 +224,7 @@ def _measure_preload(
     model_started = time.monotonic()
     models = tuple(LoadScoringProfile(profile, training_root=settings.data_paths.models) for profile in selected)
     model_seconds = time.monotonic() - model_started
-    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(root))
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(root, sqlite_policy=sqlite_policy))
     manifest = history.manifest()
     calendar_dates = reference.open_dates
     owner = SharedHistoryProjection(
@@ -267,7 +272,7 @@ def _measure_preload(
         company_started = time.monotonic()
         policy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=selected[0])
         research = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(settings.data_paths.company, raw_path=settings.data_paths.company_collection, event_policy=policy.company_scoring.events),
+            SQLiteCompanyEvidenceReader(settings.data_paths.company, raw_path=settings.data_paths.company_collection, event_policy=policy.company_scoring.events, sqlite_policy=sqlite_policy),
             wall_clock=lambda: observed,
             open_dates=lambda: calendar_dates,
             monotonic=time.monotonic,
@@ -431,11 +436,11 @@ def _measure_features(
     }
 
 
-def _measure_resume_reads(root: Path, count: int) -> int:
+def _measure_resume_reads(root: Path, count: int, *, sqlite_policy: SqliteIoPolicy) -> int:
     if not 1 <= count <= 8:
         raise ValueError("history resume sample count must be within 1..8")
     with (
-        SqliteSession(root / "catalog.sqlite3", SqliteConnectionOptions(read_only=True)) as connection,
+        SqliteSession(root / "catalog.sqlite3", SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection,
         SqliteTransaction(connection),
     ):
         sequence = int(connection.run("SELECT sequence FROM download_batch").require_one()[0])
@@ -447,7 +452,7 @@ def _measure_resume_reads(root: Path, count: int) -> int:
     measurements: list[dict[str, object]] = []
     started = time.monotonic()
     prices = HistoryDirectPrices(
-        root, sequence, None, HistorySqliteActivity(lambda: None, lambda: time.monotonic() - started >= 60)
+        root, sequence, None, HistorySqliteActivity(lambda: None, lambda: time.monotonic() - started >= 60), sqlite_policy=sqlite_policy
     )
     status = "passed"
     try:
@@ -524,8 +529,8 @@ def inspect_history_space(root: Path) -> dict[str, object]:
     }
 
 
-def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalSummary:
-    state = HistoryControlIndex(root / "catalog.sqlite3").load_state()
+def inspect_history_sqlite(root: Path, page_sample_count: int = 1, *, sqlite_policy: SqliteIoPolicy) -> _PhysicalSummary:
+    state = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_state()
     current_snapshot = state.published_snapshot
     if current_snapshot is None:
         raise RuntimeError("history SQLite has no published snapshot")
@@ -542,7 +547,7 @@ def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalS
         if not path.is_file() or path.is_symlink():
             raise RuntimeError("history SQLite partition is unavailable")
         total_bytes += path.stat().st_size
-        with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0)) as connection:
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0), sqlite_policy=sqlite_policy) as connection:
             page_size = int(connection.run("PRAGMA page_size").require_one()[0])
             page_sizes.add(page_size)
             page_count += int(connection.run("PRAGMA page_count").require_one()[0])
@@ -576,9 +581,9 @@ def inspect_history_sqlite_performance(
     root: Path,
     page_sample_count: int = 1,
     query_rounds: int = 3,
-    revision_write_sample_count: int = 512,
+    revision_write_sample_count: int = 512, *, sqlite_policy: SqliteIoPolicy,
 ) -> _HistorySQLitePerformanceReport:
-    control = HistoryControlIndex(root / "catalog.sqlite3").load_state()
+    control = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_state()
     current_snapshot = control.published_snapshot
     if current_snapshot is None:
         raise RuntimeError("history SQLite has no published snapshot")
@@ -587,15 +592,15 @@ def inspect_history_sqlite_performance(
     )
     if calendar_identity is None:
         raise RuntimeError("history SQLite calendar is unavailable")
-    physical = inspect_history_sqlite(root, page_sample_count)
+    physical = inspect_history_sqlite(root, page_sample_count, sqlite_policy=sqlite_policy)
     queries, sample = _measure_queries(
         root,
         current_snapshot,
         calendar_identity.open_dates,
         query_rounds,
-        revision_write_sample_count,
+        revision_write_sample_count, sqlite_policy=sqlite_policy,
     )
-    revision_write = _measure_revision_write(sample)
+    revision_write = _measure_revision_write(sample, sqlite_policy=sqlite_policy)
     return _HistorySQLitePerformanceReport(physical, queries, revision_write, _peak_rss_bytes())
 
 
@@ -604,14 +609,14 @@ def _measure_queries(
     current_snapshot: HistorySnapshot,
     open_dates: tuple[date, ...],
     rounds: int,
-    revision_sample_count: int,
+    revision_sample_count: int, *, sqlite_policy: SqliteIoPolicy,
 ) -> tuple[tuple[_QueryMeasurement, ...], tuple[HistoryRevision, ...]]:
     reference = current_snapshot.partitions[-1]
-    path, partition = _price_partition(root, reference)
+    path, partition = _price_partition(root, reference, sqlite_policy=sqlite_policy)
     year, month = _partition_identity(reference)
     month_start = date(year, month, 1)
     month_end = min(current_snapshot.data_cutoff, date(year, month, calendar.monthrange(year, month)[1]))
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
         seed = connection.run(
             "SELECT trade_date, code, board FROM daily_price_revision ORDER BY trade_date DESC, code LIMIT 1"
         ).fetchone()
@@ -631,7 +636,7 @@ def _measure_queries(
         path,
         year,
         month,
-        statement_trace=trace.append,
+        statement_trace=trace.append, sqlite_policy=sqlite_policy,
     )
     workloads: tuple[tuple[str, Callable[[], int]], ...] = (
         (
@@ -651,7 +656,7 @@ def _measure_queries(
         ),
         (
             "single_code_window",
-            lambda: _count_code_window(root, current_snapshot, code_dates[0], code_dates[-1], code),
+            lambda: _count_code_window(root, current_snapshot, code_dates[0], code_dates[-1], code, sqlite_policy=sqlite_policy),
         ),
         (
             "single_day_board",
@@ -691,7 +696,7 @@ def _measure_queries(
             for value in trace
             if value.lstrip().upper().startswith(("WITH LATEST AS", "SELECT RECORDS.TRADE_DATE", "SELECT R.CODE"))
         )
-        query_plan = _query_plan(path, statement)
+        query_plan = _query_plan(path, statement, sqlite_policy=sqlite_policy)
         workload_paths = code_paths if name == "single_code_window" else (path,)
         cold = _timings(workload_paths, workload, rounds, cold=True)
         warm = _timings(workload_paths, workload, rounds, cold=False)
@@ -733,13 +738,13 @@ def _timings(
     return tuple(values)
 
 
-def _query_plan(path: Path, statement: str) -> tuple[str, ...]:
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+def _query_plan(path: Path, statement: str, *, sqlite_policy: SqliteIoPolicy) -> tuple[str, ...]:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
         rows = connection.run(f"EXPLAIN QUERY PLAN {statement}")
         return tuple(str(row[3]) for row in rows)
 
 
-def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWriteMeasurement:
+def _measure_revision_write(sample: tuple[HistoryRevision, ...], *, sqlite_policy: SqliteIoPolicy) -> _RevisionWriteMeasurement:
     if not sample:
         raise RuntimeError("history SQLite revision write sample is empty")
     first = sample[0]
@@ -748,10 +753,10 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
     statements: list[str] = []
     with tempfile.TemporaryDirectory(prefix="trader-history-write-probe-") as directory:
         path = Path(directory) / f"prices_{year:04d}.sqlite3"
-        partition = HistoryPricePartition(path, year, month)
+        partition = HistoryPricePartition(path, year, month, sqlite_policy=sqlite_policy)
         partition.initialize()
         before = _database_bytes(path)
-        traced = HistoryPricePartition(path, year, month, statement_trace=statements.append)
+        traced = HistoryPricePartition(path, year, month, statement_trace=statements.append, sqlite_policy=sqlite_policy)
         started = time.perf_counter()
         traced.save_revisions(sample)
         elapsed = time.perf_counter() - started
@@ -774,11 +779,11 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
 
 def _price_partition(
     root: Path,
-    reference: HistorySnapshotPartition,
+    reference: HistorySnapshotPartition, *, sqlite_policy: SqliteIoPolicy,
 ) -> tuple[Path, HistoryPricePartition]:
     year, month = _partition_identity(reference)
     path = root / reference.relative_path
-    return path, HistoryPricePartition(path, year, month)
+    return path, HistoryPricePartition(path, year, month, sqlite_policy=sqlite_policy)
 
 
 def _partition_identity(reference: HistorySnapshotPartition) -> tuple[int, int]:
@@ -800,13 +805,13 @@ def _count_code_window(
     current_snapshot: HistorySnapshot,
     start: date,
     end: date,
-    code: str,
+    code: str, *, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     total = 0
     for reference in current_snapshot.partitions:
         if end < _partition_start(reference) or _partition_end(reference) < start:
             continue
-        _path, partition = _price_partition(root, reference)
+        _path, partition = _price_partition(root, reference, sqlite_policy=sqlite_policy)
         total += sum(
             1
             for _ in partition.iter_range(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import calendar
 import heapq
 import re
@@ -131,7 +133,8 @@ class _ReferenceVersion:
 
 
 class HistorySnapshotReader:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._root = root
         self._verified: dict[tuple[str, int], _VerifiedPartition] = {}
         self._verification_lock = threading.Lock()
@@ -139,7 +142,7 @@ class HistorySnapshotReader:
 
     def reference_index(self, snapshot: HistorySnapshot) -> HistoryReferenceIndex:
         try:
-            source = HistoryControlIndex(self._root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
+            source = HistoryControlIndex(self._root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy).read_source(snapshot.source_identity_hash)
         except HistoryControlError as exc:
             raise HistorySnapshotReadError("history_reference_unavailable") from exc
         if not source.supplier_contract.startswith("history_ref_"):
@@ -152,9 +155,9 @@ class HistorySnapshotReader:
             catalog = self._root / "catalog.sqlite3"
             if cached is not None and cached.stamp == ReferenceFileStamp(catalog, cached.path):
                 return cached.index
-            path = HistoryControlIndex(catalog).reference_path()
+            path = HistoryControlIndex(catalog, sqlite_policy=self._sqlite_policy).reference_path()
             stamp = ReferenceFileStamp(catalog, path)
-            reference = ReadBoundHistoryReference(self._root, source.supplier_contract)
+            reference = ReadBoundHistoryReference(self._root, source.supplier_contract, sqlite_policy=self._sqlite_policy)
             index = HistoryReferenceIndex(reference)
             if stamp == ReferenceFileStamp(catalog, path):
                 self._references[digest] = _ReferenceVersion(index, path, stamp)
@@ -607,7 +610,7 @@ class HistorySnapshotReader:
                     return existing.partition
                 self._verified.pop((reference.relative_path, reference.calendar_month), None)
                 if establish_level == "full":
-                    HistoryPricePartition.verify(path, reference, progress)
+                    HistoryPricePartition.verify(path, reference, progress, sqlite_policy=self._sqlite_policy)
                 else:
                     if not any(
                         value.reference.relative_path == reference.relative_path and value.identity == identity
@@ -615,7 +618,7 @@ class HistorySnapshotReader:
                     ):
                         PrefetchHistoryPricePages(path, check)
                     HistoryPricePartition.verify_logical_content(
-                        path, reference, progress, retain_pages=retain_pages, check=check
+                        path, reference, progress, retain_pages=retain_pages, check=check, sqlite_policy=self._sqlite_policy
                     )
             except (HistorySnapshotReadError, HistoryPricePartitionError, OSError) as exc:
                 self._verified.pop((reference.relative_path, reference.calendar_month), None)
@@ -623,7 +626,7 @@ class HistorySnapshotReader:
                     raise
                 raise HistorySnapshotReadError("history snapshot partition verification failed") from exc
             year, month = _reference_month(reference)
-            partition = HistoryPricePartition(path, year, month)
+            partition = HistoryPricePartition(path, year, month, sqlite_policy=self._sqlite_policy)
             self._verified[(reference.relative_path, reference.calendar_month)] = _VerifiedPartition(
                 reference, identity, partition, establish_level
             )
@@ -632,7 +635,7 @@ class HistorySnapshotReader:
     def _published_partition(self, reference: HistorySnapshotPartition) -> HistoryPricePartition:
         """Read a download-published partition; publication owns content verification."""
         return HistoryPricePartition(
-            self._root / reference.relative_path, reference.calendar_year, reference.calendar_month
+            self._root / reference.relative_path, reference.calendar_year, reference.calendar_month, sqlite_policy=self._sqlite_policy
         )
 
 

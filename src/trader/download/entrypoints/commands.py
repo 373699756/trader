@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import json
 import sys
 from concurrent.futures import CancelledError
@@ -17,7 +19,7 @@ from trader.infra.signal_cancellation import ManualCancellation
 
 
 def RunDownload(
-    repository_root: Path, config_path: Path, *, quiet_success: bool = False, allow_price_gaps: bool = False
+    repository_root: Path, config_path: Path, *, quiet_success: bool = False, allow_price_gaps: bool = False, sqlite_policy: SqliteIoPolicy
 ) -> int:
     """Run zero-argument initial or incremental archive maintenance."""
 
@@ -35,7 +37,7 @@ def RunDownload(
                 shutdown_timeout_seconds=runtime.pipeline.shutdown_timeout_seconds,
                 progress=progress,
                 cancel_requested=cancelled.is_set,
-                storage_medium=runtime.storage_medium,
+                storage_medium=runtime.storage_medium, sqlite_policy=sqlite_policy,
             )
         except (CancelledError, OSError, RuntimeError, ValueError) as exc:
             if not cancelled.is_set():

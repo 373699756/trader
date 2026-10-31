@@ -1,5 +1,7 @@
 """Second-source publication, restart and cross-basis regression boundaries."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
@@ -51,13 +53,13 @@ def test_history_waits_for_tencent_and_replaces_entire_basis(tmp_path):
     result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert supplier.events == ["tencent", "tencent", "baostock"]
-    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot
+    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     for day in days:
-        rows = HistorySnapshotReader(config.history_root).read_day(day, snapshot)
+        rows = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_day(day, snapshot)
         cell = next(row.cell for row in rows if row.code == "600001")
         assert cell.qfq.close_price == day.day + 2.0
-    assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3").gap_codes() == frozenset()
-    assert HistoryPriceRepair(config.history_root).source("600001", snapshot.sequence) == "baostock"
+    assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gap_codes() == frozenset()
+    assert HistoryPriceRepair(config.history_root, sqlite_policy=SqlitePolicyFixture()).source("600001", snapshot.sequence) == "baostock"
 
 
 def test_old_gap_is_not_retried_until_explicit_and_old_snapshot_is_immutable(tmp_path):
@@ -67,8 +69,8 @@ def test_old_gap_is_not_retried_until_explicit_and_old_snapshot_is_immutable(tmp
     config = _config(tmp_path, days)
     first = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
     assert first.unresolved_price_cells == 1
-    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot
-    previous = HistorySnapshotReader(config.history_root).read_day(days[0], snapshot)
+    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    previous = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], snapshot)
     supplier.events.clear()
     RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
     assert supplier.events == []
@@ -76,7 +78,7 @@ def test_old_gap_is_not_retried_until_explicit_and_old_snapshot_is_immutable(tmp
     repaired = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), repair_only=True)
     assert repaired.unresolved_price_cells == 0
     assert supplier.events == ["baostock"]
-    assert HistorySnapshotReader(config.history_root).read_day(days[0], snapshot) == previous
+    assert HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], snapshot) == previous
     with SqliteSession(config.history_root / "catalog.sqlite3") as connection:
         assert [tuple(row) for row in connection.run("SELECT state,resolved_source FROM price_repair_attempt")] == [("resolved", "baostock")]
 
@@ -96,7 +98,7 @@ def test_history_replays_interrupted_whole_stock_without_another_request(tmp_pat
 
     monkeypatch.setattr(HistoryPricePartition, "replace_unpublished_code", fail_second_year)
     assert RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1])).state == "failed"
-    assert HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot is None
+    assert HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
     supplier.events.clear()
     monkeypatch.setattr(HistoryPricePartition, "replace_unpublished_code", original)
     result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), repair_only=True)
@@ -155,9 +157,9 @@ def test_new_history_day_uses_tencent_tail_then_same_source_bao_tail(tmp_path):
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert supplier.events[-1] == "baostock"
     assert supplier.events.count("tencent") == 2  # One request per stock, with no second pass.
-    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot
+    snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     for day in days[1:]:
-        rows = HistorySnapshotReader(config.history_root).read_day(day, snapshot)
+        rows = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_day(day, snapshot)
         assert next(row.cell for row in rows if row.code == "600001").qfq.close_price == day.day + 2
 
 
@@ -197,9 +199,9 @@ def test_one_day_gap_replaces_all_2000_days_on_basis_change(tmp_path, initial_so
     supplier = DailySupplier(days[:2000])
     first = RunHistoryFixture(config, supplier, clock=lambda: _now(days[1999]))
     assert first.state == "completed" and first.unresolved_price_cells == 0
-    control = HistoryControlIndex(config.history_root / "catalog.sqlite3")
+    control = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     previous_snapshot = control.load_state().published_snapshot
-    reader = HistorySnapshotReader(config.history_root)
+    reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
     previous = reader.read_published_code_window("600001", days[:2000], previous_snapshot)
     supplier.seed = False
     supplier.dates = days
@@ -219,12 +221,12 @@ def test_one_day_gap_replaces_all_2000_days_on_basis_change(tmp_path, initial_so
     if incomplete:
         assert current[:-1] == previous[1:]
         assert current[-1].status != "complete"
-        assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3").gaps_by_code() == {"600001": days[-1:]}
+        assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gaps_by_code() == {"600001": days[-1:]}
     else:
         shift = 4.0 if basis_changed else 2.0
         assert all(cell.status == "complete" and cell.qfq.close_price == cell.trade_date.day + shift for cell in current)
-        assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3").gap_codes() == frozenset()
-        assert HistoryPriceRepair(config.history_root).source("600001", snapshot.sequence) == "baostock"
+        assert HistoryDownloadIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gap_codes() == frozenset()
+        assert HistoryPriceRepair(config.history_root, sqlite_policy=SqlitePolicyFixture()).source("600001", snapshot.sequence) == "baostock"
     assert reader.read_published_code_window("600001", days[:2000], previous_snapshot) == previous
 
 
@@ -253,8 +255,8 @@ def test_explicit_history_repair_does_not_publish_unfinished_initial_download(tm
     config = _config(tmp_path, days)
     supplier = RepairHistory(days)
     RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
-    state = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_published_state()
-    HistoryDownloadIndex(config.history_root / "catalog.sqlite3").begin(HistoryDownloadBatch(state.snapshot.sequence + 1, state.source.content_hash, state.calendar.content_hash, state.universe.content_hash, days[-1]), (HistoryDownloadTask("600001", days),))
+    state = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_published_state()
+    HistoryDownloadIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).begin(HistoryDownloadBatch(state.snapshot.sequence + 1, state.source.content_hash, state.calendar.content_hash, state.universe.content_hash, days[-1]), (HistoryDownloadTask("600001", days),))
     supplier.events.clear()
     result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), repair_only=True)
     assert result.state == "blocked" and result.reason == "history_download_incomplete"

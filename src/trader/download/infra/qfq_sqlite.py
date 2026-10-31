@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import json
 import sqlite3
@@ -90,7 +92,8 @@ def _digest(rows: _Rows) -> str:
 class SQLiteQfqWindowCache:
     """Profile view; construction and absent reads have no filesystem side effects."""
 
-    def __init__(self, path: Path, profile: Literal["v2", "v3"]) -> None:
+    def __init__(self, path: Path, profile: Literal["v2", "v3"], *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         if profile not in ("v2", "v3"):
             raise ValueError("qfq_profile_invalid")
         self.path = path
@@ -106,7 +109,7 @@ class SQLiteQfqWindowCache:
             SqliteConnectionOptions(
                 read_only=not write,
                 journal_mode="WAL" if write else None,
-            ),
+            ), sqlite_policy=self._sqlite_policy,
         )
         return connection
 

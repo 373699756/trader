@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
@@ -212,7 +214,7 @@ def test_transient_month_reader_lock_allows_download_to_finish(tmp_path, monkeyp
     result = RunHistoryFixture(_configuration(tmp_path), FakeSupplier(advanced), clock=lambda: NOW + timedelta(days=1))
     assert failed and result.state == "completed" and result.unresolved_price_cells == 0
     assert _snapshot(tmp_path) != previous
-    assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
+    assert HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], previous)
 
 
 @dataclass
@@ -231,10 +233,10 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
 
     completed = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert supplier.events == ["tencent", "tencent"]
-    state = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state()
+    state = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state()
     snapshot = state.published_snapshot
     assert snapshot is not None
-    assert len(HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)) == 2
+    assert len(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(dates[-1], snapshot)) == 2
     monkeypatch.setattr(
         HistoryPricePartition,
         "verify",
@@ -269,7 +271,7 @@ def test_history_sync_targets_today_only_from_shanghai_1515(tmp_path, minute, ex
 
 
 def _snapshot(root):
-    result = HistoryControlIndex(root / "catalog.sqlite3").load_state().published_snapshot
+    result = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert result is not None
     return result
 
@@ -285,7 +287,7 @@ def test_incremental_updates_only_new_days_and_keeps_cumulative_history(tmp_path
     first = RunHistoryFixture(configuration, supplier, clock=lambda: first_now)
     assert first.state == "completed", first.reason
     old_snapshot = _snapshot(tmp_path)
-    old_rows = HistorySnapshotReader(tmp_path).read_day(days[0], old_snapshot)
+    old_rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], old_snapshot)
     supplier.calls.clear()
     new_now = first_now + timedelta(days=gap)
     supplier.dates = days[: 20 + gap]
@@ -294,7 +296,7 @@ def test_incremental_updates_only_new_days_and_keeps_cumulative_history(tmp_path
     assert len(supplier.calls) == 2
     assert all(len(requested) == gap + 5 for _, requested in supplier.calls)
     published_snapshot = _snapshot(tmp_path)
-    reader = HistorySnapshotReader(tmp_path)
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     assert reader.read_day(days[0], old_snapshot) == old_rows
     assert reader.read_day(days[0], published_snapshot) == old_rows
     assert len(reader.read_day(new_now.date(), published_snapshot)) == 2
@@ -321,7 +323,7 @@ def test_partial_tencent_pairs_are_committed_without_baostock(tmp_path):
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 2
     assert supplier.events == ["tencent"] * 2
-    rows = HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))
+    rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], _snapshot(tmp_path))
     assert len(rows) == 2 and all(row.cell.status == "qfq_missing" and row.cell.qfq is None for row in rows)
 
 
@@ -360,7 +362,7 @@ def test_publication_failure_resumes_without_redownloading(tmp_path, monkeypatch
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
     failed = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert failed.state == "failed"
-    assert HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot is None
+    assert HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", original)
     supplier.calls.clear()
     result = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
@@ -386,9 +388,9 @@ def test_unpublished_gap_repair_resumes_same_sequence_without_changing_complete_
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail_publish)
     first = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert first.state == "failed"
-    assert HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot is None
-    assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3").gaps_by_code().get("600001", ()) == days
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    assert HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
+    assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gaps_by_code().get("600001", ()) == days
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     assert month.read_code("600001", days[0], days[-1], snapshot_sequence=1)[0].cell.status == "unknown_missing"
     complete_before = month.read_code("600002", days[0], days[-1], snapshot_sequence=1)
 
@@ -451,8 +453,8 @@ def test_pending_batch_replaces_incomplete_day_before_first_publication(tmp_path
 
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", interrupt_publication)
     assert RunHistoryFixture(configuration(root), supplier, clock=lambda: NOW).state == "failed"
-    assert HistoryControlIndex(root / "catalog.sqlite3").load_state().published_snapshot is None
-    assert len(HistoryDownloadIndex(root / "catalog.sqlite3").gaps_by_code().get("600001", ())) == 1
+    assert HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
+    assert len(HistoryDownloadIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gaps_by_code().get("600001", ())) == 1
 
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", publish)
     supplier.partial = False
@@ -461,7 +463,7 @@ def test_pending_batch_replaces_incomplete_day_before_first_publication(tmp_path
     assert resumed.state == "completed" and resumed.unresolved_price_cells == 0
     assert supplier.calls == [("600001", (days[0], *days[-5:]))]
     published_snapshot = _snapshot(root)
-    assert len(HistorySnapshotReader(root).read_day(days[0], published_snapshot)) == 2
+    assert len(HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], published_snapshot)) == 2
     clean = tmp_path / "clean"
     assert RunHistoryFixture(configuration(clean), FakeSupplier(days), clock=lambda: NOW).state == "completed"
     assert published_snapshot.content_hash == _snapshot(clean).content_hash
@@ -557,11 +559,11 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
     assert RunHistoryFixture(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "completed"
     snapshot = _snapshot(tmp_path)
     path = tmp_path / "prices_2026.sqlite3"
-    month = HistoryPricePartition(path, 2026, 9)
+    month = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.save_revisions(
         (HistoryRevision(2, "main", _download("600001", (date(2026, 9, 11),)).batch.cells[0], None, None, None),)
     )
-    HistoryPricePartition.verify(path, snapshot.partitions[0])
+    HistoryPricePartition.verify(path, snapshot.partitions[0], sqlite_policy=SqlitePolicyFixture())
     assert (
         len(tuple(month.iter_training_rows(days[0], days[-1], snapshot_sequence=snapshot.partitions[0].sequence))) == 6
     )
@@ -571,7 +573,7 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
             (bytes(32), EncodeDate(days[0])),
         )
     with pytest.raises(HistoryPricePartitionError):
-        HistoryPricePartition.verify(path, snapshot.partitions[0])
+        HistoryPricePartition.verify(path, snapshot.partitions[0], sqlite_policy=SqlitePolicyFixture())
 
 
 def test_old_database_format_is_rejected_without_conversion(tmp_path):
@@ -611,7 +613,7 @@ def test_cross_year_interruption_only_requests_missing_dates_and_five_anchors(tm
     assert resumed.state == "completed", resumed.reason
     assert len(supplier.calls) == 2
     assert all(dates == days[-9:] for _, dates in supplier.calls)
-    assert len(HistorySnapshotReader(tmp_path).read_day(days[0], _snapshot(tmp_path))) == 2
+    assert len(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], _snapshot(tmp_path))) == 2
 
 
 def test_resume_finishes_old_cutoff_then_updates_to_current_cutoff(tmp_path, monkeypatch):
@@ -658,7 +660,7 @@ def test_changed_reference_keeps_old_snapshot_readable_without_price_requests(tm
     supplier = FakeSupplier(days, industry="old_industry")
     assert RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
     old = _snapshot(tmp_path)
-    reader = HistorySnapshotReader(tmp_path)
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     previous = reader.read_day(days[-1], old)
     supplier.industry = "new_industry"
     supplier.calls.clear()
@@ -666,7 +668,7 @@ def test_changed_reference_keeps_old_snapshot_readable_without_price_requests(tm
     current = _snapshot(tmp_path)
     assert not supplier.calls
     assert old.partitions == current.partitions
-    assert HistorySnapshotReader(tmp_path).read_day(days[-1], old) == previous
+    assert HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], old) == previous
     assert reader.read_day(days[-1], current) != previous
 
 
@@ -686,7 +688,7 @@ def test_pending_batch_rebinds_versions_and_names_without_redownloading(tmp_path
     config = _configuration(tmp_path)
     assert RunHistoryFixture(config, supplier, clock=lambda: NOW).state == "completed"
     old = _snapshot(tmp_path)
-    reader = HistorySnapshotReader(tmp_path)
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     old_rows = reader.read_day(days[-1], old)
     supplier.dates = (*days[1:], date(2026, 9, 11))
     original = history_sync_module.PublishHistorySnapshot
@@ -697,7 +699,7 @@ def test_pending_batch_rebinds_versions_and_names_without_redownloading(tmp_path
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
     now = NOW + timedelta(days=1)
     assert RunHistoryFixture(config, supplier, clock=lambda: now).state == "failed"
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     pending = index.pending(old.sequence)
     tasks = index.tasks()
 
@@ -725,7 +727,7 @@ def test_pending_batch_rebinds_versions_and_names_without_redownloading(tmp_path
     assert not changed.calls
     current = _snapshot(tmp_path)
     assert current.source_identity_hash == rebound.source_hash
-    state = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state()
+    state = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state()
     latest_universe = next(item for item in state.universes if item.content_hash == current.universe_hash)
     if renamed:
         assert all(item.name == "新简称" for item in latest_universe.securities)
@@ -748,7 +750,7 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
     tuning = HistoryWriteTuning(1, 3, max_codes=1, max_cells=3)
     result = RunHistoryFixture(config, FakeSupplier(days), clock=lambda: NOW, write_tuning=tuning)
     assert result.state == "cancelled"
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     assert [task.tencent_done for task in index.tasks()] == [True, False]
     previous = index.pending(0)
     tasks = index.tasks()
@@ -777,7 +779,7 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
     result = RunHistoryFixture(config, supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert supplier.calls == [("600002", days)]
-    assert len(HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))) == 2
+    assert len(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], _snapshot(tmp_path))) == 2
 
 
 @pytest.mark.parametrize(
@@ -798,7 +800,7 @@ def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monke
 
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
     assert RunHistoryFixture(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "failed"
-    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     pending, tasks = index.pending(0), index.tasks()
 
     class Changed(FakeSupplier):
@@ -846,6 +848,6 @@ def test_pending_population_changes_preserve_progress_and_publish_current_refere
     result = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert supplier.calls == ([("600003", days)] if "600003" in codes else [])
-    assert {task.code for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks()} == set(codes)
+    assert {task.code for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks()} == set(codes)
     snapshot = _snapshot(tmp_path)
-    assert {cell.code for cell in HistorySnapshotReader(tmp_path).read_day(days[-1], snapshot)} == set(codes)
+    assert {cell.code for cell in HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], snapshot)} == set(codes)

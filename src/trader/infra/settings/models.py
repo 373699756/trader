@@ -9,6 +9,7 @@ from pathlib import Path
 
 from trader.infra.cache_contracts import CachePolicy
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.storage_types import StorageKind, StorageMedium
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
@@ -124,33 +125,11 @@ class DatabasePerformanceSettings:
 
 
 @dataclass(frozen=True)
-class StorageMediumSettings:
-    connection_timeout_seconds: float
-    read_window_rows: int
-    transaction_batch_rows: int
-    checkpoint_mode: str
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.connection_timeout_seconds, bool)
-            or not isinstance(self.connection_timeout_seconds, (int, float))
-            or not isfinite(self.connection_timeout_seconds)
-            or self.connection_timeout_seconds <= 0
-            or type(self.read_window_rows) is not int
-            or self.read_window_rows < 1
-            or type(self.transaction_batch_rows) is not int
-            or self.transaction_batch_rows < 1
-            or self.checkpoint_mode not in {"PASSIVE", "RESTART", "TRUNCATE"}
-        ):
-            raise ValueError("storage medium settings are invalid")
-
-
-@dataclass(frozen=True)
 class StorageSettings:
-    hdd: StorageMediumSettings
-    ssd: StorageMediumSettings
+    hdd: SqliteIoPolicy
+    ssd: SqliteIoPolicy
 
-    def for_medium(self, medium: StorageKind) -> StorageMediumSettings:
+    def for_medium(self, medium: StorageKind) -> SqliteIoPolicy:
         if medium == "hdd":
             return self.hdd
         if medium == "ssd":

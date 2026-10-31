@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import sqlite3
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -151,17 +153,17 @@ def WriteHistoryReference(
 
 
 def ReadHistoryReference(
-    path: Path, digest: str, *, references: dict[str, PreparedReference] | None = None
+    path: Path, digest: str, *, references: dict[str, PreparedReference] | None = None, sqlite_policy: SqliteIoPolicy
 ) -> HistoryReferenceSnapshot:
     try:
         with (
-            SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             location = connection.run("SELECT reference_file FROM schema_contract WHERE singleton=1").fetchone()
             if location is None or location[0] is None:
                 raise ValueError("history_reference_location_missing")
-            index = SQLiteReferenceIndex((path.parent / location[0]).resolve())
+            index = SQLiteReferenceIndex((path.parent / location[0]).resolve(), sqlite_policy=sqlite_policy)
             return _read(connection, digest, index, references)
     except (TypeError, ValueError, sqlite3.Error) as exc:
         raise ValueError("history_reference_unavailable") from exc
@@ -210,13 +212,13 @@ def _read(
 
 
 def ReadBoundHistoryReference(
-    root: Path, supplier_contract: str, *, references: dict[str, PreparedReference] | None = None
+    root: Path, supplier_contract: str, *, references: dict[str, PreparedReference] | None = None, sqlite_policy: SqliteIoPolicy
 ) -> HistoryReferenceSnapshot:
     if not supplier_contract.startswith("history_ref_"):
         raise ValueError("history_reference_contract_invalid")
     digest = supplier_contract[12:76]
     EncodeHash(digest)
-    return ReadHistoryReference(root / "catalog.sqlite3", digest, references=references)
+    return ReadHistoryReference(root / "catalog.sqlite3", digest, references=references, sqlite_policy=sqlite_policy)
 
 
 def ReferenceFileStamp(catalog: Path, reference: Path) -> tuple[tuple[int, int, int, int, int] | None, ...]:

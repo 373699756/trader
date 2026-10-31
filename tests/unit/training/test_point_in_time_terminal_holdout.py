@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 from datetime import date
 
@@ -31,7 +33,7 @@ def _seal_h1_research_parent(root):
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
-    archive = SQLiteH1PointInTimeSnapshot(root / "archive")
+    archive = SQLiteH1PointInTimeSnapshot(root / "archive", sqlite_policy=SqlitePolicyFixture())
     completion = CompleteH1Research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")),

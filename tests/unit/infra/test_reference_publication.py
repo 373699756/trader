@@ -1,5 +1,7 @@
 """Only a validated reference from the same Shanghai date supplies a cached calendar."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -17,7 +19,7 @@ _NOW = datetime(2026, 10, 26, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def test_same_day_calendar_reuse_preserves_reference_and_avoids_supplier(tmp_path):
-    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     reference = PreparedFixture(_NOW)
     publication.publish(reference, reference.st_evidence)
     before = (tmp_path / "company_st.sqlite3").read_bytes()
@@ -33,7 +35,7 @@ def test_same_day_calendar_reuse_preserves_reference_and_avoids_supplier(tmp_pat
 
 @pytest.mark.parametrize("cache", ("missing", "yesterday", "future", "corrupt", "hash_conflict", "empty_calendar"))
 def test_missing_stale_or_invalid_calendar_requires_supplier(tmp_path, cache):
-    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     reference = PreparedFixture(_NOW)
     if cache != "missing":
         offset = -1 if cache == "yesterday" else 1 if cache == "future" else 0
@@ -62,7 +64,7 @@ def test_missing_stale_or_invalid_calendar_requires_supplier(tmp_path, cache):
 
 
 def test_expired_calendar_does_not_hide_timeout_or_replace_previous_publication(tmp_path):
-    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     seed = PreparedFixture(_NOW - timedelta(days=1))
     publication.publish(seed, seed.st_evidence)
     before = (tmp_path / "company_st.sqlite3").read_bytes()
@@ -76,7 +78,7 @@ def test_expired_calendar_does_not_hide_timeout_or_replace_previous_publication(
 
 
 def test_publications_pin_versions_and_preserve_supplier_check_date(tmp_path):
-    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     source = HistoryStEvidence("600001", (_NOW - timedelta(days=30)).date(), "ever_st")
     index.merge_st((source,))
     first = replace(PreparedFixture(_NOW), st_evidence=(replace(source, checked_on=_NOW.date()),))
@@ -96,7 +98,7 @@ def test_publications_pin_versions_and_preserve_supplier_check_date(tmp_path):
 
 
 def test_same_day_republish_keeps_first_publication_time(tmp_path):
-    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     first = PreparedFixture(_NOW)
     index.publish(first, first.st_evidence)
     later = replace(first, checked_at=_NOW + timedelta(minutes=5))
@@ -106,7 +108,7 @@ def test_same_day_republish_keeps_first_publication_time(tmp_path):
 
 
 def test_failed_member_insert_rolls_back_publication_and_current_pointer(tmp_path):
-    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     first = PreparedFixture(_NOW)
     index.publish(first, first.st_evidence)
     second = PreparedFixture(_NOW + timedelta(days=1))
@@ -122,7 +124,7 @@ def test_failed_member_insert_rolls_back_publication_and_current_pointer(tmp_pat
 
 
 def test_cross_security_member_is_rejected_by_foreign_key(tmp_path):
-    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     reference = PreparedFixture(_NOW)
     index.publish(reference, reference.st_evidence)
     with SqliteSession(index.path, SqliteConnectionOptions(foreign_keys=True)) as connection:
@@ -136,4 +138,4 @@ def test_old_st_schema_is_not_accepted_as_reference_database(tmp_path):
         connection.run("CREATE TABLE st_evidence(code TEXT,checked_on TEXT,status TEXT)")
         connection.run("PRAGMA user_version=1")
     with pytest.raises(ValueError, match="unavailable"):
-        SQLiteReferenceIndex(path).read_st()
+        SQLiteReferenceIndex(path, sqlite_policy=SqlitePolicyFixture()).read_st()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import math
 from collections import Counter
@@ -17,8 +19,8 @@ from trader.training.infra.history.history_training_input import SQLiteHistoryTr
 from .reporting import emit_report
 
 
-def _audit(path: Path) -> dict[str, object]:
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=10, cache_kib=8192)) as connection:
+def _audit(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=10, cache_kib=8192), sqlite_policy=sqlite_policy) as connection:
         connection.run("PRAGMA query_only=ON")
         connection.run("PRAGMA cache_size=-8192")
         _require_sample_format(connection)
@@ -74,14 +76,14 @@ def _audit_statistics(connection: SqliteConnection) -> dict[str, object]:
     }
 
 
-def _trace_labels(history: Path, path: Path, signal: date) -> dict[str, object]:
-    source = SQLiteHistoryTrainingInputSnapshot.open(history)
+def _trace_labels(history: Path, path: Path, signal: date, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    source = SQLiteHistoryTrainingInputSnapshot.open(history, sqlite_policy=sqlite_policy)
     calendar = source.snapshot.calendar.open_dates
     position = calendar.index(signal)
     future = calendar[position + 1 : position + 6]
     if len(future) != 5:
         raise ValueError("training_label_probe_requires_mature_signal")
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=10, cache_kib=8192)) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=10, cache_kib=8192), sqlite_policy=sqlite_policy) as connection:
         _require_sample_format(connection)
         codes = frozenset(
             str(row[0])
@@ -129,13 +131,15 @@ def main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--signal-date", type=date.fromisoformat)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
     paths = LoadRuntimeSettings(args.config).data_paths
     if args.signal_date is not None:
         emit_report(
             {
                 "schema_version": "training-coverage-diagnostic",
                 "status": "degraded",
-                "summary": _trace_labels(paths.history, paths.samples / "v5/samples.sqlite3", args.signal_date),
+                "summary": _trace_labels(paths.history, paths.samples / "v5/samples.sqlite3", args.signal_date, sqlite_policy=sqlite_policy),
             }
         )
         return 0
@@ -143,7 +147,7 @@ def main() -> int:
     for profile in ("v2", "v3", "v5"):
         path = paths.samples / profile / "samples.sqlite3"
         if path.is_file():
-            profiles.append({"profile": profile, **_audit(path)})
+            profiles.append({"profile": profile, **_audit(path, sqlite_policy=sqlite_policy)})
     emit_report(
         {
             "schema_version": "training-coverage-diagnostic",

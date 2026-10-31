@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import json
 import os
@@ -101,7 +103,8 @@ class _Supplier(HistoryFixtureSupplier):
 class _SyncFixture:
     """Real sync coordinator and persistence adapters with finite synthetic supplier facts."""
 
-    def __init__(self, root: Path, size: int, sessions: int, storage_kind: StorageKind) -> None:
+    def __init__(self, root: Path, size: int, sessions: int, storage_kind: StorageKind, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self.preload_settings = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.history_preload
         self.company_configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
         self.company_policy = LoadStrategySettings(PROJECT_ROOT / "config/strategy.json").company_scoring
@@ -110,7 +113,7 @@ class _SyncFixture:
         self.sessions = sessions
         self.storage_kind = storage_kind
         days = tuple(_NOW.date() - timedelta(days=sessions - offset - 1) for offset in range(sessions))
-        self.supplier = _Supplier(days, size)
+        self.supplier = _Supplier(days, size, sqlite_policy=sqlite_policy)
         context = self.supplier.load_context(_NOW.date(), sessions)
         self.reference = PreparedReference(
             context.universe,
@@ -130,7 +133,7 @@ class _SyncFixture:
     def prepare(self) -> PreparedReference:
         def publish() -> PreparedReference:
             self.preparations += 1
-            SQLiteReferenceIndex(self.paths.reference_database).publish(self.reference, self.reference.st_evidence)
+            SQLiteReferenceIndex(self.paths.reference_database, sqlite_policy=self._sqlite_policy).publish(self.reference, self.reference.st_evidence)
             self.supplier.reference_id = self.reference.identity
             return self.reference
 
@@ -147,14 +150,14 @@ class _SyncFixture:
         )
         return self._measure(
             "history",
-            lambda: RunHistorySync(configuration, self.supplier, clock=lambda: _NOW, storage_kind=self.storage_kind),
+            lambda: RunHistorySync(configuration, self.supplier, clock=lambda: _NOW, storage_kind=self.storage_kind, sqlite_policy=self._sqlite_policy),
         )
 
     def market(self, reference: PreparedReference) -> QfqUpdateResult:
         if reference is not self.reference:
             raise RuntimeError("database_baseline_reference_not_shared")
-        v2 = SQLiteQfqWindowCache(self.paths.daily_window, "v2")
-        v3 = SQLiteQfqWindowCache(self.paths.daily_window, "v3")
+        v2 = SQLiteQfqWindowCache(self.paths.daily_window, "v2", sqlite_policy=self._sqlite_policy)
+        v3 = SQLiteQfqWindowCache(self.paths.daily_window, "v3", sqlite_policy=self._sqlite_policy)
         updater = UpdateQfqWindows(
             v2,
             v3,
@@ -164,7 +167,7 @@ class _SyncFixture:
             configuration=LoadQfqWindowConfiguration(PROJECT_ROOT),
         )
         runner = QfqUpdateRunner(
-            ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history)),
+            ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history, sqlite_policy=self._sqlite_policy)),
             updater,
             v2,
             v3,
@@ -183,7 +186,7 @@ class _SyncFixture:
                 self.paths.company_collection,
                 facts_path=self.paths.company,
                 documents=_company_documents(self.paths.company_documents, self.company_configuration),
-                event_policy=self.company_policy.events,
+                event_policy=self.company_policy.events, sqlite_policy=self._sqlite_policy,
             )
             index.initialize()
             codes = tuple(item.code for item in reference.eligible_universe)
@@ -233,10 +236,10 @@ class _SyncFixture:
         }
 
     def startup(self) -> _Startup:
-        publication = SQLiteReferenceIndex(self.paths.reference_database)
+        publication = SQLiteReferenceIndex(self.paths.reference_database, sqlite_policy=self._sqlite_policy)
         references = PublishedReferences(publication.read, publication.identity, lambda _now: (), max_age_seconds=86400)
         self._measure("startup_reference", references.initialize)
-        history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history))
+        history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history, sqlite_policy=self._sqlite_policy))
         projection = SharedHistoryProjection(history, monotonic=time.monotonic, settings=self.preload_settings)
         caches = tuple(
             PublishedHistoryCache(
@@ -258,7 +261,7 @@ class _SyncFixture:
         self._measure("startup_history", lambda: caches[0].initialize(cancelled=lambda: False))
         codes = tuple(item.code for item in self.reference.eligible_universe)
         research = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(self.paths.company, event_policy=self.company_policy.events),
+            SQLiteCompanyEvidenceReader(self.paths.company, event_policy=self.company_policy.events, sqlite_policy=self._sqlite_policy),
             wall_clock=lambda: _NOW,
             open_dates=lambda: self.reference.open_dates,
             monotonic=time.monotonic,
@@ -312,15 +315,15 @@ class _SyncFixture:
         if not self.paths.daily_window.exists():
             return None
         codes = tuple(item.code for item in self.reference.eligible_universe)
-        return cast(str, CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2").read_codes(codes)))
+        return cast(str, CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2", sqlite_policy=self._sqlite_policy).read_codes(codes)))
 
 
-def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, storage_kind: StorageKind) -> dict[str, object]:
+def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, storage_kind: StorageKind, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     targets: tuple[SyncTarget, ...] = ("all", "history", "market", "company")
     runs: dict[str, dict[str, object]] = {}
     identities: dict[str, _InputIdentities] = {}
     for target in targets:
-        fixture = _SyncFixture(root / target, size, sessions, storage_kind)
+        fixture = _SyncFixture(root / target, size, sessions, storage_kind, sqlite_policy=sqlite_policy)
         sync = fixture.execute(target)
         startup = fixture.startup()
         identities[target] = startup.identities
@@ -358,10 +361,10 @@ def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, storage_kind: S
     return {"targets": runs, "joint_single_equivalent": True, "independent_targets": True}
 
 
-def _worker(size: int, sessions: int, storage_kind: StorageKind) -> dict[str, object]:
+def _worker(size: int, sessions: int, storage_kind: StorageKind, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     with TemporaryDirectory(prefix="trader-database-baseline-") as scratch:
-        sync = MeasureSyncBaseline(Path(scratch), size=size, sessions=sessions, storage_kind=storage_kind)
-        history = MeasureHistoryWrites(size, sessions, storage_kind=storage_kind)
+        sync = MeasureSyncBaseline(Path(scratch), size=size, sessions=sessions, storage_kind=storage_kind, sqlite_policy=sqlite_policy)
+        history = MeasureHistoryWrites(size, sessions, storage_kind=storage_kind, sqlite_policy=sqlite_policy)
     if history["status"] != "passed":
         raise RuntimeError("database_baseline_history_cases_failed")
     return {"sync": sync, "history": history["summary"]}
@@ -549,12 +552,15 @@ def main() -> int:
     parser.add_argument("--acceptance-focus", choices=("history", "market-company"), default="history")
     parser.add_argument("--expected-product-root", type=Path, default=PROJECT_ROOT)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if not 1 <= args.size <= 32 or not 5 <= args.sessions <= 2000:
         parser.error("database baseline requires 1..32 stocks and 5..2000 sessions")
     if args.worker:
         if Path(trader.__file__).resolve().parents[2] != args.expected_product_root.resolve():
             raise RuntimeError("database_comparison_wrong_product_import")
-        emit_report(_worker(args.size, args.sessions, args.storage_kind))
+        emit_report(_worker(args.size, args.sessions, args.storage_kind, sqlite_policy=sqlite_policy))
         return 0
     if args.baseline_checkout is not None:
         result = _compare(

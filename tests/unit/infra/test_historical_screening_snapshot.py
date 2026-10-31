@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -31,7 +33,7 @@ def _bar(close: float = 10.5) -> HistoricalPriceBar:
 
 
 def test_historical_screening_archive_is_idempotent_and_rejects_same_identity_conflicts(tmp_path) -> None:
-    archive = SQLiteHistoricalScreeningSnapshot(tmp_path)
+    archive = SQLiteHistoricalScreeningSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     security = HistoricalSecurity("600001", "main", "甲", False, False)
 
     archive.register_universe(HISTORICAL_SCREENING_SPEC, (security,))
@@ -68,7 +70,7 @@ def test_historical_screening_archive_is_idempotent_and_rejects_same_identity_co
 
 def test_historical_screening_archive_manifest_detects_bar_payload_tampering(tmp_path) -> None:
 
-    archive = SQLiteHistoricalScreeningSnapshot(tmp_path)
+    archive = SQLiteHistoricalScreeningSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     security = HistoricalSecurity("600001", "main", "甲", False, False)
     archive.register_universe(HISTORICAL_SCREENING_SPEC, (security,))
     archive.save_history(HISTORICAL_SCREENING_SPEC, security.code, (_bar(),))
@@ -82,7 +84,7 @@ def test_historical_screening_archive_manifest_detects_bar_payload_tampering(tmp
 
 
 def test_historical_screening_archive_status_is_read_only_when_database_does_not_exist(tmp_path) -> None:
-    archive = SQLiteHistoricalScreeningSnapshot(tmp_path)
+    archive = SQLiteHistoricalScreeningSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
 
     status = archive.inspect(HISTORICAL_SCREENING_SPEC.research_identity)
 
@@ -91,7 +93,7 @@ def test_historical_screening_archive_status_is_read_only_when_database_does_not
 
 
 def test_historical_screening_archive_uses_only_rows_with_61_inputs_and_5_future_labels(tmp_path) -> None:
-    archive = SQLiteHistoricalScreeningSnapshot(tmp_path)
+    archive = SQLiteHistoricalScreeningSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     start = date(2024, 8, 1)
     securities = tuple(
         HistoricalSecurity(f"60{index:04d}", "main", f"样本{index}", False, False) for index in range(30)

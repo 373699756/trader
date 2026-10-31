@@ -31,10 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[1] / "config/runtime.json"))
     coordinator = HistoryPartitionRepackCoordinator(
         args.source,
         args.target,
-        progress=_progress if args.action == "build" else None,
+        progress=_progress if args.action == "build" else None, sqlite_policy=sqlite_policy,
     )
     try:
         if args.action == "build":

@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from datetime import date, timedelta
 
 import pytest
@@ -35,7 +37,7 @@ def industry_source(monkeypatch):
 
 def test_warm_industry_context_does_not_start_or_query_supplier(tmp_path, monkeypatch, industry_source):
     sdk, requests = industry_source
-    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3", sqlite_policy=SqlitePolicyFixture())
     calendar = BaoStockCalendar(DATES)
     with supplier_module.BaoStockHistorySupplier(
         HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference")
@@ -77,7 +79,7 @@ def test_real_request_wrapper_has_one_start_and_completion_per_industry_date(tmp
         )
 
     monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_request_once", request_once)
-    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3", sqlite_policy=SqlitePolicyFixture())
     with supplier_module.BaoStockHistorySupplier(
         HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference"),
         progress=StderrHistorySyncProgress(),
@@ -93,7 +95,7 @@ def test_real_request_wrapper_has_one_start_and_completion_per_industry_date(tmp
 
 def test_future_observation_cannot_be_reused_at_an_earlier_cutoff(tmp_path, industry_source):
     _, requests = industry_source
-    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3", sqlite_policy=SqlitePolicyFixture())
     with supplier_module.BaoStockHistorySupplier(
         HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference")
     ) as source:
@@ -105,7 +107,7 @@ def test_future_observation_cannot_be_reused_at_an_earlier_cutoff(tmp_path, indu
 
 def test_new_cutoff_fetches_only_new_query_after_more_than_thirty_days(tmp_path, industry_source):
     _, requests = industry_source
-    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3", sqlite_policy=SqlitePolicyFixture())
     with supplier_module.BaoStockHistorySupplier(
         HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference")
     ) as source:
@@ -127,17 +129,17 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
         minimum_free_bytes=0,
         reference_root=(tmp_path / "history").parent / "reference",
     )
-    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3", sqlite_policy=SqlitePolicyFixture())
     prices = Prices()
     prices.dates = dates
     with supplier_module.BaoStockHistorySupplier(config) as source:
         router = HistorySupplierRouter(source, prices, _prepared(UNIVERSE, dates), cache)
         assert RunHistoryFixture(config, router, clock=lambda: _at(dates[-1])).state == "completed"
-        control = HistoryControlIndex(config.history_root / "catalog.sqlite3")
+        control = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
         snapshot = control.load_published_state().snapshot
         identity = control.read_source(snapshot.source_identity_hash)
         path = config.history_root / "catalog.sqlite3"
-        original = ReadHistoryReference(path, identity.supplier_contract[12:76])
+        original = ReadHistoryReference(path, identity.supplier_contract[12:76], sqlite_policy=SqlitePolicyFixture())
         with SqliteSession(path) as connection, SqliteTransaction(connection):
             if damage == "missing":
                 connection.run("DELETE FROM reference_binding")
@@ -151,6 +153,6 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
             return
         assert result.state == "already_current"
     assert requests == [] and prices.calls == []
-    assert ReadHistoryReference(path, identity.supplier_contract[12:76]) == original
+    assert ReadHistoryReference(path, identity.supplier_contract[12:76], sqlite_policy=SqlitePolicyFixture()) == original
     assert control.load_published_state().snapshot == snapshot
-    assert HistorySnapshotReader(config.history_root).reference_index(snapshot).industry_on("600001", dates[-1])
+    assert HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).reference_index(snapshot).industry_on("600001", dates[-1])

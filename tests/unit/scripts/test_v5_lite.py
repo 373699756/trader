@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 import hashlib
 import json
 import time
@@ -76,7 +78,7 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
             "sha256": hashlib.sha256(original).hexdigest(),
         },
     )
-    reference, candidate = _prepare(source, work, time.monotonic() + 10, 61)
+    reference, candidate = _prepare(source, work, time.monotonic() + 10, 61, sqlite_policy=SqlitePolicyFixture())
     assert database.read_bytes() == original
     assert reference.read_bytes() == candidate.read_bytes()
     with SqliteSession(candidate, options) as connection:
@@ -101,7 +103,7 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
         },
     )
     with pytest.raises(ValueError, match="digest"):
-        _prepare(source, invalid, time.monotonic() + 10, 61)
+        _prepare(source, invalid, time.monotonic() + 10, 61, sqlite_policy=SqlitePolicyFixture())
 
 
 def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path):
@@ -111,7 +113,7 @@ def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path)
     parameters = TcnFittingParametersFixture(minimum_industry_training_rows=5000)
     for candidate in ((250, parameters), (61, replace(parameters, minimum_industry_training_rows=10000))):
         with pytest.raises(ValueError, match="identical fit dates"):
-            _quality(tmp_path / "absent", tmp_path, time.monotonic() + 10, (61, parameters), candidate)
+            _quality(tmp_path / "absent", tmp_path, time.monotonic() + 10, (61, parameters), candidate, sqlite_policy=SqlitePolicyFixture())
     assert not tuple(tmp_path.iterdir())
 
 

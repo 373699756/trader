@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -26,18 +28,18 @@ def test_current_industry_reuses_local_query_then_refreshes_after_seven_days(tmp
 
     path = tmp_path / "industry_queries.sqlite3"
     client = BaoStockIndustryClient(fetch_rows=fetch_rows, minimum_rows=1)
-    source = CurrentIndustryPublication(path, client, minimum_rows=1)
-    assert CurrentIndustryCache(path, minimum_rows=1).load(_AT) == ()
+    source = CurrentIndustryPublication(path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
+    assert CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(_AT) == ()
     assert source.fetch(_AT)[0].fields["model_industry"] == "J66货币金融服务"
     assert calls == [_AT.date().isoformat()]
-    assert source.fetch(_AT + timedelta(days=6)) == CurrentIndustryCache(path, minimum_rows=1).load(
+    assert source.fetch(_AT + timedelta(days=6)) == CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(
         _AT + timedelta(days=6)
     )
     assert calls == [_AT.date().isoformat()]
     assert len(source.fetch(_AT + timedelta(days=7))) == 1
     assert calls == [_AT.date().isoformat(), (_AT + timedelta(days=7)).date().isoformat()]
     assert (
-        SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries", "current_industry_query").latest(
+        SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries", "current_industry_query", sqlite_policy=SqlitePolicyFixture()).latest(
             (_AT + timedelta(days=7)).date()
         )
         is not None
@@ -54,12 +56,12 @@ def test_current_industry_rejects_corrupt_local_evidence(tmp_path) -> None:
             ),
             minimum_rows=1,
         ),
-        minimum_rows=1,
+        minimum_rows=1, sqlite_policy=SqlitePolicyFixture(),
     )
     source.fetch(_AT)
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE current_industry_query SET members_json='[]'")
-    assert CurrentIndustryCache(path, minimum_rows=1).load(_AT) == ()
+    assert CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(_AT) == ()
 
 
 def test_current_industry_keeps_previous_valid_query_when_newest_is_corrupt(tmp_path) -> None:
@@ -72,7 +74,7 @@ def test_current_industry_keeps_previous_valid_query_when_newest_is_corrupt(tmp_
             ),
             minimum_rows=1,
         ),
-        minimum_rows=1,
+        minimum_rows=1, sqlite_policy=SqlitePolicyFixture(),
     )
     source.fetch(_AT)
     source.fetch(_AT + timedelta(days=7))
@@ -81,7 +83,7 @@ def test_current_industry_keeps_previous_valid_query_when_newest_is_corrupt(tmp_
             "UPDATE current_industry_query SET members_json='[]' WHERE as_of_date=?",
             ((_AT + timedelta(days=7)).date().isoformat(),),
         )
-    cached = CurrentIndustryCache(path, minimum_rows=1).load(_AT + timedelta(days=7))
+    cached = CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(_AT + timedelta(days=7))
     assert len(cached) == 1
     assert cached[0].source_time.date() == _AT.date()
 
@@ -96,10 +98,10 @@ def test_online_refresh_never_overwrites_same_day_history_query(tmp_path) -> Non
             ),
             minimum_rows=1,
         ),
-        minimum_rows=1,
+        minimum_rows=1, sqlite_policy=SqlitePolicyFixture(),
     )
     source.fetch(_AT)
-    historical = SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries")
+    historical = SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
     historical.save(
         "baostock_history_industry",
         _AT.date(),
@@ -107,14 +109,14 @@ def test_online_refresh_never_overwrites_same_day_history_query(tmp_path) -> Non
         json.dumps([["600001", _AT.date().isoformat(), "I65软件", "证监会行业分类"]], ensure_ascii=False),
     )
     assert historical.read(_AT.date(), _AT.date(), source="baostock_history_industry") is not None
-    current = SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries", "current_industry_query")
+    current = SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries", "current_industry_query", sqlite_policy=SqlitePolicyFixture())
     assert current.read(_AT.date(), _AT.date(), source="baostock_current_industry") is not None
-    assert CurrentIndustryCache(path, minimum_rows=1).load(_AT)[0].fields["model_industry"] == "J66货币金融服务"
+    assert CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(_AT)[0].fields["model_industry"] == "J66货币金融服务"
 
 
 def test_historical_query_cannot_replace_missing_current_industry(tmp_path) -> None:
     path = tmp_path / "industry_queries.sqlite3"
-    SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries").save(
+    SQLiteIndustryQueryIndex(path, "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture()).save(
         "baostock_history_industry",
         _AT.date(),
         _AT.date(),
@@ -123,8 +125,8 @@ def test_historical_query_cannot_replace_missing_current_industry(tmp_path) -> N
     source = CurrentIndustryPublication(
         path,
         BaoStockIndustryClient(fetch_rows=lambda day, timeout: (), minimum_rows=1),
-        minimum_rows=1,
+        minimum_rows=1, sqlite_policy=SqlitePolicyFixture(),
     )
-    assert CurrentIndustryCache(path, minimum_rows=1).load(_AT) == ()
+    assert CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(_AT) == ()
     with pytest.raises(ValueError, match="incomplete"):
         source.fetch(_AT)

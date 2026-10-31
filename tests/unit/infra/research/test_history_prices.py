@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import math
 from contextlib import closing
 from dataclasses import replace
@@ -55,7 +57,7 @@ def _revision(day: date, sequence: int, close: float) -> HistoryRevision:
 
 def test_real_price_columns_preserve_mixed_numeric_types_and_revision_hash(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    month = HistoryPricePartition(path, 2026, 9)
+    month = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     day = date(2026, 9, 10)
     revision = _revision(day, 1, 10.0)
@@ -92,7 +94,7 @@ def test_price_read_boundary_rejects_invalid_numbers(position, invalid):
 
 def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> None:
     statements: list[str] = []
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     assert sum(sql.strip().upper().startswith("BEGIN IMMEDIATE") for sql in statements) == 1
     assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 1
@@ -101,7 +103,7 @@ def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> Non
 @pytest.mark.parametrize("consumer", ("published", "training"))
 def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision(tmp_path: Path, consumer: str) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     day = date(2026, 9, 10)
     index.save_revisions((_revision(date(2026, 1, 10), 1, 8.0), _revision(day, 1, 10.0)))
@@ -135,7 +137,7 @@ def test_published_month_query_seeks_dates_in_annual_file_and_preserves_revision
 @pytest.mark.parametrize("operation", ("proof", "cells"))
 def test_published_history_read_checks_budget_inside_sqlite(tmp_path: Path, operation: str) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     revisions = []
     for number in range(500):
@@ -164,16 +166,16 @@ def test_published_history_read_checks_budget_inside_sqlite(tmp_path: Path, oper
 
     with pytest.raises(RuntimeError, match="^history_preload_deadline$"):
         if operation == "proof":
-            HistoryPricePartition.verify_logical_content(path, reference, check=deadline)
+            HistoryPricePartition.verify_logical_content(path, reference, check=deadline, sqlite_policy=SqlitePolicyFixture())
         else:
             tuple(index.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1, check=deadline))
-    HistoryPricePartition.verify_logical_content(path, reference)
+    HistoryPricePartition.verify_logical_content(path, reference, sqlite_policy=SqlitePolicyFixture())
     assert len(tuple(index.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 500
 
 
 def test_resume_read_skips_absent_stocks_and_preserves_partial_and_sequence_views(tmp_path: Path) -> None:
     statements: list[str] = []
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     first = _revision(date(2026, 9, 10), 1, 10.0)
     later = _revision(date(2026, 9, 11), 2, 11.0)
@@ -189,7 +191,7 @@ def test_resume_read_skips_absent_stocks_and_preserves_partial_and_sequence_view
 
 def test_first_build_insert_rejects_duplicate_without_changing_durable_rows(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    month = HistoryPricePartition(path, 2026, 9)
+    month = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     revision = _revision(date(2026, 9, 10), 1, 10.0)
     session = month.open_write_session(fresh=True)
@@ -205,7 +207,7 @@ def test_first_build_insert_rejects_duplicate_without_changing_durable_rows(tmp_
 
 def test_resumed_writer_inserts_absent_stocks_without_per_date_probes(tmp_path: Path) -> None:
     statements: list[str] = []
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     original = _revision(date(2026, 9, 10), 1, 10.0)
     month.save_revisions((original,))
@@ -234,7 +236,7 @@ def test_resumed_writer_inserts_absent_stocks_without_per_date_probes(tmp_path: 
 
 
 def test_resumed_writer_does_not_assume_orphaned_records_are_absent(tmp_path: Path) -> None:
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     original = _revision(date(2026, 9, 10), 1, 10.0)
     month.save_revisions((original,))
@@ -246,7 +248,7 @@ def test_resumed_writer_does_not_assume_orphaned_records_are_absent(tmp_path: Pa
 
 
 def test_resumed_writer_reuses_new_revision_content_across_observation_sequences(tmp_path: Path) -> None:
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     original = _revision(date(2026, 9, 10), 1, 10.0)
     with closing(month.open_write_session(pending_sequence=2)) as session:
@@ -257,7 +259,7 @@ def test_resumed_writer_reuses_new_revision_content_across_observation_sequences
 
 
 def test_only_unpublished_unknown_observation_can_gain_a_price_in_same_sequence(tmp_path: Path) -> None:
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     day = date(2026, 9, 10)
     missing = HistoryRevision(
@@ -280,7 +282,7 @@ def test_only_unpublished_unknown_observation_can_gain_a_price_in_same_sequence(
 
 @pytest.mark.parametrize("status", ("qfq_missing", "unadjusted_missing", "tencent_inferred_suspended"))
 def test_pending_incomplete_observation_can_gain_a_complete_pair(tmp_path: Path, status: str) -> None:
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     day = date(2026, 9, 10)
     raw = _side(day, "unadjusted", 10.0) if status == "qfq_missing" else None
@@ -296,7 +298,7 @@ def test_pending_incomplete_observation_can_gain_a_complete_pair(tmp_path: Path,
 
 @pytest.mark.parametrize("status", ("qfq_missing", "unadjusted_missing"))
 def test_pending_completion_preserves_the_existing_price_side(tmp_path: Path, status: str) -> None:
-    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9)
+    month = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     month.initialize()
     day = date(2026, 9, 10)
     complete = _revision(day, 1, 10.0)
@@ -342,7 +344,7 @@ def test_pending_completion_preserves_the_existing_price_side(tmp_path: Path, st
 
 def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("PRAGMA page_size").fetchone()) == (8192,)
@@ -379,7 +381,7 @@ def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> N
 def test_month_partition_batches_revision_context_and_uses_specialized_latest_sql(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     statements: list[str] = []
-    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     statements.clear()
     revisions = tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16))
@@ -400,7 +402,7 @@ def test_month_partition_batches_revision_context_and_uses_specialized_latest_sq
 
 def test_month_partition_batch_context_uses_requested_keys_as_the_outer_query(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     revision = _revision(date(2026, 9, 10), 1, 10.0)
     index.save_revisions((revision,))
@@ -442,7 +444,7 @@ def test_month_partition_bounds_write_cache_without_evicting_hot_index_pages(
 ) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     statements: list[str] = []
-    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     statements.clear()
     monkeypatch.setattr(
@@ -459,7 +461,7 @@ def test_month_partition_bounds_write_cache_without_evicting_hot_index_pages(
 
 def test_month_partition_seal_scans_rows_without_a_temporary_sort(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     index.save_revisions(tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16)))
 
@@ -474,7 +476,7 @@ def test_month_partition_seal_scans_rows_without_a_temporary_sort(tmp_path: Path
 def test_month_partition_seal_checkpoints_before_bounded_mmap_verification(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     statements: list[str] = []
-    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
     statements.clear()
@@ -493,7 +495,7 @@ def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
 ) -> None:
     path = tmp_path / "09.sqlite3"
     statements: list[str] = []
-    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     original = _revision(date(2026, 9, 10), 1, 10.0)
     other = replace(
@@ -526,7 +528,7 @@ def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
 def test_training_stream_projects_latest_points_without_revision_hashes_or_temporary_sort(tmp_path: Path) -> None:
     path = tmp_path / "09.sqlite3"
     statements: list[str] = []
-    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append)
+    index = HistoryPricePartition(path, 2026, 9, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     day = date(2026, 9, 10)
     index.save_revisions((_revision(day, 1, 10.0), _revision(day, 2, 11.0)))
@@ -547,7 +549,7 @@ def test_training_stream_projects_latest_points_without_revision_hashes_or_tempo
 
 
 def test_month_partition_batch_preserves_a_to_b_to_a_snapshot_replay(tmp_path: Path) -> None:
-    index = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9)
+    index = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     day = date(2026, 9, 10)
     original = _revision(day, 1, 10.0)
@@ -564,20 +566,20 @@ def test_month_partition_batch_preserves_a_to_b_to_a_snapshot_replay(tmp_path: P
 def test_existing_month_partition_keeps_its_physical_page_size(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     path.parent.mkdir(parents=True, exist_ok=True)
-    HistoryPricePartition(path, 2026, 9).initialize()
+    HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture()).initialize()
     with SqliteSession(path) as connection:
         connection.run("PRAGMA journal_mode=DELETE")
         connection.run("PRAGMA page_size=4096")
         connection.run("VACUUM")
 
-    HistoryPricePartition(path, 2026, 9).initialize()
+    HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture()).initialize()
 
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         assert tuple(connection.run("PRAGMA page_size").fetchone()) == (4096,)
 
 
 def test_month_partition_rejects_backdating_conflicts_and_wrong_month(tmp_path: Path) -> None:
-    index = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9)
+    index = HistoryPricePartition(tmp_path / "09.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     original = _revision(date(2026, 9, 10), 2, 10.0)
     index.save_revisions((original,))
@@ -597,7 +599,7 @@ def test_month_partition_rejects_backdating_conflicts_and_wrong_month(tmp_path: 
     with pytest.raises(ValueError, match="year"):
         index.save_revisions((_revision(date(2027, 1, 1), 3, 12.0),))
 
-    empty = HistoryPricePartition(tmp_path / "ordered.sqlite3", 2026, 9)
+    empty = HistoryPricePartition(tmp_path / "ordered.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     empty.initialize()
     later = _revision(date(2026, 9, 11), 1, 12.0)
     with pytest.raises(ValueError, match="deterministic order"):
@@ -607,7 +609,7 @@ def test_month_partition_rejects_backdating_conflicts_and_wrong_month(tmp_path: 
 
 def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
 
@@ -616,11 +618,11 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
     assert reference.relative_path == "prices_2026.sqlite3"
     assert reference.row_count == 1
     sealed_path = tmp_path / reference.relative_path
-    HistoryPricePartition.verify(sealed_path, reference)
+    HistoryPricePartition.verify(sealed_path, reference, sqlite_policy=SqlitePolicyFixture())
     with SqliteSession(sealed_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price_revision SET content_hash=?", (bytes(32),))
     with pytest.raises(HistoryPricePartitionError, match="logical"):
-        HistoryPricePartition.verify(sealed_path, reference)
+        HistoryPricePartition.verify(sealed_path, reference, sqlite_policy=SqlitePolicyFixture())
 
 
 def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_rename(
@@ -628,7 +630,7 @@ def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_ren
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
 
@@ -645,7 +647,7 @@ def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_ren
 
 def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
     reference = index.seal()
@@ -656,7 +658,7 @@ def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, mon
         lambda _descriptor, _offset, _length, advice: calls.append(advice),
     )
 
-    HistoryPricePartition.verify(tmp_path / reference.relative_path, reference)
+    HistoryPricePartition.verify(tmp_path / reference.relative_path, reference, sqlite_policy=SqlitePolicyFixture())
 
     assert not calls  # Verification reads logical SQLite rows, not the entire file.
     with closing(index._read_connection()) as connection:
@@ -667,11 +669,11 @@ def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, mon
 
 def test_month_partition_rejects_invalid_payload_and_changed_observation(tmp_path: Path) -> None:
     path = tmp_path / "prices_2026.sqlite3"
-    index = HistoryPricePartition(path, 2026, 9)
+    index = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture())
     index.initialize()
     index.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
     reference = index.seal()
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price_revision SET qfq_close=999")
     with pytest.raises(HistoryPricePartitionError):
-        HistoryPricePartition.verify(path, reference)
+        HistoryPricePartition.verify(path, reference, sqlite_policy=SqlitePolicyFixture())

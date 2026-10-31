@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import os
 import shutil
 import sqlite3
@@ -125,8 +127,9 @@ class HistoryMaintenanceLock:
 
 class HistoryControlIndex:
     def __init__(
-        self, path: Path, *, reference_path: Path | None = None, fault_injector: FaultInjector | None = None
+        self, path: Path, *, reference_path: Path | None = None, fault_injector: FaultInjector | None = None, sqlite_policy: SqliteIoPolicy
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self._path = path
         self._reference_path = reference_path
         self._fault_injector = fault_injector or (lambda _stage: None)
@@ -135,7 +138,7 @@ class HistoryControlIndex:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with SqliteSession(
-                self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True)
+                self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True), sqlite_policy=self._sqlite_policy
             ) as connection:
                 EnsureSqliteSchema(
                     connection,
@@ -175,13 +178,13 @@ class HistoryControlIndex:
 
     def _reference_index(self, connection: SqliteConnection, base: Path | None = None) -> SQLiteReferenceIndex | None:
         row = connection.run("SELECT reference_file FROM schema_contract WHERE singleton=1").require_one()
-        return SQLiteReferenceIndex(((base or self._path.parent) / row[0]).resolve()) if row[0] is not None else None
+        return SQLiteReferenceIndex(((base or self._path.parent) / row[0]).resolve(), sqlite_policy=self._sqlite_policy) if row[0] is not None else None
 
     def integrity(self) -> HistoryControlIntegrityStatus:
         if not self._path.is_file():
             return HistoryControlIntegrityStatus("missing", "control_database_missing")
         try:
-            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 CheckSqliteIntegrity(connection)
                 self._validate_metadata(connection)
         except (sqlite3.Error, ValueError, HistoryControlError):
@@ -202,7 +205,7 @@ class HistoryControlIndex:
 
     def save_reference(self, reference: HistoryReferenceSnapshot, publication_id: str) -> None:
         with (
-            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             index = self._reference_index(connection)
@@ -218,7 +221,7 @@ class HistoryControlIndex:
     ) -> None:
         """Seal the reference and all unpublished parents in one durable transaction."""
         with (
-            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             index = self._reference_index(connection)
@@ -231,7 +234,7 @@ class HistoryControlIndex:
 
     def read_universe_reference(self, universe_hash: str) -> PreparedReference:
         try:
-            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 self._validate_metadata(connection)
                 index = self._reference_index(connection)
                 row = connection.run(
@@ -248,7 +251,7 @@ class HistoryControlIndex:
 
     def reference_path(self) -> Path:
         try:
-            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 self._validate_metadata(connection)
                 index = self._reference_index(connection)
                 if index is None:
@@ -270,11 +273,11 @@ class HistoryControlIndex:
         try:
             # Validate the referenced publication before exposing a catalog pointer.
             references: dict[str, PreparedReference] = {}
-            bound = ReadHistoryReference(self._path, digest, references=references)
+            bound = ReadHistoryReference(self._path, digest, references=references, sqlite_policy=self._sqlite_policy)
             if reference is not None and bound != reference:
                 raise HistoryControlConflictError("history_reference_identity_conflict")
             with (
-                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
                 SqliteTransaction(connection, immediate=True),
             ):
                 index = self._reference_index(connection)
@@ -308,7 +311,7 @@ class HistoryControlIndex:
     def load_state(self, *, reference_base: Path | None = None) -> HistoryControlState:
         try:
             with (
-                SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection,
+                SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
                 SqliteTransaction(connection),
             ):
                 self._validate_metadata(connection)
@@ -365,7 +368,7 @@ class HistoryControlIndex:
 
     def read_source(self, content_hash: str) -> HistorySourceIdentity:
         try:
-            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
+            with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 self._validate_metadata(connection)
                 source = self._read(connection, "source", content_hash, None)
                 if not isinstance(source, HistorySourceIdentity):
@@ -381,7 +384,7 @@ class HistoryControlIndex:
             raise ValueError("history publication sequence must be positive")
         try:
             with (
-                SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection,
+                SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
                 SqliteTransaction(connection),
             ):
                 self._validate_metadata(connection)
@@ -421,10 +424,10 @@ class HistoryControlIndex:
         inputs: HistoryRebuildInput,
         *,
         copy_related_records: Callable[[Path], None],
-        fault_injector: FaultInjector | None = None,
+        fault_injector: FaultInjector | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
         state = inputs.state
-        current = cls(path, reference_path=inputs.reference_path)
+        current = cls(path, reference_path=inputs.reference_path, sqlite_policy=sqlite_policy)
         if current.integrity().state == "healthy":
             raise HistoryControlError("healthy history control database must not be rebuilt")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -434,7 +437,7 @@ class HistoryControlIndex:
         temporary.unlink()
         injector = fault_injector or (lambda _stage: None)
         try:
-            rebuilt = cls(temporary, reference_path=inputs.reference_path)
+            rebuilt = cls(temporary, reference_path=inputs.reference_path, sqlite_policy=sqlite_policy)
             rebuilt.initialize()
             for reference, publication_id in inputs.references:
                 rebuilt.save_reference(reference, publication_id)
@@ -453,7 +456,7 @@ class HistoryControlIndex:
             copy_related_records(temporary)
             if rebuilt.load_state() != state:
                 raise HistoryControlError("rebuilt history control state does not match its source")
-            _checkpoint_wal(temporary)
+            _checkpoint_wal(temporary, sqlite_policy=sqlite_policy)
             _fsync_file(temporary)
             injector("rebuild_ready")
             _remove_sqlite_sidecars(path)
@@ -466,7 +469,7 @@ class HistoryControlIndex:
     def _save(self, value: ControlRecord, publication_id: str | None = None) -> None:
         try:
             with (
-                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+                SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
                 SqliteTransaction(connection, immediate=True),
             ):
                 WriteControlRecord(connection, value, self._reference_index(connection), publication_id)
@@ -527,14 +530,12 @@ def _remove_sqlite_sidecars(path: Path) -> None:
             pass
 
 
-def _checkpoint_wal(path: Path) -> None:
+def _checkpoint_wal(path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
     try:
-        with SqliteSession(path) as connection:
-            result = connection.run("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        with SqliteSession(path, sqlite_policy=sqlite_policy) as connection:
+            connection.checkpoint()
     except sqlite3.Error as exc:
         raise HistoryControlError("history control WAL checkpoint failed") from exc
-    if result is None or result[0] != 0:
-        raise HistoryControlError("history control WAL checkpoint did not complete")
 
 
 __all__ = [

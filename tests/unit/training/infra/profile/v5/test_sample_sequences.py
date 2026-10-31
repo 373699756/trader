@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -39,7 +41,7 @@ def _samples(days, codes=4):
 def test_shared_compact_rows_preserve_both_heads_and_validation(tmp_path):
     split = _split()
     days = (*split.model_fit_dates[:5], *split.early_stopping_dates[:2], *split.calibration_dates[:2], *split.confirmation_dates[:2])
-    with SQLiteTrainingSampleIndex(tmp_path / "compact.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "compact.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture()) as samples:
         for batch in _samples(days):
             samples.add_final(batch)
         samples.prepare_for_model_fitting(split)
@@ -71,8 +73,8 @@ def test_compact_samples_match_all_head_partitions_statistics_and_order(tmp_path
         *split.daily_proxy_holdout_dates[:2],
     )
     with (
-        SQLiteTrainingSampleIndex(tmp_path / "wide.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names) as wide,
-        SQLiteTrainingSampleIndex(tmp_path / "compact.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as compact,
+        SQLiteTrainingSampleIndex(tmp_path / "wide.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as wide,
+        SQLiteTrainingSampleIndex(tmp_path / "compact.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture()) as compact,
     ):
         for batch in _samples(days):
             wide.add_final(batch)
@@ -124,7 +126,7 @@ def test_eviction_partial_blocks_and_large_batch_keep_exact_values(tmp_path, mon
     split = _split()
     all_samples = tuple(item for batch in _samples(split.model_fit_dates[:70]) for item in batch)
     contract = V5_TRAINING_PROFILE.heads[0]
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture()) as samples:
         samples.add_final(all_samples)
         samples.prepare_for_model_fitting(split)
         queries = []
@@ -142,7 +144,7 @@ def test_eviction_partial_blocks_and_large_batch_keep_exact_values(tmp_path, mon
 )
 def test_missing_or_truncated_blocks_are_rejected(tmp_path, corruption):
     split = _split()
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture()) as samples:
         samples.add_final(next(_samples(split.model_fit_dates[:1])))
         samples.prepare_for_model_fitting(split)
         samples._connection.run(corruption)
@@ -152,7 +154,7 @@ def test_missing_or_truncated_blocks_are_rejected(tmp_path, corruption):
 
 def test_reused_sequence_blocks_are_immutable_and_keep_the_cache_byte_limit(tmp_path, monkeypatch):
     split = _split()
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture()) as samples:
         samples.add_final(item for batch in _samples(split.model_fit_dates[:6]) for item in batch)
         samples.prepare_for_model_fitting(split)
         reader = sample_sequences.SampleSequenceReader(samples._connection, LAYOUT)
@@ -177,7 +179,7 @@ def test_reused_sequence_blocks_are_immutable_and_keep_the_cache_byte_limit(tmp_
 
 def test_compact_cache_reopens_and_layout_change_rebuilds_with_same_input_identity(tmp_path):
     split = _split()
-    cache = TrainingSampleCache(tmp_path, "same", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, split.content_hash, sequence_layout=LAYOUT)
+    cache = TrainingSampleCache(tmp_path, "same", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, split.content_hash, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture())
     with cache.open() as samples:
         samples.add_final(next(_samples(split.model_fit_dates[:1])))
         samples.prepare_for_model_fitting(split)
@@ -188,7 +190,7 @@ def test_compact_cache_reopens_and_layout_change_rebuilds_with_same_input_identi
             2,
             366,
         )
-    columns = TrainingSampleCache(tmp_path, "same", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, split.content_hash)
+    columns = TrainingSampleCache(tmp_path, "same", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, split.content_hash, sqlite_policy=SqlitePolicyFixture())
     with columns.open() as samples:
         assert not columns.reused and samples.count() == 0
 
@@ -197,7 +199,7 @@ def test_nonfinite_sequence_is_rejected_before_sealing(tmp_path):
     split = _split()
     sample = next(_samples(split.model_fit_dates[:1]))[0]
     invalid = replace(sample, features=(*sample.features[:-1], float("nan")))
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture()) as samples:
         with pytest.raises(ValueError, match="values are invalid"):
             samples.add_final((invalid,))
 
@@ -205,7 +207,7 @@ def test_nonfinite_sequence_is_rejected_before_sealing(tmp_path):
 def test_full_batch_reads_two_blocks_per_code_with_portable_parameter_bound(tmp_path):
     split = _split()
     values = np.random.default_rng(7).normal(size=(256, 65, 6))
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V5_TRAINING_PROFILE.heads[0].feature_manifest.names, sequence_layout=LAYOUT, sqlite_policy=SqlitePolicyFixture()) as samples:
         for offset, day in enumerate(split.model_fit_dates[:6]):
             samples.add_final(
                 tuple(

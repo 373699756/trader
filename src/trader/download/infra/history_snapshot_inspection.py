@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -35,37 +37,37 @@ class PublishedHistorySnapshot:
     universe: HistoryUniverseIdentity
 
 
-def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False) -> HistorySnapshotStatus:
+def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False, sqlite_policy: SqliteIoPolicy) -> HistorySnapshotStatus:
     history_root = root
     if not (history_root / "catalog.sqlite3").is_file():
         return _unavailable()
     try:
-        history = LoadPublishedHistorySnapshot(history_root)
+        history = LoadPublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy)
     except HistorySnapshotInspectionError as exc:
         reason = str(exc)
         return _unavailable() if reason == "history_snapshot_unavailable" else _invalid(reason)
     if verify_partitions:
         try:
-            VerifyPublishedHistorySnapshot(history)
+            VerifyPublishedHistorySnapshot(history, sqlite_policy=sqlite_policy)
         except HistorySnapshotInspectionError as exc:
             return _status(history, "invalid", str(exc))
     return _status(history, "published", None)
 
 
-def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None) -> PublishedHistorySnapshot:
+def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None, sqlite_policy: SqliteIoPolicy) -> PublishedHistorySnapshot:
     history_root = root
     control_path = history_root / "catalog.sqlite3"
     if not control_path.is_file():
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
         references: dict[str, PreparedReference] = {}
-        state = HistoryControlIndex(control_path).load_published_state(sequence=sequence, references=references)
+        state = HistoryControlIndex(control_path, sqlite_policy=sqlite_policy).load_published_state(sequence=sequence, references=references)
     except HistoryControlError as exc:
         raise HistorySnapshotInspectionError("history_control_invalid") from exc
     if state is None:
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
-        reference = ReadBoundHistoryReference(history_root, state.source.supplier_contract, references=references)
+        reference = ReadBoundHistoryReference(history_root, state.source.supplier_contract, references=references, sqlite_policy=sqlite_policy)
         if set(reference.eligible_codes) != {item.code for item in state.universe.securities}:
             raise ValueError("history reference universe conflict")
     except (OSError, ValueError) as exc:
@@ -73,14 +75,14 @@ def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None) -> 
     return PublishedHistorySnapshot(history_root, state.snapshot, state.source, state.calendar, state.universe)
 
 
-def VerifyPublishedHistorySnapshot(history: PublishedHistorySnapshot) -> None:
+def VerifyPublishedHistorySnapshot(history: PublishedHistorySnapshot, *, sqlite_policy: SqliteIoPolicy) -> None:
     try:
-        ReadBoundHistoryReference(history.root, history.source.supplier_contract)
+        ReadBoundHistoryReference(history.root, history.source.supplier_contract, sqlite_policy=sqlite_policy)
     except (OSError, ValueError) as exc:
         raise HistorySnapshotInspectionError("history_reference_unavailable") from exc
     try:
         for reference in history.snapshot.partitions:
-            HistoryPricePartition.verify(history.root / reference.relative_path, reference)
+            HistoryPricePartition.verify(history.root / reference.relative_path, reference, sqlite_policy=sqlite_policy)
     except (HistoryPricePartitionError, OSError, ValueError) as exc:
         raise HistorySnapshotInspectionError("history_snapshot_partition_invalid") from exc
 

@@ -1,5 +1,7 @@
 """Explicit offline published inputs for download and recommendation contracts."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -56,7 +58,7 @@ def PublishHistoryReferenceFixture(
     prepared = replace(
         PreparedFixture(observed_at, population, open_dates=open_dates), st_evidence=reference.st_evidence
     )
-    SQLiteReferenceIndex(path).publish(prepared, reference.st_evidence)
+    SQLiteReferenceIndex(path, sqlite_policy=SqlitePolicyFixture()).publish(prepared, reference.st_evidence)
     return prepared.identity
 
 

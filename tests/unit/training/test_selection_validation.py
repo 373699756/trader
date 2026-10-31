@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import hashlib
 import json
 from datetime import date, timedelta
@@ -204,7 +206,7 @@ def test_input_conflicts_never_produce_new_target_results(tmp_path, case):
 def test_report_replay_is_idempotent_and_conflicting_content_does_not_overwrite(tmp_path):
     root = tmp_path / "evidence"
     _evidence(root)
-    payload = ProjectSelectionValidation(bootstrap.ExecuteResearchEvidence(SelectionCommand(root)))
+    payload = ProjectSelectionValidation(bootstrap.ExecuteResearchEvidence(SelectionCommand(root), sqlite_policy=SqlitePolicyFixture()))
     path = tmp_path / "validation.json"
     PublishSelectionReport(path, payload)
     original = path.read_bytes()

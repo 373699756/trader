@@ -1,5 +1,7 @@
 """Publication coverage and receipt diagnostics must not turn missing evidence into success."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 import time
 from dataclasses import replace
@@ -28,7 +30,7 @@ def _published(tmp_path):
 
 
 def _audit(index, now=fixtures.NOW):
-    return AuditCompanyPublication(index.path, index.facts_path, now=now, deadline=time.monotonic() + 10)
+    return AuditCompanyPublication(index.path, index.facts_path, now=now, deadline=time.monotonic() + 10, sqlite_policy=SqlitePolicyFixture())
 
 
 def test_published_projection_keeps_unknown_components_and_valid_released_receipts_distinct(tmp_path):
@@ -93,7 +95,7 @@ def test_unlock_horizon_ages_and_long_lived_risks_remain_visible(tmp_path):
 
 def test_empty_collection_without_formal_publication_cannot_pass(tmp_path):
     index = fixtures._index(tmp_path)
-    result = AuditCompanyStorage(index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10)
+    result = AuditCompanyStorage(index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10, sqlite_policy=SqlitePolicyFixture())
     assert result["status"] == "degraded"
     assert "company_publication_missing" in result["findings"]
     assert "company_population_empty" in result["findings"]

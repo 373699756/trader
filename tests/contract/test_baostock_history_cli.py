@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 import re
 import signal
@@ -245,7 +247,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     )
     from trader.download.entrypoints.commands import RunDownload
 
-    assert RunDownload(PROJECT_ROOT, PROJECT_ROOT / "config/runtime.json") == 0
+    assert RunDownload(PROJECT_ROOT, PROJECT_ROOT / "config/runtime.json", sqlite_policy=SqlitePolicyFixture()) == 0
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -288,6 +290,7 @@ def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(tmp_
         progress,
         cancel_requested,
         storage_medium,
+        sqlite_policy,
     ):
         assert storage_medium == configured_medium
         assert qfq_configuration == LoadQfqWindowConfiguration(PROJECT_ROOT)
@@ -322,6 +325,7 @@ def test_train_cancellation_during_reference_preparation_returns_130(tmp_path, m
         progress,
         cancel_requested,
         storage_medium,
+        sqlite_policy,
     ):
         assert storage_medium == configured_medium
         assert qfq_configuration == LoadQfqWindowConfiguration(PROJECT_ROOT)

@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from dataclasses import asdict, replace
 from datetime import date, timedelta
 from importlib.util import find_spec
@@ -204,7 +206,7 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
             sample_root=tmp_path / "samples",
         )
         return (
-            _sample_cache_for(snapshot, split, request).identity,
+            _sample_cache_for(snapshot, split, request, sqlite_policy=SqlitePolicyFixture()).identity,
             _training_contract_hash(profile, profile.heads[0], options),
         )
 

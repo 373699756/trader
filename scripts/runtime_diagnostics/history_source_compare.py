@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import platform
 import tempfile
@@ -62,12 +64,12 @@ class _ComparisonSupplier:
         return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in result.batch.cells))
 
 
-def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) -> dict[str, object]:
-    state = HistoryControlIndex(root / "catalog.sqlite3").load_published_state()
+def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    state = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
     if state is None:
         raise ValueError("comparison_requires_published_calendar")
-    published = HistoryControlIndex(root / "catalog.sqlite3").read_universe_reference(state.universe.content_hash)
-    reference = ReadBoundHistoryReference(root, state.source.supplier_contract)
+    published = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).read_universe_reference(state.universe.content_hash)
+    reference = ReadBoundHistoryReference(root, state.source.supplier_contract, sqlite_policy=sqlite_policy)
     selected = tuple(item for item in state.universe.securities if item.code in codes)
     if {item.code for item in selected} != set(codes):
         raise ValueError("comparison_codes_outside_filtered_universe")
@@ -113,7 +115,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
                 tuple(item for item in reference.st_evidence if item.code in codes),
             )
             subset = replace(published, official_universe=universe, st_evidence=context.st_evidence)
-            SQLiteReferenceIndex(config.reference_root / "company_st.sqlite3").publish(subset, subset.st_evidence)
+            SQLiteReferenceIndex(config.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy).publish(subset, subset.st_evidence)
             context = replace(context, reference_id=subset.identity)
             started = time.monotonic()
             result = RunHistorySync(
@@ -121,7 +123,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
                 _ComparisonSupplier(context, baseline, prices, tencent_first),
                 worker_pool=pool,
                 storage_kind=StorageProbe().inspect(config.history_root).kind,
-                clock=lambda: datetime.combine(dates[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai")),
+                clock=lambda: datetime.combine(dates[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai")), sqlite_policy=sqlite_policy,
             )
             results.append(
                 {
@@ -165,10 +167,13 @@ def main() -> int:
     parser.add_argument("--sessions", type=int, default=251)
     parser.add_argument("--timeout-seconds", type=float, default=20)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if not 1 <= len(args.codes) <= 10 or not 1 <= args.sessions <= 2000 or not 1 <= args.timeout_seconds <= 45:
         parser.error("comparison requires 1..10 codes, 1..2000 sessions and 1..45 second attempts")
     try:
-        report = _compare(args.history_root, tuple(args.codes), args.sessions, args.timeout_seconds)
+        report = _compare(args.history_root, tuple(args.codes), args.sessions, args.timeout_seconds, sqlite_policy=sqlite_policy)
     except (OSError, RuntimeError, ValueError) as exc:
         emit_report(
             {

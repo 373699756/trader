@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -49,7 +51,8 @@ class TrainingMaintenanceConflictError(TrainingMaintenanceError):
 class TrainingMaintenanceIndex:
     """Own training tables and records; history publication stays with download."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._path = path
 
     @contextmanager
@@ -57,7 +60,7 @@ class TrainingMaintenanceIndex:
         try:
             with (
                 SqliteSession(
-                    self._path, SqliteConnectionOptions(read_only=not write, foreign_keys=True)
+                    self._path, SqliteConnectionOptions(read_only=not write, foreign_keys=True), sqlite_policy=self._sqlite_policy
                 ) as connection,
                 SqliteTransaction(connection, immediate=write),
             ):

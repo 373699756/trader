@@ -6,7 +6,8 @@ import re
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import islice
 from math import isfinite
 from pathlib import Path
 from time import monotonic, sleep
@@ -14,20 +15,24 @@ from types import TracebackType
 from typing import Literal, TypeAlias, cast
 
 from trader.infra.sqlite_observation import CurrentSqliteObservation, ObserveSqliteConnection, ObserveSqliteStatement
+from trader.infra.sqlite_policy import SqliteIoPolicy
 
 SqliteParameter: TypeAlias = str | int | float | bytes | None
 SqliteParameters: TypeAlias = Sequence[object] | Mapping[str, object]
+_BoundParameters: TypeAlias = tuple[SqliteParameter, ...] | dict[str, SqliteParameter]
 
 
 class SqliteResult:
     """A bounded cursor view; driver handles never leave this module."""
 
-    def __init__(self, cursor: sqlite3.Cursor) -> None:
+    def __init__(self, cursor: sqlite3.Cursor, policy: SqliteIoPolicy | None = None, *, rowcount: int | None = None) -> None:
         self._cursor = cursor
+        self._policy = policy
+        self._rowcount = rowcount
 
     @property
     def rowcount(self) -> int:
-        return self._cursor.rowcount
+        return self._cursor.rowcount if self._rowcount is None else self._rowcount
 
     def fetchone(self) -> sqlite3.Row | None:
         return cast(sqlite3.Row | None, self._cursor.fetchone())
@@ -39,12 +44,20 @@ class SqliteResult:
         return row
 
     def fetchall(self) -> list[sqlite3.Row]:
-        return self._cursor.fetchall()
+        return list(self) if self._policy is not None else self._cursor.fetchall()
 
     def fetchmany(self, size: int) -> list[sqlite3.Row]:
         if size < 1:
             raise ValueError("sqlite_batch_size_invalid")
-        return self._cursor.fetchmany(size)
+        if self._policy is None:
+            return self._cursor.fetchmany(size)
+        rows: list[sqlite3.Row] = []
+        while len(rows) < size:
+            batch = self._cursor.fetchmany(min(size - len(rows), self._policy.read_window_rows))
+            if not batch:
+                break
+            rows.extend(batch)
+        return rows
 
     def fetch_values(self, size: int) -> list[tuple[SqliteParameter, ...]]:
         """Read positional values without constructing per-row name lookup wrappers."""
@@ -53,12 +66,16 @@ class SqliteResult:
         factory = self._cursor.row_factory
         self._cursor.row_factory = None
         try:
-            return cast(list[tuple[SqliteParameter, ...]], self._cursor.fetchmany(size))
+            return cast(list[tuple[SqliteParameter, ...]], self.fetchmany(size))
         finally:
             self._cursor.row_factory = factory
 
     def __iter__(self) -> Iterator[sqlite3.Row]:
-        yield from self._cursor
+        if self._policy is None:
+            yield from self._cursor
+        else:
+            while rows := self._cursor.fetchmany(self._policy.read_window_rows):
+                yield from rows
 
     def close(self) -> None:
         self._cursor.close()
@@ -67,25 +84,53 @@ class SqliteResult:
 class SqliteConnection:
     """Thread-owned driver handle exposing bounded statement operations."""
 
-    def __init__(self, driver: sqlite3.Connection) -> None:
+    def __init__(self, driver: sqlite3.Connection, policy: SqliteIoPolicy | None = None) -> None:
         self._driver = driver
+        self._policy = policy
         driver.row_factory = sqlite3.Row
 
     def run(self, sql: str, parameters: SqliteParameters = ()) -> SqliteResult:
         ObserveSqliteStatement()
-        return SqliteResult(self._driver.execute(sql, _parameters(parameters)))
+        return SqliteResult(self._driver.execute(sql, _parameters(parameters)), self._policy)
 
     def run_many(self, sql: str, parameters: Iterable[SqliteParameters]) -> SqliteResult:
         observation = CurrentSqliteObservation()
-        if observation is None:
+        if observation is None and self._policy is None:
             return SqliteResult(self._driver.executemany(sql, (_parameters(row) for row in parameters)))
 
-        def rows() -> Iterator[tuple[SqliteParameter, ...] | dict[str, SqliteParameter]]:
-            for row in parameters:
-                observation.record_statement()
-                yield _parameters(row)
+        def rows(values: Iterable[_BoundParameters]) -> Iterator[_BoundParameters]:
+            for row in values:
+                if observation is not None:
+                    observation.record_statement()
+                yield row
 
-        return SqliteResult(self._driver.executemany(sql, rows()))
+        pending = (_parameters(row) for row in parameters)
+        if self._policy is None:
+            return SqliteResult(self._driver.executemany(sql, rows(pending)))
+        # Bound executemany submissions inside the caller's transaction; never commit a chunk.
+        cursor = self._driver.cursor()
+        count = 0
+        submitted = False
+        try:
+            while batch := tuple(islice(pending, self._policy.transaction_batch_rows)):
+                submitted = True
+                cursor.executemany(sql, rows(batch))
+                count = count + cursor.rowcount if count >= 0 and cursor.rowcount >= 0 else -1
+            if not submitted:
+                cursor.executemany(sql, ())
+                count = cursor.rowcount
+            return SqliteResult(cursor, self._policy, rowcount=count)
+        except BaseException:
+            cursor.close()
+            raise
+
+    def checkpoint(self) -> None:
+        """Complete the selected WAL checkpoint, or fail without allowing a file replacement."""
+        if self._policy is None:
+            raise ValueError("sqlite_checkpoint_policy_required")
+        row = self.run(f"PRAGMA wal_checkpoint({self._policy.checkpoint_mode})").require_one()
+        if row[0] != 0 or row[1] != row[2]:
+            raise sqlite3.OperationalError("sqlite_checkpoint_incomplete")
 
     @property
     def in_transaction(self) -> bool:
@@ -216,9 +261,12 @@ def OpenSqliteConnection(
     *,
     cancel_requested: Callable[[], bool] | None = None,
     statement_trace: Callable[[str], None] | None = None,
+    sqlite_policy: SqliteIoPolicy | None = None,
 ) -> SqliteConnection:
     """Caller closes the handle; immutable is only for offline, unchanging copies."""
     ObserveSqliteConnection()
+    if sqlite_policy is not None:
+        options = replace(options, timeout_seconds=sqlite_policy.connection_timeout_seconds)
     connection = sqlite3.connect(
         _connection_target(path, options),
         uri=options.read_only,
@@ -238,7 +286,7 @@ def OpenSqliteConnection(
             _configure_statement(connection, f"PRAGMA mmap_size={options.mmap_bytes}")
         if options.temp_storage is not None:
             _configure_statement(connection, f"PRAGMA temp_store={options.temp_storage}")
-        return SqliteConnection(connection)
+        return SqliteConnection(connection, sqlite_policy)
     except BaseException:
         connection.close()
         raise
@@ -262,9 +310,12 @@ def SqliteSession(
     *,
     cancel_requested: Callable[[], bool] | None = None,
     statement_trace: Callable[[str], None] | None = None,
+    sqlite_policy: SqliteIoPolicy | None = None,
 ) -> Iterator[SqliteConnection]:
     """Own a connection lifetime; transactions are explicit and never committed on close."""
-    connection = OpenSqliteConnection(path, options, cancel_requested=cancel_requested, statement_trace=statement_trace)
+    connection = OpenSqliteConnection(
+        path, options, cancel_requested=cancel_requested, statement_trace=statement_trace, sqlite_policy=sqlite_policy
+    )
     try:
         yield connection
     finally:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import sqlite3
 import json
 from collections.abc import Callable, Iterator, Sequence
@@ -93,14 +95,15 @@ class SQLiteCompanyEvidenceIndex:
         cancel_requested: Callable[[], bool] | None = None,
         event_policy: CompanyEventPolicy,
         stock_progress: Callable[[CompanyStockProgress], None] | None = None,
-        listings: tuple[CompanyListing, ...] = (),
+        listings: tuple[CompanyListing, ...] = (), sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self.path = path
         if path.resolve() == facts_path.resolve():
             raise ValueError("company_paths_must_be_separate")
         self.facts_path = facts_path
         self._documents = documents
-        self._facts = SQLiteCompanyFactsIndex(facts_path, event_policy=event_policy, cancel_requested=cancel_requested)
+        self._facts = SQLiteCompanyFactsIndex(facts_path, event_policy=event_policy, cancel_requested=cancel_requested, sqlite_policy=self._sqlite_policy)
         self._cancel_requested = cancel_requested
         self._event_policy = event_policy
         self._stock_progress = stock_progress
@@ -119,8 +122,8 @@ class SQLiteCompanyEvidenceIndex:
         try:
             with SqliteSession(
                 self.path,
-                SqliteConnectionOptions(timeout_seconds=8, foreign_keys=True),
-                cancel_requested=None if accepted_document else self._cancel_requested,
+                SqliteConnectionOptions(foreign_keys=True),
+                cancel_requested=None if accepted_document else self._cancel_requested, sqlite_policy=self._sqlite_policy,
             ) as connection:
                 yield connection
         except sqlite3.Error as exc:
@@ -135,14 +138,14 @@ class SQLiteCompanyEvidenceIndex:
         try:
             if self.path.exists():
                 with SqliteSession(
-                    self.path, SqliteConnectionOptions(read_only=True), cancel_requested=self._cancel_requested
+                    self.path, SqliteConnectionOptions(read_only=True), cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy
                 ) as connection:
                     if connection.run("SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' LIMIT 1").fetchone():
                         self._validate_contract(connection)
             with SqliteSession(
                 self.path,
-                SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=8, foreign_keys=True),
-                cancel_requested=self._cancel_requested,
+                SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True),
+                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
             ) as connection:
                 connection.run("PRAGMA auto_vacuum=INCREMENTAL")
                 EnsureSqliteSchema(
@@ -993,7 +996,7 @@ class SQLiteCompanyEvidenceIndex:
                 (self._facts.extraction_hash,),
             )
         # A new extraction identity requires fresh source verification, not old receipts.
-        with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True)) as formal:
+        with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
             parent = ReadCompanyPublicationIdentity(formal)
         if parent is not None and parent.extraction_hash != self._facts.extraction_hash:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
@@ -1010,7 +1013,7 @@ class SQLiteCompanyEvidenceIndex:
             self.publish(codes, observed_at, changed_only=True)
 
     def published_count(self, codes: Sequence[str]) -> int:
-        with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True)) as connection:
+        with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             existing = {row[0] for row in connection.run("SELECT code FROM company_facts")}
         return len(existing.intersection(codes))
 
@@ -1027,13 +1030,13 @@ class SQLiteCompanyEvidenceIndex:
         with (
             SqliteSession(
                 self.path,
-                SqliteConnectionOptions(read_only=True, timeout_seconds=8),
-                cancel_requested=self._cancel_requested,
+                SqliteConnectionOptions(read_only=True),
+                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
             ) as source,
             SqliteSession(
                 self.facts_path,
-                SqliteConnectionOptions(read_only=True, timeout_seconds=8),
-                cancel_requested=self._cancel_requested,
+                SqliteConnectionOptions(read_only=True),
+                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
             ) as formal,
         ):
             source_version = source.run("PRAGMA data_version").require_one()[0]
@@ -1190,7 +1193,7 @@ class SQLiteCompanyEvidenceIndex:
                 )
             )
             self._documents.release(retained)
-            with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True)) as formal:
+            with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
                 referenced = tuple(
                     (DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]), row[1])
                     for row in formal.run("SELECT source,source_key FROM company_evidence_ref")

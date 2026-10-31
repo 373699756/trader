@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from dataclasses import field
+
 import hashlib
 import json
 import sqlite3
@@ -44,6 +47,8 @@ class SQLiteIndustryQueryIndex:
     contract: str
     table: str = "industry_query"
 
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+
     def __post_init__(self) -> None:
         if self.table not in {"industry_query", "current_industry_query"}:
             raise ValueError("industry_query_table_invalid")
@@ -57,7 +62,7 @@ class SQLiteIndustryQueryIndex:
             raise ValueError("industry_query_path_unsafe")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with SqliteSession(self.path, SqliteConnectionOptions(timeout_seconds=5)) as connection:
+            with SqliteSession(self.path, SqliteConnectionOptions(), sqlite_policy=self.sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
@@ -69,7 +74,7 @@ class SQLiteIndustryQueryIndex:
         if not self.path.is_file():
             return None
         try:
-            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
+            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self.sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA)
                 rows = connection.run(
                     f"SELECT {self._date_column},source,checked_date,members_json,content_hash FROM {self.table} "
@@ -86,7 +91,7 @@ class SQLiteIndustryQueryIndex:
         if not self.path.is_file():
             return None
         try:
-            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5)) as connection:
+            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self.sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA)
                 row = connection.run(
                     f"SELECT {self._date_column},source,checked_date,members_json,content_hash FROM {self.table} WHERE "
@@ -119,7 +124,7 @@ class SQLiteIndustryQueryIndex:
         self.prepare()
         try:
             with (
-                SqliteSession(self.path, SqliteConnectionOptions(timeout_seconds=5)) as connection,
+                SqliteSession(self.path, SqliteConnectionOptions(), sqlite_policy=self.sqlite_policy) as connection,
                 SqliteTransaction(connection),
             ):
                 connection.run(
@@ -139,6 +144,7 @@ class SQLiteIndustryQueryIndex:
         return hashlib.sha256(
             json.dumps((self.contract, source, day.isoformat(), observed_on.isoformat(), payload)).encode()
         ).hexdigest()
+
 
 
 __all__ = ["IndustryQuery", "SQLiteIndustryQueryIndex"]

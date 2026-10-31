@@ -404,6 +404,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
         last_error_code="",
         input_quality=(),
         publication_io=(),
+        recommendation_round=None,
         preview_context=PreviewContext("status-preview", date(2026, 8, 28), point_updated_at) if preview else None,
         preview_state="failed" if preview else None,
         preview_error="production_model_contract_conflict" if preview else None,

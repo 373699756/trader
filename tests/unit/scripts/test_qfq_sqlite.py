@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import hashlib
 import json
 import sqlite3
@@ -14,7 +16,7 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 def _seed(path, *, complete=True):
-    primary, peer = SQLiteQfqWindowCache(path, "v2"), SQLiteQfqWindowCache(path, "v3")
+    primary, peer = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture()), SQLiteQfqWindowCache(path, "v3", sqlite_policy=SqlitePolicyFixture())
     window = qfq_window("600001")
     window = replace(window, cells=window.cells[-251:])
     days = tuple(cell.trade_date for cell in window.cells)
@@ -32,7 +34,7 @@ def test_audit_reads_shared_pair_and_checkpoint_without_changes(tmp_path):
     path = tmp_path / "daily_window.sqlite3"
     _seed(path)
     before = hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
-    report = AuditQfqDatabase(path)
+    report = AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
     assert report["status"] == "passed"
     assert report["summary"]["mode"] == "shared_daily_window"
     assert report["summary"]["source_data_writes"] == 0
@@ -45,7 +47,7 @@ def test_audit_reads_shared_pair_and_checkpoint_without_changes(tmp_path):
 def test_audit_reports_unconfirmed_publication(tmp_path):
     path = tmp_path / "daily_window.sqlite3"
     _seed(path, complete=False)
-    report = AuditQfqDatabase(path)
+    report = AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
     assert report["status"] == "degraded"
     assert report["summary"]["database_not_checkpointed"] == 1
 
@@ -55,7 +57,7 @@ def test_audit_reports_checkpoint_source_conflict(tmp_path):
     _seed(path)
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE window_completion SET source='other'")
-    report = AuditQfqDatabase(path)
+    report = AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
     assert report["status"] == "degraded"
     assert report["summary"]["checkpoint_not_paired"] == 1
 
@@ -63,7 +65,7 @@ def test_audit_reports_checkpoint_source_conflict(tmp_path):
 def test_missing_database_is_not_created(tmp_path):
     path = tmp_path / "missing.sqlite3"
     with pytest.raises(FileNotFoundError):
-        AuditQfqDatabase(path)
+        AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
     assert not path.exists()
 
 

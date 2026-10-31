@@ -1,5 +1,7 @@
 """V2-owned 251-session training command adapter."""
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from pathlib import Path
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
@@ -14,7 +16,7 @@ def RunV2Training(
     *,
     settings: ProfileTrainingSettings,
     sample_root: Path,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TomorrowTrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
     return RunProfileTraining(
         ProfileTrainingRequest(
@@ -25,7 +27,7 @@ def RunV2Training(
             settings,
             progress,
             sample_root=sample_root,
-        )
+        ), sqlite_policy=sqlite_policy
     )
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -53,11 +55,11 @@ def test_production_rank_freeze_and_history_keep_identity(
         source, observed_at=observed_at, items=(replace(item, quote=replace(item.quote, source_time=observed_at)),)
     )
     path = tmp_path / "v1/freeze.sqlite3"
-    records = SQLiteFreezeRecords(path)
+    records = SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     if cold:
-        records = SQLiteFreezeRecords(path)
+        records = SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture())
     else:
         assert index.publish(current, expected_version=None).accepted
     clock = _Clock(now)
@@ -87,7 +89,7 @@ def test_production_rank_freeze_and_history_keep_identity(
     )
     restored = UnifiedFreezeIndex()
     assert (
-        _coordinator(restored, SQLiteFreezeRecords(path), clock, strategy).restore(now.date()).record == result.record
+        _coordinator(restored, SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()), clock, strategy).restore(now.date()).record == result.record
     )
     assert restored.snapshot(strategy).current == result.record.freeze
 
@@ -95,7 +97,7 @@ def test_production_rank_freeze_and_history_keep_identity(
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_production_rank_close_fallback_is_first_wins_and_preview_remains_ephemeral(tmp_path: Path, strategy: Strategy):
     clock = _Clock(_at(15, 10))
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     coordinator = _coordinator(index, records, clock, strategy)
@@ -121,7 +123,7 @@ def test_production_rank_close_fallback_is_first_wins_and_preview_remains_epheme
     assert result.record.commit_kind == "close_fallback"
     assert coordinator.freeze_scheduled().record == result.record
     assert records.list_dates(strategy) == (source.trade_date,)
-    targets = SQLiteOutcomeEvidenceIndex(tmp_path / "research", records).pending_outcome_targets(limit=10)
+    targets = SQLiteOutcomeEvidenceIndex(tmp_path / "research", records, sqlite_policy=SqlitePolicyFixture()).pending_outcome_targets(limit=10)
     assert len(targets) == 1
     assert targets[0].snapshot_id == result.record.version
     assert targets[0].strategy is strategy

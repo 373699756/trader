@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import json
 import math
@@ -50,20 +52,21 @@ class SQLiteOutcomeEvidenceIndex:
     def __init__(
         self,
         runtime_root: Path,
-        freezes: FreezeRecordPort,
+        freezes: FreezeRecordPort, *, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self._database = runtime_root / "outcomes.sqlite3"
         self._freezes = freezes
         self._lock = threading.RLock()
         self._initialized = False
 
     @classmethod
-    def inspect_status(cls, runtime_root: Path) -> OutcomeEvidenceStatus:
+    def inspect_status(cls, runtime_root: Path, *, sqlite_policy: SqliteIoPolicy) -> OutcomeEvidenceStatus:
         database = runtime_root / "outcomes.sqlite3"
         if not database.is_file():
             return OutcomeEvidenceStatus(False, 0, 0, 0, None, "")
         try:
-            with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+            with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA)
                 benchmark = connection.run("SELECT COUNT(*), MAX(trade_date) FROM benchmark_returns").require_one()
                 outcomes = connection.run(
@@ -86,7 +89,7 @@ class SQLiteOutcomeEvidenceIndex:
         if limit < 1:
             raise ValueError("summary limit must be positive")
         identities, sample_counts = _summary_samples(self._freezes, strategy, limit)
-        completed = _summary_returns(self._database, strategy, identities)
+        completed = _summary_returns(self._database, strategy, identities, sqlite_policy=self._sqlite_policy)
         return tuple(
             OutcomeTierSummary(
                 tier,
@@ -106,7 +109,7 @@ class SQLiteOutcomeEvidenceIndex:
                 return
             self._database.parent.mkdir(parents=True, exist_ok=True)
             with SqliteSession(
-                self._database, SqliteConnectionOptions(journal_mode="WAL", timeout_seconds=10)
+                self._database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=self._sqlite_policy
             ) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
             self._initialized = True
@@ -150,7 +153,7 @@ class SQLiteOutcomeEvidenceIndex:
         self.initialize()
         with (
             self._lock,
-            SqliteSession(self._database, _CONNECTION_OPTIONS) as connection,
+            SqliteSession(self._database, _CONNECTION_OPTIONS, sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             existing = connection.run(
@@ -176,7 +179,7 @@ class SQLiteOutcomeEvidenceIndex:
             raise ValueError("benchmark return limit must be positive")
         if not self._database.is_file():
             return ()
-        with self._lock, SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection:
+        with self._lock, SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             EnsureSqliteSchema(connection, _SCHEMA)
             rows = connection.run(
                 """
@@ -201,7 +204,7 @@ class SQLiteOutcomeEvidenceIndex:
         self.initialize()
         with (
             self._lock,
-            SqliteSession(self._database, _CONNECTION_OPTIONS) as connection,
+            SqliteSession(self._database, _CONNECTION_OPTIONS, sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             for outcome in outcomes:
@@ -235,7 +238,7 @@ class SQLiteOutcomeEvidenceIndex:
 
     def _pending_horizons(self, snapshot_id: str, strategy: Strategy, code: str) -> tuple[int, ...]:
         horizons = OutcomeHorizons(strategy)
-        with self._lock, SqliteSession(self._database, _CONNECTION_OPTIONS) as connection:
+        with self._lock, SqliteSession(self._database, _CONNECTION_OPTIONS, sqlite_policy=self._sqlite_policy) as connection:
             rows = connection.run(
                 "SELECT horizon FROM recommendation_outcomes WHERE snapshot_id = ? AND strategy = ? AND code = ?",
                 (snapshot_id, strategy.value, code),
@@ -244,7 +247,7 @@ class SQLiteOutcomeEvidenceIndex:
         return tuple(horizon for horizon in horizons if horizon not in settled)
 
 
-_CONNECTION_OPTIONS = SqliteConnectionOptions(timeout_seconds=10.0)
+_CONNECTION_OPTIONS = SqliteConnectionOptions()
 _SummaryTier = Literal["recommend", "watch"]
 
 
@@ -269,12 +272,12 @@ def _summary_samples(
 
 
 def _summary_returns(
-    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier]
+    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier], *, sqlite_policy: SqliteIoPolicy
 ) -> dict[tuple[_SummaryTier, int], list[float]]:
     completed: dict[tuple[_SummaryTier, int], list[float]] = {}
     if not database.is_file() or not identities:
         return completed
-    for snapshot_id, code, horizon, record_hash, record_bytes in _summary_rows(database, strategy, identities):
+    for snapshot_id, code, horizon, record_hash, record_bytes in _summary_rows(database, strategy, identities, sqlite_policy=sqlite_policy):
         tier = identities.get((snapshot_id, code))
         if tier is None:
             continue
@@ -285,12 +288,12 @@ def _summary_returns(
 
 
 def _summary_rows(
-    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier]
+    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier], *, sqlite_policy: SqliteIoPolicy
 ) -> list[tuple[str, str, int, bytes, bytes]]:
     snapshot_ids = tuple(sorted({snapshot_id for snapshot_id, _code in identities}))
     placeholders = ",".join("?" for _snapshot_id in snapshot_ids)
     try:
-        with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+        with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
             rows = connection.run(
                 "SELECT snapshot_id, code, horizon, record_hash, record_bytes "
                 f"FROM recommendation_outcomes WHERE strategy = ? AND snapshot_id IN ({placeholders})",

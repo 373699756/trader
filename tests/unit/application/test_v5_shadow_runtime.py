@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -184,7 +186,7 @@ def test_v5_weighted_score_shadow_identity_rejects_authority_upgrades(upgrade):
 def test_v5_shadow_five_time_windows_never_checkpoint_or_freeze(tmp_path: Path, hour, minute, cold):
     now = NOW.replace(hour=hour, minute=minute)
     shadow = _shadow(Strategy.TOMORROW, now)
-    records = SQLiteFreezeRecords(tmp_path / "v5" / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "v5" / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     if not cold:
@@ -208,7 +210,7 @@ def test_v5_shadow_five_time_windows_never_checkpoint_or_freeze(tmp_path: Path, 
 def test_v5_cold_start_cannot_restore_old_checkpoint_or_freeze_unmarked_rebuild(tmp_path: Path, strategy):
     now = NOW.replace(hour=15, minute=5)
     old = replace(freeze(strategy), observed_at=now.replace(hour=14, minute=59, second=50))
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     freezer = _freezer(index, records, _Clock(now), strategy)
@@ -232,7 +234,7 @@ def test_v5_existing_formal_record_remains_readable_without_new_freeze_authority
     now = NOW.replace(hour=15, minute=5)
     old = FormalScoredFreeze(freeze(strategy))
     formal = CommittedFreezeRecord(old, now.replace(minute=0), "scheduled")
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(formal)
     index = UnifiedFreezeIndex()
@@ -258,7 +260,7 @@ def test_v5_existing_formal_record_remains_readable_without_new_freeze_authority
 def test_authorized_production_freeze_keeps_existing_first_wins_contract(tmp_path: Path):
     now = NOW.replace(hour=15, minute=0)
     current = freeze()
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     index = UnifiedFreezeIndex()
     assert index.publish(current, expected_version=None).accepted

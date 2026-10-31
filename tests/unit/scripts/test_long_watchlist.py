@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -101,7 +103,7 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
         timeout=1,
         exclusions={},
         evidence_database=index.facts_path,
-        open_dates=(date(2026, 10, 8), date(2026, 10, 9)),
+        open_dates=(date(2026, 10, 8), date(2026, 10, 9)), sqlite_policy=SqlitePolicyFixture(),
     )
 
     assert result.disposition == "excluded"
@@ -134,6 +136,6 @@ def test_historical_exclusions_ignore_retired_annual_loss_evidence(tmp_path: Pat
             ),
         )
 
-    exclusions = historical_exclusions((database,), datetime(2026, 10, 9, 16, tzinfo=SHANGHAI))
+    exclusions = historical_exclusions((database,), datetime(2026, 10, 9, 16, tzinfo=SHANGHAI), sqlite_policy=SqlitePolicyFixture())
 
     assert exclusions == {}

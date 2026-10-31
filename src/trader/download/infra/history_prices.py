@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import os
 import re
 import shutil
@@ -271,8 +273,9 @@ class HistoryPricePartition:
         calendar_month: int,
         *,
         statement_trace: Callable[[str], None] | None = None,
-        activity: HistorySqliteActivity | None = None,
+        activity: HistorySqliteActivity | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         if calendar_year < 1990 or not 1 <= calendar_month <= 12:
             raise ValueError("history month partition identity is invalid")
         self._path = path
@@ -294,7 +297,7 @@ class HistoryPricePartition:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with SqliteSession(
-                self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True, page_size=8192)
+                self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True, page_size=8192), sqlite_policy=self._sqlite_policy
             ) as connection:
                 if self._statement_trace is not None:
                     connection.observe_statements(self._statement_trace)
@@ -748,9 +751,9 @@ class HistoryPricePartition:
         cls,
         path: Path,
         reference: HistorySnapshotPartition,
-        progress: HistoryPartitionVerificationProgress | None = None,
+        progress: HistoryPartitionVerificationProgress | None = None, *, sqlite_policy: SqliteIoPolicy,
     ) -> None:
-        cls.verify_logical_content(path, reference, progress, validate_payloads=True)
+        cls.verify_logical_content(path, reference, progress, validate_payloads=True, sqlite_policy=sqlite_policy)
 
     @classmethod
     def verify_logical_content(
@@ -761,10 +764,10 @@ class HistoryPricePartition:
         *,
         retain_pages: bool = False,
         validate_payloads: bool = False,
-        check: Callable[[], None] | None = None,
+        check: Callable[[], None] | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
         del retain_pages
-        candidate = cls(path, reference.calendar_year, reference.calendar_month)
+        candidate = cls(path, reference.calendar_year, reference.calendar_month, sqlite_policy=sqlite_policy)
         try:
             with (
                 closing(candidate._read_connection()) as connection,
@@ -1016,12 +1019,12 @@ class HistoryPricePartition:
             SqliteConnectionOptions(
                 journal_mode="WAL", foreign_keys=True, cache_kib=8192, mmap_bytes=0, temp_storage="FILE"
             ),
-            statement_trace=self._statement_trace,
+            statement_trace=self._statement_trace, sqlite_policy=self._sqlite_policy,
         )
 
     def _read_connection(self) -> SqliteConnection:
         return OpenHistoryPriceReader(
-            self._path, statement_trace=self._statement_trace, mmap_bytes=0, activity=self._activity
+            self._path, statement_trace=self._statement_trace, mmap_bytes=0, activity=self._activity, sqlite_policy=self._sqlite_policy
         )
 
 

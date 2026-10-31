@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -36,14 +38,14 @@ def ProbeAuxiliary(
     *,
     company_database: Path,
     open_dates: tuple[date, ...],
-    company_policy: CompanyScoringPolicy,
+    company_policy: CompanyScoringPolicy, sqlite_policy: SqliteIoPolicy,
 ) -> AuxiliaryInputs:
     """Read the published risk snapshot; only minute probes contact a supplier."""
     research: dict[str, ResearchObservation] = {}
     minutes: dict[str, tuple[MinuteBar, ...]] = {}
     reports: list[dict[str, object]] = []
     reader = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(company_database, event_policy=company_policy.events),
+        SQLiteCompanyEvidenceReader(company_database, event_policy=company_policy.events, sqlite_policy=sqlite_policy),
         wall_clock=lambda: at,
         open_dates=lambda: open_dates,
         monotonic=time.monotonic,

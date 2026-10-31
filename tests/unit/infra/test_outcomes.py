@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import json
 from dataclasses import replace
 from datetime import timedelta
@@ -39,7 +41,7 @@ class _Freezes:
 
 
 def _repository(tmp_path: Path, record: CommittedFreezeRecord | None = None):
-    return SQLiteOutcomeEvidenceIndex(tmp_path, _Freezes(record))
+    return SQLiteOutcomeEvidenceIndex(tmp_path, _Freezes(record), sqlite_policy=SqlitePolicyFixture())
 
 
 def _outcome(
@@ -229,7 +231,7 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
     assert "anchor_price" not in payload
     assert "minimum_low" not in payload
     assert "end_close" not in payload
-    status = SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path)
+    status = SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path, sqlite_policy=SqlitePolicyFixture())
     assert status.initialized is True
     assert status.recommendation_outcomes == 1
     assert status.complete_outcomes == 1
@@ -257,11 +259,11 @@ def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_
     assert payload["mae_atr"] is None
     assert payload["severe_drawdown"] is None
     assert payload["quality_reason"] == "atr20_unavailable"
-    assert SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path).complete_outcomes == 1
+    assert SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path, sqlite_policy=SqlitePolicyFixture()).complete_outcomes == 1
 
 
 def test_outcome_status_inspection_is_read_only_for_missing_database(tmp_path: Path) -> None:
-    status = SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path)
+    status = SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path, sqlite_policy=SqlitePolicyFixture())
 
     assert status.initialized is False
     assert status.benchmark_returns == 0

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -27,8 +29,8 @@ class _Progress:
         self.values.append(progress)
 
 
-def _measure(root: Path, timeout: float) -> dict[str, object]:
-    published_snapshot = HistoryControlIndex(root / "catalog.sqlite3").load_published_state()
+def _measure(root: Path, timeout: float, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    published_snapshot = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
     if published_snapshot is None:
         raise ValueError("industry_probe_requires_published_context")
     universe = tuple(
@@ -39,7 +41,7 @@ def _measure(root: Path, timeout: float) -> dict[str, object]:
     measurements = []
     intervals = []
     with tempfile.TemporaryDirectory(prefix="trader-industry-preparation-") as temporary:
-        cache = HistoryIndustryQueryCache(Path(temporary) / "industry_queries.sqlite3")
+        cache = HistoryIndustryQueryCache(Path(temporary) / "industry_queries.sqlite3", sqlite_policy=sqlite_policy)
         project_root = Path(__file__).resolve().parents[2]
         settings = replace(
             LoadHistorySyncConfiguration(project_root, DataPaths(Path(temporary) / "data")),
@@ -94,10 +96,13 @@ def main() -> int:
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=15)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if not 1 <= args.timeout_seconds <= 45:
         parser.error("attempt timeout must be 1..45 seconds")
     try:
-        report = _measure(args.history_root, args.timeout_seconds)
+        report = _measure(args.history_root, args.timeout_seconds, sqlite_policy=sqlite_policy)
     except (OSError, RuntimeError, ValueError) as exc:
         known_failures = {
             "supplier_login_timeout",

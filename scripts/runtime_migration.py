@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import re
 import shutil
@@ -39,26 +41,26 @@ def FileDigest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ValidateDatabase(path: Path) -> None:
+def ValidateDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
     for suffix in ("-wal", "-journal"):
         sidecar = Path(str(path) + suffix)
         if sidecar.exists() and sidecar.stat().st_size:
             raise ValueError("migration_requires_stopped_checkpointed_source")
-    with SqliteSession(path, _READ) as connection:
+    with SqliteSession(path, _READ, sqlite_policy=sqlite_policy) as connection:
         CheckSqliteIntegrity(connection)
         if connection.run("PRAGMA foreign_key_check").fetchone() is not None:
             raise ValueError("migration_foreign_key_invalid")
 
 
-def MergeDatabase(source: Path, target: Path) -> None:
+def MergeDatabase(source: Path, target: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
     """Union unchanged table formats; duplicate keys must have identical entire rows."""
     if not source.is_file():
         return
-    ValidateDatabase(source)
+    ValidateDatabase(source, sqlite_policy=sqlite_policy)
     if not target.exists():
         CopyFile(source, target)
         return
-    with SqliteSession(source, _READ) as reader, SqliteSession(target) as writer:
+    with SqliteSession(source, _READ, sqlite_policy=sqlite_policy) as reader, SqliteSession(target, sqlite_policy=sqlite_policy) as writer:
         source_schema = tuple(
             tuple(row)
             for row in reader.run(

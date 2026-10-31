@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import json
 import os
@@ -154,9 +156,13 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         print(json.dumps(baseline, ensure_ascii=False, sort_keys=True, indent=2))
         return 0 if isinstance(baseline, dict) and baseline.get("status") == "passed" else 1
     if args.command == "eligibility-list":
-        return _run_eligibility_list(runtime, as_of=args.as_of)
+        from trader.bootstrap import BuildSqlitePolicy
+
+        return _run_eligibility_list(runtime, as_of=args.as_of, sqlite_policy=BuildSqlitePolicy(runtime))
     if args.command.startswith("research-"):
-        return _run_training_command(args, config_path, runtime, parser)
+        from trader.bootstrap import BuildSqlitePolicy
+
+        return _run_training_command(args, config_path, runtime, parser, sqlite_policy=BuildSqlitePolicy(runtime))
     return _run_config_validation(runtime, profile_override)
 
 
@@ -176,14 +182,14 @@ def _report_sync_failure(result: SyncResult) -> None:
 
 
 def _run_training_command(
-    args: argparse.Namespace, config_path: Path, runtime: RuntimeSettings, parser: argparse.ArgumentParser
+    args: argparse.Namespace, config_path: Path, runtime: RuntimeSettings, parser: argparse.ArgumentParser, *, sqlite_policy: SqliteIoPolicy
 ) -> int:
     if args.command in COMMAND_SCHEMAS:
         if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")
         from trader.training.entrypoints.research_evidence import RunResearchEvidence
 
-        return RunResearchEvidence(args, repository_root=runtime.project_root)
+        return RunResearchEvidence(args, repository_root=runtime.project_root, sqlite_policy=sqlite_policy)
     from trader.training.entrypoints.commands import ResearchCommandOptions, RunResearchCommand
 
     return RunResearchCommand(
@@ -192,7 +198,7 @@ def _run_training_command(
         runtime,
         ResearchCommandOptions(
             workers=int(getattr(args, "workers", 5)), profile=cast(ScoringProfileId | None, args.profile)
-        ),
+        ), sqlite_policy=sqlite_policy,
     )
 
 
@@ -316,7 +322,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
     }
 
 
-def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int:
+def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None, sqlite_policy: SqliteIoPolicy) -> int:
     from trader.bootstrap import CreateCompanyEligibilityReader
 
     observed_at = datetime.fromisoformat(as_of) if as_of else datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -324,7 +330,7 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int
         raise SystemExit("--as-of must include a timezone offset")
     observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
     event_policy = LoadStrategySettings(runtime.strategy_config_path).company_scoring.events
-    eligibility_index = CreateCompanyEligibilityReader(runtime.data_paths.company, event_policy)
+    eligibility_index = CreateCompanyEligibilityReader(runtime.data_paths.company, event_policy, sqlite_policy=sqlite_policy)
     facts = tuple(fact for fact in eligibility_index.facts() if fact.effective_at <= observed_at)
     status = eligibility_index.status()
     print(

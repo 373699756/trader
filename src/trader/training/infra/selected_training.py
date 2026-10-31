@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from dataclasses import field
+
 import logging
 from collections.abc import Callable, Iterator
 from concurrent.futures import Executor
@@ -68,7 +71,7 @@ class SelectedTrainingRequest:
 
 
 def TrainSelectedProfiles(
-    request: SelectedTrainingRequest, executor: Executor
+    request: SelectedTrainingRequest, executor: Executor, *, sqlite_policy: SqliteIoPolicy
 ) -> SelectedTrainingRun[SelectedProfileResult]:
     paths = request.paths
     with ExitStack() as scope:
@@ -76,8 +79,8 @@ def TrainSelectedProfiles(
         for profile in request.profiles:
             scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
         RequireHistoryRepackIdle(paths.history)
-        history = SQLiteHistoryTrainingInputSnapshot.open(paths.history)
-        factory = _TrainingTaskFactory(request, history)
+        history = SQLiteHistoryTrainingInputSnapshot.open(paths.history, sqlite_policy=sqlite_policy)
+        factory = _TrainingTaskFactory(request, history, sqlite_policy=sqlite_policy)
         tasks = tuple(
             factory.prepare(profile, progress)
             for profile, progress in zip(request.profiles, request.progresses, strict=True)
@@ -104,6 +107,8 @@ def TrainSelectedProfiles(
 class _TrainingTaskFactory:
     selection: SelectedTrainingRequest
     history: SQLiteHistoryTrainingInputSnapshot
+
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
     def prepare(
         self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort
@@ -137,6 +142,7 @@ class _TrainingTaskFactory:
             progress=progress,
             cancel_requested=selection.cancelled,
             memory_admission=selection.memory_admission,
+            sqlite_policy=self.sqlite_policy,
         )
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
 
@@ -177,8 +183,8 @@ class _TrainingTaskFactory:
                 progress,
                 sample_root=paths.samples,
                 memory_admission=selection.memory_admission,
-            ),
+            ), sqlite_policy=self.sqlite_policy,
         )
         if reused is not None:
             return SelectedTrainingTask(profile, dates, partial(_reused, reused))
-        return SelectedTrainingTask(profile, dates, partial(FitSelectedProfile, self.history, request, cache))
+        return SelectedTrainingTask(profile, dates, partial(FitSelectedProfile, self.history, request, cache, sqlite_policy=self.sqlite_policy))

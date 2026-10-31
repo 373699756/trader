@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import json
 from dataclasses import dataclass
 from datetime import date
@@ -49,13 +51,14 @@ class _LedgerRow:
 
 
 class SQLiteHistoricalResidualLedger:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def append_predictions(self, records: tuple[HistoricalPredictionRecord, ...]) -> None:
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
+        with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
             for record in records:
                 self._append_row(
                     connection,
@@ -71,7 +74,7 @@ class SQLiteHistoricalResidualLedger:
                 )
 
     def append_outcomes(self, records: tuple[HistoricalOutcomeRecord, ...]) -> None:
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
+        with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
             for record in records:
                 self._append_row(
                     connection,
@@ -86,7 +89,7 @@ class SQLiteHistoricalResidualLedger:
                 )
 
     def read_joined(self, strategy: ResearchStrategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
+        with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
             outcomes = connection.run(
                 "SELECT content_hash, outcome_json FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
                 (strategy, EncodeHash(parent_split_hash)),
@@ -107,7 +110,7 @@ class SQLiteHistoricalResidualLedger:
     def read_predictions(
         self, strategy: ResearchStrategy, parent_split_hash: str
     ) -> tuple[HistoricalPredictionRecord, ...]:
-        with SqliteSession(self._path) as connection, SqliteTransaction(connection):
+        with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
             rows = connection.run(
                 "SELECT content_hash, prediction_json FROM historical_prediction "
                 "WHERE strategy = ? AND parent_split_hash = ? "
@@ -123,7 +126,7 @@ class SQLiteHistoricalResidualLedger:
         return tuple(result)
 
     def _initialize(self) -> None:
-        with SqliteSession(self._path) as connection:
+        with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection:
             EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
 
     @staticmethod

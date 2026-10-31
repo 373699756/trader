@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -46,10 +48,10 @@ def test_eleven_stage_audit_restarts_and_has_identical_get_sse_projections(tmp_p
 
     current = replace(freeze(), pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()))
     expected = CommittedFreezeRecord(current, NOW, "scheduled")
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(expected)
-    restarted = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    restarted = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     restored = restarted.load(Strategy.TOMORROW, current.trade_date)
     assert restored.version == expected.version and restored.payload_hash == expected.payload_hash
     assert CommittedRecordBytes(restored) == CommittedRecordBytes(expected)
@@ -90,7 +92,7 @@ def test_score_ledger_survives_freeze_reload_and_get_sse_without_changing_old_re
         NOW,
         "scheduled",
     )
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(new)
     restored = records.load(Strategy.TOMORROW, NOW.date())
@@ -103,7 +105,7 @@ def test_score_ledger_survives_freeze_reload_and_get_sse_without_changing_old_re
 
 
 def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     tomorrow = record()
     today = record(Strategy.TOMORROW)
@@ -118,7 +120,7 @@ def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_pat
 
 
 def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     older_at = NOW - timedelta(days=1)
     fixture = freeze()
@@ -143,7 +145,7 @@ def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> Non
 
 
 def test_same_strategy_date_hash_conflict_is_rejected(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(record())
 
@@ -153,13 +155,13 @@ def test_same_strategy_date_hash_conflict_is_rejected(tmp_path: Path) -> None:
 
 def test_formal_records_and_payloads_share_one_database(tmp_path):
     path = tmp_path / "freeze.sqlite3"
-    records = SQLiteFreezeRecords(path)
+    records = SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         records.commit(record(strategy))
     assert {item.name for item in tmp_path.iterdir() if not item.name.endswith(("-wal", "-shm"))} == {"freeze.sqlite3"}
     assert not tuple(tmp_path.rglob("*.json"))
-    assert SQLiteFreezeRecords(path).load(Strategy.D25, NOW.date()) == record(Strategy.D25)
+    assert SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()).load(Strategy.D25, NOW.date()) == record(Strategy.D25)
     with SqliteSession(path) as connection:
         tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
         assert tables == {"schema_contract", "freeze_record"}
@@ -173,7 +175,7 @@ def test_unversioned_legacy_database_is_rejected(tmp_path):
     with SqliteSession(path) as connection:
         connection.run("CREATE TABLE legacy(value TEXT)")
     with pytest.raises(FreezeRecordUnavailableError):
-        SQLiteFreezeRecords(path).initialize()
+        SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()).initialize()
 
 
 @pytest.mark.parametrize("cached", (False, True))
@@ -183,19 +185,19 @@ def test_failed_transaction_does_not_leave_partial_payload_or_index(tmp_path, ca
             raise KeyboardInterrupt
 
     path = tmp_path / "freeze.sqlite3"
-    records = SQLiteFreezeRecords(path, fault_injector=fail, cache=_read_cache() if cached else None)
+    records = SQLiteFreezeRecords(path, fault_injector=fail, cache=_read_cache() if cached else None, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     with pytest.raises(KeyboardInterrupt):
         records.commit(record())
     assert records.load(Strategy.TOMORROW, NOW.date()) is None
     assert records.list_dates(Strategy.TOMORROW) == ()
-    SQLiteFreezeRecords(path).commit(record())
+    SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()).commit(record())
     assert records.load(Strategy.TOMORROW, NOW.date()) == record()
 
 
 def test_same_record_is_idempotent_across_concurrent_record_instances(tmp_path: Path) -> None:
-    first = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
-    second = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    first = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    second = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     first.initialize()
     expected = record()
 
@@ -212,12 +214,12 @@ def test_staged_half_commit_recovers_the_same_payload(tmp_path: Path) -> None:
             raise RuntimeError("injected")
 
     expected = record()
-    failing = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", fault_injector=fail_after_stage)
+    failing = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", fault_injector=fail_after_stage, sqlite_policy=SqlitePolicyFixture())
     failing.initialize()
     with pytest.raises(RuntimeError, match="injected"):
         failing.commit(expected)
 
-    recovered = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    recovered = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     summary = recovered.recover()
 
     assert summary.recovered == 0
@@ -225,7 +227,7 @@ def test_staged_half_commit_recovers_the_same_payload(tmp_path: Path) -> None:
 
 
 def test_committed_load_hashes_file_bytes_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     expected = record()
     records.commit(expected)
@@ -244,7 +246,7 @@ def test_committed_load_hashes_file_bytes_once(tmp_path: Path, monkeypatch: pyte
 
 
 def test_committed_recovery_hashes_each_file_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(record())
     original = freeze_records_module._bounded_digest
@@ -264,7 +266,7 @@ def test_committed_recovery_hashes_each_file_once(tmp_path: Path, monkeypatch: p
 
 
 def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Path) -> None:
-    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3")
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     expected = record()
     records.commit(expected)
@@ -281,7 +283,7 @@ def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Pa
 
 def test_invalid_index_identity_is_quarantined_without_rewriting_payload(tmp_path):
     path = tmp_path / "freeze.sqlite3"
-    records = SQLiteFreezeRecords(path)
+    records = SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(record())
     with SqliteSession(path) as connection, SqliteTransaction(connection):
@@ -320,7 +322,7 @@ def _read_cache(*, capacity: int = 72, group_bytes: int = 1_000_000) -> BoundedL
 
 def test_startup_skips_integrity_scan_and_historical_payload_decoding(tmp_path, monkeypatch):
     path = tmp_path / "freeze.sqlite3"
-    records = SQLiteFreezeRecords(path)
+    records = SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     records.commit(record())
     records.commit(record(Strategy.D25))
@@ -330,7 +332,7 @@ def test_startup_skips_integrity_scan_and_historical_payload_decoding(tmp_path, 
     def unexpected(*args, **kwargs):
         pytest.fail("normal startup must not scan or decode historical records")
 
-    restarted = SQLiteFreezeRecords(path, cache=_read_cache(), wall_clock=lambda: NOW)
+    restarted = SQLiteFreezeRecords(path, cache=_read_cache(), wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     with monkeypatch.context() as startup:
         startup.setattr(freeze_records_module, "CheckSqliteIntegrity", unexpected)
         startup.setattr(restarted, "_load_record", unexpected)
@@ -344,7 +346,7 @@ def test_startup_skips_integrity_scan_and_historical_payload_decoding(tmp_path, 
 
 def test_repeated_record_and_date_queries_reuse_memory_without_database_access(tmp_path, monkeypatch):
     cache = _read_cache()
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=cache, wall_clock=lambda: NOW)
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=cache, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     expected = record()
     records.commit(expected)
@@ -363,7 +365,7 @@ def test_repeated_record_and_date_queries_reuse_memory_without_database_access(t
 
 
 def test_commit_updates_cached_dates_without_allowing_a_conflicting_winner(tmp_path):
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=_read_cache(), wall_clock=lambda: NOW)
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=_read_cache(), wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     assert records.list_dates(Strategy.TOMORROW) == ()
     assert records.load(Strategy.TOMORROW, NOW.date()) is None
@@ -378,7 +380,7 @@ def test_commit_updates_cached_dates_without_allowing_a_conflicting_winner(tmp_p
 @pytest.mark.parametrize("group_bytes", (100, 1_000_000))
 def test_cache_capacity_and_eviction_preserve_verified_reads(tmp_path, group_bytes):
     cache = _read_cache(capacity=1, group_bytes=group_bytes)
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=cache, wall_clock=lambda: NOW)
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=cache, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     records.initialize()
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         records.commit(record(strategy))
@@ -389,8 +391,8 @@ def test_cache_capacity_and_eviction_preserve_verified_reads(tmp_path, group_byt
 
 def test_shared_cache_isolates_profiles_and_recovery_invalidates_only_its_database(tmp_path):
     cache = _read_cache()
-    first = SQLiteFreezeRecords(tmp_path / "v1.sqlite3", cache=cache, wall_clock=lambda: NOW)
-    second = SQLiteFreezeRecords(tmp_path / "v2.sqlite3", cache=cache, wall_clock=lambda: NOW)
+    first = SQLiteFreezeRecords(tmp_path / "v1.sqlite3", cache=cache, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
+    second = SQLiteFreezeRecords(tmp_path / "v2.sqlite3", cache=cache, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     for records, expected in ((first, record()), (second, record(sequence=2))):
         records.initialize()
         records.commit(expected)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import json
 import math
@@ -47,7 +49,8 @@ class HistoricalScreeningSnapshotConflictError(RuntimeError):
 
 
 class SQLiteHistoricalScreeningSnapshot:
-    def __init__(self, runtime_dir: Path) -> None:
+    def __init__(self, runtime_dir: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._root = runtime_dir / "experiments" / HISTORICAL_SCREENING_SPEC.research_identity
         self._database = self._root / "samples.sqlite3"
         self._lock = threading.RLock()
@@ -63,7 +66,7 @@ class SQLiteHistoricalScreeningSnapshot:
             raise ValueError("historical screening universe contains duplicate codes")
         with (
             SqliteSession(
-                self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True)
+                self._database, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy
             ) as connection,
             SqliteTransaction(connection),
         ):
@@ -107,7 +110,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return frozenset()
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -121,7 +124,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return ()
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -147,7 +150,7 @@ class SQLiteHistoricalScreeningSnapshot:
         ordered = tuple(bars)
         with (
             SqliteSession(
-                self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True)
+                self._database, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy
             ) as connection,
             SqliteTransaction(connection),
         ):
@@ -227,7 +230,7 @@ class SQLiteHistoricalScreeningSnapshot:
         self._initialize()
         with (
             SqliteSession(
-                self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True)
+                self._database, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy
             ) as connection,
             SqliteTransaction(connection),
         ):
@@ -250,7 +253,7 @@ class SQLiteHistoricalScreeningSnapshot:
             return HistoricalScreeningSnapshotStatus(research_identity=research_identity)
         try:
             with (
-                SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+                SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
                 SqliteTransaction(connection),
             ):
                 EnsureSqliteSchema(connection, _SCHEMA)
@@ -297,7 +300,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return HistoricalScreeningSnapshotManifest(spec.research_identity, "", empty_hash, empty_hash, ())
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -390,7 +393,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return ()
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -431,7 +434,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -465,7 +468,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return ()
         with (
-            SqliteSession(self._database, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             EnsureSqliteSchema(connection, _SCHEMA)
@@ -502,7 +505,7 @@ class SQLiteHistoricalScreeningSnapshot:
     def _initialize(self) -> None:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
-            with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL")) as connection:
+            with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=self._sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
 
     def _register_spec(self, connection: SqliteConnection, spec: HistoricalScreeningSpec) -> None:

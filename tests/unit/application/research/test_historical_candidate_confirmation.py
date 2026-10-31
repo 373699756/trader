@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from datetime import date, timedelta
 
 from trader.training.application.h1_point_in_time_completion import CompleteH1Research
@@ -24,7 +26,7 @@ def _h1_research_completion(tmp_path):
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     return CompleteH1Research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),

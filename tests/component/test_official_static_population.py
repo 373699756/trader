@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 import threading
 from dataclasses import replace
 from datetime import date, timedelta
@@ -21,7 +23,7 @@ from tests.component.market_data_test_support import (
 from tests.reference_fixtures import PreparedFixture
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+from tests.helpers.configuration import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
 from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, ManualBlacklistFact
@@ -133,7 +135,7 @@ def test_loaded_population_and_age_do_not_depend_on_later_disk_access():
 
 def test_non_st_risk_fact_is_deferred_to_second_level_filter(tmp_path):
     eligibility = CompanyEligibility(
-        PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3"))
+        PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3", sqlite_policy=SqlitePolicyFixture()))
     )
     eligibility.record((ManualBlacklistFact("300001", effective_at=NOW, config_hash="fixture"),))
     _, _, history, service = _fixture(quotes=(_quote(), _quote("300001")), eligibility=eligibility)
@@ -187,7 +189,7 @@ def test_reference_st_revision_is_adopted_only_on_restart_before_history_reads(t
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         published_references=restarted,
         eligibility=CompanyEligibility(
-            PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3"))
+            PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3", sqlite_policy=SqlitePolicyFixture()))
         ),
     )
     batch = service.fetch_market_feature_batch(NOW)
@@ -241,7 +243,7 @@ def test_concurrent_initializers_wait_for_one_complete_reference():
 def test_reference_publication_round_trip_and_corruption_fail_closed(tmp_path):
     from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
-    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3")
+    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     reference = PreparedFixture(NOW)
     assert publication.read() is None
     publication.publish(reference, reference.st_evidence)

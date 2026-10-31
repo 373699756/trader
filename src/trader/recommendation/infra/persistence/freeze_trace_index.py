@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import json
 import sqlite3
 import threading
@@ -197,8 +199,9 @@ class SQLiteFreezeTraceIndex:
         self,
         runtime_root: Path,
         *,
-        limits: ResearchTraceLimits | None = None,
+        limits: ResearchTraceLimits | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         limits = limits or ResearchTraceLimits()
         self._root = runtime_root
         self._writer_lock = ProcessLock(self._root / ".trace-write.lock")
@@ -280,7 +283,7 @@ class SQLiteFreezeTraceIndex:
                 raise ResearchTraceCapacityError("research trace total capacity exhausted")
             self._physical_budget.require(self._source_databases(), database, pending_bytes=65536)
             self._initialize_database(database)
-            with SqliteSession(database) as connection, SqliteTransaction(connection, immediate=True):
+            with SqliteSession(database, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
                 connection.run("PRAGMA cache_spill = OFF")
                 totals = connection.run("SELECT COUNT(*), COALESCE(SUM(LENGTH(event_bytes)), 0) FROM committed_events").require_one()
                 retained, retained_bytes = int(totals[0]), int(totals[1])
@@ -310,7 +313,7 @@ class SQLiteFreezeTraceIndex:
     def get(self, freeze_version: str) -> FreezeObservation | None:
         with self._lock:
             for database in self._source_databases():
-                with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+                with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                     EnsureSqliteSchema(connection, SCHEMA)
                     row = connection.run(
                         "SELECT * FROM committed_events WHERE freeze_id = ?",
@@ -335,7 +338,7 @@ class SQLiteFreezeTraceIndex:
         dates: set[date] = set()
         with self._lock:
             for database in self._source_databases():
-                with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+                with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                     EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run("SELECT DISTINCT trade_date FROM committed_events").fetchall()
                 dates.update(DecodeDate(row["trade_date"]) for row in rows)
@@ -349,7 +352,7 @@ class SQLiteFreezeTraceIndex:
         earliest: dict[date, datetime] = {}
         with self._lock:
             for database in self._source_databases():
-                with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+                with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                     EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run(
                         """
@@ -374,7 +377,7 @@ class SQLiteFreezeTraceIndex:
         observations: dict[str, FreezeObservation] = {}
         with self._lock:
             for database in self._source_databases(trade_date):
-                with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+                with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                     EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run(
                         "SELECT * FROM committed_events WHERE trade_date = ?",
@@ -423,8 +426,8 @@ class SQLiteFreezeTraceIndex:
         if database in self._initialized_databases:
             return
         self._physical_budget.require(self._source_databases(), database, pending_bytes=262144)
-        InitializeDatabase(database, self._initialized_databases)
-        with SqliteSession(database) as connection, SqliteTransaction(connection, immediate=True):
+        InitializeDatabase(database, self._initialized_databases, sqlite_policy=self._sqlite_policy)
+        with SqliteSession(database, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
             connection.run("PRAGMA cache_spill = OFF")
             quarantined = self._quarantine_invalid_rows(connection)
             if quarantined:
@@ -450,7 +453,7 @@ class SQLiteFreezeTraceIndex:
         for source in dict.fromkeys((*self._source_databases(trade_date), database)):
             if not source.is_file():
                 continue
-            with SqliteSession(source, SqliteConnectionOptions(read_only=True)) as connection:
+            with SqliteSession(source, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, SCHEMA)
                 row = connection.run(
                     "SELECT event_hash, event_bytes FROM committed_events WHERE freeze_id = ?",
@@ -471,7 +474,7 @@ class SQLiteFreezeTraceIndex:
             signature = _partition_signature(database)
             cached = self._summaries.get(database)
             if cached is None or cached.signature != signature:
-                with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+                with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                     EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run("SELECT trade_date,COUNT(*),COALESCE(SUM(LENGTH(event_bytes)),0) FROM committed_events GROUP BY trade_date").fetchall()
                 summary = TraceIndexSummary(sum(int(row[1]) for row in rows), sum(int(row[2]) for row in rows), frozenset(DecodeDate(row[0]) for row in rows), 0)

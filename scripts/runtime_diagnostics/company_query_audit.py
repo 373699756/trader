@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import json
 import time
 from collections.abc import Mapping
@@ -62,10 +64,10 @@ class _Capture:
                 self.same_issuer += int(str(row.get("orgId") or "") in issuers)
 
 
-def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, object]:
+def AuditCompanyQueries(path: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     configuration = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
     deadline = time.monotonic() + budget_seconds
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
         targets = tuple(
             DisclosurePartition(cast(Market, row[0]), date.fromisoformat(row[1]), date.fromisoformat(row[2]))
             for row in connection.run(
@@ -190,7 +192,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float) -> dict[str, objec
 
 
 def AuditCompanyStorage(
-    path: Path, *, now: datetime, budget_seconds: float, facts_path: Path | None = None
+    path: Path, *, now: datetime, budget_seconds: float, facts_path: Path | None = None, sqlite_policy: SqliteIoPolicy
 ) -> dict[str, object]:
     """Count local records and persisted retry reasons without reading bodies into the report."""
     deadline = time.monotonic() + budget_seconds
@@ -202,7 +204,7 @@ def AuditCompanyStorage(
         SqliteSession(
             path,
             SqliteConnectionOptions(read_only=True, timeout_seconds=5),
-            cancel_requested=lambda: time.monotonic() >= deadline,
+            cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy,
         ) as connection,
         SqliteTransaction(connection),
     ):
@@ -286,7 +288,7 @@ def AuditCompanyStorage(
     if facts_path is not None and facts_path.exists():
         with SqliteSession(
             facts_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
-            cancel_requested=lambda: time.monotonic() >= deadline,
+            cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy,
         ) as connection, SqliteTransaction(connection):
             formal = {
                 "available": True,
@@ -299,7 +301,7 @@ def AuditCompanyStorage(
                     )
                 ],
             }
-    publication = AuditCompanyPublication(path, facts_path, now=now, deadline=deadline)
+    publication = AuditCompanyPublication(path, facts_path, now=now, deadline=deadline, sqlite_policy=sqlite_policy)
     publication_findings = publication["findings"]
     if not isinstance(publication_findings, list):
         raise ValueError("company_publication_findings_invalid")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 from dataclasses import dataclass
 from datetime import date
@@ -36,8 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_shadow_report(root: Path) -> dict[str, object]:
-    archive = LoadPublishedHistorySnapshot(root)
+def build_shadow_report(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    archive = LoadPublishedHistorySnapshot(root, sqlite_policy=sqlite_policy)
     cutoff = archive.snapshot.data_cutoff
     sessions = tuple(day for day in archive.calendar.open_dates if day <= cutoff)
     if not sessions:
@@ -54,7 +56,7 @@ def build_shadow_report(root: Path) -> dict[str, object]:
         }
         facts[security.code] = _CodeFacts(expected, set(), set(), set())
 
-    reader = HistorySnapshotReader(archive.root)
+    reader = HistorySnapshotReader(archive.root, sqlite_policy=sqlite_policy)
     for code, trade_date, raw_present, qfq_present in reader.iter_shadow_facts(target_start, cutoff, archive.snapshot):
         fact = facts.get(code)
         if fact is None:
@@ -136,8 +138,11 @@ def build_shadow_report(root: Path) -> dict[str, object]:
 
 def main() -> int:
     args = build_parser().parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     try:
-        report = build_shadow_report(args.history_root.resolve())
+        report = build_shadow_report(args.history_root.resolve(), sqlite_policy=sqlite_policy)
     except (HistorySnapshotInspectionError, OSError, RuntimeError, TypeError, ValueError):
         emit_report(
             {

@@ -5,6 +5,8 @@ This experiment has no production caller. SQLite remains the only fact owner.
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import json
 import os
@@ -76,7 +78,8 @@ def _record(row: HistoryTrainingRow) -> tuple[object, ...]:
 
 
 class ParquetHistoryProjection:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self.root = root
 
     def load(self) -> ParquetPublication:
@@ -98,12 +101,12 @@ class ParquetHistoryProjection:
         return ParquetPublication(value["snapshot_hash"], months)
 
     def publish(self, history: PublishedHistorySnapshot) -> ParquetPublication:
-        if LoadPublishedHistorySnapshot(history.root, sequence=history.snapshot.sequence) != history:
+        if LoadPublishedHistorySnapshot(history.root, sequence=history.snapshot.sequence, sqlite_policy=self._sqlite_policy) != history:
             raise ValueError("parquet_source_is_not_a_published_snapshot")
         self.root.mkdir(parents=True, exist_ok=True)
         previous = self.load() if (self.root / "manifest.json").exists() else None
         old = {item.source_hash: item for item in previous.months} if previous else {}
-        reader = HistorySnapshotReader(history.root)
+        reader = HistorySnapshotReader(history.root, sqlite_policy=self._sqlite_policy)
         codes = tuple(item.code for item in history.universe.securities)
         months = []
         for part in history.snapshot.partitions:

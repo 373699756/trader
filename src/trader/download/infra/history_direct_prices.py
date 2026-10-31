@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -46,8 +48,9 @@ class HistoryDirectPrices:
         current_snapshot: HistorySnapshot | None,
         activity: HistorySqliteActivity,
         *,
-        fresh: bool = False,
+        fresh: bool = False, sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self._root = root
         self._sequence = sequence
         self._activity = activity
@@ -71,7 +74,7 @@ class HistoryDirectPrices:
             self._root / f"prices_{year:04d}.sqlite3",
             year,
             month,
-            activity=self._activity,
+            activity=self._activity, sqlite_policy=self._sqlite_policy,
         )
 
     def read(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
@@ -112,7 +115,7 @@ class HistoryDirectPrices:
     def replace_window(self, security: BaoStockSecurity, window: PublishedHistoryWindow, source: Literal["tencent", "baostock"]) -> None:
         from trader.download.infra.history_price_repair import HistoryPriceRepair
 
-        HistoryPriceRepair(self._root).replace(security, tuple(cell.trade_date for cell in window.cells), window, self, self._sequence, source=source)
+        HistoryPriceRepair(self._root, sqlite_policy=self._sqlite_policy).replace(security, tuple(cell.trade_date for cell in window.cells), window, self, self._sequence, source=source)
 
     def prepare(
         self,

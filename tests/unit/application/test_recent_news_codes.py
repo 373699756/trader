@@ -1,5 +1,7 @@
 """Only valid, recent formal lists authorize bounded company news collection."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 from datetime import timedelta
 
@@ -27,7 +29,7 @@ def _record(day_offset, code):
 
 
 def test_news_population_uses_seven_calendar_days_and_deduplicates_profiles(tmp_path, monkeypatch):
-    sources = tuple(SQLiteFreezeRecords(tmp_path / profile / "freeze.sqlite3") for profile in ("v2", "v3"))
+    sources = tuple(SQLiteFreezeRecords(tmp_path / profile / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture()) for profile in ("v2", "v3"))
     for source in sources:
         source.initialize()
         for offset, code in ((-7, "600007"), (-6, "600006"), (0, "600001"), (1, "600002")):
@@ -41,5 +43,5 @@ def test_news_population_uses_seven_calendar_days_and_deduplicates_profiles(tmp_
 
 def test_absent_published_lists_remain_empty_without_creating_database(tmp_path):
     path = tmp_path / "missing/freeze.sqlite3"
-    assert RecentPublishedNewsCodes((SQLiteFreezeRecords(path),), NOW) == ()
+    assert RecentPublishedNewsCodes((SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()),), NOW) == ()
     assert not path.parent.exists()

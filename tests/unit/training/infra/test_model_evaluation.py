@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import math
 from datetime import date, timedelta
 
@@ -78,7 +80,7 @@ def test_constant_daily_ranks_remain_unavailable_without_a_fabricated_zero():
 def test_one_degenerate_industry_does_not_block_other_models_or_count_as_fitted(tmp_path):
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(1600))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", TOMORROW_HEAD_CONTRACT.feature_manifest.names) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", TOMORROW_HEAD_CONTRACT.feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as samples:
         for partition in (split.model_fit_dates[:3], split.calibration_dates[:2], split.confirmation_dates[:2]):
             for offset, day in enumerate(partition):
                 for industry, prefix in (("usable", 600000), ("degenerate", 600100)):

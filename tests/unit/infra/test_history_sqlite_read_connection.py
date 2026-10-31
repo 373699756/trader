@@ -1,5 +1,7 @@
 """A transient SQLite lock cannot abort a resumable history download."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import sqlite3
 
 import pytest
@@ -86,14 +88,14 @@ def test_month_reader_retries_only_lock_contention_and_closes_failed_handle(tmp_
     monkeypatch.setattr(history_sqlite_read_connection.time, "sleep", lambda seconds: None)
     if code != sqlite3.SQLITE_IOERR:
         connection = history_sqlite_read_connection.OpenHistoryPriceReader(
-            tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None
+            tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None, sqlite_policy=SqlitePolicyFixture()
         )
         connection.close()
         assert opened[1].closed
     else:
         with pytest.raises(sqlite3.OperationalError) as failure:
             history_sqlite_read_connection.OpenHistoryPriceReader(
-                tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None
+                tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None, sqlite_policy=SqlitePolicyFixture()
             )
         assert "SQLITE_IOERR" in HistoryFailureDetail(failure.value)
     assert len(opened) == attempts

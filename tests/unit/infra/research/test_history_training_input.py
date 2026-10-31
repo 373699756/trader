@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import hashlib
 import shutil
 import threading
@@ -158,13 +160,13 @@ def test_monthly_training_input_binds_published_snapshot_and_counts_typed_rows(
     result = prepared_history(history_root, dates)
 
     assert result.state == "completed"
-    expected_hash = HistoryControlIndex(history_root / "catalog.sqlite3").load_state().snapshot_hash
+    expected_hash = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().snapshot_hash
 
     def fail_full_history_read(_self):
         raise AssertionError("training input must not load historical checkpoints")
 
     monkeypatch.setattr(HistoryControlIndex, "load_state", fail_full_history_read)
-    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history")
+    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
     assert history.snapshot.snapshot_hash == expected_hash
     assert len(tuple(history.iter_training_rows(frozenset(dates)))) == len(dates)
     assert history.snapshot.label_cutoff == dates[-2]
@@ -174,7 +176,7 @@ def test_training_input_streams_rows_from_published_snapshot(tmp_path: Path, pre
     history_root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(history_root, dates)
-    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history")
+    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
     assert history.training_row_upper_bound(frozenset(dates)) >= 3
     assert len(tuple(history.iter_training_rows(frozenset(dates)))) == 3
 
@@ -190,7 +192,7 @@ def test_training_reader_uses_narrow_projection_without_rechecking_published_pay
         "verify_logical_content",
         classmethod(lambda *_args, **_kwargs: pytest.fail("training must trust the published payload")),
     )
-    history = SQLiteHistoryTrainingInputSnapshot.open(history_root)
+    history = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=SqlitePolicyFixture())
     rows = tuple(history.iter_training_rows(frozenset(dates)))
     assert len(rows) == len(dates)
     assert all(row.point is not None for row in rows)
@@ -200,7 +202,7 @@ def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Pa
     history_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
     prepared_history(history_root, dates)
-    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history")
+    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
     progress: list[int] = []
 
     rows = tuple(history.iter_training_rows(frozenset(dates), progress.append))
@@ -215,12 +217,12 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     history_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(251))
     result = prepared_history(history_root, dates)
-    training = SQLiteHistoryTrainingInputSnapshot.open(history_root)
+    training = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=SqlitePolicyFixture())
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=SqlitePolicyFixture())),
         lookback_sessions=251,
         monotonic=time.monotonic,
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=SqlitePolicyFixture())), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
 
     history.initialize(cancelled=lambda: False)
@@ -240,7 +242,7 @@ def test_old_published_manifest_remains_readable_after_published_history_advance
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
-    reader = SQLitePublishedHistorySnapshot(root)
+    reader = SQLitePublishedHistorySnapshot(root, sqlite_policy=SqlitePolicyFixture())
     original = reader.manifest()
     original_rows = reader.read_windows(original, ("600001",), sessions=61)
     configuration = HistorySyncConfiguration(
@@ -260,7 +262,7 @@ def test_online_alignment_refuses_a_wholly_missing_source_day(tmp_path, prepared
     root = tmp_path / "history"
     days = tuple(date(2026, 9, 8) + timedelta(days=i) for i in range(3))
     prepared_history(root, days)
-    source = SQLitePublishedHistorySnapshot(root)
+    source = SQLitePublishedHistorySnapshot(root, sqlite_policy=SqlitePolicyFixture())
     read = source._reader.iter_published_range_by_code
 
     def missing_day(*args, **kwargs):
@@ -275,7 +277,7 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
-    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW)
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, sqlite_policy=SqlitePolicyFixture())
     assert {(head.profile_id, head.strategy) for head in heads} == {
         (profile, strategy) for profile in ("v2", "v3") for strategy in (Strategy.TOMORROW, Strategy.D25)
     }
@@ -290,7 +292,7 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     monkeypatch.setattr(
         due_module, "EvaluateHistoryTrainingDue", lambda *args: pytest.fail("startup must never calculate due state")
     )
-    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
+    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     projection.initialize()
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
     assert all(head.owned == (head.profile_id == "v3") for head in projection.status())
@@ -329,20 +331,20 @@ def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(
         )
     assert result.state == "already_current"
     assert result.published
-    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW)
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, sqlite_policy=SqlitePolicyFixture())
     assert len(heads) == 4
     assert all(head.failure == "corrupt" and head.due.training_due for head in heads)
-    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW)
+    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     projection.initialize()
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
 
 
 def test_recommendation_without_an_published_snapshot_is_pending_and_never_fabricates_history(tmp_path: Path) -> None:
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())),
         lookback_sessions=61,
         monotonic=time.monotonic,
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     restrictions: dict[str, set[str]] = {}
 
@@ -359,10 +361,10 @@ def test_history_consumers_do_not_wait_for_background_projection(
     history_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(history_root, dates)
-    published = SQLitePublishedHistorySnapshot(history_root)
+    published = SQLitePublishedHistorySnapshot(history_root, sqlite_policy=SqlitePolicyFixture())
     manifest = published.manifest()
     assert manifest is not None
-    short = SQLiteQfqWindowCache((tmp_path / "qfq") / "daily_window.sqlite3", "v3")
+    short = SQLiteQfqWindowCache((tmp_path / "qfq") / "daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture())
     window = published.read_windows(manifest, ("600001",), sessions=61)[0]
     publish_windows(short, (window,), "tencent:fixture")
     history = PublishedHistoryCache(
@@ -429,7 +431,7 @@ def test_published_projection_and_outcomes_do_not_repeat_full_content_verificati
         return verify(cls, path, reference, progress, **kwargs)
 
     monkeypatch.setattr(HistoryPricePartition, "verify_logical_content", classmethod(observed))
-    published = SQLitePublishedHistorySnapshot(tmp_path / "history")
+    published = SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
     manifest = published.manifest()
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(published),
@@ -449,7 +451,7 @@ def test_deadline_bound_history_load_never_starts_a_history_scan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    published = SQLitePublishedHistorySnapshot(tmp_path / "history")
+    published = SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(published), lookback_sessions=61, monotonic=time.monotonic,
         projection_owner=SharedHistoryProjection(
@@ -471,11 +473,11 @@ def test_reference_change_invalidates_cached_published_snapshot(tmp_path, prepar
     root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
-    published = SQLitePublishedHistorySnapshot(root)
+    published = SQLitePublishedHistorySnapshot(root, sqlite_policy=SqlitePolicyFixture())
     manifest = published.manifest()
     assert manifest is not None
     assert published.read_windows(manifest, ("600001",), sessions=61)
-    reference_path = HistoryControlIndex(root / "catalog.sqlite3").reference_path()
+    reference_path = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).reference_path()
     # Keep the writer open so the corruption is visible only in the reference WAL.
     with SqliteSession(reference_path) as connection:
         connection.run("PRAGMA journal_mode=WAL")
@@ -492,10 +494,10 @@ def test_recommendation_retains_the_last_valid_projection_when_the_history_becom
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(history_root, dates)
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=SqlitePolicyFixture())),
         lookback_sessions=61,
         monotonic=time.monotonic,
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root)), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
+        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=SqlitePolicyFixture())), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
     )
     history.initialize(cancelled=lambda: False)
     before = history.entries()
@@ -519,7 +521,7 @@ def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_sourc
         for path in history_root.rglob("*.sqlite3")
     }
 
-    report = inspect_history_sqlite_performance(history_root, 1, 1, 10)
+    report = inspect_history_sqlite_performance(history_root, 1, 1, 10, sqlite_policy=SqlitePolicyFixture())
 
     after = {
         path.relative_to(history_root): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -547,7 +549,7 @@ def test_training_due_uses_the_published_snapshot_label_cutoff_and_marks_initial
     prepared_history(history_root, dates)
 
     evaluation = EvaluateHistoryTrainingDue(
-        HistoryTrainingDueQuery(history_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE)
+        HistoryTrainingDueQuery(history_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE), sqlite_policy=SqlitePolicyFixture()
     )
 
     assert evaluation is not None
@@ -580,7 +582,7 @@ def test_training_due_expands_revision_cache_invalidation_to_the_selected_profil
     )
 
     evaluation = EvaluateHistoryTrainingDue(
-        HistoryTrainingDueQuery(history_root, tmp_path / "train", NOW, V2_TRAINING_PROFILE)
+        HistoryTrainingDueQuery(history_root, tmp_path / "train", NOW, V2_TRAINING_PROFILE), sqlite_policy=SqlitePolicyFixture()
     )
 
     assert evaluation is not None
@@ -601,7 +603,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     )
     first_dates = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
     RunHistoryFixture(configuration, _Supplier(first_dates), clock=lambda: NOW)
-    baseline = HistoryControlIndex(history_root / "catalog.sqlite3").load_state().published_snapshot
+    baseline = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert baseline is not None
     contract_hash = "9" * 64
     bundle = PublishedHeadBundle(
@@ -628,7 +630,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
             NOW,
             V3_TRAINING_PROFILE,
             expected_training_contract_hash=contract_hash,
-        )
+        ), sqlite_policy=SqlitePolicyFixture()
     )
 
     assert evaluation is not None
@@ -662,7 +664,7 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
     )
 
     class _HistoryInput:
-        def __init__(self, _root: Path) -> None:
+        def __init__(self, _root: Path, *, sqlite_policy) -> None:
             pass
 
         def revised_dates(
@@ -678,4 +680,4 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
 
     monkeypatch.setattr("trader.training.infra.history.history_training_due.HistorySnapshotReader", _HistoryInput)
 
-    assert _revised_dates_since_bundle(tmp_path, baseline, current_snapshot, dates, dates[-2]) == (dates[2],)
+    assert _revised_dates_since_bundle(tmp_path, baseline, current_snapshot, dates, dates[-2], sqlite_policy=SqlitePolicyFixture()) == (dates[2],)

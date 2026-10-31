@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from dataclasses import field
+
 import logging
 import sqlite3
 from collections.abc import Callable
@@ -103,6 +106,8 @@ class _HistorySync:
     storage_kind: StorageKind
     write_tuning: HistoryWriteTuning | None
     repair_only: bool = False
+
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
     def execute(self) -> HistoryMaintenanceStatus:
         published = False
@@ -223,7 +228,7 @@ class _HistorySync:
                 raise RuntimeError("history_resume_security_changed")
         if (source.source, source.dataset) != (current_source.source, current_source.dataset):
             raise RuntimeError("history_resume_source_changed")
-        reference = ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract)
+        reference = ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract, sqlite_policy=self.sqlite_policy)
         if (
             source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
             or universe.securities != current_universe.securities
@@ -259,7 +264,7 @@ class _HistorySync:
         self, source: HistorySourceIdentity, reference: HistoryReferenceSnapshot, publication_id: str
     ) -> None:
         try:
-            ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract)
+            ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract, sqlite_policy=self.sqlite_policy)
         except (OSError, ValueError):
             self.control.save_reference(reference, publication_id)
 
@@ -269,8 +274,8 @@ class _HistorySync:
             lambda: _publish_progress(self.progress, "persisting_partitions", "waiting"),
             self.cancel,
         )
-        prices = HistoryDirectPrices(root, inputs.batch.sequence, current_snapshot, activity, fresh=inputs.fresh)
-        repair = HistoryPriceRepair(root)
+        prices = HistoryDirectPrices(root, inputs.batch.sequence, current_snapshot, activity, fresh=inputs.fresh, sqlite_policy=self.sqlite_policy)
+        repair = HistoryPriceRepair(root, sqlite_policy=self.sqlite_policy)
         repair.replay(inputs.batch.sequence)
         flow = HistoryDownloadFlow(
             HistoryDownloadResources(
@@ -289,7 +294,7 @@ class _HistorySync:
                 ),
                 self.cancel,
                 self.progress,
-            )
+            ), sqlite_policy=self.sqlite_policy
         )
         if not self.repair_only:
             flow.tencent()
@@ -373,6 +378,7 @@ class _HistorySync:
         return snapshot
 
 
+
 def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection preserves the public entrypoint
     configuration: HistorySyncConfiguration,
     supplier: HistoryTwoStageSupplier,
@@ -384,7 +390,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     writer_pool: WorkerExecutor | None = None,
     write_tuning: HistoryWriteTuning | None = None,
     storage_kind: StorageKind = "unknown",
-    repair_only: bool = False,
+    repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
 ) -> HistoryMaintenanceStatus:
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -393,9 +399,9 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     cancel = cancel_requested or (lambda: False)
     control = HistoryControlIndex(
         configuration.history_root / "catalog.sqlite3",
-        reference_path=configuration.reference_root / "company_st.sqlite3",
+        reference_path=configuration.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy,
     )
-    index = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3")
+    index = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
     _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(configuration.history_root.with_name(".history.lock")):
@@ -409,7 +415,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
             ):
                 raise RuntimeError("history_format_requires_rebuild")
             control.initialize()
-            HistoryPriceRepair(configuration.history_root).initialize()
+            HistoryPriceRepair(configuration.history_root, sqlite_policy=sqlite_policy).initialize()
             return _HistorySync(
                 configuration,
                 supplier,
@@ -422,7 +428,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 index,
                 storage_kind,
                 write_tuning,
-                repair_only,
+                repair_only, sqlite_policy=sqlite_policy,
             ).execute()
     except KeyboardInterrupt:
         return _status("cancelled", "cancelled", configuration, _safe_snapshot(control))

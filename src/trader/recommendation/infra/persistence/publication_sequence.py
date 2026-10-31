@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import sqlite3
 import threading
 from pathlib import Path
@@ -39,7 +41,8 @@ def _validate_schema(connection: SqliteConnection) -> None:
 class PublicationSequence:
     """Reserve blocks before publishing; a crash may skip numbers, never reuse them."""
 
-    def __init__(self, path: Path, *, block_size: int = 1_048_576) -> None:
+    def __init__(self, path: Path, *, block_size: int = 1_048_576, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         if block_size < 2:
             raise ValueError("publication sequence block must contain at least two numbers")
         self._path = path
@@ -90,7 +93,7 @@ class PublicationSequence:
     def _reserve(self, *, minimum: int = 1, allow_create: bool = False) -> None:
         try:
             with (
-                SqliteSession(self._path, SqliteConnectionOptions(timeout_seconds=5.0)) as connection,
+                SqliteSession(self._path, SqliteConnectionOptions(), sqlite_policy=self._sqlite_policy) as connection,
                 SqliteTransaction(connection, immediate=True),
             ):
                 EnsureSqliteSchema(

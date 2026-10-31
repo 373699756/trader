@@ -1,5 +1,7 @@
 """Four real profile workers share one synthetic history scan and retain independent pairs."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -38,7 +40,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
 
     history.iter_training_rows = rows
     monkeypatch.setattr(
-        "trader.training.infra.selected_training.SQLiteHistoryTrainingInputSnapshot.open", lambda _p: history
+        "trader.training.infra.selected_training.SQLiteHistoryTrainingInputSnapshot.open", lambda _p, *, sqlite_policy: history
     )
     monkeypatch.setattr("trader.training.infra.selected_training.LoadV1TrainingSettings", lambda _p: _settings())
 
@@ -68,14 +70,14 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
         TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples"),
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
-        result = TrainSelectedProfiles(request, executor)
+        result = TrainSelectedProfiles(request, executor, sqlite_policy=SqlitePolicyFixture())
     assert len(scans) == result.history_scan_passes == 1
     assert tuple(item.profile for item in result.outcomes) == request.profiles
     assert all(item.failure is None and item.result.status == "engineering_ready" for item in result.outcomes), result
     assert len(tuple((tmp_path / "models").rglob("model.json"))) == 8
     second = request
     with ThreadPoolExecutor(max_workers=4) as executor:
-        reused = TrainSelectedProfiles(second, executor)
+        reused = TrainSelectedProfiles(second, executor, sqlite_policy=SqlitePolicyFixture())
     assert len(scans) == 1
     assert reused.history_scan_passes == reused.history_rows_read == 0
     assert all(item.result.reused for item in reused.outcomes)

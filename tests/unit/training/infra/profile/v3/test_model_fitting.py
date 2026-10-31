@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from contextlib import ExitStack
 from datetime import date, timedelta
 from pathlib import Path
@@ -35,7 +37,7 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
     settings = LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id)
 
     feature_count = max(contract.feature_positions) + 1
-    cache = TrainingSampleCache(tmp_path, contract.model_id, profile.heads[0].feature_manifest.names, split.content_hash)
+    cache = TrainingSampleCache(tmp_path, contract.model_id, profile.heads[0].feature_manifest.names, split.content_hash, sqlite_policy=SqlitePolicyFixture())
     with cache.open() as repository, ExitStack() as resources:
         for day_position, day in enumerate(usable_dates):
             repository.add_final(_samples_for_day(day, day_position, feature_count))

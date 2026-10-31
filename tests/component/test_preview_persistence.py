@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from dataclasses import replace
 
 import pytest
@@ -29,7 +31,7 @@ def test_preview_writer_guards_reject_before_creating_any_database(tmp_path) -> 
     # Exercise adapter guards even if an unvalidated object bypasses frozen domain constructors.
     object.__setattr__(record, "freeze", current)
     root = tmp_path / "formal"
-    records = SQLiteFreezeRecords(root / "freeze.sqlite3")
+    records = SQLiteFreezeRecords(root / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     with pytest.raises(ValueError, match="preview"):
         records.commit(record)
     with pytest.raises(ValueError, match="preview"):
@@ -48,7 +50,7 @@ def test_preview_research_trace_rejects_before_initialization_or_audit_materiali
     if not with_projection:
         event = replace(event, projection=None)
     history_root = tmp_path / "history"
-    history = SQLiteFreezeTraceIndex(history_root)
+    history = SQLiteFreezeTraceIndex(history_root, sqlite_policy=SqlitePolicyFixture())
     with pytest.raises(ValueError, match="preview"):
         history.record(FreezeObservation(event, None))
     assert not history_root.exists()
@@ -70,7 +72,7 @@ def test_preview_freeze_and_restore_do_not_read_or_write_formal_storage(tmp_path
 
     coordinator = ScoredFreezeCoordinator(
         index,
-        RejectRecords(root / "freeze.sqlite3"),
+        RejectRecords(root / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture()),
         Clock(),
         runtime_identity=FreezeRuntimeIdentity(
             current.config_version, current.strategy_version, current.fusion_version

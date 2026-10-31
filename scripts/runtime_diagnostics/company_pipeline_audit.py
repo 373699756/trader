@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import time
 from collections.abc import Sequence
@@ -46,9 +48,9 @@ class _SampleIndex(SQLiteCompanyEvidenceIndex):
         return False
 
 
-def _sample(path: Path) -> tuple[Disclosure, ...]:
+def _sample(path: Path, *, sqlite_policy: SqliteIoPolicy) -> tuple[Disclosure, ...]:
     selected: dict[tuple[str, str], Disclosure] = {}
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3)) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3), sqlite_policy=sqlite_policy) as connection:
         rows = connection.run(
             "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code "
             "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
@@ -66,8 +68,8 @@ def _sample(path: Path) -> tuple[Disclosure, ...]:
     return tuple(selected.values())
 
 
-def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) -> dict[str, object]:
-    items = _sample(path)
+def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    items = _sample(path, sqlite_policy=sqlite_policy)
     if not items:
         return {"schema_version": "company-resume", "status": "degraded", "findings": ["no_document_sample"]}
     codes = tuple(sorted({code for item in items for code in item.codes}))
@@ -97,7 +99,7 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                 max_bytes=configuration.temporary_text_capacity_bytes,
                 reserve_bytes=configuration.temporary_disk_reserve_bytes,
             ),
-            event_policy=event_policy,
+            event_policy=event_policy, sqlite_policy=sqlite_policy,
         )
         index.initialize()
         for market, day in sorted({(EvidenceMarket(item.codes[0]), item.published_at.date()) for item in items}):
@@ -181,7 +183,7 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
                 dependencies,
                 CompanyEvidenceRequest(codes, now, replace(configuration, document_workers=count), event_policy),
             )
-        facts = SQLiteCompanyEvidenceReader(index.facts_path, event_policy=event_policy).read(codes)
+        facts = SQLiteCompanyEvidenceReader(index.facts_path, event_policy=event_policy, sqlite_policy=sqlite_policy).read(codes)
         # Compare business facts; observation timestamps naturally differ by worker count.
         comparable = tuple(
             replace(
@@ -193,7 +195,7 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float) 
         )
         signature = hashlib.sha256(repr(comparable).encode()).hexdigest()
         signatures.append(signature)
-        with SqliteSession(database, SqliteConnectionOptions(read_only=True)) as connection:
+        with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
             documents = tuple(tuple(row) for row in connection.run(
                 "SELECT d.source,d.source_key,d.record_hash,d.body_checked,d.body_hash,e.payload_hash "
                 "FROM disclosures d LEFT JOIN document_extractions e ON e.disclosure_id=d.id "

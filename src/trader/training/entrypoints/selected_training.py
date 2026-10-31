@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import json
 import time
 from concurrent.futures import CancelledError
@@ -42,10 +44,10 @@ def RunSelectedTraining(
     *,
     executor: ManagedWorkerExecutor,
     memory_admission: TrainingMemoryAdmission,
-    paths: TrainingLocations,
+    paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
-        return _run_selected_training(runtime, profiles, executor, memory_admission, paths, cancelled)
+        return _run_selected_training(runtime, profiles, executor, memory_admission, paths, cancelled, sqlite_policy=sqlite_policy)
 
 
 def _run_selected_training(
@@ -54,7 +56,7 @@ def _run_selected_training(
     executor: ManagedWorkerExecutor,
     memory_admission: TrainingMemoryAdmission,
     paths: TrainingLocations,
-    cancelled: Event,
+    cancelled: Event, *, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     started = time.monotonic()
     try:
@@ -85,7 +87,7 @@ def _run_selected_training(
                 SelectedTrainingRequest(
                     runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome
                 ),
-                WorkerFutureExecutor(executor),
+                WorkerFutureExecutor(executor), sqlite_policy=sqlite_policy,
             )
         codes: list[int] = []
         for outcome in run.outcomes:
@@ -103,7 +105,7 @@ def _run_selected_training(
                             paths.history,
                             paths.models,
                             datetime.now(ZoneInfo("Asia/Shanghai")),
-                            selected_profile=contract,
+                            selected_profile=contract, sqlite_policy=sqlite_policy,
                         )
                         payload["maintenance"] = [ProjectHeadTrainingStatus(head) for head in maintenance]
                     except (OSError, RuntimeError, ValueError) as exc:

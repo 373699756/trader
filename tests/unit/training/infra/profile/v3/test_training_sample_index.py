@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from dataclasses import replace
 from contextlib import ExitStack
 from datetime import date, timedelta
@@ -32,7 +34,7 @@ def _sample(
 
 def test_shared_industry_reads_once_and_keeps_head_matrices_independent(tmp_path):
     split = BuildTrainingDateSplit(tuple(date(2021, 1, 1) + timedelta(days=i) for i in range(1600)), parent_manifest_hash="a" * 64)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as index:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture()) as index:
         index.add_final((_sample("600001", split.model_fit_dates[0]), _sample("600002", split.model_fit_dates[0], targets=(None, 0.03, 0.04, 0.05, 0.06, 0.045))))
         index.prepare_for_model_fitting(split)
         first = index.industry_counts(TOMORROW_HEAD_CONTRACT)[0]
@@ -57,7 +59,7 @@ def test_large_matrices_release_mappings_and_files_on_every_exit(tmp_path, monke
     split = BuildTrainingDateSplit(
         tuple(date(2021, 1, 1) + timedelta(days=i) for i in range(1600)), parent_manifest_hash="a" * 64
     )
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as index:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture()) as index:
         index.add_final((_sample("600001", split.model_fit_dates[0]),))
         index.prepare_for_model_fitting(split)
         counts = index.industry_counts(TOMORROW_HEAD_CONTRACT)[0]
@@ -83,7 +85,7 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
     early_day = split.early_stopping_dates[0]
     calibration_day = split.calibration_dates[0]
     validation_day = split.confirmation_dates[0]
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository, ExitStack() as resources:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture()) as repository, ExitStack() as resources:
         assert tuple(repository._connection.run("PRAGMA cache_size").fetchone()) == (-32768,)
         assert repository.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
         repository.add_final(
@@ -131,7 +133,7 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
 
 def test_sample_index_has_only_the_shared_tables_and_one_build_transaction(tmp_path: Path) -> None:
     start = date(2025, 1, 1)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture()) as repository:
         for offset in range(10):
             day = start + timedelta(days=offset)
             repository.add_final(_sample(f"{code:06d}", day) for code in range(100))
@@ -162,7 +164,7 @@ def test_industry_matrices_preserve_order_and_split_boundaries_across_read_batch
         )
         for number, day in enumerate(sample_dates)
     ) + (_sample("650000", split.model_fit_dates[0], targets=(0.9, None, None, None, None, None)),)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository, ExitStack() as resources:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture()) as repository, ExitStack() as resources:
         repository.add_final(reversed(samples))
         repository.prepare_for_model_fitting(split)
         counts = repository.industry_counts(contract)[0]
@@ -195,7 +197,7 @@ def test_industry_matrices_preserve_order_and_split_boundaries_across_read_batch
 def test_validation_statistics_use_one_scan_and_include_validation_only_industries(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture()) as repository:
         repository.add_final(
             (
                 _sample("600001", split.model_fit_dates[0]),
@@ -227,7 +229,7 @@ def test_validation_statistics_use_one_scan_and_include_validation_only_industri
 def test_sample_index_rolls_back_the_whole_workspace_build_on_failure(tmp_path: Path) -> None:
     path = tmp_path / "samples.sqlite3"
     with pytest.raises(RuntimeError, match="forced"):
-        with SQLiteV3TrainingSampleIndex(path) as repository:
+        with SQLiteV3TrainingSampleIndex(path, sqlite_policy=SqlitePolicyFixture()) as repository:
             repository.add_final((_sample("600001", date(2025, 1, 1)),))
             raise RuntimeError("forced")
 

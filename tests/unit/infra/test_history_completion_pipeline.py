@@ -1,5 +1,7 @@
 """Coverage evidence and durable asynchronous writes share one completion boundary."""
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -35,9 +37,9 @@ def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, 
     tunings = []
     initialize = module.HistoryDownloadFlow.__init__
 
-    def tracked_initialize(flow, resources):
+    def tracked_initialize(flow, resources, *, sqlite_policy):
         tunings.append(resources.tuning)
-        initialize(flow, resources)
+        initialize(flow, resources, sqlite_policy=sqlite_policy)
 
     class Interrupted:
         def publish(self, progress):
@@ -56,7 +58,7 @@ def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, 
         storage_kind="hdd",
     )
     assert first.state == "cancelled"
-    assert HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot is None
+    assert HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
     resumed = RunHistoryFixture(configuration, FakeSupplier(DAYS), clock=lambda: NOW, storage_kind="hdd")
     assert resumed.state == "completed"
     assert len(tunings) == 2 and tunings[0] == tunings[1]
@@ -67,7 +69,7 @@ def test_recovery_reads_each_physical_year_once_and_keeps_sequence_visibility(tm
     days = (date(2025, 1, 2), date(2025, 2, 3), date(2025, 12, 4), date(2026, 1, 5))
     cells = _download("600001", days).batch.cells
     for year in (2025, 2026):
-        partition = HistoryPricePartition(tmp_path / f"prices_{year}.sqlite3", year, 1)
+        partition = HistoryPricePartition(tmp_path / f"prices_{year}.sqlite3", year, 1, sqlite_policy=SqlitePolicyFixture())
         partition.initialize()
         partition.save_revisions(
             tuple(
@@ -84,7 +86,7 @@ def test_recovery_reads_each_physical_year_once_and_keeps_sequence_visibility(tm
         return read_connection(partition)
 
     monkeypatch.setattr(HistoryPricePartition, "_read_connection", counted_read)
-    prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False))
+    prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=SqlitePolicyFixture())
     assert prices.read_for_download("600001", days) == cells[:-1]
     assert opened == ["prices_2025.sqlite3", "prices_2026.sqlite3"]
 
@@ -163,8 +165,8 @@ def test_inferred_suspension_is_published_without_a_price_or_retry_gap(tmp_path,
     result = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW, progress=progress)
     progress.publish_result(result)
     assert result.state == "completed" and result.unresolved_price_cells == 0
-    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
-    reader = HistorySnapshotReader(tmp_path)
+    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     assert all(row.cell.status == "tencent_inferred_suspended" for row in reader.read_day(DAYS[1], current_snapshot))
     training = tuple(reader.iter_training_rows(current_snapshot, DAYS, ("600001", "600002")))
     assert all(
@@ -187,8 +189,8 @@ def test_explicit_unknown_tencent_cell_remains_retryable_without_baostock(tmp_pa
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 2
     assert "baostock_prices" not in supplier.events
-    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
-    reader = HistorySnapshotReader(tmp_path)
+    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     cells = reader.read_day(DAYS[1], current_snapshot)
     assert all(row.cell.status == "unknown_missing" for row in cells)
     assert all(row.cell.qfq is None or row.cell.qfq.close_price is None for row in cells)
@@ -337,7 +339,7 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
             started.set()
             assert reached_capacity.wait(5), "network must continue while writer is blocked"
             assert network_count == 64, "completed plus in-flight payloads must stay bounded"
-            tasks = HistoryDownloadIndex(tmp_path / "parallel/catalog.sqlite3").tasks()
+            tasks = HistoryDownloadIndex(tmp_path / "parallel/catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks()
             assert not any(task.tencent_done for task in tasks)
         return original(prices, results)
 
@@ -350,13 +352,13 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
         )
     assert result.state == "completed", result.reason
     assert count_at_write[0] < 64
-    assert all(task.tencent_done for task in HistoryDownloadIndex(config.history_root / "catalog.sqlite3").tasks())
+    assert all(task.tencent_done for task in HistoryDownloadIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
     assert any(item.pipeline and item.pipeline.write_seconds > 0 for item in progress.values)
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     serial = tmp_path / "serial"
     assert RunHistoryFixture(_configuration(serial), ManySecurities(DAYS), clock=lambda: NOW).state == "completed"
-    parallel_snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3").load_state().published_snapshot
-    serial_snapshot = HistoryControlIndex(serial / "catalog.sqlite3").load_state().published_snapshot
+    parallel_snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    serial_snapshot = HistoryControlIndex(serial / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert parallel_snapshot.content_hash == serial_snapshot.content_hash
 
 
@@ -445,10 +447,10 @@ def test_transient_worker_and_writer_rejection_preserves_complete_history(tmp_pa
     assert result.state == "completed", result.reason
     assert download_pool.rejections == write_pool.rejections == 1
     assert len(supplier.calls) == 2
-    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
-    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
+    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert current_snapshot is not None
-    assert len(HistorySnapshotReader(tmp_path).read_day(DAYS[-1], current_snapshot)) == 2
+    assert len(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(DAYS[-1], current_snapshot)) == 2
     supplier.calls.clear()
     assert RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "already_current"
     assert not supplier.calls
@@ -471,13 +473,13 @@ def test_permanent_worker_rejection_reports_capacity_failure_and_resumes(tmp_pat
     assert failed.state == "failed" and failed.reason == "history_worker_unavailable"
     assert len(pool.codes) == 1 and 4.5 <= elapsed < 9
     assert not supplier.calls
-    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
-    assert HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot is None
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
+    assert HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
 
     resumed = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert resumed.state == "completed", resumed.reason
     assert len(supplier.calls) == 2
-    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
+    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
 
 
 @pytest.mark.parametrize("failure", [OSError("disk_full"), KeyboardInterrupt()])
@@ -494,7 +496,7 @@ def test_async_write_failure_never_acknowledges_or_enters_baostock(tmp_path, mon
             _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer
         )
     assert result.state == ("failed" if isinstance(failure, OSError) else "cancelled")
-    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
     assert "baostock_prices" not in supplier.events
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     assert RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
@@ -516,12 +518,12 @@ def test_async_cross_year_failure_reuses_durable_rows_on_restart(tmp_path, monke
             _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer
         )
     assert result.state == "failed"
-    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
     monkeypatch.setattr(HistoryPriceWriteSession, "save_revision_batches", original)
     monkeypatch.setattr(supplier, "fetch_tencent_window", lambda *_args: (_ for _ in ()).throw(RuntimeError("offline")))
     result = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 4
-    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().published_snapshot
+    current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert all(
-        row.cell.status == "complete" for row in HistorySnapshotReader(tmp_path).read_day(days[0], current_snapshot)
+        row.cell.status == "complete" for row in HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], current_snapshot)
     )

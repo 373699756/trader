@@ -1,3 +1,5 @@
+
+from tests.helpers.configuration import SqlitePolicyFixture
 from datetime import date
 
 from trader.training.application.h1_point_in_time_completion import CompleteH1Research
@@ -40,7 +42,7 @@ def _insufficient_capability():
 
 
 def test_h1_research_completion_seals_all_downstream_insufficient_states_without_fake_rows(tmp_path) -> None:
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
 
     completion = CompleteH1Research(
         capability=_insufficient_capability(),
@@ -59,7 +61,7 @@ def test_h1_research_completion_seals_all_downstream_insufficient_states_without
 
 
 def test_h1_research_completion_projects_a_terminal_development_handoff_with_parent_hashes(tmp_path) -> None:
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     completion = CompleteH1Research(
         capability=_insufficient_capability(),
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),

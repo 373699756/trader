@@ -1,5 +1,7 @@
 """V5 adapter over the existing locked, recoverable dual-head training owner."""
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 from pathlib import Path
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
@@ -14,7 +16,7 @@ def RunV5Training(
     *,
     sample_root: Path,
     settings: ProfileTrainingSettings,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TomorrowTrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
     return RunProfileTraining(
         ProfileTrainingRequest(
@@ -25,7 +27,7 @@ def RunV5Training(
             settings,
             progress,
             sample_root=sample_root,
-        )
+        ), sqlite_policy=sqlite_policy
     )
 
 

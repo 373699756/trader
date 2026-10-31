@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -16,11 +18,11 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 
-def AuditCompanyPagination(path: Path, *, budget_seconds: float) -> dict[str, object]:
+def AuditCompanyPagination(path: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     configuration = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[2])
     deadline = time.monotonic() + budget_seconds
     yesterday = datetime.now(ZoneInfo("Asia/Shanghai")).date() - timedelta(days=1)
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3)) as connection:
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3), sqlite_policy=sqlite_policy) as connection:
         targets = tuple(
             DisclosurePartition(cast(Market, row[0]), date.fromisoformat(row[1]), date.fromisoformat(row[2]))
             for row in connection.run(

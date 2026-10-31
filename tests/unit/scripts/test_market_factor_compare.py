@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.configuration import SqlitePolicyFixture
+
 from argparse import Namespace
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -276,7 +278,7 @@ def test_market_factor_profile_uses_unified_output_and_explicit_bounds() -> None
 
 def test_reference_probe_never_initializes_missing_runtime_database(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="published_reference_unavailable"):
-        ReadReferences(tmp_path, AT)
+        ReadReferences(tmp_path, AT, sqlite_policy=SqlitePolicyFixture())
     assert not tuple(tmp_path.iterdir())
 
 
@@ -327,7 +329,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
             filter_codes=lambda codes, at: tuple(codes),
         ),
     )
-    monkeypatch.setattr(comparison, "ReadReferences", lambda path, at: references)
+    monkeypatch.setattr(comparison, "ReadReferences", lambda path, at, *, sqlite_policy: references)
     monkeypatch.setattr(
         comparison, "ExchangeSecurityMasterClient", lambda **kwargs: SimpleNamespace(fetch=lambda at: ())
     )
@@ -341,7 +343,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     monkeypatch.setattr(
         comparison,
         "LoadFactorInputs",
-        lambda config, qfq, profile, codes, at: SimpleNamespace(
+        lambda config, qfq, profile, codes, at, *, sqlite_policy: SimpleNamespace(
             profile=profile, snapshot_hash="fixed", config_version="fixed", preparation_ms={}
         ),
     )
@@ -377,7 +379,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
             interval_seconds=0,
             source_loop_seconds=120,
             task_seconds=600,
-        )
+        ), sqlite_policy=SqlitePolicyFixture()
     )
     assert len(acquired) == 2
     assert len(replayed) == 4
@@ -632,7 +634,7 @@ def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unkno
             pool,
             company_database=Path("unused/evidence.sqlite3"),
             open_dates=(AT.date(),),
-            company_policy=strategy.company_scoring,
+            company_policy=strategy.company_scoring, sqlite_policy=SqlitePolicyFixture(),
         )
     finally:
         pool.stop(wait=True, cancel_futures=True)
@@ -706,7 +708,7 @@ def test_child_sdk_stdout_cannot_corrupt_json_report(
     import os
     import sys
 
-    def Collect(args, *, cpu_profile_dir=None):
+    def Collect(args, *, cpu_profile_dir=None, sqlite_policy):
         os.write(1, b"supplier login success\n")
         return {"status": "degraded", "summary": {"complete": False}}
 

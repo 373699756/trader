@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,7 +21,7 @@ from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSessio
 
 
 def AuditCompanyPublication(
-    path: Path, facts_path: Path | None, *, now: datetime, deadline: float
+    path: Path, facts_path: Path | None, *, now: datetime, deadline: float, sqlite_policy: SqliteIoPolicy
 ) -> dict[str, object]:
     """Two read snapshots, with concurrent changes rejected; not a source completeness certificate."""
     if facts_path is None or not facts_path.exists():
@@ -27,8 +29,8 @@ def AuditCompanyPublication(
     options = SqliteConnectionOptions(read_only=True, timeout_seconds=5)
     findings: list[str] = []
     with (
-        SqliteSession(path, options, cancel_requested=lambda: time.monotonic() >= deadline) as raw,
-        SqliteSession(facts_path, options, cancel_requested=lambda: time.monotonic() >= deadline) as formal,
+        SqliteSession(path, options, cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy) as raw,
+        SqliteSession(facts_path, options, cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy) as formal,
     ):
         versions = (raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0])
         with SqliteTransaction(raw), SqliteTransaction(formal):

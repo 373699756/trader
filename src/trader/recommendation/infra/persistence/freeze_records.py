@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import hashlib
 import sqlite3
 import threading
@@ -73,8 +75,9 @@ class SQLiteFreezeRecords:
         *,
         fault_injector: FaultInjector | None = None,
         cache: BoundedLruCache[object] | None = None,
-        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), sqlite_policy: SqliteIoPolicy,
     ) -> None:
+        self._sqlite_policy = sqlite_policy
         self._database = path
         self._fault_injector = fault_injector or (lambda _stage: None)
         self._lock = threading.RLock()
@@ -85,7 +88,7 @@ class SQLiteFreezeRecords:
     def initialize(self) -> None:
         self._database.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL")) as connection:
+            with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=self._sqlite_policy) as connection:
                 EnsureSqliteSchema(
                     connection, _SCHEMA, allow_create=True, initialize=_initialize_schema, validate=_validate_schema
                 )
@@ -99,9 +102,8 @@ class SQLiteFreezeRecords:
                 self._database,
                 SqliteConnectionOptions(
                     read_only=not write,
-                    timeout_seconds=10.0,
                     journal_mode="WAL" if write else None,
-                ),
+                ), sqlite_policy=self._sqlite_policy,
             ) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, validate=_validate_schema)
                 with SqliteTransaction(connection, immediate=write):

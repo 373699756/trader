@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import json
 import os
 import shutil
@@ -213,27 +215,27 @@ class _TrainingInputDocumentContext:
     training_run_hash: str
 
 
-def RunProfileTraining(request: ProfileTrainingRequest) -> TrainingRunResult:
+def RunProfileTraining(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPolicy) -> TrainingRunResult:
     return _run_training(
         replace(
             request,
             train_root=request.train_root / request.profile.output_directory,
             sample_root=request.sample_root / request.profile.output_directory,
-        )
+        ), sqlite_policy=sqlite_policy
     )
 
 
-def RunRepackProfileTraining(request: ProfileTrainingRequest) -> TrainingRunResult:
+def RunRepackProfileTraining(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPolicy) -> TrainingRunResult:
     if request.expected_history_snapshot_hash is None:
         raise ValueError("repack training requires an expected history snapshot hash")
-    return RunProfileTraining(request)
+    return RunProfileTraining(request, sqlite_policy=sqlite_policy)
 
 
-def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
+def _run_training(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPolicy) -> TrainingRunResult:
     _publish(request.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
     _publish(request.progress, TomorrowTrainingProgress("input_read", "started", 0, 1))
     try:
-        history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
+        history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root, sqlite_policy=sqlite_policy)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         heads = tuple(_unavailable_result(item, _reason(exc)) for item in request.contracts)
         return TrainingRunResult(None, "", 0, heads)
@@ -248,13 +250,13 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
             HistoryMaintenanceLock(history.history_root.with_name(".history.lock")),
             HistoryMaintenanceLock(training_lock),
         ):
-            history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
+            history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root, sqlite_policy=sqlite_policy)
             try:
                 RequireHistoryRepackIdle(history.history_root)
             except HistoryPartitionRepackFenceError:
                 if request.expected_history_snapshot_hash != history.snapshot.snapshot_hash:
                     raise
-            return _run_locked(history, request)
+            return _run_locked(history, request, sqlite_policy=sqlite_policy)
     except HistoryMaintenanceAlreadyRunningError:
         heads = tuple(
             _blocked_from_snapshot(item, history.snapshot, "history_maintenance_running") for item in request.contracts
@@ -272,15 +274,15 @@ def FitSelectedProfile(
     history: _TrainingInputSnapshot,
     request: ProfileTrainingRequest,
     cache: TrainingSampleCache,
-    aligned_rows: Iterator[HistoryTrainingRow],
+    aligned_rows: Iterator[HistoryTrainingRow], *, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
     """Caller owns history/profile locks; connections belong exclusively to this worker."""
-    return _run_locked(history, request, prepared_cache=cache, aligned_rows=aligned_rows)
+    return _run_locked(history, request, prepared_cache=cache, aligned_rows=aligned_rows, sqlite_policy=sqlite_policy)
 
 
 def InspectSelectedProfile(
     history: _TrainingInputSnapshot,
-    request: ProfileTrainingRequest,
+    request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPolicy,
 ) -> tuple[ProfileTrainingRequest, TrainingSampleCache, frozenset[date], TrainingRunResult | None]:
     request = replace(
         request,
@@ -290,7 +292,7 @@ def InspectSelectedProfile(
     split, reason = _prepare_locked_split(history.snapshot, request.profile, request.settings)
     if split is None:
         raise ValueError(reason)
-    cache = _sample_cache_for(history.snapshot, split, request)
+    cache = _sample_cache_for(history.snapshot, split, request, sqlite_policy=sqlite_policy)
     reused = _reuse_profile(history.snapshot, request)
     dates = frozenset() if reused is not None or cache.inspect() else TomorrowTrainingWindow(split).readable_dates
     return request, cache, dates, reused
@@ -301,9 +303,9 @@ def _run_locked(
     request: ProfileTrainingRequest,
     *,
     prepared_cache: TrainingSampleCache | None = None,
-    aligned_rows: Iterator[HistoryTrainingRow] | None = None,
+    aligned_rows: Iterator[HistoryTrainingRow] | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
-    history, target_matches = _reopen_expected_snapshot(history, request.expected_history_snapshot_hash)
+    history, target_matches = _reopen_expected_snapshot(history, request.expected_history_snapshot_hash, sqlite_policy=sqlite_policy)
     if not target_matches:
         heads = tuple(
             _blocked_from_snapshot(item, history.snapshot, "history_archive_repack_target_mismatch")
@@ -343,7 +345,7 @@ def _run_locked(
         )
         request.train_root.mkdir(parents=True, exist_ok=True)
         _cleanup_abandoned_workspaces(request.train_root)
-        cache = prepared_cache or _sample_cache_for(snapshot, split, request)
+        cache = prepared_cache or _sample_cache_for(snapshot, split, request, sqlite_policy=sqlite_policy)
         _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
         with cache.open(inspected=prepared_cache is not None) as samples:
             _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
@@ -377,7 +379,7 @@ def _run_locked(
                 cache.path,
                 cache.feature_names,
                 prepared_split_hash=split.content_hash,
-                sequence_layout=cache.sequence_layout,
+                sequence_layout=cache.sequence_layout, sqlite_policy=sqlite_policy,
             ) as samples,
             ExitStack() as fitting_resources,
         ):
@@ -465,7 +467,7 @@ def _run_locked(
 def _sample_cache_for(
     snapshot: HistoryTrainingInputSnapshot,
     split: TrainingDateSplit,
-    request: ProfileTrainingRequest,
+    request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingSampleCache:
     feature_names = TrainingFeatureNames(request.profile.heads)
     feature_count = len(feature_names)
@@ -503,7 +505,7 @@ def _sample_cache_for(
             TomorrowTrainingProgress(
                 "sample_cache_check" if phase == "checking" else "sample_cache_seal", state, done, total
             ),
-        ),
+        ), sqlite_policy=sqlite_policy,
     )
 
 
@@ -552,11 +554,11 @@ def _require_industry_coverage(
 
 def _reopen_expected_snapshot(
     history: _TrainingInputSnapshot,
-    expected_snapshot_hash: str | None,
+    expected_snapshot_hash: str | None, *, sqlite_policy: SqliteIoPolicy,
 ) -> tuple[_TrainingInputSnapshot, bool]:
     if expected_snapshot_hash is None:
         return history, True
-    reopened = SQLiteHistoryTrainingInputSnapshot.open(history.history_root)
+    reopened = SQLiteHistoryTrainingInputSnapshot.open(history.history_root, sqlite_policy=sqlite_policy)
     return reopened, reopened.snapshot.snapshot_hash == expected_snapshot_hash
 
 

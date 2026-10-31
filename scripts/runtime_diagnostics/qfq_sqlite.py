@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import argparse
 import sqlite3
 from pathlib import Path
@@ -17,11 +19,11 @@ from trader.infra.sqlite_connection import (
 from .reporting import emit_report
 
 
-def AuditQfqDatabase(path: Path) -> dict[str, object]:
+def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     """Report aggregate evidence only; no initialization or recovery writes."""
     if path.is_symlink() or not path.is_file():
         raise FileNotFoundError("qfq database missing or unsafe")
-    caches = (SQLiteQfqWindowCache(path, "v2"), SQLiteQfqWindowCache(path, "v3"))
+    caches = (SQLiteQfqWindowCache(path, "v2", sqlite_policy=sqlite_policy), SQLiteQfqWindowCache(path, "v3", sqlite_policy=sqlite_policy))
     before = tuple(cache.manifest() for cache in caches)
     profiles: list[dict[str, object]] = []
     failures: list[str] = []
@@ -35,7 +37,7 @@ def AuditQfqDatabase(path: Path) -> dict[str, object]:
             rows += len(window.cells)
         profiles.append({"profile": cache.profile, "codes": len(manifest.universe_codes), "rows": rows})
     with (
-        SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection,
+        SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection,
         SqliteTransaction(connection),
     ):
         CheckSqliteIntegrity(connection)
@@ -94,8 +96,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
     args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     try:
-        report = AuditQfqDatabase(args.database.expanduser().resolve())
+        report = AuditQfqDatabase(args.database.expanduser().resolve(), sqlite_policy=sqlite_policy)
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         report = {
             "schema_version": "qfq-sqlite-diagnostic",

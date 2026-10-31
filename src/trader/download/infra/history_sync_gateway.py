@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from dataclasses import field
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +31,8 @@ class HistorySyncGateway:
     storage_kind: StorageKind = "unknown"
     repair_only: bool = False
 
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+
     def download(
         self,
         configuration: HistorySyncConfiguration,
@@ -48,8 +53,9 @@ class HistorySyncGateway:
             worker_pool=self.worker_pool,
             writer_pool=self.writer_pool,
             storage_kind=self.storage_kind,
-            repair_only=self.repair_only,
+            repair_only=self.repair_only, sqlite_policy=self.sqlite_policy,
         )
+
 
 
 __all__ = ["HistorySyncGateway"]

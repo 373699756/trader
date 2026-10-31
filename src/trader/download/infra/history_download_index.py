@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -121,11 +123,12 @@ HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
 
 
 class HistoryDownloadIndex:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+        self._sqlite_policy = sqlite_policy
         self._path = path
 
     def pending(self, published_sequence: int) -> HistoryDownloadBatch | None:
-        with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection:
             row = connection.run(
                 "SELECT sync_sequence,source_hash,calendar_hash,universe_hash,cutoff_date FROM download_batch"
             ).fetchone()
@@ -137,7 +140,7 @@ class HistoryDownloadIndex:
 
     def begin(self, batch: HistoryDownloadBatch, tasks: tuple[HistoryDownloadTask, ...]) -> None:
         with (
-            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             connection.run("DELETE FROM download_tasks")
@@ -162,7 +165,7 @@ class HistoryDownloadIndex:
 
     def tasks(self) -> tuple[HistoryDownloadTask, ...]:
         with (
-            SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection,
+            SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
             rows = connection.run(
@@ -187,7 +190,7 @@ class HistoryDownloadIndex:
         if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
             raise ValueError("history_download_identity_conflict")
         with (
-            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             updated = connection.run(
@@ -226,7 +229,7 @@ class HistoryDownloadIndex:
 
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""
-        with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection:
             return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM download_gaps"))
 
     def gaps_by_code(self, calendar_dates: tuple[date, ...] | None = None) -> dict[str, tuple[date, ...]]:
@@ -236,7 +239,7 @@ class HistoryDownloadIndex:
         positions = {day: index for index, day in enumerate(calendar_dates or ())}
         last = len(positions) - 1
         grouped: dict[str, list[date]] = {}
-        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             for code, day, checked in connection.run(
                 "SELECT g.code,g.trade_date,u.cutoff_date FROM download_gaps g "
                 "LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
@@ -259,7 +262,7 @@ class HistoryDownloadIndex:
         if not completions or len({item.task.code for item in completions}) != len(completions):
             raise ValueError("history_download_completions_invalid")
         with (
-            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             cutoff_row = connection.run("SELECT cutoff_date FROM download_batch WHERE singleton=1").fetchone()
@@ -302,7 +305,7 @@ class HistoryDownloadIndex:
 
     def begin_attempt(self, code: str) -> int:
         with (
-            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True)) as connection,
+            SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             connection.run("UPDATE download_tasks SET attempts=attempts+1 WHERE code=? AND attempts<3", (code,))
@@ -313,7 +316,7 @@ class HistoryDownloadIndex:
         stocks: set[str] = set()
         reasons: dict[str, int] = {}
         dates: list[date] = []
-        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True)) as connection:
+        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             rows = connection.run(
                 "SELECT g.code,CASE WHEN u.trade_date IS NOT NULL THEN 'tencent_qfq_invalid_price' "
                 "ELSE COALESCE(NULLIF(t.failure,'tencent_qfq_invalid_price'),'history_price_pending') "
