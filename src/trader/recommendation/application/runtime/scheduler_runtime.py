@@ -881,7 +881,7 @@ class SchedulerRuntime:
     def _record_publish_rejection(self, reason: str, strategy: Strategy) -> None:
         with self._lock:
             self._publish_rejection_count += 1
-        if reason in {"freeze_closed", "freeze_sealed"}:
+        if reason in {"freeze_closed", "freeze_sealed", "publication_window_closed"}:
             return
         self._record_failure("publish", reason, strategy)
 

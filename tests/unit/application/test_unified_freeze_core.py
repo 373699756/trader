@@ -73,7 +73,7 @@ def test_profiled_batch_rejects_every_profile_before_any_partial_write() -> None
 
     assert not result.accepted and result.reason == "cas_mismatch"
     assert all(index.snapshot(strategy).current is None for index in indexes for strategy in (Strategy.TOMORROW, Strategy.D25))
-    expired = UnifiedFreezeIndex.publish_scored_batch((pairs[0], pairs[1]), lambda: False)
+    expired = UnifiedFreezeIndex.publish_scored_batch((pairs[0], pairs[1]), lambda: "round_timeout")
     assert not expired.accepted and expired.reason == "round_timeout"
     assert all(index.snapshot(strategy).current is None for index in indexes for strategy in (Strategy.TOMORROW, Strategy.D25))
     accepted = UnifiedFreezeIndex.publish_scored_batch((pairs[0], pairs[1]))

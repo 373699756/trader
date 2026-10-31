@@ -136,6 +136,11 @@ class RecommendationCycleExecutor:
                 expected_versions=(expected[0], expected[1]),
                 publication_io=self._dependencies.publication_io,
                 sessions=(requests[0].session, requests[1].session),
+                clock=self._dependencies.clock,
+                publish_before=(
+                    min(request.review_deadline for request in requests)
+                    if requests[0].preview_context is None else None
+                ),
             )
             publish_started = time.perf_counter()
             result = self._dependencies.rounds.stage(

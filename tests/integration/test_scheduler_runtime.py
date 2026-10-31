@@ -493,6 +493,38 @@ def _round_cleanup_runtime() -> SchedulerRuntime:
     )
 
 
+def test_round_rechecks_close_after_preparing_initial_quotes(monkeypatch):
+    runtime = _round_cleanup_runtime()
+    dependencies = runtime._dependencies
+    at = NOW.replace(hour=14, minute=59, second=59)
+    dependencies.clock.current = at
+    initial_overlay = dependencies.freezes.initial_overlay
+
+    def advance_during_projection(identity):
+        overlay = initial_overlay(identity)
+        dependencies.clock.current = at.replace(hour=15, minute=0, second=0)
+        return overlay
+
+    monkeypatch.setattr(dependencies.freezes, "initial_overlay", advance_during_projection)
+    requests = tuple(runtime._scheduled_request(strategy, at, "before_close") for strategy in (
+        Strategy.TOMORROW, Strategy.D25,
+    ))
+    admission = dependencies.rounds.enter(dependencies.round_profile, (
+        ScheduledPipelineTask(PipelineTask.SCORE, at, MarketPhase.BEFORE_CLOSE),
+    ))
+    runtime.start()
+    try:
+        runtime._cycles.execute_round_pair(requests, round_sequence=admission.sequence)
+        assert all(dependencies.index.snapshot(request.strategy).current is None for request in requests)
+        assert dependencies.rounds.status().outcome == "publication_window_closed"
+        assert runtime.status().publish_rejection_count == 2
+        assert runtime.status().last_error_code == ""
+        assert dependencies.data.released_requests == list(requests)
+    finally:
+        dependencies.rounds.finish(dependencies.round_profile, admission.sequence)
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+
 def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
     review_started = threading.Event()
     release_review = threading.Event()

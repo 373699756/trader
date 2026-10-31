@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
+from datetime import datetime
 
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
     ObservePublicationIo,
@@ -18,7 +19,9 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
     UnifiedProfilePair,
     UnifiedProfiledPublishResult,
 )
+from trader.recommendation.application.ports.clock import Clock
 from trader.recommendation.application.ports.runtime import FreezeBuilderPort
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.application.runtime.trading_session import SessionGuard, SessionLease, StaleSessionError
 from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity, FreezeOverlay, ScoredFreeze
@@ -34,6 +37,8 @@ class PreparedCurrentPair:
     expected_versions: tuple[str | None, str | None]
     publication_io: PublicationIoTracker | None
     sessions: tuple[SessionLease | None, SessionLease | None]
+    clock: Clock
+    publish_before: datetime | None
 
 
 def PrepareCurrentPair(
@@ -45,6 +50,8 @@ def PrepareCurrentPair(
     expected_versions: tuple[str | None, str | None],
     publication_io: PublicationIoTracker | None,
     sessions: tuple[SessionLease | None, SessionLease | None],
+    clock: Clock,
+    publish_before: datetime | None,
 ) -> PreparedCurrentPair:
     if tuple(freeze.strategy for freeze in freezes) != (Strategy.TOMORROW, Strategy.D25):
         raise ValueError("paired publication requires tomorrow and d25")
@@ -56,6 +63,8 @@ def PrepareCurrentPair(
         expected_versions,
         publication_io,
         sessions,
+        clock,
+        publish_before,
     )
 
 
@@ -63,6 +72,15 @@ def PublishCurrentBatch(
     pairs: tuple[PreparedCurrentPair, ...],
     publish_allowed: Callable[[], bool] = lambda: True,
 ) -> UnifiedProfiledPublishResult:
+    def publication_rejection() -> str | None:
+        # Called by the index under the shared transaction lock, after all waits.
+        if any(
+            pair.publish_before is not None and ShanghaiNow(pair.clock.now()) >= pair.publish_before
+            for pair in pairs
+        ):
+            return "publication_window_closed"
+        return None if publish_allowed() else "round_timeout"
+
     with ExitStack() as stack:
         try:
             for pair in sorted(pairs, key=lambda item: item.profile):
@@ -89,7 +107,7 @@ def PublishCurrentBatch(
                 )
                 for pair in pairs
             ),
-            publish_allowed,
+            publication_rejection,
         )
         for pair, profile_observations in observations:
             for observation, freeze in zip(profile_observations, pair.freezes, strict=True):

@@ -190,7 +190,7 @@ class UnifiedFreezeIndex:
     @staticmethod
     def publish_scored_batch(
         pairs: tuple[UnifiedProfilePair, ...],
-        publish_allowed: Callable[[], bool] = lambda: True,
+        publication_rejection: Callable[[], str | None] = lambda: None,
     ) -> UnifiedProfiledPublishResult:
         """Validate and replace every profile pair under one reader-visible lock."""
 
@@ -206,13 +206,14 @@ class UnifiedFreezeIndex:
                 )
                 if rejection is not None:
                     return UnifiedProfiledPublishResult(False, rejection)
-            if not publish_allowed():
-                return UnifiedProfiledPublishResult(False, "round_timeout")
-            published: list[tuple[str, tuple[FreezeCommitted, FreezeCommitted]]] = []
+            # Materialize every event before checking the final deadline or changing any index.
+            published = tuple((pair.profile, _scored_pair_events(pair.freezes, pair.overlays)) for pair in pairs)
+            rejection = publication_rejection()
+            if rejection is not None:
+                return UnifiedProfiledPublishResult(False, rejection)
             for pair in pairs:
-                events = pair.index._apply_scored_pair_locked(pair.freezes, pair.overlays)
-                published.append((pair.profile, events))
-            return UnifiedProfiledPublishResult(True, "accepted", tuple(published))
+                pair.index._apply_scored_pair_locked(pair.freezes, pair.overlays)
+            return UnifiedProfiledPublishResult(True, "accepted", published)
 
     def _paired_rejection_locked(
         self,
@@ -243,11 +244,7 @@ class UnifiedFreezeIndex:
         self,
         freezes: tuple[ScoredFreeze, ScoredFreeze],
         overlays: tuple[FreezeOverlay, FreezeOverlay],
-    ) -> tuple[FreezeCommitted, FreezeCommitted]:
-        events = tuple(
-            BuildFreezeCommitted(freeze, projection_version=f"{freeze.version}+{overlay.version}")
-            for freeze, overlay in zip(freezes, overlays, strict=True)
-        )
+    ) -> None:
         for freeze, overlay in zip(freezes, overlays, strict=True):
             current = self._current.get(freeze.strategy)
             self._current[freeze.strategy] = freeze
@@ -256,7 +253,6 @@ class UnifiedFreezeIndex:
                 self._seals.pop(freeze.strategy, None)
                 self._formal.pop(freeze.strategy, None)
                 self._closed.pop(freeze.strategy, None)
-        return events[0], events[1]
 
     def publish_overlay(
         self,
@@ -478,6 +474,17 @@ class UnifiedFreezeIndex:
             source,
         )
         return UnifiedFreezeSealResult(True, "sealed", formal, source)
+
+
+def _scored_pair_events(
+    freezes: tuple[ScoredFreeze, ScoredFreeze],
+    overlays: tuple[FreezeOverlay, FreezeOverlay],
+) -> tuple[FreezeCommitted, FreezeCommitted]:
+    events = tuple(
+        BuildFreezeCommitted(freeze, projection_version=f"{freeze.version}+{overlay.version}")
+        for freeze, overlay in zip(freezes, overlays, strict=True)
+    )
+    return events[0], events[1]
 
 
 def _identity_rejection(
