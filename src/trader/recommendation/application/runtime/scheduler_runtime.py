@@ -27,6 +27,7 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.runtime.cadence import (
     PERIODIC_TASKS,
+    CadenceBand,
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointResult,
@@ -115,7 +116,7 @@ class SchedulerRuntime:
         self._lock = threading.RLock()
         self._session = TradingSession(dependencies.clock.now, dependencies.monotonic)
         self._planned_generation = 0
-        self._preview_long_submitted = False
+        self._preview_long_next_due = 0.0
         self._running = False
         self._stopped = False
         self._shutdown_report: ShutdownReport | None = None
@@ -355,23 +356,9 @@ class SchedulerRuntime:
 
     def _submit_preview(self, observed_at: datetime) -> float:
         observed_at = max(observed_at, ShanghaiNow(self._dependencies.clock.now()))
-        scope = self._dependencies.run_scope
-        long_quotes = self._dependencies.long_quotes
-        with self._lock:
-            if not self._preview_long_submitted and long_quotes is not None and scope is not None:
-                self._preview_long_submitted = long_quotes.offer_refresh(
-                    LongRefreshRequest(
-                        observed_at,
-                        "after_close",
-                        deadline=observed_at
-                        + timedelta(seconds=TaskExecutionBudgetSeconds(PipelineTask.LONG_QUOTES) or 3.0),
-                        force=True,
-                        session=self._session.capture(),
-                        preview_context=scope.preview,
-                    )
-                )
+        long_delay = self._submit_preview_long(observed_at)
         if self._preview.status().state != "waiting_inputs":
-            return 30.0
+            return min(30.0, long_delay)
         lane = self._score_lane.status()
         if not lane.running and not lane.pending:
             scheduled = ScheduledPipelineTask(
@@ -381,7 +368,36 @@ class SchedulerRuntime:
                 session=self._session.capture(),
             )
             self._submit_round_tasks((scheduled,), scheduled)
-        return 1.0
+        return min(1.0, long_delay)
+
+    def _submit_preview_long(self, observed_at: datetime) -> float:
+        scope = self._dependencies.run_scope
+        long_quotes = self._dependencies.long_quotes
+        if long_quotes is None or scope is None:
+            return 30.0
+        current = self._dependencies.index.snapshot(Strategy.LONG).current
+        if (
+            isinstance(current, LongProjection)
+            and current.trade_date == observed_at.date()
+            and current.items
+            and all(item.quote_status != "missing" for item in current.items)
+        ):
+            return 30.0
+        interval = self._dependencies.cadence.status().intervals[PipelineTask.LONG_QUOTES][CadenceBand.AFTER_CLOSE]
+        with self._lock:
+            monotonic_now = self._dependencies.monotonic()
+            if monotonic_now < self._preview_long_next_due:
+                return self._preview_long_next_due - monotonic_now
+            long_quotes.offer_refresh(LongRefreshRequest(
+                observed_at,
+                "after_close",
+                deadline=observed_at + timedelta(seconds=TaskExecutionBudgetSeconds(PipelineTask.LONG_QUOTES) or 3.0),
+                force=True,
+                session=self._session.capture(),
+                preview_context=scope.preview,
+            ))
+            self._preview_long_next_due = monotonic_now + interval
+        return interval
 
     def _calendar_freeze(self, observed_at: datetime) -> tuple[bool | None, float]:
         trade_date = observed_at.date()

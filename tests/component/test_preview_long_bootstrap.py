@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
@@ -78,6 +79,86 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
         assert primary.tomorrow_index.snapshot(Strategy.LONG).formal is None
         assert not (tmp_path / "data/recommendation").exists()
         assert not (tmp_path / "data/research").exists()
+    finally:
+        assert primary.scheduler.stop(ShutdownDeadline.start(3.0)).completed
+        assert primary.long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(3.0)).completed
+
+
+@pytest.mark.parametrize("first_response", ("failed", "empty", "partial", "invalid_close"))
+def test_preview_long_recovers_missing_quotes_on_cadence_then_stops(
+    tmp_path, monkeypatch, application_feature_factory, first_response
+):
+    close = STARTED_AT.replace(day=23, hour=15)
+    wall = [STARTED_AT]
+    monotonic = [100.0]
+    calls = []
+
+    def missing_model(*args, **kwargs):
+        raise ScoringModelsMissingError()
+
+    def quotes(self, codes, observed_at, **kwargs):
+        calls.append((observed_at, kwargs["deadline"], kwargs["preview_context"]))
+        selected = codes
+        source_time = close
+        if len(calls) == 1:
+            if first_response == "failed":
+                raise OSError("fixture supplier failure")
+            if first_response == "empty":
+                return ()
+            if first_response == "partial":
+                selected = codes[:1]
+            if first_response == "invalid_close":
+                source_time = close - timedelta(minutes=1)
+        elif first_response == "partial":
+            selected = codes[1:]
+        return tuple(
+            replace(application_feature_factory(code, observed_at).quote, source_time=source_time)
+            for code in selected
+        )
+
+    monkeypatch.setattr("trader.bootstrap._utc_now", lambda: wall[0])
+    monkeypatch.setattr("trader.bootstrap.LoadScoringProfile", missing_model)
+    monkeypatch.setattr("trader.bootstrap.PublishedReferences.initialize", lambda self: None)
+    monkeypatch.setattr("trader.bootstrap.ChinaTradingCalendar.open_dates", lambda self: (MARKET_DATE,))
+    monkeypatch.setattr("trader.bootstrap.MarketDataGateway.fetch_long_quotes", quotes)
+    system = BuildProfiledSystem(_config(tmp_path), profiles=("v1", "v5"))
+    primary = system.systems[0]
+    primary.scheduler._dependencies = replace(primary.scheduler._dependencies, monotonic=lambda: monotonic[0])
+    primary.run_scope.initialize()
+    try:
+        primary.long_runtime.start()
+        primary.scheduler.start()
+        primary.scheduler.submit_due()
+        assert primary.scheduler.wait_idle(3.0)
+        assert primary.long_runtime.wait_idle(3.0)
+        client = system.app.test_client()
+        payload = client.get("/api/freezes/long/current").get_json()
+        assert payload["coverage"]["available_quote_count"] == (1 if first_response == "partial" else 0)
+
+        # Wall-clock movement cannot consume the monotonic retry interval.
+        wall[0] += timedelta(seconds=30)
+        primary.scheduler.submit_due()
+        assert primary.long_runtime.wait_idle(3.0)
+        assert len(calls) == 1
+        monotonic[0] += 10.0
+        primary.scheduler.submit_due()
+        assert primary.long_runtime.wait_idle(3.0)
+        payload = client.get("/api/freezes/long/current").get_json()
+        assert payload["coverage"]["available_quote_count"] == len(primary.long_runtime.codes)
+        assert all(item["quote"]["source_time"] == close.isoformat() for item in payload["items"])
+        if first_response == "partial":
+            assert payload["items"][0]["quote"]["status"] == "retained"
+        for _ in range(3):
+            wall[0] += timedelta(seconds=10)
+            monotonic[0] += 10.0
+            primary.scheduler.submit_due()
+            assert primary.long_runtime.wait_idle(3.0)
+        assert len(calls) == 2
+        assert all((deadline - observed).total_seconds() == 3.0 for observed, deadline, _ in calls)
+        assert all(context == primary.run_scope.preview for _, _, context in calls)
+        assert primary.scheduler.status().preview_error == "production_model_missing"
+        assert primary.tomorrow_index.snapshot(Strategy.LONG).formal is None
+        assert not (tmp_path / "data/recommendation").exists()
     finally:
         assert primary.scheduler.stop(ShutdownDeadline.start(3.0)).completed
         assert primary.long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(3.0)).completed

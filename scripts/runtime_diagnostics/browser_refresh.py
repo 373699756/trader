@@ -76,6 +76,7 @@ from trader.recommendation.domain.publication.freeze_identity import (  # noqa: 
     ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
+from trader.recommendation.domain.publication.preview import PreviewContext  # noqa: E402
 from trader.training.application.research_audit import CommittedResearchAudit  # noqa: E402
 from trader.web import CreateApp  # noqa: E402
 
@@ -104,6 +105,9 @@ class _TradingCalendar:
         del day
         return True
 
+    def session_distance(self, start: str, end: str) -> int:
+        return (date.fromisoformat(end) - date.fromisoformat(start)).days
+
 
 class _History:
     def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
@@ -119,6 +123,9 @@ class _RecordingData:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._calls: list[dict[str, object]] = []
+
+    def prepare_preview(self, context: PreviewContext) -> None:
+        del context
 
     def refresh(self, request: CycleRequest) -> None:
         strategy = request.strategy
@@ -803,7 +810,9 @@ def _live_browser(url: str) -> dict[str, object]:
         if not isinstance(profiles, list) or not profiles or any(p not in ("v1", "v2", "v3", "v5") for p in profiles):
             raise RuntimeError("live browser has no valid enabled profiles")
         results = []
-        for profile, strategy in ((p, s) for p in profiles for s in ("tomorrow", "d25")):
+        views = [(p, s) for p in profiles for s in ("tomorrow", "d25")]
+        views.append((profiles[0], "long"))
+        for profile, strategy in views:
             chrome.execute(f"document.querySelector('.profile-tab[data-profile={profile}]').click(); return true;")
             chrome.execute(f"document.querySelector('.strategy-tab[data-strategy={strategy}]').click(); return true;")
             result: object = None
@@ -815,17 +824,54 @@ def _live_browser(url: str) -> dict[str, object]:
                   const response = await fetch(`/api/freezes/${strategy}/current?profile=${profile}`);
                   if (!response.ok) return {matched: false};
                   const current = await response.json();
-                  const codes = Array.from(document.querySelectorAll('#tableBody tr[data-code]'), r => r.dataset.code);
+                  const rows = Array.from(document.querySelectorAll('#tableBody tr[data-code]'));
+                  let codes = rows.map(r => r.dataset.code);
                   const expected = (current.items || []).map(item => item.code);
+                  let visitedGroups = 0;
+                  let longQuotes = true;
+                  if (strategy === 'long') {
+                    longQuotes = expected.length > 0 && current.coverage?.available_quote_count === expected.length;
+                    const byCode = new Map((current.items || []).map(item => [item.code, item]));
+                    const visited = new Set();
+                    for (const scope of document.querySelectorAll('#longScopeTabs button[data-scope]')) {
+                      scope.click();
+                      const groups = window.TraderLongGroups.normalized(
+                        {strategy: 'long', long_groups: window.TraderLongWatchlistData.groups}, scope.dataset.scope);
+                      for (const group of groups) {
+                        const button = Array.from(document.querySelectorAll('#longIndustryTabs button[data-group]'))
+                          .find(item => item.dataset.group === group.key);
+                        if (!button) { longQuotes = false; continue; }
+                        button.click();
+                        visitedGroups += 1;
+                        const visible = Array.from(document.querySelectorAll('#tableBody tr[data-code]'));
+                        longQuotes = longQuotes && JSON.stringify(visible.map(row => row.dataset.code).sort())
+                          === JSON.stringify([...group.codes].sort());
+                        for (const row of visible) {
+                          const price = byCode.get(row.dataset.code)?.quote?.price;
+                          longQuotes = longQuotes && typeof price === 'number'
+                            && row.children[2]?.textContent.trim() === price.toLocaleString('zh-CN',
+                              {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                          visited.add(row.dataset.code);
+                        }
+                      }
+                    }
+                    codes = Array.from(visited);
+                  }
+                  const sameCodes = strategy === 'long'
+                    ? JSON.stringify([...codes].sort()) === JSON.stringify([...expected].sort())
+                    : JSON.stringify(codes) === JSON.stringify(expected);
                   return {profile, strategy, status: current.status, rows: codes.length,
-                    expected_rows: expected.length, matched: JSON.stringify(codes) === JSON.stringify(expected),
+                    expected_rows: expected.length, matched: sameCodes,
+                    quotes_complete: longQuotes,
+                    visited_groups: visitedGroups,
+                    available_quote_count: current.coverage?.available_quote_count ?? null,
                     publication: document.querySelector('#publicationStatus')?.textContent,
                     stream: document.querySelector('#streamStatus')?.textContent,
                     browser_errors: window.TraderDashboardDiagnostics.snapshot().browserErrors.length};
                 })();""")
                 if (isinstance(result, dict) and result.get("matched") and result.get("stream") == "实时"
                         and result.get("profile") == profile and result.get("strategy") == strategy
-                        and result.get("status") == "ready"):
+                        and result.get("status") == "ready" and result.get("quotes_complete")):
                     break
                 time.sleep(0.1)
             if isinstance(result, dict):
@@ -833,7 +879,7 @@ def _live_browser(url: str) -> dict[str, object]:
             results.append(result)
         passed = all(isinstance(row, dict) and row.get("matched") and row.get("browser_errors") == 0
                      and row.get("stream") == "实时" and row.get("requested_view_matched")
-                     and row.get("status") == "ready" for row in results)
+                     and row.get("status") == "ready" and row.get("quotes_complete") for row in results)
         return {"schema_version": "web-live-browser", "passed": passed,
                 "summary": {"fixture": False, "profiles": profiles, "strategies": results}}
     finally:
