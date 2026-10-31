@@ -143,6 +143,11 @@ def _serialize_long_item(item: FreezeItemView) -> dict[str, object]:
         "industry": item.industry,
         "group": item.group,
         "observation_reason": item.action_reason,
+        "selection_anchor": {
+            "date": item.selection_date.isoformat() if item.selection_date is not None else None,
+            "price": item.selection_price,
+        },
+        "selection_to_now_pct": item.selection_to_now_pct,
         "quote": {
             "price": item.price,
             "pct_change": item.pct_change,

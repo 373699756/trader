@@ -139,6 +139,9 @@ class FreezeItemView:
     anchor_daily_return_pct: float | None = None
     anchor_to_now_pct: float | None = None
     classified_industry: str | None = None
+    selection_date: date | None = None
+    selection_price: float | None = None
+    selection_to_now_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -582,6 +585,9 @@ def _long_item(item: LongProjectionItem) -> FreezeItemView:
         item.source or None,
         item.source_time,
         item.quote_status,
+        selection_date=item.selection_date,
+        selection_price=item.selection_price,
+        selection_to_now_pct=item.selection_to_now_pct,
     )
 
 

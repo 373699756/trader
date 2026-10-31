@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from math import isfinite
 from pathlib import Path
 
@@ -298,6 +299,8 @@ class LongWatchItem:
     name: str
     industry: str
     target_price: float | None
+    selected_on: date
+    selection_price: float
 
 
 @dataclass(frozen=True)

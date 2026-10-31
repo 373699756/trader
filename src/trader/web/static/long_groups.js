@@ -49,6 +49,9 @@
         source: "long_watchlist",
         source_time: null,
         quote_status: "missing",
+        selection_date: item.selected_on || null,
+        selection_price: item.selection_price,
+        selection_to_now_pct: null,
         action: "observe",
         action_reason: "fixed_long_watchlist",
         setup_type: "none",
@@ -61,6 +64,8 @@
         action_reason: live.action_reason || "fixed_long_watchlist",
         name: live.name || item.name,
         industry: live.industry || item.industry,
+        selection_date: live.selection_date || item.selected_on || null,
+        selection_price: live.selection_price || item.selection_price,
       };
     });
     return {

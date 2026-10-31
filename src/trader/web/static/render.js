@@ -298,11 +298,12 @@
         '<col style="width:220px">',
         '<col style="width:110px">',
         '<col style="width:110px">',
+        '<col style="width:110px">',
         '<col style="width:170px">',
         '<col style="width:130px">',
         '<col style="width:168px">',
       ].join(""),
-      head: "<tr><th>类别</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
+      head: "<tr><th>类别</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>自加选后</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
     };
   }
 
@@ -317,7 +318,7 @@
         '<col style="width:118px">',
         '<col style="width:150px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>状态</th><th>股票</th><th>锚点价格</th><th>锚点涨跌</th><th>今日涨跌</th><th>锚点至今</th></tr>",
+      head: "<tr><th>排名</th><th>状态</th><th>股票</th><th>锚点价格</th><th>锚点涨跌</th><th>今日涨跌</th><th>自加选后</th></tr>",
     };
   }
 
@@ -385,12 +386,14 @@
 
   function longRow(item) {
     const change = pct(item.pct_change);
+    const selectionChange = pct(item.selection_to_now_pct);
     const rowClass = item.long_section_divider ? "has-long-section-divider" : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${stock(item)}</td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
+      <td class="${selectionChange.className}">${selectionChange.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
       <td>${compact(item.market_cap)}</td>
       <td>${hasValue(item.source_time) ? formatDateTime(item.source_time) : "-"}<span class="stock-code">${escapeHtml(sourceLabel(item.source))}</span></td>
@@ -422,7 +425,7 @@
 
   function tableColumnCount(snapshot) {
     if (snapshot && snapshot.historical === true) return 7;
-    if (snapshot && snapshot.strategy === "long") return 7;
+    if (snapshot && snapshot.strategy === "long") return 8;
     return 11;
   }
 
@@ -472,7 +475,15 @@
         ["锚点当日涨跌", valuePct(item.anchor_daily_return_pct)],
         ["当前价", valueNumber(item.price, 2)],
         ["今日涨跌", valuePct(item.pct_change)],
-        ["锚点至今", valuePct(item.anchor_to_now_pct)],
+        ["自加选后", valuePct(item.anchor_to_now_pct)],
+      ]
+      : long
+      ? [
+        ["最新价", valueNumber(item.price, 2)],
+        ["今日涨跌", valuePct(item.pct_change)],
+        ["自加选后", valuePct(item.selection_to_now_pct)],
+        ["加入日期", item.selection_date || null],
+        ["加入锚点价", valueNumber(item.selection_price, 2)],
       ]
       : [
         ["最新价", valueNumber(item.price, 2)],
@@ -487,6 +498,8 @@
     );
     const requiredMarket = historical
       ? [item.anchor_price, item.anchor_daily_return_pct, item.price, item.pct_change, item.anchor_to_now_pct]
+      : long
+      ? [item.price, item.pct_change, item.selection_price, item.selection_to_now_pct]
       : [item.price, item.pct_change, item.turnover_rate, item.amount, item.market_cap];
     const marketNotes = [];
     if (requiredMarket.some((value) => !hasValue(value))) marketNotes.push(note("部分核心行情暂缺", "warn"));

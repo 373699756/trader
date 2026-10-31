@@ -291,6 +291,8 @@ def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_field
     assert payload["coverage"] == {"item_count": 1, "available_quote_count": 1}
     assert set(payload).isdisjoint({"frozen", "frozen_at", "freeze_kind", "top_scores", "selection_diagnostics"})
     assert set(payload["items"][0]).isdisjoint({"rank", "selection_rank", "scores", "score_status"})
+    assert payload["items"][0]["selection_anchor"] == {"date": NOW.date().isoformat(), "price": 10.0}
+    assert payload["items"][0]["selection_to_now_pct"] == 23.0
     assert dates.get_json() == {
         "schema_version": "freeze_dates",
         "strategy": "long",
@@ -650,6 +652,9 @@ def _app():
                 source="fixture",
                 source_time=NOW,
                 quote_status="live",
+                selection_date=NOW.date(),
+                selection_price=10.0,
+                selection_to_now_pct=23.0,
             ),
         ),
     )

@@ -265,6 +265,8 @@ def test_configuration_contract_is_valid() -> None:
     assert strategy.long_research.announcement_lookback_days == 180
     assert watchlist.watchlist_version.startswith("watchlist_sha256_")
     assert watchlist.items and watchlist.groups
+    assert {item.selected_on.isoformat() for item in watchlist.items} == {"2026-10-31"}
+    assert all(item.selection_price > 0 for item in watchlist.items)
     assert {group.category for group in watchlist.groups} == {
         "chokepoint",
         "future_growth",
@@ -363,7 +365,14 @@ def _long_watchlist_config(groups: list[tuple[str, list[str]]]) -> dict[str, obj
     codes = tuple(code for _category, group_codes in groups for code in group_codes)
     return {
         "items": [
-            {"code": code, "name": f"测试{code}", "industry": "测试行业", "target_price": None}
+            {
+                "code": code,
+                "name": f"测试{code}",
+                "industry": "测试行业",
+                "target_price": None,
+                "selected_on": "2026-10-31",
+                "selection_price": 10.0,
+            }
             for code in dict.fromkeys(codes)
         ],
         "groups": [
@@ -389,6 +398,25 @@ def test_long_watchlist_group_limits_are_enforced(tmp_path) -> None:
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="cannot contain more than 8 codes"):
+        LoadLongWatchlist(changed_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (("selected_on", "not-a-date", "selected_on"), ("selection_price", 0, "selection_price")),
+)
+def test_long_watchlist_rejects_invalid_selection_anchor(tmp_path, field, value, message) -> None:
+    raw = _long_watchlist_config(
+        [
+            ("low_price_potential", ["000001"]),
+            ("low_price_potential", ["000002"]),
+        ]
+    )
+    raw["items"][0][field] = value
+    changed_path = tmp_path / "long_watchlist.json"
+    changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match=message):
         LoadLongWatchlist(changed_path)
 
 

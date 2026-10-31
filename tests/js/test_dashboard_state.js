@@ -52,7 +52,10 @@ const sandbox = {
     addEventListener() {},
     TraderLongWatchlistData: {
       watchlist_version: "test-watchlist",
-      items: [{ code: "600001", name: "配置名称", industry: "配置行业" }],
+      items: [{
+        code: "600001", name: "配置名称", industry: "配置行业",
+        selected_on: "2026-10-31", selection_price: 10,
+      }],
       groups: [{ name: "半导体设备", category: "chokepoint", codes: ["600001"] }],
     },
   },
@@ -1457,9 +1460,11 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(
   state.longTable().head,
-  "<tr><th>类别</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
+  "<tr><th>类别</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>自加选后</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
 );
-assert.strictEqual(state.tableColumnCount({ strategy: "long", historical: false }), 7);
+assert.strictEqual(state.tableColumnCount({ strategy: "long", historical: false }), 8);
+assert.match(sandbox.window.TraderRender.historyTable().head, /<th>自加选后<\/th>/);
+assert.doesNotMatch(sandbox.window.TraderRender.historyTable().head, /锚点至今/);
 const getItem = {
   rank: 2, code: "600001", name: "证据股票", board: "main", industry: "测试行业",
   action: "executable", action_reason: "score_threshold_met", selected: true,
@@ -1641,11 +1646,16 @@ const longDrawer = state.drawer(
     ...scoredItem,
     action: "observe",
     action_reason: "fixed_long_watchlist",
+    selection_date: "2026-10-31",
+    selection_price: 10,
+    selection_to_now_pct: 23,
   },
   { strategy: "long", historical: false, degraded_reasons: [] },
 );
 assert.match(longDrawer, /观察结论/);
 assert.match(longDrawer, /核心行情/);
+assert.match(longDrawer, /自加选后/);
+assert.match(longDrawer, /2026-10-31/);
 assert.doesNotMatch(longDrawer, /最终评分/);
 assert.doesNotMatch(longDrawer, /评分与风险/);
 assert.strictEqual(state.sourceLabel("unavailable"), "行情暂不可用");
@@ -1660,6 +1670,7 @@ assert.match(
       industry: "半导体设备",
       price: 182.4,
       pct_change: 1.23,
+      selection_to_now_pct: 23,
       amount: 900000000,
       turnover_rate: 2.5,
       market_cap: 120000000000,
@@ -1667,7 +1678,7 @@ assert.match(
       source_time: "2026-07-24T14:50:00+08:00",
     },
   ], { strategy: "long" }),
-  /腾讯行情 · 新浪行情/,
+  /\+23\.00%[\s\S]*腾讯行情 · 新浪行情/,
 );
 assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("chokepoint"), "卡脖子行业");
 assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("future_growth"), "高成长赛道");
@@ -1680,6 +1691,8 @@ const liveLongPayload = state.longGroupDisplayPayload({
 assert.strictEqual(liveLongPayload.items[0].name, "实时名称");
 assert.strictEqual(liveLongPayload.items[0].industry, "配置行业");
 assert.strictEqual(liveLongPayload.items[0].market_cap, 5000000000);
+assert.strictEqual(liveLongPayload.items[0].selection_date, "2026-10-31");
+assert.strictEqual(liveLongPayload.items[0].selection_price, 10);
 sandbox.window.TraderLongWatchlistData.items = [];
 sandbox.window.TraderLongWatchlistData.groups = [];
 const emptyLongPayload = state.longGroupDisplayPayload({

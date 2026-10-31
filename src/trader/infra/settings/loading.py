@@ -7,6 +7,7 @@ import json
 import math
 import os
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 
 from trader.infra.settings.company import ParseCompanyScoringPolicy
@@ -274,12 +275,23 @@ def LoadLongWatchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:
             or target <= 0
         ):
             raise ConfigurationError(f"invalid target_price for {code}")
+        selected_on = _long_selection_date(item, code)
+        selection_price = item.get("selection_price")
+        if (
+            not isinstance(selection_price, (int, float))
+            or isinstance(selection_price, bool)
+            or not math.isfinite(float(selection_price))
+            or selection_price <= 0
+        ):
+            raise ConfigurationError(f"invalid selection_price for {code}")
         items.append(
             LongWatchItem(
                 code=code,
                 name=_text(item, "name"),
                 industry=_text(item, "industry"),
                 target_price=float(target) if target is not None else None,
+                selected_on=selected_on,
+                selection_price=float(selection_price),
             )
         )
     groups = _parse_long_watch_groups(raw, codes)
@@ -288,6 +300,14 @@ def LoadLongWatchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:
         items=tuple(items),
         groups=groups,
     )
+
+
+def _long_selection_date(item: Mapping[str, object], code: str) -> date:
+    selected_on = _text(item, "selected_on")
+    try:
+        return date.fromisoformat(selected_on)
+    except ValueError as exc:
+        raise ConfigurationError(f"invalid selected_on for {code}") from exc
 
 
 def _configuration_identity(label: str, raw: Mapping[str, object]) -> str:

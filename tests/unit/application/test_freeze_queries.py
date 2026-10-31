@@ -72,6 +72,9 @@ def test_queries_expose_one_shape_for_scored_and_long_current_views() -> None:
                 source="fixture",
                 source_time=NOW,
                 quote_status="live",
+                selection_date=NOW.date(),
+                selection_price=10.0,
+                selection_to_now_pct=23.0,
             ),
         ),
     )
@@ -101,6 +104,9 @@ def test_queries_expose_one_shape_for_scored_and_long_current_views() -> None:
     assert long_view.score_status == "not_applicable"
     assert long_view.items[0].name == "样例"
     assert long_view.items[0].price == 12.3
+    assert long_view.items[0].selection_date == NOW.date()
+    assert long_view.items[0].selection_price == 10.0
+    assert long_view.items[0].selection_to_now_pct == 23.0
 
 
 def test_current_uses_separate_classified_industry_without_changing_frozen_history() -> None:

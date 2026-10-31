@@ -338,6 +338,9 @@ class LongProjectionItem:
     source: str = ""
     source_time: datetime | None = None
     quote_status: Literal["live", "retained", "missing"] = "missing"
+    selection_date: date | None = None
+    selection_price: float | None = None
+    selection_to_now_pct: float | None = None
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -350,6 +353,12 @@ class LongProjectionItem:
         _validate_optional_market_value(self.amount, "long amount", non_negative=True)
         _validate_optional_market_value(self.turnover_rate, "long turnover_rate", non_negative=True)
         _validate_optional_market_value(self.market_cap, "long market_cap", non_negative=True)
+        _validate_optional_market_value(self.selection_price, "long selection_price", positive=True)
+        _validate_optional_market_value(self.selection_to_now_pct, "long selection_to_now_pct")
+        if (self.selection_date is None) != (self.selection_price is None):
+            raise ValueError("long selection anchor requires both date and price")
+        if self.selection_to_now_pct is not None and self.selection_price is None:
+            raise ValueError("long selection return requires an anchor")
         if self.quote_status == "missing":
             if (
                 any(

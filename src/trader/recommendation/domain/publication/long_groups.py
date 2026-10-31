@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -10,6 +11,8 @@ class LongWatchItemDefinition:
     code: str
     name: str
     industry: str
+    selected_on: date
+    selection_price: float
 
 
 @dataclass(frozen=True)

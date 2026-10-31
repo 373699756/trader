@@ -73,7 +73,10 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
 
 
 def _long_item_definitions(watchlist: LongWatchlist) -> tuple[LongWatchItemDefinition, ...]:
-    return tuple(LongWatchItemDefinition(item.code, item.name, item.industry) for item in watchlist.items)
+    return tuple(
+        LongWatchItemDefinition(item.code, item.name, item.industry, item.selected_on, item.selection_price)
+        for item in watchlist.items
+    )
 
 
 def _long_group_definitions(watchlist: LongWatchlist) -> tuple[LongGroupDefinition, ...]:

@@ -263,6 +263,8 @@ class LongRuntime:
                         f"missing:{self._watchlist_version}",
                         name=item.name,
                         industry=item.industry,
+                        selection_date=item.selected_on,
+                        selection_price=item.selection_price,
                     )
                 )
                 continue
@@ -271,7 +273,15 @@ class LongRuntime:
             else:
                 retained_count += 1
             available_status: Literal["live", "retained"] = "live" if quote_status == "live" else "retained"
-            projection_items.append(_projection_item(item, self._groups[item.code], quote, available_status))
+            projection_items.append(
+                _projection_item(
+                    item,
+                    self._groups[item.code],
+                    quote,
+                    available_status,
+                    trade_date,
+                )
+            )
         return tuple(projection_items), retained, live_count, retained_count, missing_count
 
 
@@ -355,14 +365,18 @@ def _projection_item(
     group: str,
     quote: MarketQuote,
     quote_status: Literal["live", "retained"],
+    projection_date: date,
 ) -> LongProjectionItem:
+    price = quote.price
+    if price is None or price <= 0.0:
+        raise ValueError("long projection quote requires a positive price")
     return LongProjectionItem(
         item.code,
         group,
         quote.data_version,
         name=item.name,
         industry=item.industry,
-        price=quote.price,
+        price=price,
         pct_change=quote.pct_change,
         amount=quote.amount,
         turnover_rate=quote.turnover_rate,
@@ -370,6 +384,11 @@ def _projection_item(
         source=quote.source,
         source_time=quote.source_time,
         quote_status=quote_status,
+        selection_date=item.selected_on,
+        selection_price=item.selection_price,
+        selection_to_now_pct=(
+            (price / item.selection_price - 1.0) * 100.0 if projection_date >= item.selected_on else None
+        ),
     )
 
 

@@ -55,9 +55,9 @@ def _runtime(
         config_version="runtime-current+strategy-fixture",
         watchlist_version="long-watchlist-fixture",
         items=(
-            LongWatchItemDefinition("600001", "甲公司", "设备"),
-            LongWatchItemDefinition("600002", "乙公司", "材料"),
-            LongWatchItemDefinition("600003", "丙公司", "软件"),
+            LongWatchItemDefinition("600001", "甲公司", "设备", NOW.date(), 10.0),
+            LongWatchItemDefinition("600002", "乙公司", "材料", NOW.date(), 11.0),
+            LongWatchItemDefinition("600003", "丙公司", "软件", NOW.date(), 12.0),
         ),
         groups=(
             LongGroupDefinition("设备组", "chokepoint", ("600001", "600002")),
@@ -132,6 +132,9 @@ def test_long_publishes_full_fixed_order_without_scoring(application_feature_fac
         assert tuple(item.code for item in current.items) == ("600001", "600002", "600003")
         assert all(item.quote_status == "live" for item in current.items)
         assert all(item.price == 12.0 for item in current.items)
+        assert tuple(item.selection_date for item in current.items) == (NOW.date(),) * 3
+        assert current.items[0].selection_price == 10.0
+        assert current.items[0].selection_to_now_pct == pytest.approx(20.0)
         assert len({item.group for item in current.items}) == 2
         assert index.snapshot(Strategy.LONG).formal is None
         assert runtime.status().score_status == "not_applicable"
@@ -223,7 +226,7 @@ def test_empty_long_watchlist_keeps_current_unready_without_fetching() -> None:
 
 def test_long_rejects_duplicate_or_unassigned_group_membership() -> None:
     quotes = _Quotes([()])
-    item = LongWatchItemDefinition("600001", "甲公司", "设备")
+    item = LongWatchItemDefinition("600001", "甲公司", "设备", NOW.date(), 10.0)
 
     for groups in (
         (),
