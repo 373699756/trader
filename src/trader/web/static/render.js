@@ -361,11 +361,9 @@
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const review = reviewStatus(item);
     const presentation = scorePresentation(snapshot);
-    const primaryLabel = presentation.learnedRank ? "本地评分" : presentation.finalLabel;
-    const primaryScore = presentation.learnedRank ? scores.local_score : scores.final_score;
-    const modelRank = presentation.learnedRank
-      ? `<span aria-label="模型排名百分位" title="同轮模型排名的相对位置，不是上涨概率；动作仍由本地分和风险条件决定">模型排名百分位 ${number(scores.final_score, 2)}</span>`
-      : "";
+    const primaryScore = presentation.learnedRank
+      ? `<span aria-label="本地评分 / 模型排名百分位" title="模型分是同轮排名百分位，不是上涨概率；动作仍由本地分和风险条件决定"><b>本地/模型：${number(scores.local_score, 2)}/${number(scores.final_score, 2)}</b></span>`
+      : `<span aria-label="${presentation.finalLabel}"><b>${presentation.finalLabel} ${number(scores.final_score, 2)}</b></span>`;
     const ledger = scores.ledger;
     const scoreDetail = ledger
       ? `基础 ${number(ledger.weighted_base_score, 2)} · +${number(ledger.applied_bonus, 2)} · −${number(ledger.applied_risk_penalty, 2)}`
@@ -380,7 +378,7 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span aria-label="${primaryLabel}"><b>${primaryLabel} ${number(primaryScore, 2)}</b></span><span aria-label="加减分明细">${scoreDetail}</span>${modelRank}</div></td>
+      <td><div class="score-stack">${primaryScore}<span aria-label="加减分明细">${scoreDetail}</span></div></td>
       <td class="reason-cell"><div class="reason-stack"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span><span class="review-status" aria-label="风险复核">风险复核：${review}</span></div></td>
     </tr>`;
   }

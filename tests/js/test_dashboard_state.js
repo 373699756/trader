@@ -220,8 +220,8 @@ const rankItem = {
 };
 assert.match(sandbox.window.TraderRender.tableDefinition(rankSnapshot).head, /本地评分 \/ 模型排名/);
 const rankRow = sandbox.window.TraderRender.tableRows([rankItem], rankSnapshot);
-assert.match(rankRow, /aria-label="本地评分"><b>本地评分 65\.00<\/b>/);
-assert.match(rankRow, /aria-label="模型排名百分位"[^>]*>模型排名百分位 99\.50/);
+assert.match(rankRow, /aria-label="本地评分 \/ 模型排名百分位"[^>]*><b>本地\/模型：65\.00\/99\.50<\/b>/);
+assert.strictEqual((rankRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0].match(/<span\b/g) || []).length, 2);
 assert.doesNotMatch(rankRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0], /风险复核/);
 assert.match(rankRow, /class="reason-cell">[\s\S]*风险复核：已复核/);
 const rankDrawer = state.drawer(rankItem, rankSnapshot);
@@ -272,9 +272,8 @@ assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).sha
 assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).learnedRank, true);
 assert.match(sandbox.window.TraderRender.tableDefinition(v5Snapshot).head, /本地评分 \/ 模型排名/);
 const v5Row = sandbox.window.TraderRender.tableRows([v5Item], v5Snapshot);
-assert.match(v5Row, /<b>本地评分 80\.00<\/b>/);
-assert.match(v5Row, /模型排名百分位 95\.00/);
-assert.doesNotMatch(v5Row, /<b>[^<]*95\.00/);
+assert.match(v5Row, /<b>本地\/模型：80\.00\/95\.00<\/b>/);
+assert.strictEqual((v5Row.match(/class="score-stack"[\s\S]*?<\/div>/)[0].match(/<span\b/g) || []).length, 2);
 const v5Drawer = state.drawer(v5Item, v5Snapshot);
 assert.match(v5Drawer, /模型排序分/);
 assert(!v5Drawer.includes("Shadow 仅供观察"));
