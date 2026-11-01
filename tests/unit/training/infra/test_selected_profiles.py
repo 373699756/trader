@@ -5,11 +5,14 @@ from tests.helpers.configuration import SqlitePolicyFixture
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
+
+import pytest
 
 from tests.unit.training.infra.profile.v1.test_learned_rank_training import _settings
 from tests.unit.training.infra.profile.v5.test_v5_training import _history
 from trader.infra.settings import LoadRuntimeSettings
-from trader.training.application.selected_training import TrainingLocations
+from trader.training.application.selected_training import SelectedTrainingTask, TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.selected_training import SelectedTrainingRequest, TrainSelectedProfiles
@@ -22,6 +25,71 @@ ROOT = Path(__file__).resolve().parents[4]
 class _Progress:
     def publish(self, _update):
         pass
+
+
+@pytest.mark.parametrize("terminal", ("worker_failure", "source_failure", "cancelled", "success"))
+def test_shared_reader_closes_nested_streams_even_when_callers_retain_them(tmp_path, monkeypatch, terminal):
+    from trader.training.infra import selected_training
+
+    history = _history(tmp_path / "history")
+    original_read = history.iter_training_rows
+    original_align = selected_training.AlignTrainingRows
+    retained, worker_rows = [], []
+    cancelled, source_closed = Event(), Event()
+
+    def source(dates):
+        from contextlib import closing
+
+        try:
+            with closing(original_read(dates)) as rows:
+                retained.append(rows)
+                for index, row in enumerate(rows):
+                    if index == 300:
+                        if terminal == "source_failure":
+                            raise OSError("fixture_source_failure")
+                        if terminal == "cancelled":
+                            cancelled.set()
+                    yield row
+        finally:
+            source_closed.set()
+
+    def align(*args):
+        rows = original_align(*args)
+        retained.append(rows)
+        return rows
+
+    def fit(rows):
+        worker_rows.append(rows)
+        if terminal == "worker_failure":
+            next(rows)
+            raise ValueError("fixture_worker_failure")
+        return len(tuple(rows))
+
+    monkeypatch.setattr(history, "iter_training_rows", source)
+    monkeypatch.setattr(selected_training, "AlignTrainingRows", align)
+    monkeypatch.setattr(selected_training.SQLiteHistoryTrainingInputSnapshot, "open", lambda *_a, **_kw: history)
+    monkeypatch.setattr(selected_training._TrainingTaskFactory, "prepare", lambda _self, profile, _progress:
+                        SelectedTrainingTask(profile, frozenset(history.snapshot.calendar.open_dates), fit))
+    request = SelectedTrainingRequest(
+        LoadRuntimeSettings(ROOT / "config/runtime.json"),
+        ("v1", "v5"),
+        (_Progress(), _Progress()),
+        cancelled.is_set,
+        TrainingMemoryBudget(1024),
+        TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples"),
+        cpu_budget=TrainingCpuBudget(2),
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        if terminal in ("source_failure", "cancelled"):
+            with pytest.raises(OSError if terminal == "source_failure" else InterruptedError):
+                TrainSelectedProfiles(request, executor, sqlite_policy=SqlitePolicyFixture())
+        else:
+            result = TrainSelectedProfiles(request, executor, sqlite_policy=SqlitePolicyFixture())
+            assert all(item.failure == ("fixture_worker_failure" if terminal == "worker_failure" else None)
+                       for item in result.outcomes)
+    assert source_closed.is_set()
+    assert len(retained) == 2 and len(worker_rows) == 2
+    assert all(rows.gi_frame is None for rows in (*retained, *worker_rows))
 
 
 def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path, monkeypatch):

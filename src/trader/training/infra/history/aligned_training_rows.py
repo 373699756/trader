@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Generator, Iterable, Sequence
 from dataclasses import replace
 from datetime import date
 from itertools import groupby
@@ -28,7 +28,7 @@ def AlignTrainingRows(
     rows: Iterable[HistoryTrainingRow],
     calendar: Sequence[date],
     listing_intervals: tuple[tuple[str, date, date | None], ...] = (),
-) -> Iterator[HistoryTrainingRow]:
+) -> Generator[HistoryTrainingRow, None, None]:
     """Keep absent sessions in each known stock's timeline without future filling.
 
     A wholly absent source day is a source gap, not evidence of a market-wide

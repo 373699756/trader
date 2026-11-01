@@ -6,9 +6,9 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 from dataclasses import field
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Executor
-from contextlib import ExitStack
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
 from functools import partial
@@ -102,17 +102,20 @@ def TrainSelectedProfiles(
         )
         physical_rows = 0
 
-        def source_rows(dates: frozenset[date]) -> Iterator[HistoryTrainingRow]:
+        def source_rows(dates: frozenset[date]) -> Generator[HistoryTrainingRow, None, None]:
             nonlocal physical_rows
-            for row in history.iter_training_rows(dates):
-                physical_rows += 1
-                yield row
+            with closing(history.iter_training_rows(dates)) as rows:
+                for row in rows:
+                    physical_rows += 1
+                    yield row
 
-        def read_rows(dates: frozenset[date]) -> Iterator[HistoryTrainingRow]:
+        @contextmanager
+        def read_rows(dates: frozenset[date]) -> Iterator[Iterator[HistoryTrainingRow]]:
             readable = AlignmentReadDates(history.snapshot.calendar.open_dates, dates)
-            yield from AlignTrainingRows(
-                source_rows(readable), tuple(sorted(readable)), history.snapshot.listing_intervals
-            )
+            with closing(source_rows(readable)) as source, closing(AlignTrainingRows(
+                source, tuple(sorted(readable)), history.snapshot.listing_intervals
+            )) as rows:
+                yield rows
 
         with request.cpu_budget.native_runtime() as controller:
             tasks = tuple(replace(task, execute=partial(

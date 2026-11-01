@@ -1,6 +1,7 @@
 """Shared CPU admission with real worker/native limits and bounded cancellation."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import date
 from itertools import combinations
 from pathlib import Path
@@ -49,7 +50,7 @@ def test_small_job_capacity_keeps_one_stream_and_every_selected_profile_complete
     with ThreadPoolExecutor(max_workers=len(profiles)) as executor:
         result = RunSelectedTrainingTasks(
             tuple(SelectedTrainingTask(profile, frozenset((day,)), fit) for profile in profiles),
-            read, executor, lambda: False,
+            lambda dates: closing(read(dates)), executor, lambda: False,
         )
     assert len(scans) == result.history_scan_passes == 1
     assert all(outcome.result == len(source) for outcome in result.outcomes)

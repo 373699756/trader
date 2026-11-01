@@ -175,6 +175,7 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
         for profile in profiles
     )
     from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing
     from functools import partial
 
     from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask
@@ -191,7 +192,7 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
 
     def read(dates):
         allowed = AlignmentReadDates(source.snapshot.calendar.open_dates, dates)
-        return AlignTrainingRows(source.iter_training_rows(allowed), tuple(sorted(allowed)), ())
+        return closing(AlignTrainingRows(source.iter_training_rows(allowed), tuple(sorted(allowed)), ()))
 
     tasks = tuple(
         SelectedTrainingTask(profile.profile_id, window.readable_dates, partial(build, profile, window, "shared"))

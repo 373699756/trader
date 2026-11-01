@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Executor, Future, wait
+from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import dataclass
 from datetime import date
+from itertools import islice
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event
@@ -48,7 +50,7 @@ class SelectedTrainingRun(Generic[ResultT]):
 
 def RunSelectedTrainingTasks(
     tasks: tuple[SelectedTrainingTask[ResultT], ...],
-    read_rows: Callable[[frozenset[date]], Iterator[HistoryTrainingRow]],
+    read_rows: Callable[[frozenset[date]], AbstractContextManager[Iterator[HistoryTrainingRow]]],
     executor: Executor,
     cancelled: Callable[[], bool],
     *,
@@ -75,7 +77,7 @@ class _TrainingFanout(Generic[ResultT]):
         self.stopped = Event()
         self.futures: list[Future[SelectedTrainingOutcome[ResultT]]] = []
 
-    def _receive(self, queue: Queue[tuple[HistoryTrainingRow, ...] | None]) -> Iterator[HistoryTrainingRow]:
+    def _receive(self, queue: Queue[tuple[HistoryTrainingRow, ...] | None]) -> Generator[HistoryTrainingRow, None, None]:
         while True:
             if self.cancelled() or self.stopped.is_set():
                 raise InterruptedError("selected_training_cancelled")
@@ -92,7 +94,8 @@ class _TrainingFanout(Generic[ResultT]):
         try:
             if self.cancelled():
                 raise InterruptedError("selected_training_cancelled")
-            outcome = SelectedTrainingOutcome(task.profile, task.execute(self._receive(self.queues[index])))
+            with closing(self._receive(self.queues[index])) as rows:
+                outcome = SelectedTrainingOutcome(task.profile, task.execute(rows))
         except InterruptedError:
             outcome = SelectedTrainingOutcome(task.profile, None, "cancelled", True)
         except (OSError, RuntimeError, ValueError, ImportError) as exc:
@@ -120,28 +123,34 @@ class _TrainingFanout(Generic[ResultT]):
 
     def _stream(self, rows: Iterator[HistoryTrainingRow]) -> int:
         scanned = 0
-        batch: list[HistoryTrainingRow] = []
-        for row in rows:
-            scanned += 1
-            batch.append(row)
-            if len(batch) == 256:
-                if self.cancelled():
-                    raise InterruptedError("selected_training_cancelled")
-                self._dispatch(batch)
-                batch.clear()
-        self._dispatch(batch)
+        while True:
+            if self.cancelled():
+                raise InterruptedError("selected_training_cancelled")
+            if not any(
+                task.readable_dates and not future.done()
+                for task, future in zip(self.tasks, self.futures, strict=True)
+            ):
+                break
+            batch = list(islice(rows, 256))
+            scanned += len(batch)
+            if not batch:
+                break
+            self._dispatch(batch)
         for index in range(len(self.tasks)):
             self._send(index, None)
         return scanned
 
     def execute(
-        self, read_rows: Callable[[frozenset[date]], Iterator[HistoryTrainingRow]]
+        self, read_rows: Callable[[frozenset[date]], AbstractContextManager[Iterator[HistoryTrainingRow]]]
     ) -> SelectedTrainingRun[ResultT]:
         dates = frozenset(day for task in self.tasks for day in task.readable_dates)
         try:
+            if self.cancelled():
+                raise InterruptedError("selected_training_cancelled")
             for index in range(len(self.tasks)):
                 self.futures.append(self.executor.submit(self._run, index))
-            scanned = self._stream(read_rows(dates) if dates else iter(()))
+            with read_rows(dates) if dates else nullcontext(iter(())) as rows:
+                scanned = self._stream(rows)
             wait(self.futures)
             outcomes = tuple(future.result() for future in self.futures)
             return SelectedTrainingRun(outcomes, int(bool(dates)), scanned)
@@ -149,3 +158,12 @@ class _TrainingFanout(Generic[ResultT]):
             self.stopped.set()
             wait(self.futures)
             raise
+        finally:
+            # Failed consumers can leave bounded batches behind, including when
+            # an exception traceback retains this fan-out until later reporting.
+            for queue in self.queues:
+                while True:
+                    try:
+                        queue.get_nowait()
+                    except Empty:
+                        break

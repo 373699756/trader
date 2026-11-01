@@ -1,6 +1,7 @@
 """Real worker fan-out, failure isolation, cancellation and memory admission."""
 
-from concurrent.futures import CancelledError, ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor, wait
+from contextlib import closing, contextmanager, nullcontext
 from datetime import date
 from itertools import combinations
 from threading import Barrier, Event
@@ -34,7 +35,7 @@ def test_one_scan_and_all_selected_workers_can_fit_concurrently(profiles):
 
     tasks = tuple(SelectedTrainingTask(profile, frozenset((DAY,)), fit) for profile in profiles)
     with ThreadPoolExecutor(max_workers=len(profiles)) as executor:
-        result = RunSelectedTrainingTasks(tasks, read, executor, lambda: False)
+        result = RunSelectedTrainingTasks(tasks, lambda dates: closing(read(dates)), executor, lambda: False)
     assert len(scans) == result.history_scan_passes == 1
     assert result.history_rows_read == len(source)
     assert tuple(item.profile for item in result.outcomes) == profiles
@@ -62,7 +63,7 @@ def test_cache_hits_read_no_history_and_partial_failure_does_not_block_other_pro
     with ThreadPoolExecutor(max_workers=2) as executor:
         result = RunSelectedTrainingTasks(
             (SelectedTrainingTask("v2", frozenset((DAY,)), fail), SelectedTrainingTask("v5", frozenset((DAY,)), tuple)),
-            lambda _dates: iter(rows),
+            lambda _dates: nullcontext(iter(rows)),
             executor,
             lambda: False,
         )
@@ -121,9 +122,118 @@ def test_cancellation_unblocks_bounded_producer_and_workers():
     with ThreadPoolExecutor(max_workers=2) as executor, pytest.raises(InterruptedError):
         RunSelectedTrainingTasks(
             tuple(SelectedTrainingTask(profile, frozenset((DAY,)), tuple) for profile in ("v2", "v5")),
+            lambda dates: closing(read(dates)),
+            executor,
+            cancelled.is_set,
+        )
+
+
+@pytest.mark.parametrize("terminal", ("failure", "success", "unexpected_error"))
+def test_finished_consumers_stop_scan_and_close_source_before_cached_worker_finishes(terminal, monkeypatch):
+    closed = Event()
+    futures, retained, scanned = [], [], []
+
+    def source():
+        try:
+            for index in range(2000):
+                if index == 256:
+                    done, pending = wait(futures[:2], timeout=5)
+                    assert len(done) == 2 and not pending
+                scanned.append(index)
+                yield HistoryTrainingRow(f"{index:06d}", DAY, "main", "bank", None)
+        finally:
+            closed.set()
+
+    @contextmanager
+    def read(_dates):
+        rows = source()
+        retained.append(rows)
+        with closing(rows):
+            yield rows
+
+    def finish(rows):
+        next(rows)
+        if terminal == "failure":
+            raise ValueError("fixture_failure")
+        if terminal == "unexpected_error":
+            raise TypeError("fixture_programming_error")
+        return 1
+
+    def cached(_rows):
+        assert closed.wait(5), "history remained open while waiting for cached fitting"
+        return 42
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        submit = executor.submit
+
+        def capture(*args, **kwargs):
+            future = submit(*args, **kwargs)
+            futures.append(future)
+            return future
+
+        monkeypatch.setattr(executor, "submit", capture)
+        expected = pytest.raises(TypeError, match="fixture_programming_error") if terminal == "unexpected_error" else nullcontext()
+        with expected:
+            result = RunSelectedTrainingTasks(
+                (SelectedTrainingTask("v1", frozenset((DAY,)), finish),
+                 SelectedTrainingTask("v2", frozenset((DAY,)), finish),
+                 SelectedTrainingTask("v5", frozenset(), cached)),
+                read,
+                executor,
+                lambda: False,
+            )
+    assert 256 <= len(scanned) <= 512
+    assert retained[0].gi_frame is None
+    assert all(future.done() for future in futures)
+    if terminal != "unexpected_error":
+        assert result.history_rows_read == len(scanned)
+        assert result.outcomes[2].result == 42
+        assert [item.failure for item in result.outcomes[:2]] == (
+            ["fixture_failure"] * 2 if terminal == "failure" else [None] * 2
+        )
+
+
+@pytest.mark.parametrize("interruption", ("cancelled", "source_error"))
+def test_interrupted_scan_closes_retained_iterator_and_workers(interruption):
+    cancelled, closed = Event(), Event()
+    retained, outcomes = [], []
+
+    def source():
+        try:
+            for index in range(2000):
+                if index == 300:
+                    if interruption == "source_error":
+                        raise OSError("fixture_read_error")
+                    cancelled.set()
+                yield HistoryTrainingRow(f"{index:06d}", DAY, "main", "bank", None)
+        finally:
+            closed.set()
+
+    def read(_dates):
+        rows = source()
+        retained.append(rows)
+        return closing(rows)
+
+    expected = OSError if interruption == "source_error" else InterruptedError
+    with ThreadPoolExecutor(max_workers=2) as executor, pytest.raises(expected):
+        RunSelectedTrainingTasks(
+            tuple(SelectedTrainingTask(profile, frozenset((DAY,)), tuple) for profile in ("v1", "v5")),
             read,
             executor,
             cancelled.is_set,
+            on_outcome=outcomes.append,
+        )
+    assert closed.is_set() and retained[0].gi_frame is None
+    assert len(outcomes) == 2 and all(outcome.cancelled for outcome in outcomes)
+
+
+def test_cancelled_before_start_never_opens_history_or_schedules_work():
+    with ThreadPoolExecutor(max_workers=1) as executor, pytest.raises(InterruptedError):
+        RunSelectedTrainingTasks(
+            (SelectedTrainingTask("v1", frozenset((DAY,)), lambda _rows: pytest.fail("work started")),),
+            lambda _dates: pytest.fail("history opened"),
+            executor,
+            lambda: True,
         )
 
 

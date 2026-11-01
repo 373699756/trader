@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -188,7 +188,7 @@ class SQLiteHistoryTrainingInputSnapshot:
         self,
         allowed_dates: frozenset[date],
         progress: Callable[[int], None] | None = None,
-    ) -> Iterator[HistoryTrainingRow]:
+    ) -> Generator[HistoryTrainingRow, None, None]:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         if not dates or frozenset(dates) != allowed_dates:
             raise HistoryTrainingInputError("history_training_dates_invalid")
