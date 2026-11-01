@@ -124,12 +124,11 @@ class CompanyEvidenceRequest:
     news_codes: tuple[str, ...] = ()
     stock_names: tuple[tuple[str, str], ...] = ()
     listings: tuple[CompanyListing, ...] = ()
-    document_repair: DocumentRepairMode | None = None
-    risk_history: bool = False
+    supplement: bool = False
 
     @property
     def history_start(self) -> date | None:
-        return min(item.listed_on for item in self.listings) if self.risk_history else None
+        return min(item.listed_on for item in self.listings) if self.supplement else None
 
     @classmethod
     def from_reference(
@@ -140,8 +139,7 @@ class CompanyEvidenceRequest:
         event_policy: CompanyEventPolicy,
         *,
         news_codes: tuple[str, ...] = (),
-        document_repair: DocumentRepairMode | None = None,
-        risk_history: bool = False,
+        supplement: bool = False,
     ) -> CompanyEvidenceRequest:
         population = reference.eligible_universe
         return cls(
@@ -152,15 +150,14 @@ class CompanyEvidenceRequest:
             news_codes=news_codes,
             stock_names=tuple((item.code, item.name) for item in population),
             listings=tuple(CompanyListing(item.code, item.listed_on) for item in population),
-            document_repair=document_repair,
-            risk_history=risk_history,
+            supplement=supplement,
         )
 
     def __post_init__(self) -> None:
         if self.observed_at.utcoffset() is None:
             raise ValueError("company_evidence_request_invalid")
-        if self.risk_history and (not self.listings or len(self.listings) != len(self.codes) or self.document_repair is not None):
-            raise ValueError("company_history_requires_official_listings_and_no_document_repair")
+        if self.supplement and (not self.listings or len(self.listings) != len(self.codes)):
+            raise ValueError("company_supplement_requires_official_listings")
         if len({item.code for item in self.listings}) != len(self.listings) or any(
             item.code not in self.codes or item.listed_on > self.observed_at.date() for item in self.listings
         ):

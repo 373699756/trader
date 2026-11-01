@@ -22,9 +22,7 @@ function Show-Usage {
   .\run.ps1 sync history --repair-source baostock  只用BaoStock重试历史缺口
   .\run.ps1 sync market --repair-source baostock   只用BaoStock重试行情窗口缺口
   .\run.ps1 sync company            单独更新公司资料
-  .\run.ps1 sync company --repair-documents ocr     只补已记录的扫描版公告
-  .\run.ps1 sync company --risk-history              从官方上市日起续传历史风险资料
-  .\run.ps1 sync company --repair-documents limits  只补已记录的超限公告
+  .\run.ps1 sync company --supplement  补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料
   .\run.ps1 train                   历史维护后处理全部档位 V1、V2、V3、V5
   .\run.ps1 train v1,v5             历史维护后只训练所列档位
 
@@ -59,10 +57,9 @@ $IsServerMode = [string]::IsNullOrEmpty($Mode)
 if ($Mode -eq "sync") {
     $ValidTarget = $ForwardArgs.Count -eq 0 -or $ForwardArgs[0] -in @("history", "market", "company")
     $ValidRepair = $ForwardArgs.Count -eq 3 -and $ForwardArgs[0] -in @("history", "market") -and $ForwardArgs[1] -eq "--repair-source" -and $ForwardArgs[2] -eq "baostock"
-    $ValidDocumentRepair = $ForwardArgs.Count -eq 3 -and $ForwardArgs[0] -eq "company" -and $ForwardArgs[1] -eq "--repair-documents" -and $ForwardArgs[2] -in @("ocr", "limits")
-    $ValidRiskHistory = $ForwardArgs.Count -eq 2 -and $ForwardArgs[0] -eq "company" -and $ForwardArgs[1] -eq "--risk-history"
-    if (-not $ValidTarget -or ($ForwardArgs.Count -gt 1 -and -not ($ValidRepair -or $ValidDocumentRepair -or $ValidRiskHistory))) {
-        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]；history/market 可加 --repair-source baostock，company 可加 --risk-history 或 --repair-documents ocr|limits。")
+    $ValidSupplement = $ForwardArgs.Count -eq 2 -and $ForwardArgs[0] -eq "company" -and $ForwardArgs[1] -eq "--supplement"
+    if (-not $ValidTarget -or ($ForwardArgs.Count -gt 1 -and -not ($ValidRepair -or $ValidSupplement))) {
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]；history/market 可加 --repair-source baostock，company 可加 --supplement 补充下载。")
         exit 2
     }
 } elseif ($ForwardArgs.Count -gt 0) {

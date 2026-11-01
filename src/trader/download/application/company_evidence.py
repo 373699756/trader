@@ -203,39 +203,25 @@ def SyncCompanyEvidence(
     population = _validated_population(codes)
     start_date = observed_at.date() - timedelta(days=365)
     context = _CompanyRunContext(observed_at, started, configuration, min(request.history_start, start_date) if request.history_start else start_date)
-    documents = _DocumentRun(dependencies, population, state, context, request.document_repair)
+    documents = _DocumentRun(dependencies, population, state, context)
     if not _cancelled(dependencies):
         index.initialize()
         index.prepare_publication(population, observed_at)
-    news_population = tuple(sorted(set(news_codes).intersection(population))) if request.document_repair is None and not request.risk_history else ()
-    if request.document_repair is not None:
-        pending = 0
-        while documents.has_due():
-            state.batch += 1
-            documents.run_batch(discovering=False)
-            if not _cancelled(dependencies):
-                _publish_batch(dependencies, population, observed_at, started, state)
-            if documents.stopped or _cancelled(dependencies):
-                break
-        # A cancelled previous run may have accepted a body but not published it.
-        if not _cancelled(dependencies):
-            _publish_batch(dependencies, population, observed_at, started, state)
-        published = 0 if _cancelled(dependencies) else index.published_count(population)
-    else:
-        components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
-        for component in components:
-            if _cancelled(dependencies):
-                break
-            if any(item.endswith((":access_denied", ":rate_limited")) for item in state.failures):
-                _report(dependencies, component, state, None, completed=0, status="deferred")
-                continue
-            _structured(dependencies, component, observed_at, state)
-        pending, published = (
-            (0, 0) if _cancelled(dependencies) else _run_batches(dependencies, population, state, context, documents)
-        )
-        news_updates = () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
-        if news_updates and not _cancelled(dependencies):
-            _publish_batch(dependencies, population, observed_at, started, state)
+    news_population = tuple(sorted(set(news_codes).intersection(population))) if not request.supplement else ()
+    components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
+    for component in components:
+        if _cancelled(dependencies):
+            break
+        if any(item.endswith((":access_denied", ":rate_limited")) for item in state.failures):
+            _report(dependencies, component, state, None, completed=0, status="deferred")
+            continue
+        _structured(dependencies, component, observed_at, state)
+    pending, published = (
+        (0, 0) if _cancelled(dependencies) else _run_batches(dependencies, population, state, context, documents)
+    )
+    news_updates = () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
+    if news_updates and not _cancelled(dependencies):
+        _publish_batch(dependencies, population, observed_at, started, state)
     if _cancelled(dependencies):
         state.failures += ("task:cancelled",)
     document_workload = (
@@ -643,7 +629,6 @@ class _DocumentRun:
         population: tuple[str, ...],
         state: _SyncState,
         context: _CompanyRunContext,
-        repair: Literal["ocr", "limits"] | None,
     ) -> None:
         configuration = context.configuration
         self.dependencies, self.population, self.observed_at = dependencies, population, context.observed_at
@@ -664,7 +649,6 @@ class _DocumentRun:
             dependencies.ocr_identity,
             text_identity=dependencies.text_identity,
         )
-        self.repair = repair
         self.circuit = _SourceCircuit()
         self.stopped = False
         self.completed = self.attempted = 0
@@ -680,7 +664,6 @@ class _DocumentRun:
             self.now(),
             self.policies,
             excluded=() if include_attempted else tuple(self.failed_identities),
-            repair=self.repair,
         )
 
     def has_due(self) -> bool:
@@ -699,7 +682,6 @@ class _DocumentRun:
                 limit=self.configuration.document_batch_size,
                 policies=self.policies,
                 excluded=tuple(self.failed_identities),
-                repair=self.repair,
             )
         )
         pending_documents: dict[Future[CompanyDocumentExtraction], tuple[int, CompanyDocumentTask]] = {}

@@ -51,55 +51,33 @@ def test_repair_source_rejects_non_price_target_before_configuration(target, mon
     assert error.value.code == 2
 
 
-def test_company_risk_history_is_forwarded_by_shell_and_parser(tmp_path):
-    parsed = BuildParser().parse_args(["sync", "company", "--risk-history"])
-    assert parsed.risk_history and parsed.target == "company"
+def test_company_supplement_is_forwarded_by_shell_and_parser(tmp_path):
+    parsed = BuildParser().parse_args(["sync", "company", "--supplement"])
+    assert parsed.supplement and parsed.target == "company"
     binary = tmp_path / "bin"
     binary.mkdir()
     for name in ("python3", "trader-cli"):
         path = binary / name
         path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
         path.chmod(0o755)
-    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", "company", "--risk-history"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
+    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", "company", "--supplement"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
     assert command.returncode == 0, command.stderr
-    assert command.stdout.splitlines()[-3:] == ["sync", "company", "--risk-history"]
+    assert command.stdout.splitlines()[-3:] == ["sync", "company", "--supplement"]
 
 
-@pytest.mark.parametrize("arguments", (["sync", "market", "--risk-history"], ["sync", "company", "--risk-history", "--repair-documents", "ocr"]))
-def test_risk_history_rejects_incompatible_commands_before_configuration(arguments, monkeypatch):
+@pytest.mark.parametrize("arguments", (["sync", "market", "--supplement"], ["sync", "all", "--supplement"], ["sync", "history", "--supplement"], ["sync", "company", "--supplement", "--repair-source", "baostock"]))
+def test_supplement_rejects_incompatible_commands_before_configuration(arguments, monkeypatch):
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
     with pytest.raises(SystemExit) as error:
         Main(arguments)
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("repair", ("ocr", "limits"))
-def test_company_document_repair_is_forwarded_by_shell_and_parser(tmp_path, repair):
-    parsed = BuildParser().parse_args(["sync", "company", "--repair-documents", repair])
-    assert parsed.target == "company" and parsed.repair_documents == repair
-    binary = tmp_path / "bin"
-    binary.mkdir()
-    for name in ("python3", "trader-cli"):
-        path = binary / name
-        path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
-        path.chmod(0o755)
-    command = subprocess.run(
-        ["bash", str(PROJECT_ROOT / "run.sh"), "sync", "company", "--repair-documents", repair],
-        env={**os.environ, "VENV_DIR": str(tmp_path)},
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    assert command.returncode == 0, command.stderr
-    assert command.stdout.splitlines()[-4:] == ["sync", "company", "--repair-documents", repair]
-
-
-@pytest.mark.parametrize("target", ("all", "history", "market"))
-def test_company_document_repair_rejects_other_targets_before_configuration(target, monkeypatch):
+@pytest.mark.parametrize("option", (("--risk-history",), ("--repair-documents", "ocr"), ("--repair-documents", "limits")))
+def test_retired_company_options_are_rejected_before_configuration(option, monkeypatch):
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
     with pytest.raises(SystemExit) as error:
-        Main(["sync", target, "--repair-documents", "ocr"])
+        Main(["sync", "company", *option])
     assert error.value.code == 2
 
 

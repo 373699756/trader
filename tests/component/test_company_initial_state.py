@@ -128,14 +128,21 @@ def test_old_extraction_identity_cannot_be_silently_loaded_under_new_rules(tmp_p
         SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))
 
 
-def test_explicit_history_run_extracts_old_risk_and_reuses_completed_historical_coverage(tmp_path):
+def test_supplement_combines_history_ocr_limits_and_reuses_completed_data(tmp_path):
     listed = _AT.date() - timedelta(days=410)
     listings = (CompanyListing("600001", listed),)
     path = tmp_path / "collection.sqlite3"
     facts_path = tmp_path / "facts.sqlite3"
     index = SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text"), listings=listings)
     index.initialize()
-    _old_document(index, None)
+    old = _AT - timedelta(days=400)
+    documents = tuple(Disclosure("cninfo", identity, ("600001",), "收到立案告知书", old, "https://example.test/old", identity) for identity in ("old-case", "ocr-case", "limits-case"))
+    partition = DisclosurePartition("sse", old.date(), old.date())
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("INSERT INTO partitions(market,start_date,end_date) VALUES('sse',?,?)", (str(old.date()), str(old.date())))
+    index.commit_page(partition, DisclosurePage(documents, 3, False), _AT)
+    index.document_failure(documents[1], "previous-ocr-policy", "disclosure_document_no_text", _AT, _AT + timedelta(days=1))
+    index.document_failure(documents[2], "previous-limits-policy", "disclosure_document_page_limit", _AT, _AT + timedelta(days=1))
     _coverage(index, _AT.date() - timedelta(days=365))
     index.publish(("600001",), _AT)
     history = SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text"), listings=listings, history_start=listed)
@@ -144,25 +151,26 @@ def test_explicit_history_run_extracts_old_risk_and_reuses_completed_historical_
     class Source(fixtures.Sources):
         def fetch(self, query, **kwargs):
             if isinstance(query, DisclosurePartition) and query.start <= (_AT - timedelta(days=400)).date() <= query.end:
-                return DisclosurePage((Disclosure("cninfo", "old-case", ("600001",), "收到立案告知书", _AT - timedelta(days=400), "https://example.test/old", "old"),), 1, False)
+                return DisclosurePage(documents, 3, False)
             return super().fetch(query, **kwargs)
 
         def document(self, item, **kwargs):
-            attempts.append(item.identity)
+            attempts.append((item.identity, kwargs.get("route", "standard")))
             return fixtures._extraction("本公司收到证监会立案告知书〔2025〕调查1号，仍在调查中。")
 
     source = Source()
-    request = CompanyEvidenceRequest(("600001",), _AT, fixtures._TEST_COMPANY_CONFIGURATION, listings=listings, risk_history=True)
+    request = CompanyEvidenceRequest(("600001",), _AT, fixtures._TEST_COMPANY_CONFIGURATION, listings=listings, supplement=True)
     dependencies = CompanyEvidenceDependencies(history, source, source, lambda: 0)
     result = SyncCompanyEvidence(dependencies, request)
-    assert not result.needs_retry and result.window_days == 410 and attempts == ["old-case"]
+    assert not result.needs_retry and result.window_days == 410
+    assert set(attempts) == {("old-case", "standard"), ("ocr-case", "ocr"), ("limits-case", "limits")}
     assert ProjectSyncResult(SyncResult((SyncTaskResult("company", "completed", company=result),)))["tasks"][0]["window_days"] == 410
     facts = SQLiteCompanyEvidenceReader(facts_path, raw_path=path).read(("600001",))[0]
     assert facts.announcement_state is CompanyDataState.COMPLETE and len(facts.risk_events) == 1
     assert not any(review.reason_code == "initial_risk_state_unverified" for review in facts.review_reasons)
     source.calls.clear()
     again = SyncCompanyEvidence(dependencies, request)
-    assert not again.needs_retry and not source.calls and attempts == ["old-case"]
+    assert not again.needs_retry and not source.calls and len(attempts) == 3
 
 
 def test_ordinary_finish_keeps_unfinished_old_history_cursor(tmp_path):

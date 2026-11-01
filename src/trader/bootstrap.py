@@ -219,17 +219,12 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
     repair_source: Literal["baostock"] | None = None,
-    repair_documents: company_evidence.DocumentRepairMode | None = None,
-    risk_history: bool = False,
+    supplement: bool = False,
 ) -> SyncResult:
     if repair_source is not None and target not in ("history", "market"):
         raise ValueError("repair_source_requires_price_target")
-    if repair_documents is not None and target != "company":
-        raise ValueError("repair_documents_requires_company_target")
-    if repair_source is not None and repair_documents is not None:
-        raise ValueError("repair_modes_are_mutually_exclusive")
-    if risk_history and (target != "company" or repair_documents is not None):
-        raise ValueError("risk_history_requires_company_and_no_document_repair")
+    if supplement and target != "company":
+        raise ValueError("supplement_requires_company_target")
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
@@ -301,8 +296,7 @@ def ExecuteSync(
                     ),
                     clock.now(),
                 ),
-                document_repair=repair_documents,
-                risk_history=risk_history,
+                supplement=supplement,
             ),
             cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
         ),
