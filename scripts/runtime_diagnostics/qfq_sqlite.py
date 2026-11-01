@@ -11,6 +11,7 @@ from pathlib import Path
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
 from trader.download.infra.download_settings import LoadDownloadFailureConfiguration
+from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     SqliteConnectionOptions,
@@ -22,7 +23,7 @@ from .reporting import emit_report
 
 
 def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
-    """Report aggregate evidence only; no initialization or recovery writes."""
+    """Report integrity and bounded missing-price dates without recovery writes."""
     if path.is_symlink() or not path.is_file():
         raise FileNotFoundError("qfq database missing or unsafe")
     caches = (SQLiteQfqWindowCache(path, "v2", sqlite_policy=sqlite_policy), SQLiteQfqWindowCache(path, "v3", sqlite_policy=sqlite_policy))
@@ -69,6 +70,31 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
                 "(SELECT 1 FROM window_completion c WHERE c.code=a.code AND c.source=a.source AND c.cutoff_date=a.end_date)"
             ).require_one()[0]
         )
+        latest_without_prices: list[dict[str, object]] = []
+        nontrading_available = connection.run(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='price_nontrading'"
+        ).fetchone() is not None
+        for code, start, end, last_price in connection.run(
+            "SELECT a.code,a.start_date,a.end_date,"
+            "(SELECT MAX(d.trade_date) FROM daily_price d WHERE d.code=a.code "
+            "AND d.trade_date BETWEEN a.start_date AND a.end_date) "
+            "FROM window_binding a WHERE a.profile='v2' AND NOT EXISTS "
+            "(SELECT 1 FROM daily_price d WHERE d.code=a.code AND d.trade_date=a.end_date) "
+            "ORDER BY a.code LIMIT 50"
+        ).fetchall():
+            nontrading = tuple(
+                DecodeDate(row[0]).isoformat() for row in connection.run(
+                    "SELECT trade_date FROM price_nontrading WHERE code=? AND trade_date BETWEEN ? AND ? "
+                    "ORDER BY trade_date", (code, start, end),
+                )
+            ) if nontrading_available else ()
+            latest_without_prices.append({
+                "code": code,
+                "cutoff": DecodeDate(end).isoformat(),
+                "last_price_date": DecodeDate(last_price).isoformat() if last_price is not None else None,
+                "nontrading_dates": nontrading,
+                "nontrading_is_not_exchange_confirmation": True,
+            })
     if tuple(cache.manifest() for cache in caches) != before:
         failures.append("publication_changed_during_audit")
     issues = caches[0].price_issues()
@@ -89,6 +115,7 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
             "database_not_checkpointed": unconfirmed,
             "pending_stocks": len(issues),
             "pending_days": sum(len(issue.dates) for issue in issues),
+            "latest_without_prices": latest_without_prices,
             "failures": tuple(sorted(set(failures))),
         },
     }

@@ -71,6 +71,35 @@ def test_missing_database_is_not_created(tmp_path):
     assert not path.exists()
 
 
+def test_audit_locates_latest_absent_prices_without_claiming_confirmed_suspension(tmp_path):
+    path = tmp_path / "daily_window.sqlite3"
+    primary = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(path, "v3", sqlite_policy=SqlitePolicyFixture())
+    window = qfq_window("600001")
+    days = tuple(cell.trade_date for cell in window.cells[-251:])
+    window = replace(window, cells=tuple(
+        replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+        if cell.trade_date in days[-2:] else cell
+        for cell in window.cells[-251:]
+    ))
+    primary.replace_paired_windows(
+        peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=days, completed_day=days[-1]
+    )
+    before = hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
+
+    report = AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
+
+    assert report["status"] == "passed"
+    assert report["summary"]["latest_without_prices"] == [{
+        "code": "600001",
+        "cutoff": days[-1].isoformat(),
+        "last_price_date": days[-3].isoformat(),
+        "nontrading_dates": tuple(day.isoformat() for day in days[-2:]),
+        "nontrading_is_not_exchange_confirmation": True,
+    }]
+    assert before == (hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns)
+
+
 def test_busy_reason_is_stable():
     assert ClassifyQfqDiagnosticError(sqlite3.OperationalError("database is locked")) == "qfq_pair_database_busy"
 
