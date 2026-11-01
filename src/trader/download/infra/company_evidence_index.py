@@ -27,6 +27,7 @@ from trader.download.domain.company_evidence import (
     DisclosureMonths,
     DisclosurePage,
     DisclosurePartition,
+    DisclosurePartitionRetry,
     DisclosureQuery,
     DisclosureSecurity,
     DocumentRetry,
@@ -517,13 +518,22 @@ class SQLiteCompanyEvidenceIndex:
                     )
             raise
 
-    def partition_retry_after(self, partition: DisclosurePartition) -> datetime | None:
+    def partition_retry(self, partition: DisclosurePartition) -> DisclosurePartitionRetry | None:
         with self._connect() as connection:
             row = connection.run(
-                "SELECT retry_at FROM partition_retries WHERE market=? AND start_date=? AND end_date=? AND scope=?",
+                "SELECT r.retry_at,CASE WHEN r.scope='' THEN p.failure ELSE q.failure END "
+                "FROM partition_retries r JOIN partitions p "
+                "ON p.market=r.market AND p.start_date=r.start_date AND p.end_date=r.end_date "
+                "LEFT JOIN disclosure_queries q ON q.market=r.market AND q.start_date=r.start_date "
+                "AND q.end_date=r.end_date AND q.scope=r.scope "
+                "WHERE r.market=? AND r.start_date=? AND r.end_date=? AND r.scope=?",
                 DisclosureQueryKey(partition),
             ).fetchone()
-        return datetime.fromisoformat(row[0]) if row else None
+        if row is None:
+            return None
+        if row[1] is None:
+            raise ValueError("company_disclosure_retry_invalid")
+        return DisclosurePartitionRetry(datetime.fromisoformat(row[0]), row[1])
 
     def defer_partition(self, partition: DisclosurePartition, retry_after: datetime) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):

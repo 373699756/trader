@@ -247,6 +247,12 @@ class DisclosurePartition:
 
 
 @dataclass(frozen=True)
+class DisclosurePartitionRetry:
+    retry_at: datetime
+    failure: str
+
+
+@dataclass(frozen=True)
 class DisclosurePage:
     rows: tuple[Disclosure, ...]
     total: int
@@ -659,6 +665,7 @@ __all__ = [
     "DisclosureMonths",
     "DisclosurePage",
     "DisclosurePartition",
+    "DisclosurePartitionRetry",
     "EvidenceMarket",
     "EvidenceSyncProgress",
     "EvidenceProgressState",

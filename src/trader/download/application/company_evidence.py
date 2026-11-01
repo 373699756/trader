@@ -30,6 +30,7 @@ from trader.download.domain.company_evidence import (
     DisclosureCoverageMismatch,
     DisclosurePage,
     DisclosurePartition,
+    DisclosurePartitionRetry,
     DisclosureQuery,
     DisclosureSecurity,
     EvidenceMarket,
@@ -60,7 +61,7 @@ class CompanyEvidenceIndex(Protocol):
     def commit_query_coverage(
         self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime
     ) -> None: ...
-    def partition_retry_after(self, partition: DisclosurePartition) -> datetime | None: ...
+    def partition_retry(self, partition: DisclosurePartition) -> DisclosurePartitionRetry | None: ...
     def defer_partition(self, partition: DisclosurePartition, retry_after: datetime) -> None: ...
     def pending_documents(
         self,
@@ -424,9 +425,10 @@ class _AnnouncementRun:
         )
 
     def _consume(self, partition: DisclosurePartition) -> None:
-        retry_after = self._index.partition_retry_after(partition)
-        if retry_after is not None and retry_after > self._now():
+        retry = self._index.partition_retry(partition)
+        if retry is not None and retry.retry_at > self._now():
             self._deferred.add(_query_key(partition))
+            self._state.failures += (f"announcements:{retry.failure or 'pending'}",)
             return
         children = self._index.disclosure_queries(partition) if partition.query is None else None
         if children:
@@ -519,7 +521,7 @@ class _AnnouncementRun:
         configuration = self._context.configuration
         delay = (
             configuration.document_transient_retry_seconds
-            if _transient(exc)
+            if _transient(exc) or failure in {"cninfo_partition_changed", "cninfo_query_coverage_mismatch"}
             else configuration.document_failure_retry_seconds
         )
         self._index.defer_partition(partition, self._now() + timedelta(seconds=delay))

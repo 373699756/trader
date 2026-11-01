@@ -25,18 +25,20 @@ def DisclosureQueryKey(partition: DisclosurePartition) -> tuple[str, str, str, s
 
 
 def ActivateDisclosureQueryPolicy(connection: SqliteConnection) -> None:
-    identity = "issuer_union_board"
+    identity = "issuer_union_board_retry_2"
     row = connection.run("SELECT query_policy_id FROM disclosure_query_policy WHERE singleton=1").fetchone()
     if row is not None and row[0] == identity:
         return
-    # Retry only failures affected by this parser/union correction, once. Keep
+    # Release old long cooldowns affected by query/retry corrections once. Keep
     # network cooldowns, completed pages, facts and published snapshots intact.
     connection.run(
         "DELETE FROM partition_retries WHERE (scope='' AND EXISTS(SELECT 1 FROM partitions p "
         "WHERE p.market=partition_retries.market AND p.start_date=partition_retries.start_date AND p.end_date=partition_retries.end_date "
-        "AND p.failure IN ('cninfo_query_coverage_mismatch','cninfo_query_filter_ignored'))) OR EXISTS(SELECT 1 FROM disclosure_queries q "
+        "AND p.failure IN ('cninfo_partition_changed','cninfo_query_coverage_mismatch','cninfo_query_filter_ignored'))) "
+        "OR EXISTS(SELECT 1 FROM disclosure_queries q "
         "WHERE q.market=partition_retries.market AND q.start_date=partition_retries.start_date AND q.end_date=partition_retries.end_date "
-        "AND q.scope=partition_retries.scope AND q.failure='cninfo_query_filter_ignored')"
+        "AND q.scope=partition_retries.scope "
+        "AND q.failure IN ('cninfo_partition_changed','cninfo_query_coverage_mismatch','cninfo_query_filter_ignored'))"
     )
     connection.run("INSERT OR REPLACE INTO disclosure_query_policy VALUES(1,?)", (identity,))
 

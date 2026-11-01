@@ -11,6 +11,7 @@ from trader.download.domain.company_evidence import (
     CompanySourceFailure,
     DisclosurePage,
     DisclosurePartition,
+    DisclosurePartitionRetry,
     DisclosureQuery,
     DisclosureSecurity,
 )
@@ -19,7 +20,7 @@ from tests.helpers.configuration import (
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
 )
 from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpError, HttpTimeout
-from trader.infra.sqlite_connection import SqliteSession
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 NOW = fixtures.NOW
 
@@ -105,7 +106,7 @@ def test_cancellation_preserves_cursor_without_source_circuit_or_retry_cooldown(
     first = fixtures._sync_company_evidence(dependencies, ("600001",), NOW)
     assert first.failures == ("task:cancelled",) and first.pending_partitions == 1
     assert not documents
-    assert index.partition_retry_after(target) is None
+    assert index.partition_retry(target) is None
     source.blocked = False
     source.cancelled = False
     assert not fixtures._sync_company_evidence(dependencies, ("600001",), NOW).needs_retry
@@ -302,12 +303,94 @@ def test_query_policy_releases_only_corrected_failures_once(tmp_path, monkeypatc
     with SqliteSession(index.path) as c:
         c.run("DELETE FROM disclosure_query_policy")
     index.initialize()
-    assert index.partition_retry_after(child) is None
-    assert index.partition_retry_after(target) == NOW + timedelta(minutes=15)
+    assert index.partition_retry(child) is None
+    assert index.partition_retry(target) == DisclosurePartitionRetry(NOW + timedelta(minutes=15), "HttpConnectionError")
     assert index.disclosure_queries(target)[0].page == 2
     index.defer_partition(child, NOW + timedelta(days=1))
     index.initialize()
-    assert index.partition_retry_after(child) == NOW + timedelta(days=1)
+    assert index.partition_retry(child) == DisclosurePartitionRetry(NOW + timedelta(days=1), "cninfo_query_filter_ignored")
+
+
+@pytest.mark.parametrize(
+    ("failure", "delay"),
+    (
+        ("cninfo_partition_changed", timedelta(minutes=15)),
+        ("cninfo_query_coverage_mismatch", timedelta(minutes=15)),
+        ("cninfo_page_truncated", timedelta(days=1)),
+    ),
+)
+def test_directory_cooldown_retains_reason_and_recovers_after_expiry(tmp_path, monkeypatch, failure, delay):
+    index, target = _scope(tmp_path, monkeypatch)
+
+    class Source(fixtures.Sources):
+        blocked = True
+
+        def fetch(self, query, **kwargs):
+            if isinstance(query, DisclosurePartition) and self.blocked:
+                self.calls.append(query)
+                raise ValueError(failure)
+            return super().fetch(query, **kwargs)
+
+    source = Source()
+    first = _run(index, source)
+    assert first.pending_partitions == 1 and f"announcements:{failure}" in first.failures
+    assert index.partition_retry(target) == DisclosurePartitionRetry(NOW + delay, failure)
+    source.calls.clear()
+    source.blocked = False
+    events = []
+    cooling = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append),
+        ("600001",), NOW + timedelta(minutes=1),
+    )
+    assert cooling.pending_partitions == 1 and f"announcements:{failure}" in cooling.failures
+    assert f"announcements:{failure}" in events[-1].failure
+    assert not any(isinstance(query, DisclosurePartition) for query in source.calls)
+    recovered = _run(index, source, NOW + delay + timedelta(seconds=1))
+    assert not recovered.needs_retry and recovered.pending_partitions == 0
+    assert f"announcements:{failure}" not in recovered.failures
+    assert index.partition_retry(target) is None
+
+
+@pytest.mark.parametrize("failure", ("cninfo_partition_changed", "cninfo_query_coverage_mismatch"))
+@pytest.mark.parametrize("child_query", (False, True))
+def test_retry_policy_releases_old_long_cooldown_without_restarting_saved_work(
+    tmp_path, monkeypatch, failure, child_query
+):
+    index, target = _scope(tmp_path, monkeypatch)
+    leaf = index.split_query(target, (DisclosureQuery("shmb"),))[0] if child_query else target
+    item = fixtures._disclosure("saved")
+    index.commit_page(leaf, DisclosurePage((item,), 2, True), NOW)
+    index.commit_document(item, fixtures._extraction("本公司收到证监会立案告知书。"), NOW)
+    index.publish(("600001",), NOW)
+    index.partition_failure(leaf, failure)
+    index.defer_partition(leaf, NOW + timedelta(days=1))
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE disclosure_query_policy SET query_policy_id='issuer_union_board' WHERE singleton=1")
+    index.initialize()
+    assert index.partition_retry(leaf) is None
+    if child_query:
+        assert index.disclosure_queries(target)[0].page == 2
+    else:
+        partitions = SQLiteCompanyEvidenceIndex.partitions(index, ("sse",), NOW)
+        assert next(part for part in partitions if part.start == target.start and part.end == target.end).page == 2
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT body_checked FROM disclosures WHERE source_key='saved'").require_one()[0] == 1
+    assert index.published_count(("600001",)) == 1
+    index.defer_partition(leaf, NOW + timedelta(minutes=15))
+    index.initialize()
+    assert index.partition_retry(leaf) == DisclosurePartitionRetry(NOW + timedelta(minutes=15), failure)
+
+
+def test_child_retry_reports_its_own_reason_instead_of_another_child_failure(tmp_path, monkeypatch):
+    index, target = _scope(tmp_path, monkeypatch)
+    first, second = index.split_query(target, (DisclosureQuery("shmb"), DisclosureQuery("shkcp")))
+    index.partition_failure(first, "cninfo_partition_changed")
+    index.defer_partition(first, NOW + timedelta(minutes=15))
+    index.partition_failure(second, "timeout")
+    index.defer_partition(second, NOW + timedelta(minutes=15))
+    assert index.partition_retry(first).failure == "cninfo_partition_changed"
+    assert index.partition_retry(second).failure == "timeout"
+    assert index.partition_retry(target) is None
 
 
 def test_date_completion_removes_only_withdrawn_links_in_its_market_and_day(tmp_path, monkeypatch):
