@@ -128,7 +128,7 @@ def test_old_extraction_identity_cannot_be_silently_loaded_under_new_rules(tmp_p
         SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))
 
 
-def test_supplement_combines_history_ocr_limits_and_reuses_completed_data(tmp_path):
+def test_fill_combines_history_ocr_limits_and_reuses_completed_data(tmp_path):
     listed = _AT.date() - timedelta(days=410)
     listings = (CompanyListing("600001", listed),)
     path = tmp_path / "collection.sqlite3"
@@ -159,7 +159,7 @@ def test_supplement_combines_history_ocr_limits_and_reuses_completed_data(tmp_pa
             return fixtures._extraction("本公司收到证监会立案告知书〔2025〕调查1号，仍在调查中。")
 
     source = Source()
-    request = CompanyEvidenceRequest(("600001",), _AT, fixtures._TEST_COMPANY_CONFIGURATION, listings=listings, supplement=True)
+    request = CompanyEvidenceRequest(("600001",), _AT, fixtures._TEST_COMPANY_CONFIGURATION, listings=listings, fill_missing=True)
     dependencies = CompanyEvidenceDependencies(history, source, source, lambda: 0)
     result = SyncCompanyEvidence(dependencies, request)
     assert not result.needs_retry and result.window_days == 410

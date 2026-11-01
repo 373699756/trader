@@ -22,6 +22,17 @@ from trader.recommendation.domain.scoring.profile_selection import ParseProfileS
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
 
 
+class _FillFlag(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        namespace.fill = True
+
+
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-cli")
     parser.add_argument(
@@ -53,8 +64,7 @@ def BuildParser() -> argparse.ArgumentParser:
     )
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
-    sync.add_argument("--repair-source", choices=("baostock",), help="仅补充 history/market 的已记录价格缺口。")
-    sync.add_argument("--supplement", action="store_true", help="仅用于 sync company：补充历史缺口及待补正文，自动选择 OCR/扩限并复用已完成资料。")
+    sync.add_argument("--fill", action=_FillFlag, nargs=0, default=False, help="补充所选资料的缺口：history/market 自动用 BaoStock；company 补历史及正文并自动 OCR/扩限。")
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
@@ -82,10 +92,8 @@ def BuildParser() -> argparse.ArgumentParser:
 def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     parser = BuildParser()
     args = parser.parse_args(argv)
-    if args.command == "sync" and args.supplement and args.target != "company":
-        parser.error("--supplement 仅支持 sync company")
-    if args.command == "sync" and args.repair_source is not None and args.target not in ("history", "market"):
-        parser.error("--repair-source 仅支持 sync history 或 sync market")
+    if args.command == "sync" and args.fill and args.target == "all":
+        parser.error("--fill 须指定 history、market 或 company")
     try:
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
@@ -118,8 +126,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
                 config_path,
                 args.target,
                 cancel_requested=cancelled.is_set,
-                repair_source=args.repair_source,
-                supplement=args.supplement,
+                fill_missing=args.fill,
             )
         _report_sync_failure(result)
         print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True, indent=2))

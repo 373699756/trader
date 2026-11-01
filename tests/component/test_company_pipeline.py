@@ -68,7 +68,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
 
 
 @pytest.mark.parametrize("route,failure", [("ocr", "disclosure_document_no_text"), ("limits", "disclosure_document_page_limit")])
-def test_supplement_routes_failed_document_publishes_risk_and_releases_body(tmp_path, route, failure):
+def test_fill_routes_failed_document_publishes_risk_and_releases_body(tmp_path, route, failure):
     from trader.download.application.company_evidence import SyncCompanyEvidence
 
     index = fixtures._index(tmp_path)
@@ -84,14 +84,14 @@ def test_supplement_routes_failed_document_publishes_risk_and_releases_body(tmp_
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     source = Source()
-    request = CompanyEvidenceRequest(("600001",), NOW, fixtures._TEST_COMPANY_CONFIGURATION, supplement=True, listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),))
+    request = CompanyEvidenceRequest(("600001",), NOW, fixtures._TEST_COMPANY_CONFIGURATION, fill_missing=True, listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),))
     result = SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0.0), request)
     assert not result.needs_retry and result.changed_rows == 1
     assert len(reader.read(("600001",))[0].risk_events) == 1
     assert not tuple((tmp_path / "text").glob("*/*.txt.gz"))
 
 
-def test_supplement_cancellation_preserves_old_publication(tmp_path):
+def test_fill_cancellation_preserves_old_publication(tmp_path):
     from trader.download.application.company_evidence import SyncCompanyEvidence
 
     index = fixtures._index(tmp_path)
@@ -108,7 +108,7 @@ def test_supplement_cancellation_preserves_old_publication(tmp_path):
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     source = Source()
-    request = CompanyEvidenceRequest(("600001",), NOW, fixtures._TEST_COMPANY_CONFIGURATION, supplement=True, listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),))
+    request = CompanyEvidenceRequest(("600001",), NOW, fixtures._TEST_COMPANY_CONFIGURATION, fill_missing=True, listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),))
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, cancel_requested=cancelled.is_set)
     assert SyncCompanyEvidence(dependencies, request).needs_retry
     assert reader.read(("600001",)) == previous

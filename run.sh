@@ -20,11 +20,11 @@ usage() {
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh sync                    依次更新参考、完整历史、行情窗口与公司资料" \
     "  ./run.sh sync history            单独更新完整历史，自动续传" \
-    "  ./run.sh sync history --repair-source baostock  只用BaoStock重试历史缺口" \
+    "  ./run.sh sync history --fill     自动用BaoStock补历史缺口" \
     "  ./run.sh sync market             单独更新行情窗口" \
-    "  ./run.sh sync market --repair-source baostock   只用BaoStock重试行情窗口缺口" \
+    "  ./run.sh sync market --fill      自动用BaoStock补行情窗口缺口" \
     "  ./run.sh sync company            单独更新公司资料" \
-    "  ./run.sh sync company --supplement  补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料" \
+    "  ./run.sh sync company --fill     补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料" \
     "  ./run.sh train                   历史维护后处理全部档位 V1、V2、V3、V5" \
     "  ./run.sh train v1,v5             历史维护后只训练所列档位" \
     "" \
@@ -72,15 +72,8 @@ if (($#)); then
       printf '%s\n' '用法：./run.sh sync [history|market|company]' >&2
       exit 2
     fi
-    valid_repair=false
-    if (($# == 2)) && [[ "$1" == "company" && "$2" == "--supplement" ]]; then
-      valid_repair=true
-    fi
-    if (($# == 3)) && [[ "$1" != "company" && "$2" == "--repair-source" && "$3" == "baostock" ]]; then
-      valid_repair=true
-    fi
-    if (($# != 1)) && [[ "$valid_repair" != "true" ]]; then
-      printf '%s\n' '用法：./run.sh sync [history|market|company]；history/market 可加 --repair-source baostock，company 可加 --supplement 补充下载。' >&2
+    if (($# != 1)) && { (($# != 2)) || [[ "$2" != "--fill" ]]; }; then
+      printf '%s\n' '用法：./run.sh sync [history|market|company]；指定分项后可加 --fill 补充下载。' >&2
       exit 2
     fi
   else

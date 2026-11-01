@@ -207,7 +207,7 @@ def SyncCompanyEvidence(
     if not _cancelled(dependencies):
         index.initialize()
         index.prepare_publication(population, observed_at)
-    news_population = tuple(sorted(set(news_codes).intersection(population))) if not request.supplement else ()
+    news_population = tuple(sorted(set(news_codes).intersection(population))) if not request.fill_missing else ()
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
         if _cancelled(dependencies):

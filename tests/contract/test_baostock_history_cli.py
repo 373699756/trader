@@ -9,7 +9,7 @@ import os
 import subprocess
 from concurrent.futures import CancelledError
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -22,63 +22,69 @@ from trader.download.domain.history_maintenance import (
 )
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.infra.download_settings import LoadQfqWindowConfiguration
+from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.entrypoints.cli import BuildParser, Main
 from trader.infra.settings import LoadRuntimeSettings
+from trader.infra.settings.data_paths import DataPaths
+from tests.reference_fixtures import PreparedFixture
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("target", ("history", "market"))
-def test_repair_source_is_forwarded_by_shell_and_parser(tmp_path, target):
-    parsed = BuildParser().parse_args(["sync", target, "--repair-source", "baostock"])
-    assert parsed.target == target and parsed.repair_source == "baostock"
+@pytest.mark.parametrize("target", ("history", "market", "company"))
+def test_fill_is_forwarded_by_shell_and_parser(tmp_path, target):
+    parsed = BuildParser().parse_args(["sync", target, "--fill"])
+    assert parsed.target == target and parsed.fill is True
+    assert BuildParser().parse_args(["sync", target]).fill is False
     binary = tmp_path / "bin"
     binary.mkdir()
     for name in ("python3", "trader-cli"):
         path = binary / name
         path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
         path.chmod(0o755)
-    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", target, "--repair-source", "baostock"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
+    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", target, "--fill"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
     assert command.returncode == 0, command.stderr
-    assert command.stdout.splitlines()[-4:] == ["sync", target, "--repair-source", "baostock"]
+    assert command.stdout.splitlines()[-3:] == ["sync", target, "--fill"]
 
 
-@pytest.mark.parametrize("target", ("all", "company"))
-def test_repair_source_rejects_non_price_target_before_configuration(target, monkeypatch):
-    monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
-    with pytest.raises(SystemExit) as error:
-        Main(["sync", target, "--repair-source", "baostock"])
-    assert error.value.code == 2
-
-
-def test_company_supplement_is_forwarded_by_shell_and_parser(tmp_path):
-    parsed = BuildParser().parse_args(["sync", "company", "--supplement"])
-    assert parsed.supplement and parsed.target == "company"
-    binary = tmp_path / "bin"
-    binary.mkdir()
-    for name in ("python3", "trader-cli"):
-        path = binary / name
-        path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
-        path.chmod(0o755)
-    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", "company", "--supplement"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
-    assert command.returncode == 0, command.stderr
-    assert command.stdout.splitlines()[-3:] == ["sync", "company", "--supplement"]
-
-
-@pytest.mark.parametrize("arguments", (["sync", "market", "--supplement"], ["sync", "all", "--supplement"], ["sync", "history", "--supplement"], ["sync", "company", "--supplement", "--repair-source", "baostock"]))
-def test_supplement_rejects_incompatible_commands_before_configuration(arguments, monkeypatch):
+@pytest.mark.parametrize("arguments", (["sync", "all", "--fill"], ["sync", "--fill"], ["sync", "company", "--fill", "baostock"]))
+def test_fill_rejects_incompatible_commands_before_configuration(arguments, monkeypatch):
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
     with pytest.raises(SystemExit) as error:
         Main(arguments)
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("option", (("--risk-history",), ("--repair-documents", "ocr"), ("--repair-documents", "limits")))
-def test_retired_company_options_are_rejected_before_configuration(option, monkeypatch):
+@pytest.mark.parametrize("option", (("--risk-history",), ("--repair-documents", "ocr"), ("--repair-documents", "limits"), ("--supplement",), ("--repair-source", "baostock")))
+def test_retired_fill_options_are_rejected_before_configuration(option, monkeypatch):
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
     with pytest.raises(SystemExit) as error:
         Main(["sync", "company", *option])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize("target", ("history", "market"))
+@pytest.mark.parametrize("fill_missing", (False, True))
+def test_fill_selects_existing_price_repair_path_without_changing_normal_sync(tmp_path, monkeypatch, target, fill_missing):
+    from trader.bootstrap import ExecuteSync
+
+    settings = replace(LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json"), data_paths=DataPaths(tmp_path / "data"))
+    reference = PreparedFixture(datetime(2026, 11, 1, tzinfo=timezone.utc))
+    calls = []
+
+    def download(*args, repair_only, **kwargs):
+        calls.append(repair_only)
+        if target == "market":
+            return QfqUpdateResult(date(2026, 11, 1), 1)
+        return HistoryMaintenanceStatus("completed", None, tmp_path, "baostock", None, "a" * 64, date(2026, 11, 1), date(2026, 11, 1))
+
+    monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda _: settings)
+    monkeypatch.setattr("trader.bootstrap._prepare_reference", lambda *args, **kwargs: reference)
+    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", download)
+    monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", download)
+    result = ExecuteSync(PROJECT_ROOT / "config/runtime.json", target, fill_missing=fill_missing)
+    assert result.exit_code == 0 and calls == [fill_missing]
+    assert not (tmp_path / "data").exists()
 
 
 @pytest.mark.parametrize("profile_args", ((), ("v1",)))

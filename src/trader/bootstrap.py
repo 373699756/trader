@@ -218,13 +218,10 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
-    repair_source: Literal["baostock"] | None = None,
-    supplement: bool = False,
+    fill_missing: bool = False,
 ) -> SyncResult:
-    if repair_source is not None and target not in ("history", "market"):
-        raise ValueError("repair_source_requires_price_target")
-    if supplement and target != "company":
-        raise ValueError("supplement_requires_company_target")
+    if fill_missing and target == "all":
+        raise ValueError("fill_requires_explicit_target")
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
@@ -253,7 +250,7 @@ def ExecuteSync(
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference,
             cancel_requested=cancel_requested,
-            repair_only=repair_source is not None, sqlite_policy=sqlite_policy, failures=market_failures,
+            repair_only=fill_missing, sqlite_policy=sqlite_policy, failures=market_failures,
         )
 
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
@@ -267,7 +264,7 @@ def ExecuteSync(
             progress=history_progress,
             cancel_requested=cancel_requested,
             storage_medium=settings.storage_medium,
-            repair_only=repair_source is not None, sqlite_policy=sqlite_policy,
+            repair_only=fill_missing, sqlite_policy=sqlite_policy,
         )
 
     return SyncData(
@@ -296,7 +293,7 @@ def ExecuteSync(
                     ),
                     clock.now(),
                 ),
-                supplement=supplement,
+                fill_missing=fill_missing,
             ),
             cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
         ),
