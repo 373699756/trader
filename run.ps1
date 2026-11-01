@@ -18,8 +18,8 @@ function Show-Usage {
 离线研究（仅在明确执行研究任务时使用）:
   .\run.ps1 sync                    依次更新参考、完整历史、行情窗口与公司资料
   .\run.ps1 sync history            单独更新完整历史，自动续传
-  .\run.ps1 sync market             单独更新行情窗口
   .\run.ps1 sync history --repair-source baostock  只用BaoStock重试历史缺口
+  .\run.ps1 sync market             单独更新行情窗口
   .\run.ps1 sync market --repair-source baostock   只用BaoStock重试行情窗口缺口
   .\run.ps1 sync company            单独更新公司资料
   .\run.ps1 sync company --supplement  补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料
