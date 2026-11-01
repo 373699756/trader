@@ -52,16 +52,14 @@ class CompanySnapshotShared:
 
 
 def ReadCompanySnapshotShared(connection: SqliteConnection, now: datetime) -> CompanySnapshotShared:
-    cutoff = (now.date() - timedelta(days=365)).isoformat()
     pledge = connection.run("SELECT start_date FROM ratio_snapshots WHERE component='pledge'").fetchone()
     return CompanySnapshotShared(
         tuple(connection.run("SELECT start_date,end_date,market,checked_at FROM coverage ORDER BY start_date")),
         tuple(connection.run("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
         tuple(
             connection.run(
-                "SELECT DISTINCT CASE WHEN failure='' THEN 'pending' ELSE failure END AS failure,market "
-                "FROM partitions WHERE end_date>=? AND (failure<>'' OR is_complete=0)",
-                (cutoff,),
+                "SELECT DISTINCT CASE WHEN failure='' THEN 'pending' ELSE failure END AS failure,market,start_date,end_date "
+                "FROM partitions WHERE failure<>'' OR is_complete=0",
             )
         ),
         pledge[0] if pledge else None,
@@ -156,7 +154,8 @@ def BuildCompanySnapshot(
             failures += (f"{component}:not_current",)
     if pledge is not None and pledge.day < end - timedelta(days=10):
         failures += ("pledge:source_stale",)
-    partition_errors = tuple(row for row in shared.errors if row["market"] == EvidenceMarket(code))
+    risk_start = min(start, listed_on) if listed_on is not None else start
+    partition_errors = tuple(row for row in shared.errors if row["market"] == EvidenceMarket(code) and row["end_date"] >= risk_start.isoformat())
     failures += tuple(f"announcements:{row[0]}" for row in partition_errors)
     if listed_on is None or listed_on > end or not CompanyCoverageComplete(ranges, listed_on, end):
         failures += ("announcements:initial_risk_state_unverified",)

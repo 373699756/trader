@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import date, datetime
 
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import (
@@ -136,6 +136,8 @@ def SelectCompanyDocuments(
     policies: CompanyDocumentPolicies,
     excluded: Sequence[tuple[str, str, str]],
     repair: DocumentRepairMode | None = None,
+    *,
+    start: date,
 ) -> None:
     connection.run("CREATE TEMP TABLE requested_codes(code TEXT PRIMARY KEY) WITHOUT ROWID")
     connection.run_many("INSERT OR IGNORE INTO temp.requested_codes VALUES(?)", ((code,) for code in codes))
@@ -182,7 +184,7 @@ def SelectCompanyDocuments(
             repair_route,
             at.isoformat(),
             at.isoformat(),
-            (at.date() - timedelta(days=365)).isoformat(),
+            start.isoformat(),
             at.isoformat(),
             repair_route,
             repair_route,

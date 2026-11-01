@@ -10,10 +10,14 @@ from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, Disclosure, DisclosurePage, DisclosurePartition
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from tests.helpers.configuration import (
+    CompanyEvidenceRequestFixture as CompanyEvidenceRequest,
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
     CompanyDocumentFilesFixture as CompanyDocumentFiles,
     SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
 )
+from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
+from trader.download.application.sync_data import SyncResult, SyncTaskResult
+from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
 _AT = datetime(2026, 10, 27, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -122,6 +126,58 @@ def test_old_extraction_identity_cannot_be_silently_loaded_under_new_rules(tmp_p
         connection.run("UPDATE company_publication SET extraction_hash=?", (b"0" * 32,))
     with pytest.raises(ValueError, match="company_publication_identity_mismatch"):
         SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))
+
+
+def test_explicit_history_run_extracts_old_risk_and_reuses_completed_historical_coverage(tmp_path):
+    listed = _AT.date() - timedelta(days=410)
+    listings = (CompanyListing("600001", listed),)
+    path = tmp_path / "collection.sqlite3"
+    facts_path = tmp_path / "facts.sqlite3"
+    index = SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text"), listings=listings)
+    index.initialize()
+    _old_document(index, None)
+    _coverage(index, _AT.date() - timedelta(days=365))
+    index.publish(("600001",), _AT)
+    history = SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text"), listings=listings, history_start=listed)
+    attempts = []
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if isinstance(query, DisclosurePartition) and query.start <= (_AT - timedelta(days=400)).date() <= query.end:
+                return DisclosurePage((Disclosure("cninfo", "old-case", ("600001",), "收到立案告知书", _AT - timedelta(days=400), "https://example.test/old", "old"),), 1, False)
+            return super().fetch(query, **kwargs)
+
+        def document(self, item, **kwargs):
+            attempts.append(item.identity)
+            return fixtures._extraction("本公司收到证监会立案告知书〔2025〕调查1号，仍在调查中。")
+
+    source = Source()
+    request = CompanyEvidenceRequest(("600001",), _AT, fixtures._TEST_COMPANY_CONFIGURATION, listings=listings, risk_history=True)
+    dependencies = CompanyEvidenceDependencies(history, source, source, lambda: 0)
+    result = SyncCompanyEvidence(dependencies, request)
+    assert not result.needs_retry and result.window_days == 410 and attempts == ["old-case"]
+    assert ProjectSyncResult(SyncResult((SyncTaskResult("company", "completed", company=result),)))["tasks"][0]["window_days"] == 410
+    facts = SQLiteCompanyEvidenceReader(facts_path, raw_path=path).read(("600001",))[0]
+    assert facts.announcement_state is CompanyDataState.COMPLETE and len(facts.risk_events) == 1
+    assert not any(review.reason_code == "initial_risk_state_unverified" for review in facts.review_reasons)
+    source.calls.clear()
+    again = SyncCompanyEvidence(dependencies, request)
+    assert not again.needs_retry and not source.calls and attempts == ["old-case"]
+
+
+def test_ordinary_finish_keeps_unfinished_old_history_cursor(tmp_path):
+    listed = _AT.date() - timedelta(days=410)
+    index = SQLiteCompanyEvidenceIndex(tmp_path / "collection.sqlite3", facts_path=tmp_path / "facts.sqlite3", documents=CompanyDocumentFiles(tmp_path / "text"), listings=(CompanyListing("600001", listed),))
+    index.initialize()
+    day = _AT.date() - timedelta(days=405)
+    partition = DisclosurePartition("sse", day, day)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("INSERT INTO partitions(market,start_date,end_date) VALUES('sse',?,?)", (str(day), str(day)))
+    item = fixtures._disclosure("old-page", when=_AT - timedelta(days=405))
+    index.commit_page(partition, DisclosurePage((item,), 2, True), _AT)
+    index.finish(_AT)
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT next_page FROM partitions WHERE market='sse' AND start_date=?", (str(day),)).require_one()[0] == 2
 
 
 def test_extraction_upgrade_rebuilds_case_status_and_does_not_stamp_unprocessed_rows(tmp_path):

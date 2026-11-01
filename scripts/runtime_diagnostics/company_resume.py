@@ -11,9 +11,9 @@ import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from scripts.runtime_diagnostics.company_pagination_audit import AuditCompanyPagination
@@ -28,6 +28,7 @@ from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
     CompanyDocumentPolicies,
     CompanyDocumentTask,
+    CompanyDocumentWorkload,
     CompanyEvidenceRequest,
     CompanySyncConfiguration,
     Disclosure,
@@ -40,6 +41,7 @@ from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_pipeline_queries import ReleaseCompletedCompanyQueryRows
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from trader.download.infra.company_fact_inputs import CompanyCoverageComplete
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpTransport
 from trader.infra.settings import LoadStrategySettings
@@ -58,6 +60,7 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         facts_path: Path,
         event_policy: CompanyEventPolicy,
         sqlite_policy: SqliteIoPolicy,
+        directory_only: bool = False,
     ) -> None:
         super().__init__(
             path,
@@ -72,12 +75,13 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
             sqlite_policy=sqlite_policy,
         )
         self._selection = selection
+        self._directory_only = directory_only
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
         return tuple(
             p
             for p in super().partitions(markets, observed_at)
-            if (p.market, str(p.start), str(p.end)) in self._selection
+            if any(p.market == market and start <= str(p.start) <= str(p.end) <= end for market, start, end in self._selection)
         )
 
     def component_due(self, component: str, scope: str, observed_at: datetime) -> bool:
@@ -94,17 +98,29 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         excluded: Sequence[tuple[str, str, str]] = (),
         repair: Literal["ocr", "limits"] | None = None,
     ) -> tuple[CompanyDocumentTask, ...]:
-        return cast(
-            tuple[CompanyDocumentTask, ...],
-            super().pending_documents(
-                codes,
-                observed_at,
-                limit=min(limit or 32, 32),
-                policies=policies,
-                excluded=excluded,
-                repair=repair,
-            ),
+        if self._directory_only:
+            return ()
+        return super().pending_documents(
+            codes,
+            observed_at,
+            limit=min(limit or 32, 32),
+            policies=policies,
+            excluded=excluded,
+            repair=repair,
         )
+
+    def document_workload(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        policies: CompanyDocumentPolicies,
+        *,
+        excluded: Sequence[tuple[str, str, str]] = (),
+        repair: Literal["ocr", "limits"] | None = None,
+    ) -> CompanyDocumentWorkload:
+        if self._directory_only:
+            return CompanyDocumentWorkload(0, 0)
+        return super().document_workload(codes, observed_at, policies, excluded=excluded, repair=repair)
 
 
 class _ObservedSource(CninfoMarketDisclosureSource):
@@ -248,6 +264,7 @@ def Main() -> int:
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--ocr-only", action="store_true")
     audit.add_argument("--document-only", action="store_true")
+    audit.add_argument("--directory-only", action="store_true")
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
@@ -348,7 +365,12 @@ def Main() -> int:
         configuration,
         facts_path=facts_path,
         event_policy=event_policy, sqlite_policy=sqlite_policy,
+        directory_only=args.directory_only,
     )
+    if args.directory_only:
+        with SqliteSession(destination, sqlite_policy=sqlite_policy) as c, SqliteTransaction(c, immediate=True):
+            for key in selection:
+                c.run("DELETE FROM partition_retries WHERE market=? AND start_date=? AND end_date=?", key)
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     runs = []
     saved: set[tuple[str, str, str, str, int]] = set()
@@ -398,14 +420,14 @@ def Main() -> int:
         time.sleep(configuration.request_interval_seconds)
     with SqliteSession(destination, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as c:
         completed = sum(
-            bool(c.run("SELECT is_complete FROM partitions WHERE market=? AND start_date=? AND end_date=?", key).require_one()[0])
+            not c.run("SELECT 1 FROM partitions WHERE market=? AND start_date>=? AND end_date<=? AND is_complete=0 LIMIT 1", key).fetchone()
             for key in selection
         )
         covered = sum(
-            c.run("SELECT 1 FROM coverage WHERE market=? AND start_date=? AND end_date=?", key).fetchone() is not None
+            CompanyCoverageComplete(tuple(c.run("SELECT start_date,end_date FROM coverage WHERE market=?", (key[0],))), date.fromisoformat(key[1]), date.fromisoformat(key[2]))
             for key in selection
         )
-    passed = completed == covered == len(selection) and replayed == 0
+    passed = completed == covered == len(selection) and (args.directory_only or replayed == 0)
     report = {
         "schema_version": "company-resume",
         "status": "passed" if passed else "degraded",
@@ -417,6 +439,7 @@ def Main() -> int:
             "covered_slices": covered,
             "saved_pages_replayed": replayed,
             "document_sample_limit": 32,
+            "directory_only": args.directory_only,
             "runs": runs,
         },
         "findings": [] if passed else ["company_resume_incomplete"],

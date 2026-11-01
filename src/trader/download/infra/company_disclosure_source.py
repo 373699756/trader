@@ -177,7 +177,7 @@ class CninfoMarketDisclosureSource:
         code-sorted parent samples discover absent issuers; only a later exact
         record-union check can declare coverage, even if discovery is incomplete.
         """
-        known = {member.org_id for member in members}
+        known = {(member.code, member.org_id) for member in members}
         found: list[DisclosureSecurity] = []
         records: set[tuple[str, tuple[str, ...]]] = set()
         for plate in sorted({_plate(member.code) for member in members}):
@@ -194,9 +194,10 @@ class CninfoMarketDisclosureSource:
                     rows = payload.get("announcements") or []
                     for raw, item in zip(rows, page.rows, strict=True):
                         issuer = str(raw.get("orgId") or "")
-                        if issuer and issuer not in known:
-                            found.append(DisclosureSecurity(item.codes[0], issuer))
-                            known.add(issuer)
+                        for code in item.codes:
+                            if issuer and (code, issuer) not in known:
+                                found.append(DisclosureSecurity(code, issuer))
+                                known.add((code, issuer))
                         if any(member.org_id == issuer for member in found):
                             records.add((item.identity, item.codes))
                     if len(records) >= missing_rows:

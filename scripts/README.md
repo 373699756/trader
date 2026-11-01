@@ -67,6 +67,10 @@ It samples up to three failed dates and three failed child cursors, at most 192 
 
 `local_storage.publication`进一步核对采集人口与已发布人口、待发布股票、四类资料状态、公告覆盖起止、当前日期的180日解禁范围、持续风险及待核实原因。正文回执必须匹配公告版本、提取身份及全部相关采集股票；已释放正文缺回执单列。两库使用只读事务，读取期间检测到外部提交则标记`stable_read=false`及降级。缺正式发布、资料不完整或待核实不能因下载队列为空判为通过。报告只含聚合数量、日期和摘要，不输出证券、标题、正文或证据键；这些本地记录不能证明供应商目录无遗漏、事件提取准确或历史风险已完整回溯，也不以自然日比较代替交易日日历判断公告时效。
 
+该存储审计的`publication.field_audit`覆盖正式库各表字段填充、存储类型和非有限数，并对财务数值、质押（含完整快照支持的无记录零值）、解禁及事件证据定位核对采集来源；合同等字段另报适用记录中的测量缺失，不把NULL一律判坏或用默认值补齐。pending目录另报已完成子查询数、计数之和、去重并集及来源ID数；这些统计不证明全部业务语义已核实。
+
+`--profile company-resume --company-directory-audit --company-replay-directory /absolute/external/path --command-timeout-seconds 600 --output -`在显式仓库外副本中恢复待补目录，不下载正文、不改活动库；仅在副本释放所选范围的冷却以进行恢复实测。允许切分后的子范围完成后按连续coverage证明核验原范围，并区分修复时的首页重新核验与普通断点重放；`directory_only=true`不宣称正文或字段完整。
+
 `--profile company-resume --company-ocr-audit --company-replay-directory /absolute/external/ocr-probe --command-timeout-seconds 180`只选一篇已记录低质量失败的公告，真实下载后用当前OCR策略识别；总预算最多150秒。结果记录载荷是否相同、字符数/置信度、耗时或失败阶段，不写活动数据库、不保存PDF和正文、不运行公司全量流程。`ocr-result.json`写入显式仓库外目录；失败不冒充修复成功。存储只读审计另投影最近10条已持久化OCR失败诊断。
 
 `--profile company-resume --company-pagination-audit` compares complete CNInfo record identities for page sizes 30/50/100 using bounded historical samples and read-only local metadata. Production remains at 30 unless the larger contract is proven equivalent. `--company-pipeline-audit --company-replay-directory /absolute/external/fresh-directory` instead downloads the same sampled PDFs with one and two independent clients into fresh disposable indexes, compares facts and measures repeat-run reuse. This is a real PDF probe over sampled metadata, not a full-market coverage audit or a whole-download completion estimate. Audit modes are mutually exclusive; use `--command-timeout-seconds` to bound the diagnostic, never production sync.

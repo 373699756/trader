@@ -54,6 +54,7 @@ def BuildParser() -> argparse.ArgumentParser:
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
     sync.add_argument("--repair-source", choices=("baostock",), help="仅补充 history/market 的已记录价格缺口。")
+    sync.add_argument("--risk-history", action="store_true", help="仅用于 sync company：从官方上市日起续传历史风险资料；首次核验可能较长。")
     sync.add_argument(
         "--repair-documents",
         choices=("ocr", "limits"),
@@ -86,6 +87,8 @@ def BuildParser() -> argparse.ArgumentParser:
 def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     parser = BuildParser()
     args = parser.parse_args(argv)
+    if args.command == "sync" and args.risk_history and (args.target != "company" or args.repair_documents is not None):
+        parser.error("--risk-history 仅支持 sync company，且不能与 --repair-documents 同用")
     if args.command == "sync" and args.repair_source is not None and args.target not in ("history", "market"):
         parser.error("--repair-source 仅支持 sync history 或 sync market")
     if args.command == "sync" and args.repair_documents is not None and args.target != "company":
@@ -126,6 +129,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
                 cancel_requested=cancelled.is_set,
                 repair_source=args.repair_source,
                 repair_documents=args.repair_documents,
+                risk_history=args.risk_history,
             )
         _report_sync_failure(result)
         print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True, indent=2))

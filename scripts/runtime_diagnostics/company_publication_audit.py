@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from scripts.runtime_diagnostics.company_field_audit import AuditCompanyFields
+
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import time
@@ -103,6 +105,11 @@ def AuditCompanyPublication(
                 findings.append("company_reviews_pending")
             if missing_risk_evidence:
                 findings.append("company_risk_evidence_missing")
+            field_audit = AuditCompanyFields(formal, path)
+            field_findings = field_audit["findings"]
+            if not isinstance(field_findings, list):
+                raise ValueError("company_field_findings_invalid")
+            findings.extend(field_findings)
             result: dict[str, object] = {
                 "available": True,
                 "observed_at": now.isoformat(),
@@ -127,6 +134,7 @@ def AuditCompanyPublication(
                                   "missing_evidence_events": missing_risk_evidence},
                 "receipts": receipts,
                 "findings": findings,
+                "field_audit": field_audit,
             }
         stable = versions == (
             raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0]

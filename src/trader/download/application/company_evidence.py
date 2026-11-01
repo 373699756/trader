@@ -53,7 +53,10 @@ class CompanyEvidenceIndex(Protocol):
     ) -> tuple[DisclosurePartition, ...]: ...
     def commit_page(self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime) -> int: ...
     def partition_failure(self, partition: DisclosurePartition, failure: str) -> None: ...
-    def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None: ...
+    def disclosure_queries(
+        self, partition: DisclosurePartition, *, include_completed: bool = False
+    ) -> tuple[DisclosurePartition, ...] | None: ...
+    def refresh_disclosure_query(self, partition: DisclosurePartition, page: DisclosurePage) -> int | None: ...
     def disclosure_members(self, partition: DisclosurePartition) -> tuple[DisclosureSecurity, ...]: ...
     def split_query(
         self, partition: DisclosurePartition, queries: tuple[DisclosureQuery, ...]
@@ -198,12 +201,13 @@ def SyncCompanyEvidence(
     index = dependencies.index
     state = _SyncState()
     population = _validated_population(codes)
-    context = _CompanyRunContext(observed_at, started, configuration)
+    start_date = observed_at.date() - timedelta(days=365)
+    context = _CompanyRunContext(observed_at, started, configuration, min(request.history_start, start_date) if request.history_start else start_date)
     documents = _DocumentRun(dependencies, population, state, context, request.document_repair)
     if not _cancelled(dependencies):
         index.initialize()
         index.prepare_publication(population, observed_at)
-    news_population = tuple(sorted(set(news_codes).intersection(population))) if request.document_repair is None else ()
+    news_population = tuple(sorted(set(news_codes).intersection(population))) if request.document_repair is None and not request.risk_history else ()
     if request.document_repair is not None:
         pending = 0
         while documents.has_due():
@@ -272,6 +276,7 @@ def SyncCompanyEvidence(
         document_workload.ocr,
         document_workload.unextractable,
         document_workload.next_retry_at,
+        (observed_at.date() - context.start_date).days,
     )
 
 
@@ -344,6 +349,7 @@ class _CompanyRunContext:
     observed_at: datetime
     started: float
     configuration: CompanySyncConfiguration
+    start_date: date
 
 
 class _AnnouncementRun:
@@ -413,7 +419,7 @@ class _AnnouncementRun:
             self._state,
             _pending_count(self._queue, self._deferred, current),
             scope=partition,
-            dates=_date_progress(self._context.observed_at.date(), self._queue, self._deferred, current),
+            dates=_date_progress(self._context.observed_at.date(), self._queue, self._deferred, current, self._context.start_date),
             status=status,
             activity=activity,
             known_pages=sum(
@@ -443,6 +449,8 @@ class _AnnouncementRun:
             try:
                 self._index.commit_query_coverage(partition, page, self._context.observed_at)
             except DisclosureCoverageMismatch as exc:
+                if exc.missing_rows and self._refresh_queries(partition):
+                    return
                 repairs = (
                     self._dependencies.disclosures.repair_queries(
                         partition,
@@ -470,6 +478,25 @@ class _AnnouncementRun:
             self._circuit.success()
             self._advance(partition, page)
         self._report(replace(partition, expected_rows=page.total))
+
+    def _refresh_queries(self, partition: DisclosurePartition) -> bool:
+        refreshed = False
+        for saved in self._index.disclosure_queries(partition, include_completed=True) or ():
+            if _cancelled(self._dependencies):
+                return False
+            probe = replace(saved, page=1, received_rows=0)
+            page = self._dependencies.disclosures.fetch(probe)
+            self._state.pages += 1
+            changes = self._index.refresh_disclosure_query(probe, page)
+            if changes is not None:
+                self._state.changes += changes
+                refreshed = True
+            self._report(probe, include_current=True, activity="repair")
+        if refreshed:
+            pending = self._index.disclosure_queries(partition) or ()
+            self._queue = _replace_query_queue(self._queue, partition, pending, self._deferred)
+            self._circuit.success()
+        return refreshed
 
     def _repair_progress(self, partition: DisclosurePartition) -> None:
         self._state.pages += 1
@@ -505,7 +532,9 @@ class _AnnouncementRun:
             return True
         if str(exc) == "company_evidence_persistence_unavailable":
             raise exc
-        if _failure(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"}:
+        if _failure(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"} or (
+            _failure(exc) == "cninfo_partition_changed" and partition.start < partition.end
+        ):
             try:
                 self._split(partition)
                 return False
@@ -576,8 +605,8 @@ def _date_progress(
     queue: deque[DisclosurePartition],
     deferred: set[tuple[Market, date, date, str]],
     current: DisclosurePartition | None,
+    start: date,
 ) -> CompanyDateProgress:
-    start = end - timedelta(days=365)
     ranges = {(item.start, item.end) for item in queue} | {(first, last) for _, first, last, _ in deferred}
     if current is not None:
         ranges.add((current.start, current.end))

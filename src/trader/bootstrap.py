@@ -220,6 +220,7 @@ def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
     repair_source: Literal["baostock"] | None = None,
     repair_documents: company_evidence.DocumentRepairMode | None = None,
+    risk_history: bool = False,
 ) -> SyncResult:
     if repair_source is not None and target not in ("history", "market"):
         raise ValueError("repair_source_requires_price_target")
@@ -227,6 +228,8 @@ def ExecuteSync(
         raise ValueError("repair_documents_requires_company_target")
     if repair_source is not None and repair_documents is not None:
         raise ValueError("repair_modes_are_mutually_exclusive")
+    if risk_history and (target != "company" or repair_documents is not None):
+        raise ValueError("risk_history_requires_company_and_no_document_repair")
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
@@ -299,6 +302,7 @@ def ExecuteSync(
                     clock.now(),
                 ),
                 document_repair=repair_documents,
+                risk_history=risk_history,
             ),
             cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
         ),
@@ -370,6 +374,7 @@ def _sync_company_evidence(
         dependencies = CompanyEvidenceDependencies(
             SQLiteCompanyEvidenceIndex(
                 paths.company_collection,
+                history_start=request.history_start,
                 facts_path=paths.company,
                 documents=company_document_files.CompanyDocumentFiles(
                     paths.company_documents,

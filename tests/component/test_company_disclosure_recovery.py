@@ -278,7 +278,9 @@ def test_missing_historical_issuer_is_added_without_redownloading_completed_quer
             if not isinstance(query, DisclosurePartition):
                 return super().fetch(query, **kwargs)
             self.calls.append(query)
-            assert query.query != known
+            if query.query == known:
+                assert query.page == 1
+                return DisclosurePage((one,), 1, False)
             return DisclosurePage((two,), 1, False) if query.query else DisclosurePage((one,), 2, True)
 
         def repair_queries(self, partition, members, **kwargs):
@@ -309,6 +311,52 @@ def test_query_policy_releases_only_corrected_failures_once(tmp_path, monkeypatc
     index.defer_partition(child, NOW + timedelta(days=1))
     index.initialize()
     assert index.partition_retry(child) == DisclosurePartitionRetry(NOW + timedelta(days=1), "cninfo_query_filter_ignored")
+
+
+def test_known_issuer_new_rows_refresh_only_changed_query_and_close_union(tmp_path, monkeypatch):
+    index, target = _scope(tmp_path, monkeypatch)
+    first, second = index.split_query(target, (DisclosureQuery("shmb"), DisclosureQuery("shkcp")))
+    one, two, three = (fixtures._disclosure(key) for key in ("one", "two", "three"))
+    index.commit_page(first, DisclosurePage((one,), 1, False), NOW)
+    index.commit_page(second, DisclosurePage((two,), 1, False), NOW)
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if not isinstance(query, DisclosurePartition):
+                return super().fetch(query, **kwargs)
+            self.calls.append(query)
+            if query.query == first.query:
+                assert query.page == 1
+                return DisclosurePage((one, three), 2, False)
+            if query.query == second.query:
+                assert query.page == 1
+                return DisclosurePage((two,), 1, False)
+            return DisclosurePage((one, two, three), 3, False)
+
+        def repair_queries(self, *args, **kwargs):
+            pytest.fail("existing issuer changes must be refreshed before discovering new issuers")
+
+    result = _run(index, Source())
+    assert not result.needs_retry and result.changed_rows >= 1
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM coverage").require_one()[0] == 1
+
+
+def test_changed_multi_day_directory_is_split_and_can_finish_same_run(tmp_path, monkeypatch):
+    index, target = _scope(tmp_path, monkeypatch)
+    target = next(part for part in SQLiteCompanyEvidenceIndex.partitions(index, ("sse",), NOW) if part.start < part.end)
+    monkeypatch.setattr(index, "partitions", lambda *_: (target,))
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if isinstance(query, DisclosurePartition) and query.start == target.start and query.end == target.end:
+                raise ValueError("cninfo_partition_changed")
+            return super().fetch(query, **kwargs)
+
+    result = _run(index, Source())
+    assert not result.needs_retry and result.pending_partitions == 0
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM coverage WHERE market='sse' AND start_date>=? AND end_date<=?", (str(target.start), str(target.end))).require_one()[0] == 2
 
 
 @pytest.mark.parametrize(

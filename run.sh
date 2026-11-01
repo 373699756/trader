@@ -24,6 +24,7 @@ usage() {
     "  ./run.sh sync history --repair-source baostock  只用BaoStock重试历史缺口" \
     "  ./run.sh sync market --repair-source baostock   只用BaoStock重试行情窗口缺口" \
     "  ./run.sh sync company            单独更新公司资料" \
+    "  ./run.sh sync company --risk-history  从官方上市日起续传历史风险资料" \
     "  ./run.sh sync company --repair-documents ocr     只补已记录的扫描版公告" \
     "  ./run.sh sync company --repair-documents limits  只补已记录的超限公告" \
     "  ./run.sh train                   历史维护后处理全部档位 V1、V2、V3、V5" \
@@ -74,11 +75,14 @@ if (($#)); then
       exit 2
     fi
     valid_repair=false
+    if (($# == 2)) && [[ "$1" == "company" && "$2" == "--risk-history" ]]; then
+      valid_repair=true
+    fi
     if (($# == 3)) && { [[ "$1" != "company" && "$2" == "--repair-source" && "$3" == "baostock" ]] || [[ "$1" == "company" && "$2" == "--repair-documents" && ( "$3" == "ocr" || "$3" == "limits" ) ]]; }; then
       valid_repair=true
     fi
     if (($# != 1)) && [[ "$valid_repair" != "true" ]]; then
-      printf '%s\n' '用法：./run.sh sync [history|market|company]；history/market 可加 --repair-source baostock，company 可加 --repair-documents ocr|limits。' >&2
+      printf '%s\n' '用法：./run.sh sync [history|market|company]；history/market 可加 --repair-source baostock，company 可加 --risk-history 或 --repair-documents ocr|limits。' >&2
       exit 2
     fi
   else

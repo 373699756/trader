@@ -45,7 +45,7 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
         summary.update(
             {
                 "observed_at": company.observed_at.isoformat(),
-                "window_days": 365,
+                "window_days": company.window_days,
                 "requested_codes": company.requested_codes,
                 "published_codes": company.published_codes,
                 "fetched_pages": company.fetched_pages,

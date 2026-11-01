@@ -41,6 +41,7 @@ from scripts.runtime_diagnostics.market_factor_budget import (  # noqa: E402
     MARKET_TASK_LIMIT_SECONDS,
 )
 from scripts.runtime_diagnostics.market_factor_text import RenderMarketFactorText  # noqa: E402
+from scripts.runtime_diagnostics.company_field_audit import ProjectCompanyFieldAudit  # noqa: E402
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS  # noqa: E402
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection  # noqa: E402
 
@@ -125,6 +126,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--company-pagination-audit", action="store_true", help="read-only CNInfo page-size comparison")
     parser.add_argument("--company-ocr-audit", action="store_true", help="one failed announcement OCR probe without active writes")
     parser.add_argument("--company-document-audit", action="store_true", help="read-only failed PDF request comparison")
+    parser.add_argument("--company-directory-audit", action="store_true", help="repair failed directories only in an external backup")
     parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup timing")
     parser.add_argument("--history-preload-cpu-profile", action="store_true", help="include CPU profiling overhead in preload timing")
     parser.add_argument("--history-preload-feature-audit", action="store_true", help="profile concurrent feature builds with published inputs and synthetic quotes")
@@ -432,6 +434,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
                 args.company_pipeline_audit,
                 args.company_ocr_audit,
                 args.company_document_audit,
+                args.company_directory_audit,
             )
         )
         > 1
@@ -548,6 +551,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_pipeline_audit=args.company_pipeline_audit,
             company_ocr_audit=args.company_ocr_audit,
             company_document_audit=args.company_document_audit,
+            company_directory_audit=args.company_directory_audit,
             v5_kernel_probe=args.v5_kernel_probe,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
@@ -1089,6 +1093,7 @@ def build_commands(
                 *(("--pipeline-only",) if options.company_pipeline_audit else ()),
                 *(("--ocr-only",) if options.company_ocr_audit else ()),
                 *(("--document-only",) if options.company_document_audit else ()),
+                *(("--directory-only",) if options.company_directory_audit else ()),
             ),
             common_timeout,
         ),
@@ -1786,6 +1791,7 @@ def _company_resume_details(
             "covered_slices",
             "saved_pages_replayed",
             "document_sample_limit",
+            "directory_only",
         )
     }
     runs = summary.get("runs")
@@ -1943,8 +1949,12 @@ def _company_resume_details(
                 "company_population_unpublished", "company_publication_dirty", "company_components_incomplete",
                 "company_unlock_180_days_incomplete", "company_reviews_pending", "company_risk_evidence_missing",
                 "company_released_body_receipt_missing", "company_audit_concurrent_change",
+                "company_field_integrity_failed", "company_applicable_fields_missing",
             }
         ]
+        field_audit = _mapping(publication.get("field_audit"))
+        if field_audit:
+            projected_publication["field_audit"] = ProjectCompanyFieldAudit(field_audit)
         projected_storage["publication"] = projected_publication
         for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
             rows = storage.get(name)

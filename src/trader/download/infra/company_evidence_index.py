@@ -59,6 +59,7 @@ from trader.download.infra.company_evidence_sql import (
 from trader.download.infra.company_fact_inputs import (
     BuildCompanySnapshot,
     DecodeCompanyDisclosure,
+    CompanyCoverageComplete,
     ReadCompanySnapshotRows,
     ReadCompanySnapshotShared,
 )
@@ -97,6 +98,7 @@ class SQLiteCompanyEvidenceIndex:
         event_policy: CompanyEventPolicy,
         stock_progress: Callable[[CompanyStockProgress], None] | None = None,
         listings: tuple[CompanyListing, ...] = (), sqlite_policy: SqliteIoPolicy,
+        history_start: date | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self.path = path
@@ -111,6 +113,9 @@ class SQLiteCompanyEvidenceIndex:
         if len({item.code for item in listings}) != len(listings):
             raise ValueError("company_listing_identity_invalid")
         self._listings = listings
+        if history_start is not None and (not listings or history_start != min(item.listed_on for item in listings)):
+            raise ValueError("company_history_requires_official_listings")
+        self._history_start = history_start
 
     def _check_cancelled(self) -> None:
         if self._cancel_requested is not None and self._cancel_requested():
@@ -221,11 +226,16 @@ class SQLiteCompanyEvidenceIndex:
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
         today = observed_at.date()
-        cutoff = today - timedelta(days=365)
+        cutoff = min(today - timedelta(days=365), self._history_start) if self._history_start else today - timedelta(days=365)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             pending_before: set[tuple[str, str, str]] = set()
             for market in markets:
                 before_planning = connection.total_changes
+                if self._history_start is not None:
+                    historical_coverage = tuple(connection.run("SELECT start_date,end_date FROM coverage WHERE market=?", (market,)))
+                    for start, end in DisclosureMonths(cutoff, today - timedelta(days=366)):
+                        if not CompanyCoverageComplete(historical_coverage, start, end):
+                            self._add_partition(connection, market, start, end)
                 pending_before.update(
                     (row["market"], row["start_date"], row["end_date"])
                     for row in connection.run(
@@ -332,7 +342,7 @@ class SQLiteCompanyEvidenceIndex:
                 row[1]
                 for row in connection.run(
                     "SELECT market,count(*) FROM partitions WHERE is_complete=1 AND end_date>=? GROUP BY market",
-                    ((observed_at.date() - timedelta(days=365)).isoformat(),),
+                    ((self._history_start or observed_at.date() - timedelta(days=365)).isoformat(),),
                 )
                 if row[0] in markets
             )
@@ -463,9 +473,33 @@ class SQLiteCompanyEvidenceIndex:
         connection.run("DELETE FROM partition_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
         connection.run("DELETE FROM disclosure_query_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
 
-    def disclosure_queries(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...] | None:
+    def disclosure_queries(
+        self, partition: DisclosurePartition, *, include_completed: bool = False
+    ) -> tuple[DisclosurePartition, ...] | None:
         with self._connect() as connection:
-            return ReadDisclosureQueries(connection, replace(partition, query=None))
+            return ReadDisclosureQueries(connection, replace(partition, query=None), include_completed=include_completed)
+
+    def refresh_disclosure_query(self, partition: DisclosurePartition, page: DisclosurePage) -> int | None:
+        if partition.query is None or partition.page != 1:
+            raise ValueError("company_query_probe_invalid")
+        key = DisclosureQueryKey(partition)
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            changed = partition.expected_rows != page.total or any(
+                connection.run(
+                    "SELECT 1 FROM disclosure_query_rows WHERE market=? AND start_date=? AND end_date=? "
+                    "AND scope=? AND record_key=? LIMIT 1",
+                    (*key, json.dumps([item.identity, item.codes], separators=(",", ":"))),
+                ).fetchone() is None for item in page.rows
+            )
+            if not changed:
+                return None
+            fresh = replace(partition, received_rows=0, expected_rows=None)
+            ValidateDisclosureQueryPage(connection, fresh, page)
+            RestartDisclosureQuery(connection, fresh)
+            changes = self._write_disclosures(connection, page.rows)
+            CommitDisclosureQueryPage(connection, fresh, page)
+            MarkCompanyMarketDirty(connection, partition.market)
+        return changes
 
     def disclosure_members(self, partition: DisclosurePartition) -> tuple[DisclosureSecurity, ...]:
         with self._connect() as connection:
@@ -657,7 +691,7 @@ class SQLiteCompanyEvidenceIndex:
         if limit is not None and not 1 <= limit <= 200:
             raise ValueError("company_document_batch_invalid")
         with self._connect() as connection:
-            SelectCompanyDocuments(connection, codes, observed_at, policies, excluded, repair)
+            SelectCompanyDocuments(connection, codes, observed_at, policies, excluded, repair, start=self._history_start or observed_at.date() - timedelta(days=365))
             rows = connection.run(
                 "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code,p.route FROM disclosures d "
                 "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN temp.pending_documents p ON p.id=d.id WHERE d.id IN ("
@@ -689,7 +723,7 @@ class SQLiteCompanyEvidenceIndex:
         repair: DocumentRepairMode | None = None,
     ) -> CompanyDocumentWorkload:
         with self._connect() as connection:
-            SelectCompanyDocuments(connection, codes, observed_at, policies, excluded, repair)
+            SelectCompanyDocuments(connection, codes, observed_at, policies, excluded, repair, start=self._history_start or observed_at.date() - timedelta(days=365))
             row = connection.run(
                 "SELECT COUNT(*),COALESCE(SUM(due),0),COALESCE(SUM(cooling),0),COALESCE(SUM(ocr),0),"
                 "COALESCE(SUM(unextractable),0),MIN(CASE WHEN cooling=1 THEN retry_at END) FROM temp.pending_documents"
@@ -1214,9 +1248,9 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             cutoff = (observed_at.date() - timedelta(days=365)).isoformat()
             ReleaseCompletedCompanyQueryRows(connection)
-            connection.run("DELETE FROM partitions WHERE end_date<?", (cutoff,))
-            connection.run("DELETE FROM disclosure_query_contracts WHERE end_date<?", (cutoff,))
-            connection.run("DELETE FROM partition_rows WHERE end_date<?", (cutoff,))
+            connection.run("DELETE FROM partitions WHERE end_date<? AND is_complete=1", (cutoff,))
+            connection.run("DELETE FROM disclosure_query_contracts WHERE end_date<? AND NOT EXISTS(SELECT 1 FROM partitions p WHERE p.market=disclosure_query_contracts.market AND p.start_date=disclosure_query_contracts.start_date AND p.end_date=disclosure_query_contracts.end_date AND p.is_complete=0)", (cutoff,))
+            connection.run("DELETE FROM partition_rows WHERE end_date<? AND NOT EXISTS(SELECT 1 FROM partitions p WHERE p.market=partition_rows.market AND p.start_date=partition_rows.start_date AND p.end_date=partition_rows.end_date AND p.is_complete=0)", (cutoff,))
             connection.run(
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
             )

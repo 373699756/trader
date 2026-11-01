@@ -234,6 +234,14 @@ def test_issuer_discovery_alternates_sort_edges_and_keeps_shanghai_b_share_cover
     ]
 
 
+def test_historical_code_alias_of_known_issuer_is_not_ignored():
+    row = {"announcementId": "old", "secCode": "600009", "orgId": "known", "announcementTitle": "公告", "announcementTime": NOW.timestamp() * 1000, "adjunctUrl": ""}
+    session = Session({"totalRecordNum": 4000, "hasMore": True, "announcements": [row]})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    queries = source.repair_queries(DisclosurePartition("sse", NOW.date(), NOW.date()), (DisclosureSecurity("600001", "known"),), missing_rows=1)
+    assert queries == (DisclosureQuery("shmb", (DisclosureSecurity("600009", "known"),)),)
+
+
 @pytest.mark.parametrize(("status", "category"), ((403, "access_denied"), (429, "rate_limited"), (500, "http_error")))
 def test_rejections_have_distinct_safe_categories(status, category):
     source = CninfoMarketDisclosureSource(Session({}, status), monotonic=lambda: 0, sleeper=lambda value: None)

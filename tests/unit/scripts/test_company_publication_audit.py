@@ -46,6 +46,27 @@ def test_published_projection_keeps_unknown_components_and_valid_released_receip
     assert "company_components_incomplete" in result["findings"]
     assert "company_reviews_pending" in result["findings"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
+    audit = result["field_audit"]
+    assert audit["table_count"] == 12 and audit["field_count"] == 97
+    assert audit["invalid_storage_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
+
+
+def test_field_audit_distinguishes_real_source_values_from_formal_corruption(tmp_path):
+    index = _published(tmp_path)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("INSERT INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("600001", str(fixtures.NOW.date()), fixtures.NOW.isoformat(), 1, 2, 3, 4, 5, 6, 7, 8))
+    index.publish(("600001",), fixtures.NOW)
+    before = _audit(index)["field_audit"]
+    assert before["source_agreement"]["financial_rows"] == 1
+    assert before["source_agreement"]["financial_value_mismatches"] == 0
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE company_facts SET eps='invalid' WHERE code='600001'")
+    after = _audit(index)["field_audit"]
+    assert after["invalid_storage_types"] == 1
+    assert after["source_agreement"]["financial_value_mismatches"] == 1
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE company_facts SET eps=? WHERE code='600001'", (float("inf"),))
+    assert _audit(index)["field_audit"]["nonfinite_values"] == 1
 
 
 @pytest.mark.parametrize("change", ("delete", "record_hash", "extraction_hash", "new_member"))
