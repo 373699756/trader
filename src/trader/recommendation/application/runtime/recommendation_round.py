@@ -207,9 +207,11 @@ class RecommendationRounds:
             ):
                 return UnifiedPairedPublishResult(False, "round_cancelled")
             self._staged[profile] = pair
-            if len(self._staged) == len(self._profiles):
-                self._commit_locked(sequence)
-            self._condition.notify_all()
+            try:
+                if len(self._staged) == len(self._profiles):
+                    self._commit_locked(sequence)
+            finally:
+                self._condition.notify_all()
             while self._publication is None and self._matches_locked(sequence):
                 remaining = self._remaining_locked()
                 if remaining <= 0.0:
@@ -231,7 +233,14 @@ class RecommendationRounds:
             self._cancel_locked("timeout")
             return
         pairs = tuple(self._staged[profile] for profile in self._profiles)
-        publication = self._publish_batch(pairs, lambda: self._remaining_locked() > 0.0)
+        try:
+            publication = self._publish_batch(pairs, lambda: self._remaining_locked() > 0.0)
+        except BaseException:
+            # Release staged peers before propagating the original failure to
+            # the worker's diagnostics. Notifications after commit are separate.
+            self._publication = UnifiedProfiledPublishResult(False, "round_publication_failed")
+            self._cancel_locked("round_publication_failed")
+            raise
         self._publication = publication
         self._outcome = "published" if publication.accepted else publication.reason
         if publication.accepted and self._publish_batch_event is not None:

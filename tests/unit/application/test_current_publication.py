@@ -14,6 +14,9 @@ from trader.recommendation.application.pipeline.freeze_publish.current_publisher
     PublishCurrentBatch,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
+from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -139,3 +142,85 @@ def test_all_event_preparation_precedes_final_eligibility_and_every_index_write(
     else:
         assert PublishCurrentBatch(pairs).reason == "publication_window_closed"
     assert UnifiedFreezeIndex.snapshot_batch(indexes) == previous
+
+
+@pytest.mark.parametrize("profiles", (("v5",), ("v1", "v5"), ("v1", "v2", "v3", "v5")))
+@pytest.mark.parametrize("failure_at", ("event_preparation", "batch_notification"))
+def test_publication_exception_releases_peers_and_next_round_can_publish(monkeypatch, profiles, failure_at):
+    pairs = _pairs(profiles, _Clock(NOW), RLock())
+    indexes = tuple(pair.index for pair in pairs)
+    previous = UnifiedFreezeIndex.snapshot_batch(indexes)
+    fail = True
+    error = ValueError("fixture_publication_failure")
+    notifications = []
+    original = snapshot_publisher.BuildFreezeCommitted
+
+    def build(identity, *, projection_version):
+        if fail and failure_at == "event_preparation" and identity is pairs[-1].freezes[-1]:
+            raise error
+        return original(identity, projection_version=projection_version)
+
+    def notify(sequence, events):
+        if fail and failure_at == "batch_notification":
+            raise error
+        notifications.append((sequence, events))
+
+    monkeypatch.setattr(snapshot_publisher, "BuildFreezeCommitted", build)
+    rounds = RecommendationRounds(monotonic=lambda: 0.0, publish_batch_event=notify)
+    tasks = (ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE),)
+    for profile in profiles:
+        rounds.register(profile)
+    admission = rounds.enter(profiles[0], tasks)
+    assert all(rounds.enter(profile, tasks) is admission for profile in profiles[1:])
+
+    with ThreadPoolExecutor(max_workers=len(profiles)) as pool:
+        peers = [pool.submit(rounds.stage, pair.profile, admission.sequence, pair) for pair in pairs[:-1]]
+        try:
+            with rounds._condition:
+                assert rounds._condition.wait_for(lambda: len(rounds.status().staged_profiles) == len(peers), timeout=2)
+            with pytest.raises(ValueError) as caught:
+                rounds.stage(pairs[-1].profile, admission.sequence, pairs[-1])
+            assert caught.value is error
+            before_commit = failure_at == "event_preparation"
+            assert rounds.cancelled(admission.sequence) is before_commit
+            results = [future.result(timeout=2) for future in peers]
+            assert all(result.accepted is not before_commit for result in results)
+            assert all(result.reason == ("round_publication_failed" if before_commit else "accepted")
+                       for result in results)
+            assert rounds.status().outcome == ("round_publication_failed" if before_commit else "published")
+            assert not rounds.status().finished
+            assert rounds.enter(profiles[-1], tasks) is None
+            if before_commit:
+                assert UnifiedFreezeIndex.snapshot_batch(indexes) == previous
+            else:
+                assert all(pair.index.snapshot(item.strategy).current == item for pair in pairs for item in pair.freezes)
+        except BaseException:
+            # Keep a broken implementation from leaving test workers asleep for
+            # the full production deadline, including with the frozen test clock.
+            rounds.withdraw(profiles[-1])
+            raise
+        finally:
+            for profile in profiles:
+                rounds.finish(profile, admission.sequence)
+        assert rounds.status().finished
+
+        fail = False
+        next_pairs = []
+        for pair in pairs:
+            freezes = tuple(replace(item, sequence=3) for item in pair.freezes)
+            overlays = tuple(replace(overlay, parent_version=item.version)
+                             for item, overlay in zip(freezes, pair.overlays, strict=True))
+            expected = tuple(pair.index.snapshot(item.strategy).current.version for item in pair.freezes)
+            next_pairs.append(replace(pair, freezes=freezes, overlays=overlays, expected_versions=expected))
+        following = rounds.enter(profiles[0], tasks)
+        assert following.sequence == admission.sequence + 1
+        assert all(rounds.enter(profile, tasks) is following for profile in profiles[1:])
+        try:
+            futures = [pool.submit(rounds.stage, pair.profile, following.sequence, pair) for pair in next_pairs]
+            assert all(future.result(timeout=2).accepted for future in futures)
+        finally:
+            for profile in profiles:
+                rounds.finish(profile, following.sequence)
+    assert rounds.status().finished and rounds.status().outcome == "published"
+    assert len(notifications) == 1 and notifications[0][0] == following.sequence
+    assert all(pair.index.snapshot(item.strategy).current == item for pair in next_pairs for item in pair.freezes)
