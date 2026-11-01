@@ -293,7 +293,7 @@ def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> Shutdo
 def _log_shutdown_report(report: ShutdownReport) -> None:
     _LOGGER.error(
         "shutdown deadline exceeded: %s",
-        json.dumps(asdict(report), ensure_ascii=True, sort_keys=True),
+        json.dumps(asdict(report), ensure_ascii=False, sort_keys=True, indent=2),
     )
 
 

@@ -1,5 +1,7 @@
 # Scripts
 
+终端及诊断报告JSON统一使用两空格缩进、换行和中文直显。训练命令按档位依次输出完整JSON对象，最后输出整轮汇总；消费者应按完整JSON文档解析，不能逐行调用json.loads。模型、缓存、摘要、网络和JSONL机器协议保持各自编码合同。
+
 `diagnose_runtime.py --profile price-repair-audit --history-root data/market/history --command-timeout-seconds 1800`
 exports up to 50 locally recorded problem stocks into an external SQLite copy, rehearses additive repair metadata,
 requests complete BaoStock windows serially (minimum 1.5 seconds between daily queries), and checks that the previous

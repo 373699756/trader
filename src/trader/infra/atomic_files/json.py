@@ -46,14 +46,15 @@ class RuntimeJsonWriter:
         future.result()
 
 
-def AtomicWriteJson(path: Path, payload: object) -> None:
-    """Write a JSON payload atomically beside the destination file."""
+def AtomicWriteJson(path: Path, payload: object, *, indent: int | None = None) -> None:
+    """Write atomically; indentation is opt-in for readable diagnostic reports."""
 
     text = json.dumps(
         payload,
         ensure_ascii=False,
         sort_keys=True,
-        separators=(",", ":"),
+        separators=(",", ":") if indent is None else None,
+        indent=indent,
         allow_nan=False,
     )
     missing = []

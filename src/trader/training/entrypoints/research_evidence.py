@@ -238,7 +238,7 @@ def _overlap(first: Path, second: Path) -> bool:
 
 
 def _write(payload: dict[str, object], output: Path | None) -> None:
-    rendered = json.dumps(payload, ensure_ascii=True, sort_keys=True, allow_nan=False) + "\n"
+    rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False, indent=2) + "\n"
     if output is None:
         print(rendered, end="", flush=True)
     else:

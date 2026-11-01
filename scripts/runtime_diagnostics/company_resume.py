@@ -276,18 +276,18 @@ def Main() -> int:
             summary["compaction"] = _compact_storage(
                 source_path, args.directory.resolve(), budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy
             )
-        print(json.dumps(report, ensure_ascii=False))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args.pagination_only:
         print(
             json.dumps(
-                AuditCompanyPagination(source_path, budget_seconds=min(300.0, args.budget_seconds), sqlite_policy=sqlite_policy), ensure_ascii=False
+                AuditCompanyPagination(source_path, budget_seconds=min(300.0, args.budget_seconds), sqlite_policy=sqlite_policy), ensure_ascii=False, indent=2
             )
         )
         return 0
     if args.audit_only:
         report = AuditCompanyQueries(source_path, budget_seconds=min(300.0, args.budget_seconds), sqlite_policy=sqlite_policy)
-        print(json.dumps(report, ensure_ascii=False))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args.directory is None:
         parser.error("replay requires an external absolute directory")
@@ -297,13 +297,13 @@ def Main() -> int:
     directory.mkdir(parents=True, exist_ok=True)
     if args.ocr_only:
         report = AuditCompanyOcr(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
-        (directory / "ocr-result.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
-        print(json.dumps(report, ensure_ascii=False))
+        (directory / "ocr-result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args.pipeline_only:
         print(
             json.dumps(
-                AuditCompanyPipeline(source_path, directory, budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy), ensure_ascii=False
+                AuditCompanyPipeline(source_path, directory, budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy), ensure_ascii=False, indent=2
             )
         )
         return 0
@@ -415,7 +415,7 @@ def Main() -> int:
         "findings": [] if passed else ["company_resume_incomplete"],
     }
     (directory / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(report, ensure_ascii=False))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
 

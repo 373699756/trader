@@ -179,4 +179,4 @@ if __name__ == "__main__":
         from trader.infra.settings import LoadRuntimeSettings
 
         sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.checkout / "config/runtime.json"))
-    print(json.dumps(MeasureSamples(args.checkout, args.root, args.size, args.sessions, sqlite_policy=sqlite_policy)))
+    print(json.dumps(MeasureSamples(args.checkout, args.root, args.size, args.sessions, sqlite_policy=sqlite_policy), indent=2, ensure_ascii=False))

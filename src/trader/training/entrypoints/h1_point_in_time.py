@@ -59,7 +59,7 @@ def Main(argv: list[str] | None = None) -> int:
         json.dumps(
             {"schema_version": "score_h1_point_in_time_audit", "strategies": audits},
             ensure_ascii=False,
-            sort_keys=True,
+            sort_keys=True, indent=2,
         )
     )
     return 1 if failed else 0

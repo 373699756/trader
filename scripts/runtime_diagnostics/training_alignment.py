@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 from zoneinfo import ZoneInfo
 
-from .reporting import emit_report
+from .reporting import ReadJsonReports, emit_report
 
 if TYPE_CHECKING:
     from trader.infra.settings import RuntimeSettings
@@ -171,12 +171,12 @@ def _train_once(
     with redirect_stdout(captured):
         code = ExecuteSelectedTraining(runtime, profiles, history_root=history, training_root=work)
     seconds = time.monotonic() - started
-    reports = [json.loads(line) for line in captured.getvalue().splitlines() if line.startswith("{")]
+    reports = ReadJsonReports(captured.getvalue())
     results = [item for item in reports if item.get("schema_version") == "profile_training_result"]
     reloaded_heads = sum(
-        len(LoadScoringProfile(item["profile"], training_root=work / "models").heads)
-        for item in results
-        if item["status"] == "engineering_ready"
+        len(LoadScoringProfile(profile, training_root=work / "models").heads)
+        for profile in profiles
+        if any(item.get("profile") == profile and item.get("status") == "engineering_ready" for item in results)
     )
     complete = code == 0 and reloaded_heads == len(profiles) * 2 and len(results) == len(profiles)
     return {

@@ -61,11 +61,11 @@ def main(argv: list[str] | None = None) -> int:
                     "error_code": _error_code(exc),
                 },
                 ensure_ascii=False,
-                sort_keys=True,
+                sort_keys=True, indent=2,
             )
         )
         return 1
-    print(json.dumps(_project_status(status), ensure_ascii=False, sort_keys=True))
+    print(json.dumps(_project_status(status), ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
 

@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         "failure_reasons": [reason for head in result.heads for reason in head.failure_reasons],
     }
     payload["content_hash"] = ContentHash(payload)
-    rendered = json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
+    rendered = json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2) + "\n"
     _write_result(args.output.resolve(), rendered)
     print(rendered, end="")
     return 0 if payload["status"] == "passed" else 1

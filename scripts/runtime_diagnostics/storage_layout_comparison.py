@@ -714,4 +714,4 @@ if __name__ == "__main__":
         if args.worker == "window"
         else _worker(checkout, args.worker, args.size, sqlite_policy=sqlite_policy)
     )
-    print(json.dumps(report, sort_keys=True))
+    print(json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False))

@@ -171,7 +171,7 @@ class _FitTimer:
         self.switch(detail.phase)
         self.epoch = max(self.epoch, detail.epoch)
         if time.monotonic() - self.last_report >= 10:
-            AtomicWriteJson(self.work / "progress.json", {**asdict(detail), "phase_seconds": self.seconds})
+            AtomicWriteJson(self.work / "progress.json", {**asdict(detail), "phase_seconds": self.seconds}, indent=2)
             self.last_report = time.monotonic()
 
 
@@ -226,7 +226,7 @@ def _quality(
             "selected": selected,
             "excluded": sorted(set(by_head[0]) - set(eligible)),
         }
-        AtomicWriteJson(work / "coverage.json", coverage)
+        AtomicWriteJson(work / "coverage.json", coverage, indent=2)
         for industry in selected:
             for head_index, head in enumerate(V5_TRAINING_PROFILE.heads):
                 pair: dict[str, dict[str, object]] = {}
@@ -235,7 +235,7 @@ def _quality(
                     _check(deadline)
                     counts = by_head[head_index][industry]
                     AtomicWriteJson(
-                        work / "current.json", {"case": name, "head": head.strategy.value, "industry": industry}
+                        work / "current.json", {"case": name, "head": head.strategy.value, "industry": industry}, indent=2
                     )
                     started = time.monotonic()
                     timer = _FitTimer(work, deadline)
@@ -271,13 +271,13 @@ def _quality(
                         "process_peak_rss_mib": _peak_rss_mib(),
                         "parameters": asdict(parameters),
                     }
-                    AtomicWriteJson(work / "latest_pair.json", pair)
+                    AtomicWriteJson(work / "latest_pair.json", pair, indent=2)
                 passed = QualityPassed(pair["reference"], pair["candidate"])
                 summaries.append({
                     "industry": industry, "head": head.strategy.value, "passed": passed, "cases": pair,
                     "time_ratio": cast(float, pair["candidate"]["seconds"]) / cast(float, pair["reference"]["seconds"]),
                 })
-                AtomicWriteJson(work / "comparisons.json", {"comparisons": summaries})
+                AtomicWriteJson(work / "comparisons.json", {"comparisons": summaries}, indent=2)
                 if not passed:
                     return {
                         "passed": False,
@@ -320,9 +320,9 @@ def Main() -> int:
         candidate = _parameters(args.candidate_config) if args.candidate_config is not None else None
         if candidate is not None:
             summary["candidate_configuration"] = TcnConfigurationDocument(*candidate)
-        AtomicWriteJson(work / "result.json", report)
+        AtomicWriteJson(work / "result.json", report, indent=2)
         summary["compute"] = ProbeLiteKernels()
-        AtomicWriteJson(work / "result.json", report)
+        AtomicWriteJson(work / "result.json", report, indent=2)
         if args.sample_root is not None and candidate is not None:
             summary["quality"] = quality = _quality(
                 args.sample_root.resolve(), work, time.monotonic() + 3 * 3600, baseline, candidate, sqlite_policy=sqlite_policy
@@ -338,8 +338,8 @@ def Main() -> int:
         # Only the two exact diagnostic snapshots are disposable; retain reports.
         for name in ("reference.sqlite3", "candidate.sqlite3"):
             (work / name).unlink(missing_ok=True)
-        AtomicWriteJson(work / "result.json", report)
-    print(json.dumps(report, ensure_ascii=False))
+        AtomicWriteJson(work / "result.json", report, indent=2)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] == "passed" else 1
 
 

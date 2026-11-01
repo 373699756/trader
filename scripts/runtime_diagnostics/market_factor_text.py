@@ -184,7 +184,8 @@ def RenderMarketFactorText(report: Mapping[str, object]) -> str:
         lines.append(f"    来源时间跨度：{_span_text(source.get('source_time_span_seconds'))}")
         errors = _mapping(source.get("errors"))
         if errors:
-            lines.append(f"    失败：{json.dumps(errors, ensure_ascii=False, sort_keys=True)}")
+            lines.append("    失败：")
+            lines.extend("      " + line for line in json.dumps(errors, ensure_ascii=False, sort_keys=True, indent=2).splitlines())
         lines.extend(_field_coverage_text(source.get("fields")))
     lines.extend(("", "二、组合合并后的评分输入（含官方与本地参考字段）"))
     for route in _list(summary.get("route_results")):

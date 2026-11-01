@@ -88,9 +88,9 @@ def main(argv: list[str] | None = None) -> int:
             result = {"state": "rolled_back"}
     except (MigrationError, OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         result = {"state": "failed", "error_code": _error_code(exc)}
-        print(json.dumps(result, sort_keys=True))
+        print(json.dumps(result, sort_keys=True, indent=2, ensure_ascii=False))
         return 1
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
 

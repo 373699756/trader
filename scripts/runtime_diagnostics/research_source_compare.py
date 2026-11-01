@@ -198,7 +198,7 @@ def main() -> int:
     args = parser.parse_args()
     if not (0 < args.timeout_seconds <= 30 and 0 < args.source_loop_seconds <= 120 and 0 < args.task_seconds <= 600):
         parser.error("diagnostic budgets exceed the bounded source/task limits")
-    print(json.dumps(Collect(args), ensure_ascii=False))
+    print(json.dumps(Collect(args), ensure_ascii=False, indent=2))
     return 0
 
 

@@ -14,6 +14,28 @@ def emit_report(report: Mapping[str, object]) -> None:
     sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
 
 
+def ReadJsonReports(output: str) -> tuple[dict[str, object], ...]:
+    """Read complete report objects, preserving the existing tolerance of text progress lines."""
+    decoder = json.JSONDecoder()
+    reports: list[dict[str, object]] = []
+    cursor = 0
+    while cursor < len(output):
+        if output[cursor].isspace():
+            cursor += 1
+            continue
+        if output[cursor] != "{":
+            newline = output.find("\n", cursor)
+            if newline < 0:
+                break
+            cursor = newline + 1
+            continue
+        value, cursor = decoder.raw_decode(output, cursor)
+        if not isinstance(value, dict):
+            raise ValueError("diagnostic_report_must_be_object")
+        reports.append(value)
+    return tuple(reports)
+
+
 def summarize_latency_ms(values: Sequence[float]) -> dict[str, float | int | None]:
     """Return the common nearest-rank latency summary used by source probes."""
     if not values:

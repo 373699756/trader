@@ -97,7 +97,7 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
                 "--root", str(work / f"samples-{number}-{label}"), "--size", str(size), "--sessions", str(sessions),
             ), checkout, work))
     sample_comparison = _compare(runs, "baseline", "candidate", budget.relative_regression_percent)
-    (work / "sample-results.json").write_text(json.dumps({"runs": runs, "comparison": sample_comparison}))
+    (work / "sample-results.json").write_text(json.dumps({"runs": runs, "comparison": sample_comparison}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     history = PrepareTrainingHistory(work / "history-input", size=size, sessions=sessions, sqlite_policy=sqlite_policy)
     reads: dict[str, list[_Run]] = {"sqlite": [], "parquet": []}
     for number in range(rounds):
@@ -169,7 +169,7 @@ def Main() -> int:
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
     report = ProbeTrainingSamples(args.work_root, args.baseline_checkout, args.config, size=args.size, sessions=args.sessions, sqlite_policy=sqlite_policy)
-    print(json.dumps(report))
+    print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0 if report["status"] == "passed" else 1
 
 

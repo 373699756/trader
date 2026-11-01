@@ -100,7 +100,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
             runtime = PrepareRuntimeStorage(runtime, choose=args.command in ("sync", "train"))
     except (OSError, RuntimeError, ValueError) as exc:
-        print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}))
+        print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
         return 2
     profile_override = cast(ScoringProfileId | None, args.profile)
     if args.command in ("sync", "train"):
@@ -109,7 +109,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         try:
             _configuration_payload(runtime, None)
         except (OSError, RuntimeError, ValueError) as exc:
-            print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}))
+            print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
             return 2
         print(f"{args.command}: 正在准备官方总体、ST资格、交易日历及当前行业。", file=sys.stderr)
         if args.command == "train":
@@ -128,14 +128,14 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
                 repair_documents=args.repair_documents,
             )
         _report_sync_failure(result)
-        print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True, indent=2))
         return result.exit_code
     if args.command == "history-automation-status":
         from trader.bootstrap import ExecuteTrainingReminderStatus
         from trader.training.entrypoints.training_reminder_projection import ProjectTrainingReminderStatus
 
         status = ExecuteTrainingReminderStatus(runtime)
-        print(json.dumps(ProjectTrainingReminderStatus(status), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(ProjectTrainingReminderStatus(status), ensure_ascii=False, sort_keys=True, indent=2))
         return 0
     if args.command == "history-automation-uninstall":
         from trader.download.entrypoints.commands import RunDownloadCommand
@@ -211,7 +211,7 @@ def _run_history_download(config_path: Path, profiles: tuple[ScoringProfileId, .
     try:
         return ExecuteDownloadTrain(config_path, scoring_profiles=profiles)
     except KeyboardInterrupt:
-        print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled"}))
+        print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled"}, indent=2, ensure_ascii=False))
         return 130
     except AkshareCalendarTimeoutError as exc:
         print(
@@ -228,14 +228,14 @@ def _run_history_download(config_path: Path, profiles: tuple[ScoringProfileId, .
                     "stage": "reference_calendar",
                     "source": "akshare_sina",
                     "timeout_seconds": exc.timeout_seconds,
-                }
+                }, indent=2, ensure_ascii=False
             )
         )
         return 1
     except (OSError, RuntimeError, ValueError) as exc:
         print(
             json.dumps(
-                {"schema_version": "selected_training_result", "status": "failed", "category": type(exc).__name__}
+                {"schema_version": "selected_training_result", "status": "failed", "category": type(exc).__name__}, indent=2, ensure_ascii=False
             )
         )
         return 1
@@ -246,7 +246,7 @@ def _shanghai_now() -> datetime:
 
 
 def _run_config_validation(runtime: RuntimeSettings, profile_override: ScoringProfileId | None) -> int:
-    print(json.dumps(_configuration_payload(runtime, profile_override), ensure_ascii=False, sort_keys=True))
+    print(json.dumps(_configuration_payload(runtime, profile_override), ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
 
@@ -355,7 +355,7 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None, sqlite
                 ],
             },
             ensure_ascii=False,
-            sort_keys=True,
+            sort_keys=True, indent=2,
         )
     )
     return 0 if status.integrity_ok else 1

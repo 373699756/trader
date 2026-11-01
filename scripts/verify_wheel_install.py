@@ -205,7 +205,7 @@ print(json.dumps({"installed_outside_repository": outside, "resource_count": len
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     result = verify_wheel_install(dist_dir=args.dist_dir, runtime_config=args.runtime_config)
-    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
 

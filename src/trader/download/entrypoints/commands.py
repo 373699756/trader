@@ -50,7 +50,7 @@ def RunDownload(
     # Published price gaps remain visible; training checks effective samples per head.
     ready = status.published and (allow_price_gaps or not status.needs_retry)
     if not ready or not quiet_success:
-        print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True))
+        print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True, indent=2))
     if status.state == "cancelled":
         return 130
     if not ready:
@@ -76,9 +76,9 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
         try:
             removed = ExecuteHistoryAutomationRemoval()
         except (OSError, RuntimeError, ValueError) as exc:
-            print(json.dumps({"status": "failed", "category": type(exc).__name__}))
+            print(json.dumps({"status": "failed", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
             return 1
-        print(json.dumps({"status": "removed", "removed_files": len(removed)}))
+        print(json.dumps({"status": "removed", "removed_files": len(removed)}, indent=2, ensure_ascii=False))
         return 0
     raise ValueError(f"unsupported download command: {command}")
 

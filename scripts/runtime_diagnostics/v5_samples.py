@@ -152,7 +152,7 @@ def Main() -> int:
     from trader.bootstrap import BuildSqlitePolicy
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
     report = ProbeV5Samples(args.work_root, wide_source=args.wide_sample_source, sqlite_policy=sqlite_policy)
-    print(json.dumps(report, ensure_ascii=False))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] == "passed" else 1
 
 

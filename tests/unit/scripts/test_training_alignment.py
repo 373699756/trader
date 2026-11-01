@@ -5,11 +5,36 @@ from tests.helpers.configuration import SqlitePolicyFixture
 from pathlib import Path
 import sys
 import subprocess
+import json
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.diagnose_runtime import _parser, _validate, build_commands
 from scripts.runtime_diagnostics.training_alignment import _probe
+
+
+@pytest.mark.parametrize("reported_profile", ("v1", "v2"))
+def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, monkeypatch, reported_profile):
+    from scripts.runtime_diagnostics import training_alignment
+    from trader import bootstrap
+    from trader.recommendation.infra.scoring import profile_factory
+
+    profile = {"schema_version": "profile_training_result", "profile": reported_profile, "status": "engineering_ready", "message": "训练完成"}
+    execution = {"schema_version": "selected_training_result", "status": "completed", "history_rows_read": 0}
+
+    def train(*args, **kwargs):
+        print(json.dumps(profile, ensure_ascii=False, indent=2))
+        print(json.dumps(execution, ensure_ascii=False, indent=2))
+        return 0
+
+    monkeypatch.setattr(bootstrap, "ExecuteSelectedTraining", train)
+    monkeypatch.setattr(profile_factory, "LoadScoringProfile", lambda *args, **kwargs: SimpleNamespace(heads=(1, 2)))
+    monkeypatch.setattr(training_alignment, "_numeric_fingerprints", lambda *args: ())
+    result = training_alignment._train_once(None, tmp_path / "history", tmp_path / "work", ("v1",))
+    assert result["complete"] is (reported_profile == "v1")
+    assert result["profiles"] == [profile]
+    assert result["execution"] == execution
 
 
 def test_alignment_import_does_not_preload_the_product_before_checkout_selection():

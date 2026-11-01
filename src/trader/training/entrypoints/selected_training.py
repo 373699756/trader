@@ -128,7 +128,7 @@ def _run_selected_training(
                     "failure": outcome.failure,
                 }
             payload["stage_seconds"] = dict(outputs[profiles.index(outcome.profile)].stage_durations)
-            print(json.dumps(payload, ensure_ascii=False))
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
             codes.append(
                 130
                 if outcome.cancelled
@@ -154,22 +154,22 @@ def _run_selected_training(
                         for profile, value in zip(profiles, codes, strict=True)
                     ],
                     "not_started": [],
-                }
+                }, indent=2, ensure_ascii=False
             )
         )
         return code
     except (KeyboardInterrupt, InterruptedError, CancelledError):
         cancelled.set()
-        print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles}))
+        print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles}, indent=2, ensure_ascii=False))
         return 130
     except (OSError, RuntimeError, ValueError) as exc:
         if cancelled.is_set():
             print(
-                json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles})
+                json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles}, indent=2, ensure_ascii=False)
             )
             return 130
         reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-        print(json.dumps({"schema_version": "selected_training_result", "status": "failed", "failure": reason}))
+        print(json.dumps({"schema_version": "selected_training_result", "status": "failed", "failure": reason}, indent=2, ensure_ascii=False))
         return 1
     finally:
         executor.stop(

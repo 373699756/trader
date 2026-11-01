@@ -7,6 +7,7 @@ from threading import Barrier, Event
 
 import pytest
 
+from scripts.runtime_diagnostics.reporting import ReadJsonReports
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask
@@ -157,7 +158,6 @@ def test_atomic_memory_wait_cancel_release_and_oversize():
 def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
     tmp_path, monkeypatch, capsys, v1_status
 ):
-    import json
 
     from tests.contract.test_cold_start import _empty_config
     from trader.bootstrap import ExecuteSelectedTraining
@@ -202,7 +202,7 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
     runtime = LoadRuntimeSettings(_empty_config(tmp_path))
     assert ExecuteSelectedTraining(runtime, ("v1", "v5")) == 1
     assert not executors[0].status().running
-    reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    reports = ReadJsonReports(capsys.readouterr().out)
     assert [item["profile"] for item in reports[:2]] == ["v1", "v5"]
     assert reports[-1]["worker_capacity"] == 2
     assert reports[-1]["history_scan_passes"] == 1
@@ -211,7 +211,6 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
 
 @pytest.mark.parametrize("reused,scans,rows", ((False, 1, 123), (True, 0, 0)))
 def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, capsys, reused, scans, rows):
-    import json
 
     from tests.contract.test_cold_start import _empty_config
     from trader.bootstrap import ExecuteSelectedTraining
@@ -225,7 +224,9 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
     assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1",)) == 0
-    reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    output = capsys.readouterr().out
+    assert '\n  "schema_version": ' in output
+    reports = ReadJsonReports(output)
     assert len(reports) == 2
     assert reports[0]["reused"] is reused
     assert reports[1]["schema_version"] == "selected_training_result"

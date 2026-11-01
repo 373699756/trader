@@ -102,7 +102,7 @@ class _TomorrowResearchProgress(TomorrowResearchProgressPort):
                     "status": status,
                     "elapsed_seconds": round(now - started_at, 3),
                 },
-                sort_keys=True,
+                sort_keys=True, indent=2, ensure_ascii=False,
             ),
             file=sys.stderr,
             flush=True,
@@ -202,7 +202,7 @@ def RunResearchCommand(
                     "outcomes": asdict(SQLiteOutcomeEvidenceIndex.inspect_status(research_root, sqlite_policy=sqlite_policy)),
                 },
                 ensure_ascii=False,
-                sort_keys=True,
+                sort_keys=True, indent=2,
             )
         )
         return 0
@@ -252,7 +252,7 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
             for claim in audit.claims
         ],
     }
-    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
     return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
