@@ -52,6 +52,7 @@ def AuditCompanyOcr(path: Path, *, budget_seconds: float, sqlite_policy: SqliteI
             monotonic=time.monotonic,
             sleeper=time.sleep,
             timeout_seconds=configuration.source_timeout_seconds,
+            document_download_timeout_seconds=configuration.document_download_timeout_seconds,
             document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
             document_limits=configuration.document_limits,
             extended_document_limits=configuration.extended_document_limits,

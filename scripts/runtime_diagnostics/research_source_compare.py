@@ -36,6 +36,7 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
             monotonic=time.monotonic,
             sleeper=time.sleep,
             timeout_seconds=args.timeout_seconds,
+            document_download_timeout_seconds=configuration.document_download_timeout_seconds,
             document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
             request_interval_seconds=configuration.request_interval_seconds,
             document_limits=configuration.document_limits,

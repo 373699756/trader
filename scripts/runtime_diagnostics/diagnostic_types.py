@@ -104,6 +104,7 @@ class DiagnosticOptions:
     company_pagination_audit: bool = False
     company_pipeline_audit: bool = False
     company_ocr_audit: bool = False
+    company_document_audit: bool = False
     v5_probe_directory: Path | None = None
     v5_kernel_probe: bool = False
     training_probe_directory: Path | None = None

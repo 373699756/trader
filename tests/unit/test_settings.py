@@ -876,6 +876,7 @@ def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_pa
 def test_company_sync_request_and_document_limits(tmp_path) -> None:
     settings = LoadCompanySyncConfiguration(PROJECT_ROOT)
     assert settings.source_timeout_seconds == 8.0
+    assert settings.document_download_timeout_seconds == 120.0
     assert settings.document_limits.max_bytes == 16 * 1024 * 1024
     assert settings.document_limits.max_pages == 200
     assert settings.document_failure_retry_seconds == 86400
@@ -890,6 +891,12 @@ def test_company_sync_request_and_document_limits(tmp_path) -> None:
         LoadCompanySyncConfiguration(tmp_path)
 
     document["company"]["source_timeout_seconds"] = 8.0
+    document["company"]["document_download_timeout_seconds"] = 120.01
+    (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="document_download_timeout_seconds must be at most 120.0"):
+        LoadCompanySyncConfiguration(tmp_path)
+
+    document["company"]["document_download_timeout_seconds"] = 120.0
     document["company"]["document_limits"]["max_bytes"] = 64 * 1024 * 1024 + 1
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="max_bytes must be at most"):

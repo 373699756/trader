@@ -8,7 +8,7 @@ import pytest
 
 from trader.download.domain.company_evidence import CompanySourceFailure, Disclosure, DisclosurePartition
 from tests.helpers.configuration import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource
-from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpError, HttpResponse, HttpTimeout
+from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpError, HttpResponse, HttpResponseTooLarge, HttpTimeout
 
 _DAY = date(2026, 10, 18)
 _EMPTY = HttpResponse(200, json.dumps({"totalRecordNum": 0, "hasMore": False, "announcements": []}).encode())
@@ -43,6 +43,13 @@ class _Transport:
 
     get = post
 
+    def execute(self, request):
+        return self.get(
+            request.url, timeout=request.timeout_seconds, deadline=request.deadline,
+            max_response_bytes=request.max_response_bytes, cancel_requested=request.cancel_requested,
+            io_timeout_seconds=request.io_timeout_seconds,
+        )
+
 
 @pytest.mark.parametrize(
     "transient",
@@ -66,6 +73,45 @@ def test_transient_failure_recovers_same_page_with_independent_request_timeout(t
     assert (first["deadline"], second["deadline"]) == (8, 18)
     assert first["timeout"] == second["timeout"] == 8
     assert sum(clock.waits) == 2
+
+
+def test_pdf_uses_separate_total_deadline_and_bounded_io_and_retries(monkeypatch):
+    clock = _Clock()
+    transport = _Transport(clock, [(HttpTimeout("idle"), 8), (HttpResponse(200, b"PDF fixture"), 20)])
+    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
+    monkeypatch.setattr(source, "_parse_document", lambda *_: "verified body " * 8)
+    item = Disclosure(
+        "cninfo", "slow", ("600001",), "风险公告", datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
+        "https://static.cninfo.com.cn/finalpage/a.PDF", "a",
+    )
+    assert source.document(item).text == "verified body " * 8
+    first, second = [request for _, request in transport.calls]
+    assert first["timeout"] == second["timeout"] == 120
+    assert first["io_timeout_seconds"] == second["io_timeout_seconds"] == 8
+    assert (first["deadline"], second["deadline"]) == (120, 130)
+    assert len(transport.calls) == 2
+
+
+def test_slow_pdf_reaches_existing_expanded_size_route(monkeypatch):
+    clock = _Clock()
+    transport = _Transport(clock, [
+        (HttpResponseTooLarge("http_response_too_large"), 17),
+        (HttpResponse(200, b"PDF fixture"), 29),
+    ])
+    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
+
+    def parse(_payload, limits):
+        assert limits.max_bytes == 64 * 1024 * 1024
+        return "verified body " * 8
+
+    monkeypatch.setattr(source, "_parse_document", parse)
+    item = Disclosure(
+        "cninfo", "large", ("600001",), "风险公告", datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
+        "https://static.cninfo.com.cn/finalpage/a.PDF", "a",
+    )
+    assert source.document(item).text == "verified body " * 8
+    assert [call["max_response_bytes"] for _, call in transport.calls] == [16 * 1024 * 1024, 64 * 1024 * 1024]
+    assert clock.now > 8 and len(transport.calls) == 2
 
 
 @pytest.mark.parametrize("recover", [False, True])

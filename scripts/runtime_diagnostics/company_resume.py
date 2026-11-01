@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from scripts.runtime_diagnostics.company_pagination_audit import AuditCompanyPagination
 from scripts.runtime_diagnostics.company_pipeline_audit import AuditCompanyPipeline
 from scripts.runtime_diagnostics.company_ocr_audit import AuditCompanyOcr
+from scripts.runtime_diagnostics.company_document_download_audit import AuditCompanyDocumentDownloads
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries, AuditCompanyStorage
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
@@ -115,6 +116,7 @@ class _ObservedSource(CninfoMarketDisclosureSource):
             monotonic=time.monotonic,
             sleeper=time.sleep,
             timeout_seconds=configuration.source_timeout_seconds,
+            document_download_timeout_seconds=configuration.document_download_timeout_seconds,
             document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
             document_limits=configuration.document_limits,
             extended_document_limits=configuration.extended_document_limits,
@@ -245,6 +247,7 @@ def Main() -> int:
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--ocr-only", action="store_true")
+    audit.add_argument("--document-only", action="store_true")
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
@@ -262,6 +265,10 @@ def Main() -> int:
     source_path = args.database.resolve(strict=True)
     if not 30 <= args.budget_seconds <= 10800:
         parser.error("budget within 30..10800 seconds required")
+    if args.document_only:
+        report = AuditCompanyDocumentDownloads(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
     if args.storage_only:
         report = AuditCompanyStorage(
             source_path,

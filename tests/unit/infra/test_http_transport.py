@@ -162,6 +162,44 @@ def test_invalid_or_cancelled_request_performs_no_io(monkeypatch):
         transport.get("https://example.invalid", timeout=1, cancel_requested=lambda: True)
 
 
+@pytest.mark.parametrize("value", (0, -1, float("nan"), float("inf")))
+def test_invalid_io_timeout_is_rejected(value):
+    with pytest.raises(ValueError, match="http_io_timeout_invalid"):
+        HttpRequest("GET", "https://example.invalid", 120, io_timeout_seconds=value)
+
+
+def test_progressing_download_can_exceed_io_timeout_but_not_total_deadline(monkeypatch):
+    clock = [0.0]
+    socket_timeouts = []
+
+    class Socket:
+        def settimeout(self, seconds):
+            socket_timeouts.append(seconds)
+
+    class Connection:
+        sock = Socket()
+
+    def advance():
+        clock[0] += 3
+
+    raw = _Raw([b"%PDF-", b"content", b"end"], on_read=advance)
+    raw.connection = Connection()
+    session = _Session(raw)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    with driver.RequestsHttpTransport(monotonic=lambda: clock[0]) as transport:
+        response = transport.execute(HttpRequest("GET", "https://example.invalid", 120, io_timeout_seconds=8))
+    assert response.content == b"%PDF-contentend" and clock[0] > 8
+    assert session.calls[0][1]["timeout"] == 8 and max(socket_timeouts) == 8
+    assert raw.closed
+    clock[0] = 0.0
+    raw = _Raw([b"a"] * 20, on_read=advance)
+    raw.connection = Connection()
+    monkeypatch.setattr(driver.requests, "Session", lambda: _Session(raw))
+    with driver.RequestsHttpTransport(monotonic=lambda: clock[0]) as transport, pytest.raises(HttpTimeout):
+        transport.execute(HttpRequest("GET", "https://example.invalid", 10, io_timeout_seconds=8))
+    assert clock[0] <= 13 and raw.closed
+
+
 def test_total_deadline_interrupts_a_continuously_trickling_body():
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"

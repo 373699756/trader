@@ -35,6 +35,7 @@ class CompanyDocumentLimits:
 @dataclass(frozen=True)
 class CompanySyncConfiguration:
     source_timeout_seconds: float
+    document_download_timeout_seconds: float
     document_parse_timeout_seconds: float
     request_interval_seconds: float
     document_failure_retry_seconds: float
@@ -54,6 +55,7 @@ class CompanySyncConfiguration:
     def __post_init__(self) -> None:
         values = (
             self.source_timeout_seconds,
+            self.document_download_timeout_seconds,
             self.document_parse_timeout_seconds,
             self.request_interval_seconds,
             self.document_failure_retry_seconds,
@@ -79,6 +81,7 @@ class CompanySyncConfiguration:
         if (
             any(not math.isfinite(value) for value in values)
             or not 0 < self.source_timeout_seconds <= 8
+            or not self.source_timeout_seconds <= self.document_download_timeout_seconds <= 120
             or self.document_parse_timeout_seconds <= 0
             or self.request_interval_seconds < 1
             or self.document_failure_retry_seconds <= 0

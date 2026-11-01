@@ -33,6 +33,7 @@
   },
   "company": {
     "source_timeout_seconds": 8.0,
+    "document_download_timeout_seconds": 120.0,
     "document_parse_timeout_seconds": 10.0,
     "request_interval_seconds": 1.0,
     "directory_batch_pages": 20,

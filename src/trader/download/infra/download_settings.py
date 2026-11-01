@@ -110,6 +110,7 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
         company,
         {
             "source_timeout_seconds",
+            "document_download_timeout_seconds",
             "document_parse_timeout_seconds",
             "request_interval_seconds",
             "directory_batch_pages",
@@ -138,6 +139,7 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
     )
     return CompanySyncConfiguration(
         source_timeout_seconds=Number(company, "source_timeout_seconds", minimum=0.1, maximum=8.0),
+        document_download_timeout_seconds=Number(company, "document_download_timeout_seconds", minimum=0.1, maximum=120.0),
         document_parse_timeout_seconds=Number(company, "document_parse_timeout_seconds", minimum=0.1, maximum=30.0),
         request_interval_seconds=Number(company, "request_interval_seconds", minimum=1.0),
         directory_batch_pages=Integer(company, "directory_batch_pages", minimum=1, maximum=100),

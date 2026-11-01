@@ -128,6 +128,7 @@ class CninfoMarketDisclosureSourceFixture(CninfoMarketDisclosureSource):
     def __init__(self, *args: object, **options: object) -> None:
         settings = LoadCompanySyncConfiguration(PROJECT_ROOT)
         options.setdefault("timeout_seconds", settings.source_timeout_seconds)
+        options.setdefault("document_download_timeout_seconds", settings.document_download_timeout_seconds)
         options.setdefault("document_parse_timeout_seconds", settings.document_parse_timeout_seconds)
         options.setdefault("request_interval_seconds", settings.request_interval_seconds)
         options.setdefault("document_limits", settings.document_limits)

@@ -124,6 +124,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--company-pagination-audit", action="store_true", help="read-only CNInfo page-size comparison")
     parser.add_argument("--company-ocr-audit", action="store_true", help="one failed announcement OCR probe without active writes")
+    parser.add_argument("--company-document-audit", action="store_true", help="read-only failed PDF request comparison")
     parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup timing")
     parser.add_argument("--history-preload-cpu-profile", action="store_true", help="include CPU profiling overhead in preload timing")
     parser.add_argument("--history-preload-feature-audit", action="store_true", help="profile concurrent feature builds with published inputs and synthetic quotes")
@@ -430,6 +431,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
                 args.company_pagination_audit,
                 args.company_pipeline_audit,
                 args.company_ocr_audit,
+                args.company_document_audit,
             )
         )
         > 1
@@ -438,7 +440,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     if (
         args.profile == "company-resume"
         and company_replay_directory is None
-        and not (args.company_query_audit or args.company_storage_audit or args.company_pagination_audit)
+        and not (args.company_query_audit or args.company_storage_audit or args.company_pagination_audit or args.company_document_audit)
     ):
         raise ValueError("company-resume requires --company-replay-directory")
     output = args.output
@@ -545,6 +547,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_pagination_audit=args.company_pagination_audit,
             company_pipeline_audit=args.company_pipeline_audit,
             company_ocr_audit=args.company_ocr_audit,
+            company_document_audit=args.company_document_audit,
             v5_kernel_probe=args.v5_kernel_probe,
             v5_probe_directory=_external_path(args.v5_probe_directory, "--v5-probe-directory")
             if args.v5_probe_directory is not None
@@ -1085,6 +1088,7 @@ def build_commands(
                 *(("--pagination-only",) if options.company_pagination_audit else ()),
                 *(("--pipeline-only",) if options.company_pipeline_audit else ()),
                 *(("--ocr-only",) if options.company_ocr_audit else ()),
+                *(("--document-only",) if options.company_document_audit else ()),
             ),
             common_timeout,
         ),
@@ -1785,6 +1789,28 @@ def _company_resume_details(
         )
     }
     runs = summary.get("runs")
+    document_download = _mapping(summary.get("document_download_audit"))
+    if document_download:
+        observations = document_download.get("observations")
+        selected["document_download_audit"] = {
+            "read_only": document_download.get("read_only"),
+            "sample_size": document_download.get("sample_size"),
+            "complete": document_download.get("complete"),
+            "production_passed": document_download.get("production_passed"),
+            "observations": [
+                {key: row.get(key) for key in (
+                    "disclosure_id", "variant", "timeout_seconds", "io_timeout_seconds", "passed", "is_pdf", "payload_hash", "failure", "cause",
+                )} | {"attempts": [
+                    {key: attempt.get(key) for key in (
+                        "seconds", "response_bytes", "status_code", "failure", "phase",
+                    )}
+                    for attempt in (row.get("attempts", [])[:1] if isinstance(row.get("attempts"), list) else [])
+                    if isinstance(attempt, dict)
+                ]}
+                for row in (observations[:10] if isinstance(observations, list) else [])
+                if isinstance(row, dict)
+            ],
+        }
     ocr = _mapping(summary.get("ocr_audit"))
     if ocr:
         selected["ocr_audit"] = {key: ocr.get(key) for key in (

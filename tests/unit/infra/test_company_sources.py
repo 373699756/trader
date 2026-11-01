@@ -34,6 +34,13 @@ class Session:
 
     get = post
 
+    def execute(self, request):
+        return self.get(
+            request.url, timeout=request.timeout_seconds, deadline=request.deadline,
+            max_response_bytes=request.max_response_bytes, cancel_requested=request.cancel_requested,
+            io_timeout_seconds=request.io_timeout_seconds,
+        )
+
 
 def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
     session = Session(
@@ -238,7 +245,7 @@ def test_rejections_have_distinct_safe_categories(status, category):
 
 def test_oversized_pdf_remains_a_document_failure_instead_of_stopping_the_source():
     class Oversized:
-        def get(self, *args, **kwargs):
+        def execute(self, request):
             raise HttpResponseTooLarge("http_response_too_large")
 
     source = CninfoMarketDisclosureSource(Oversized(), monotonic=lambda: 0, sleeper=lambda value: None)

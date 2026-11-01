@@ -177,7 +177,7 @@ class RequestsHttpTransport:
                 request.url,
                 headers=headers,
                 data=request.body,
-                timeout=max(0.001, deadline - self._monotonic()),
+                timeout=max(0.001, min(deadline - self._monotonic(), request.io_timeout_seconds or request.timeout_seconds)),
                 stream=True,
                 allow_redirects=False,
             ) as raw:
@@ -191,7 +191,9 @@ class RequestsHttpTransport:
                     self._check(request, deadline)
                     connection = raw.raw.connection
                     if connection is not None and connection.sock is not None:
-                        connection.sock.settimeout(max(0.001, deadline - self._monotonic()))
+                        connection.sock.settimeout(max(0.001, min(
+                            deadline - self._monotonic(), request.io_timeout_seconds or request.timeout_seconds
+                        )))
                     # read1 performs one socket read, including for trickling bodies.
                     chunk = raw.raw.read1(65536, decode_content=False)
                     if not chunk:

@@ -39,6 +39,7 @@ from trader.infra.http_contracts import (
     HttpError,
     HttpResponse,
     HttpResponseTooLarge,
+    HttpRequest,
     HttpTimeout,
     HttpTransport,
 )
@@ -56,6 +57,7 @@ class CninfoMarketDisclosureSource:
         monotonic: Callable[[], float],
         sleeper: Callable[[float], None],
         timeout_seconds: float,
+        document_download_timeout_seconds: float,
         document_parse_timeout_seconds: float,
         request_interval_seconds: float,
         document_limits: CompanyDocumentLimits,
@@ -69,6 +71,7 @@ class CninfoMarketDisclosureSource:
         self._monotonic = monotonic
         self._sleep = sleeper
         self._timeout = timeout_seconds
+        self._document_download_timeout = document_download_timeout_seconds
         self._document_parse_timeout = document_parse_timeout_seconds
         self._document_limits = document_limits
         self._extended_document_limits = extended_document_limits
@@ -295,12 +298,13 @@ class CninfoMarketDisclosureSource:
 
     def _download_document(self, item: Disclosure, max_bytes: int) -> HttpResponse:
         return self._request(
-            lambda: self._session.get(
-                item.url,
-                timeout=self._timeout,
-                deadline=self._monotonic() + self._timeout,
-                max_response_bytes=max_bytes,
-                cancel_requested=self._cancel_requested,
+            lambda: self._session.execute(
+                HttpRequest(
+                    "GET", item.url, self._document_download_timeout,
+                    deadline=self._monotonic() + self._document_download_timeout,
+                    max_response_bytes=max_bytes, cancel_requested=self._cancel_requested,
+                    io_timeout_seconds=self._timeout,
+                )
             ),
         )
 
