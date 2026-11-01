@@ -68,6 +68,8 @@ class QfqWindowState:
     source: str
     dates: tuple[date, ...]
     verified: bool
+    start_date: date | None
+    end_date: date | None
 
 
 @dataclass(frozen=True, slots=True)

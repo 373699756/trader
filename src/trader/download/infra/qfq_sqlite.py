@@ -310,17 +310,23 @@ class SQLiteQfqWindowCache:
             if connection is None:
                 return QfqWindowSnapshot(())
             identities = connection.run(
-                "SELECT code,source FROM window_binding WHERE profile=? ORDER BY code", (self.profile,)
+                "SELECT code,source,start_date,end_date FROM window_binding WHERE profile=? ORDER BY code",
+                (self.profile,),
             ).fetchall()
-            for code, source in identities:
+            for code, source, start, end in identities:
                 if code not in allowed_codes:
                     continue
                 try:
+                    start_date, end_date = DecodeDate(start), DecodeDate(end)
+                    if start_date > end_date:
+                        raise RuntimeError("qfq_code_identity_mismatch")
                     with SqliteTransaction(connection):
                         rows = self._rows(connection, code)
-                    states.append(QfqWindowState(code, source, tuple(DecodeDate(day) for day, _ in rows), True))
+                    states.append(QfqWindowState(
+                        code, source, tuple(DecodeDate(day) for day, _ in rows), True, start_date, end_date
+                    ))
                 except (RuntimeError, ValueError):
-                    states.append(QfqWindowState(code, source, (), False))
+                    states.append(QfqWindowState(code, source, (), False, None, None))
         return QfqWindowSnapshot(tuple(states))
 
     def source_identity(self, code: str) -> str | None:

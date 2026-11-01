@@ -1591,6 +1591,100 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
     assert any("发布内容校验" in message and "完成" in message for message in messages)
 
 
+@pytest.mark.parametrize("suspension", ("inside", "boundary", "latest", "whole_peer"))
+def test_market_publication_accepts_suspension_without_counting_price_rows(tmp_path, suspension):
+    suspended_days = {
+        "inside": (DAYS[-30],),
+        "boundary": (DAYS[-61],),
+        "latest": (DAYS[-1],),
+        "whole_peer": DAYS[-61:],
+    }[suspension]
+
+    class SuspendedSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            window = super().fetch_window(security, dates)
+            return replace(window, cells=tuple(
+                replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+                if cell.trade_date in suspended_days else cell
+                for cell in window.cells
+            ))
+
+    supplier = SuspendedSupplier()
+    messages = []
+    updater = replace(_updater(tmp_path, supplier), report=lambda message: messages.append(_plain_feedback(message)))
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed)
+
+    result = runner.execute()
+
+    assert result.failure_reason is None and not result.needs_retry
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert len(updater.v2.read_code("600001").cells) == 251 - len(suspended_days)
+    assert len(updater.v3.read_code("600001").cells) == 61 - len(suspended_days)
+    assert any("发布内容校验" in message and "完成" in message for message in messages)
+    if suspension in ("inside", "boundary"):
+        before = _fingerprints(tmp_path)
+        resumed = runner.execute()
+        assert resumed.failure_reason is None and resumed.skipped_codes == 1
+        assert len(supplier.calls) == 1
+        assert _fingerprints(tmp_path) == before
+
+
+def test_market_publication_uses_persisted_bounds_instead_of_current_configuration(tmp_path, monkeypatch):
+    updater = _updater(tmp_path, Supplier())
+    published_configuration = replace(QFQ_CONFIGURATION, v3_sessions=50)
+    updater.v2.replace_paired_windows(
+        updater.v3, (_window(days=DAYS[1:]),), "fixture", published_configuration,
+        calendar=DAYS[1:], completed_day=DAYS[-1],
+    )
+    result = QfqUpdateResult(DAYS[-1], completed_codes=1, skipped_codes=1)
+    monkeypatch.setattr(UpdateQfqWindows, "execute", lambda *_args: result)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed)
+    before = _fingerprints(tmp_path)
+
+    assert runner.execute() == result
+    assert _fingerprints(tmp_path) == before
+
+
+def test_market_publication_keeps_old_valid_pair_when_another_stock_advances(tmp_path):
+    updater = _updater(tmp_path, _IncompleteSupplier(codes=("600001", "600002")))
+    updater.seed((_window(days=DAYS[:-1]),), "old-source", calendar=DAYS[:-1])
+    old_window = updater.v3.read_code("600001")
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed)
+
+    result = runner.execute()
+
+    assert result.failure_reason is None
+    assert result.completed_codes == 1 and result.pending_codes == 1 and result.needs_retry
+    assert updater.v3.read_code("600001") == old_window
+    assert updater.v3.read_code("600002").cells[-1].trade_date == DAYS[-1]
+
+
+@pytest.mark.parametrize(
+    "field,value,reason",
+    (
+        ("source", "other-source", "qfq_publication_pair_mismatch"),
+        ("end_date", EncodeDate(DAYS[-1] + timedelta(days=1)), "qfq_publication_pair_mismatch"),
+        ("content_hash", bytes(32), "qfq_publication_content_invalid"),
+    ),
+)
+def test_market_publication_still_rejects_invalid_identity(tmp_path, monkeypatch, field, value, reason):
+    updater = _updater(tmp_path, Supplier())
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    with SqliteSession(updater.v2.path) as connection, SqliteTransaction(connection, immediate=True):
+        connection.run(f"UPDATE window_binding SET {field}=? WHERE profile='v3'", (value,))
+    monkeypatch.setattr(UpdateQfqWindows, "execute", lambda *_args: result)
+    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed)
+
+    checked = runner.execute()
+
+    assert checked == replace(result, failure_reason=reason)
+    assert checked.needs_retry
+
+
 def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
     updater = _updater(tmp_path, Supplier(codes=("600001",)))
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
@@ -1604,7 +1698,7 @@ def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
     runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed, failures=failures)
     checked = runner.execute()
     assert checked.failure_reason == "qfq_publication_membership_mismatch"
-    assert checked.changed_rows == result.changed_rows and checked.changed_files == result.changed_files
+    assert checked == replace(result, failure_reason="qfq_publication_membership_mismatch")
     with SqliteSession(tmp_path / "daily_window.sqlite3") as connection:
         failure, = ReadDownloadFailures(connection, DownloadFailureConfigurationFixture())["events"]
     assert failure["stage"] == "publication_validation"

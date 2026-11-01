@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +35,7 @@ class QfqUpdateRunner:
         changed: set[str] = set()
         rows = 0
         stage = "maintenance_lock"
+        result: QfqUpdateResult | None = None
         try:
             with HistoryMaintenanceLock(self.lock_path):
                 stage = "initial_integrity"
@@ -89,6 +90,10 @@ class QfqUpdateRunner:
             self.updater.report(
                 QfqMessage(self.updater.monotonic() - started, "更新失败", reason, level=ProgressLevel.ERROR)
             )
+            if result is not None:
+                return replace(
+                    result, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason
+                )
             return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)
 
     def _verify_publication(self, started: float) -> None:
@@ -101,9 +106,20 @@ class QfqUpdateRunner:
             raise RuntimeError("qfq_publication_membership_mismatch")
         for left, right in zip(v2.states, v3.states, strict=True):
             try:
-                if not left.verified or not right.verified:
+                if (
+                    not left.verified or not right.verified
+                    or left.start_date is None or left.end_date is None
+                    or right.start_date is None or right.end_date is None
+                ):
                     raise RuntimeError("qfq_publication_content_invalid")
-                if left.source != right.source or right.dates != left.dates[-self.updater.configuration.v3_sessions :]:
+                # Published bounds own the pair; missing prices do not expand a window.
+                expected = tuple(day for day in left.dates if right.start_date <= day <= right.end_date)
+                if (
+                    left.source != right.source
+                    or left.end_date != right.end_date
+                    or left.start_date > right.start_date
+                    or right.dates != expected
+                ):
                     raise RuntimeError("qfq_publication_pair_mismatch")
             except RuntimeError as exc:
                 if self.failures is not None:
