@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from trader.download.domain.company_evidence import CompanyDocumentLimits, CompanySyncConfiguration
+from trader.download.domain.download_failure import DownloadFailureConfiguration
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistoryWriteBatchPolicy
 from trader.download.domain.qfq_window import QfqWindowConfiguration
 from trader.infra.settings.data_paths import DataPaths
@@ -163,10 +164,18 @@ def LoadCompanySyncConfiguration(project_root: Path) -> CompanySyncConfiguration
     )
 
 
+def LoadDownloadFailureConfiguration(project_root: Path) -> DownloadFailureConfiguration:
+    section = RequireMapping(_download_document(project_root), "failure_diagnostics")
+    RequireExactKeys(section, {"retention_limit", "query_limit"}, "download.failure_diagnostics")
+    retention = Integer(section, "retention_limit", minimum=1, maximum=2**63 - 1)
+    query = Integer(section, "query_limit", minimum=1, maximum=retention)
+    return DownloadFailureConfiguration(retention_limit=retention, query_limit=query)
+
+
 def _download_document(project_root: Path) -> dict[str, object]:
     document = ReadJsonObject(project_root / "config" / "download.json")
-    RequireExactKeys(document, {"history", "online_qfq", "company"}, "download")
+    RequireExactKeys(document, {"history", "online_qfq", "company", "failure_diagnostics"}, "download")
     return document
 
 
-__all__ = ["LoadCompanySyncConfiguration", "LoadHistorySyncConfiguration", "LoadQfqWindowConfiguration"]
+__all__ = ["LoadCompanySyncConfiguration", "LoadDownloadFailureConfiguration", "LoadHistorySyncConfiguration", "LoadQfqWindowConfiguration"]

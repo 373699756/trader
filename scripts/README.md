@@ -269,10 +269,13 @@ Audit active qfq paired publication and checkpoint state:
 
 For `sync market` failures, run `.venv/bin/python3 scripts/diagnose_runtime.py --profile download-failures --output -`.
 This reads only the existing `download_failure` table in the configured shared daily window, with stage/reason counts
-and the latest 50 failure events (run, Shanghai timestamp, stock, request window, provider/endpoint class, attempt,
+and recent failure events (run, Shanghai timestamp, stock, request window, provider/endpoint class, attempt,
 measured timing, safe exception causes and source location). It makes no supplier requests and reads no price payloads.
 Failed attempts remain visible after recovery; they are not the current pending state. Only failures are retained,
-up to 20000 rows; terminal output is not archived. Old databases return `available=false` without initialization.
+using `download.json.failure_diagnostics.retention_limit` (currently 20000); terminal output is not archived.
+`query_limit` bounds both returned events and groups (currently 50). Both settings follow `--runtime-config`.
+Reducing retention takes effect on the next failure write; diagnostics never trim rows.
+Old databases return `available=false` without initialization and report the configured limits.
 Use `--qfq-database /absolute/external/copy.sqlite3` for an isolated copy.
 
 ```bash

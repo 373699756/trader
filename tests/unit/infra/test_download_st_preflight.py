@@ -1,6 +1,6 @@
 """Every download filters current and historical ST before business requests."""
 
-from tests.helpers.configuration import SqlitePolicyFixture
+from tests.helpers.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture
 
 from dataclasses import replace
 from datetime import timedelta
@@ -85,6 +85,7 @@ def st_sources(monkeypatch):
     )
     company_config = LoadCompanySyncConfiguration(_ROOT)
     monkeypatch.setattr(bootstrap, "LoadCompanySyncConfiguration", lambda _root: company_config)
+    monkeypatch.setattr(bootstrap, "LoadDownloadFailureConfiguration", lambda _root: DownloadFailureConfigurationFixture())
     return calls, sessions
 
 
@@ -194,6 +195,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
             paths,
             bootstrap.LoadHistorySyncConfiguration(_ROOT, paths),
             LoadQfqWindowConfiguration(_ROOT),
+            failure_configuration=DownloadFailureConfigurationFixture(),
             shutdown_timeout_seconds=2.0,
             now=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
         )

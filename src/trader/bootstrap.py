@@ -38,7 +38,7 @@ from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
-from trader.download.domain.download_failure import DownloadFailureContext
+from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
@@ -49,6 +49,7 @@ from trader.download.infra.company_structured_source import EastmoneyCompanySour
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
 from trader.download.infra.download_settings import (
     LoadCompanySyncConfiguration,
+    LoadDownloadFailureConfiguration,
     LoadHistorySyncConfiguration,
     LoadQfqWindowConfiguration,
 )
@@ -235,9 +236,11 @@ def ExecuteSync(
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
+    failure_configuration = LoadDownloadFailureConfiguration(settings.project_root)
     market_failures = (
         DownloadFailureDiagnostics(
-            SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy).RecordDownloadFailure, clock.now
+            partial(SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy).RecordDownloadFailure,
+                    configuration=failure_configuration), clock.now
         ) if target in ("market", "all") else None
     )
 
@@ -248,6 +251,7 @@ def ExecuteSync(
             paths,
             configuration,
             qfq_configuration,
+            failure_configuration=failure_configuration,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference,
             cancel_requested=cancel_requested,
@@ -579,6 +583,7 @@ def ExecuteQfqDownload(
     history_configuration: HistorySyncConfiguration,
     qfq_configuration: QfqWindowConfiguration,
     *,
+    failure_configuration: DownloadFailureConfiguration,
     shutdown_timeout_seconds: float,
     reference: PreparedReference | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
@@ -593,7 +598,9 @@ def ExecuteQfqDownload(
     v2 = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy)
     v3 = SQLiteQfqWindowCache(paths.daily_window, "v3", sqlite_policy=sqlite_policy)
     if failures is None:
-        failures = DownloadFailureDiagnostics(v2.RecordDownloadFailure, ShanghaiClock(now).now)
+        failures = DownloadFailureDiagnostics(
+            partial(v2.RecordDownloadFailure, configuration=failure_configuration), ShanghaiClock(now).now,
+        )
     prepared_started = time.monotonic()
     if reference is None:
         try:

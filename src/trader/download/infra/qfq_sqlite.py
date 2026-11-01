@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.download.domain.download_failure import DownloadFailureRecord
+from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureRecord
 from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL, WriteDownloadFailure
 
 import hashlib
@@ -134,9 +134,9 @@ class SQLiteQfqWindowCache:
                 connection.run(statement)
             yield connection
 
-    def RecordDownloadFailure(self, record: DownloadFailureRecord) -> None:
+    def RecordDownloadFailure(self, record: DownloadFailureRecord, *, configuration: DownloadFailureConfiguration) -> None:
         with self._write_connection() as connection:
-            WriteDownloadFailure(connection, record)
+            WriteDownloadFailure(connection, record, configuration)
 
     def price_issues(self) -> tuple[PriceIssue, ...]:
         with self._read_connection() as connection:

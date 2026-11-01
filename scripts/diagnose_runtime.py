@@ -750,7 +750,8 @@ def build_commands(
         "download_failures": DiagnosticCommand(
             "download_failures",
             (python_executable, "-m", "scripts.runtime_diagnostics.qfq_sqlite",
-             "--database", str(options.qfq_database), "--failures-only"),
+             "--database", str(options.qfq_database), "--failures-only",
+             "--runtime-config", str(options.runtime_config)),
             common_timeout,
         ),
         "qfq_sqlite_audit": DiagnosticCommand(
@@ -759,6 +760,7 @@ def build_commands(
                 python_executable,
                 "-m",
                 "scripts.runtime_diagnostics.qfq_sqlite",
+                "--runtime-config", str(options.runtime_config),
                 "--database",
                 str(options.qfq_database),
             ),

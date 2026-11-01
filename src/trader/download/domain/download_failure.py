@@ -5,6 +5,12 @@ from datetime import date, datetime
 
 
 @dataclass(frozen=True, slots=True)
+class DownloadFailureConfiguration:
+    retention_limit: int
+    query_limit: int
+
+
+@dataclass(frozen=True, slots=True)
 class DownloadFailureContext:
     stage: str
     code: str = ""

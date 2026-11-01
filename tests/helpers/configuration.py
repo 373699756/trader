@@ -9,6 +9,8 @@ from pathlib import Path
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import CompanyEvidenceRequest
 from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.domain.download_failure import DownloadFailureConfiguration
+from trader.download.infra.download_settings import LoadDownloadFailureConfiguration
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
@@ -30,6 +32,10 @@ from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def DownloadFailureConfigurationFixture(**changes: object) -> DownloadFailureConfiguration:
+    return replace(LoadDownloadFailureConfiguration(PROJECT_ROOT), **changes)
 
 
 @lru_cache(maxsize=1)

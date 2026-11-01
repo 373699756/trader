@@ -256,7 +256,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         scoring_profile=profile_override,
     )
     watchlist = LoadLongWatchlist(runtime.long_watchlist_path)
-    from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
+    from trader.download.infra.download_settings import LoadDownloadFailureConfiguration, LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
     from trader.recommendation.infra.scoring.cost_settings import (
         LoadEvaluationCostScenarios,
         LoadExecutionCostPolicy,
@@ -270,6 +270,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
     config_dir = runtime.config_path.parent
     download = LoadHistorySyncConfiguration(runtime.project_root, runtime.data_paths)
     qfq = LoadQfqWindowConfiguration(runtime.project_root)
+    failure = LoadDownloadFailureConfiguration(runtime.project_root)
     training_v2 = LoadProfileTrainingSettings(runtime.project_root, "v2")
     training_v3 = LoadProfileTrainingSettings(runtime.project_root, "v3")
     training_v1 = LoadV1TrainingSettings(runtime.project_root)
@@ -299,6 +300,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "qfq_workers": qfq.workers,
         "qfq_source_timeout_seconds": qfq.source_timeout_seconds,
         "qfq_source_retries": qfq.source_retries,
+        "download_failure_diagnostics": {"retention_limit": failure.retention_limit, "query_limit": failure.query_limit},
         "storage_policy": {
             "hdd": {
                 "connection_timeout_seconds": runtime.storage_policy.hdd.connection_timeout_seconds,

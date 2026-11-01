@@ -9,7 +9,7 @@ from collections.abc import Callable
 from datetime import datetime
 from uuid import uuid4
 
-from trader.download.domain.download_failure import DownloadFailureContext, DownloadFailureRecord
+from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext, DownloadFailureRecord
 from trader.download.infra.history_sync_failure import HistoryFailureDetail
 from trader.infra.http_contracts import HttpCancelled, HttpStatusError
 from trader.infra.sqlite_connection import SqliteConnection
@@ -70,7 +70,7 @@ class DownloadFailureDiagnostics:
             _LOGGER.error("download_failure_recording_failed stage=%s reason=%s", context.stage, record.reason)
 
 
-def WriteDownloadFailure(connection: SqliteConnection, record: DownloadFailureRecord) -> None:
+def WriteDownloadFailure(connection: SqliteConnection, record: DownloadFailureRecord, configuration: DownloadFailureConfiguration) -> None:
     context = record.context
     connection.run(
         "INSERT INTO download_failure(run_id,occurred_at,stage,code,supplier,attempt,maximum_attempts,"
@@ -82,25 +82,28 @@ def WriteDownloadFailure(connection: SqliteConnection, record: DownloadFailureRe
          context.window_end.isoformat() if context.window_end else None, context.endpoint),
     )
     connection.run(
-        "DELETE FROM download_failure WHERE id<=(SELECT id FROM download_failure ORDER BY id DESC LIMIT 1 OFFSET 20000)"
+        "DELETE FROM download_failure WHERE id<=(SELECT id FROM download_failure ORDER BY id DESC LIMIT 1 OFFSET ?)",
+        (configuration.retention_limit,),
     )
 
 
-def ReadDownloadFailures(connection: SqliteConnection) -> dict[str, object]:
+def ReadDownloadFailures(connection: SqliteConnection, configuration: DownloadFailureConfiguration) -> dict[str, object]:
     """Bounded diagnostic JSON projection; never initialize a read-only database."""
     if connection.run("SELECT 1 FROM sqlite_master WHERE name='download_failure'").fetchone() is None:
-        return {"available": False, "events": [], "total": 0}
+        return {"available": False, "events": [], "groups": [], "total": 0,
+                "retention_limit": configuration.retention_limit, "query_limit": configuration.query_limit}
     fields = ("run_id", "occurred_at", "stage", "code", "supplier", "attempt", "maximum_attempts",
               "elapsed_seconds", "timeout_seconds", "reason", "causes", "diagnostic", "window_start", "window_end", "endpoint")
     total = connection.run("SELECT COUNT(*) FROM download_failure").require_one()[0]
     events = [dict(zip(fields, tuple(row), strict=True)) for row in connection.run(
-        "SELECT " + ",".join(fields) + " FROM download_failure ORDER BY id DESC LIMIT 50"
+        "SELECT " + ",".join(fields) + " FROM download_failure ORDER BY id DESC LIMIT ?", (configuration.query_limit,),
     )]
     groups = [
         {"stage": row[0], "code": row[1], "reason": row[2], "events": row[3], "first_at": row[4], "last_at": row[5]}
         for row in connection.run(
             "SELECT stage,code,reason,COUNT(*),MIN(occurred_at),MAX(occurred_at) FROM download_failure "
-            "GROUP BY stage,code,reason ORDER BY COUNT(*) DESC LIMIT 50"
+            "GROUP BY stage,code,reason ORDER BY COUNT(*) DESC LIMIT ?", (configuration.query_limit,),
         )
     ]
-    return {"available": True, "total": total, "retention_limit": 20000, "events": events, "groups": groups}
+    return {"available": True, "total": total, "retention_limit": configuration.retention_limit,
+            "query_limit": configuration.query_limit, "events": events, "groups": groups}

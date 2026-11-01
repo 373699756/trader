@@ -3,10 +3,11 @@
 import json
 import sqlite3
 from dataclasses import replace
+from functools import partial
 
 import pytest
 
-from tests.helpers.configuration import SqlitePolicyFixture
+from tests.helpers.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture
 from tests.helpers.qfq import QFQ_CONFIGURATION, QFQ_TENCENT_OPTIONS
 from tests.unit.infra.test_tencent_history_supplier import _Http, DAY, SECURITY
 from tests.unit.infra.research.test_history_sync import NOW
@@ -19,14 +20,14 @@ from trader.infra.http_contracts import HttpCancelled, HttpTimeout
 from trader.infra.sqlite_connection import SqliteSession, SqliteConnectionOptions, SqliteTransaction
 
 
-def _recorder(path):
+def _recorder(path, **limits):
     cache = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture())
-    return DownloadFailureDiagnostics(cache.RecordDownloadFailure, lambda: NOW)
+    return DownloadFailureDiagnostics(partial(cache.RecordDownloadFailure, configuration=DownloadFailureConfigurationFixture(**limits)), lambda: NOW)
 
 
-def _read(path):
+def _read(path, **limits):
     with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
-        return ReadDownloadFailures(connection)
+        return ReadDownloadFailures(connection, DownloadFailureConfigurationFixture(**limits))
 
 
 def test_evidence_survives_restart_with_safe_cause_chain_and_distinct_run(tmp_path):
@@ -111,6 +112,7 @@ def test_market_reference_preparation_failure_is_recorded_before_workers_start(t
     with pytest.raises(ValueError, match="history_reference_publication_missing"):
         bootstrap.ExecuteQfqDownload(
             paths, HistorySyncConfigurationFixture(paths.history, paths.reference), QFQ_CONFIGURATION,
+            failure_configuration=DownloadFailureConfigurationFixture(),
             shutdown_timeout_seconds=1, sqlite_policy=SqlitePolicyFixture(), now=lambda: NOW,
         )
     event, = _read(paths.daily_window)["events"]
@@ -121,20 +123,28 @@ def test_market_reference_preparation_failure_is_recorded_before_workers_start(t
 def test_retention_and_read_only_missing_table(tmp_path):
     path = tmp_path / "daily.sqlite3"
     with SqliteSession(path) as connection:
-        assert ReadDownloadFailures(connection)["available"] is False
+        assert ReadDownloadFailures(connection, DownloadFailureConfigurationFixture())["available"] is False
         assert connection.run("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
-    recorder = _recorder(path)
+    recorder = _recorder(path, retention_limit=7, query_limit=2)
     recorder(DownloadFailureContext("validation"), ValueError("invalid"))
     with SqliteSession(path) as connection, SqliteTransaction(connection, immediate=True):
         connection.run_many(
             "INSERT INTO download_failure SELECT ?,run_id,occurred_at,stage,code,supplier,attempt,maximum_attempts,"
             "elapsed_seconds,timeout_seconds,reason,causes,diagnostic,window_start,window_end,endpoint "
-            "FROM download_failure WHERE id=1", ((index,) for index in range(2, 20002)),
+            "FROM download_failure WHERE id=1", ((index,) for index in range(2, 10)),
         )
     recorder(DownloadFailureContext("latest_validation"), ValueError("latest"))
-    report = _read(path)
-    assert report["total"] == 20000 and len(report["events"]) == 50
+    report = _read(path, retention_limit=7, query_limit=2)
+    assert report["total"] == report["retention_limit"] == 7
+    assert len(report["events"]) == report["query_limit"] == 2
+    assert len(report["groups"]) == 2
     assert report["events"][0]["stage"] == "latest_validation"
+    before = path.read_bytes()
+    smaller = _read(path, retention_limit=3, query_limit=1)
+    assert smaller["total"] == 7 and len(smaller["events"]) == len(smaller["groups"]) == 1
+    assert path.read_bytes() == before
+    _recorder(path, retention_limit=3, query_limit=1)(DownloadFailureContext("restart"), ValueError("invalid"))
+    assert _read(path)["total"] == 3
 
 
 def test_sync_preparation_preserves_original_exception_before_public_result_projection(tmp_path):

@@ -1,4 +1,8 @@
 {
+  "failure_diagnostics": {
+    "retention_limit": 20000,
+    "query_limit": 50
+  },
   "history": {
     "requested_sessions": 2000,
     "reread_sessions": 5,

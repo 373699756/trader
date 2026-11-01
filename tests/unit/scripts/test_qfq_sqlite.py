@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from tests.helpers.configuration import SqlitePolicyFixture
+from tests.helpers.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture, PROJECT_ROOT
+from functools import partial
+import shutil
 
 import hashlib
 import json
@@ -103,21 +105,28 @@ def test_failure_profile_reads_only_diagnostic_rows_and_survives_bad_price_conte
     path = tmp_path / "daily_window.sqlite3"
     _seed(path)
     primary = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture())
-    DownloadFailureDiagnostics(primary.RecordDownloadFailure, lambda: NOW)(
+    DownloadFailureDiagnostics(partial(primary.RecordDownloadFailure, configuration=DownloadFailureConfigurationFixture()), lambda: NOW)(
         DownloadFailureContext("tencent_qfq", code="600001"), RuntimeError("tencent_qfq_request_failed")
     )
     # A broken business binding must not prevent reading why the update failed.
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE window_binding SET content_hash=?", (b"x" * 32,))
     before = path.read_bytes()
+    config = tmp_path / "config"
+    shutil.copytree(PROJECT_ROOT / "config", config)
+    document = json.loads((config / "download.json").read_text())
+    document["failure_diagnostics"] = {"retention_limit": 7, "query_limit": 2}
+    (config / "download.json").write_text(json.dumps(document))
     options, _ = _validate(_parser().parse_args([
-        "--profile", "download-failures", "--qfq-database", str(path)
+        "--profile", "download-failures", "--qfq-database", str(path), "--runtime-config", str(config / "runtime.json"),
     ]))
     command, = build_commands(options)
     assert "--failures-only" in command.argv and str(path) in command.argv
-    monkeypatch.setattr(sys, "argv", ["qfq_sqlite", "--database", str(path), "--failures-only"])
+    monkeypatch.setattr(sys, "argv", ["qfq_sqlite", *command.argv[3:]])
     assert qfq_sqlite.main() == 0
     output = json.loads(capsys.readouterr().out)
     report = build_report("download-failures", [DiagnosticResult(command.name, 0, 1, output, None)])
     assert report["checks"][0]["summary"]["events"][0]["code"] == "600001"
+    assert report["checks"][0]["summary"]["retention_limit"] == 7
+    assert report["checks"][0]["summary"]["query_limit"] == 2
     assert before == path.read_bytes()

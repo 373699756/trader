@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.infra.settings.runtime_loader as runtime_loader
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadQfqWindowConfiguration
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadDownloadFailureConfiguration, LoadQfqWindowConfiguration
 from trader.infra.settings import (
     ConfigurationError,
     LoadLongWatchlist,
@@ -1364,3 +1364,33 @@ def test_long_factor_index_cannot_hide_a_provider_placeholder(tmp_path) -> None:
 
     with pytest.raises(ConfigurationError, match="value_score.formula"):
         LoadStrategySettings(changed_path)
+
+
+@pytest.mark.parametrize("section", [
+    None, {}, {"retention_limit": 7}, {"retention_limit": 7, "query_limit": 2, "extra": 1},
+    {"retention_limit": 0, "query_limit": 1}, {"retention_limit": True, "query_limit": 1},
+    {"retention_limit": 2**63, "query_limit": 1}, {"retention_limit": 7, "query_limit": 8},
+    {"retention_limit": 7, "query_limit": 0}, {"retention_limit": 7, "query_limit": 1.5},
+    {"retention_limit": 7, "query_limit": True},
+])
+def test_download_failure_configuration_rejects_invalid_capacity(tmp_path, section):
+    config = tmp_path / "config"
+    config.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text())
+    if section is None:
+        del document["failure_diagnostics"]
+    else:
+        document["failure_diagnostics"] = section
+    (config / "download.json").write_text(json.dumps(document))
+    with pytest.raises(ConfigurationError):
+        LoadDownloadFailureConfiguration(tmp_path)
+
+
+def test_download_failure_configuration_preserves_explicit_capacity(tmp_path):
+    config = tmp_path / "config"
+    config.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text())
+    document["failure_diagnostics"] = {"retention_limit": 7, "query_limit": 2}
+    (config / "download.json").write_text(json.dumps(document))
+    loaded = LoadDownloadFailureConfiguration(tmp_path)
+    assert (loaded.retention_limit, loaded.query_limit) == (7, 2)

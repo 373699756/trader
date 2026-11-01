@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from tests.helpers.configuration import SqlitePolicyFixture
+from tests.helpers.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture
+from functools import partial
 
 import hashlib
 import json
@@ -960,6 +961,7 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
             paths,
             history_configuration,
             qfq_configuration,
+            failure_configuration=DownloadFailureConfigurationFixture(),
             shutdown_timeout_seconds=2.0,
             reference=_reference(("600001", "600002")),
             report=lambda _message: None,
@@ -1013,6 +1015,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     result = bootstrap.ExecuteQfqDownload(
         paths,
         *_qfq_download_configuration(tmp_path, paths),
+        failure_configuration=DownloadFailureConfigurationFixture(),
         shutdown_timeout_seconds=2.0,
         reference=PreparedFixture(
             datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI),
@@ -1047,6 +1050,7 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
         result = bootstrap.ExecuteQfqDownload(
             paths,
             *_qfq_download_configuration(tmp_path, paths),
+            failure_configuration=DownloadFailureConfigurationFixture(),
             shutdown_timeout_seconds=2.0,
             reference=_reference(),
             report=lambda _message: None, sqlite_policy=SqlitePolicyFixture(),
@@ -1088,6 +1092,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
             bootstrap.ExecuteQfqDownload,
             paths,
             *_qfq_download_configuration(tmp_path, paths),
+            failure_configuration=DownloadFailureConfigurationFixture(),
             shutdown_timeout_seconds=2.0,
             reference=_reference(),
             report=lambda _message: None,
@@ -1595,13 +1600,13 @@ def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
         connection.run("DELETE FROM window_binding WHERE profile='v3'")
     monkeypatch.setattr(UpdateQfqWindows, "execute", lambda *_args: result)
     from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics, ReadDownloadFailures
-    failures = DownloadFailureDiagnostics(updater.v2.RecordDownloadFailure, lambda: observed)
+    failures = DownloadFailureDiagnostics(partial(updater.v2.RecordDownloadFailure, configuration=DownloadFailureConfigurationFixture()), lambda: observed)
     runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed, failures=failures)
     checked = runner.execute()
     assert checked.failure_reason == "qfq_publication_membership_mismatch"
     assert checked.changed_rows == result.changed_rows and checked.changed_files == result.changed_files
     with SqliteSession(tmp_path / "daily_window.sqlite3") as connection:
-        failure, = ReadDownloadFailures(connection)["events"]
+        failure, = ReadDownloadFailures(connection, DownloadFailureConfigurationFixture())["events"]
     assert failure["stage"] == "publication_validation"
     assert failure["reason"] == checked.failure_reason
 
