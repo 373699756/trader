@@ -81,6 +81,7 @@ class CompanyEvidenceProgress:
             return
         self._last, self._previous = now, progress
         labels = {
+            "resume": "断点恢复",
             "st_eligibility": "ST资格",
             "calendar": "交易日历",
             "financial": "财务增量下载",
@@ -94,6 +95,7 @@ class CompanyEvidenceProgress:
             "complete": "本轮结束",
         }
         units = {
+            "resume": "篇",
             "st_eligibility": "股",
             "calendar": "份",
             "financial": "页",
@@ -122,6 +124,7 @@ class CompanyEvidenceProgress:
             f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
             + (f" | 批次 {self._batch}" if self._batch and progress.component != "complete" else "")
             + _scope(progress)
+            + _coverage(progress)
             + _stock(progress)
             + (self._summary(progress.completed) if progress.component == "complete" else "")
             + (" | 补查历史发行人（保留已完成页）" if progress.activity == "repair" else "")
@@ -152,7 +155,24 @@ class CompanyEvidenceProgress:
         )
 
 
+def _coverage(progress: EvidenceSyncProgress) -> str:
+    if progress.workload is None:
+        return ""
+    return "".join(
+        f" | {item.market}目录D(日) {item.discovered_day or '未闭合'} / 处理P(日) {item.processed_day or '未闭合'}"
+        for item in progress.workload.watermarks
+    )
+
+
 def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
+    if progress.component == "resume" and progress.workload is not None:
+        work = progress.workload
+        return (
+            f"已发布输入 {work.published_inputs} 篇 | 有效替代 {work.superseded_inputs} 篇 | "
+            f"已分析待发布 {work.analyzed_pending} 篇 | 本地待分析 {work.local_pending} 篇 | "
+            f"需下载 {work.download_pending} 篇（含冷却） | 冷却 {work.cooling} 篇 | "
+            f"不可提取/资料未知 {work.unextractable} 篇 | raw占用 {work.raw_bytes / 1024**2:.1f} MiB"
+        )
     if progress.component == "complete":
         return (
             f"已发布 {progress.completed} 股（含待核实） | 公告待补 {progress.pending} 个范围 | "

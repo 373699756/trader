@@ -1,4 +1,4 @@
-"""Initial company risk state needs history provenance, including cross-year active cases."""
+"""One-year discovery bounds preserve previously verified ongoing cases."""
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -42,7 +42,7 @@ def _old_document(index, body):
     return old
 
 
-def test_first_publication_retains_old_unresolved_case_and_exposes_unverified_initial_state(tmp_path):
+def test_first_publication_retains_verified_old_case_without_listing_history_gate(tmp_path):
     listed = _AT.date() - timedelta(days=1000)
     index = SQLiteCompanyEvidenceIndex(
         tmp_path / "facts.sqlite3",
@@ -58,8 +58,8 @@ def test_first_publication_retains_old_unresolved_case_and_exposes_unverified_in
     first = reader.read(("600001",))[0]
     assert len(first.risk_events) == 1 and first.risk_events[0].risk_level == 4
     assert first.risk_events[0].first_disclosed_at == old
-    assert first.announcement_state is CompanyDataState.PARTIAL
-    assert any(item.reason_code == "initial_risk_state_unverified" for item in first.review_reasons)
+    assert first.announcement_state is CompanyDataState.COMPLETE
+    assert not any(item.reason_code == "initial_risk_state_unverified" for item in first.review_reasons)
     assert reader.document_links("600001", ("old-case",))
     index.publish(("600001",), _AT + timedelta(minutes=1))
     assert reader.read(("600001",))[0].risk_events == first.risk_events
@@ -75,7 +75,7 @@ def test_first_publication_retains_old_unresolved_case_and_exposes_unverified_in
     "body",
     (None, "本公司收到证监会立案告知书〔2025〕调查1号。另案〔2025〕调查2号本公司未被立案。"),
 )
-def test_old_pending_or_ambiguous_document_survives_pruning_and_blocks_complete_coverage(tmp_path, body):
+def test_expired_unprocessed_document_is_out_of_scope_but_verified_ambiguity_survives(tmp_path, body):
     listed = _AT.date() - timedelta(days=1000)
     index = SQLiteCompanyEvidenceIndex(
         tmp_path / "facts.sqlite3",
@@ -90,13 +90,13 @@ def test_old_pending_or_ambiguous_document_survives_pruning_and_blocks_complete_
     for minute in (0, 1):
         index.publish(("600001",), _AT + timedelta(minutes=minute))
         facts = reader.read(("600001",))[0]
-        assert facts.announcement_state is CompanyDataState.PARTIAL
-        assert any(item.evidence_id == "old-case" for item in facts.review_reasons)
+        assert (facts.announcement_state is CompanyDataState.PARTIAL) is (body is not None)
+        assert any(item.evidence_id == "old-case" for item in facts.review_reasons) is (body is not None)
         assert reader.document_links("600001", ("old-case",))
 
 
 @pytest.mark.parametrize("known_listing", (False, True))
-def test_missing_listing_is_unknown_while_coverage_since_recent_listing_is_provable(tmp_path, known_listing):
+def test_one_year_coverage_does_not_require_history_since_listing(tmp_path, known_listing):
     listings = (CompanyListing("600001", _AT.date() - timedelta(days=30)),) if known_listing else ()
     index = SQLiteCompanyEvidenceIndex(
         tmp_path / "facts.sqlite3",
@@ -108,10 +108,8 @@ def test_missing_listing_is_unknown_while_coverage_since_recent_listing_is_prova
     _coverage(index, _AT.date() - timedelta(days=365))
     index.publish(("600001",), _AT)
     facts = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
-    assert (facts.announcement_state is CompanyDataState.COMPLETE) is known_listing
-    assert (
-        any(item.reason_code == "initial_risk_state_unverified" for item in facts.review_reasons) is not known_listing
-    )
+    assert facts.announcement_state is CompanyDataState.COMPLETE
+    assert not any(item.reason_code == "initial_risk_state_unverified" for item in facts.review_reasons)
 
 
 def test_old_extraction_identity_cannot_be_silently_loaded_under_new_rules(tmp_path):
@@ -128,14 +126,14 @@ def test_old_extraction_identity_cannot_be_silently_loaded_under_new_rules(tmp_p
         SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))
 
 
-def test_fill_combines_history_ocr_limits_and_reuses_completed_data(tmp_path):
+def test_fill_combines_year_window_ocr_limits_and_reuses_completed_data(tmp_path):
     listed = _AT.date() - timedelta(days=410)
     listings = (CompanyListing("600001", listed),)
     path = tmp_path / "collection.sqlite3"
     facts_path = tmp_path / "facts.sqlite3"
     index = SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text"), listings=listings)
     index.initialize()
-    old = _AT - timedelta(days=400)
+    old = _AT - timedelta(days=300)
     documents = tuple(Disclosure("cninfo", identity, ("600001",), "收到立案告知书", old, "https://example.test/old", identity) for identity in ("old-case", "ocr-case", "limits-case"))
     partition = DisclosurePartition("sse", old.date(), old.date())
     with SqliteSession(path) as connection, SqliteTransaction(connection):
@@ -145,12 +143,14 @@ def test_fill_combines_history_ocr_limits_and_reuses_completed_data(tmp_path):
     index.document_failure(documents[2], "previous-limits-policy", "disclosure_document_page_limit", _AT, _AT + timedelta(days=1))
     _coverage(index, _AT.date() - timedelta(days=365))
     index.publish(("600001",), _AT)
-    history = SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text"), listings=listings, history_start=listed)
+    history = SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text"), listings=listings)
     attempts = []
 
     class Source(fixtures.Sources):
         def fetch(self, query, **kwargs):
-            if isinstance(query, DisclosurePartition) and query.start <= (_AT - timedelta(days=400)).date() <= query.end:
+            if isinstance(query, DisclosurePartition):
+                assert query.start >= (_AT - timedelta(days=365)).date()
+            if isinstance(query, DisclosurePartition) and query.start <= old.date() <= query.end:
                 return DisclosurePage(documents, 3, False)
             return super().fetch(query, **kwargs)
 
@@ -162,9 +162,9 @@ def test_fill_combines_history_ocr_limits_and_reuses_completed_data(tmp_path):
     request = CompanyEvidenceRequest(("600001",), _AT, fixtures._TEST_COMPANY_CONFIGURATION, listings=listings, fill_missing=True)
     dependencies = CompanyEvidenceDependencies(history, source, source, lambda: 0)
     result = SyncCompanyEvidence(dependencies, request)
-    assert not result.needs_retry and result.window_days == 410
+    assert not result.needs_retry and result.window_days == 365
     assert set(attempts) == {("old-case", "standard"), ("ocr-case", "ocr"), ("limits-case", "limits")}
-    assert ProjectSyncResult(SyncResult((SyncTaskResult("company", "completed", company=result),)))["tasks"][0]["window_days"] == 410
+    assert ProjectSyncResult(SyncResult((SyncTaskResult("company", "completed", company=result),)))["tasks"][0]["window_days"] == 365
     facts = SQLiteCompanyEvidenceReader(facts_path, raw_path=path).read(("600001",))[0]
     assert facts.announcement_state is CompanyDataState.COMPLETE and len(facts.risk_events) == 1
     assert not any(review.reason_code == "initial_risk_state_unverified" for review in facts.review_reasons)

@@ -3,9 +3,25 @@
 from trader.infra.sqlite_connection import SqliteSchema
 
 SCHEMA = SqliteSchema(
-    2,
+    3,
     (
         "CREATE TABLE IF NOT EXISTS contract(schema_id TEXT PRIMARY KEY CHECK(schema_id='company_collection'))",
+        "CREATE TABLE company_sync_job(singleton INTEGER PRIMARY KEY CHECK(singleton=1),initialized_at TEXT NOT NULL,cutoff TEXT NOT NULL)",
+        "CREATE TABLE company_expired_ranges(market TEXT,start_date TEXT,end_date TEXT,expired_at TEXT,PRIMARY KEY(market,start_date,end_date)) WITHOUT ROWID",
+        """CREATE TABLE document_supersessions (
+          disclosure_id INTEGER NOT NULL,code TEXT NOT NULL,record_hash TEXT NOT NULL,
+          replacement_id INTEGER NOT NULL,replacement_hash TEXT NOT NULL,extraction_hash BLOB NOT NULL,
+          reason TEXT NOT NULL,PRIMARY KEY(disclosure_id,code,record_hash)
+        ) WITHOUT ROWID""",
+        """CREATE TABLE document_link_candidates (
+          source TEXT NOT NULL,source_key TEXT NOT NULL,record_hash TEXT NOT NULL,extraction_hash BLOB NOT NULL,
+          payload TEXT NOT NULL,PRIMARY KEY(source,source_key,record_hash,extraction_hash)
+        ) WITHOUT ROWID""",
+        """CREATE TABLE document_tasks (
+          source TEXT NOT NULL,source_key TEXT NOT NULL,record_hash TEXT NOT NULL,
+          stage TEXT NOT NULL,path TEXT,payload_hash BLOB,size INTEGER,
+          PRIMARY KEY(source,source_key,record_hash)
+        ) WITHOUT ROWID""",
         """
         CREATE TABLE IF NOT EXISTS disclosures (
           id INTEGER PRIMARY KEY, source TEXT NOT NULL, source_key TEXT NOT NULL,

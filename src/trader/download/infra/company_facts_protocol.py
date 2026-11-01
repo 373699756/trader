@@ -26,7 +26,7 @@ _EnumValue = TypeVar("_EnumValue", bound=Enum)
 _EPOCH_DATE = date(1970, 1, 1)
 _EPOCH_TIME = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-COMPANY_EXTRACTION_IDENTITY = "relational_company_facts:1:subject_bound"
+COMPANY_EXTRACTION_IDENTITY = "relational_company_facts:2:window365_links_receipts"
 
 DATA_STATES = {CompanyDataState.UNAVAILABLE: 0, CompanyDataState.PARTIAL: 1, CompanyDataState.COMPLETE: 2}
 RISK_TYPES = {

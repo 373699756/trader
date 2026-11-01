@@ -32,6 +32,14 @@ def _executable(path: Path, body: str) -> str:
     return str(path)
 
 
+def _extract(engine, payload, root):
+    root.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(payload).digest()
+    pdf = root / (digest.hex() + ".pdf")
+    pdf.write_bytes(payload)
+    return engine.extract(pdf, digest)
+
+
 def test_capability_requires_binaries_and_requested_languages(monkeypatch):
     monkeypatch.setattr("trader.download.infra.company_document_ocr.shutil.which", lambda _name: None)
     assert DetectCompanyOcr("chi_sim+eng").failure == "disclosure_document_ocr_unavailable"
@@ -61,9 +69,9 @@ def test_ocr_renders_one_page_and_rejects_low_quality(tmp_path):
         "print('5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t1\\t1\\t92\\t' + 'verified' * 12)\n",
     )
     capability = CompanyOcrCapability("fixture", recognizer, renderer, "chi_sim+eng")
-    engine = CompanyOcrEngine(capability, timeout_seconds=2, max_pages=2, dpi=150)
+    engine = CompanyOcrEngine(capability, timeout_seconds=2, page_timeout_seconds=2, max_pages=2, dpi=150)
     payload = _pdf()
-    text, quality = engine.extract(payload, hashlib.sha256(payload).digest())
+    text, quality = _extract(engine, payload, tmp_path)
     assert text == "verified" * 12 and quality == 92
 
     weak = _executable(
@@ -74,31 +82,33 @@ def test_ocr_renders_one_page_and_rejects_low_quality(tmp_path):
     engine = CompanyOcrEngine(
         CompanyOcrCapability("weak", weak, renderer, "chi_sim+eng"),
         timeout_seconds=2,
+        page_timeout_seconds=2,
         max_pages=2,
         dpi=150,
     )
     with pytest.raises(CompanyDocumentFailure, match="disclosure_document_ocr_low_quality"):
-        engine.extract(payload, hashlib.sha256(payload).digest())
+        _extract(engine, payload, tmp_path)
 
 
-def test_unavailable_ocr_fails_without_starting_a_process():
+def test_unavailable_ocr_fails_without_starting_a_process(tmp_path):
     engine = CompanyOcrEngine(
         CompanyOcrCapability(
             "unavailable", None, None, "chi_sim+eng", "disclosure_document_ocr_unavailable"
         ),
         timeout_seconds=1,
+        page_timeout_seconds=1,
         max_pages=1,
         dpi=150,
     )
     payload = _pdf()
     with pytest.raises(CompanyDocumentFailure, match="disclosure_document_ocr_unavailable"):
-        engine.extract(payload, hashlib.sha256(payload).digest())
+        _extract(engine, payload, tmp_path)
 
 
-def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monkeypatch):
+def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monkeypatch, tmp_path):
     engine = CompanyOcrEngine(
         CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
-        timeout_seconds=2, max_pages=2, dpi=150,
+        timeout_seconds=2, page_timeout_seconds=2, max_pages=2, dpi=150,
     )
     modes = []
 
@@ -113,22 +123,23 @@ def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monk
 
     monkeypatch.setattr(engine, "_run", run)
     monkeypatch.setattr(engine, "_recognize", recognize)
-    text, quality = engine.extract(b"pdf", b"a" * 32)
+    text, quality = _extract(engine, b"pdf", tmp_path)
     assert "recovered" in text and quality == 51
     assert modes == [6, 3, 6]
 
     monkeypatch.setattr(engine, "_recognize", lambda *args: ("short", [10.0]))
+    assert _extract(engine, b"pdf", tmp_path) == (text, quality)
     with pytest.raises(CompanyDocumentFailure) as caught:
-        engine.extract(b"pdf", b"a" * 32)
+        _extract(engine, b"pdf", tmp_path / "new-input")
     diagnostic = caught.value.diagnostic
     assert diagnostic.phase == "quality" and diagnostic.pages == 2
     assert diagnostic.characters == 10 and diagnostic.confidence == 10
 
 
-def test_timeout_records_render_phase_and_page(monkeypatch):
+def test_timeout_records_render_phase_and_page(monkeypatch, tmp_path):
     engine = CompanyOcrEngine(
         CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
-        timeout_seconds=2, max_pages=2, dpi=150,
+        timeout_seconds=2, page_timeout_seconds=2, max_pages=2, dpi=150,
     )
 
     def run(command, *args, **kwargs):
@@ -138,7 +149,7 @@ def test_timeout_records_render_phase_and_page(monkeypatch):
 
     monkeypatch.setattr(engine, "_run", run)
     with pytest.raises(CompanyDocumentFailure) as caught:
-        engine.extract(b"pdf", b"a" * 32)
+        _extract(engine, b"pdf", tmp_path)
     assert caught.value.diagnostic.phase == "render"
     assert caught.value.diagnostic.page == caught.value.diagnostic.pages == 1
 
@@ -147,11 +158,11 @@ def test_page_limit_is_checked_before_renderer_starts(tmp_path):
     renderer = _executable(tmp_path / "renderer", "raise AssertionError('must not render')\n")
     engine = CompanyOcrEngine(
         CompanyOcrCapability("fixture", renderer, renderer, "eng"),
-        timeout_seconds=2, max_pages=1, dpi=150,
+        timeout_seconds=2, page_timeout_seconds=2, max_pages=1, dpi=150,
     )
     payload = _pdf(2)
     with pytest.raises(CompanyDocumentFailure, match="ocr_page_limit"):
-        engine.extract(payload, hashlib.sha256(payload).digest())
+        _extract(engine, payload, tmp_path)
 
 
 @pytest.mark.parametrize("oversized", ["image", "tsv"])
@@ -170,23 +181,24 @@ def test_oversized_output_is_stopped_while_tool_is_running(tmp_path, monkeypatch
     monkeypatch.setattr(ocr, "_MAX_RENDERED_BYTES", 1024)
     engine = CompanyOcrEngine(
         CompanyOcrCapability("fixture", recognizer, renderer, "eng"),
-        timeout_seconds=10, max_pages=2, dpi=150,
+        timeout_seconds=10, page_timeout_seconds=10, max_pages=2, dpi=150,
     )
     payload = _pdf()
     started = time.monotonic()
     with pytest.raises(CompanyDocumentFailure, match="ocr_resource_limit"):
-        engine.extract(payload, hashlib.sha256(payload).digest())
+        _extract(engine, payload, tmp_path)
     assert time.monotonic() - started < 5
-    assert not Path(directory_record.read_text()).exists()
+    assert Path(directory_record.read_text()).exists()
+    assert not tuple(tmp_path.rglob("page.png"))
 
 
-def test_real_poppler_and_tesseract_extract_complete_synthetic_text():
+def test_real_poppler_and_tesseract_extract_complete_synthetic_text(tmp_path):
     from tests.unit.infra.test_company_document_parser import _pdf as text_pdf
 
     capability = DetectCompanyOcr("eng")
     if not capability.available:
         pytest.skip("local Poppler/Tesseract unavailable")
-    engine = CompanyOcrEngine(capability, timeout_seconds=20, max_pages=1, dpi=150)
+    engine = CompanyOcrEngine(capability, timeout_seconds=20, page_timeout_seconds=20, max_pages=1, dpi=150)
     payload = text_pdf()
-    text, quality = engine.extract(payload, hashlib.sha256(payload).digest())
+    text, quality = _extract(engine, payload, tmp_path)
     assert "Official" in text and len("".join(text.split())) >= 80 and quality >= 35

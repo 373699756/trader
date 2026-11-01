@@ -35,7 +35,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
     item = _seed(index, 1)[0]
     policies = fixtures._TEST_DOCUMENT_POLICIES
     run = _DocumentRun.__new__(_DocumentRun)
-    run.dependencies = SimpleNamespace(index=index, monotonic=lambda: 0.0)
+    run.dependencies = SimpleNamespace(index=index, monotonic=lambda: 0.0, failures=None)
     run.failed_identities = set()
     run.state = _SyncState()
     run.policies = policies
@@ -177,6 +177,30 @@ def test_page_batch_publishes_before_directory_finishes_and_restart_keeps_cursor
     assert second.published_codes == 1
 
 
+def test_text_to_ocr_handoff_counts_one_attempted_document(tmp_path, monkeypatch):
+    from trader.download.domain.company_evidence import CompanyDocumentFailure
+
+    index = fixtures._index(tmp_path)
+    _seed(index, 1)
+    monkeypatch.setattr(index, "partitions", lambda *_: ())
+    events, routes = [], []
+
+    class Source(fixtures.Sources):
+        def extract_document(self, item, *, route="standard"):
+            routes.append(route)
+            if route == "standard":
+                raise CompanyDocumentFailure("disclosure_document_ocr_required")
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
+
+    source = Source()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append), ("600001",), NOW,
+    )
+    assert routes == ["standard", "ocr"] and result.pending_documents == 0
+    attempts = [event.attempted_documents for event in events if event.component == "risk_documents"]
+    assert max(attempts) == 1
+
+
 def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_cancel(tmp_path, monkeypatch):
     index = fixtures._index(tmp_path)
     items = _seed(index)
@@ -213,6 +237,7 @@ def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_can
                 cancel_requested=cancelled.is_set,
                 document_sources=clients,
                 document_executor=workers,
+                text_executor=workers,
             ),
             ("600001",),
             NOW,

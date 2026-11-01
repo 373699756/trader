@@ -77,30 +77,24 @@ def CompileCompanyFacts(
         policy,
         previous_risks=previous.risk_events if previous else (),
         previous_positives=previous.positive_events if previous else (),
-        previous_reviews=previous.review_reasons if previous else (),
+        previous_reviews=tuple(r for r in previous.review_reasons if r.evidence_id not in source.superseded_evidence_ids) if previous else (),
     )
     financials = tuple(
         item for item in source.financials if item.published_at <= now and item.report_date <= now.date()
     )
-    financial = max(financials, key=lambda item: (item.report_date, item.published_at)) if financials else None
+    if (previous is not None and previous.financial is not None
+            and previous.financial.published_at <= now and previous.financial.report_date <= now.date()):
+        financials += (previous.financial,)
+    latest_financial = max(financials, key=lambda item: (item.report_date, item.published_at)) if financials else None
+    valid_financials = tuple(item for item in financials if _complete_financial(item))
+    financial = max(valid_financials, key=lambda item: (item.report_date, item.published_at)) if valid_financials else latest_financial
     financial_complete = (
-        financial is not None
-        and all(
-            value is not None
-            for value in (
-                financial.basic_eps,
-                financial.book_value_per_share,
-                financial.revenue_growth_pct,
-                financial.net_profit_growth_pct,
-                financial.core_profit_growth_pct,
-                financial.roe_pct,
-                financial.parent_net_profit,
-                financial.core_net_profit,
-            )
-        )
+        latest_financial is not None and financial is latest_financial and _complete_financial(latest_financial)
         and not any(item.startswith("financial:") for item in source.failures)
     )
     reviews = list(extraction.reviews)
+    if latest_financial is not None and not _complete_financial(latest_financial):
+        reviews.append(CompanyReviewReason("financial", "necessary_data_missing", None, now, "最新财报字段尚不完整"))
     for failure in source.failures:
         scope, _, reason = failure.partition(":")
         if scope in {"financial", "pledge", "unlock", "announcements"}:
@@ -113,6 +107,7 @@ def CompileCompanyFacts(
                     "持续事项的上市初始状态尚未核实" if reason == "initial_risk_state_unverified" else failure,
                 )
             )
+    pledge = source.pledge if source.pledge is not None else previous.pledge if previous else None
     pledge_complete = source.pledge is not None and not any(item.startswith("pledge:") for item in source.failures)
     unlock_complete = source.unlock_checked and not any(item.startswith("unlock:") for item in source.failures)
     risk_complete = source.announcement_complete and not any(item.scope == "risk" for item in reviews)
@@ -134,7 +129,7 @@ def CompileCompanyFacts(
             for item in reviews
         ]
     pending = sum(
-        not item.checked and CompanyDocumentNeedsReview(item.disclosure.title) for item in source.announcements
+        not item.checked and not item.terminal_failure and CompanyDocumentNeedsReview(item.disclosure.title) for item in source.announcements
     )
     return CompanyFacts(
         source.code,
@@ -144,11 +139,11 @@ def CompileCompanyFacts(
         else CompanyDataState.PARTIAL
         if financial
         else CompanyDataState.UNAVAILABLE,
-        source.pledge,
+        pledge,
         CompanyDataState.COMPLETE
         if pledge_complete
         else CompanyDataState.PARTIAL
-        if source.pledge
+        if pledge
         else CompanyDataState.UNAVAILABLE,
         tuple(
             item for item in source.unlocks if now.date() <= item.day <= now.date() + timedelta(days=policy.unlock_days)
@@ -183,3 +178,10 @@ def CompileCompanyFacts(
         source.source_checked_at or (previous.checked_at if previous else now),
         now,
     )
+
+
+def _complete_financial(item: CompanyFinancial) -> bool:
+    return all(value is not None for value in (
+        item.basic_eps, item.book_value_per_share, item.revenue_growth_pct, item.net_profit_growth_pct,
+        item.core_profit_growth_pct, item.roe_pct, item.parent_net_profit, item.core_net_profit,
+    ))

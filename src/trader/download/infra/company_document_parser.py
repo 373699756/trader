@@ -55,6 +55,7 @@ def Main() -> int:
     signal.signal(signal.SIGTERM, _terminate)
     parser = argparse.ArgumentParser()
     parser.add_argument("--directory", required=True)
+    parser.add_argument("--input", required=True)
     parser.add_argument("--max-bytes", required=True, type=int)
     parser.add_argument("--max-pages", required=True, type=int)
     parser.add_argument("--max-text-characters", required=True, type=int)
@@ -62,15 +63,13 @@ def Main() -> int:
     parser.add_argument("--pdfinfo", default="pdfinfo")
     args = parser.parse_args()
     limits = CompanyDocumentLimits(args.max_bytes, args.max_pages, args.max_text_characters)
-    payload = sys.stdin.buffer.read(limits.max_bytes + 1)
-    if len(payload) > limits.max_bytes:
+    pdf = Path(args.input)
+    if pdf.stat().st_size > limits.max_bytes:
         return 2
     try:
         # The supervising caller owns cleanup after the complete process family exits.
         root = Path(args.directory)
-        pdf = root / "document.pdf"
         text_path = root / "document.txt"
-        pdf.write_bytes(payload)
         details = subprocess.run((args.pdfinfo, str(pdf)), capture_output=True, check=False)
         metadata = (details.stdout + details.stderr).decode("utf-8", errors="replace")
         if _metadata_value(metadata, "Encrypted").lower().startswith("yes") or "Incorrect password" in metadata:

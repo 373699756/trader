@@ -33,6 +33,8 @@ from trader.download.infra.company_document_parser import DetectCompanyText
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.infra.company_http import CompanyRequestPacer
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
@@ -87,14 +89,19 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float, 
     document_signatures: list[str] = []
     payload_signatures: list[str] = []
     for count in (1, 2):
-        database = directory / f"pipeline-{count}.sqlite3"
+        run_directory = directory / f"pipeline-{count}"
+        database = run_directory / "collection.sqlite3"
         if database.exists():
             raise ValueError("company_probe_requires_fresh_directory")
+        raw_files = CompanyRawFiles(run_directory, capacity=configuration.raw_capacity_bytes,
+                                   analysis_reserve=configuration.raw_analysis_reserve_bytes,
+                                   free_reserve=configuration.temporary_disk_reserve_bytes)
         index = _SampleIndex(
             database,
+            raw_files=raw_files,
             facts_path=directory / f"facts-{count}.sqlite3",
             documents=CompanyDocumentFiles(
-                directory / f"text-{count}",
+                run_directory / "text",
                 max_text_characters=configuration.extended_document_limits.max_text_characters,
                 max_bytes=configuration.temporary_text_capacity_bytes,
                 reserve_bytes=configuration.temporary_disk_reserve_bytes,
@@ -127,10 +134,12 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float, 
             engine = CompanyOcrEngine(
                 ocr_capability,
                 timeout_seconds=configuration.document_ocr_timeout_seconds,
+                page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
                 max_pages=configuration.document_ocr_max_pages,
                 dpi=configuration.document_ocr_dpi,
                 cancel_requested=cancelled,
             )
+            pacer = CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, cancelled)
             sources = tuple(
                 CninfoMarketDisclosureSource(
                     session,
@@ -146,12 +155,22 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float, 
                     ocr_engine=engine,
                     document_policies=policies,
                     text_capability=text_capability,
+                    raw_files=raw_files,
+                    pacer=pacer,
+                    text_reserve_bytes=configuration.text_task_reserve_bytes,
+                    ocr_reserve_bytes=configuration.ocr_task_reserve_bytes,
                 )
                 for session in sessions
             )
             workers = BoundedExecutor(worker_count=count, queue_capacity=2, thread_name_prefix="company-probe")
             workers.start()
             resources.callback(workers.stop, wait=True, cancel_futures=True)
+            text_workers = BoundedExecutor(worker_count=configuration.text_workers, queue_capacity=0, thread_name_prefix="company-probe-text")
+            ocr_workers = BoundedExecutor(worker_count=configuration.ocr_workers, queue_capacity=0, thread_name_prefix="company-probe-ocr")
+            text_workers.start()
+            resources.callback(text_workers.stop, wait=True, cancel_futures=True)
+            ocr_workers.start()
+            resources.callback(ocr_workers.stop, wait=True, cancel_futures=True)
             dependencies = CompanyEvidenceDependencies(
                 index,
                 sources[0],
@@ -165,6 +184,8 @@ def AuditCompanyPipeline(path: Path, directory: Path, *, budget_seconds: float, 
                 cancelled,
                 document_sources=sources,
                 document_executor=workers,
+                text_executor=text_workers,
+                ocr_executor=ocr_workers,
                 ocr_identity=ocr_capability.identity,
                 text_identity=text_capability.identity,
             )

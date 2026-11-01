@@ -76,15 +76,22 @@ def AuditCompanyPublication(
             ).require_one()[0]
             receipts: dict[str, object] = {"checked": False}
             if identity is not None:
-                receipt_rows = raw.run(
-                    "SELECT COUNT(*),COALESCE(SUM(d.body_retained=0),0) FROM disclosures d "
-                    "WHERE d.kind='announcement' AND d.body_checked=1 AND EXISTS("
-                    "SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
-                    "WHERE c.disclosure_id=d.id AND NOT EXISTS(SELECT 1 FROM document_publications p "
-                    "WHERE p.disclosure_id=d.id AND p.code=c.code AND p.record_hash=d.record_hash "
-                    "AND p.extraction_hash=?))",
-                    (identity.extraction_hash,),
-                ).require_one()
+                missing: set[int] = set()
+                released: set[int] = set()
+                for row in raw.run(
+                    "SELECT d.id,d.source,d.source_key,d.record_hash,d.body_retained,c.code FROM disclosures d "
+                    "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN company_population u ON u.code=c.code "
+                    "WHERE d.kind='announcement' AND d.body_checked=1"
+                ):
+                    if formal.run(
+                        "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? "
+                        "AND extraction_hash=? AND outcome='valid'",
+                        (row[1], row[2], row[5], row[3], identity.extraction_hash),
+                    ).fetchone() is None:
+                        missing.add(row[0])
+                        if not row[4]:
+                            released.add(row[0])
+                receipt_rows = len(missing), len(released)
                 receipts = {"checked": True, "awaiting_publication_documents": receipt_rows[0],
                             "released_without_receipts": receipt_rows[1]}
                 if receipt_rows[1]:

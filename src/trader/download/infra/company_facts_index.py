@@ -36,6 +36,19 @@ class CompanyPublicationIdentity:
     published_at: datetime
 
 
+@dataclass(frozen=True)
+class CompanyInputReceipt:
+    source: str
+    source_key: str
+    code: str
+    record_hash: str
+    extraction_hash: bytes
+    body_hash: bytes | None
+    published_at: datetime
+    outcome: str = "valid"
+    policy_id: str = ""
+
+
 def ReadCompanyPublicationIdentity(connection: SqliteConnection) -> CompanyPublicationIdentity | None:
     EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA)
     row = connection.run(
@@ -55,6 +68,7 @@ def ReadCompanyPublicationIdentity(connection: SqliteConnection) -> CompanyPubli
 
 
 _CONTENT_QUERIES = (
+    "SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash",
     "SELECT * FROM company_facts ORDER BY code",
     "SELECT code,event_key,risk_type,subject_type,level,case_number,first_disclosed_at,last_disclosed_at,effective_at,status,resolved_at,expires_at FROM company_risk_event ORDER BY code,event_key",
     "SELECT e.code,e.event_key,p.start_date,p.end_date,p.planned_pct,p.completion_disclosed_at FROM company_reduction_plan p JOIN company_risk_event e ON e.id=p.risk_id ORDER BY e.code,e.event_key",
@@ -120,6 +134,8 @@ class SQLiteCompanyFactsIndex:
         sources: Mapping[str, str],
         parent: CompanyPublicationIdentity | None,
         at: datetime,
+        *,
+        receipts: Sequence[CompanyInputReceipt] = (),
     ) -> None:
         with (
             SqliteSession(
@@ -135,6 +151,12 @@ class SQLiteCompanyFactsIndex:
                 if self._cancel_requested is not None and self._cancel_requested():
                     raise InterruptedError("company_sync_cancelled")
                 WriteCompanyFactRows(connection, item, sources)
+            connection.run_many(
+                "INSERT INTO company_input_receipt VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source,source_key,code,record_hash,extraction_hash) "
+                "DO UPDATE SET body_hash=excluded.body_hash,published_at=excluded.published_at,outcome=excluded.outcome,policy_id=excluded.policy_id "
+                "WHERE outcome<>'valid' AND (outcome<>excluded.outcome OR policy_id<>excluded.policy_id)",
+                ((r.source, r.source_key, r.code, r.record_hash, r.extraction_hash, r.body_hash, EncodeCompanyTime(r.published_at), r.outcome, r.policy_id) for r in receipts),
+            )
             connection.run(
                 "DELETE FROM company_evidence_ref WHERE id NOT IN (SELECT evidence_id FROM company_risk_evidence "
                 "UNION SELECT evidence_id FROM company_positive_evidence UNION SELECT evidence_id FROM company_positive_milestone "
@@ -212,4 +234,4 @@ class SQLiteCompanyFactsIndex:
             return inserted
 
 
-__all__ = ["CompanyPublicationIdentity", "ReadCompanyPublicationIdentity", "SQLiteCompanyFactsIndex"]
+__all__ = ["CompanyInputReceipt", "CompanyPublicationIdentity", "ReadCompanyPublicationIdentity", "SQLiteCompanyFactsIndex"]

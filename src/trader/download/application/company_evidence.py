@@ -42,9 +42,13 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.infra.workers import SubmitOrReject, WorkerExecutor, WorkerResourceRejectedError
+from trader.download.application.download_failure import DownloadFailurePort
+from trader.download.domain.download_failure import DownloadFailureContext
 
 
 class CompanyEvidenceIndex(Protocol):
+    def document_stage(self, item: Disclosure, stage: str) -> None: ...
+    def document_required(self, item: Disclosure) -> bool: ...
     def initialize(self) -> None: ...
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]: ...
     def reusable_partitions(self, markets: Sequence[Market], observed_at: datetime) -> int: ...
@@ -116,9 +120,9 @@ class CompanyEvidenceIndex(Protocol):
 
 class CompanyDisclosureSource(Protocol):
     def fetch(self, partition: DisclosurePartition) -> DisclosurePage: ...
-    def document(
-        self, item: Disclosure, *, route: Literal["standard", "ocr", "limits"] = "standard"
-    ) -> CompanyDocumentExtraction: ...
+    def document_ready(self, item: Disclosure) -> bool: ...
+    def download_document(self, item: Disclosure) -> None: ...
+    def extract_document(self, item: Disclosure, *, route: Literal["standard", "ocr", "limits"] = "standard") -> CompanyDocumentExtraction: ...
     def split_queries(self, partition: DisclosurePartition) -> tuple[DisclosureQuery, ...]: ...
     def repair_queries(
         self,
@@ -147,8 +151,11 @@ class CompanyEvidenceDependencies:
     stock_names: tuple[tuple[str, str], ...] = ()
     document_sources: tuple[CompanyDisclosureSource, ...] = ()
     document_executor: WorkerExecutor | None = None
+    text_executor: WorkerExecutor | None = None
+    ocr_executor: WorkerExecutor | None = None
     ocr_identity: str = "unavailable"
     text_identity: str = "poppler-path"
+    failures: DownloadFailurePort | None = None
 
 
 @dataclass
@@ -202,11 +209,18 @@ def SyncCompanyEvidence(
     state = _SyncState()
     population = _validated_population(codes)
     start_date = observed_at.date() - timedelta(days=365)
-    context = _CompanyRunContext(observed_at, started, configuration, min(request.history_start, start_date) if request.history_start else start_date)
+    context = _CompanyRunContext(observed_at, started, configuration, start_date)
     documents = _DocumentRun(dependencies, population, state, context)
     if not _cancelled(dependencies):
         index.initialize()
         index.prepare_publication(population, observed_at)
+        _report(dependencies, "resume", state, None, workload=documents.workload())
+        while documents.workload().local_pending and not _cancelled(dependencies):
+            completed = documents.completed
+            documents.run_batch(local_only=True)
+            if documents.completed == completed:
+                break
+            _publish_batch(dependencies, population, observed_at, started, state)
     news_population = tuple(sorted(set(news_codes).intersection(population))) if not request.fill_missing else ()
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
@@ -229,7 +243,7 @@ def SyncCompanyEvidence(
     )
     pending_documents = document_workload.due + document_workload.cooling
     if not _cancelled(dependencies):
-        index.finish(observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started)))
+        index.finish(observed_at)
     if pending_documents:
         state.failures += ("risk_documents:pending",)
     result_failures = tuple(sorted({failure for failure in state.failures if _failure_requires_retry(failure)}))
@@ -245,6 +259,7 @@ def SyncCompanyEvidence(
         ocr_documents=document_workload.ocr,
         unextractable_documents=document_workload.unextractable,
         next_document_retry_at=document_workload.next_retry_at,
+        workload=document_workload,
     )
     return CompanyEvidenceSyncResult(
         observed_at,
@@ -280,12 +295,13 @@ def _run_batches(
         state.batch += 1
         pending = announcements.run_batch(context.configuration.directory_batch_pages)
         if not _cancelled(dependencies):
-            documents.run_batch(discovering=announcements.can_continue)
+            documents.run_batch(discovering=announcements.can_continue, discover=lambda: announcements.run_batch(1) if announcements.can_continue else None)
+            pending = announcements.run_batch(0)
         if not _cancelled(dependencies):
             count = _publish_batch(dependencies, population, context.observed_at, context.started, state)
             if count is not None:
                 published = count
-        if not announcements.can_continue and (documents.stopped or not documents.has_due()):
+        if not announcements.can_continue and not documents.has_due():
             break
     if not _cancelled(dependencies):
         published = dependencies.index.published_count(population)
@@ -305,7 +321,7 @@ def _publish_batch(
             try:
                 updated = dependencies.index.publish(
                     population,
-                    observed_at + timedelta(seconds=max(0, dependencies.monotonic() - started)),
+                    observed_at,
                     changed_only=True,
                 )
                 break
@@ -460,7 +476,7 @@ class _AnnouncementRun:
             self._circuit.success()
             self._split(partition)
         else:
-            self._state.changes += self._index.commit_page(partition, page, self._now())
+            self._state.changes += self._index.commit_page(partition, page, self._context.observed_at)
             self._circuit.success()
             self._advance(partition, page)
         self._report(replace(partition, expected_rows=page.total))
@@ -530,6 +546,8 @@ class _AnnouncementRun:
             self._queue.appendleft(partition)
             return True
         failure = _failure(exc)
+        if self._dependencies.failures is not None:
+            self._dependencies.failures(DownloadFailureContext("company_directory", supplier="cninfo", window_start=partition.start, window_end=partition.end), exc)
         self._index.partition_failure(partition, failure)
         self._state.failures += (f"announcements:{failure}",)
         self._deferred.add(_query_key(partition))
@@ -651,7 +669,9 @@ class _DocumentRun:
         )
         self.circuit = _SourceCircuit()
         self.stopped = False
+        self.capacity_blocked = False
         self.completed = self.attempted = 0
+        self.attempted_identities: set[tuple[str, str, str]] = set()
         self.elapsed = 0.0
         self.batch_started: float | None = None
 
@@ -667,11 +687,17 @@ class _DocumentRun:
         )
 
     def has_due(self) -> bool:
-        return not _cancelled(self.dependencies) and self.workload().due > 0
+        if _cancelled(self.dependencies) or self.capacity_blocked or not self.workload().due:
+            return False
+        if not self.stopped:
+            return True
+        tasks = self.dependencies.index.pending_documents(self.population, self.now(), limit=1, policies=self.policies,
+                                                          excluded=tuple(self.failed_identities))
+        return bool(tasks and self.sources[0].document_ready(tasks[0].disclosure))
 
-    def run_batch(self, *, discovering: bool = False) -> None:
+    def run_batch(self, *, discovering: bool = False, discover: Callable[[], int | None] | None = None, local_only: bool = False) -> None:
         dependencies, index = self.dependencies, self.dependencies.index
-        if self.stopped or _cancelled(dependencies):
+        if self.capacity_blocked or _cancelled(dependencies):
             return
         self.state.current_stock = None
         workload = self.workload()
@@ -684,34 +710,101 @@ class _DocumentRun:
                 excluded=tuple(self.failed_identities),
             )
         )
-        pending_documents: dict[Future[CompanyDocumentExtraction], tuple[int, CompanyDocumentTask]] = {}
+        self.attempted_identities.clear()
+        text_queue: deque[CompanyDocumentTask] = deque()
+        ocr_queue: deque[CompanyDocumentTask] = deque()
+        for task in tuple(queue):
+            if self.sources[0].document_ready(task.disclosure):
+                queue.remove(task)
+                (ocr_queue if task.route == "ocr" else text_queue).append(task)
+        if local_only or self.stopped:
+            queue.clear()
+        pending_documents: dict[Future[CompanyDocumentExtraction | None], tuple[int, str, CompanyDocumentTask]] = {}
         available = deque(range(len(self.sources)))
         completed_before = self.completed
         self.batch_started = dependencies.monotonic()
         self.report(workload, completed_before)
-        while queue or pending_documents:
-            while queue and available and not self.stopped and not _cancelled(dependencies):
+        last_publish = dependencies.monotonic()
+        unpublished = 0
+        capacity_blocked = False
+        while queue or text_queue or ocr_queue or pending_documents:
+            for stage, ready, executor, capacity in (
+                ("ocr", ocr_queue, dependencies.ocr_executor, self.configuration.ocr_workers),
+                ("text", text_queue, dependencies.text_executor, self.configuration.text_workers),
+            ):
+                active = sum(value[1] == stage for value in pending_documents.values())
+                while ready and active < capacity and not _cancelled(dependencies):
+                    task = ready.popleft()
+                    if not index.document_required(task.disclosure):
+                        continue
+                    index.document_stage(task.disclosure, "analyzing")
+                    pending_documents[self._submit(self.sources[0], task, stage, executor)] = (-1, stage, task)
+                    active += 1
+                    self._attempt(task.disclosure)
+            while queue and available and not self.stopped and not capacity_blocked and not _cancelled(dependencies):
                 slot = available.popleft()
                 task = queue.popleft()
                 item = task.disclosure
+                if not index.document_required(item):
+                    available.append(slot)
+                    continue
                 _prepare_stock_progress(dependencies, self.state, item.codes[0])
                 self.report(workload, completed_before, discovering=discovering)
                 if _cancelled(dependencies):
                     break
-                pending_documents[self._submit(self.sources[slot], task)] = (slot, task)
-                self.attempted += 1
+                index.document_stage(item, "downloading")
+                pending_documents[self._submit(self.sources[slot], task, "download", self.executor)] = (slot, "download", task)
+                self._attempt(item)
             if self.stopped or _cancelled(dependencies):
                 queue.clear()
+            if _cancelled(dependencies):
+                text_queue.clear()
+                ocr_queue.clear()
                 for future in pending_documents:
                     future.cancel()
             if not pending_documents:
                 break
+            if discover is not None and any(not future.done() for future in pending_documents) and not _cancelled(dependencies):
+                discover()
             done, _ = wait(pending_documents, timeout=0.1, return_when=FIRST_COMPLETED)
             for future in done:
-                slot, task = pending_documents.pop(future)
-                available.append(slot)
-                self._accept(future, task)
+                slot, stage, task = pending_documents.pop(future)
+                if slot >= 0:
+                    available.append(slot)
+                if future.cancelled():
+                    continue
+                try:
+                    extraction = future.result()
+                except WorkerResourceRejectedError:
+                    raise
+                except (OSError, RuntimeError, ValueError) as exc:
+                    if isinstance(exc, CompanyDocumentFailure) and exc.reason == "disclosure_document_ocr_required":
+                        ocr_queue.append(replace(task, route="ocr"))
+                        index.document_stage(task.disclosure, "ocr_pending")
+                    elif str(exc) == "company_raw_capacity_exhausted":
+                        capacity_blocked = True
+                        queue.clear()
+                    elif not _cancelled(dependencies):
+                        self.failed(task.disclosure, exc, stage=stage)
+                else:
+                    if stage == "download":
+                        self.circuit.success()
+                        index.document_stage(task.disclosure, "downloaded")
+                        (ocr_queue if task.route == "ocr" else text_queue).append(task)
+                    elif extraction is not None and index.commit_document(task.disclosure, extraction, self.now()):
+                        self.completed += 1
+                        unpublished += 1
+                        self.state.changes += 1
                 self.report(workload, completed_before, discovering=discovering)
+            if unpublished and not _cancelled(dependencies) and (
+                unpublished >= self.configuration.publication_batch_size or dependencies.monotonic() - last_publish >= self.configuration.publication_interval_seconds
+            ):
+                _publish_batch(dependencies, self.population, self.observed_at, self.started, self.state)
+                unpublished = 0
+                last_publish = dependencies.monotonic()
+        if capacity_blocked and self.completed == completed_before:
+            self.capacity_blocked = True
+            self.state.failures += ("risk_documents:company_raw_capacity_exhausted",)
         self.elapsed += max(0.0, dependencies.monotonic() - self.batch_started)
         self.batch_started = None
         final_workload = self.workload()
@@ -722,39 +815,32 @@ class _DocumentRun:
             discovering=discovering,
         )
 
-    def _accept(self, future: Future[CompanyDocumentExtraction], task: CompanyDocumentTask) -> None:
-        if future.cancelled():
-            return
-        item = task.disclosure
-        _prepare_stock_progress(self.dependencies, self.state, item.codes[0])
-        try:
-            extraction = future.result()
-        except WorkerResourceRejectedError:
-            raise
-        except (OSError, RuntimeError, ValueError) as exc:
-            if not _cancelled(self.dependencies):
-                self.failed(item, exc)
-        else:
-            self.circuit.success()
-            if self.dependencies.index.commit_document(item, extraction, self.now()):
-                self.completed += 1
-                self.state.changes += 1
+    def _attempt(self, item: Disclosure) -> None:
+        key = item.source, item.identity, item.digest
+        if key not in self.attempted_identities:
+            self.attempted_identities.add(key)
+            self.attempted += 1
 
     def _submit(
-        self, source: CompanyDisclosureSource, task: CompanyDocumentTask
-    ) -> Future[CompanyDocumentExtraction]:
-        function = source.document if task.route == "standard" else partial(source.document, route=task.route)
-        if self.executor is not None:
-            return SubmitOrReject(self.executor, function, task.disclosure)
+        self, source: CompanyDisclosureSource, task: CompanyDocumentTask, stage: str, executor: WorkerExecutor | None
+    ) -> Future[CompanyDocumentExtraction | None]:
+        function: Callable[[Disclosure], CompanyDocumentExtraction | None] = (
+            source.download_document if stage == "download" else partial(source.extract_document, route=task.route)
+        )
+        if executor is not None:
+            return SubmitOrReject(executor, function, task.disclosure)
         # Explicit single-worker configuration also supports caller-thread execution.
-        completed: Future[CompanyDocumentExtraction] = Future()
+        completed: Future[CompanyDocumentExtraction | None] = Future()
         try:
             completed.set_result(function(task.disclosure))
         except (OSError, RuntimeError, ValueError) as exc:
             completed.set_exception(exc)
         return completed
 
-    def failed(self, item: Disclosure, exc: BaseException) -> None:
+    def failed(self, item: Disclosure, exc: BaseException, *, stage: str = "analysis") -> None:
+        if self.dependencies.failures is not None:
+            self.dependencies.failures(DownloadFailureContext("company_document", code=item.codes[0], supplier=item.source,
+                detail=f"stage={stage};record={item.identity};version={item.digest}"), exc)
         self.failed_identities.add((item.source, item.identity, item.digest))
         failure = _failure(exc)
         if failure == "disclosure_document_ocr_timeout" and self.dependencies.index.document_ocr_timeouts(
@@ -778,7 +864,7 @@ class _DocumentRun:
             exc.diagnostic if isinstance(exc, CompanyDocumentFailure) else None,
             self.policies.ocr,
         )
-        if self.circuit.failed(exc):
+        if stage == "download" and self.circuit.failed(exc):
             self.stopped = True
             self.state.failures += ("risk_documents:source_stopped",)
 
@@ -936,6 +1022,8 @@ def _structured(
             return
         failure = _failure(exc)
         index.component_failure(component, "market", failure)
+        if dependencies.failures is not None:
+            dependencies.failures(DownloadFailureContext(f"company_{component}", supplier="eastmoney"), exc)
         state.failures += (f"{component}:{failure}",)
         _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
 
@@ -982,7 +1070,7 @@ def _transport_failure(exc: BaseException) -> bool:
 
 def _failure_requires_retry(failure: str) -> bool:
     scope, _, reason = failure.partition(":")
-    return scope != "risk_documents" or reason in {"pending", "source_stopped"} or IsTransientCompanyDocumentFailure(reason)
+    return scope != "risk_documents" or reason in {"pending", "source_stopped", "company_raw_capacity_exhausted"} or IsTransientCompanyDocumentFailure(reason)
 
 
 def _cancelled(dependencies: CompanyEvidenceDependencies) -> bool:
@@ -1011,6 +1099,7 @@ def _report(
     unextractable_documents: int = 0,
     next_document_retry_at: datetime | None = None,
     discovering_documents: bool = False,
+    workload: CompanyDocumentWorkload | None = None,
 ) -> None:
     if dependencies.progress is not None:
         failures = tuple(
@@ -1045,6 +1134,7 @@ def _report(
                 unextractable_documents=unextractable_documents,
                 next_document_retry_at=next_document_retry_at,
                 discovering_documents=discovering_documents,
+                workload=workload,
             )
         )
 

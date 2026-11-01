@@ -92,11 +92,10 @@ class EastmoneyCompanySource:
                     "type": "RPT_F10_FINANCE_MAINFINADATA",
                     "sty": "SECUCODE,REPORT_DATE,NOTICE_DATE,EPSJB,BPS,TOTALOPERATEREVETZ,PARENTNETPROFITTZ,KCFJCXSYJLRTZ,ROEJQ,PARENTNETPROFIT,KCFJCXSYJLR",
                     "quoteColumns": "",
-                    "filter": f"(REPORT_DATE>='{(observed_at.date() - timedelta(days=550)).isoformat()}')"
-                    f"(NOTICE_DATE>='{start.isoformat()}')(NOTICE_DATE<='{end.isoformat()}')",
+                    "filter": f"(NOTICE_DATE>='{max(start, observed_at.date() - timedelta(days=365)).isoformat()}')(NOTICE_DATE<='{end.isoformat()}')",
                     "p": str(page),
                     "ps": "500",
-                    "sr": "1,1,1",
+                    "sr": "-1,1,-1",
                     "st": "NOTICE_DATE,SECUCODE,REPORT_DATE",
                     "source": "HSF10",
                     "client": "PC",

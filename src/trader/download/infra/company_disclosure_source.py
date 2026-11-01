@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime
@@ -32,7 +33,9 @@ from trader.download.domain.company_evidence import (
 from trader.download.infra.company_document_ocr import CompanyOcrEngine
 from trader.download.infra.company_document_parser import CompanyTextCapability
 from trader.download.infra.company_document_process import DocumentProcessFamily
-from trader.download.infra.company_http import CheckCompanyResponse
+from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
+from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
+from trader.download.infra.company_http import CheckCompanyResponse, CompanyRequestPacer
 from trader.infra.http_contracts import (
     HttpCancelled,
     HttpConnectionError,
@@ -66,7 +69,13 @@ class CninfoMarketDisclosureSource:
         text_capability: CompanyTextCapability = _DEFAULT_TEXT_CAPABILITY,
         ocr_engine: CompanyOcrEngine | None = None,
         cancel_requested: Callable[[], bool] | None = None,
+        raw_files: CompanyRawFiles | None = None,
+        pacer: CompanyRequestPacer | None = None,
+        text_reserve_bytes: int | None = None,
+        ocr_reserve_bytes: int | None = None,
     ) -> None:
+        if raw_files is not None and (text_reserve_bytes is None or ocr_reserve_bytes is None or min(text_reserve_bytes, ocr_reserve_bytes) <= 0):
+            raise ValueError("company_document_reservations_required")
         self._session = session
         self._monotonic = monotonic
         self._sleep = sleeper
@@ -82,6 +91,10 @@ class CninfoMarketDisclosureSource:
         self._cancel_requested = cancel_requested
         self._next_request = 0.0
         self._securities: tuple[DisclosureSecurity, ...] | None = None
+        self._raw_files = raw_files
+        self._pacer = pacer
+        self._text_reserve_bytes = text_reserve_bytes
+        self._ocr_reserve_bytes = ocr_reserve_bytes
 
     def fetch(self, partition: DisclosurePartition, *, order: Literal["", "asc", "desc"] = "") -> DisclosurePage:
         if partition.page > 100:
@@ -245,24 +258,130 @@ class CninfoMarketDisclosureSource:
             self._check_cancelled()
             delay -= interval
         self._next_request = self._monotonic() + self._request_interval
+        if self._pacer is not None:
+            self._pacer.wait()
 
-    def document(self, item: Disclosure, *, route: DocumentRoute = "standard") -> CompanyDocumentExtraction:
+    def document_ready(self, item: Disclosure) -> bool:
+        if self._raw_files is None:
+            raise RuntimeError("company_raw_files_required")
+        return self._raw_files.result(item, (self._document_policies.standard, self._document_policies.ocr, self._document_policies.limits)) is not None or self._raw_files.local(item) is not None
+
+    def download_document(self, item: Disclosure) -> None:
+        if self._raw_files is None:
+            raise RuntimeError("company_raw_files_required")
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
             raise CompanyDocumentFailure("disclosure_document_unavailable")
-        limits = self._extended_document_limits if route == "limits" else self._document_limits
-        try:
-            response = self._download_document(item, limits.max_bytes)
-        except HttpResponseTooLarge as exc:
-            if route == "limits":
-                raise CompanyDocumentFailure("disclosure_document_oversized") from exc
+        local = self._raw_files.local(item)
+        if local is not None:
+            return
+        directory = self._raw_files.directory(item)
+        with self._raw_files.reserve(directory, self._extended_document_limits.max_bytes + 65536):
             try:
-                response = self._download_document(item, self._extended_document_limits.max_bytes)
-            except HttpResponseTooLarge as expanded:
-                raise CompanyDocumentFailure("disclosure_document_oversized") from expanded
-            limits = self._extended_document_limits
+                self._request(partial(self._transfer_document, item, directory))
+            except HttpResponseTooLarge as exc:
+                raise CompanyDocumentFailure("disclosure_document_oversized") from exc
+            self._raw_files.complete(item, directory / "download.part")
+
+    def _transfer_document(self, item: Disclosure, directory: Path) -> HttpResponse:
+        partial_path, metadata_path = directory / "download.part", directory / "download.json"
+        metadata = AtomicReadJson(metadata_path) if metadata_path.exists() else None
+        validator = metadata.get("validator", "") if isinstance(metadata, dict) else ""
+        offset = partial_path.stat().st_size if partial_path.exists() and isinstance(validator, str) and validator else 0
+        headers: tuple[tuple[str, str], ...] = (("Accept-Encoding", "identity"),)
+        if offset:
+            headers += (("Range", f"bytes={offset}-"), ("If-Range", validator))
+        expected: int | None = None
+        with partial_path.open("r+b" if partial_path.exists() else "w+b") as stream:
+            def receive_headers(status: int, values: tuple[tuple[str, str], ...]) -> None:
+                nonlocal offset, expected
+                response = HttpResponse(status, b"", values)
+                if status == 416:
+                    stream.seek(0)
+                    stream.truncate()
+                    metadata_path.unlink(missing_ok=True)
+                    raise HttpConnectionError("company_download_range_changed")
+                CheckCompanyResponse(response)
+                fields = response.headers
+                if fields.get("Content-Encoding", "identity") != "identity":
+                    raise CompanyDocumentFailure("disclosure_document_encoding_unsupported")
+                if status == 206:
+                    returned_validator = fields.get("ETag", "")
+                    if returned_validator.startswith("W/"):
+                        returned_validator = ""
+                    returned_validator = returned_validator or fields.get("Last-Modified", "")
+                    if not offset or returned_validator != validator:
+                        stream.seek(0)
+                        stream.truncate()
+                        metadata_path.unlink(missing_ok=True)
+                        raise HttpConnectionError("company_download_range_changed")
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", fields.get("Content-Range", ""))
+                    if not match or int(match[1]) != offset or int(match[2]) + 1 != int(match[3]):
+                        stream.seek(0)
+                        stream.truncate()
+                        metadata_path.unlink(missing_ok=True)
+                        raise HttpConnectionError("company_download_range_changed")
+                    expected = int(match[3])
+                elif status == 200:
+                    offset = 0
+                    length = fields.get("Content-Length")
+                    expected = int(length) if length and length.isdigit() else None
+                else:
+                    raise CompanyDocumentFailure("disclosure_document_response_invalid")
+                if expected is not None and expected > self._extended_document_limits.max_bytes:
+                    raise CompanyDocumentFailure("disclosure_document_oversized")
+                stream.seek(offset)
+                stream.truncate()
+                tag = fields.get("ETag", "")
+                if tag.startswith("W/"):
+                    tag = ""
+                AtomicWriteJson(metadata_path, {"validator": tag or fields.get("Last-Modified", "")})
+
+            def receive_chunk(chunk: bytes) -> None:
+                if stream.tell() + len(chunk) > self._extended_document_limits.max_bytes:
+                    raise CompanyDocumentFailure("disclosure_document_oversized")
+                stream.write(chunk)
+
+            try:
+                response = self._session.execute(HttpRequest(
+                    "GET", item.url, self._document_download_timeout, headers=headers,
+                    deadline=self._monotonic() + self._document_download_timeout,
+                    max_response_bytes=self._extended_document_limits.max_bytes,
+                    cancel_requested=self._cancel_requested, io_timeout_seconds=self._timeout,
+                    receive_headers=receive_headers, receive_chunk=receive_chunk,
+                ))
+            finally:
+                stream.flush()
+                os.fsync(stream.fileno())
+            if stream.tell() == 0 or expected is not None and stream.tell() != expected:
+                raise HttpConnectionError("company_download_incomplete")
+        return response
+
+    def extract_document(
+        self, item: Disclosure, *, route: DocumentRoute = "standard"
+    ) -> CompanyDocumentExtraction:
+        if self._raw_files is None:
+            raise RuntimeError("company_raw_files_required")
+        policies = (self._document_policies.standard, self._document_policies.ocr, self._document_policies.limits)
+        cached = self._raw_files.result(item, policies)
+        if cached is not None:
+            return cached
+        local = self._raw_files.local(item)
+        if local is None:
+            raise RuntimeError("company_local_document_missing")
+        # Scratch, page checkpoints and result are covered by this reservation.
+        reserve = self._ocr_reserve_bytes if route == "ocr" else self._text_reserve_bytes
+        if reserve is None:
+            raise ValueError("company_document_reservations_required")
+        with self._raw_files.reserve(local.directory, reserve, analysis=True):
+            result = self._analyze_document(local, route)
+            self._raw_files.save_result(item, result)
+            return result
+
+    def _analyze_document(self, local: CompanyLocalDocument, route: DocumentRoute) -> CompanyDocumentExtraction:
+        limits = self._extended_document_limits if route == "limits" or local.size > self._document_limits.max_bytes else self._document_limits
+        if limits is self._extended_document_limits and route == "standard":
             route = "limits"
-        payload = response.content
-        payload_hash = hashlib.sha256(payload).digest()
+        payload, payload_hash = local.path, local.payload_hash
         if route == "ocr":
             return self._ocr(payload, payload_hash)
         try:
@@ -275,7 +394,7 @@ class CninfoMarketDisclosureSource:
                 "disclosure_document_parse_timeout",
                 "disclosure_document_text_unavailable",
             }:
-                return self._ocr(payload, payload_hash)
+                raise CompanyDocumentFailure("disclosure_document_ocr_required", payload_hash=payload_hash) from exc
             if route == "standard" and exc.reason in {
                 "disclosure_document_page_limit",
                 "disclosure_document_text_limit",
@@ -290,38 +409,26 @@ class CninfoMarketDisclosureSource:
                         "disclosure_document_parse_timeout",
                         "disclosure_document_text_unavailable",
                     }:
-                        return self._ocr(payload, payload_hash)
+                        raise CompanyDocumentFailure("disclosure_document_ocr_required", payload_hash=payload_hash) from expanded
                     raise
                 route = "limits"
             else:
                 raise
         return CompanyDocumentExtraction(text, "text", payload_hash, self._document_policies.for_route(route))
 
-    def _download_document(self, item: Disclosure, max_bytes: int) -> HttpResponse:
-        return self._request(
-            lambda: self._session.execute(
-                HttpRequest(
-                    "GET", item.url, self._document_download_timeout,
-                    deadline=self._monotonic() + self._document_download_timeout,
-                    max_response_bytes=max_bytes, cancel_requested=self._cancel_requested,
-                    io_timeout_seconds=self._timeout,
-                )
-            ),
-        )
-
-    def _ocr(self, payload: bytes, payload_hash: bytes) -> CompanyDocumentExtraction:
+    def _ocr(self, payload: Path, payload_hash: bytes) -> CompanyDocumentExtraction:
         if self._ocr_engine is None:
             raise CompanyDocumentFailure("disclosure_document_ocr_unavailable", payload_hash=payload_hash)
         text, quality = self._ocr_engine.extract(payload, payload_hash)
         return CompanyDocumentExtraction(text, "ocr", payload_hash, self._document_policies.ocr, quality)
 
-    def _parse_document(self, payload: bytes, limits: CompanyDocumentLimits | None = None) -> str:
+    def _parse_document(self, payload: Path, limits: CompanyDocumentLimits | None = None) -> str:
         limits = limits or self._document_limits
-        with tempfile.TemporaryDirectory(prefix="trader-company-text-") as directory:
+        with tempfile.TemporaryDirectory(prefix="text-", dir=payload.parent) as directory:
             return self._extract_document(payload, limits, directory)
 
-    def _extract_document(self, payload: bytes, limits: CompanyDocumentLimits, directory: str) -> str:
-        payload_hash = hashlib.sha256(payload).digest()
+    def _extract_document(self, payload: Path, limits: CompanyDocumentLimits, directory: str) -> str:
+        payload_hash = bytes.fromhex(payload.stem)
         if not self._text_capability.available:
             raise CompanyDocumentFailure(
                 self._text_capability.failure or "disclosure_document_text_unavailable",
@@ -336,6 +443,8 @@ class CninfoMarketDisclosureSource:
                 "trader.download.infra.company_document_parser",
                 "--directory",
                 directory,
+                "--input",
+                str(payload),
                 "--max-bytes",
                 str(limits.max_bytes),
                 "--max-pages",
@@ -347,12 +456,11 @@ class CninfoMarketDisclosureSource:
                 "--pdfinfo",
                 self._text_capability.pdfinfo or "pdfinfo",
             ],
-            stdin=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             start_new_session=os.name == "posix",
         )
-        pending_input: bytes | None = payload
         family: DocumentProcessFamily | None = None
         try:
             family = DocumentProcessFamily(process)
@@ -362,11 +470,11 @@ class CninfoMarketDisclosureSource:
                 if remaining <= 0:
                     raise CompanyDocumentFailure("disclosure_document_parse_timeout", payload_hash=payload_hash)
                 try:
-                    output, _ = process.communicate(input=pending_input, timeout=min(0.1, remaining))
+                    output, _ = process.communicate(timeout=min(0.1, remaining))
                     break
                 except subprocess.TimeoutExpired:
                     # communicate retains partial writes and reads after a timeout.
-                    pending_input = None
+                    continue
             self._check_cancelled()
         finally:
             _close_parser(process, family)

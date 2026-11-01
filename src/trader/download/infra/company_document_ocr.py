@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import shutil
 import subprocess
-import tempfile
+from contextlib import contextmanager
+from collections.abc import Iterator
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
 
 from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
 from trader.download.infra.company_document_process import CaptureDocumentTool
 from trader.infra.http_contracts import HttpCancelled
+from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
 
 _MAX_RENDERED_BYTES = 256 * 1024 * 1024
 _MAX_TSV_BYTES = 8 * 1024 * 1024
@@ -73,42 +75,42 @@ def DetectCompanyOcr(languages: str) -> CompanyOcrCapability:
 
 
 class CompanyOcrEngine:
-    """Serialize OCR and own every renderer/recognizer process it starts."""
+    """Own each renderer/recognizer process; the injected executor bounds concurrency."""
 
     def __init__(
         self,
         capability: CompanyOcrCapability,
         *,
         timeout_seconds: float,
+        page_timeout_seconds: float,
         max_pages: int,
         dpi: int,
         cancel_requested: Callable[[], bool] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
+        if not 0 < page_timeout_seconds <= timeout_seconds <= 600 or not math.isfinite(timeout_seconds):
+            raise ValueError("company_ocr_deadline_invalid")
         self.capability = capability
         self._timeout_seconds = timeout_seconds
+        self._page_timeout_seconds = page_timeout_seconds
         self._max_pages = max_pages
         self._dpi = dpi
         self._cancel_requested = cancel_requested
         self._monotonic = monotonic
-        self._lock = Lock()
 
-    def extract(self, payload: bytes, payload_hash: bytes) -> tuple[str, float]:
+    def extract(self, payload: Path, payload_hash: bytes) -> tuple[str, float]:
         diagnostic = CompanyOcrDiagnostic("metadata", 0, 0, 0, None, 6)
         if not self.capability.available:
             raise CompanyDocumentFailure(self.capability.failure or "disclosure_document_ocr_unavailable", payload_hash=payload_hash)
-        while not self._lock.acquire(timeout=0.1):
-            self._check_cancelled()
         try:
             self._check_cancelled()
             deadline = self._monotonic() + self._timeout_seconds
-            with tempfile.TemporaryDirectory(prefix="trader-company-ocr-") as directory:
-                root = Path(directory)
-                pdf = root / "document.pdf"
-                pdf.write_bytes(payload)
+            identity = hashlib.sha256(f"ocr-pages-1:{payload_hash.hex()}:{self.capability.identity}:{self.capability.languages}:{self._dpi}".encode()).hexdigest()
+            with _workspace(payload.parent / ("ocr-" + identity)) as root:
+                pdf = payload
                 metadata = self._run(
                     (self.capability.pdfinfo or "pdfinfo", "-f", "1", "-l", str(self._max_pages + 1), str(pdf)),
-                    deadline,
+                    min(deadline, self._monotonic() + self._page_timeout_seconds),
                     payload_hash,
                     "disclosure_document_ocr_unreadable",
                     maximum_bytes=65536,
@@ -126,6 +128,26 @@ class CompanyOcrEngine:
                 fallback_used = False
                 image = root / "page.png"
                 for page, edge in enumerate(edges, start=1):
+                    self._check_cancelled()
+                    checkpoint = root / f"{page}.json"
+                    if checkpoint.exists():
+                        try:
+                            saved = _read_page(checkpoint)
+                        except ValueError:
+                            checkpoint.replace(checkpoint.with_suffix(".corrupt"))
+                            saved = None
+                    else:
+                        saved = None
+                    if saved is not None:
+                        texts.append(saved.text)
+                        characters += len(saved.text) + 1
+                        confidence_sum += saved.confidence_sum
+                        confidence_count += saved.confidence_count
+                        fallback_used = saved.fallback_used
+                        if characters > _MAX_TEXT_CHARACTERS:
+                            raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash)
+                        continue
+                    page_deadline = min(deadline, self._monotonic() + self._page_timeout_seconds)
                     diagnostic = CompanyOcrDiagnostic("render", page, int(pages), characters, None, 6)
                     rendered = self._run(
                         (
@@ -133,7 +155,7 @@ class CompanyOcrEngine:
                             "-r", str(self._dpi), "-scale-to", str(edge),
                             "-f", str(page), "-l", str(page), str(pdf),
                         ),
-                        deadline,
+                        page_deadline,
                         payload_hash,
                         "disclosure_document_ocr_unreadable",
                         maximum_bytes=_MAX_RENDERED_BYTES - rendered_bytes,
@@ -144,13 +166,13 @@ class CompanyOcrEngine:
                     image.write_bytes(rendered)
                     del rendered
                     diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), characters, None, 6)
-                    text, confidence = self._recognize(image, deadline, payload_hash, 6)
+                    text, confidence = self._recognize(image, page_deadline, payload_hash, 6)
                     page_characters = len("".join(text.split()))
                     quality = sum(confidence) / len(confidence) if confidence else 0.0
                     if not fallback_used and (page_characters < 80 or quality < _MIN_CONFIDENCE):
                         fallback_used = True
                         diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, 3)
-                        alternative, alternative_confidence = self._recognize(image, deadline, payload_hash, 3)
+                        alternative, alternative_confidence = self._recognize(image, page_deadline, payload_hash, 3)
                         alternative_characters = len("".join(alternative.split()))
                         alternative_quality = (
                             sum(alternative_confidence) / len(alternative_confidence) if alternative_confidence else 0.0
@@ -169,6 +191,9 @@ class CompanyOcrEngine:
                     texts.append(text)
                     confidence_sum += sum(confidence)
                     confidence_count += len(confidence)
+                    page_value = {"text": text, "sum": sum(confidence), "count": len(confidence), "fallback": fallback_used}
+                    page_value["checksum"] = hashlib.sha256(json.dumps(page_value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+                    AtomicWriteJson(checkpoint, page_value)
             result = "\n".join(texts).strip()
             quality = confidence_sum / confidence_count if confidence_count else 0.0
             diagnostic = CompanyOcrDiagnostic(
@@ -179,8 +204,6 @@ class CompanyOcrEngine:
             return result, quality
         except CompanyDocumentFailure as exc:
             raise CompanyDocumentFailure(exc.reason, payload_hash=payload_hash, diagnostic=diagnostic) from exc
-        finally:
-            self._lock.release()
 
     def _recognize(
         self, image: Path, deadline: float, payload_hash: bytes, mode: int
@@ -255,6 +278,39 @@ def _read_tsv(payload: bytes) -> tuple[str, list[float]]:
         words.append(columns[11].strip())
         confidences.append(confidence)
     return " ".join(words), confidences
+
+
+@dataclass(frozen=True)
+class _Page:
+    text: str
+    confidence_sum: float
+    confidence_count: int
+    fallback_used: bool
+
+
+def _read_page(path: Path) -> _Page:
+    if path.stat().st_size > 16 * 1024 * 1024:
+        raise ValueError("company_ocr_checkpoint_invalid")
+    value = AtomicReadJson(path)
+    if not isinstance(value, dict):
+        raise ValueError("company_ocr_checkpoint_invalid")
+    checksum = value.pop("checksum", None)
+    if checksum != hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest():
+        raise ValueError("company_ocr_checkpoint_invalid")
+    text, total, count, fallback = (value.get(k) for k in ("text", "sum", "count", "fallback"))
+    if (not isinstance(text, str) or not isinstance(total, (int, float)) or type(count) is not int
+        or type(fallback) is not bool or count < 0 or not math.isfinite(total) or not 0 <= total <= count * 100):
+        raise ValueError("company_ocr_checkpoint_invalid")
+    return _Page(text, float(total), count, fallback)
+
+
+@contextmanager
+def _workspace(root: Path) -> Iterator[Path]:
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        yield root
+    finally:
+        (root / "page.png").unlink(missing_ok=True)
 
 
 __all__ = ["CompanyOcrCapability", "CompanyOcrEngine", "DetectCompanyOcr"]

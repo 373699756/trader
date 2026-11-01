@@ -87,6 +87,15 @@ class Sources:
     def document(self, item, *, route="standard"):
         raise AssertionError("ordinary announcements must not fetch a document")
 
+    def document_ready(self, item):
+        return False
+
+    def download_document(self, item):
+        return None
+
+    def extract_document(self, item, *, route="standard"):
+        return self.document(item) if route == "standard" else self.document(item, route=route)
+
     def split_queries(self, partition):
         raise ValueError("cninfo_query_unsplittable")
 

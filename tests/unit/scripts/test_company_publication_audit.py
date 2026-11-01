@@ -47,7 +47,7 @@ def test_published_projection_keeps_unknown_components_and_valid_released_receip
     assert "company_reviews_pending" in result["findings"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
     audit = result["field_audit"]
-    assert audit["table_count"] == 12 and audit["field_count"] == 97
+    assert audit["table_count"] == 13 and audit["field_count"] == 106
     assert audit["invalid_storage_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
 
 
@@ -73,20 +73,30 @@ def test_field_audit_distinguishes_real_source_values_from_formal_corruption(tmp
 def test_released_body_requires_current_version_receipt_for_every_population_member(tmp_path, change):
     index = _published(tmp_path)
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        if change == "delete":
-            connection.run("DELETE FROM document_publications")
-        elif change == "record_hash":
-            connection.run("UPDATE document_publications SET record_hash='old'")
-        elif change == "extraction_hash":
-            connection.run("UPDATE document_publications SET extraction_hash=?", (b"x" * 32,))
-        else:
+        if change == "new_member":
             connection.run("INSERT INTO company_population VALUES('600002')")
             connection.run("INSERT INTO disclosure_codes(code,disclosure_id) SELECT '600002',id FROM disclosures")
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        if change == "delete":
+            connection.run("DELETE FROM company_input_receipt")
+        elif change == "record_hash":
+            connection.run("UPDATE company_input_receipt SET record_hash='old'")
+        elif change == "extraction_hash":
+            connection.run("UPDATE company_input_receipt SET extraction_hash=?", (b"x" * 32,))
     result = _audit(index)
     assert result["receipts"]["released_without_receipts"] == 1
     assert "company_released_body_receipt_missing" in result["findings"]
     if change == "new_member":
         assert result["unpublished_stocks"] == 1
+
+
+def test_collection_receipt_loss_is_recoverable_from_formal_success(tmp_path):
+    index = _published(tmp_path)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("DELETE FROM document_publications")
+    result = _audit(index)
+    assert result["receipts"]["released_without_receipts"] == 0
+    assert "company_released_body_receipt_missing" not in result["findings"]
 
 
 def test_retained_unpublished_document_is_pending_and_not_lost(tmp_path):

@@ -67,7 +67,7 @@ def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, 
     items = tuple(fixtures._disclosure(str(i), "本公司收到立案告知书", when=now) for i in range(2))
     monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: items)
 
-    class Source:
+    class Source(fixtures.Sources):
         def __init__(self, *args, **kwargs):
             pass
 
@@ -92,7 +92,7 @@ def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(t
     monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("changed", "收到立案告知书", when=now),))
     clients = []
 
-    class Source:
+    class Source(fixtures.Sources):
         def __init__(self, *args, **kwargs):
             self.digest = b"a" * 32 if not clients else b"b" * 32
             clients.append(self)
@@ -138,7 +138,7 @@ def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_fai
     monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("failure", "收到立案告知书", when=now),))
     capabilities = []
 
-    class Source:
+    class Source(fixtures.Sources):
         def __init__(self, *args, **kwargs):
             capabilities.append((kwargs["ocr_engine"], kwargs["text_capability"], kwargs["document_policies"]))
 

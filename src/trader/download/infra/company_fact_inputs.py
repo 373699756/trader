@@ -16,6 +16,7 @@ from trader.download.domain.company_evidence import (
     CompanyRatio,
     Disclosure,
     EvidenceMarket,
+    IsTransientCompanyDocumentFailure,
 )
 from trader.download.infra.company_facts_protocol import REVIEW_REASONS, DecodeCompanyLabel, EncodeCompanyReason
 from trader.infra.sqlite_connection import SqliteConnection
@@ -72,12 +73,17 @@ def ReadCompanySnapshotRows(
 ) -> dict[str, CompanySnapshotRows]:
     placeholders = ",".join("?" for _ in codes)
     disclosures = connection.run(
-        "SELECT d.*,c.code,EXISTS(SELECT 1 FROM document_publications p WHERE p.disclosure_id=d.id "
-        "AND p.code=c.code AND p.record_hash=d.record_hash AND p.extraction_hash=?) AS published_for_code "
+        "SELECT d.*,c.code,r.failure AS document_failure,r.retry_policy_id,r.payload_hash,EXISTS(SELECT 1 FROM document_publications p WHERE p.disclosure_id=d.id "
+        "AND p.code=c.code AND p.record_hash=d.record_hash AND p.extraction_hash=?) AS published_for_code, EXISTS("
+        "SELECT 1 FROM document_supersessions s JOIN disclosures n ON n.id=s.replacement_id "
+        "JOIN document_publications r ON r.disclosure_id=n.id AND r.code=c.code AND r.record_hash=n.record_hash "
+        "AND r.extraction_hash=s.extraction_hash WHERE s.disclosure_id=d.id AND s.code=c.code AND s.record_hash=d.record_hash "
+        "AND s.replacement_hash=n.record_hash AND s.extraction_hash=?) AS superseded_for_code "
         "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-        f"WHERE c.code IN ({placeholders}) AND (d.published_at>=? OR d.kind='announcement') "
+        "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash "
+        f"WHERE c.code IN ({placeholders}) AND (d.published_at>=? OR (d.kind='announcement' AND d.body_checked=1)) "
         "AND d.published_at<=? ORDER BY d.published_at,d.id",
-        (extraction_hash, *codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
+        (extraction_hash, extraction_hash, *codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
     )
     documents: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
     for row in disclosures:
@@ -116,15 +122,18 @@ def BuildCompanySnapshot(
     read_document: Callable[[bytes], str],
 ) -> CompanyEvidenceInput:
     start, end = now.date() - timedelta(days=365), now.date()
+    if listed_on is not None:
+        start = max(start, listed_on)
     rows = inputs.disclosures
     documents = tuple(
         CompanyDocument(
             DecodeCompanyDisclosure(row),
             read_document(row["body_hash"]) if row["body_retained"] else "",
             bool(row["body_checked"]) and bool(row["body_retained"]),
+            bool(row["document_failure"]) and not IsTransientCompanyDocumentFailure(row["document_failure"]),
         )
         for row in rows
-        if row["kind"] == "announcement" and not row["published_for_code"]
+        if row["kind"] == "announcement" and not row["published_for_code"] and not row["superseded_for_code"]
     )
     ranges = tuple(row for row in shared.coverage if row["market"] == EvidenceMarket(code))
     complete = CompanyCoverageComplete(ranges, start, end) and all(
@@ -154,11 +163,9 @@ def BuildCompanySnapshot(
             failures += (f"{component}:not_current",)
     if pledge is not None and pledge.day < end - timedelta(days=10):
         failures += ("pledge:source_stale",)
-    risk_start = min(start, listed_on) if listed_on is not None else start
+    risk_start = start
     partition_errors = tuple(row for row in shared.errors if row["market"] == EvidenceMarket(code) and row["end_date"] >= risk_start.isoformat())
     failures += tuple(f"announcements:{row[0]}" for row in partition_errors)
-    if listed_on is None or listed_on > end or not CompanyCoverageComplete(ranges, listed_on, end):
-        failures += ("announcements:initial_risk_state_unverified",)
     complete = complete and not partition_errors
     if not complete:
         failures += ("announcements:window_incomplete",)
@@ -204,6 +211,7 @@ def BuildCompanySnapshot(
         ),
         unlock_checked_at=datetime.fromisoformat(shared.unlock_snapshot[0]) if shared.unlock_snapshot else None,
         unlock_coverage_end=date.fromisoformat(shared.unlock_snapshot[1]) if shared.unlock_snapshot else None,
+        superseded_evidence_ids=tuple(row["source_key"] for row in rows if row["superseded_for_code"]),
     )
     return snapshot
 

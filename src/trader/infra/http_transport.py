@@ -149,9 +149,16 @@ class RequestsHttpTransport:
         try:
             response = self._execute_request(replace(request, deadline=deadline))
             self._check(request, deadline)
+            if len(response.content) > request.max_response_bytes:
+                raise HttpResponseTooLarge("http_response_too_large")
+            if request.receive_headers is not None and request.receive_chunk is not None:
+                request.receive_headers(response.status_code, response.header_items)
+                for offset in range(0, len(response.content), 65536):
+                    self._check(request, deadline)
+                    request.receive_chunk(response.content[offset:offset + 65536])
             if self._inspect_response is not None:
                 self._inspect_response(request, response)
-            return response
+            return replace(response, content=b"") if request.receive_chunk is not None else response
         except HttpError as exc:
             failure = type(exc).__name__
             raise
@@ -169,6 +176,7 @@ class RequestsHttpTransport:
         assert self._session is not None
         status: int | None = None
         body = bytearray()
+        received = 0
         failure = ""
         try:
             headers = {"Accept-Encoding": "gzip, deflate", **dict(request.headers)}
@@ -182,6 +190,8 @@ class RequestsHttpTransport:
                 allow_redirects=False,
             ) as raw:
                 status = raw.status_code
+                if request.receive_headers is not None:
+                    request.receive_headers(status, tuple(raw.headers.items()))
                 encoding = raw.headers.get("Content-Encoding", "identity").lower()
                 if encoding not in {"identity", "gzip", "deflate"}:
                     raise HttpError("http_content_encoding_unsupported")
@@ -202,10 +212,14 @@ class RequestsHttpTransport:
                     if wire_bytes > request.max_response_bytes:
                         raise HttpResponseTooLarge("http_response_too_large")
                     if decoder is not None:
-                        chunk = decoder.decompress(chunk, request.max_response_bytes - len(body) + 1)
-                    if len(body) + len(chunk) > request.max_response_bytes:
+                        chunk = decoder.decompress(chunk, request.max_response_bytes - received + 1)
+                    if received + len(chunk) > request.max_response_bytes:
                         raise HttpResponseTooLarge("http_response_too_large")
-                    body.extend(chunk)
+                    received += len(chunk)
+                    if request.receive_chunk is None:
+                        body.extend(chunk)
+                    else:
+                        request.receive_chunk(chunk)
                 if decoder is not None and (not decoder.eof or decoder.unused_data):
                     raise HttpError("http_compressed_body_invalid")
                 self._check(request, deadline)
@@ -232,7 +246,7 @@ class RequestsHttpTransport:
                         urlsplit(request.url).hostname or "",
                         request.method,
                         self._monotonic() - started,
-                        len(body),
+                        received,
                         status,
                         failure or (f"http_{status}" if status is not None and status >= 300 else ""),
                     )

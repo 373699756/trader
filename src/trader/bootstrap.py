@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from flask import Flask
@@ -47,6 +47,8 @@ from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIn
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
+from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.infra.company_http import CompanyRequestPacer
 from trader.download.infra.download_settings import (
     LoadCompanySyncConfiguration,
     LoadDownloadFailureConfiguration,
@@ -296,6 +298,7 @@ def ExecuteSync(
                 fill_missing=fill_missing,
             ),
             cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
+            failure_configuration=failure_configuration,
         ),
         cancelled=cancel_requested,
     ).execute(target)
@@ -314,6 +317,7 @@ def _sync_company_evidence(
     request: company_evidence.CompanyEvidenceRequest,
     *,
     cancel_requested: Callable[[], bool] | None = None, sqlite_policy: SqliteIoPolicy,
+    failure_configuration: DownloadFailureConfiguration,
 ) -> company_evidence.CompanyEvidenceSyncResult:
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
@@ -326,9 +330,16 @@ def _sync_company_evidence(
             ocr_capability.identity,
             text_identity=text_capability.identity,
         )
+        raw_files = CompanyRawFiles(
+            paths.company_collection.parent,
+            capacity=configuration.raw_capacity_bytes,
+            analysis_reserve=configuration.raw_analysis_reserve_bytes,
+            free_reserve=configuration.temporary_disk_reserve_bytes,
+        )
         ocr_engine = CompanyOcrEngine(
             ocr_capability,
             timeout_seconds=configuration.document_ocr_timeout_seconds,
+            page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
             max_pages=configuration.document_ocr_max_pages,
             dpi=configuration.document_ocr_dpi,
             cancel_requested=cancel_requested,
@@ -345,6 +356,10 @@ def _sync_company_evidence(
             document_policies=document_policies,
             text_capability=text_capability,
             ocr_engine=ocr_engine,
+            raw_files=raw_files,
+            text_reserve_bytes=configuration.text_task_reserve_bytes,
+            ocr_reserve_bytes=configuration.ocr_task_reserve_bytes,
+            pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, cancel_requested),
             request_interval_seconds=configuration.request_interval_seconds,
             cancel_requested=cancel_requested,
         )
@@ -358,27 +373,35 @@ def _sync_company_evidence(
             cancel_requested=cancel_requested,
         )
         workers = BoundedExecutor(
-            worker_count=configuration.document_workers, queue_capacity=2, thread_name_prefix="company-document"
+            worker_count=configuration.document_workers, queue_capacity=0, thread_name_prefix="company-document"
         )
         workers.start()
         resources.callback(workers.stop, wait=True, cancel_futures=True)
-        dependencies = CompanyEvidenceDependencies(
-            SQLiteCompanyEvidenceIndex(
-                paths.company_collection,
-                history_start=request.history_start,
-                facts_path=paths.company,
-                documents=company_document_files.CompanyDocumentFiles(
-                    paths.company_documents,
-                    max_text_characters=configuration.extended_document_limits.max_text_characters,
-                    max_bytes=configuration.temporary_text_capacity_bytes,
-                    reserve_bytes=configuration.temporary_disk_reserve_bytes,
-                ),
-                cancel_requested=cancel_requested,
-                event_policy=request.event_policy,
-                listings=request.listings,
-                stock_progress=partial(company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names), sqlite_policy=sqlite_policy,
+        text_workers = BoundedExecutor(worker_count=configuration.text_workers, queue_capacity=0, thread_name_prefix="company-text")
+        ocr_workers = BoundedExecutor(worker_count=configuration.ocr_workers, queue_capacity=0, thread_name_prefix="company-ocr")
+        text_workers.start()
+        resources.callback(text_workers.stop, wait=True, cancel_futures=True)
+        ocr_workers.start()
+        resources.callback(ocr_workers.stop, wait=True, cancel_futures=True)
+        index = SQLiteCompanyEvidenceIndex(
+            paths.company_collection,
+            raw_files=raw_files,
+            facts_path=paths.company,
+            documents=company_document_files.CompanyDocumentFiles(
+                paths.company_documents,
+                max_text_characters=configuration.extended_document_limits.max_text_characters,
+                max_bytes=configuration.temporary_text_capacity_bytes,
+                reserve_bytes=configuration.temporary_disk_reserve_bytes,
             ),
-            documents[0],
+            cancel_requested=cancel_requested,
+            event_policy=request.event_policy,
+            listings=request.listings,
+            stock_progress=partial(company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names), sqlite_policy=sqlite_policy,
+        )
+        failures = DownloadFailureDiagnostics(partial(index.record_failure, configuration=failure_configuration), ShanghaiClock(_utc_now).now)
+        dependencies = CompanyEvidenceDependencies(
+            index,
+            source_factory(resources.enter_context(OpenExternalHttp())),
             structured,
             time.monotonic,
             heartbeat,
@@ -386,8 +409,11 @@ def _sync_company_evidence(
             request.stock_names,
             document_sources=documents,
             document_executor=workers,
+            text_executor=text_workers,
+            ocr_executor=ocr_workers,
             ocr_identity=ocr_capability.identity,
             text_identity=text_capability.identity,
+            failures=failures,
         )
         return SyncCompanyEvidence(dependencies, request)
 

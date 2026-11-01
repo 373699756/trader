@@ -7,12 +7,14 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import time
 from dataclasses import asdict
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
+from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
@@ -41,12 +43,13 @@ def AuditCompanyOcr(path: Path, *, budget_seconds: float, sqlite_policy: SqliteI
     engine = CompanyOcrEngine(
         capability,
         timeout_seconds=configuration.document_ocr_timeout_seconds,
+        page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
         max_pages=configuration.document_ocr_max_pages,
         dpi=configuration.document_ocr_dpi,
         cancel_requested=cancelled,
     )
     observation: dict[str, object] = {"sample_size": 1, "active_writes": False, "policy": policies.ocr}
-    with OpenExternalHttp() as session:
+    with TemporaryDirectory(prefix="company-ocr-audit-") as directory, OpenExternalHttp() as session:
         source = CninfoMarketDisclosureSource(
             session,
             monotonic=time.monotonic,
@@ -60,9 +63,15 @@ def AuditCompanyOcr(path: Path, *, budget_seconds: float, sqlite_policy: SqliteI
             cancel_requested=cancelled,
             ocr_engine=engine,
             document_policies=policies,
+            raw_files=CompanyRawFiles(Path(directory), capacity=configuration.raw_capacity_bytes,
+                                      analysis_reserve=configuration.raw_analysis_reserve_bytes,
+                                      free_reserve=configuration.temporary_disk_reserve_bytes),
+            text_reserve_bytes=configuration.text_task_reserve_bytes,
+            ocr_reserve_bytes=configuration.ocr_task_reserve_bytes,
         )
         try:
-            result = source.document(item, route="ocr")
+            source.download_document(item)
+            result = source.extract_document(item, route="ocr")
             observation.update({"passed": True, "characters": len("".join(result.text.split())),
                                 "confidence": result.quality, "same_pdf": result.payload_hash == previous_hash})
         except CompanyDocumentFailure as exc:

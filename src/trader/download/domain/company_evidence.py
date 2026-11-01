@@ -43,14 +43,24 @@ class CompanySyncConfiguration:
     document_limits: CompanyDocumentLimits
     extended_document_limits: CompanyDocumentLimits
     document_ocr_timeout_seconds: float
+    document_ocr_page_timeout_seconds: float
     document_ocr_max_pages: int
     document_ocr_dpi: int
     document_ocr_languages: str
     temporary_text_capacity_bytes: int
     temporary_disk_reserve_bytes: int
+    raw_capacity_bytes: int
+    raw_analysis_reserve_bytes: int
     directory_batch_pages: int
     document_batch_size: int
     document_workers: int
+    text_workers: int
+    ocr_workers: int
+    document_queue_limit: int
+    publication_batch_size: int
+    publication_interval_seconds: float
+    text_task_reserve_bytes: int
+    ocr_task_reserve_bytes: int
 
     def __post_init__(self) -> None:
         values = (
@@ -61,17 +71,29 @@ class CompanySyncConfiguration:
             self.document_failure_retry_seconds,
             self.document_transient_retry_seconds,
             self.document_ocr_timeout_seconds,
+            self.document_ocr_page_timeout_seconds,
+            self.publication_interval_seconds,
         )
         if (
             not 1 <= self.directory_batch_pages <= 100
-            or not 1 <= self.document_batch_size <= 200
-            or self.document_workers not in {1, 2}
+            or not 1 <= self.document_workers <= 8
+            or not 1 <= self.text_workers <= 8
+            or not 1 <= self.ocr_workers <= 4
+            or not 1 <= self.document_batch_size <= self.document_queue_limit <= 128
+            or not 1 <= self.publication_batch_size <= self.document_queue_limit
+            or self.publication_interval_seconds <= 0
+            or self.text_task_reserve_bytes < self.extended_document_limits.max_text_characters * 8
+            or self.ocr_task_reserve_bytes < 300 * 1024 * 1024
+            or self.text_workers * self.text_task_reserve_bytes + self.ocr_workers * self.ocr_task_reserve_bytes > self.raw_analysis_reserve_bytes
             or not 1 <= self.document_ocr_max_pages <= 200
             or not 72 <= self.document_ocr_dpi <= 300
-            or self.document_ocr_timeout_seconds > 600
+            or not 0 < self.document_ocr_timeout_seconds <= 600
+            or not 0 < self.document_ocr_page_timeout_seconds <= self.document_ocr_timeout_seconds
             or not self.document_ocr_languages
             or self.temporary_text_capacity_bytes < self.extended_document_limits.max_text_characters * 4
             or self.temporary_disk_reserve_bytes < 1
+            or not self.temporary_text_capacity_bytes <= self.raw_analysis_reserve_bytes < self.raw_capacity_bytes
+            or self.raw_analysis_reserve_bytes < 320 * 1024 * 1024
             or any(not part.replace("_", "").isalnum() for part in self.document_ocr_languages.split("+"))
             or self.extended_document_limits.max_bytes < self.document_limits.max_bytes
             or self.extended_document_limits.max_pages < self.document_limits.max_pages
@@ -126,10 +148,6 @@ class CompanyEvidenceRequest:
     listings: tuple[CompanyListing, ...] = ()
     fill_missing: bool = False
 
-    @property
-    def history_start(self) -> date | None:
-        return min(item.listed_on for item in self.listings) if self.fill_missing else None
-
     @classmethod
     def from_reference(
         cls,
@@ -156,8 +174,6 @@ class CompanyEvidenceRequest:
     def __post_init__(self) -> None:
         if self.observed_at.utcoffset() is None:
             raise ValueError("company_evidence_request_invalid")
-        if self.fill_missing and (not self.listings or len(self.listings) != len(self.codes)):
-            raise ValueError("company_fill_requires_official_listings")
         if len({item.code for item in self.listings}) != len(self.listings) or any(
             item.code not in self.codes or item.listed_on > self.observed_at.date() for item in self.listings
         ):
@@ -317,6 +333,7 @@ class CompanyDocument:
     disclosure: Disclosure
     text: str
     checked: bool
+    terminal_failure: bool = False
 
 
 @dataclass(frozen=True)
@@ -386,6 +403,14 @@ class CompanyDocumentTask:
 
 
 @dataclass(frozen=True)
+class CompanyCoverageWatermark:
+    market: Market
+    window_start: date
+    discovered_day: date | None
+    processed_day: date | None
+
+
+@dataclass(frozen=True)
 class CompanyDocumentWorkload:
     pending: int
     due: int
@@ -393,6 +418,13 @@ class CompanyDocumentWorkload:
     ocr: int = 0
     unextractable: int = 0
     next_retry_at: datetime | None = None
+    download_pending: int = 0
+    local_pending: int = 0
+    analyzed_pending: int = 0
+    published_inputs: int = 0
+    superseded_inputs: int = 0
+    raw_bytes: int = 0
+    watermarks: tuple[CompanyCoverageWatermark, ...] = ()
 
     def __post_init__(self) -> None:
         if min(self.pending, self.due, self.cooling, self.ocr, self.unextractable) < 0 or self.due > self.pending:
@@ -418,6 +450,7 @@ class CompanyEvidenceInput:
     source_checked_at: datetime | None = None
     unlock_checked_at: datetime | None = None
     unlock_coverage_end: date | None = None
+    superseded_evidence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         EvidenceMarket(self.code)
@@ -515,6 +548,7 @@ class EvidenceSyncProgress:
     unextractable_documents: int = 0
     next_document_retry_at: datetime | None = None
     discovering_documents: bool = False
+    workload: CompanyDocumentWorkload | None = None
 
 
 @dataclass(frozen=True)
@@ -615,16 +649,22 @@ def BuildCompanyDocumentPolicies(
     expanded = configuration.extended_document_limits
     return CompanyDocumentPolicies(
         standard=(
-            f"text_4:{text_identity}:{configuration.document_parse_timeout_seconds:g}:"
+            f"text_4:{text_identity}:timeout={configuration.document_parse_timeout_seconds:g}:"
             f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
         ),
         ocr=(
-            f"ocr_3:psm6_3:retry2:edge4096:{ocr_identity}:{configuration.document_ocr_timeout_seconds:g}:"
+            f"ocr_4:psm6_3:retry2:edge4096:{ocr_identity}:timeout={configuration.document_ocr_timeout_seconds:g}:"
+            f"page_timeout={configuration.document_ocr_page_timeout_seconds:g}:"
             f"{configuration.document_ocr_max_pages}:{configuration.document_ocr_dpi}:"
             f"{configuration.document_ocr_languages}"
         ),
         limits=f"limits_1:{expanded.max_bytes}:{expanded.max_pages}:{expanded.max_text_characters}",
     )
+
+
+def CompanyDocumentOutputIdentity(policy: str) -> str:
+    """Deadlines reopen failures, but cannot invalidate a complete successful output."""
+    return ":".join(part for part in policy.split(":") if not part.startswith(("timeout=", "page_timeout=")))
 
 
 def EvidenceMarket(code: str) -> Market:
@@ -645,6 +685,8 @@ def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
 
 __all__ = [
     "BuildCompanyDocumentPolicies",
+    "CompanyDocumentOutputIdentity",
+    "CompanyCoverageWatermark",
     "CompanyDocumentExtraction",
     "CompanyDocumentFailure",
     "CompanyOcrDiagnostic",

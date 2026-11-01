@@ -106,7 +106,7 @@ def test_revised_ordinary_title_keeps_locator_for_existing_formal_evidence(tmp_p
     assert reader.document_links("600001", ("case",))
 
 
-def test_later_discovery_of_old_case_requeues_unlinked_closure(tmp_path):
+def test_later_discovery_of_old_case_links_saved_candidate_without_redownload(tmp_path):
     index = fixtures._index(tmp_path)
     closure = fixtures._disclosure("closed", "关于调查终结的公告")
     text = "本公司收到证监会〔2026〕调查1号通知，调查终结。"
@@ -120,9 +120,7 @@ def test_later_discovery_of_old_case_requeues_unlinked_closure(tmp_path):
     assert {
         task.disclosure.identity
         for task in index.pending_documents(old.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
-    } == {"closed"}
-    assert index.commit_document(closure, fixtures._extraction(text), NOW)
-    index.publish(old.codes, NOW)
+    } == set()
     facts = reader.read(old.codes)[0]
     assert not facts.risk_events
     assert not any(item.reason_code == "resolution_unlinked" for item in facts.review_reasons)

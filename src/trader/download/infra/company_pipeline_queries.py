@@ -125,6 +125,7 @@ def IndexCompanyDocument(connection: SqliteConnection, rows: Sequence[Disclosure
 
 
 def PrepareCompanyPublication(connection: SqliteConnection, codes: tuple[str, ...]) -> None:
+    connection.run("DELETE FROM company_population")
     connection.run_many("INSERT OR IGNORE INTO company_population VALUES(?)", ((code,) for code in codes))
     MarkCompanyDirty(connection, codes)
 
@@ -138,6 +139,8 @@ def SelectCompanyDocuments(
     repair: DocumentRepairMode | None = None,
     *,
     start: date,
+    extraction_hash: bytes,
+    until: datetime | None = None,
 ) -> None:
     connection.run("CREATE TEMP TABLE requested_codes(code TEXT PRIMARY KEY) WITHOUT ROWID")
     connection.run_many("INSERT OR IGNORE INTO temp.requested_codes VALUES(?)", ((code,) for code in codes))
@@ -178,16 +181,21 @@ def SelectCompanyDocuments(
         "JOIN temp.document_policies p ON p.route=COALESCE(f.route,'standard') "
         "WHERE d.body_checked=0 AND d.published_at>=? AND d.published_at<=? "
         "AND (?='' OR (r.disclosure_id IS NOT NULL AND p.route=?)) "
-        "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN temp.requested_codes p ON p.code=c.code WHERE c.disclosure_id=d.id)",
+        "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN temp.requested_codes p ON p.code=c.code WHERE c.disclosure_id=d.id "
+        "AND NOT EXISTS(SELECT 1 FROM document_supersessions s JOIN disclosures n ON n.id=s.replacement_id "
+        "JOIN document_publications r ON r.disclosure_id=n.id AND r.code=c.code AND r.record_hash=n.record_hash "
+        "AND r.extraction_hash=s.extraction_hash WHERE s.disclosure_id=d.id AND s.code=c.code AND s.record_hash=d.record_hash "
+        "AND s.replacement_hash=n.record_hash AND s.extraction_hash=?))",
         (
             repair_route,
             repair_route,
             at.isoformat(),
             at.isoformat(),
             start.isoformat(),
-            at.isoformat(),
+            (until or at).isoformat(),
             repair_route,
             repair_route,
+            extraction_hash,
         ),
     )
 

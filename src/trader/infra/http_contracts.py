@@ -63,6 +63,8 @@ class HttpRequest:
     max_response_bytes: int = 16 * 1024 * 1024
     cancel_requested: Callable[[], bool] | None = None
     io_timeout_seconds: float | None = None
+    receive_headers: Callable[[int, tuple[tuple[str, str], ...]], None] | None = None
+    receive_chunk: Callable[[bytes], None] | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
@@ -71,6 +73,8 @@ class HttpRequest:
             raise ValueError("http_deadline_invalid")
         if self.max_response_bytes <= 0:
             raise ValueError("http_response_limit_invalid")
+        if (self.receive_headers is None) != (self.receive_chunk is None):
+            raise ValueError("http_stream_callbacks_incomplete")
         if self.io_timeout_seconds is not None and (
             not math.isfinite(self.io_timeout_seconds) or self.io_timeout_seconds <= 0
         ):

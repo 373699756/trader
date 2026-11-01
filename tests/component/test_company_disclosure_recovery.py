@@ -178,7 +178,7 @@ def test_oversized_day_completes_only_after_all_board_queries_and_parent_reconci
     assert announcement_events[-1].completed == 1 and announcement_events[-1].pending == 0
     days = [event.dates.completed_days for event in announcement_events if event.dates]
     assert days == sorted(days) and days[-2:] == [366, 366]
-    assert all(value == 365 for value in days[:-2])
+    assert days[0] == 365 and set(days) == {365, 366}
     with SqliteSession(index.path) as c:
         assert (
             c.run(
@@ -540,6 +540,11 @@ def test_parse_failures_do_not_trip_transport_circuit_but_three_network_failures
     class Source(fixtures.Sources):
         documents = []
 
+        def download_document(self, item):
+            if int(item.identity) >= 4:
+                self.documents.append(item.identity)
+                raise HttpTimeout("fixture")
+
         def document(self, item, **kwargs):
             self.documents.append(item.identity)
             if int(item.identity) < 4:
@@ -606,7 +611,7 @@ def test_pdf_host_rejection_stops_immediately_without_touching_later_documents(t
     class Source(fixtures.Sources):
         attempts = 0
 
-        def document(self, item, **kwargs):
+        def download_document(self, item):
             self.attempts += 1
             raise CompanySourceFailure(category)
 

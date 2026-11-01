@@ -35,11 +35,15 @@ class Session:
     get = post
 
     def execute(self, request):
-        return self.get(
+        response = self.get(
             request.url, timeout=request.timeout_seconds, deadline=request.deadline,
             max_response_bytes=request.max_response_bytes, cancel_requested=request.cancel_requested,
             io_timeout_seconds=request.io_timeout_seconds,
         )
+        if request.receive_headers is not None:
+            request.receive_headers(response.status_code, response.header_items)
+            request.receive_chunk(response.content)
+        return response
 
 
 def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
@@ -261,7 +265,7 @@ def test_oversized_pdf_remains_a_document_failure_instead_of_stopping_the_source
         "cninfo", "fixture", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
     )
     with pytest.raises(ValueError, match="disclosure_document_oversized"):
-        source.document(item)
+        source.download_document(item)
 
 
 def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count():

@@ -25,7 +25,7 @@ from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import (
-    CompanyDocumentExtraction,
+    BuildCompanyDocumentPolicies,
     CompanyDocumentPolicies,
     CompanyDocumentTask,
     CompanyDocumentWorkload,
@@ -38,6 +38,9 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
+from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
+from trader.download.infra.company_document_parser import CompanyTextCapability, DetectCompanyText
+from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_pipeline_queries import ReleaseCompletedCompanyQueryRows
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
@@ -60,11 +63,13 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         facts_path: Path,
         event_policy: CompanyEventPolicy,
         sqlite_policy: SqliteIoPolicy,
+        raw_files: CompanyRawFiles,
         directory_only: bool = False,
     ) -> None:
         super().__init__(
             path,
             facts_path=facts_path,
+            raw_files=raw_files,
             documents=CompanyDocumentFiles(
                 path.parent / "text",
                 max_text_characters=configuration.extended_document_limits.max_text_characters,
@@ -125,7 +130,8 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
 
 class _ObservedSource(CninfoMarketDisclosureSource):
     def __init__(
-        self, session: HttpTransport, configuration: CompanySyncConfiguration, *, cancel_requested: Callable[[], bool]
+        self, session: HttpTransport, configuration: CompanySyncConfiguration, *, cancel_requested: Callable[[], bool],
+        raw_files: CompanyRawFiles, engine: CompanyOcrEngine, policies: CompanyDocumentPolicies, text_capability: CompanyTextCapability,
     ) -> None:
         super().__init__(
             session,
@@ -138,6 +144,12 @@ class _ObservedSource(CninfoMarketDisclosureSource):
             extended_document_limits=configuration.extended_document_limits,
             request_interval_seconds=configuration.request_interval_seconds,
             cancel_requested=cancel_requested,
+            raw_files=raw_files,
+            ocr_engine=engine,
+            document_policies=policies,
+            text_capability=text_capability,
+            text_reserve_bytes=configuration.text_task_reserve_bytes,
+            ocr_reserve_bytes=configuration.ocr_task_reserve_bytes,
         )
         self.pages: list[tuple[str, str, str, str, int]] = []
         self.documents = 0
@@ -155,9 +167,9 @@ class _ObservedSource(CninfoMarketDisclosureSource):
         )
         return page
 
-    def document(self, item: Disclosure, *, route: Literal["standard", "ocr", "limits"] = "standard") -> CompanyDocumentExtraction:
+    def download_document(self, item: Disclosure) -> None:
         self.documents += 1
-        return super().document(item, route=route)
+        super().download_document(item)
 
 
 def _copy(source: Path, destination: Path, *, deadline: float, sqlite_policy: SqliteIoPolicy) -> None:
@@ -358,12 +370,23 @@ def Main() -> int:
     if not facts_path.exists():
         _copy(args.facts_database, facts_path, deadline=started + args.budget_seconds, sqlite_policy=sqlite_policy)
     configuration = replace(LoadCompanySyncConfiguration(_ROOT), document_workers=1)
+    raw_files = CompanyRawFiles(directory, capacity=configuration.raw_capacity_bytes,
+                               analysis_reserve=configuration.raw_analysis_reserve_bytes,
+                               free_reserve=configuration.temporary_disk_reserve_bytes)
+    ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
+    text_capability = DetectCompanyText()
+    policies = BuildCompanyDocumentPolicies(configuration, ocr_capability.identity, text_identity=text_capability.identity)
+    engine = CompanyOcrEngine(ocr_capability, timeout_seconds=configuration.document_ocr_timeout_seconds,
+                              page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
+                              max_pages=configuration.document_ocr_max_pages, dpi=configuration.document_ocr_dpi,
+                              cancel_requested=lambda: time.monotonic() >= started + args.budget_seconds)
     event_policy = LoadStrategySettings(_ROOT / "config" / "strategy.json").company_scoring.events
     index = _ReplayIndex(
         destination,
         selection,
         configuration,
         facts_path=facts_path,
+        raw_files=raw_files,
         event_policy=event_policy, sqlite_policy=sqlite_policy,
         directory_only=args.directory_only,
     )
@@ -381,7 +404,8 @@ def Main() -> int:
             break
         with OpenExternalHttp() as session:
             source = _ObservedSource(
-                session, configuration, cancel_requested=lambda: time.monotonic() >= started + args.budget_seconds
+                session, configuration, cancel_requested=lambda: time.monotonic() >= started + args.budget_seconds,
+                raw_files=raw_files, engine=engine, policies=policies, text_capability=text_capability,
             )
 
             def interrupt(number: int = number, source: _ObservedSource = source) -> bool:
@@ -399,6 +423,8 @@ def Main() -> int:
                     ),
                     time.monotonic,
                     cancel_requested=interrupt,
+                    ocr_identity=ocr_capability.identity,
+                    text_identity=text_capability.identity,
                 ),
                 CompanyEvidenceRequest(codes, now, configuration, event_policy),
             )

@@ -143,7 +143,8 @@ def test_existing_page_one_precedes_new_calendar_day_and_rechecks(tmp_path):
         )
     pending = index.partitions(("sse",), NOW + timedelta(days=1))
     assert pending[0].end == NOW.date() + timedelta(days=1)
-    assert old in pending
+    assert replace(old, start=old.start + timedelta(days=1)) in pending
+    assert all(item.start >= NOW.date() + timedelta(days=1) - timedelta(days=365) for item in pending)
     assert any(item.start == item.end == NOW.date() + timedelta(days=1) for item in pending)
 
 
@@ -303,7 +304,7 @@ def test_failed_body_is_deferred_across_restart_and_retried_on_recovery(tmp_path
         )
 
 
-def test_retry_schema_extension_preserves_old_cursors_and_publication(tmp_path):
+def test_incomplete_retry_schema_is_rejected_without_migration(tmp_path):
     index = fixtures._index(tmp_path)
     part = index.partitions(("sse",), NOW)[0]
     index.commit_page(part, DisclosurePage((fixtures._disclosure(),), 2, True), NOW)
@@ -317,13 +318,11 @@ def test_retry_schema_extension_preserves_old_cursors_and_publication(tmp_path):
             "record_hash TEXT NOT NULL,retry_policy_id TEXT NOT NULL,failure TEXT NOT NULL,attempted_at TEXT NOT NULL,"
             "retry_at TEXT NOT NULL,attempts INTEGER NOT NULL)"
         )
-    index.initialize()
-    index.initialize()
-    resumed = index.partitions(("sse",), NOW)[0]
-    assert resumed.page == 2 and resumed.received_rows == 1
+    with pytest.raises(RuntimeError, match="company_evidence_persistence_unavailable"):
+        index.initialize()
     assert reader.read(("600001",)) == before
     with SqliteSession(index.path) as connection:
-        assert "payload_hash" in {row[1] for row in connection.run("PRAGMA table_info(document_retries)")}
+        assert "payload_hash" not in {row[1] for row in connection.run("PRAGMA table_info(document_retries)")}
         assert connection.run(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_extractions'"
         ).fetchone()

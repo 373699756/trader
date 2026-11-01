@@ -1,6 +1,7 @@
 """Run real isolated PDF extraction against bounded synthetic documents."""
 
 import io
+import hashlib
 import os
 import select
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import time
 from threading import Event, Timer
 from tempfile import TemporaryDirectory
+from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
@@ -52,6 +54,8 @@ def _parse(payload, *, max_pages=200, max_text=1_000_000):
 
 
 def _parse_in_directory(payload, directory, max_pages, max_text):
+    pdf = Path(directory) / "input.pdf"
+    pdf.write_bytes(payload)
     return subprocess.run(
         [
             sys.executable,
@@ -59,6 +63,8 @@ def _parse_in_directory(payload, directory, max_pages, max_text):
             "trader.download.infra.company_document_parser",
             "--directory",
             directory,
+            "--input",
+            str(pdf),
             "--max-bytes",
             "16777216",
             "--max-pages",
@@ -115,9 +121,11 @@ def test_real_parser_reason_and_config_limits_reach_the_source():
     item = Disclosure(
         "cninfo", "fixture", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
     )
-    extraction = source.document(item)
+    source.download_document(item)
+    extraction = source.extract_document(item)
     assert extraction.method == "text" and extraction.policy_id == "limits_1:default"
-    assert session.requests[0]["max_response_bytes"] == 65536
+    assert session.requests[0]["max_response_bytes"] == 64 * 1024 * 1024
+    assert len(session.requests) == 1
 
 
 def test_poppler_capability_is_versioned_and_parser_timeout_falls_back_to_ocr(monkeypatch):
@@ -148,13 +156,16 @@ def test_poppler_capability_is_versioned_and_parser_timeout_falls_back_to_ocr(mo
     item = Disclosure(
         "cninfo", "timeout", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
     )
-    extraction = source.document(item)
+    source.download_document(item)
+    with pytest.raises(CompanyDocumentFailure, match="disclosure_document_ocr_required"):
+        source.extract_document(item)
+    extraction = source.extract_document(item, route="ocr")
     assert extraction.method == "ocr" and extraction.quality == 88.0
 
 
 @pytest.mark.skipif(os.name != "posix", reason="signal-based parser termination probe")
 @pytest.mark.parametrize("cancel,ignore_term", [(True, False), (True, True), (False, False)])
-def test_blocked_parser_is_cancelled_or_times_out_and_is_reaped(monkeypatch, cancel, ignore_term):
+def test_blocked_parser_is_cancelled_or_times_out_and_is_reaped(monkeypatch, cancel, ignore_term, tmp_path):
     cancelled = Event()
     children = []
     timers = []
@@ -185,13 +196,15 @@ def test_blocked_parser_is_cancelled_or_times_out_and_is_reaped(monkeypatch, can
         cancel_requested=cancelled.is_set,
     )
     started = time.monotonic()
+    pdf = tmp_path / (hashlib.sha256(b"fixture").hexdigest() + ".pdf")
+    pdf.write_bytes(b"fixture")
     try:
         expected = HttpCancelled if cancel else CompanyDocumentFailure
         with pytest.raises(expected, match=None if cancel else "disclosure_document_parse_timeout"):
-            source._parse_document(b"fixture")
+            source._parse_document(pdf)
         assert time.monotonic() - started < 5
         assert len(children) == 1 and children[0].poll() is not None
-        assert children[0].stdin.closed and children[0].stdout.closed
+        assert children[0].stdin is None and children[0].stdout.closed
         if ignore_term:
             assert children[0].returncode == -9
     finally:

@@ -75,6 +75,89 @@ class CompanyExtractedEvents:
 
 
 @dataclass(frozen=True, slots=True)
+class CompanyLinkCandidate:
+    evidence_id: str
+    published_at: datetime
+    subject: CompanySubject
+    references: tuple[str, ...]
+    cases: tuple[str, ...]
+    closures: tuple[CompanyRiskType, ...]
+    positive: CompanyPositiveEvent | None
+    cancellation: bool
+    supersedes: tuple[str, ...] = ()
+
+
+def ExtractCompanyLinkCandidate(document: CompanyDocument, now: datetime, policy: CompanyEventPolicy) -> CompanyLinkCandidate | None:
+    verified, _ = _verify_document(document, now)
+    if verified is None:
+        return None
+    body = _subject_body(verified)
+    closures = tuple(kind for kind in _risk_closure(verified.title) if kind in _risk_closure(body))
+    if any(marker in body for marker in ("尚未", "未解除", "未终止", "未结案", "未完成")):
+        closures = ()
+    kind = _positive_type(verified.title)
+    supersedes = tuple(sorted(set(re.findall(r"(?:本公告|本次公告)(?:的全部内容)?(?:更正并替代|完整替代|全部替代)(?:原)?公告(?:编号)?[：:（(]?([A-Za-z0-9_-]{4,80})", body))))
+    cancellation = any(x in verified.title for x in ("终止", "撤销", "取消"))
+    positive = _positive_event(verified, kind, policy, None)[0] if kind is not None else None
+    if not closures and positive is None and not supersedes:
+        return None
+    return CompanyLinkCandidate(
+        document.disclosure.identity, document.disclosure.published_at, verified.subject,
+        tuple(sorted(set(re.findall(r"[A-Za-z0-9_]+(?:[-/.][A-Za-z0-9_]+)*", body)))),
+        tuple(sorted(set(_CASE.findall(body)))), closures, positive, cancellation, supersedes,
+    )
+
+
+def ResolveCompanyLinks(
+    candidates: tuple[CompanyLinkCandidate, ...],
+    risks: tuple[CompanyRiskEvent, ...],
+    positives: tuple[CompanyPositiveEvent, ...],
+    reviews: tuple[CompanyReviewReason, ...],
+    policy: CompanyEventPolicy,
+) -> CompanyExtractedEvents:
+    risk_rows, positive_rows, remaining = list(risks), list(positives), list(reviews)
+    for candidate in sorted(candidates, key=lambda item: (item.published_at, item.evidence_id)):
+        pending = tuple(r for r in remaining if r.evidence_id == candidate.evidence_id
+                        and r.reason_code in {"resolution_unlinked", "progress_unlinked", "cancellation_unlinked"})
+        if not pending:
+            continue
+        matched = False
+        for index, event in enumerate(risk_rows):
+            if (event.risk_type not in candidate.closures or event.subject_type is not candidate.subject
+                or candidate.published_at < event.first_disclosed_at or len(candidate.cases) > 1
+                or event.case_id and candidate.cases and event.case_id not in candidate.cases):
+                continue
+            if not (set(event.evidence_ids).intersection(candidate.references) or event.case_id and event.case_id in candidate.cases):
+                continue
+            at = min(candidate.published_at, event.resolved_at) if event.resolved_at else candidate.published_at
+            tail = timedelta(days=policy.reduction_tail_days) if event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION else timedelta(0)
+            risk_rows[index] = replace(event, status=CompanyEventStatus.RESOLVED, resolved_at=at, expires_at=at + tail,
+                last_disclosed_at=max(event.last_disclosed_at, candidate.published_at), evidence_ids=_evidence(event.evidence_ids, candidate.evidence_id),
+                reduction_plan=replace(event.reduction_plan, completion_disclosed_at=at) if event.reduction_plan else None)
+            matched = True
+        if candidate.positive is not None:
+            for index, positive_event in enumerate(positive_rows):
+                if (positive_event.event_type is not candidate.positive.event_type or positive_event.subject_type is not candidate.subject
+                    or candidate.published_at < positive_event.first_disclosed_at or not set(positive_event.evidence_ids).intersection(candidate.references)):
+                    continue
+                if candidate.cancellation:
+                    positive_rows[index] = replace(positive_event, status=CompanyPositiveStatus.CANCELLED, cancelled_at=candidate.published_at,
+                        last_disclosed_at=max(positive_event.last_disclosed_at, candidate.published_at), evidence_ids=_evidence(positive_event.evidence_ids, candidate.evidence_id))
+                elif positive_event.status is not CompanyPositiveStatus.CANCELLED and candidate.published_at >= positive_event.last_disclosed_at:
+                    milestones = (*positive_event.level_milestones, *(m for m in candidate.positive.level_milestones if m.level not in {p.level for p in positive_event.level_milestones}))
+                    positive_rows[index] = replace(candidate.positive, event_id=positive_event.event_id, first_disclosed_at=positive_event.first_disclosed_at,
+                        evidence_ids=_evidence(positive_event.evidence_ids, candidate.evidence_id), level_milestones=milestones)
+                matched = True
+                break
+        if matched:
+            remaining = [r for r in remaining if r not in pending]
+            if candidate.positive is not None and not candidate.cancellation and candidate.positive.not_eligible_reason:
+                remaining.append(CompanyReviewReason("positive", candidate.positive.not_eligible_reason, candidate.evidence_id,
+                                                    candidate.published_at, "实施数据仍待核实"))
+    return CompanyExtractedEvents(tuple(risk_rows), tuple(positive_rows), tuple(remaining), 0)
+
+
+@dataclass(frozen=True, slots=True)
 class _VerifiedDocument:
     document: CompanyDocument
     title: str
@@ -155,7 +238,7 @@ def _verify_document(
     body = "".join(document.text.split())
     scope = "risk" if CompanyDocumentRiskRelevant(title) else "positive"
     if not document.checked or not body:
-        return None, _review(document, observed_at, scope, "document_pending", "公告正文尚未完整提取")
+        return None, _review(document, observed_at, scope, "extraction_unsupported" if document.terminal_failure else "document_pending", "公告正文无法提取" if document.terminal_failure else "公告正文尚未完整提取")
     if document.disclosure.source not in _OFFICIAL_SOURCES:
         return None, _review(document, observed_at, scope, "official_source_unverified", "公告来源未核实")
     if _unrelated_subject(title):
@@ -437,6 +520,18 @@ def _append_positive(
         return None
     if previous is None and any(x in title for x in ("进展", "实施情况", "结果")):
         return "progress_unlinked"
+    event, reason = _positive_event(verified, kind, policy, previous)
+    if previous:
+        positives[positives.index(previous)] = event
+    else:
+        positives.append(event)
+    return reason
+
+
+def _positive_event(
+    verified: _VerifiedDocument, kind: CompanyPositiveType, policy: CompanyEventPolicy, previous: CompanyPositiveEvent | None
+) -> tuple[CompanyPositiveEvent, str | None]:
+    item, title = verified.document.disclosure, verified.title
     measurements, ratio, implemented = _positive_measurements(verified, kind)
     thresholds = (
         policy.contract_thresholds if kind is CompanyPositiveType.OPERATING_CONTRACT else policy.share_thresholds
@@ -467,11 +562,7 @@ def _append_positive(
         tuple(milestones),
         reason,
     )
-    if previous:
-        positives[positives.index(previous)] = event
-    else:
-        positives.append(event)
-    return reason
+    return event, reason
 
 
 def _positive_measurements(

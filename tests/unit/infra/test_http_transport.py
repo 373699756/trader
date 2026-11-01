@@ -104,6 +104,19 @@ def test_lazy_creation_reuse_close_and_no_environment_proxy_or_hidden_retry(monk
         transport.get("https://example.invalid/", timeout=1)
 
 
+def test_streaming_response_is_delivered_to_sink_without_accumulated_body(monkeypatch):
+    chunks = [b"a" * 65536, b"b" * 65536, b"tail"]
+    raw = _Raw(chunks, headers={"Content-Length": str(sum(map(len, chunks)))})
+    monkeypatch.setattr(driver.requests, "Session", lambda: _Session(raw))
+    received, headers, attempts = [], [], []
+    with driver.RequestsHttpTransport(observe=attempts.append) as transport:
+        response = transport.execute(HttpRequest("GET", "https://example.invalid/pdf", 1,
+            receive_headers=lambda status, fields: headers.append((status, fields)), receive_chunk=received.append))
+    assert response.content == b"" and received == chunks
+    assert headers[0][0] == 200 and raw.closed
+    assert attempts[0].response_bytes == sum(map(len, chunks))
+
+
 @pytest.mark.parametrize("compressed", [False, True])
 def test_size_limit_counts_decompressed_bytes_and_closes_response(monkeypatch, compressed):
     raw = _Raw(

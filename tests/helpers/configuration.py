@@ -126,13 +126,20 @@ class PublishedCompanyResearchFixture(PublishedCompanyResearch):
 
 class CninfoMarketDisclosureSourceFixture(CninfoMarketDisclosureSource):
     def __init__(self, *args: object, **options: object) -> None:
+        from tempfile import TemporaryDirectory
+        from trader.download.infra.company_raw_files import CompanyRawFiles
         settings = LoadCompanySyncConfiguration(PROJECT_ROOT)
+        self._temporary_raw = TemporaryDirectory(prefix="test-company-raw-")
+        options.setdefault("raw_files", CompanyRawFiles(Path(self._temporary_raw.name), capacity=settings.raw_capacity_bytes,
+                           analysis_reserve=settings.raw_analysis_reserve_bytes, free_reserve=settings.temporary_disk_reserve_bytes))
         options.setdefault("timeout_seconds", settings.source_timeout_seconds)
         options.setdefault("document_download_timeout_seconds", settings.document_download_timeout_seconds)
         options.setdefault("document_parse_timeout_seconds", settings.document_parse_timeout_seconds)
         options.setdefault("request_interval_seconds", settings.request_interval_seconds)
         options.setdefault("document_limits", settings.document_limits)
         options.setdefault("extended_document_limits", settings.extended_document_limits)
+        options.setdefault("text_reserve_bytes", settings.text_task_reserve_bytes)
+        options.setdefault("ocr_reserve_bytes", settings.ocr_task_reserve_bytes)
         super().__init__(*args, **options)
 
 
