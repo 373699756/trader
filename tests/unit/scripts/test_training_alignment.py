@@ -4,11 +4,20 @@ from tests.helpers.configuration import SqlitePolicyFixture
 
 from pathlib import Path
 import sys
+import subprocess
 
 import pytest
 
 from scripts.diagnose_runtime import _parser, _validate, build_commands
 from scripts.runtime_diagnostics.training_alignment import _probe
+
+
+def test_alignment_import_does_not_preload_the_product_before_checkout_selection():
+    completed = subprocess.run(
+        [sys.executable, "-c", "import sys; import scripts.runtime_diagnostics.training_alignment; assert 'trader' not in sys.modules"],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp_path: Path):
@@ -34,8 +43,9 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
 
 @pytest.mark.parametrize("inputs_only", (True, False))
 @pytest.mark.parametrize("explicit_config", (True, False))
+@pytest.mark.parametrize("benchmark_mode", (None, "baseline_before", "baseline_after", "candidate"))
 def test_entry_selects_checkout_before_loading_its_storage_policy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inputs_only: bool, explicit_config: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inputs_only: bool, explicit_config: bool, benchmark_mode: str | None,
 ):
     from scripts.runtime_diagnostics import training_alignment as module
     import trader.bootstrap as bootstrap
@@ -66,13 +76,16 @@ def test_entry_selects_checkout_before_loading_its_storage_policy(
         assert sqlite_policy is policy
         return {"status": "passed"}
 
-    def probe(history, work, profiles, *, runtime_config, sqlite_policy):
+    def probe(history, work, profiles, *, runtime_config, sqlite_policy, require_reuse):
+        assert require_reuse is (benchmark_mode not in {"baseline_before", "baseline_after"})
         return inputs(history, runtime_config, sqlite_policy=sqlite_policy)
 
     argv = ["probe", "--history-root", str(tmp_path / "history"), "--product-checkout", str(product)]
     argv += ["--inputs-only"] if inputs_only else ["--work-root", str(tmp_path / "output")]
     if explicit_config:
         argv += ["--runtime-config", str(config)]
+    if benchmark_mode is not None:
+        argv += ["--benchmark-mode", benchmark_mode]
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(module, "_select_product", select)
     monkeypatch.setattr(settings, "LoadRuntimeSettings", load)

@@ -90,7 +90,11 @@ def _probe(
     profiles: tuple[ScoringProfileId, ...] | None = None,
     *,
     runtime_config: Path | None = None, sqlite_policy: SqliteIoPolicy | None,
+    require_reuse: bool = True,
 ) -> dict[str, object]:
+    # Load diagnostic types only after main selects the measured product checkout.
+    from .training_performance import TrainingReuseFailures
+
     from trader.infra.settings import LoadRuntimeSettings
     from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
     from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
@@ -126,9 +130,10 @@ def _probe(
     unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **storage_arguments).snapshot.snapshot_hash == identity
     complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged)
     equal = repeat is not None and initial["numeric_fingerprints"] == repeat["numeric_fingerprints"]
+    reuse_failures = TrainingReuseFailures(initial, repeat, profiles)
     return {
         "schema_version": "training-alignment-diagnostic",
-        "status": "passed" if complete and equal else "degraded",
+        "status": "passed" if complete and equal and (not require_reuse or not reuse_failures) else "degraded",
         "summary": {
             "alignment_contract": HISTORY_ALIGNMENT_CONTRACT,
             "profiles": initial["profiles"],
@@ -136,6 +141,9 @@ def _probe(
             "initial": initial,
             "repeat": repeat,
             "repeat_model_values_equal": equal,
+            "repeat_reuse_verified": not reuse_failures,
+            "repeat_reuse_required": require_reuse,
+            "repeat_reuse_failures": reuse_failures,
             "source_codes": len(source.snapshot.training_codes),
             "source_identity_unchanged": unchanged,
             "reloaded_heads": initial["reloaded_heads"],
@@ -277,7 +285,10 @@ def main() -> int:
         if args.inputs_only:
             report = _inputs(args.history_root, runtime_config, sqlite_policy=sqlite_policy)
         elif args.work_root is not None:
-            report = _probe(args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy)
+            report = _probe(
+                args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy,
+                require_reuse=args.benchmark_mode not in {"baseline_before", "baseline_after"},
+            )
             report["benchmark_mode"] = args.benchmark_mode
             report["product_checkout"] = str(product)
         else:

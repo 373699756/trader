@@ -209,6 +209,32 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
     assert reports[-1]["status"] == "failed"
 
 
+@pytest.mark.parametrize("reused,scans,rows", ((False, 1, 123), (True, 0, 0)))
+def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, capsys, reused, scans, rows):
+    import json
+
+    from tests.contract.test_cold_start import _empty_config
+    from trader.bootstrap import ExecuteSelectedTraining
+    from trader.infra.settings import LoadRuntimeSettings
+    from trader.training.application.selected_training import SelectedTrainingOutcome, SelectedTrainingRun
+    from trader.training.infra.profile.v1.training import V1TrainingResult
+
+    def train(request, executor, *, sqlite_policy):
+        result = V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0, reused=reused)
+        return SelectedTrainingRun((SelectedTrainingOutcome("v1", result),), scans, rows)
+
+    monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
+    assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1",)) == 0
+    reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(reports) == 2
+    assert reports[0]["reused"] is reused
+    assert reports[1]["schema_version"] == "selected_training_result"
+    assert reports[1]["profiles"] == ["v1"]
+    assert reports[1]["status"] == "completed"
+    assert reports[1]["history_scan_passes"] == scans
+    assert reports[1]["history_rows_read"] == rows
+
+
 @pytest.mark.parametrize("error", (InterruptedError, CancelledError, RuntimeError))
 def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_path, monkeypatch, capsys, error):
     import signal

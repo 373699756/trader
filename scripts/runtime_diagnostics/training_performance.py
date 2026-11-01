@@ -16,6 +16,7 @@ class _Round(TypedDict):
     seconds: float | None
     repeat_seconds: float | None
     peak_rss_bytes: int | None
+    reuse_failures: tuple[str, ...]
 
 
 class _CheckoutRound(TypedDict):
@@ -26,6 +27,66 @@ class _CheckoutRound(TypedDict):
     repeat_profiles: object
     repeat_execution: object
     peak_rss_bytes: object
+    reuse_failures: tuple[str, ...]
+
+
+def TrainingReuseFailures(initial: object, repeat: object, profiles: Sequence[str]) -> tuple[str, ...]:
+    """Check explicit execution and immutable artifact evidence at the JSON boundary."""
+    if not isinstance(initial, Mapping) or not isinstance(repeat, Mapping):
+        return ("reuse_run_missing",)
+    failures: list[str] = []
+    if initial.get("complete") is not True or repeat.get("complete") is not True:
+        failures.append("reuse_run_incomplete")
+    execution = repeat.get("execution")
+    if not isinstance(execution, Mapping) or execution.get("status") != "completed":
+        failures.append("reuse_execution_missing_or_failed")
+    else:
+        for key in ("history_scan_passes", "history_rows_read"):
+            value = execution.get(key)
+            if type(value) is not int or value != 0:
+                failures.append("reuse_" + key + "_not_zero")
+        selected = execution.get("profiles")
+        if (not isinstance(selected, (list, tuple)) or not all(isinstance(item, str) for item in selected)
+                or tuple(sorted(selected)) != tuple(sorted(profiles))):
+            failures.append("reuse_execution_profiles_mismatch")
+    before = _reuse_identity(initial.get("profiles"), profiles)
+    after = _reuse_identity(repeat.get("profiles"), profiles)
+    if before is None or after is None or before != after:
+        failures.append("reuse_artifact_identity_mismatch")
+    runs = repeat.get("profiles")
+    if not isinstance(runs, list) or not runs or any(
+        not isinstance(run, Mapping) or run.get("reused") is not True for run in runs
+    ):
+        failures.append("reuse_profiles_not_reused")
+    return tuple(failures)
+
+
+def _reuse_identity(value: object, profiles: Sequence[str]) -> tuple[tuple[str, ...], ...] | None:
+    if not profiles or len(set(profiles)) != len(profiles) or not isinstance(value, list) or len(value) != len(profiles):
+        return None
+    identities: list[tuple[str, ...]] = []
+    seen: set[str] = set()
+    for run in value:
+        if not isinstance(run, Mapping):
+            return None
+        profile, input_hash, heads = run.get("profile"), run.get("training_input_hash"), run.get("heads")
+        if (not isinstance(profile, str) or profile not in profiles or profile in seen
+                or not isinstance(input_hash, str) or not input_hash or run.get("status") != "engineering_ready"
+                or not isinstance(heads, list) or len(heads) != 2):
+            return None
+        seen.add(profile)
+        strategies: set[str] = set()
+        for head in heads:
+            if not isinstance(head, Mapping):
+                return None
+            strategy, model_hash, report_hash = (head.get(key) for key in ("strategy", "model_hash", "report_hash"))
+            if (not isinstance(strategy, str) or strategy not in {"tomorrow", "d25"} or strategy in strategies
+                    or head.get("status") != "engineering_ready"
+                    or not isinstance(model_hash, str) or not model_hash or not isinstance(report_hash, str) or not report_hash):
+                return None
+            strategies.add(strategy)
+            identities.append((profile, input_hash, strategy, model_hash, report_hash))
+    return tuple(sorted(identities))
 
 
 def BuildTrainingBenchmarkCommands(options: DiagnosticOptions, python_executable: str) -> tuple[DiagnosticCommand, ...]:
@@ -101,6 +162,7 @@ def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str,
         peak = 0
         initial_times = []
         repeat_times = []
+        reuse_failures: list[str] = []
         for result in selected:
             summary = result.payload.get("summary") if result.payload is not None else None
             if not isinstance(summary, Mapping):
@@ -122,6 +184,10 @@ def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str,
                 ready = False
                 continue
             expected = result.name.rsplit(":", 1)[-1].split(",")
+            reuse_failures.extend(TrainingReuseFailures(initial, repeat, expected))
+            if _reuse_identity(profiles, expected) is None:
+                ready = False
+                continue
             if len(profiles) != len(expected) or {profile.get("profile") for profile in profiles} != set(expected):
                 ready = False
             peak = max(peak, int(summary.get("process_peak_rss_bytes") or 0))
@@ -148,10 +214,12 @@ def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str,
                 "seconds": sum(initial_times) if selected and len(initial_times) == len(selected) else None,
                 "repeat_seconds": sum(repeat_times) if selected and len(repeat_times) == len(selected) else None,
                 "peak_rss_bytes": peak or None,
+                "reuse_failures": tuple(sorted(set(reuse_failures))),
             }
         )
     comparable = (
         all(item["complete"] for item in rounds)
+        and all(not item["reuse_failures"] for item in rounds)
         and bool(identities[0])
         and identities[0] == identities[1] == identities[2]
     )
@@ -201,6 +269,7 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
             complete = False
         profiles.append(tuple((profile.get("profile"), profile.get("training_input_hash")) for profile in runs))
         expected = selected[0].name.rsplit(":", 1)[-1].split(",") if selected else []
+        reuse_failures = TrainingReuseFailures(initial, repeat, expected)
         complete = (
             complete
             and selected[0].return_code == 0
@@ -212,6 +281,7 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
             and len(runs) == len(expected)
             and {profile.get("profile") for profile in runs} == set(expected)
             and all(profile.get("training_input_hash") for profile in runs)
+            and (mode != "candidate" or not reuse_failures)
         )
         values = _fingerprint_values(initial.get("numeric_fingerprints"), expected)
         complete = (
@@ -231,6 +301,7 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
                 "repeat_profiles": repeat.get("profiles"),
                 "repeat_execution": repeat.get("execution"),
                 "peak_rss_bytes": summary.get("process_peak_rss_bytes"),
+                "reuse_failures": reuse_failures,
             }
         )
     comparable = (

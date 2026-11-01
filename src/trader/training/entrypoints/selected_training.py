@@ -135,29 +135,28 @@ def _run_selected_training(
                 else int(result is None or result.status != "engineering_ready" or "maintenance_failure" in payload)
             )
         code = 130 if cancelled.is_set() or 130 in codes else int(any(codes))
-        if len(profiles) > 1:
-            print(
-                json.dumps(
-                    {
-                        "schema_version": "selected_training_result",
-                        "status": "cancelled" if code == 130 else "failed" if code else "completed",
-                        "profiles": profiles,
-                        "worker_capacity": len(profiles),
-                        "available_cpus": cpu_budget.available_cpus,
-                        "fitting_cpu_capacity": cpu_budget.capacity,
-                        "native_threads": cpu_budget.native_threads,
-                        "peak_reserved_cpu_threads": cpu_budget.peak_reserved_threads,
-                        "history_scan_passes": run.history_scan_passes,
-                        "history_rows_read": run.history_rows_read,
-                        "elapsed_seconds": round(time.monotonic() - started, 3),
-                        "results": [
-                            {"profile": profile, "exit_code": value}
-                            for profile, value in zip(profiles, codes, strict=True)
-                        ],
-                        "not_started": [],
-                    }
-                )
+        print(
+            json.dumps(
+                {
+                    "schema_version": "selected_training_result",
+                    "status": "cancelled" if code == 130 else "failed" if code else "completed",
+                    "profiles": profiles,
+                    "worker_capacity": len(profiles),
+                    "available_cpus": cpu_budget.available_cpus,
+                    "fitting_cpu_capacity": cpu_budget.capacity,
+                    "native_threads": cpu_budget.native_threads,
+                    "peak_reserved_cpu_threads": cpu_budget.peak_reserved_threads,
+                    "history_scan_passes": run.history_scan_passes,
+                    "history_rows_read": run.history_rows_read,
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "results": [
+                        {"profile": profile, "exit_code": value}
+                        for profile, value in zip(profiles, codes, strict=True)
+                    ],
+                    "not_started": [],
+                }
             )
+        )
         return code
     except (KeyboardInterrupt, InterruptedError, CancelledError):
         cancelled.set()

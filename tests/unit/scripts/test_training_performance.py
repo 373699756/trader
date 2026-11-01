@@ -3,6 +3,7 @@
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from scripts.diagnose_runtime import _parser, _validate, build_commands, build_r
 from scripts.runtime_diagnostics import training_alignment
 from scripts.runtime_diagnostics.diagnostic_types import DiagnosticResult
 from scripts.runtime_diagnostics.training_alignment import _numeric_fingerprints
-from scripts.runtime_diagnostics.training_performance import SummarizeTrainingBenchmark
+from scripts.runtime_diagnostics.training_performance import SummarizeTrainingBenchmark, TrainingReuseFailures
 
 
 def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path):
@@ -49,9 +50,10 @@ def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path
 def _serial_results():
     profile = {
         "profile": "v5",
+        "status": "engineering_ready",
         "training_input_hash": "a" * 64,
         "heads": [
-            {"strategy": strategy, "model_hash": "b" * 64, "report_hash": "c" * 64} for strategy in ("tomorrow", "d25")
+            {"strategy": strategy, "status": "engineering_ready", "model_hash": "b" * 64, "report_hash": "c" * 64} for strategy in ("tomorrow", "d25")
         ],
     }
     return tuple(
@@ -64,7 +66,8 @@ def _serial_results():
                 "summary": {
                     "profiles": [profile],
                     "initial": {"complete": True, "profiles": [profile], "seconds": duration / 1000},
-                    "repeat": {"complete": True, "profiles": [profile], "seconds": duration / 10000},
+                    "repeat": {"complete": True, "profiles": [dict(deepcopy(profile), reused=True)], "seconds": duration / 10000,
+                               "execution": {"status": "completed", "profiles": ["v5"], "history_scan_passes": 0, "history_rows_read": 0}},
                     "process_peak_rss_bytes": 100,
                 },
             },
@@ -170,9 +173,10 @@ def _checkout_results():
     ):
         profile = {
             "profile": "v1",
+            "status": "engineering_ready",
             "training_input_hash": "a" * 64,
             "heads": [
-                {"strategy": strategy, "model_hash": mode, "report_hash": mode} for strategy in ("tomorrow", "d25")
+                {"strategy": strategy, "status": "engineering_ready", "model_hash": mode, "report_hash": mode} for strategy in ("tomorrow", "d25")
             ],
         }
         numeric = [
@@ -180,7 +184,9 @@ def _checkout_results():
             for strategy in ("tomorrow", "d25")
         ]
         initial = {"complete": True, "profiles": [profile], "seconds": initial_seconds, "numeric_fingerprints": numeric}
-        repeat = dict(initial, seconds=repeat_seconds, profiles=[dict(profile, reused=mode == "candidate")])
+        repeat = dict(initial, seconds=repeat_seconds, profiles=[dict(deepcopy(profile), reused=mode == "candidate")],
+                      execution={"status": "completed", "profiles": ["v1"], "history_scan_passes": int(mode != "candidate"),
+                                 "history_rows_read": 0 if mode == "candidate" else 10})
         results.append(
             DiagnosticResult(
                 "training_alignment:" + mode + ":v1",
@@ -206,6 +212,8 @@ def test_checkout_comparison_uses_numeric_values_instead_of_source_sensitive_has
     assert comparison["comparable"]
     assert comparison["candidate_ratio_vs_best_baseline"] == {"initial_seconds": 5.0 / 9.0, "repeat_seconds": 0.1 / 9.0}
     assert build_report("training-performance", _checkout_results())["status"] == "passed"
+    assert comparison["rounds"][0]["reuse_failures"]
+    assert comparison["rounds"][1]["reuse_failures"] == ()
 
 
 @pytest.mark.parametrize(
@@ -279,7 +287,8 @@ def test_model_numeric_fingerprints_include_components_and_metrics_but_not_ident
 
 
 @pytest.mark.parametrize("initial_complete", (True, False))
-def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, monkeypatch, initial_complete):
+@pytest.mark.parametrize("reused,require_reuse", ((True, True), (False, True), (False, False)))
+def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, monkeypatch, initial_complete, reused, require_reuse):
     from trader.infra import settings
     from trader.training.entrypoints import commands
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
@@ -294,22 +303,88 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
 
     def train_once(runtime, history, work, profiles):
         calls.append((history, work, profiles))
+        is_repeat = len(calls) == 2
+        profile = deepcopy(_checkout_results()[1].payload["summary"]["initial"]["profiles"][0])
+        profile["reused"] = is_repeat and reused
         return {
             "complete": initial_complete,
-            "profiles": [{"profile": "v1", "reused": len(calls) == 2}],
-            "execution": {"history_scan_passes": int(len(calls) == 1)},
+            "profiles": [profile],
+            "execution": {"status": "completed", "profiles": ["v1"], "history_scan_passes": int(not is_repeat),
+                          "history_rows_read": 0 if is_repeat else 10},
             "reloaded_heads": 2 if initial_complete else 0,
             "seconds": 1.0,
             "numeric_fingerprints": ("unchanged",),
         }
 
     monkeypatch.setattr(training_alignment, "_train_once", train_once)
-    report = training_alignment._probe(tmp_path / "history", tmp_path / "work", ("v1",), sqlite_policy=SqlitePolicyFixture())
+    report = training_alignment._probe(tmp_path / "history", tmp_path / "work", ("v1",), sqlite_policy=SqlitePolicyFixture(), require_reuse=require_reuse)
     assert len(calls) == (2 if initial_complete else 1)
     assert all(call == (tmp_path / "history", tmp_path / "work", ("v1",)) for call in calls)
-    assert report["status"] == ("passed" if initial_complete else "degraded")
+    assert report["status"] == ("passed" if initial_complete and (reused or not require_reuse) else "degraded")
+    assert report["summary"]["repeat_reuse_verified"] is (initial_complete and reused)
     if initial_complete:
-        assert report["summary"]["repeat"]["profiles"] == [{"profile": "v1", "reused": True}]
-        assert report["summary"]["repeat"]["execution"] == {"history_scan_passes": 0}
+        assert report["summary"]["repeat"]["profiles"][0]["reused"] is reused
+        assert report["summary"]["repeat"]["execution"]["history_scan_passes"] == 0
     else:
         assert report["summary"]["repeat"] is None
+
+
+@pytest.mark.parametrize("checkout", (False, True))
+@pytest.mark.parametrize("change", (
+    "missing_execution", "failed_execution", "scan", "rows", "boolean_zero", "missing_counter",
+    "wrong_execution_profiles", "malformed_execution_profiles", "not_reused", "boolean_reused",
+    "missing_profile", "duplicate_head", "changed_model", "changed_input", "failed_profile", "failed_head",
+))
+def test_comparison_rejects_false_reuse_even_when_child_claims_passed(checkout, change):
+    results = list(deepcopy(_checkout_results() if checkout else _serial_results()))
+    repeat = results[1].payload["summary"]["repeat"]
+    execution = repeat["execution"]
+    profile = repeat["profiles"][0]
+    if change == "missing_execution":
+        del repeat["execution"]
+    elif change == "failed_execution":
+        execution["status"] = "failed"
+    elif change == "scan":
+        execution["history_scan_passes"] = 1
+    elif change == "rows":
+        execution["history_rows_read"] = 1
+    elif change == "boolean_zero":
+        execution["history_scan_passes"] = False
+    elif change == "missing_counter":
+        del execution["history_rows_read"]
+    elif change == "wrong_execution_profiles":
+        execution["profiles"] = ["v2"]
+    elif change == "malformed_execution_profiles":
+        execution["profiles"] = [None, "v1"]
+    elif change == "not_reused":
+        profile["reused"] = False
+    elif change == "boolean_reused":
+        profile["reused"] = 1
+    elif change == "missing_profile":
+        repeat["profiles"] = []
+    elif change == "duplicate_head":
+        profile["heads"][1] = dict(profile["heads"][0])
+    elif change == "changed_model":
+        profile["heads"][0]["model_hash"] = "changed"
+    elif change == "changed_input":
+        profile["training_input_hash"] = "changed"
+    elif change == "failed_head":
+        profile["heads"][0]["status"] = "failed"
+    else:
+        profile["status"] = "failed"
+    report = build_report("training-performance", results)
+    assert report["status"] == "degraded"
+    assert not report["benchmark"]["comparable"]
+    assert report["benchmark"]["rounds"][1]["reuse_failures"]
+
+
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+def test_four_profile_reuse_requires_every_selected_member(profile):
+    profiles = ("v1", "v2", "v3", "v5")
+    run = deepcopy(_serial_results()[1].payload["summary"]["repeat"])
+    run["profiles"] = [dict(deepcopy(run["profiles"][0]), profile=selected) for selected in profiles]
+    run["execution"]["profiles"] = list(profiles)
+    initial = deepcopy(run)
+    assert TrainingReuseFailures(initial, run, profiles) == ()
+    next(item for item in run["profiles"] if item["profile"] == profile)["reused"] = False
+    assert TrainingReuseFailures(initial, run, profiles) == ("reuse_profiles_not_reused",)
