@@ -72,6 +72,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "training-resources": ("training_resources",),
     "model-inputs": ("model_inputs",),
     "history-sqlite": ("history_sqlite_performance",),
+    "history-publication": ("history_publication_audit",),
     "history-source-compare": ("history_source_compare",),
     "price-repair-audit": ("price_repair_audit",),
     "market-factor-compare": ("market_factor_compare",),
@@ -934,6 +935,14 @@ def build_commands(
                 ),
             ),
             common_timeout if options.baostock_serial_only else max(common_timeout, 1800.0),
+        ),
+        "history_publication_audit": DiagnosticCommand(
+            "history_publication_audit",
+            (
+                python_executable, "-m", "scripts.runtime_diagnostics.history_publication_audit",
+                "--history-root", str(options.history_root), "--runtime-config", str(options.runtime_config),
+            ),
+            common_timeout,
         ),
         "history_sqlite_performance": DiagnosticCommand(
             "history_sqlite_performance",
@@ -2071,6 +2080,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "history_daily_capability": _history_daily_capability_details,
     "baostock_concurrency": _baostock_concurrency_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
+    "history_publication_audit": _summary_with_findings,
     "history_source_compare": _history_sqlite_performance_details,
     "price_repair_audit": _history_sqlite_performance_details,
     "market_factor_compare": _summary_with_findings,

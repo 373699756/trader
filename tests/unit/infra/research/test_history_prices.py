@@ -659,6 +659,34 @@ def test_multi_month_seal_uses_one_latest_observation_query_and_matches_individu
     assert sum("WITH latest AS" in statement for statement in statements) == 1
 
 
+def test_batch_verification_keeps_each_month_observation_sequence(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "prices_2026.sqlite3"
+    writer = HistoryPricePartition(path, 2026, 1, sqlite_policy=SqlitePolicyFixture())
+    writer.initialize()
+    writer.save_revisions((_revision(date(2026, 1, 30), 1, 10.0), _revision(date(2026, 3, 2), 1, 20.0)))
+    january = writer.seal(1)
+    writer.save_revisions((_revision(date(2026, 1, 30), 2, 11.0), _revision(date(2026, 3, 2), 2, 21.0)))
+    march = HistoryPricePartition(path, 2026, 3, sqlite_policy=SqlitePolicyFixture()).seal(2)
+    HistoryPricePartition.verify_months(path, (january, march), sqlite_policy=SqlitePolicyFixture())
+    references = writer.seal_months((1, 3), 2)
+    original = partition_module.CalculateHistoryProofs
+    calls = []
+
+    def calculate(connection, sequence, **options):
+        calls.append((sequence, len(options["date_ranges"]), options["validate_payloads"]))
+        return original(connection, sequence, **options)
+
+    monkeypatch.setattr(partition_module, "CalculateHistoryProofs", calculate)
+    HistoryPricePartition.verify_months(path, references, sqlite_policy=SqlitePolicyFixture())
+    assert calls == [(2, 2, True)]
+    with pytest.raises(HistoryPricePartitionError):
+        HistoryPricePartition.verify_months(
+            path, (references[0], replace(references[1], row_count=99)), sqlite_policy=SqlitePolicyFixture()
+        )
+    with pytest.raises(ValueError):
+        HistoryPricePartition.verify_months(path, (january, january), sqlite_policy=SqlitePolicyFixture())
+
+
 def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_rename(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

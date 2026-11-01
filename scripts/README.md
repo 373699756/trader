@@ -282,8 +282,28 @@ Use `--qfq-database /absolute/external/copy.sqlite3` for an isolated copy.
 
 The probe opens the shared daily window read-only, verifies both profile manifests and
 price hashes, checks SQLite integrity and WAL mode, and reports aggregate pairing
-and checkpoint differences. It checks publication identity before and after the
-audit, emits no stock identities, and does not prove supplier availability.
+and checkpoint differences, plus current pending stock/day counts. Existing valid
+windows do not hide pending repairs. It checks publication identity and price issues
+before and after the audit, emits no stock identities, and does not prove supplier availability.
+
+For the complete published history and its durable repair receipts:
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile history-publication \
+  --command-timeout-seconds 1800 --output -
+```
+
+This read-only audit checks catalog and annual database integrity, every published
+month's payload, logical hash and row count through the existing production codec
+(one batched proof scan per annual database and observation sequence),
+and pending gaps, unfinished tasks, replacement candidates and repair receipts.
+It rejects publication or receipt changes during the audit. It makes no supplier
+requests, initializes no tables, and writes no source data. `--history-root` can select an
+isolated copy; its bound reference database must also be available. The explicit
+timeout bounds the diagnostic subprocess; a timeout is not successful validation.
+Passing proves the captured publication and local receipts, not source completeness,
+company coverage, model eligibility or performance. Resolved attempts remain evidence
+of completed repair and do not count as pending work.
 
 Local configuration, history-maintenance state, research readiness and offline
 performance share the existing implementations:

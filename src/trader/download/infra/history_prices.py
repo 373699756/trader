@@ -20,7 +20,7 @@ from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellSta
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
-from trader.download.infra.history_partition_proof import CalculateHistoryProof, CalculateHistoryProofs
+from trader.download.infra.history_partition_proof import CalculateHistoryProofs
 from trader.download.infra.history_revision_codec import (
     PublishedCellFromPriceColumns,
     RevisionColumnValues,
@@ -791,7 +791,28 @@ class HistoryPricePartition:
         check: Callable[[], None] | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
         del retain_pages
-        candidate = cls(path, reference.calendar_year, reference.calendar_month, sqlite_policy=sqlite_policy)
+        cls.verify_months(
+            path, (reference,), progress, validate_payloads=validate_payloads, check=check, sqlite_policy=sqlite_policy
+        )
+
+    @classmethod
+    def verify_months(
+        cls,
+        path: Path,
+        references: tuple[HistorySnapshotPartition, ...],
+        progress: HistoryPartitionVerificationProgress | None = None,
+        *,
+        validate_payloads: bool = True,
+        check: Callable[[], None] | None = None,
+        sqlite_policy: SqliteIoPolicy,
+    ) -> None:
+        """Verify same-year monthly proofs, sharing the existing scan for each observation sequence."""
+        ordered = tuple(sorted(references, key=lambda item: item.calendar_month))
+        if not ordered or len({item.calendar_year for item in ordered}) != 1 or len(
+            {item.calendar_month for item in ordered}
+        ) != len(ordered):
+            raise ValueError("history verification months invalid")
+        candidate = cls(path, ordered[0].calendar_year, ordered[0].calendar_month, sqlite_policy=sqlite_policy)
         try:
             with (
                 closing(candidate._read_connection()) as connection,
@@ -800,16 +821,25 @@ class HistoryPricePartition:
             ):
                 candidate._require_metadata(connection)
                 candidate._require_schema(connection)
-                proof = CalculateHistoryProof(
-                    connection,
-                    reference.sequence,
-                    validate_payloads=validate_payloads,
-                    dates=candidate._month_bounds(),
-                    heartbeat=lambda count: progress(count, reference.row_count, "logical") if progress else None,
-                    check=check,
-                )
-                if proof.logical_hash != reference.logical_hash or proof.row_count != reference.row_count:
-                    raise HistoryPricePartitionError("history month logical hash mismatch")
+                for sequence in sorted({item.sequence for item in ordered}):
+                    selected = tuple(item for item in ordered if item.sequence == sequence)
+                    total = sum(item.row_count for item in selected)
+
+                    def report(count: int, total: int = total) -> None:
+                        if progress is not None:
+                            progress(count, total, "logical")
+
+                    proofs = CalculateHistoryProofs(
+                        connection,
+                        sequence,
+                        validate_payloads=validate_payloads,
+                        date_ranges=tuple(_month_bounds(item.calendar_year, item.calendar_month) for item in selected),
+                        heartbeat=report,
+                        check=check,
+                    )
+                    for reference, proof in zip(selected, proofs, strict=True):
+                        if proof.logical_hash != reference.logical_hash or proof.row_count != reference.row_count:
+                            raise HistoryPricePartitionError("history month logical hash mismatch")
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryPricePartitionError("history month logical verification failed") from exc
 

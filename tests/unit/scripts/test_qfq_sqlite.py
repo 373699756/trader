@@ -73,6 +73,25 @@ def test_busy_reason_is_stable():
     assert ClassifyQfqDiagnosticError(sqlite3.OperationalError("database is locked")) == "qfq_pair_database_busy"
 
 
+def test_valid_pair_does_not_hide_current_price_issues(tmp_path):
+    from trader.download.domain.price_repair import PriceIssue
+
+    path = tmp_path / "daily_window.sqlite3"
+    _seed(path)
+    cache = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture())
+    day = qfq_window("600001").cells[-1].trade_date
+    # A newly failing member has no binding or completion to mismatch; the
+    # previously published member must remain valid while the issue is reported.
+    cache.record_price_issue(PriceIssue("600002", (day,), "timeout"))
+    report = AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
+    assert report["status"] == "degraded"
+    assert report["summary"]["pending_stocks"] == 1
+    assert report["summary"]["pending_days"] == 1
+    assert report["summary"]["paired_identity_mismatches"] == 0
+    assert report["summary"]["database_not_checkpointed"] == 0
+    assert report["summary"]["checkpoint_not_paired"] == 0
+
+
 def test_failure_profile_reads_only_diagnostic_rows_and_survives_bad_price_content(tmp_path, monkeypatch, capsys):
     from scripts.diagnose_runtime import _parser, _validate, build_commands, build_report, DiagnosticResult
     from scripts.runtime_diagnostics import qfq_sqlite

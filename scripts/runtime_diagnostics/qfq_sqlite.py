@@ -26,6 +26,7 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
         raise FileNotFoundError("qfq database missing or unsafe")
     caches = (SQLiteQfqWindowCache(path, "v2", sqlite_policy=sqlite_policy), SQLiteQfqWindowCache(path, "v3", sqlite_policy=sqlite_policy))
     before = tuple(cache.manifest() for cache in caches)
+    issues_before = caches[0].price_issues()
     profiles: list[dict[str, object]] = []
     failures: list[str] = []
     for cache, manifest in zip(caches, before, strict=True):
@@ -36,7 +37,11 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
         rows = 0
         for window in cache.iter_windows(manifest, sessions=len(manifest.calendar_dates)):
             rows += len(window.cells)
-        profiles.append({"profile": cache.profile, "codes": len(manifest.universe_codes), "rows": rows})
+        profiles.append({
+            "profile": cache.profile, "codes": len(manifest.universe_codes), "rows": rows,
+            "cutoff": manifest.data_cutoff.isoformat(), "sessions": len(manifest.calendar_dates),
+            "snapshot_hash": manifest.snapshot_hash,
+        })
     with (
         SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection,
         SqliteTransaction(connection),
@@ -65,7 +70,10 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
         )
     if tuple(cache.manifest() for cache in caches) != before:
         failures.append("publication_changed_during_audit")
-    status = "failed" if failures else "degraded" if missing or unpaired or unconfirmed or mode != "wal" else "passed"
+    issues = caches[0].price_issues()
+    if issues != issues_before:
+        failures.append("price_issues_changed_during_audit")
+    status = "failed" if failures else "degraded" if issues or missing or unpaired or unconfirmed or mode != "wal" else "passed"
     return {
         "schema_version": "qfq-sqlite-diagnostic",
         "status": status,
@@ -78,6 +86,8 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
             "paired_identity_mismatches": missing,
             "checkpoint_not_paired": unpaired,
             "database_not_checkpointed": unconfirmed,
+            "pending_stocks": len(issues),
+            "pending_days": sum(len(issue.dates) for issue in issues),
             "failures": tuple(sorted(set(failures))),
         },
     }
