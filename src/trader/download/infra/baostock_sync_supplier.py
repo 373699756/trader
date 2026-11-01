@@ -15,6 +15,9 @@ from multiprocessing.process import BaseProcess
 from typing import Literal, cast
 from threading import RLock
 from trader.infra.process_lock import ProcessLock
+from trader.download.application.download_failure import DownloadFailurePort
+from trader.download.domain.download_failure import DownloadFailureContext
+from trader.download.infra.history_sync_failure import HistoryFailureDetail
 
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
@@ -109,6 +112,7 @@ class _AttemptResult:
     response: _Response | None
     state: _RequestState
     failure_reason: str | None
+    failure: BaseException | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +127,7 @@ class _Response:
     failure_reason: str | None = None
     restart_session: bool = False
     industry_facts: tuple[BaoStockIndustryInterval, ...] | None = None
+    failure_detail: str = ""
 
 
 class _RateLimitedSdk:
@@ -207,6 +212,7 @@ class BaoStockHistorySupplier:
         price_policy: BaoStockRequestPolicy | None = None,
         price_total_seconds: float | None = None,
         vendor_lock: ProcessLock | None = None,
+        failures: DownloadFailurePort | None = None,
     ) -> None:
         settings = configuration
         self._context_policy = BaoStockRequestPolicy(settings.supplier_timeout_seconds, settings.supplier_retries)
@@ -228,6 +234,7 @@ class BaoStockHistorySupplier:
         self._connection: Connection | None = None
         self._vendor_lock = vendor_lock
         self._serial = RLock()
+        self._failures = failures
 
     def __enter__(self) -> BaoStockHistorySupplier:
         return self
@@ -345,6 +352,17 @@ class BaoStockHistorySupplier:
                     raise RuntimeError("supplier_price_total_timeout")
                 self._publish(state.stage, "completed", attempt, state.current_item, self._elapsed(state))
                 return result.response
+            if self._failures is not None:
+                self._failures(DownloadFailureContext(
+                    state.stage, code=command.security.code if isinstance(command, _FetchCode) else "",
+                    supplier="baostock", attempt=attempt.number, maximum_attempts=attempt.total,
+                    elapsed_seconds=self._elapsed(state), timeout_seconds=(
+                        self._context_policy.timeout_seconds if state.stage == "supplier_login" else policy.timeout_seconds
+                    ),
+                    detail=result.response.failure_detail if result.response is not None else "",
+                    window_start=command.dates[0] if isinstance(command, _FetchCode) else None,
+                    window_end=command.dates[-1] if isinstance(command, _FetchCode) else None,
+                ), result.failure or RuntimeError(failure))
             self._publish_failure(
                 state.stage,
                 attempt,
@@ -397,7 +415,7 @@ class BaoStockHistorySupplier:
         except (EOFError, OSError, RuntimeError) as exc:
             if not state.worker_ready:
                 state = replace(state, stage="supplier_login", current_item=None)
-            return _AttemptResult(None, state, _failure_code(exc))
+            return _AttemptResult(None, state, _failure_code(exc), exc)
 
     def _handle_industry_progress(
         self, progress: HistorySyncProgress, state: _RequestState, attempt: _Attempt, timeout: float
@@ -632,6 +650,7 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                     _Response(
                         failure_reason=failure_reason,
                         restart_session=failure_reason == "supplier_query_session_failed",
+                        failure_detail=HistoryFailureDetail(exc),
                     )
                 )
     except Exception as exc:

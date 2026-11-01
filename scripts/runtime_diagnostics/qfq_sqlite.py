@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     SqliteConnectionOptions,
@@ -95,12 +96,26 @@ def ClassifyQfqDiagnosticError(exc: BaseException) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--failures-only", action="store_true")
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
+    report: dict[str, object]
     try:
-        report = AuditQfqDatabase(args.database.expanduser().resolve(), sqlite_policy=sqlite_policy)
+        path = args.database.expanduser().resolve()
+        if args.failures_only:
+            if path.is_symlink() or not path.is_file():
+                raise FileNotFoundError("qfq database missing or unsafe")
+            with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
+                with SqliteTransaction(connection):
+                    failures = ReadDownloadFailures(connection)
+            report = {
+                "schema_version": "download-failures-diagnostic", "status": "passed",
+                "summary": {"read_only": True, "failure_attempts_are_not_pending_state": True, **failures},
+            }
+        else:
+            report = AuditQfqDatabase(path, sqlite_policy=sqlite_policy)
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         report = {
             "schema_version": "qfq-sqlite-diagnostic",

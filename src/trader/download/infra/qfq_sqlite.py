@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.download.domain.download_failure import DownloadFailureRecord
+from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL, WriteDownloadFailure
 
 import hashlib
 import json
@@ -60,6 +62,7 @@ _SCHEMA = SqliteSchema(
     ),
 )
 _REPAIR_SQL = (
+    FAILURE_DIAGNOSTICS_SQL,
     PRICE_SOURCE_CHECK_SQL,
     PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
     "CREATE TABLE IF NOT EXISTS price_issue(code TEXT NOT NULL, trade_date INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
@@ -130,6 +133,10 @@ class SQLiteQfqWindowCache:
             for statement in _REPAIR_SQL:
                 connection.run(statement)
             yield connection
+
+    def RecordDownloadFailure(self, record: DownloadFailureRecord) -> None:
+        with self._write_connection() as connection:
+            WriteDownloadFailure(connection, record)
 
     def price_issues(self) -> tuple[PriceIssue, ...]:
         with self._read_connection() as connection:

@@ -37,6 +37,9 @@ from trader.download.infra import company_document_files, company_facts_reader
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
+from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
+from trader.download.domain.download_failure import DownloadFailureContext
+from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
 from trader.download.infra.company_document_parser import DetectCompanyText
@@ -232,6 +235,11 @@ def ExecuteSync(
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
+    market_failures = (
+        DownloadFailureDiagnostics(
+            SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy).RecordDownloadFailure, clock.now
+        ) if target in ("market", "all") else None
+    )
 
     def sync_market(reference: PreparedReference) -> QfqUpdateResult:
         if qfq_configuration is None:
@@ -243,7 +251,7 @@ def ExecuteSync(
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference,
             cancel_requested=cancel_requested,
-            repair_only=repair_source is not None, sqlite_policy=sqlite_policy,
+            repair_only=repair_source is not None, sqlite_policy=sqlite_policy, failures=market_failures,
         )
 
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
@@ -261,6 +269,7 @@ def ExecuteSync(
         )
 
     return SyncData(
+        failures=market_failures,
         prepare=lambda: _prepare_reference(
             paths.reference,
             clock.now(),
@@ -576,21 +585,30 @@ def ExecuteQfqDownload(
     report: Callable[[ProgressMessage], None] | None = None,
     now: Callable[[], datetime] = _utc_now,
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
+    failures: DownloadFailurePort | None = None,
 ) -> QfqUpdateResult:
     """Compose explicit short-window maintenance without building the server."""
     if report is None:
         report = TerminalDownloadProgress()
-    if reference is None:
-        reference = _prepare_reference(
-            paths.reference,
-            ShanghaiClock(now).now(),
-            None,
-            cancel_requested=cancel_requested,
-            shutdown_timeout_seconds=shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
-        )
-    history_root = paths.history
     v2 = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy)
     v3 = SQLiteQfqWindowCache(paths.daily_window, "v3", sqlite_policy=sqlite_policy)
+    if failures is None:
+        failures = DownloadFailureDiagnostics(v2.RecordDownloadFailure, ShanghaiClock(now).now)
+    prepared_started = time.monotonic()
+    if reference is None:
+        try:
+            reference = _prepare_reference(
+                paths.reference,
+                ShanghaiClock(now).now(),
+                None,
+                cancel_requested=cancel_requested,
+                shutdown_timeout_seconds=shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            if not cancel_requested():
+                failures(DownloadFailureContext("reference_preparation", elapsed_seconds=time.monotonic() - prepared_started), exc)
+            raise
+    history_root = paths.history
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy))
     started = time.monotonic()
     qfq_pool = BoundedExecutor(
@@ -598,7 +616,11 @@ def ExecuteQfqDownload(
         queue_capacity=0,
         thread_name_prefix="qfq-download",
     )
-    qfq_pool.start()
+    try:
+        qfq_pool.start()
+    except (OSError, RuntimeError) as exc:
+        failures(DownloadFailureContext("worker_start"), exc)
+        raise
     qfq_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="qfq-writer")
     with ExitStack() as http_resources:
         try:
@@ -611,7 +633,8 @@ def ExecuteQfqDownload(
             )
             tencent = TencentQfqSupplier(
                 TencentQfqDependencies(
-                    http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
+                    http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar,
+                    failures=failures,
                 ),
                 TencentQfqOptions(
                     timeout_seconds=qfq_configuration.source_timeout_seconds,
@@ -625,6 +648,7 @@ def ExecuteQfqDownload(
                     history_configuration.supplier_timeout_seconds, history_configuration.supplier_retries
                 ),
                 vendor_lock=ProcessLock(paths.reference / "baostock.lock", label="BaoStock"),
+                failures=failures,
             ))
             repair_supplier = HistorySupplierRouter(baseline, tencent, reference)
             updater = UpdateQfqWindows(
@@ -638,15 +662,22 @@ def ExecuteQfqDownload(
                 writer_pool=qfq_writer,
                 repair_supplier=repair_supplier,
                 repair_only=repair_only,
+                failures=failures,
             )
             return QfqUpdateRunner(
-                history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now
+                history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now,
+                failures=failures,
             ).execute()
+        except (OSError, RuntimeError, ValueError) as exc:
+            if not cancel_requested():
+                failures(DownloadFailureContext("resource_or_command", elapsed_seconds=time.monotonic() - started), exc)
+            raise
         finally:
             deadline = ShutdownDeadline.start(shutdown_timeout_seconds)
             writer_stopped = qfq_writer.stop(wait=True, cancel_futures=True, deadline=deadline)
             stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
             if not stopped.completed or not writer_stopped.completed:
+                failures(DownloadFailureContext("shutdown", elapsed_seconds=time.monotonic() - started), RuntimeError("qfq_worker_deadline_exceeded"))
                 report(
                     QfqMessage(
                         time.monotonic() - started, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR

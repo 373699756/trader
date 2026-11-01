@@ -16,6 +16,8 @@ from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_progress import QfqLocalProgress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.download.application.download_failure import DownloadFailurePort
+from trader.download.domain.download_failure import DownloadFailureContext
 
 
 @dataclass(frozen=True)
@@ -26,19 +28,24 @@ class QfqUpdateRunner:
     v3: SQLiteQfqWindowCache
     lock_path: Path
     now: Callable[[], datetime]
+    failures: DownloadFailurePort | None = None
 
     def execute(self, *, seed_only: bool = False) -> QfqUpdateResult:
         started = self.updater.monotonic()
         changed: set[str] = set()
         rows = 0
+        stage = "maintenance_lock"
         try:
             with HistoryMaintenanceLock(self.lock_path):
+                stage = "initial_integrity"
                 self.v2.verify_integrity()
                 if not seed_only:
+                    stage = "update"
                     result = self.updater.execute(self.now())
                     changed.update(result.changed_files)
                     rows += result.changed_rows
                     if result.failure_reason is None and not self.updater.cancel_requested():
+                        stage = "publication_validation"
                         self._verify_publication(started)
                     return result
                 manifest = self.history.manifest()
@@ -76,6 +83,8 @@ class QfqUpdateRunner:
                     failure_reason="cancelled" if self.updater.cancel_requested() else None,
                 )
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as exc:
+            if self.failures is not None and not self.updater.cancel_requested():
+                self.failures(DownloadFailureContext(stage, elapsed_seconds=self.updater.monotonic() - started), exc)
             reason = QfqFailureCode(exc)
             self.updater.report(
                 QfqMessage(self.updater.monotonic() - started, "更新失败", reason, level=ProgressLevel.ERROR)
@@ -91,10 +100,15 @@ class QfqUpdateRunner:
         if tuple(state.code for state in v2.states) != tuple(state.code for state in v3.states):
             raise RuntimeError("qfq_publication_membership_mismatch")
         for left, right in zip(v2.states, v3.states, strict=True):
-            if not left.verified or not right.verified:
-                raise RuntimeError("qfq_publication_content_invalid")
-            if left.source != right.source or right.dates != left.dates[-self.updater.configuration.v3_sessions :]:
-                raise RuntimeError("qfq_publication_pair_mismatch")
+            try:
+                if not left.verified or not right.verified:
+                    raise RuntimeError("qfq_publication_content_invalid")
+                if left.source != right.source or right.dates != left.dates[-self.updater.configuration.v3_sessions :]:
+                    raise RuntimeError("qfq_publication_pair_mismatch")
+            except RuntimeError as exc:
+                if self.failures is not None:
+                    self.failures(DownloadFailureContext("publication_stock_validation", code=left.code), exc)
+                raise
         self.updater.report(QfqMessage(
             self.updater.monotonic() - started, "发布内容校验", f"完成 | 整库完整 | 两档配对 {len(v2.states)} 股"
         ))

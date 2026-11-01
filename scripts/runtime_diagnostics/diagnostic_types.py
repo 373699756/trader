@@ -48,6 +48,7 @@ Profile = Literal[
     "history-space",
     "history-industry",
     "qfq-sqlite",
+    "download-failures",
     "research",
     "long-watchlist",
     "browser",

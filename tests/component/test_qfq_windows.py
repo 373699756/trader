@@ -1594,10 +1594,16 @@ def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
     with SqliteSession(tmp_path / "daily_window.sqlite3") as connection, SqliteTransaction(connection, immediate=True):
         connection.run("DELETE FROM window_binding WHERE profile='v3'")
     monkeypatch.setattr(UpdateQfqWindows, "execute", lambda *_args: result)
-    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed)
+    from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics, ReadDownloadFailures
+    failures = DownloadFailureDiagnostics(updater.v2.RecordDownloadFailure, lambda: observed)
+    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed, failures=failures)
     checked = runner.execute()
     assert checked.failure_reason == "qfq_publication_membership_mismatch"
     assert checked.changed_rows == result.changed_rows and checked.changed_files == result.changed_files
+    with SqliteSession(tmp_path / "daily_window.sqlite3") as connection:
+        failure, = ReadDownloadFailures(connection)["events"]
+    assert failure["stage"] == "publication_validation"
+    assert failure["reason"] == checked.failure_reason
 
 
 @pytest.mark.parametrize(

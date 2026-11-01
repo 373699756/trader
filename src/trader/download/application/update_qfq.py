@@ -33,6 +33,8 @@ from trader.download.domain.qfq_window import (
     QfqPendingReason,
 )
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
+from trader.download.application.download_failure import DownloadFailurePort
+from trader.download.domain.download_failure import DownloadFailureContext
 
 
 class QfqPairPublicationError(RuntimeError):
@@ -142,6 +144,7 @@ class UpdateQfqWindows:
     monotonic: Callable[[], float] = monotonic
     repair_supplier: QfqRepairSupplierPort | None = None
     repair_only: bool = False
+    failures: DownloadFailurePort | None = None
 
     def __post_init__(self) -> None:
         workers = self.configuration.workers if self.workers is None else self.workers
@@ -154,6 +157,10 @@ class UpdateQfqWindows:
         if self.workers is None:
             raise RuntimeError("qfq workers were not initialized")
         return self.workers
+
+    def _record_failure(self, stage: str, exc: BaseException, code: str = "", elapsed: float | None = None) -> None:
+        if self.failures is not None and not self.cancel_requested():
+            self.failures(DownloadFailureContext(stage, code=code, elapsed_seconds=elapsed), exc)
 
     def seed(
         self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...]
@@ -204,6 +211,7 @@ class UpdateQfqWindows:
             )
         except (RuntimeError, OSError, ValueError) as exc:
             cancelled = self.cancel_requested()
+            self._record_failure("loading_context", exc, elapsed=self.monotonic() - started)
             stage = "已取消" if cancelled else "准备失败"
             self.report(
                 QfqMessage(
@@ -275,6 +283,7 @@ class UpdateQfqWindows:
             issue = PriceIssue(issue.code, tuple(day for day in issue.dates if day in dates), issue.reason)
             if not issue.dates or not self.v2.reserve_repair(issue, batch, explicit=self.repair_only):
                 continue
+            repair_started = self.monotonic()
             try:
                 previous = self.v2.read_code(issue.code)
                 candidate = None
@@ -298,6 +307,7 @@ class UpdateQfqWindows:
                 progress.rows += rows
                 progress.publish("BaoStock补缺", f"{issue.code} | 整窗发布成功 | {len(dates)} 股日")
             except (RuntimeError, OSError, ValueError) as exc:
+                self._record_failure("baostock_repair", exc, issue.code, self.monotonic() - repair_started)
                 self.v2.fail_repair(issue.code, batch, QfqFailureCode(exc))
                 progress.publish("BaoStock补缺", f"{issue.code} | 未修复 | {QfqFailureCode(exc)}", level=ProgressLevel.WARNING)
         remaining = tuple(item for item in self.v2.price_issues() if item.code in securities and any(day in context.calendar.open_dates for day in item.dates))
@@ -325,6 +335,7 @@ class UpdateQfqWindows:
             try:
                 plan = self._prepare_plan(security, dates, progress, v2_snapshot, v3_snapshot)
             except (RuntimeError, OSError, ValueError) as exc:
+                self._record_failure("local_validation", exc, security.code)
                 if self.repair_supplier is not None:
                     self.v2.record_price_issue(PriceIssue(security.code, dates, QfqFailureCode(exc)))
                 progress.record_pending(security, exc, dates, action="本地检查")
@@ -505,8 +516,12 @@ class UpdateQfqWindows:
                 tuple(window.code for _, window in batch), files, rows, write_seconds=self.monotonic() - started
             )
         except QfqPairPublicationError as exc:
+            for job, _window in batch:
+                self._record_failure("paired_publication", exc, job.security.code, self.monotonic() - started)
             return _WriteReceipt(exc.codes, exc.files, exc.rows, exc, self.monotonic() - started)
         except (RuntimeError, OSError, ValueError) as exc:
+            for job, _window in batch:
+                self._record_failure("paired_publication", exc, job.security.code, self.monotonic() - started)
             return _WriteReceipt((), (), 0, exc, self.monotonic() - started)
 
     def _fill_slots(
@@ -519,6 +534,7 @@ class UpdateQfqWindows:
             jobs = self._hydrate_wave(plans)
         except (RuntimeError, OSError, ValueError) as exc:
             for plan in plans:
+                self._record_failure("local_read", exc, plan.security.code)
                 if self.repair_supplier is not None:
                     self.v2.record_price_issue(PriceIssue(plan.security.code, plan.dates, QfqFailureCode(exc)))
                 progress.record_pending(plan.security, exc, plan.dates, action="本地检查")
@@ -528,8 +544,11 @@ class UpdateQfqWindows:
                 break
             future = self._submit(job)
             futures[future] = job
-            if future.done() and not future.cancelled() and isinstance(future.exception(), WorkerResourceRejectedError):
-                return "qfq_worker_unavailable"
+            if future.done() and not future.cancelled():
+                error = future.exception()
+                if isinstance(error, WorkerResourceRejectedError):
+                    self._record_failure("worker_dispatch", error, job.security.code)
+                    return "qfq_worker_unavailable"
         return None
 
     def _collect_completed(
@@ -543,12 +562,14 @@ class UpdateQfqWindows:
             job = futures.pop(future)
             try:
                 window = future.result()
-            except WorkerResourceRejectedError:
+            except WorkerResourceRejectedError as exc:
+                self._record_failure("worker_dispatch", exc, job.security.code)
                 progress.record_pending(
                     job.security, RuntimeError("qfq_worker_unavailable"), job.dates, action="任务派发"
                 )
                 continue
             except (RuntimeError, OSError, ValueError) as exc:
+                self._record_failure("tencent_validation", exc, job.security.code)
                 if self.repair_supplier is not None:
                     dates = job.dates
                     if isinstance(exc, HistorySupplierPendingError):

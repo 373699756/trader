@@ -84,6 +84,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
     "qfq-sqlite": ("qfq_sqlite_audit",),
+    "download-failures": ("download_failures",),
     "research": ("research_readiness",),
     "long-watchlist": ("long_watchlist_admission",),
     "browser": ("browser_refresh",),
@@ -744,6 +745,12 @@ def build_commands(
         "configuration": DiagnosticCommand("configuration", cli + ("validate-config",), common_timeout),
         "history_maintenance": DiagnosticCommand(
             "history_maintenance", cli + ("history-automation-status",), common_timeout
+        ),
+        "download_failures": DiagnosticCommand(
+            "download_failures",
+            (python_executable, "-m", "scripts.runtime_diagnostics.qfq_sqlite",
+             "--database", str(options.qfq_database), "--failures-only"),
+            common_timeout,
         ),
         "qfq_sqlite_audit": DiagnosticCommand(
             "qfq_sqlite_audit",
@@ -2056,6 +2063,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "training_coverage": _security_master_details,
     "model_inputs": _security_master_details,
     "qfq_sqlite_audit": _security_master_details,
+    "download_failures": _security_master_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tencent_transport": _security_master_details,

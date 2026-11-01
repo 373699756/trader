@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import platform
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -24,6 +25,8 @@ from trader.download.domain.published_history import PublishedHistoryCell, Publi
 from trader.download.domain.qfq_window import MAX_QFQ_WINDOW_SESSIONS
 from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
 from trader.infra.http_contracts import HttpError, HttpTransport
+from trader.download.application.download_failure import DownloadFailurePort
+from trader.download.domain.download_failure import DownloadFailureContext
 
 _QFQ_PAGE_ROWS = 640
 _MAX_QFQ_PAGES = 5
@@ -51,6 +54,8 @@ class TencentQfqDependencies:
     load_universe: Callable[[date], tuple[BaoStockSecurity, ...]]
     cancel_requested: Callable[[], bool]
     calendar: Callable[[date, int], BaoStockCalendar] | None = None
+    failures: DownloadFailurePort | None = None
+    monotonic: Callable[[], float] = time.monotonic
 
 
 @dataclass(frozen=True)
@@ -401,12 +406,23 @@ class TencentQfqSupplier:
     ) -> tuple[TencentDailyRow, ...]:
         for attempt in range(self._options.retries + 1):
             self._check_cancel()
+            started = self._dependencies.monotonic()
             try:
                 if session is not None:
                     return self._request_once(session, query, host or self._options.history_host)
                 with self._dependencies.session_factory() as owned_session:
                     return self._request_once(owned_session, query, host or self._options.history_host)
-            except (HttpError, OSError) as exc:
+            except (HttpError, OSError, ValueError) as exc:
+                if self._dependencies.failures is not None:
+                    self._dependencies.failures(DownloadFailureContext(
+                        "tencent_calendar" if query.symbol == "sh000001" else f"tencent_{query.mode}",
+                        code="" if query.symbol == "sh000001" else query.symbol[2:], supplier="tencent",
+                        attempt=attempt + 1, maximum_attempts=self._options.retries + 1,
+                        elapsed_seconds=self._dependencies.monotonic() - started, timeout_seconds=self._options.timeout_seconds,
+                        window_start=query.start, window_end=query.end, endpoint=host or self._options.history_host,
+                    ), exc)
+                if isinstance(exc, ValueError):
+                    raise
                 if attempt == self._options.retries:
                     raise RuntimeError("tencent_qfq_request_failed") from exc
         raise RuntimeError("tencent_qfq_request_failed")

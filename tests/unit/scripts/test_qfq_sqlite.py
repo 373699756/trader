@@ -71,3 +71,34 @@ def test_missing_database_is_not_created(tmp_path):
 
 def test_busy_reason_is_stable():
     assert ClassifyQfqDiagnosticError(sqlite3.OperationalError("database is locked")) == "qfq_pair_database_busy"
+
+
+def test_failure_profile_reads_only_diagnostic_rows_and_survives_bad_price_content(tmp_path, monkeypatch, capsys):
+    from scripts.diagnose_runtime import _parser, _validate, build_commands, build_report, DiagnosticResult
+    from scripts.runtime_diagnostics import qfq_sqlite
+    from trader.download.domain.download_failure import DownloadFailureContext
+    from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
+    from tests.unit.infra.research.test_history_sync import NOW
+    import sys
+
+    path = tmp_path / "daily_window.sqlite3"
+    _seed(path)
+    primary = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture())
+    DownloadFailureDiagnostics(primary.RecordDownloadFailure, lambda: NOW)(
+        DownloadFailureContext("tencent_qfq", code="600001"), RuntimeError("tencent_qfq_request_failed")
+    )
+    # A broken business binding must not prevent reading why the update failed.
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE window_binding SET content_hash=?", (b"x" * 32,))
+    before = path.read_bytes()
+    options, _ = _validate(_parser().parse_args([
+        "--profile", "download-failures", "--qfq-database", str(path)
+    ]))
+    command, = build_commands(options)
+    assert "--failures-only" in command.argv and str(path) in command.argv
+    monkeypatch.setattr(sys, "argv", ["qfq_sqlite", "--database", str(path), "--failures-only"])
+    assert qfq_sqlite.main() == 0
+    output = json.loads(capsys.readouterr().out)
+    report = build_report("download-failures", [DiagnosticResult(command.name, 0, 1, output, None)])
+    assert report["checks"][0]["summary"]["events"][0]["code"] == "600001"
+    assert before == path.read_bytes()

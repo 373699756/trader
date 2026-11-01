@@ -9,6 +9,8 @@ from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.application.download_failure import DownloadFailurePort
+from trader.download.domain.download_failure import DownloadFailureContext
 
 SyncTarget = Literal["all", "history", "market", "company"]
 
@@ -43,6 +45,7 @@ class SyncData:
     market: Callable[[PreparedReference], QfqUpdateResult]
     company: Callable[[PreparedReference], CompanyEvidenceSyncResult]
     cancelled: Callable[[], bool]
+    failures: DownloadFailurePort | None = None
 
     def execute(self, target: SyncTarget) -> SyncResult:
         if target not in ("all", "history", "market", "company"):
@@ -58,6 +61,8 @@ class SyncData:
             except (CancelledError, OSError, RuntimeError, ValueError) as exc:
                 if self.cancelled():
                     return SyncResult((), cancelled=True)
+                if self.failures is not None:
+                    self.failures(DownloadFailureContext("reference_preparation"), exc)
                 return SyncResult((), failure=f"preparation_{type(exc).__name__}")
             selected: tuple[Literal["history", "market", "company"], ...] = (
                 ("history", "market", "company") if target == "all" else (target,)
@@ -74,6 +79,8 @@ class SyncData:
                     if self.cancelled():
                         tasks.append(SyncTaskResult(task, "cancelled"))
                         return SyncResult(tuple(tasks), cancelled=True)
+                    if self.failures is not None and task == "market":
+                        self.failures(DownloadFailureContext("market_command"), exc)
                     tasks.append(SyncTaskResult(task, "failed", type(exc).__name__))
             return SyncResult(tuple(tasks))
         except KeyboardInterrupt:

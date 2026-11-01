@@ -375,9 +375,10 @@ def test_price_timeout_restarts_session_with_bounded_retries(tmp_path, monkeypat
     from trader.download.infra import baostock_sync_supplier as supplier_module
     from tests.unit.infra.research.test_history_sync import _download
 
+    failures = []
     supplier = BaoStockHistorySupplier(HistorySyncConfiguration(
         history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=2
-    ))
+    ), failures=lambda context, exc: failures.append((context, str(exc))))
     attempts, closes = [], []
     security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
     days = (date(2026, 10, 9),)
@@ -399,6 +400,10 @@ def test_price_timeout_restarts_session_with_bounded_retries(tmp_path, monkeypat
         with pytest.raises(RuntimeError, match="supplier_daily_raw_timeout"):
             supplier.fetch_code(security, days)
         assert attempts == [1, 2, 3] and len(closes) == 3
+    assert len(failures) == (1 if recovers else 3)
+    assert failures[0][0].code == security.code and failures[0][0].supplier == "baostock"
+    assert failures[0][0].maximum_attempts == 3 and failures[0][0].window_start == days[0]
+    assert failures[0][1] == "supplier_daily_raw_timeout"
 
 
 def test_supplier_login_timeout_does_not_repeat_the_slow_start(tmp_path, monkeypatch) -> None:

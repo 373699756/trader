@@ -267,6 +267,14 @@ current.json、progress.json、latest_pair.json和comparisons.json保留当前�
 
 Audit active qfq paired publication and checkpoint state:
 
+For `sync market` failures, run `.venv/bin/python3 scripts/diagnose_runtime.py --profile download-failures --output -`.
+This reads only the existing `download_failure` table in the configured shared daily window, with stage/reason counts
+and the latest 50 failure events (run, Shanghai timestamp, stock, request window, provider/endpoint class, attempt,
+measured timing, safe exception causes and source location). It makes no supplier requests and reads no price payloads.
+Failed attempts remain visible after recovery; they are not the current pending state. Only failures are retained,
+up to 20000 rows; terminal output is not archived. Old databases return `available=false` without initialization.
+Use `--qfq-database /absolute/external/copy.sqlite3` for an isolated copy.
+
 ```bash
 .venv/bin/python3 scripts/diagnose_runtime.py --profile qfq-sqlite \
   --output -
