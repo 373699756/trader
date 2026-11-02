@@ -14,6 +14,8 @@ class ProfileRuntime(Protocol):
     @property
     def profile_id(self) -> ScoringProfileId: ...
 
+    def initialize(self) -> None: ...
+
     def start(self) -> bool: ...
 
     def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport: ...
@@ -31,15 +33,17 @@ class ProfiledApplicationSystem(Generic[ApplicationT]):
     systems: tuple[ProfileRuntime, ...]
 
     def start(self) -> bool:
-        started: list[ProfileRuntime] = []
+        prepared: list[ProfileRuntime] = []
         try:
+            for system in self.systems:
+                prepared.append(system)
+                system.initialize()
             for system in self.systems:
                 if not system.start():
                     raise RuntimeError(f"{system.profile_id} runtime did not start")
-                started.append(system)
         except BaseException:
             deadline = ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
-            for system in reversed(started):
+            for system in reversed(prepared):
                 system.stop(deadline=deadline)
             raise
         return True

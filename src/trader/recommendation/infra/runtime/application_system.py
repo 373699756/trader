@@ -102,6 +102,9 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             self.owns_shared_resources,
         )
 
+    def initialize(self) -> None:
+        self.supervisor.initialize()
+
     def start(self) -> bool:
         try:
             return StartApplicationResources(

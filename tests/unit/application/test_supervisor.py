@@ -43,6 +43,33 @@ def test_supervisor_initializes_starts_ticks_and_stops() -> None:
     assert "trader-scheduler" not in {thread.name for thread in threading.enumerate()}
 
 
+def test_supervisor_can_initialize_once_before_starting_any_threads() -> None:
+    pipeline = FakePipeline()
+    initialized: list[str] = []
+    supervisor = RuntimeSupervisor(
+        pipeline,
+        RuntimeSupervisorConfig(
+            now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
+            initializers=(lambda: initialized.append("ready"),),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=1.0,
+        ),
+    )
+    supervisor.initialize()
+    supervisor.initialize()
+    assert initialized == ["ready"]
+    assert pipeline.started == 0
+    assert not pipeline.ticked.is_set()
+    try:
+        assert supervisor.start()
+        assert pipeline.ticked.wait(1.0)
+        assert initialized == ["ready"]
+    finally:
+        assert supervisor.stop().completed
+    with pytest.raises(RuntimeError, match="cannot initialize after stop"):
+        supervisor.initialize()
+
+
 def test_supervisor_does_not_block_start_on_deferred_initializer() -> None:
     pipeline = FakePipeline()
     deferred_started = threading.Event()

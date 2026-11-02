@@ -52,6 +52,7 @@ class RuntimeSupervisor:
         self._record_error = config.record_error or (lambda _error: None)
         self._deferred_initializers = tuple(config.deferred_initializers)
         self._lock = threading.Lock()
+        self._initialization_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._deferred_stop_event = threading.Event()
         self._scheduler: threading.Thread | None = None
@@ -61,6 +62,27 @@ class RuntimeSupervisor:
         self._runtime_started = False
         self._stopped = False
         self._shutdown_report: ShutdownReport | None = None
+
+    def initialize(self) -> None:
+        """Prepare synchronous dependencies without starting workers or scheduling."""
+        with self._initialization_lock:
+            with self._lock:
+                if self._stopped:
+                    raise RuntimeError("runtime supervisor cannot initialize after stop")
+                if self._initialized:
+                    return
+            for initialize in self._initializers:
+                initializer_started = self._monotonic()
+                try:
+                    initialize()
+                finally:
+                    _LOGGER.info(
+                        "startup initializer completed name=%s elapsed_ms=%.1f",
+                        getattr(initialize, "__qualname__", repr(initialize)),
+                        max(0.0, self._monotonic() - initializer_started) * 1000.0,
+                    )
+            with self._lock:
+                self._initialized = True
 
     def start(self) -> bool:
         with self._lock:
@@ -73,19 +95,7 @@ class RuntimeSupervisor:
             self._starting = True
         startup_started = self._monotonic()
         try:
-            if not self._initialized:
-                for initialize in self._initializers:
-                    initializer_started = self._monotonic()
-                    try:
-                        initialize()
-                    finally:
-                        _LOGGER.info(
-                            "startup initializer completed name=%s elapsed_ms=%.1f",
-                            getattr(initialize, "__qualname__", repr(initialize)),
-                            max(0.0, self._monotonic() - initializer_started) * 1000.0,
-                        )
-                with self._lock:
-                    self._initialized = True
+            self.initialize()
             with self._lock:
                 if self._stopped:
                     return False
