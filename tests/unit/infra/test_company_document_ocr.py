@@ -105,10 +105,12 @@ def test_unavailable_ocr_fails_without_starting_a_process(tmp_path):
         _extract(engine, payload, tmp_path)
 
 
-def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monkeypatch, tmp_path):
+@pytest.mark.parametrize("retry_each_page", (False, True))
+def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monkeypatch, tmp_path, retry_each_page):
     engine = CompanyOcrEngine(
         CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
         timeout_seconds=2, page_timeout_seconds=2, max_pages=2, dpi=150,
+        retry_each_page=retry_each_page,
     )
     modes = []
 
@@ -123,17 +125,52 @@ def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monk
 
     monkeypatch.setattr(engine, "_run", run)
     monkeypatch.setattr(engine, "_recognize", recognize)
-    text, quality = _extract(engine, b"pdf", tmp_path)
-    assert "recovered" in text and quality == 51
-    assert modes == [6, 3, 6]
+    payload = _pdf(2)
+    text, quality = _extract(engine, payload, tmp_path)
+    assert "recovered" in text and quality == (92 if retry_each_page else 51)
+    assert modes == ([6, 1, 6, 1] if retry_each_page else [6, 3, 6])
 
     monkeypatch.setattr(engine, "_recognize", lambda *args: ("short", [10.0]))
-    assert _extract(engine, b"pdf", tmp_path) == (text, quality)
+    assert _extract(engine, payload, tmp_path) == (text, quality)
     with pytest.raises(CompanyDocumentFailure) as caught:
-        _extract(engine, b"pdf", tmp_path / "new-input")
+        _extract(engine, payload, tmp_path / "new-input")
     diagnostic = caught.value.diagnostic
     assert diagnostic.phase == "quality" and diagnostic.pages == 2
     assert diagnostic.characters == 10 and diagnostic.confidence == 10
+
+
+@pytest.mark.parametrize("recovery", ("rotation", "resolution"))
+def test_each_sideways_page_is_rotated_and_successful_pages_are_reused(monkeypatch, tmp_path, recovery):
+    from pypdf import PdfReader
+
+    engine = CompanyOcrEngine(
+        CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
+        timeout_seconds=10, page_timeout_seconds=10, max_pages=2, dpi=150, retry_each_page=True,
+    )
+    rotations = []
+
+    def run(command, *args, **kwargs):
+        if command[0] == "pdfinfo":
+            return b"Pages: 2\nPage 1 size: 200 x 200 pts\nPage 2 size: 200 x 200 pts\n"
+        if command[-1].endswith("oriented.pdf"):
+            angle = PdfReader(command[-1]).pages[0].rotation
+            rotations.append(angle)
+            return f"{angle}:{command[command.index('-r') + 1]}".encode()
+        return b"sideways"
+
+    def recognize(image, *args):
+        expected = b"90:150" if recovery == "rotation" else b"0:300"
+        return ("verified " * 12, [90.0]) if image.read_bytes() == expected else ("short", [10.0])
+
+    monkeypatch.setattr(engine, "_run", run)
+    monkeypatch.setattr(engine, "_recognize", recognize)
+    payload = _pdf(2)
+    assert _extract(engine, payload, tmp_path)[1] == 90.0
+    expected_rotations = [90, 90] if recovery == "rotation" else [90, 270, 0, 90, 270, 0]
+    assert rotations == expected_rotations
+    assert _extract(engine, payload, tmp_path)[1] == 90.0
+    assert rotations == expected_rotations
+    assert not tuple(tmp_path.rglob("oriented.pdf"))
 
 
 def test_timeout_records_render_phase_and_page(monkeypatch, tmp_path):

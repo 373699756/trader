@@ -165,6 +165,13 @@ def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end()
     assert "状态 待续传" in final
 
 
+def test_restart_displays_persistent_failures_separately_from_new_failures():
+    stream = StringIO()
+    report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
+    report(EvidenceSyncProgress("risk_documents", 0, 7, 0, 0, 0, unresolved_document_failures=7))
+    assert "本轮失败 0 篇 | 未解决失败 7 篇" in stream.getvalue()
+
+
 def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(monkeypatch, capsys):
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
@@ -245,7 +252,7 @@ def test_source_failure_and_unreadable_documents_have_separate_recovery_messages
         )
     )
     text = stream.getvalue()
-    assert "本轮失败 1 篇 | 当前可处理 2 篇 | 冷却暂缓 2 篇" in text
+    assert "本轮失败 1 篇 | 未解决失败 0 篇 | 当前可处理 2 篇 | 冷却暂缓 2 篇" in text
     assert "公告目录：来源暂缓（连续失败或限流）" in text
     assert "公告正文：PDF未提取到文字" in text
     assert "OCR仍失败的正文标记为不可提取/资料未知，同内容同策略不再重试" in text

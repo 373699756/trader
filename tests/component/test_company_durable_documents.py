@@ -63,6 +63,53 @@ def test_runtime_configuration_changes_preserve_successful_result(tmp_path):
         raw.save_result(item, extraction)
         assert raw.result(item, (after.standard, after.ocr, after.limits)) == extraction
     assert before.ocr != after.ocr  # Failed tasks receive a new deadline budget.
+    from trader.download.domain.company_evidence import CompanyDocumentOutputIdentity
+
+    old = before.ocr.replace(":retry_layout=orient_rotate_dpi_each_page", "")
+    assert CompanyDocumentOutputIdentity(before.ocr) == CompanyDocumentOutputIdentity(old)
+
+
+def test_failed_input_survives_restart_success_cleanup_and_obsolete_revision(tmp_path):
+    raw = _raw(tmp_path)
+    item = _item()
+    directory = raw.directory(item)
+    directory.mkdir(parents=True)
+    payload = _pdf()
+    pdf = directory / (hashlib.sha256(payload).hexdigest() + ".pdf")
+    pdf.write_bytes(payload)
+    (directory / "page-checkpoint.json").write_text("{}")
+    retained = raw.retain_failure(item, "disclosure_document_ocr_low_quality", "ocr-policy", fixtures.NOW.isoformat())
+    assert "failed" in retained.parts and not directory.exists()
+    restarted = _raw(tmp_path)
+    assert restarted.local(item).path.read_bytes() == payload
+    assert restarted.usage() >= len(payload)
+    assert restarted.release(item)
+    assert restarted.local(item) is not None
+    assert (retained / "page-checkpoint.json").exists()
+    assert len(tuple(retained.glob("failure-*.json"))) == 1
+    new = replace(item, digest="new-version")
+    restarted.directory(new).mkdir(parents=True)
+    assert restarted.release(new)
+    assert retained.exists()
+    constrained = CompanyRawFiles(tmp_path, capacity=100, analysis_reserve=10, free_reserve=1)
+    with pytest.raises(RuntimeError, match="company_raw_capacity_exhausted"):
+        with constrained.reserve(retained, 1):
+            pass
+    assert restarted.local(item) is not None
+
+
+def test_failure_workload_persists_after_restart_and_clears_after_success(tmp_path):
+    index = fixtures._index(tmp_path)
+    now = fixtures.NOW
+    item = _item()
+    partition = index.partitions(("sse",), now)[0]
+    index.commit_page(partition, DisclosurePage((item,), 1, False), now)
+    index.document_failure(item, fixtures._TEST_DOCUMENT_POLICIES.ocr, "disclosure_document_ocr_low_quality", now, now + timedelta(days=1))
+    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 1
+    index.prepare_publication(item.codes, now)
+    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 1
+    index.commit_document(item, fixtures._extraction("本公司收到中国证监会立案告知书。"), now)
+    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 0
 
 
 def test_same_content_revision_reuses_analysis_and_survives_other_task_cleanup(tmp_path):

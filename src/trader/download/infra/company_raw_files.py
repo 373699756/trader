@@ -8,11 +8,11 @@ import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import RLock
 
-from trader.download.domain.company_evidence import CompanyDocumentExtraction, CompanyDocumentOutputIdentity, Disclosure
+from trader.download.domain.company_evidence import CompanyDocumentExtraction, CompanyDocumentOutputIdentity, CompanyOcrDiagnostic, Disclosure
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
 from trader.infra.atomic_files.json import SyncDirectory
 
@@ -48,10 +48,38 @@ class CompanyRawFiles:
 
     def directory(self, item: Disclosure) -> Path:
         key = hashlib.sha256(json.dumps((item.source, item.identity, item.digest)).encode()).hexdigest()
-        return self.root / "documents" / key[:2] / key
+        retained = self.root / "failed" / key[:2] / key
+        return retained if retained.exists() else self.root / "documents" / key[:2] / key
+
+    def retain_failure(
+        self,
+        item: Disclosure,
+        failure: str,
+        policy: str,
+        attempted_at: str,
+        diagnostic: CompanyOcrDiagnostic | None = None,
+    ) -> Path:
+        """Retain failed inputs and checkpoints permanently, including after recovery."""
+        with self._lock:
+            directory = self.directory(item)
+            if any(r.key == str(directory) for r in self._reservations):
+                raise RuntimeError("company_failed_input_in_use")
+            target = self.root / "failed" / directory.parent.name / directory.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if directory != target and directory.exists():
+                os.replace(directory, target)
+            target.mkdir(exist_ok=True)
+            identity = hashlib.sha256(f"{policy}:{attempted_at}".encode()).hexdigest()
+            AtomicWriteJson(target / f"failure-{identity}.json", {
+                "source": item.source, "source_key": item.identity, "record_hash": item.digest,
+                "failure": failure, "policy": policy, "attempted_at": attempted_at,
+                "diagnostic": asdict(diagnostic) if diagnostic is not None else None,
+            })
+            SyncDirectory(target.parent)
+            return target
 
     def usage(self) -> int:
-        return sum(self._size(self.root / name) for name in ("documents", "text"))
+        return sum(self._size(self.root / name) for name in ("documents", "text", "failed"))
 
     @staticmethod
     def _size(directory: Path) -> int:
@@ -185,6 +213,8 @@ class CompanyRawFiles:
     def release(self, item: Disclosure) -> bool:
         directory = self.directory(item)
         with self._lock:
+            if self.root / "failed" in directory.parents:
+                return True
             if any(r.key == str(directory) for r in self._reservations):
                 return False
             if directory.exists():

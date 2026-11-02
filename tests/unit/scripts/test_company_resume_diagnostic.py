@@ -12,6 +12,7 @@ import pytest
 
 from scripts.diagnose_runtime import DiagnosticResult, _parser, _validate, build_commands, build_report
 from scripts.runtime_diagnostics import company_pagination_audit, company_pipeline_audit
+from scripts.runtime_diagnostics import company_ocr_audit
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
 from scripts.runtime_diagnostics.company_resume import Main, _compact_storage, _copy, _saved_pages
 from tests.component import test_company_evidence as fixtures
@@ -22,6 +23,51 @@ from tests.helpers.configuration import (
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
 )
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+
+
+def test_ocr_comparison_reuses_seven_identical_pdfs_without_writing_collection(tmp_path, monkeypatch):
+    import hashlib
+    from contextlib import nullcontext
+    from tests.component.test_company_pipeline import _seed
+
+    index = fixtures._index(tmp_path)
+    items = _seed(index, 8)
+    payload = b"%PDF-fixture"
+    digest = hashlib.sha256(payload).digest()
+    for item in items:
+        index.document_failure(item, "policy", "disclosure_document_ocr_low_quality", fixtures.NOW,
+                               fixtures.NOW + timedelta(days=1), digest)
+
+    class Source:
+        def __init__(self, *args, raw_files, **kwargs):
+            self.raw = raw_files
+
+        def download_document(self, item):
+            directory = self.raw.directory(item)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / (digest.hex() + ".pdf")).write_bytes(payload)
+
+    class Engine:
+        def __init__(self, *args, dpi, **kwargs):
+            self.dpi = dpi
+
+        def extract(self, *args):
+            if self.dpi == 150:
+                raise CompanyDocumentFailure("disclosure_document_ocr_low_quality")
+            return "合格正文" * 30, 80.0
+
+    monkeypatch.setattr(company_ocr_audit, "OpenExternalHttp", lambda: nullcontext(None))
+    monkeypatch.setattr(company_ocr_audit, "CninfoMarketDisclosureSource", Source)
+    monkeypatch.setattr(company_ocr_audit, "CompanyOcrEngine", Engine)
+    before = index.path.read_bytes()
+    report = company_ocr_audit.AuditCompanyOcr(index.path, tmp_path / "probe", budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
+    result = report["summary"]["ocr_audit"]
+    assert result["sample_size"] == 7 and not result["active_writes"]
+    assert result["passed"] and result["recovered_documents"] == 7
+    assert all(sample["same_pdf"] for sample in result["samples"])
+    assert all([run["passed"] for run in sample["runs"]] == [False, False, True] for sample in result["samples"])
+    assert index.path.read_bytes() == before
+    assert len(tuple((tmp_path / "probe").rglob("*.pdf"))) == 7
 
 
 def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_path, monkeypatch):

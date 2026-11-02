@@ -332,7 +332,7 @@ def Main() -> int:
         parser.error("external absolute directory required")
     directory.mkdir(parents=True, exist_ok=True)
     if args.ocr_only:
-        report = AuditCompanyOcr(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
+        report = AuditCompanyOcr(source_path, directory, budget_seconds=min(1800.0, args.budget_seconds), sqlite_policy=sqlite_policy)
         (directory / "ocr-result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0

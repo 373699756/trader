@@ -425,6 +425,7 @@ class CompanyDocumentWorkload:
     superseded_inputs: int = 0
     raw_bytes: int = 0
     watermarks: tuple[CompanyCoverageWatermark, ...] = ()
+    unresolved_failures: int = 0
 
     def __post_init__(self) -> None:
         if min(self.pending, self.due, self.cooling, self.ocr, self.unextractable) < 0 or self.due > self.pending:
@@ -549,6 +550,7 @@ class EvidenceSyncProgress:
     next_document_retry_at: datetime | None = None
     discovering_documents: bool = False
     workload: CompanyDocumentWorkload | None = None
+    unresolved_document_failures: int = 0
 
 
 @dataclass(frozen=True)
@@ -653,7 +655,7 @@ def BuildCompanyDocumentPolicies(
             f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
         ),
         ocr=(
-            f"ocr_4:psm6_3:retry2:edge4096:{ocr_identity}:timeout={configuration.document_ocr_timeout_seconds:g}:"
+            f"ocr_4:psm6_3:retry_layout=orient_rotate_dpi_each_page:retry2:edge4096:{ocr_identity}:timeout={configuration.document_ocr_timeout_seconds:g}:"
             f"page_timeout={configuration.document_ocr_page_timeout_seconds:g}:"
             f"{configuration.document_ocr_max_pages}:{configuration.document_ocr_dpi}:"
             f"{configuration.document_ocr_languages}"
@@ -664,7 +666,7 @@ def BuildCompanyDocumentPolicies(
 
 def CompanyDocumentOutputIdentity(policy: str) -> str:
     """Deadlines reopen failures, but cannot invalidate a complete successful output."""
-    return ":".join(part for part in policy.split(":") if not part.startswith(("timeout=", "page_timeout=")))
+    return ":".join(part for part in policy.split(":") if not part.startswith(("timeout=", "page_timeout=", "retry_layout=")))
 
 
 def EvidenceMarket(code: str) -> Market:

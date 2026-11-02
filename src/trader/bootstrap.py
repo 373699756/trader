@@ -343,6 +343,7 @@ def _sync_company_evidence(
             max_pages=configuration.document_ocr_max_pages,
             dpi=configuration.document_ocr_dpi,
             cancel_requested=cancel_requested,
+            retry_each_page=True,
         )
         source_factory = partial(
             CninfoMarketDisclosureSource,

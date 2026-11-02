@@ -14,6 +14,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PdfReadError
 
 from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
 from trader.download.infra.company_document_process import CaptureDocumentTool
@@ -35,6 +37,7 @@ class CompanyOcrCapability:
     languages: str
     failure: str | None = None
     pdfinfo: str | None = "pdfinfo"
+    orientation_available: bool = True
 
     @property
     def available(self) -> bool:
@@ -71,7 +74,7 @@ def DetectCompanyOcr(languages: str) -> CompanyOcrCapability:
             "disclosure_document_ocr_language_unavailable",
         )
     identity = hashlib.sha256(version.stdout + listed.stdout + renderer.stderr).hexdigest()[:20]
-    return CompanyOcrCapability(identity, tesseract, pdftoppm, languages, pdfinfo=pdfinfo)
+    return CompanyOcrCapability(identity, tesseract, pdftoppm, languages, pdfinfo=pdfinfo, orientation_available="osd" in installed)
 
 
 class CompanyOcrEngine:
@@ -87,6 +90,7 @@ class CompanyOcrEngine:
         dpi: int,
         cancel_requested: Callable[[], bool] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        retry_each_page: bool = False,
     ) -> None:
         if not 0 < page_timeout_seconds <= timeout_seconds <= 600 or not math.isfinite(timeout_seconds):
             raise ValueError("company_ocr_deadline_invalid")
@@ -97,6 +101,7 @@ class CompanyOcrEngine:
         self._dpi = dpi
         self._cancel_requested = cancel_requested
         self._monotonic = monotonic
+        self._retry_each_page = retry_each_page
 
     def extract(self, payload: Path, payload_hash: bytes) -> tuple[str, float]:
         diagnostic = CompanyOcrDiagnostic("metadata", 0, 0, 0, None, 6)
@@ -105,7 +110,8 @@ class CompanyOcrEngine:
         try:
             self._check_cancelled()
             deadline = self._monotonic() + self._timeout_seconds
-            identity = hashlib.sha256(f"ocr-pages-1:{payload_hash.hex()}:{self.capability.identity}:{self.capability.languages}:{self._dpi}".encode()).hexdigest()
+            page_policy = "ocr-pages-per-page-orient-rotate-dpi-1" if self._retry_each_page else "ocr-pages-1"
+            identity = hashlib.sha256(f"{page_policy}:{payload_hash.hex()}:{self.capability.identity}:{self.capability.languages}:{self._dpi}".encode()).hexdigest()
             with _workspace(payload.parent / ("ocr-" + identity)) as root:
                 pdf = payload
                 metadata = self._run(
@@ -169,10 +175,11 @@ class CompanyOcrEngine:
                     text, confidence = self._recognize(image, page_deadline, payload_hash, 6)
                     page_characters = len("".join(text.split()))
                     quality = sum(confidence) / len(confidence) if confidence else 0.0
-                    if not fallback_used and (page_characters < 80 or quality < _MIN_CONFIDENCE):
+                    if (self._retry_each_page or not fallback_used) and (page_characters < 80 or quality < _MIN_CONFIDENCE):
                         fallback_used = True
-                        diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, 3)
-                        alternative, alternative_confidence = self._recognize(image, page_deadline, payload_hash, 3)
+                        mode = 1 if self._retry_each_page and self.capability.orientation_available else 3
+                        diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, mode)
+                        alternative, alternative_confidence = self._recognize(image, page_deadline, payload_hash, mode)
                         alternative_characters = len("".join(alternative.split()))
                         alternative_quality = (
                             sum(alternative_confidence) / len(alternative_confidence) if alternative_confidence else 0.0
@@ -184,6 +191,36 @@ class CompanyOcrEngine:
                             text, confidence = alternative, alternative_confidence
                         else:
                             diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, 6)
+                        if self._retry_each_page and (len("".join(text.split())) < 80 or not confidence or sum(confidence) / len(confidence) < _MIN_CONFIDENCE):
+                            for angle, render_dpi in ((90, self._dpi), (270, self._dpi), (0, min(300, self._dpi * 2))):
+                                if angle == 0 and render_dpi == self._dpi:
+                                    continue
+                                rotated = root / "oriented.pdf"
+                                writer = PdfWriter()
+                                with pdf.open("rb") as stream:
+                                    reader = PdfReader(stream)
+                                    writer.add_page(reader.pages[page - 1])
+                                    writer.pages[0].rotate(angle)
+                                    with rotated.open("wb") as output:
+                                        writer.write(output)
+                                try:
+                                    rendered = self._run(
+                                        (self.capability.pdftoppm or "pdftoppm", "-png", "-singlefile",
+                                         "-r", str(render_dpi), "-scale-to", str(min(_MAX_IMAGE_EDGE, math.ceil(edge * render_dpi / self._dpi))), str(rotated)),
+                                        page_deadline, payload_hash, "disclosure_document_ocr_unreadable",
+                                        maximum_bytes=_MAX_RENDERED_BYTES - rendered_bytes,
+                                    )
+                                    rendered_bytes += len(rendered)
+                                    image.write_bytes(rendered)
+                                    del rendered
+                                    alternative, alternative_confidence = self._recognize(image, page_deadline, payload_hash, mode if angle == 0 else 6)
+                                    alternative_quality = sum(alternative_confidence) / len(alternative_confidence) if alternative_confidence else 0.0
+                                    if len("".join(alternative.split())) >= 80 and alternative_quality > (sum(confidence) / len(confidence) if confidence else 0.0):
+                                        text, confidence = alternative, alternative_confidence
+                                    if len("".join(alternative.split())) >= 80 and alternative_quality >= _MIN_CONFIDENCE:
+                                        break
+                                finally:
+                                    rotated.unlink(missing_ok=True)
                     image.unlink()
                     characters += len(text) + 1
                     if characters > _MAX_TEXT_CHARACTERS:
@@ -202,6 +239,8 @@ class CompanyOcrEngine:
             if len("".join(result.split())) < 80 or quality < _MIN_CONFIDENCE:
                 raise CompanyDocumentFailure("disclosure_document_ocr_low_quality", payload_hash=payload_hash)
             return result, quality
+        except PdfReadError as exc:
+            raise CompanyDocumentFailure("disclosure_document_ocr_unreadable", payload_hash=payload_hash, diagnostic=diagnostic) from exc
         except CompanyDocumentFailure as exc:
             raise CompanyDocumentFailure(exc.reason, payload_hash=payload_hash, diagnostic=diagnostic) from exc
 
@@ -311,6 +350,7 @@ def _workspace(root: Path) -> Iterator[Path]:
         yield root
     finally:
         (root / "page.png").unlink(missing_ok=True)
+        (root / "oriented.pdf").unlink(missing_ok=True)
 
 
 __all__ = ["CompanyOcrCapability", "CompanyOcrEngine", "DetectCompanyOcr"]

@@ -124,7 +124,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--company-pagination-audit", action="store_true", help="read-only CNInfo page-size comparison")
-    parser.add_argument("--company-ocr-audit", action="store_true", help="one failed announcement OCR probe without active writes")
+    parser.add_argument("--company-ocr-audit", action="store_true", help="compare OCR on up to seven failed announcements without active writes")
     parser.add_argument("--company-document-audit", action="store_true", help="read-only failed PDF request comparison")
     parser.add_argument("--company-directory-audit", action="store_true", help="repair failed directories only in an external backup")
     parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup timing")
@@ -1821,7 +1821,7 @@ def _company_resume_details(
     if ocr:
         selected["ocr_audit"] = {key: ocr.get(key) for key in (
             "sample_size", "active_writes", "policy", "passed", "characters", "confidence", "same_pdf",
-            "failure", "diagnostic", "seconds", "reason",
+            "failure", "diagnostic", "seconds", "reason", "samples", "recovered_documents",
         )}
     pipeline = _mapping(summary.get("pipeline_audit"))
     if pipeline:

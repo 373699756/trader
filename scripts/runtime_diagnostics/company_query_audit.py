@@ -327,7 +327,8 @@ def AuditCompanyStorage(
         "summary": {
             "local_storage": {
                 "read_only": True,
-                "pdf_archived": False,
+                "pdf_archived": (path.parent / "failed").exists(),
+                "retained_failed_pdfs": sum(1 for _ in (path.parent / "failed").rglob("*.pdf")),
                 "database_bytes": path.stat().st_size,
                 "free_bytes": page_size * free_pages,
                 "table_bytes": table_bytes,

@@ -896,6 +896,7 @@ class _DocumentRun:
             unextractable_documents=workload.unextractable,
             next_document_retry_at=workload.next_retry_at,
             discovering_documents=discovering,
+            unresolved_document_failures=workload.unresolved_failures,
         )
 
 
@@ -1100,6 +1101,7 @@ def _report(
     next_document_retry_at: datetime | None = None,
     discovering_documents: bool = False,
     workload: CompanyDocumentWorkload | None = None,
+    unresolved_document_failures: int = 0,
 ) -> None:
     if dependencies.progress is not None:
         failures = tuple(
@@ -1125,6 +1127,7 @@ def _report(
                 state.current_stock if component in {"risk_documents", "news"} else None,
                 dates=dates,
                 failed_documents=state.failed_documents if component == "risk_documents" else 0,
+                unresolved_document_failures=unresolved_document_failures,
                 batch=state.batch,
                 known_pages=known_pages,
                 unknown_queries=unknown_queries,

@@ -725,11 +725,16 @@ class SQLiteCompanyEvidenceIndex:
             ).require_one()[0]
             with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
                 watermarks = ReadCompanyCoverageProgress(connection, formal, self._run_cutoff or observed_at, self._facts.extraction_hash)
+            unresolved = connection.run(
+                "SELECT COUNT(*) FROM temp.pending_documents p JOIN document_retries r ON r.disclosure_id=p.id "
+                "JOIN disclosures d ON d.id=p.id AND d.record_hash=r.record_hash"
+            ).require_one()[0]
         return CompanyDocumentWorkload(
             row[0], row[1], row[2], row[3], row[4], datetime.fromisoformat(row[5]) if row[5] else None,
             max(0, row[0] - row[4] - local), local, analyzed, published, superseded,
             self._raw_files.usage() if self._raw_files is not None else 0,
             watermarks,
+            unresolved,
         )
 
     def document_required(self, item: Disclosure) -> bool:
@@ -843,6 +848,8 @@ class SQLiteCompanyEvidenceIndex:
             "segmentation_mode": diagnostic.segmentation_mode,
         }, separators=(",", ":"), allow_nan=False) if diagnostic is not None else None
         timeout = int(failure in {"disclosure_document_ocr_timeout", "disclosure_document_ocr_timeout_exhausted"})
+        if self._raw_files is not None:
+            self._raw_files.retain_failure(item, failure, policy, attempted_at.isoformat(), diagnostic)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             connection.run(
                 "INSERT INTO document_retries(disclosure_id,record_hash,retry_policy_id,failure,attempted_at,retry_at,attempts,payload_hash,ocr_diagnostic,ocr_policy_id,ocr_timeout_attempts) "
