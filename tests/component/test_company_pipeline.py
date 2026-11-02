@@ -308,6 +308,7 @@ def test_revision_rejects_late_body_and_dirty_publication_retains_other_issuers(
     partition = DisclosurePartition("sse", NOW.date(), NOW.date())
     index.commit_page(partition, DisclosurePage((changed,), 1, False), NOW)
     assert not index.commit_document(item, fixtures._extraction("过期正文"), NOW)
+    assert not tuple((tmp_path / "text").rglob("*.gz"))
     assert tuple(task.disclosure for task in index.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)) == (changed,)
     assert index.commit_document(changed, fixtures._extraction("本公司收到中国证监会立案告知书。"), NOW)
     assert index.publish(("600001",), NOW, changed_only=True) == 1

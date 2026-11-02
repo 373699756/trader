@@ -768,6 +768,12 @@ class SQLiteCompanyEvidenceIndex:
     def commit_document(self, item: Disclosure, extraction: CompanyDocumentExtraction, extracted_at: datetime) -> bool:
         # A result already accepted by the main thread is drained on cancellation.
         with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
+            # Reject late or duplicate results before writing text or link candidates.
+            if connection.run(
+                "SELECT 1 FROM disclosures WHERE source=? AND source_key=? AND record_hash=? AND body_checked=0",
+                (item.source, item.identity, item.digest),
+            ).fetchone() is None:
+                return False
             reservation = self._raw_files.reserve(self._documents.root, len(extraction.text.encode("utf-8")) + 4096, analysis=True) if self._raw_files is not None else nullcontext()
             with reservation:
                 digest = self._documents.write(extraction.text)

@@ -6,6 +6,7 @@ from datetime import timedelta
 import pytest
 
 from tests.component import test_company_evidence as fixtures
+from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from tests.helpers.configuration import (
@@ -122,6 +123,57 @@ def test_later_discovery_of_old_case_links_saved_candidate_without_redownload(tm
         for task in index.pending_documents(old.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     } == set()
     facts = reader.read(old.codes)[0]
+    assert not facts.risk_events
+    assert not any(item.reason_code == "resolution_unlinked" for item in facts.review_reasons)
+
+
+@pytest.mark.parametrize("fill_missing", [False, True])
+def test_rejected_late_result_cannot_replace_link_candidate_used_by_later_sync(tmp_path, fill_missing):
+    index = fixtures._index(tmp_path)
+    closure = fixtures._disclosure("closed", "关于调查终结的公告")
+    _put(index, closure, "本公司收到证监会〔2026〕调查1号通知，调查终结。")
+    index.publish(closure.codes, NOW)
+    with SqliteSession(index.path) as connection:
+        accepted = connection.run("SELECT payload FROM document_link_candidates").require_one()[0]
+    assert not index.commit_document(
+        closure, fixtures._extraction("本公司收到证监会〔2026〕调查2号通知，调查终结。"), NOW + timedelta(seconds=1)
+    )
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT payload FROM document_link_candidates").require_one()[0] == accepted
+    assert not tuple((tmp_path / "text").rglob("*.gz"))
+    opened = fixtures._disclosure("opened", "关于收到立案告知书的公告", when=NOW - timedelta(days=3))
+    index.commit_page(
+        DisclosurePartition("sse", opened.published_at.date(), opened.published_at.date()),
+        DisclosurePage((opened,), 1, False), NOW,
+    )
+
+    extracted = []
+
+    class Source(fixtures.Sources):
+        def fetch(self, first, *args, **kwargs):
+            if isinstance(first, DisclosurePartition):
+                rows = tuple(
+                    item for item in (opened, closure)
+                    if first.start <= item.published_at.date() <= first.end
+                )
+                return DisclosurePage(rows, len(rows), False)
+            return super().fetch(first, *args, **kwargs)
+
+        def document(self, item, **kwargs):
+            assert item.identity == opened.identity
+            extracted.append(item.identity)
+            return fixtures._extraction(_CASE)
+
+    source = Source()
+    result = SyncCompanyEvidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0.0),
+        fixtures.CompanyEvidenceRequest(
+            opened.codes, NOW, fixtures._TEST_COMPANY_CONFIGURATION, fill_missing=fill_missing,
+        ),
+    )
+    assert not result.needs_retry
+    assert extracted == [opened.identity]
+    facts = SQLiteCompanyEvidenceReader(index.facts_path).read(opened.codes)[0]
     assert not facts.risk_events
     assert not any(item.reason_code == "resolution_unlinked" for item in facts.review_reasons)
 
