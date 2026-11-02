@@ -1798,11 +1798,19 @@ def _company_resume_details(
     document_download = _mapping(summary.get("document_download_audit"))
     if document_download:
         observations = document_download.get("observations")
+        encrypted = document_download.get("encrypted_observations")
         selected["document_download_audit"] = {
             "read_only": document_download.get("read_only"),
             "sample_size": document_download.get("sample_size"),
             "complete": document_download.get("complete"),
             "production_passed": document_download.get("production_passed"),
+            "encrypted_observations": [
+                {key: row.get(key) for key in (
+                    "disclosure_id", "read_only", "status_code", "same_pdf", "metadata_exit_code", "encrypted",
+                    "pages", "password_required", "text_exit_code", "text_bytes", "failure",
+                )}
+                for row in (encrypted[:3] if isinstance(encrypted, list) else []) if isinstance(row, dict)
+            ],
             "observations": [
                 {key: row.get(key) for key in (
                     "disclosure_id", "variant", "timeout_seconds", "io_timeout_seconds", "passed", "is_pdf", "payload_hash", "failure", "cause",
@@ -1896,6 +1904,11 @@ def _company_resume_details(
                 "deterministic_failures",
                 "retry_payload_hashes",
                 "ocr_diagnostics",
+                "retained_failed_pdfs",
+                "failure_history",
+                "failure_receipts",
+                "retry_inventory",
+                "file_inventory_is_atomic",
             )
         }
         tables = storage.get("table_bytes")

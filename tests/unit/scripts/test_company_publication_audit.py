@@ -15,6 +15,8 @@ from scripts.runtime_diagnostics.company_publication_audit import AuditCompanyPu
 from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
 from tests.component import test_company_evidence as fixtures
 from trader.download.domain.company_evidence import DisclosurePage
+from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext, DownloadFailureRecord
+from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.company_facts_protocol import EncodeCompanyDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -146,6 +148,38 @@ def test_empty_collection_without_formal_publication_cannot_pass(tmp_path):
     assert result["status"] == "degraded"
     assert "company_publication_missing" in result["findings"]
     assert "company_population_empty" in result["findings"]
+
+
+def test_storage_inventory_includes_history_beyond_summary_limit_without_touching_inputs(tmp_path):
+    index = _published(tmp_path)
+    item = fixtures._disclosure(title="关于收到立案告知书的公告")
+    index.document_failure(item, "old-policy", "FileNotFoundError", fixtures.NOW, fixtures.NOW)
+    raw = CompanyRawFiles(tmp_path, capacity=1000000, analysis_reserve=100000, free_reserve=1000)
+    directory = raw.directory(item)
+    directory.mkdir(parents=True)
+    invalid = directory / "invalid.pdf"
+    invalid.write_bytes(b"not-a-valid-pdf-private-content")
+    configuration = DownloadFailureConfiguration(20000, 50)
+    for _ in range(55):
+        index.record_failure(DownloadFailureRecord(
+            "test-run", fixtures.NOW, DownloadFailureContext("company_document", code="600001", supplier="cninfo"),
+            "FileNotFoundError", "FileNotFoundError:errno_2",
+            "FileNotFoundError:pathlib.py:_scandir:938 > stage=download;record=first;version=a",
+        ), configuration=configuration)
+    before = (index.path.read_bytes(), index.facts_path.read_bytes(), invalid.read_bytes())
+    result = AuditCompanyStorage(
+        index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10, sqlite_policy=SqlitePolicyFixture(),
+    )
+    inventory = result["summary"]["local_storage"]
+    assert len(inventory["failure_history"]["events"]) == inventory["failure_history"]["total"] == 55
+    assert inventory["retry_inventory"][0]["files"] == ["invalid.pdf"]
+    assert inventory["retry_inventory"][0]["pdf_files"] == 1
+    assert inventory["failure_receipts"][0]["outcome"] == "valid"
+    assert not inventory["file_inventory_is_atomic"]
+    report = build_report("company-resume", [DiagnosticResult("company_resume", 0, 1.0, result, None)])
+    assert "not-a-valid-pdf-private-content" not in json.dumps(report)
+    assert len(report["checks"][0]["summary"]["local_storage"]["retry_inventory"]) == 1
+    assert (index.path.read_bytes(), index.facts_path.read_bytes(), invalid.read_bytes()) == before
 
 
 def test_audit_detects_concurrent_commit_instead_of_claiming_consistent_output(tmp_path, monkeypatch):

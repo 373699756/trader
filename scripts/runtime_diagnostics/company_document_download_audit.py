@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +38,11 @@ def AuditCompanyDocumentDownloads(
             "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN company_population p ON p.code=c.code "
             "WHERE c.disclosure_id=d.id) ORDER BY r.attempted_at DESC,d.id LIMIT 2"
         ))
+        encrypted = tuple(connection.run(
+            "SELECT d.id,d.url,r.payload_hash FROM document_retries r JOIN disclosures d "
+            "ON d.id=r.disclosure_id AND d.record_hash=r.record_hash "
+            "WHERE r.failure='disclosure_document_encrypted' ORDER BY d.id LIMIT 3"
+        ))
     variants = (
         _DownloadVariant("legacy_8_seconds", configuration.source_timeout_seconds, False),
         _DownloadVariant("browser_headers", configuration.source_timeout_seconds, True),
@@ -47,6 +54,7 @@ def AuditCompanyDocumentDownloads(
         ),
     )
     observations: list[dict[str, object]] = []
+    encrypted_observations: list[dict[str, object]] = []
     for sample in samples:
         if not sample[1].startswith("https://static.cninfo.com.cn/finalpage/"):
             raise ValueError("company_document_audit_url_invalid")
@@ -93,6 +101,46 @@ def AuditCompanyDocumentDownloads(
                 "phase": "before_response_headers" if attempt.status_code is None else "response_body",
             } for attempt in attempts]
             observations.append(observation)
+    for sample in encrypted:
+        if time.monotonic() >= deadline:
+            break
+        if not sample[1].startswith("https://static.cninfo.com.cn/finalpage/"):
+            raise ValueError("company_document_audit_url_invalid")
+        observation = {"disclosure_id": sample[0], "read_only": True}
+        try:
+            with OpenExternalHttp() as session:
+                response = session.execute(HttpRequest(
+                    "GET", sample[1], configuration.document_download_timeout_seconds,
+                    deadline=min(deadline, time.monotonic() + configuration.document_download_timeout_seconds),
+                    max_response_bytes=configuration.extended_document_limits.max_bytes,
+                    io_timeout_seconds=configuration.source_timeout_seconds,
+                ))
+            observation["status_code"] = response.status_code
+            observation["same_pdf"] = hashlib.sha256(response.content).digest() == sample[2]
+            if response.status_code != 200 or not response.content.startswith(b"%PDF-"):
+                observation["failure"] = "pdf_unavailable"
+            else:
+                with tempfile.TemporaryDirectory(prefix="trader-encrypted-pdf-audit-") as temporary:
+                    pdf = Path(temporary) / "input.pdf"
+                    output = Path(temporary) / "text.txt"
+                    pdf.write_bytes(response.content)
+                    metadata = subprocess.run(
+                        ("pdfinfo", str(pdf)), capture_output=True, timeout=10, check=False,
+                    )
+                    lines = metadata.stdout.decode("utf-8", errors="replace").splitlines()
+                    observation["metadata_exit_code"] = metadata.returncode
+                    observation["encrypted"] = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("Encrypted:")), None)
+                    observation["pages"] = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("Pages:")), None)
+                    observation["password_required"] = b"Incorrect password" in metadata.stderr
+                    extracted = subprocess.run(
+                        ("pdftotext", "-enc", "UTF-8", str(pdf), str(output)),
+                        capture_output=True, timeout=10, check=False,
+                    )
+                    observation["text_exit_code"] = extracted.returncode
+                    observation["text_bytes"] = output.stat().st_size if output.exists() else 0
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            observation["failure"] = type(exc).__name__
+        encrypted_observations.append(observation)
     complete = bool(samples) and len(observations) == len(samples) * len(variants)
     corrected = [row for row in observations if row["variant"] == "production_fixed"]
     passed = complete and len(corrected) == len(samples) and all(row["passed"] for row in corrected)
@@ -102,6 +150,7 @@ def AuditCompanyDocumentDownloads(
             "read_only": True, "sample_size": len(samples), "complete": complete,
             "production_passed": passed,
             "observations": observations,
+            "encrypted_observations": encrypted_observations,
         }},
         "findings": [] if passed else ["company_document_download_incomplete"],
     }

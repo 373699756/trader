@@ -5,6 +5,7 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import json
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import replace
@@ -25,7 +26,10 @@ from trader.download.domain.company_evidence import (
     Market,
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
+from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadDownloadFailureConfiguration
 from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
@@ -205,6 +209,15 @@ def AuditCompanyStorage(
     pending = cooling = ready = deterministic = 0
     failures: dict[str, int] = {}
     failure_classes: dict[str, int] = {}
+    project_root = Path(__file__).resolve().parents[2]
+    configuration = LoadCompanySyncConfiguration(project_root)
+    failure_configuration = LoadDownloadFailureConfiguration(project_root)
+    raw = CompanyRawFiles(
+        path.parent,
+        capacity=configuration.raw_capacity_bytes,
+        analysis_reserve=configuration.raw_analysis_reserve_bytes,
+        free_reserve=configuration.temporary_disk_reserve_bytes,
+    )
     with (
         SqliteSession(
             path,
@@ -232,6 +245,43 @@ def AuditCompanyStorage(
                 (cutoff,),
             )
         ]
+        failure_history = ReadDownloadFailures(
+            connection, replace(failure_configuration, query_limit=failure_configuration.retention_limit)
+        )
+        retry_inventory = []
+        for row in connection.run(
+            "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,MIN(c.code) AS code,"
+            "d.id,r.failure,r.attempted_at,r.retry_at,r.attempts,r.retry_policy_id,r.record_hash AS retry_hash,"
+            "r.ocr_diagnostic,r.ocr_timeout_attempts,t.stage,d.body_checked,d.body_retained "
+            "FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
+            "JOIN disclosure_codes c ON c.disclosure_id=d.id LEFT JOIN document_tasks t ON t.source=d.source "
+            "AND t.source_key=d.source_key AND t.record_hash=d.record_hash GROUP BY d.id ORDER BY d.id"
+        ):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("company_failure_inventory_timeout")
+            item = DecodeCompanyDisclosure(row)
+            directory = raw.directory(item)
+            codes = tuple(code[0] for code in connection.run(
+                "SELECT code FROM disclosure_codes WHERE disclosure_id=? ORDER BY code", (row[8],)
+            ))
+            # Inspect names only: raw.local/result can rename corrupt files and are not read-only.
+            try:
+                files = sorted(file.name for file in directory.iterdir() if file.is_file())
+                directory_available = True
+            except FileNotFoundError:
+                files = []
+                directory_available = False
+            retry_inventory.append({
+                "disclosure_id": row[8], "source_key": item.identity, "record_hash": item.digest,
+                "codes": codes, "published_at": item.published_at.isoformat(), "failure": row[9],
+                "attempted_at": row[10], "retry_at": row[11], "attempts": row[12], "policy": row[13],
+                "same_version": row[14] == item.digest, "ocr_diagnostic": json.loads(row[15]) if row[15] else None,
+                "ocr_timeout_attempts": row[16], "task_stage": row[17], "body_checked": bool(row[18]),
+                "body_retained": bool(row[19]), "directory": directory.relative_to(path.parent).as_posix(),
+                "directory_available": directory_available,
+                "files": files, "pdf_files": sum(name.endswith(".pdf") for name in files),
+                "failure_records": sum(name.startswith("failure-") and name.endswith(".json") for name in files),
+            })
         for row in connection.run(
             "SELECT d.title,r.failure,r.retry_at FROM disclosures d LEFT JOIN document_retries r "
             "ON r.disclosure_id=d.id AND r.record_hash=d.record_hash WHERE d.kind='announcement' AND d.body_checked=0 "
@@ -301,6 +351,7 @@ def AuditCompanyStorage(
                 )
             ]
     formal: dict[str, object] = {"available": False}
+    failure_receipts: list[dict[str, object]] = []
     if facts_path is not None and facts_path.exists():
         with SqliteSession(
             facts_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
@@ -317,6 +368,20 @@ def AuditCompanyStorage(
                     )
                 ],
             }
+            events = cast(list[dict[str, object]], failure_history["events"])
+            source_keys = sorted({
+                match[1] for event in events
+                if (match := re.search(r";record=([a-zA-Z0-9_-]+);version=", str(event["diagnostic"])))
+            })
+            for source_key in source_keys:
+                for receipt in connection.run(
+                    "SELECT source,source_key,code,record_hash,outcome,policy_id,published_at "
+                    "FROM company_input_receipt WHERE source='cninfo' AND source_key=?", (source_key,)
+                ):
+                    failure_receipts.append(dict(zip(
+                        ("source", "source_key", "code", "record_hash", "outcome", "policy", "published_at"),
+                        tuple(receipt), strict=True,
+                    )))
     publication = AuditCompanyPublication(path, facts_path, now=now, deadline=deadline, sqlite_policy=sqlite_policy)
     publication_findings = publication["findings"]
     if not isinstance(publication_findings, list):
@@ -351,6 +416,10 @@ def AuditCompanyStorage(
                     {"class": name, "documents": count} for name, count in sorted(failure_classes.items())
                 ],
                 "retry_payload_hashes": retry_payload_hashes,
+                "failure_history": failure_history,
+                "failure_receipts": failure_receipts,
+                "retry_inventory": retry_inventory,
+                "file_inventory_is_atomic": False,
                 "ocr_diagnostics": ocr_diagnostics,
                 "document_extractions": extraction_methods,
             }

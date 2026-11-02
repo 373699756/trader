@@ -1,6 +1,9 @@
 """Failed-PDF diagnostics are bounded, read-only and expose only aggregate request metadata."""
 
 from dataclasses import replace
+import hashlib
+from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -51,6 +54,38 @@ def test_probe_without_failed_documents_does_not_contact_source(tmp_path, monkey
     result = audit.AuditCompanyDocumentDownloads(index.path, budget_seconds=150, sqlite_policy=SqlitePolicyFixture())
     assert result["status"] == "degraded"
     assert result["summary"]["document_download_audit"]["sample_size"] == 0
+
+
+@pytest.mark.parametrize("password_required", (False, True))
+def test_encrypted_probe_checks_identical_pdf_and_password_requirement_without_active_writes(tmp_path, monkeypatch, password_required):
+    index = fixtures._index(tmp_path)
+    item = replace(fixtures._disclosure(title="收到立案告知书"), url="https://static.cninfo.com.cn/finalpage/fixture.PDF")
+    index.commit_page(index.partitions(("sse",), fixtures.NOW)[0], DisclosurePage((item,), 1, False), fixtures.NOW)
+    payload = b"%PDF-test"
+    index.document_failure(item, "test-text", "disclosure_document_encrypted", fixtures.NOW, fixtures.NOW, hashlib.sha256(payload).digest())
+    monkeypatch.setattr(audit, "OpenExternalHttp", lambda **kwargs: RequestsHttpTransport(
+        execute_request=lambda _: HttpResponse(200, payload), **kwargs,
+    ))
+
+    def run(command, **kwargs):
+        assert kwargs["timeout"] == 10
+        if command[0] == "pdfinfo":
+            return CompletedProcess(command, int(password_required),
+                                    b"" if password_required else b"Encrypted: yes (copy:no)\nPages: 1\n",
+                                    b"Incorrect password" if password_required else b"")
+        if not password_required:
+            Path(command[-1]).write_bytes(b"private extracted text")
+        return CompletedProcess(command, int(password_required), b"", b"")
+
+    monkeypatch.setattr(audit.subprocess, "run", run)
+    before = index.path.read_bytes()
+    result = audit.AuditCompanyDocumentDownloads(index.path, budget_seconds=150, sqlite_policy=SqlitePolicyFixture())
+    observation = result["summary"]["document_download_audit"]["encrypted_observations"][0]
+    assert observation["same_pdf"] and observation["password_required"] == password_required
+    assert observation["text_exit_code"] == int(password_required)
+    assert (observation["text_bytes"] > 0) != password_required
+    assert "private extracted text" not in str(result)
+    assert index.path.read_bytes() == before
 
 
 def test_document_probe_routes_without_replay_directory_and_filters_report_fields():
