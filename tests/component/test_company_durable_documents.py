@@ -1,8 +1,10 @@
 """Crash boundaries and physical requests, independent of terminal counters."""
 
 import hashlib
+import os
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +25,32 @@ def _raw(root):
 def _item():
     return replace(fixtures._disclosure("1000000001", "关于收到立案告知书的公告"),
                    url="https://static.cninfo.com.cn/finalpage/fixture.pdf")
+
+
+def test_usage_tolerates_scratch_directory_removed_during_scan(tmp_path, monkeypatch):
+    scratch = tmp_path / "documents" / "text-scratch"
+    scratch.mkdir(parents=True)
+    retained = tmp_path / "failed" / "kept.pdf"
+    retained.parent.mkdir()
+    retained.write_bytes(b"retained-input")
+    original = os.scandir
+
+    def scandir(path):
+        if Path(path) == scratch and scratch.exists():
+            scratch.rmdir()
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert _raw(tmp_path).usage() == len(b"retained-input")
+
+
+def test_usage_does_not_hide_permission_errors_and_underestimate_capacity(tmp_path, monkeypatch):
+    def scandir(_path):
+        raise PermissionError("fixture directory not readable")
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with pytest.raises(PermissionError, match="not readable"):
+        _raw(tmp_path).usage()
 
 
 def test_restart_reuses_pdf_after_analysis_failure_and_then_reuses_result(tmp_path):
@@ -67,6 +95,11 @@ def test_runtime_configuration_changes_preserve_successful_result(tmp_path):
 
     old = before.ocr.replace(":retry_layout=orient_rotate_dpi_each_page", "")
     assert CompanyDocumentOutputIdentity(before.ocr) == CompanyDocumentOutputIdentity(old)
+    old_text = before.standard.replace(":retry_inputs=1", "")
+    assert CompanyDocumentOutputIdentity(before.standard) == CompanyDocumentOutputIdentity(old_text)
+    extraction = replace(fixtures._extraction("本公司收到证监会立案告知书。"), policy_id=old_text)
+    raw.save_result(item, extraction)
+    assert raw.result(item, (after.standard, after.ocr, after.limits)) == extraction
 
 
 def test_failed_input_survives_restart_success_cleanup_and_obsolete_revision(tmp_path):

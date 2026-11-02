@@ -83,13 +83,19 @@ class CompanyRawFiles:
 
     @staticmethod
     def _size(directory: Path) -> int:
+        def scan_error(error: OSError) -> None:
+            if not isinstance(error, FileNotFoundError):
+                raise error
+
         total = 0
-        for path in directory.rglob("*"):
-            try:
-                if path.is_file():
-                    total += path.stat().st_size
-            except FileNotFoundError:
-                continue  # A completed scratch file may be removed by its worker.
+        for root, _directories, files in os.walk(directory, onerror=scan_error):
+            for name in files:
+                path = Path(root) / name
+                try:
+                    if path.is_file():
+                        total += path.stat().st_size
+                except FileNotFoundError:
+                    continue  # Workers remove completed scratch files and directories.
         return total
 
     @contextmanager

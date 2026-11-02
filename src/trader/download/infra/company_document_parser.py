@@ -72,7 +72,8 @@ def Main() -> int:
         text_path = root / "document.txt"
         details = subprocess.run((args.pdfinfo, str(pdf)), capture_output=True, check=False)
         metadata = (details.stdout + details.stderr).decode("utf-8", errors="replace")
-        if _metadata_value(metadata, "Encrypted").lower().startswith("yes") or "Incorrect password" in metadata:
+        # Owner permissions alone do not require a password to open the document.
+        if "Incorrect password" in metadata:
             return 3
         if details.returncode:
             return 2

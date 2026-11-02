@@ -852,6 +852,11 @@ class SQLiteCompanyEvidenceIndex:
             self._raw_files.retain_failure(item, failure, policy, attempted_at.isoformat(), diagnostic)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             connection.run(
+                "INSERT INTO document_tasks(source,source_key,record_hash,stage) VALUES(?,?,?,'failed') "
+                "ON CONFLICT(source,source_key,record_hash) DO UPDATE SET stage='failed'",
+                (item.source, item.identity, item.digest),
+            )
+            connection.run(
                 "INSERT INTO document_retries(disclosure_id,record_hash,retry_policy_id,failure,attempted_at,retry_at,attempts,payload_hash,ocr_diagnostic,ocr_policy_id,ocr_timeout_attempts) "
                 "SELECT id,record_hash,?,?,?,?,1,?,?,?,? FROM disclosures WHERE source=? AND source_key=? AND record_hash=? "
                 "ON CONFLICT(disclosure_id) DO UPDATE SET record_hash=excluded.record_hash,retry_policy_id=excluded.retry_policy_id,failure=excluded.failure,"
@@ -1329,7 +1334,8 @@ class SQLiteCompanyEvidenceIndex:
                     "SELECT d.*,MIN(c.code) AS code,r.failure,r.retry_policy_id FROM document_tasks t JOIN disclosures d "
                     "ON d.source=t.source AND d.source_key=t.source_key AND d.record_hash=t.record_hash "
                     "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN document_retries r ON r.disclosure_id=d.id "
-                    "AND r.record_hash=d.record_hash WHERE t.stage<>'cleaned' GROUP BY d.id"
+                    # A receipt for an old attempt cannot release a new attempt's input.
+                    "AND r.record_hash=d.record_hash WHERE t.stage='failed' GROUP BY d.id"
                 ).fetchall()
                 with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
                     for row in failed:

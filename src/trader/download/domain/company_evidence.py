@@ -603,6 +603,8 @@ _LIMIT_FAILURES = frozenset(
 )
 _TRANSIENT_FAILURES = frozenset(
     {
+        "FileNotFoundError",
+        "company_local_document_missing",
         "disclosure_document_ocr_timeout",
         "timeout",
         "HttpConnectionError",
@@ -651,7 +653,7 @@ def BuildCompanyDocumentPolicies(
     expanded = configuration.extended_document_limits
     return CompanyDocumentPolicies(
         standard=(
-            f"text_4:{text_identity}:timeout={configuration.document_parse_timeout_seconds:g}:"
+            f"text_4:{text_identity}:retry_inputs=1:timeout={configuration.document_parse_timeout_seconds:g}:"
             f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
         ),
         ocr=(
@@ -665,8 +667,8 @@ def BuildCompanyDocumentPolicies(
 
 
 def CompanyDocumentOutputIdentity(policy: str) -> str:
-    """Deadlines reopen failures, but cannot invalidate a complete successful output."""
-    return ":".join(part for part in policy.split(":") if not part.startswith(("timeout=", "page_timeout=", "retry_layout=")))
+    """Recovery policies reopen failures without invalidating complete successful outputs."""
+    return ":".join(part for part in policy.split(":") if not part.startswith(("timeout=", "page_timeout=", "retry_layout=", "retry_inputs=")))
 
 
 def EvidenceMarket(code: str) -> Market:

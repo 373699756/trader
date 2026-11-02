@@ -22,7 +22,7 @@ from trader.download.infra.company_document_parser import DetectCompanyText
 from trader.infra.http_contracts import HttpCancelled, HttpResponse
 
 
-def _pdf(pages=1, *, encrypted=False, blank=False, short=False):
+def _pdf(pages=1, *, encrypted=False, blank=False, short=False, owner_only=False):
     writer = PdfWriter()
     for _ in range(pages):
         page = writer.add_blank_page(width=2000, height=500)
@@ -41,7 +41,9 @@ def _pdf(pages=1, *, encrypted=False, blank=False, short=False):
             text = b"Short text." if short else b"Official announcement evidence. " * 5
             stream.set_data(b"BT /F1 12 Tf 10 10 Td (" + text + b") Tj ET")
             page[NameObject("/Contents")] = writer._add_object(stream)
-    if encrypted:
+    if owner_only:
+        writer.encrypt("", owner_password="fixture-owner", permissions_flag=0)
+    elif encrypted:
         writer.encrypt("fixture")
     output = io.BytesIO()
     writer.write(output)
@@ -91,6 +93,16 @@ def test_long_text_pdf_requires_full_extraction_and_respects_configured_page_lim
 def test_pdf_failure_categories_do_not_emit_partial_verified_text(payload, code):
     result = _parse(payload)
     assert result.returncode == code and not result.stdout
+
+
+@pytest.mark.parametrize("short,code", [(False, 0), (True, 8)])
+def test_permission_encryption_does_not_block_text_or_short_text_ocr_route(short, code):
+    result = _parse(_pdf(owner_only=True, short=short))
+    assert result.returncode == code
+    if code == 0:
+        assert result.stdout.count(b"Official announcement evidence.") == 5
+    else:
+        assert not result.stdout
 
 
 def test_extracted_text_limit_rejects_instead_of_truncating():

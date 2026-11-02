@@ -24,6 +24,51 @@ from tests.helpers.configuration import (
 NOW = fixtures.NOW
 
 
+@pytest.mark.parametrize("stage", ["downloading", "downloaded", "analyzing", "ocr_pending"])
+def test_retry_pdf_survives_old_failure_receipt_cleanup(tmp_path, stage):
+    from trader.download.infra.company_raw_files import CompanyRawFiles
+
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    index.document_failure(item, "old-ocr-policy", "disclosure_document_ocr_low_quality", NOW, NOW)
+    index.publish(item.codes, NOW)
+    raw = CompanyRawFiles(tmp_path, capacity=10000000, analysis_reserve=1000000, free_reserve=1000)
+    index._raw_files = raw
+    directory = raw.directory(item)
+    directory.mkdir(parents=True)
+    partial = directory / "download.part"
+    partial.write_bytes(b"%PDF-isolated-retry-fixture")
+    local = raw.complete(item, partial)
+    index.document_stage(item, stage)
+    index.publish(item.codes, NOW)
+    assert local.path.exists(), "old failure receipt deleted the new input before OCR"
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT stage FROM document_tasks").require_one()[0] == stage
+    index.document_failure(item, "new-ocr-policy", "disclosure_document_ocr_low_quality", NOW, NOW)
+    index.publish(item.codes, NOW)
+    assert raw.local(item) is not None
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT stage FROM document_tasks").require_one()[0] == "cleaned"
+
+
+@pytest.mark.parametrize("failure", ["FileNotFoundError", "company_local_document_missing", "disclosure_document_encrypted"])
+def test_input_recovery_reopens_legacy_failure_and_keeps_successful_body(tmp_path, failure):
+    from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies
+
+    index = fixtures._index(tmp_path)
+    item, success = _seed(index, 2)
+    policies = BuildCompanyDocumentPolicies(fixtures._TEST_COMPANY_CONFIGURATION, "ocr-fixture")
+    legacy = policies.standard.replace(":retry_inputs=1", "")
+    index.document_failure(item, legacy, failure, NOW, NOW + timedelta(days=1))
+    index.commit_document(success, fixtures._extraction("本公司收到中国证监会立案告知书。"), NOW)
+    tasks = index.pending_documents(item.codes, NOW, limit=10, policies=policies)
+    assert [task.disclosure.identity for task in tasks] == [item.identity]
+    index.document_failure(item, policies.standard, failure, NOW, NOW + timedelta(minutes=15))
+    assert not index.pending_documents(item.codes, NOW, limit=10, policies=policies)
+    tasks = index.pending_documents(item.codes, NOW + timedelta(minutes=16), limit=10, policies=policies)
+    assert len(tasks) == (0 if failure == "disclosure_document_encrypted" else 1)
+
+
 def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_path):
     import json
     from types import SimpleNamespace
