@@ -25,8 +25,33 @@ from scripts.runtime_diagnostics.diagnostic_types import PROJECT_ROOT, Diagnosti
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
 from trader.infra.disk_types import DiskProfile
+from scripts.runtime_diagnostics import database_baseline
 
 _CONFIG = PROJECT_ROOT / "config/runtime.json"
+
+
+def test_training_io_baseline_measures_all_profiles_and_restores_instrumentation(tmp_path, monkeypatch):
+    initialize, close, run = SqliteConnection.__init__, SqliteConnection.close, SqliteConnection.run
+    monkeypatch.setattr(database_baseline, "MeasureSyncBaseline", lambda *args, **kwargs: {})
+    monkeypatch.setattr(database_baseline, "MeasureHistoryWrites", lambda *args, **kwargs: {"status": "passed", "summary": {}})
+    report = database_baseline._worker(2, 64, "hdd", sqlite_policy=SqlitePolicyFixture(), include_training=True)
+    training = report["training"]
+    assert set(training["samples"]["cases"]) == {"v1", "v2", "v3", "v5"}
+    assert all(len(case["numeric_hash"]) == 64 for case in training["samples"]["cases"].values())
+    assert training["measurement"]["connections"] > 0
+    assert training["measurement"]["statements"] > 0
+    assert training["samples"]["database"]["connections"] == training["samples"]["database"]["closed_connections"]
+    assert (SqliteConnection.__init__, SqliteConnection.close, SqliteConnection.run) == (initialize, close, run)
+
+
+def test_training_baseline_is_routed_only_to_a_new_isolated_baseline(tmp_path):
+    base = ["--profile", "database-baseline", "--database-probe-directory", str(tmp_path / "probe")]
+    options, _ = _validate(_parser().parse_args(base + ["--database-training"]))
+    assert "--include-training" in build_commands(options, python_executable="/python3")[0].argv
+    with pytest.raises(ValueError, match="without a comparison checkout"):
+        _validate(_parser().parse_args(base + ["--database-training", "--baseline-checkout", str(tmp_path / "baseline")]))
+    with pytest.raises(ValueError, match="requires --profile disk"):
+        _validate(_parser().parse_args(["--profile", "local", "--disk-policy-audit"]))
 
 
 def test_measurement_counts_wrapper_operations_and_preserves_rollback(tmp_path: Path) -> None:

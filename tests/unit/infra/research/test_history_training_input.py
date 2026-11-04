@@ -188,9 +188,8 @@ def test_training_reader_uses_narrow_projection_without_rechecking_published_pay
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(history_root, dates)
     monkeypatch.setattr(
-        HistoryPricePartition,
-        "verify_logical_content",
-        classmethod(lambda *_args, **_kwargs: pytest.fail("training must trust the published payload")),
+        "trader.download.infra.history_prices.RevisionFromColumns",
+        lambda *_args, **_kwargs: pytest.fail("training must not run a separate row audit"),
     )
     history = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=SqlitePolicyFixture())
     rows = tuple(history.iter_training_rows(frozenset(dates)))
@@ -417,34 +416,37 @@ def test_history_consumers_do_not_wait_for_background_projection(
     assert len(history.load(("600001",))["600001"]) == 20
 
 
-def test_published_projection_and_outcomes_do_not_repeat_full_content_verification(
-    tmp_path, monkeypatch, prepared_history
-):
+def test_published_projection_and_outcomes_reuse_file_checksums(tmp_path, monkeypatch, prepared_history):
+    from trader.infra import sqlite_publication
     root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
     verified = []
-    verify = HistoryPricePartition.verify_logical_content.__func__
+    digest = sqlite_publication._digest
 
-    def observed(cls, path, reference, progress=None, **kwargs):
-        verified.append(reference)
-        return verify(cls, path, reference, progress, **kwargs)
+    def observed(path, size, check):
+        verified.append(path.name)
+        return digest(path, size, check)
 
-    monkeypatch.setattr(HistoryPricePartition, "verify_logical_content", classmethod(observed))
-    published = SQLitePublishedHistorySnapshot(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
+    monkeypatch.setattr(sqlite_publication, "_digest", observed)
+    published = SQLitePublishedHistorySnapshot(root, sqlite_policy=SqlitePolicyFixture())
     manifest = published.manifest()
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(published),
         lookback_sessions=61,
         monotonic=time.monotonic,
         outcome_history=ReadPublishedHistoryUseCase(published),
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(published), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
+        projection_owner=SharedHistoryProjection(
+            ReadPublishedHistoryUseCase(published),
+            monotonic=time.monotonic,
+            settings=HistoryPreloadSettings(warn_after_seconds=300.0),
+        ),
     )
     history.initialize(cancelled=lambda: False)
-    assert verified == []
+    assert sorted(verified) == ["catalog.sqlite3", "prices_2026.sqlite3"]
     assert len(published.read_windows(manifest, ("600001",), sessions=61)[0].cells) == 61
     assert history.read_outcome_bars(("600001",), NOW)
-    assert verified == []
+    assert sorted(verified) == ["catalog.sqlite3", "prices_2026.sqlite3"]
 
 
 def test_deadline_bound_history_load_never_starts_a_history_scan(

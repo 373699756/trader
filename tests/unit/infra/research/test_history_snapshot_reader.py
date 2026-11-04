@@ -230,70 +230,50 @@ def test_history_reader_streams_2000_sessions_without_directory_scan_or_unbounde
         assert peak_descriptors <= baseline_descriptors + 4
 
 
-def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_verified_snapshot_reuses_each_file_checksum_and_counts_latest_rows(tmp_path, monkeypatch):
+    from trader.infra import sqlite_publication
     root = tmp_path / "history"
     dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
-    history = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
-    original = HistoryPricePartition.verify.__func__
-    verified: list[Path] = []
+    original = sqlite_publication._digest
+    verified = []
 
-    def verify(cls, path: Path, reference: HistorySnapshotPartition, progress=None, *, sqlite_policy) -> None:
+    def digest(path, size, check):
         verified.append(path)
-        original(cls, path, reference, progress, sqlite_policy=sqlite_policy)
+        return original(path, size, check)
 
-    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(verify))
-
-    observed: list[tuple[int, int, int, int, int, str]] = []
+    monkeypatch.setattr(sqlite_publication, "_digest", digest)
+    history = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
+    observed = []
     history.verify_snapshot(snapshot, lambda *values: observed.append(values))
     assert history.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
-    assert history.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(rows)
-    assert len(tuple(history.iter_code("600001", dates[0], dates[-1], snapshot))) == len(dates)
     assert len(tuple(history.iter_code("600002", dates[0], dates[-1], snapshot))) == len(dates)
-
-    assert observed[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
-    assert any(
-        completed == 0 and current == 1 and phase == "logical" for completed, _, current, _, _, phase in observed
-    )
-    assert len(verified) == len(snapshot.partitions)
+    assert verified == [root / "prices_2026.sqlite3"]
+    assert observed[-1][:3] == (1, 1, 1)
+    assert {item[-1] for item in observed} == {"hash"}
 
 
-def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_snapshot_loading_never_selects_business_rows_for_verification(tmp_path, monkeypatch):
     root = tmp_path / "history"
     dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
     snapshot = _build_snapshot(root, tuple(_revision("600001", day) for day in dates))
-    published = HistoryPricePartition.verify_logical_content.__func__
-    published_calls: list[HistorySnapshotPartition] = []
-
-    def verify_published(cls, path, reference, progress=None, **kwargs):
-        published_calls.append(reference)
-        return published(cls, path, reference, progress, **kwargs)
-
-    def unexpected_full_verify(*_args, **_kwargs):
-        pytest.fail("training trust must not repeat SQLite quick_check and row-count scans")
-
-    monkeypatch.setattr(
-        HistoryPricePartition,
-        "verify_logical_content",
-        classmethod(verify_published),
-    )
-    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(unexpected_full_verify))
     reader = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
-    progress: list[tuple[int, int, int, int, int, str]] = []
+    from trader.infra.sqlite_connection import SqliteConnection
+    original = SqliteConnection.run
+    statements = []
 
-    reader.verify_published_snapshot(snapshot, lambda *values: progress.append(values))
+    def execute(connection, sql, parameters=()):
+        statements.append(sql)
+        assert "daily_price" not in sql.lower()
+        assert "quick_check" not in sql.lower() and "integrity_check" not in sql.lower()
+        return original(connection, sql, parameters)
 
+    with monkeypatch.context() as isolated:
+        isolated.setattr(SqliteConnection, "run", execute)
+        reader.verify_snapshot(snapshot)
+    assert statements
     assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
-    assert published_calls == list(snapshot.partitions)
-    assert progress[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
-    assert {item[-1] for item in progress} == {"logical"}
 
 
 def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> None:
@@ -305,40 +285,25 @@ def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> 
         connection.run("UPDATE daily_price_revision SET content_hash=?", (bytes(32),))
 
     with pytest.raises(HistorySnapshotReadError, match="verification failed"):
-        HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture()).verify_published_snapshot(snapshot)
+        HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture()).verify_snapshot(snapshot)
 
 
-def test_explicit_full_verification_upgrades_published_byte_trust(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_repeated_snapshot_load_reuses_verified_file_fingerprint(tmp_path, monkeypatch):
+    from trader.infra import sqlite_publication
     root = tmp_path / "history"
-    day = date(2026, 9, 1)
-    snapshot = _build_snapshot(root, (_revision("600001", day),))
-    published = HistoryPricePartition.verify_logical_content.__func__
-    full = HistoryPricePartition.verify.__func__
-    calls: list[str] = []
+    snapshot = _build_snapshot(root, (_revision("600001", date(2026, 9, 1)),))
+    original = sqlite_publication._digest
+    calls = []
 
-    def verify_published(cls, path, reference, progress=None, **kwargs):
-        calls.append("logical")
-        return published(cls, path, reference, progress, **kwargs)
+    def digest(path, size, check):
+        calls.append(path)
+        return original(path, size, check)
 
-    def verify_full(cls, path, reference, progress=None, *, sqlite_policy):
-        calls.append("full")
-        return full(cls, path, reference, progress, sqlite_policy=sqlite_policy)
-
-    monkeypatch.setattr(
-        HistoryPricePartition,
-        "verify_logical_content",
-        classmethod(verify_published),
-    )
-    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(verify_full))
+    monkeypatch.setattr(sqlite_publication, "_digest", digest)
     reader = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
-
-    reader.verify_published_snapshot(snapshot)
     reader.verify_snapshot(snapshot)
-
-    assert calls == ["logical", "full", "logical"]
+    reader.verify_snapshot(snapshot)
+    assert calls == [root / "prices_2026.sqlite3"]
 
 
 def test_revision_comparison_uses_one_current_physical_partition_for_both_sequences(tmp_path: Path) -> None:
@@ -403,7 +368,8 @@ def test_published_read_skips_payload_revalidation_but_explicit_audit_rejects_co
         connection.run(
             "UPDATE daily_price_revision SET qfq_amount=qfq_amount+1 WHERE trade_date=?", (EncodeDate(dates[-1]),)
         )
-    assert len(reader.read_published_code_window("600001", dates, snapshot)) == 300
+    with pytest.raises(HistorySnapshotReadError):
+        reader.read_published_code_window("600001", dates, snapshot)
     with pytest.raises(HistorySnapshotReadError):
         reader.verify_snapshot(snapshot)
 
@@ -445,7 +411,8 @@ def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monke
         assert len(verified) == 2
 
 
-def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp_path, monkeypatch):
+def test_file_verification_preserves_sequence_reads_and_detects_later_changes(tmp_path, monkeypatch):
+    from trader.infra import sqlite_publication
     root = tmp_path / "history"
     day = date(2026, 9, 1)
     original = _revision("600001", day)
@@ -455,25 +422,16 @@ def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp
         cell=replace(original.cell, qfq=replace(original.cell.qfq, close_price=original.cell.qfq.close_price + 0.1)),
     )
     snapshot = _build_snapshot(root, (original, revised))
-    calls = []
-    verify = HistoryPricePartition.verify_logical_content.__func__
-
-    def observe(cls, path, reference, progress=None, **kwargs):
-        calls.append(reference)
-        return verify(cls, path, reference, progress, **kwargs)
-
-    monkeypatch.setattr(HistoryPricePartition, "verify_logical_content", classmethod(observe))
+    path = root / snapshot.partitions[0].relative_path
+    old_reference = HistoryPricePartition(path, 2026, 9, sqlite_policy=SqlitePolicyFixture()).seal(1)
     reader = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
-    old_reference = HistoryPricePartition(root / snapshot.partitions[0].relative_path, 2026, 9, sqlite_policy=SqlitePolicyFixture()).seal(1)
     old_snapshot = replace(snapshot, sequence=1, partitions=(old_reference,))
     assert reader.read_published_code_window("600001", (day,), old_snapshot) == (ProjectHistoryCell(original.cell),)
-    current = replace(snapshot, sequence=2)
-    assert reader.read_published_code_window("600001", (day,), current) == (ProjectHistoryCell(revised.cell),)
-    assert calls == []
-    invalid = replace(current, partitions=(replace(current.partitions[0], logical_hash="f" * 64),))
+    assert reader.read_published_code_window("600001", (day,), snapshot) == (ProjectHistoryCell(revised.cell),)
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE daily_price_revision SET qfq_amount=qfq_amount+1")
     with pytest.raises(HistorySnapshotReadError):
-        reader.verify_published_snapshot(invalid)
-    assert len(calls) == 1
+        reader.verify_snapshot(snapshot)
 
 
 def test_annual_published_stream_keeps_each_months_sequence_and_ignores_unpublished_revisions(tmp_path):

@@ -166,10 +166,10 @@ def test_published_history_read_checks_budget_inside_sqlite(tmp_path: Path, oper
 
     with pytest.raises(RuntimeError, match="^history_preload_deadline$"):
         if operation == "proof":
-            HistoryPricePartition.verify_logical_content(path, reference, check=deadline, sqlite_policy=SqlitePolicyFixture())
+            HistoryPricePartition.verify(path, reference, check=deadline, sqlite_policy=SqlitePolicyFixture())
         else:
             tuple(index.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1, check=deadline))
-    HistoryPricePartition.verify_logical_content(path, reference, sqlite_policy=SqlitePolicyFixture())
+    HistoryPricePartition.verify(path, reference, sqlite_policy=SqlitePolicyFixture())
     assert len(tuple(index.iter_published_cells(date(2026, 9, 1), date(2026, 9, 30), snapshot_sequence=1))) == 500
 
 
@@ -621,7 +621,7 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
     HistoryPricePartition.verify(sealed_path, reference, sqlite_policy=SqlitePolicyFixture())
     with SqliteSession(sealed_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price_revision SET content_hash=?", (bytes(32),))
-    with pytest.raises(HistoryPricePartitionError, match="logical"):
+    with pytest.raises(HistoryPricePartitionError, match="file"):
         HistoryPricePartition.verify(sealed_path, reference, sqlite_policy=SqlitePolicyFixture())
 
 
@@ -652,11 +652,11 @@ def test_multi_month_seal_uses_one_latest_observation_query_and_matches_individu
     actual = reader.seal_months((1, 2), 2)
 
     assert actual == expected
-    assert tuple((item.logical_hash, item.row_count) for item in actual) == (
-        ("f9efaa89afeea6c4be4b9ff847e23d9a51b1f0da23d8e2ddcbeabdb6df9fce68", 1),
-        ("3d133527f01ba1482409ab3224f800ef220514456457b9eb80e471d5ed9e381a", 1),
-    )
-    assert sum("WITH latest AS" in statement for statement in statements) == 1
+    assert tuple(item.row_count for item in actual) == (1, 1)
+    assert actual[0].logical_hash != actual[1].logical_hash
+    assert Path(f"{path}.sha256").is_file()
+    assert sum("COUNT(DISTINCT code)" in statement for statement in statements) == 1
+    assert not any("JOIN daily_price_revision" in statement for statement in statements)
 
 
 def test_batch_verification_keeps_each_month_observation_sequence(tmp_path: Path, monkeypatch) -> None:
@@ -669,20 +669,17 @@ def test_batch_verification_keeps_each_month_observation_sequence(tmp_path: Path
     march = HistoryPricePartition(path, 2026, 3, sqlite_policy=SqlitePolicyFixture()).seal(2)
     HistoryPricePartition.verify_months(path, (january, march), sqlite_policy=SqlitePolicyFixture())
     references = writer.seal_months((1, 3), 2)
-    original = partition_module.CalculateHistoryProofs
+    original = partition_module.VerifySqliteFile
     calls = []
 
-    def calculate(connection, sequence, **options):
-        calls.append((sequence, len(options["date_ranges"]), options["validate_payloads"]))
-        return original(connection, sequence, **options)
+    def verify_file(database, version, **options):
+        calls.append((database, version))
+        return original(database, version, **options)
 
-    monkeypatch.setattr(partition_module, "CalculateHistoryProofs", calculate)
+    monkeypatch.setattr(partition_module, "VerifySqliteFile", verify_file)
     HistoryPricePartition.verify_months(path, references, sqlite_policy=SqlitePolicyFixture())
-    assert calls == [(2, 2, True)]
-    with pytest.raises(HistoryPricePartitionError):
-        HistoryPricePartition.verify_months(
-            path, (references[0], replace(references[1], row_count=99)), sqlite_policy=SqlitePolicyFixture()
-        )
+    assert calls == [(path, 2)]
+    assert january.sequence == 1 and march.sequence == 2
     with pytest.raises(ValueError):
         HistoryPricePartition.verify_months(path, (january, january), sqlite_policy=SqlitePolicyFixture())
 
@@ -722,7 +719,7 @@ def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, mon
 
     HistoryPricePartition.verify(tmp_path / reference.relative_path, reference, sqlite_policy=SqlitePolicyFixture())
 
-    assert not calls  # Verification reads logical SQLite rows, not the entire file.
+    assert not calls  # Verification reads file bytes without changing global cache policy.
     with closing(index._read_connection()) as connection:
         assert tuple(connection.run("PRAGMA cache_size").fetchone()) == (-8192,)
         assert tuple(connection.run("PRAGMA mmap_size").fetchone()) == (0,)

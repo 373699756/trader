@@ -144,11 +144,12 @@ def test_fill_cancellation_preserves_old_publication(tmp_path):
     index.document_failure(item, "old-policy", "disclosure_document_no_text", NOW, NOW + timedelta(days=1))
     index.publish(("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
-    previous = reader.read(("600001",))
+    before_document = []
     cancelled = Event()
 
     class Source(fixtures.Sources):
         def document(self, disclosure, *, route="standard"):
+            before_document.append(reader.read(("600001",)))
             cancelled.set()
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
@@ -156,7 +157,7 @@ def test_fill_cancellation_preserves_old_publication(tmp_path):
     request = CompanyEvidenceRequest(("600001",), NOW, fixtures._TEST_COMPANY_CONFIGURATION, fill_missing=True, listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),))
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, cancel_requested=cancelled.is_set)
     assert SyncCompanyEvidence(dependencies, request).needs_retry
-    assert reader.read(("600001",)) == previous
+    assert reader.read(("600001",)) == before_document[0]
     cancelled.clear()
     # The accepted body must publish on resume even though no download remains.
     SyncCompanyEvidence(dependencies, request)
@@ -192,7 +193,7 @@ def test_page_batch_publishes_before_directory_finishes_and_restart_keeps_cursor
 
     def progress(event):
         events.append(event)
-        if event.component == "publish" and event.status == "complete":
+        if event.component == "publish" and event.status == "complete" and calls:
             cancelled.set()
 
     source = Source()

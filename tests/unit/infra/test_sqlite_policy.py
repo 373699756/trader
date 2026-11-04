@@ -18,7 +18,8 @@ from trader.infra.sqlite_observation import SqliteObservation
 from trader.infra.disk_types import DiskProfile
 
 
-def test_sqlite_json_reaches_download_training_and_recommendation_adapters(tmp_path, monkeypatch):
+@pytest.mark.parametrize("medium,timeout_ms", (("hdd", 41), ("ssd", 73)))
+def test_sqlite_json_reaches_download_training_and_recommendation_adapters(tmp_path, monkeypatch, medium, timeout_ms):
     from trader.download.infra.reference_index import SQLiteReferenceIndex
     from trader.infra import sqlite_connection
     from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
@@ -28,12 +29,12 @@ def test_sqlite_json_reaches_download_training_and_recommendation_adapters(tmp_p
     shutil.copytree(root / "config", tmp_path / "config")
     runtime_path = tmp_path / "config/runtime.json"
     runtime = json.loads(runtime_path.read_text())
-    runtime["disk_medium"] = "ssd"
+    runtime["disk_medium"] = medium
     runtime_path.write_text(json.dumps(runtime))
     policy_path = tmp_path / "config/sqlite.json"
     policy_config = json.loads(policy_path.read_text())
-    policy_config["sqlite_policy"]["ssd"] = {
-        "connection_timeout_seconds": 0.041,
+    policy_config["sqlite_policy"][medium] = {
+        "connection_timeout_seconds": timeout_ms / 1000,
         "read_window_rows": 3,
         "transaction_batch_rows": 2,
         "checkpoint_mode": "PASSIVE",
@@ -52,7 +53,7 @@ def test_sqlite_json_reaches_download_training_and_recommendation_adapters(tmp_p
     with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", ("fixture_feature",), sqlite_policy=policy):
         pass
     PublicationSequence(tmp_path / "sequence.sqlite3", sqlite_policy=policy).initialize()
-    assert seen == [41, 41, 41]
+    assert seen == [timeout_ms, timeout_ms, timeout_ms]
 
 
 def test_composition_selects_explicit_detected_and_unknown_medium(monkeypatch):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import PublishSqliteFile
 
 import os
 import shutil
@@ -150,7 +151,6 @@ class HistoryControlIndex:
                     initialize=self._initialize_metadata,
                     validate=self._validate_metadata,
                 )
-                CheckSqliteIntegrity(connection)
         except (sqlite3.Error, ValueError) as exc:
             raise HistoryControlError("history control initialization failed") from exc
         self._fault_injector("schema_initialized")
@@ -307,6 +307,11 @@ class HistoryControlIndex:
         except (sqlite3.Error, ValueError) as exc:
             raise HistoryControlConflictError("history published snapshot publication failed") from exc
         self._fault_injector("published_snapshot_committed")
+        self.publish_file()
+
+    def publish_file(self) -> None:
+        """Finish the catalog publication with the common database file fingerprint."""
+        PublishSqliteFile(self._path, 2, sqlite_policy=self._sqlite_policy)
 
     def load_state(self, *, reference_base: Path | None = None) -> HistoryControlState:
         try:

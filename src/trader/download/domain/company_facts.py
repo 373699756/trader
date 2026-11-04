@@ -107,8 +107,11 @@ def CompileCompanyFacts(
                     "持续事项的上市初始状态尚未核实" if reason == "initial_risk_state_unverified" else failure,
                 )
             )
-    pledge = source.pledge if source.pledge is not None else previous.pledge if previous else None
-    pledge_complete = source.pledge is not None and not any(item.startswith("pledge:") for item in source.failures)
+    pledges = tuple(item for item in (source.pledge, previous.pledge if previous else None)
+                    if item is not None and item.day <= now.date())
+    pledge = max(pledges, key=lambda item: item.day) if pledges else None
+    pledge_complete = (pledge is source.pledge and source.pledge is not None
+                       and not any(item.startswith("pledge:") for item in source.failures))
     unlock_complete = source.unlock_checked and not any(item.startswith("unlock:") for item in source.failures)
     risk_complete = source.announcement_complete and not any(item.scope == "risk" for item in reviews)
     if previous is not None:

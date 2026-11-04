@@ -18,6 +18,7 @@ module and profile there; it is not added as another top-level script.
 
 `--profile disk`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
 可重复使用`--disk-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
+显式添加`--disk-policy-audit`会只读清点活动源码的SQLite打开调用，分别列出显式注入、缺失注入及待人工追踪的参数展开，并报告组合根选出的实际策略。该清单不能代替真实adapter的哨兵值验证；普通disk检查不扫描源码。
 unknown结果附带实际runtime配置文件和单项`disk_medium`修改示例：`"disk_medium": "hdd"`或`"disk_medium": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
 
 `--profile tencent-transport`只读加载本地证券参考人口，以同一120只分片、3路并发分别测量直接HTTP和可复用隔离HTTP；两组均采用生产全市场覆盖校验、配置中的主源采集预算（当前12秒）及分片尝试上限（当前2次），外层仍受统一命令超时控制。真实请求腾讯，输出总体请求/返回数、物理尝试与失败数、尝试上限、单次及整批耗时，不保存供应商载荷或改动活动数据。单次对照不能证明长期尾延迟或完整推荐轮次；直连组的不可协作DNS等阻塞仍可能超过其本地采集预算。`runtime`报告另外保留预览状态、失败码与最多64项阶段计时，用于区分行情等待和下游阻断。
@@ -446,6 +447,10 @@ competing for the same disk.
 报告同时给出文件系统、介质与识别来源；同文件系统的唯一手动配置标记为
 `configuration_same_filesystem`，不冒充自动检测。tmpfs/ramfs始终标记为内存文件系统，
 不能作为SSD/HDD性能证据。介质未知时保留unknown。
+
+添加`--database-training`可在每轮下载及启动预读之后，复用现有样本检测worker测量V1/V2/V3/V5的写入和双头矩阵读取。样本为固定合成值，最多750个拟合日期，另保留早停、校准和验证日期；不执行模型拟合或收益验收。报告包含四档输出摘要、连接关闭、SQL/事务、物理I/O及RSS；跨轮发布身份和样本摘要必须一致。该选项只用于单版本基线，不与`--baseline-checkout`组合。
+
+基线记录Python/平台、实际SQLite策略和源码/配置摘要，并在结束前复核未变化。共享工作区有并行修改时，应从固定提交加本批变动形成的仓库外冻结副本运行；同机HDD测量分时执行，记录OS缓存未清空，不将新进程等同于物理冷缓存。真实全市场读取、完整拟合、供应商网络与PDF/OCR负载另行测量。
 
 `--database-probe-directory`也适用于`history-write`、`history-sqlite`和`download-performance`，
 将子进程及其对照进程的临时数据库放在指定文件系统上；不提供该参数时沿用系统临时目录，

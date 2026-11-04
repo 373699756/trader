@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Mapping
+from collections import Counter
+from datetime import datetime
 
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES
+from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
 
 
-def AuditCompanyFields(formal: SqliteConnection, raw_path: Path) -> dict[str, object]:
+def AuditCompanyFields(
+    formal: SqliteConnection, raw_path: Path, *, raw: SqliteConnection, observed_at: datetime
+) -> dict[str, object]:
     formal.run("ATTACH DATABASE ? AS collected", (raw_path.resolve().as_uri() + "?mode=ro",))
     tables: list[dict[str, object]] = []
     invalid_types = 0
@@ -68,7 +73,8 @@ def AuditCompanyFields(formal: SqliteConnection, raw_path: Path) -> dict[str, ob
     applicable = formal.run(
         "SELECT COALESCE(SUM(event_type=3),0),COALESCE(SUM(event_type=3 AND contract_amount IS NULL),0),"
         "COALESCE(SUM(event_type=3 AND annual_revenue IS NULL),0),COALESCE(SUM(event_type=3 AND contract_revenue_pct IS NULL),0),"
-        "COALESCE(SUM(event_type IN (1,2) AND actual_pct IS NULL),0) FROM main.company_positive_event"
+        "COALESCE(SUM(event_type IN (1,2) AND status IN (2,3) AND actual_pct IS NULL),0) "
+        "FROM main.company_positive_event WHERE status<>4"
     ).require_one()
     partitions = []
     for row in formal.run("SELECT market,start_date,end_date,failure,expected_rows,received_rows,next_page FROM collected.partitions WHERE is_complete=0 AND failure<>'' ORDER BY start_date DESC LIMIT 12"):
@@ -92,6 +98,10 @@ def AuditCompanyFields(formal: SqliteConnection, raw_path: Path) -> dict[str, ob
         findings.append("company_field_integrity_failed")
     if any(applicable[1:]):
         findings.append("company_applicable_fields_missing")
+    recovery = () if invalid_types or nonfinite_values else ReadCompanyFieldRecovery(
+        formal, raw, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
+        observed_at, raw_path.parent,
+    )
     return {
         "read_only": True, "tables": tables, "table_count": len(tables), "field_count": field_count,
         "invalid_value_types": invalid_types,
@@ -107,6 +117,16 @@ def AuditCompanyFields(formal: SqliteConnection, raw_path: Path) -> dict[str, ob
         },
         "applicable_missing": {"contract_events": applicable[0], "contract_amount_missing": applicable[1], "contract_revenue_missing": applicable[2], "contract_ratio_missing": applicable[3], "share_action_actual_pct_missing": applicable[4]},
         "partition_details": partitions,
+        "recovery_plan": {
+            "read_only": True, "fields": len(recovery),
+            "actions": dict(Counter(item.action for item in recovery)), "truncated": len(recovery) > 100,
+            "items": [{
+                "code": item.gap.code, "event_id": item.gap.event_id,
+                "source_key": item.gap.evidence_id, "field": item.gap.field,
+                "reason": item.reason, "next_step": item.action,
+                "network_required": item.action == "download",
+            } for item in recovery[:100]],
+        },
         "interpretation": "population_and_source_agreement_do_not_prove_all_event_measurements_or_historical_coverage",
         "findings": findings,
     }
@@ -134,4 +154,12 @@ def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
         "table": row.get("table"), "rows": row.get("rows"),
         "fields": [{key: field.get(key) for key in ("name", "populated", "null", "invalid_type", "nonfinite")} for field in _rows(row.get("fields"), 128)],
     } for row in _rows(source.get("tables"), 32)]
+    recovery = source.get("recovery_plan")
+    if isinstance(recovery, Mapping):
+        result["recovery_plan"] = {
+            **{key: recovery.get(key) for key in ("read_only", "fields", "actions", "truncated")},
+            "items": [{key: row.get(key) for key in (
+                "code", "event_id", "source_key", "field", "reason", "next_step", "network_required",
+            )} for row in _rows(recovery.get("items"), 100)],
+        }
     return result

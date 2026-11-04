@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import PublishSqliteFile
 from dataclasses import field
 
 import logging
@@ -110,41 +111,38 @@ class _HistorySync:
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
     def execute(self) -> HistoryMaintenanceStatus:
-        published = False
-        while True:
-            state = self.control.load_published_state()
-            current_snapshot = state.snapshot if state is not None else None
-            previous = frozenset(item.code for item in state.universe.securities) if state is not None else frozenset()
-            if not _has_sufficient_disk(self.configuration.history_root, self.configuration.minimum_free_bytes):
-                return _status("blocked", "disk_space_insufficient", self.configuration, current_snapshot)
-            pending = self.index.pending(current_snapshot.sequence if current_snapshot else 0)
-            if self.repair_only and pending is not None and any(not task.tencent_done and task.dates for task in self.index.tasks()):
-                return _status("blocked", "history_download_incomplete", self.configuration, current_snapshot)
-            target = pending.cutoff if pending else current_snapshot.data_cutoff if self.repair_only and current_snapshot is not None else CompletedDailyCutoff(self.observed_at)
-            inputs = self._prepare(current_snapshot, pending, target, previous)
-            if inputs is None:
-                unresolved = self.index.gap_summary(tuple(previous)) if current_snapshot is not None else None
-                return _status(
-                    "completed" if published else "already_current",
-                    "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
-                    self.configuration,
-                    current_snapshot,
-                    unresolved_price_cells=unresolved.cells if unresolved else 0,
-                    price_gap_summary=unresolved,
-                )
-            snapshot = self._download(inputs, current_snapshot)
-            published = True
-            if not self.repair_only and pending is not None and target < CompletedDailyCutoff(self.observed_at):
-                continue
-            unresolved = self.index.gap_summary(tuple(item.code for item in inputs.context.universe))
+        state = self.control.load_published_state()
+        current_snapshot = state.snapshot if state is not None else None
+        previous = frozenset(item.code for item in state.universe.securities) if state is not None else frozenset()
+        if not _has_sufficient_disk(self.configuration.history_root, self.configuration.minimum_free_bytes):
+            return _status("blocked", "disk_space_insufficient", self.configuration, current_snapshot)
+        pending = self.index.pending(current_snapshot.sequence if current_snapshot else 0)
+        if self.repair_only and pending is not None and any(not task.tencent_done and task.dates for task in self.index.tasks()):
+            return _status("blocked", "history_download_incomplete", self.configuration, current_snapshot)
+        target = CompletedDailyCutoff(self.observed_at)
+        if self.repair_only:
+            target = pending.cutoff if pending else current_snapshot.data_cutoff if current_snapshot else target
+        inputs = self._prepare(current_snapshot, pending, target, previous)
+        if inputs is None:
+            unresolved = self.index.gap_summary(tuple(previous)) if current_snapshot is not None else None
             return _status(
-                "completed",
+                "already_current",
                 "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
                 self.configuration,
-                snapshot,
+                current_snapshot,
                 unresolved_price_cells=unresolved.cells if unresolved else 0,
                 price_gap_summary=unresolved,
             )
+        snapshot = self._download(inputs, current_snapshot)
+        unresolved = self.index.gap_summary(tuple(item.code for item in inputs.context.universe))
+        return _status(
+            "completed",
+            "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
+            self.configuration,
+            snapshot,
+            unresolved_price_cells=unresolved.cells if unresolved else 0,
+            price_gap_summary=unresolved,
+        )
 
     def _prepare(
         self,
@@ -211,10 +209,15 @@ class _HistorySync:
         ):
             raise RuntimeError("history_download_identity_conflict")
         current_source, current_calendar, current_universe = _control_identities(context)
-        if calendar.open_dates != context.calendar.open_dates:
-            raise RuntimeError("history_resume_calendar_changed")
-        if pending.cutoff != calendar.open_dates[-1]:
+        if pending.cutoff != calendar.open_dates[-1] or current_calendar.open_dates[-1] < pending.cutoff:
             raise RuntimeError("history_resume_cutoff_changed")
+        advancing = current_calendar.open_dates[-1] > pending.cutoff
+        if (
+            tuple(day for day in calendar.open_dates if day >= current_calendar.open_dates[0])
+            != tuple(day for day in current_calendar.open_dates if day <= pending.cutoff)
+            or (not advancing and calendar.open_dates != current_calendar.open_dates)
+        ):
+            raise RuntimeError("history_resume_calendar_changed")
         previous_by_code = {item.code: item for item in universe.securities}
         for current_security in current_universe.securities:
             if IsStSecurityName(current_security.name):
@@ -230,7 +233,8 @@ class _HistorySync:
             raise RuntimeError("history_resume_source_changed")
         reference = ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract, sqlite_policy=self.sqlite_policy)
         if (
-            source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
+            advancing
+            or source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
             or universe.securities != current_universe.securities
         ):
             # Bind the current reference while retaining progress only for common codes.
@@ -244,9 +248,11 @@ class _HistorySync:
                 current_source.content_hash,
                 current_calendar.content_hash,
                 current_universe.content_hash,
-                pending.cutoff,
+                current_calendar.open_dates[-1],
             )
-            if previous_by_code.keys() != {item.code for item in current_universe.securities}:
+            if advancing:
+                self.index.rebind_context(pending, current, tasks=self._advance_tasks(context, pending))
+            elif previous_by_code.keys() != {item.code for item in current_universe.securities}:
                 self.index.rebind_context(
                     pending,
                     current,
@@ -259,6 +265,30 @@ class _HistorySync:
                 self.index.rebind_context(pending, current)
             return _BatchInput(context, current_source, current_calendar, current_universe, reference, current, False)
         return _BatchInput(context, source, calendar, universe, reference, pending, False)
+
+    def _advance_tasks(
+        self, context: HistorySupplierContext, pending: HistoryDownloadBatch
+    ) -> tuple[HistoryDownloadTask, ...]:
+        previous = {task.code: task for task in self.index.tasks()}
+        retryable = self.index.gaps_by_code(context.calendar.open_dates)
+        tasks = []
+        for security in context.universe:
+            expected = context.calendar.expected_dates(security)
+            task = previous.get(security.code)
+            if task is None:
+                tasks.append(HistoryDownloadTask(security.code, expected))
+                continue
+            new = {day for day in expected if day > pending.cutoff}
+            missing = set(retryable.get(security.code, ()))
+            remaining = set(task.dates) if not task.tencent_done else set()
+            anchors = (
+                tuple(day for day in expected if day <= pending.cutoff)[-self.configuration.reread_sessions:]
+                if new or missing else ()
+            )
+            required = remaining | missing | new | set(anchors)
+            dates = tuple(day for day in expected if day in required)
+            tasks.append(replace(task, dates=dates, tencent_done=task.tencent_done and not new))
+        return tuple(tasks)
 
     def _repair_reference(
         self, source: HistorySourceIdentity, reference: HistoryReferenceSnapshot, publication_id: str
@@ -416,7 +446,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 raise RuntimeError("history_format_requires_rebuild")
             control.initialize()
             HistoryPriceRepair(configuration.history_root, sqlite_policy=sqlite_policy).initialize()
-            return _HistorySync(
+            result = _HistorySync(
                 configuration,
                 supplier,
                 observed_at,
@@ -430,6 +460,12 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 write_tuning,
                 repair_only, sqlite_policy=sqlite_policy,
             ).execute()
+            if result.published:
+                for path in sorted(configuration.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3")):
+                    if not Path(f"{path}.sha256").is_file():
+                        PublishSqliteFile(path, 2, sqlite_policy=sqlite_policy)
+                control.publish_file()
+            return result
     except KeyboardInterrupt:
         return _status("cancelled", "cancelled", configuration, _safe_snapshot(control))
     except HistoryMaintenanceAlreadyRunningError:

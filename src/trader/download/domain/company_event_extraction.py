@@ -295,7 +295,9 @@ def _risk_categories(text: str) -> tuple[CompanyRiskType, ...]:
     result: list[CompanyRiskType] = []
     freeze = any(x in text for x in ("行政处罚决定", "纪律处分决定", "处罚决定书", "判决书"))
     major_holder = any(x in text for x in ("控股股东", "实际控制人", "持股5%以上", "5%以上股东", "大股东"))
-    reduction_start = any(x in text for x in ("拟减持", "减持股份预披露", "减持股份的预披露")) or (
+    reduction_start = _planned_reduction_intent(text) or any(
+        x in text for x in ("减持股份预披露", "减持股份的预披露")
+    ) or (
         "减持计划" in text and not any(x in text for x in ("进展", "实施情况", "结果", "终止"))
     )
     if major_holder and reduction_start:
@@ -350,6 +352,8 @@ def _append_risk(
         ),
         None,
     )
+    if previous is not None and item.published_at < previous.last_disclosed_at:
+        return
     soft = category in {
         CompanyRiskType.REGULATORY_WARNING,
         CompanyRiskType.ADMINISTRATIVE_PENALTY,
@@ -373,7 +377,20 @@ def _append_risk(
     )
     reduction_plan = previous.reduction_plan if previous else None
     if category is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION:
-        reduction_plan = _reduction_plan(body) or reduction_plan or ReductionPlan()
+        parsed_plan = _reduction_plan(body)
+        if parsed_plan is not None and reduction_plan is not None:
+            reduction_plan = replace(
+                reduction_plan,
+                planned_start_date=parsed_plan.planned_start_date or reduction_plan.planned_start_date,
+                planned_end_date=parsed_plan.planned_end_date or reduction_plan.planned_end_date,
+                planned_ratio_pct=(
+                    parsed_plan.planned_ratio_pct
+                    if parsed_plan.planned_ratio_pct is not None
+                    else reduction_plan.planned_ratio_pct
+                ),
+            )
+        else:
+            reduction_plan = parsed_plan or reduction_plan or ReductionPlan()
         if reduction_plan.planned_end_date is not None:
             expires = datetime.combine(reduction_plan.planned_end_date, time.max, first.tzinfo) + timedelta(
                 days=policy.reduction_tail_days
@@ -425,18 +442,56 @@ def _risk_closure(text: str) -> tuple[CompanyRiskType, ...]:
 
 
 def _reduction_plan(body: str) -> ReductionPlan | None:
+    ratio = _planned_reduction_ratio(body)
     dates = re.search(
         r"减持(?:计划)?期间(?:为|：|:)?(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?(?:至|到|~)(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?",
         body,
     )
     if dates is None:
-        return None
+        return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
     try:
         start = date(*(int(dates[i]) for i in (1, 2, 3)))
         end = date(*(int(dates[i]) for i in (4, 5, 6)))
     except ValueError:
+        return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+    if start <= end:
+        return ReductionPlan(start, end, ratio)
+    return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+
+
+def _planned_reduction_ratio(body: str) -> float | None:
+    pattern = (
+        r"(?:拟|计划)(?:通过[^。；;]{0,30})?减持(?:公司)?(?:股份)?[^。；;]{0,90}?"
+        r"占(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的?比例|的)?"
+        r"(?:不超过|不高于|为|约为|为约)?[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
+    )
+    matches = tuple(re.finditer(pattern, body))
+    if len(matches) != 1 or any(marker in matches[0][0] for marker in ("已减持", "已实施", "持有", "流通股", "所持股份")):
         return None
-    return ReductionPlan(start, end) if start <= end else None
+    match = matches[0]
+    # Separate holders need separate identities. Unrelated sections do not make
+    # the single plan ambiguous, and a section number is not a holder list.
+    separators = "。；;！？!?"
+    start = max(body.rfind(separator, 0, match.start()) for separator in separators) + 1
+    ends = tuple(body.find(separator, match.end()) for separator in separators)
+    end = min((position for position in ends if position >= 0), default=len(body))
+    context = re.sub(r"^(?:[一二三四五六七八九十百]+|[0-9]+)、", "", body[start:end])
+    if any(marker in context for marker in ("分别", "各自", "一致行动人", "合计", "、")) or re.search(
+        r"(?:股东|实际控制人)[^。；;]{0,40}[及和与]", context
+    ):
+        return None
+    prefix = body[max(0, match.start() - 3) : match.start()]
+    if re.search(r"(?:未|不|尚未)$", prefix):
+        return None
+    ratio = float(match[1])
+    return ratio if 0 <= ratio <= 100 else None
+
+
+def _planned_reduction_intent(text: str) -> bool:
+    return any(
+        re.search(r"(?:未|不|尚未)$", text[max(0, match.start() - 3) : match.start()]) is None
+        for match in re.finditer(r"(?:拟|计划)(?:通过[^。；;]{0,30})?减持", text)
+    )
 
 
 def _resolve_risks(risks: list[CompanyRiskEvent], verified: _VerifiedDocument, policy: CompanyEventPolicy) -> bool:
@@ -505,6 +560,10 @@ def _append_positive(
         None,
     )
     title = "".join(item.title.split())
+    if previous is not None and item.published_at < previous.last_disclosed_at:
+        if item.identity in previous.evidence_ids and not _positive_measurements(verified, kind)[2]:
+            return "implementation_or_measurement_unverified"
+        return None
     if previous is not None and previous.status is CompanyPositiveStatus.CANCELLED:
         return None
     if any(x in title for x in ("终止", "撤销", "取消")):
@@ -598,12 +657,16 @@ def _positive_measurements(
 
 
 def _actual_ratio(body: str, verb: str) -> float | None:
-    pattern = rf"(?:累计|已)(?:实际|通过[^。；]{{0,30}})?{verb}[^。；]{{0,140}}?占(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的比例)?(?:为|约为|为约)?[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
+    pattern = (
+        rf"(?:累计(?:已)?|已)(?:实际|通过[^。；;]{{0,30}})?{verb}[^。；;]{{0,140}}?"
+        r"占(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的?比例|的)?"
+        r"(?:为|约为|为约)?[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
+    )
     # The measurement must describe the same actual action, without crossing a plan or negation.
     values = {
         float(match[1])
         for match in re.finditer(pattern, body)
-        if not any(marker in match[0] for marker in ("拟", "计划", "预计", "将", "尚未", "未实施"))
+        if not any(marker in match[0] for marker in ("拟", "计划", "预计", "将", "尚未", "未实施", "持有", "所持股份"))
         and not re.search(r"(?:未|不|尚未)$", body[max(0, match.start() - 3) : match.start()])
     }
     return next(iter(values)) if len(values) == 1 and all(0 <= x <= 100 for x in values) else None
@@ -615,10 +678,10 @@ def _contract(body: str, published: datetime) -> ContractMeasurements:
     ) and not any(x in body for x in ("框架协议", "意向协议", "中标候选", "尚未生效"))
     binding = binding and re.search(r"(?:尚需|须经|需经)[^。；]{0,40}生效", body) is None
     amount = _single_measurement(
-        r"合同(?:总)?金额(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?人民币([0-9]+(?:\.[0-9]+)?)(亿|万)?元", body
+        r"合同(?:总)?金额(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
     )
     revenue = _single_measurement(
-        r"(20[0-9]{2})年度(?:经审计的)?营业收入(?:为|合计)?人民币([0-9]+(?:\.[0-9]+)?)(亿|万)?元", body
+        r"(20[0-9]{2})年度(?:经审计的)?营业收入(?:为|合计)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
     )
     disclosed = _annual_report_disclosure(body, int(revenue[1]), published) if revenue else None
     comparable = (
@@ -628,8 +691,8 @@ def _contract(body: str, published: datetime) -> ContractMeasurements:
         and _net_measurement(body, revenue)
         and disclosed is not None
     )
-    contract_amount = float(amount[1]) * _amount_unit(amount[2]) if amount else None
-    annual_revenue = float(revenue[2]) * _amount_unit(revenue[3]) if revenue else None
+    contract_amount = float(amount[1].replace(",", "").replace("，", "")) * _amount_unit(amount[2]) if amount else None
+    annual_revenue = float(revenue[2].replace(",", "").replace("，", "")) * _amount_unit(revenue[3]) if revenue else None
     ratio = (
         100 * contract_amount / annual_revenue
         if comparable and contract_amount is not None and annual_revenue and annual_revenue > 0
@@ -711,7 +774,7 @@ def _unrelated_subject(title: str) -> bool:
 
 def _risk_authority(body: str, category: CompanyRiskType) -> bool:
     if category is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION:
-        return "减持计划" in body or "拟减持" in body
+        return "减持计划" in body or _planned_reduction_intent(body)
     return any(x in body for x in ("中国证券监督管理", "证监会", "证券交易所", "人民法院", "监管局"))
 
 

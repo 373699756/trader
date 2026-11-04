@@ -4,6 +4,7 @@ from tests.helpers.configuration import SqlitePolicyFixture
 
 from dataclasses import replace
 from datetime import date, timedelta
+import sqlite3
 
 import pytest
 
@@ -73,3 +74,31 @@ def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path, cha
             index.rebind_context(current, invalid)
     assert index.pending(0) == current
     assert index.tasks() == expected
+
+
+def test_advancing_pending_batch_atomically_replaces_dates_and_keeps_gap_receipts(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture())
+    days = tuple(date(2026, 10, 12) + timedelta(days=offset) for offset in range(3))
+    previous = HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, days[1])
+    task = HistoryDownloadTask("600001", days[:2])
+    index.begin(previous, (task,))
+    index.begin_attempt(task.code)
+    index.finish((HistoryDownloadCompletion(task, days[:1], "tencent_qfq_invalid_price", days[:1]),))
+    before = index.tasks()
+    current = replace(previous, cutoff=days[-1], source_hash="d" * 64, calendar_hash="e" * 64)
+    expanded = replace(before[0], dates=days[1:], tencent_done=False)
+    with pytest.raises(ValueError, match="history_download_identity_conflict"):
+        index.rebind_context(previous, current)
+    with pytest.raises(sqlite3.IntegrityError):
+        index.rebind_context(previous, current, tasks=(expanded, expanded))
+    assert index.pending(0) == previous
+    assert index.tasks() == before
+    index.rebind_context(previous, current, tasks=(expanded,))
+    assert index.pending(0) == current
+    assert index.tasks() == (expanded,)
+    assert index.gaps_by_code() == {task.code: days[:1]}
+    assert index.gaps_by_code(days) == {}
+    with pytest.raises(RuntimeError, match="history_download_identity_conflict"):
+        index.rebind_context(previous, current, tasks=(expanded,))

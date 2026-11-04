@@ -8,18 +8,32 @@ from pathlib import Path
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.disk_probe import DiskProbe
 from trader.infra.disk_runtime import DisplayDiskPath, InspectDataDisk, ReportDiskProfiles
+from .disk_policy_audit import AuditSqlitePolicyConsumers
 
 
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--path", type=Path, action="append", default=[])
+    parser.add_argument("--policy-audit", action="store_true")
     args = parser.parse_args()
     settings = LoadRuntimeSettings(args.config)
     locations = InspectDataDisk(settings, DiskProbe(settings.disk_medium), additional_paths=args.path)
     ReportDiskProfiles(settings, locations)
     actual_probe = DiskProbe()
     actual_profiles = tuple(actual_probe.inspect(item.path) for item in locations)
+    policy_audit = AuditSqlitePolicyConsumers(Path(__file__).resolve().parents[2]) if args.policy_audit else None
+    if policy_audit is not None:
+        from trader.bootstrap import BuildSqlitePolicy
+
+        selected_policy = BuildSqlitePolicy(settings)
+        policy_audit["configured_medium"] = settings.disk_medium
+        policy_audit["selected_sqlite_policy"] = {
+            "connection_timeout_seconds": selected_policy.connection_timeout_seconds,
+            "read_window_rows": selected_policy.read_window_rows,
+            "transaction_batch_rows": selected_policy.transaction_batch_rows,
+            "checkpoint_mode": selected_policy.checkpoint_mode,
+        }
     unknown = sum(item.profile.kind == "unknown" for item in locations)
     unknown_app = any(item.profile.kind == "unknown" and not item.role.startswith("external.") for item in locations)
     actual_unknown = sum(profile.kind == "unknown" for profile in actual_profiles)
@@ -57,6 +71,7 @@ def Main() -> int:
             "source": item.profile.source,
             "reason": item.profile.reason,
             "actual_kind": actual.kind,
+            "actual_device": actual.device,
             "actual_source": actual.source,
             "actual_reason": actual.reason,
             "configured_mismatch": item.role in configured_mismatch_roles,
@@ -82,7 +97,11 @@ def Main() -> int:
         json.dumps(
             {
                 "schema_version": "disk-profile-v1",
-                "status": "degraded" if unknown or actual_unknown or configured_mismatches else "passed",
+                "status": "degraded" if unknown or actual_unknown or configured_mismatches or (
+                    policy_audit is not None and (
+                        policy_audit["missing_policy_calls"] or policy_audit["unpacked_policy_calls_require_review"]
+                    )
+                ) else "passed",
                 "summary": {
                     "locations": details,
                     "unknown": unknown,
@@ -93,6 +112,7 @@ def Main() -> int:
                     "configuration_field": "disk_medium",
                     "instruction": instruction,
                     "configuration_example": configuration_example,
+                    "policy_consumers": policy_audit,
                     "sqlite_policies": {
                         medium: {
                             "connection_timeout_seconds": policy.connection_timeout_seconds,

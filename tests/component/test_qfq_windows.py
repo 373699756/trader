@@ -224,7 +224,7 @@ def test_corrupt_prices_fail_closed(tmp_path, corrupt_price):
     publish_windows(cache, (_window(),), "fixture")
     with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price SET qfq_close=? WHERE code='600001'", (corrupt_price,))
-    with pytest.raises(RuntimeError, match="identity_mismatch"):
+    with pytest.raises(RuntimeError, match="checksum_mismatch"):
         cache.read_code("600001")
 
 
@@ -554,7 +554,7 @@ def test_unpaired_only_window_does_not_report_no_trade_data_or_success(tmp_path)
         ("end_date", EncodeDate(date(2000, 1, 1))),
     ),
 )
-def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, profile, field, value):
+def test_modified_database_is_rejected_before_supplier_calls(tmp_path, profile, field, value):
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
@@ -562,16 +562,9 @@ def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, pr
     cache = updater.v2 if profile == "v2" else updater.v3
     with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
         connection.run(f"UPDATE window_binding SET {field}=? WHERE code=? AND profile=?", (value, "600001", profile))
-    assert not cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
-    result = updater.execute(observed)
-    assert result.completed_codes == 1 and result.pending_codes == 0
-    assert result.changed_files == ("daily_window.sqlite3",)
-    assert result.changed_rows == 0
-    assert cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
-    assert cache.read_code("600001").cells
     supplier.calls.clear()
-    repeat = updater.execute(observed)
-    assert repeat.skipped_codes == 1 and repeat.pending_codes == 0
+    with pytest.raises(RuntimeError, match="checksum_mismatch"):
+        updater.execute(observed)
     assert supplier.calls == []
 
 
@@ -1588,7 +1581,7 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
     assert len(updater.v2.read_code("600001").cells) == 251
     assert len(updater.v3.read_code("600001").cells) == 61
     assert result.failure_reason is None
-    assert any("发布内容校验" in message and "完成" in message for message in messages)
+    assert any("数据库文件校验" in message and "完成" in message for message in messages)
 
 
 @pytest.mark.parametrize("suspension", ("inside", "boundary", "latest", "whole_peer"))
@@ -1621,7 +1614,7 @@ def test_market_publication_accepts_suspension_without_counting_price_rows(tmp_p
     assert result.completed_codes == 1 and result.pending_codes == 0
     assert len(updater.v2.read_code("600001").cells) == 251 - len(suspended_days)
     assert len(updater.v3.read_code("600001").cells) == 61 - len(suspended_days)
-    assert any("发布内容校验" in message and "完成" in message for message in messages)
+    assert any("数据库文件校验" in message and "完成" in message for message in messages)
     if suspension in ("inside", "boundary"):
         before = _fingerprints(tmp_path)
         resumed = runner.execute()
@@ -1665,9 +1658,9 @@ def test_market_publication_keeps_old_valid_pair_when_another_stock_advances(tmp
 @pytest.mark.parametrize(
     "field,value,reason",
     (
-        ("source", "other-source", "qfq_publication_pair_mismatch"),
-        ("end_date", EncodeDate(DAYS[-1] + timedelta(days=1)), "qfq_publication_pair_mismatch"),
-        ("content_hash", bytes(32), "qfq_publication_content_invalid"),
+        ("source", "other-source", "sqlite_publication_checksum_mismatch"),
+        ("end_date", EncodeDate(DAYS[-1] + timedelta(days=1)), "sqlite_publication_checksum_mismatch"),
+        ("content_hash", bytes(32), "sqlite_publication_checksum_mismatch"),
     ),
 )
 def test_market_publication_still_rejects_invalid_identity(tmp_path, monkeypatch, field, value, reason):
@@ -1697,12 +1690,10 @@ def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
     failures = DownloadFailureDiagnostics(partial(updater.v2.RecordDownloadFailure, configuration=DownloadFailureConfigurationFixture()), lambda: observed)
     runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed, failures=failures)
     checked = runner.execute()
-    assert checked.failure_reason == "qfq_publication_membership_mismatch"
-    assert checked == replace(result, failure_reason="qfq_publication_membership_mismatch")
-    with SqliteSession(tmp_path / "daily_window.sqlite3") as connection:
-        failure, = ReadDownloadFailures(connection, DownloadFailureConfigurationFixture())["events"]
-    assert failure["stage"] == "publication_validation"
-    assert failure["reason"] == checked.failure_reason
+    assert checked.failure_reason == "sqlite_publication_checksum_mismatch"
+    assert checked.needs_retry
+    with pytest.raises(RuntimeError, match="checksum_mismatch"):
+        updater.v2.verify_integrity()
 
 
 @pytest.mark.parametrize(

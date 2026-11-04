@@ -8,12 +8,13 @@ import errno
 import hashlib
 import logging
 import os
+import re
 import shutil
-import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
@@ -21,6 +22,8 @@ from trader.training.infra.sample_sequences import SampleSequenceLayout
 from trader.training.infra.sample_schema import SampleFormatId
 
 _LOGGER = logging.getLogger(__name__)
+_TEMPORARY_SAMPLE_NAMESPACE = ".temporary-training-v1"
+_TEMPORARY_SAMPLE_NAME = re.compile(r"training-[0-9a-f]{32}")
 SampleCachePhase = Literal["checking", "sealing"]
 SampleCacheProgress = Callable[[SampleCachePhase, Literal["started", "running", "completed"], int, int], None]
 
@@ -71,6 +74,7 @@ class TrainingSampleCache:
     def open(self, *, inspected: bool = False) -> SQLiteTrainingSampleIndex:
         if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
             raise ValueError("training_sample_cache_symlink")
+        _clear_tcn_batch_workspaces(self.root)
         # The caller holds the profile lock; these are scratch mappings from a
         # killed fit, never sealed samples or another running profile's files.
         for pattern in ("sample-fit-*", "sample-shared-*"):
@@ -187,20 +191,76 @@ class TrainingSampleCache:
 
 @contextmanager
 def TemporaryTrainingSamples(samples_root: Path, profile: str) -> Iterator[Path]:
-    """Keep one profile's temporary samples only while its training run is active."""
+    """Recover owned scratch samples; the caller holds the profile lock throughout."""
     if profile not in ("v1", "v2", "v3"):
         raise ValueError("training sample profile is invalid")
     profile_root = samples_root / profile
-    if profile_root.is_symlink() or (
-        profile_root.exists() and (not profile_root.is_dir() or any(profile_root.iterdir()))
+    if samples_root.is_symlink() or profile_root.is_symlink() or (
+        profile_root.exists() and not profile_root.is_dir()
     ):
         raise ValueError("training sample directory contains existing data")
     profile_root.mkdir(parents=True, exist_ok=True)
+    _clear_temporary_sample_workspaces(profile_root)
+    namespace = profile_root / _TEMPORARY_SAMPLE_NAMESPACE
+    # mkdir claims the versioned namespace atomically. An empty namespace or
+    # workspace is recoverable, without a separate partially written owner file.
+    namespace.mkdir(exist_ok=True)
     try:
-        with tempfile.TemporaryDirectory(prefix="training-", dir=profile_root) as temporary:
-            yield Path(temporary)
+        directory = namespace / f"training-{uuid4().hex}"
+        directory.mkdir()
+        yield directory
     finally:
+        _clear_temporary_sample_workspaces(profile_root)
+        namespace.rmdir()
         PruneEmptySampleDirectories(profile_root, samples_root)
+
+
+def _clear_temporary_sample_workspaces(profile_root: Path) -> None:
+    entries = tuple(profile_root.iterdir())
+    if not entries:
+        return
+    namespace = profile_root / _TEMPORARY_SAMPLE_NAMESPACE
+    if entries != (namespace,) or namespace.is_symlink() or not namespace.is_dir():
+        raise ValueError("training sample directory contains existing data")
+    workspaces = tuple(namespace.iterdir())
+    for workspace in workspaces:
+        if not _TEMPORARY_SAMPLE_NAME.fullmatch(workspace.name):
+            raise ValueError("training sample directory contains existing data")
+        _validate_temporary_sample_workspace(workspace)
+    # Validate every entry before removing any object. Interrupted removal leaves
+    # a subset of this same layout, so the next locked run can repeat cleanup.
+    for workspace in workspaces:
+        shutil.rmtree(workspace)
+
+
+def _validate_temporary_sample_workspace(workspace: Path) -> None:
+    if workspace.is_symlink() or not workspace.is_dir():
+        raise ValueError("training sample directory contains existing data")
+    for path in workspace.iterdir():
+        if path.is_symlink():
+            raise ValueError("training sample directory contains existing data")
+        if path.name in ("samples.sqlite3", "samples.sqlite3-journal") and path.is_file():
+            continue
+        if path.name != "matrices" or not path.is_dir():
+            raise ValueError("training sample directory contains existing data")
+        for partition in path.iterdir():
+            if partition.name not in tuple(map(str, range(8))) or partition.is_symlink() or not partition.is_dir():
+                raise ValueError("training sample directory contains existing data")
+            for matrix in partition.iterdir():
+                if matrix.name not in ("features.bin", "targets.bin") or matrix.is_symlink() or not matrix.is_file():
+                    raise ValueError("training sample directory contains existing data")
+
+
+def _clear_tcn_batch_workspaces(root: Path) -> None:
+    workspaces = tuple(root.glob("tcn-batches-*"))
+    for workspace in workspaces:
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError("training_sample_cache_unknown_tcn_workspace")
+        for path in workspace.iterdir():
+            if path.name not in ("training", "early_stopping") or path.is_symlink() or not path.is_file():
+                raise ValueError("training_sample_cache_unknown_tcn_workspace")
+    for workspace in workspaces:
+        shutil.rmtree(workspace)
 
 
 def PruneEmptySampleDirectories(profile_root: Path, samples_root: Path) -> None:

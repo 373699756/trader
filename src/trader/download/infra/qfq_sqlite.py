@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import PublishSqliteFile, VerifiedSqlitePublication, VerifySqliteFile
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureRecord
 from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL, WriteDownloadFailure
 
@@ -33,7 +34,6 @@ from trader.download.infra.price_columns import (
 )
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
-    CheckSqliteIntegrity,
     EnsureSqliteSchema,
     HasSqliteSchema,
     OpenSqliteConnection,
@@ -101,6 +101,9 @@ class SQLiteQfqWindowCache:
             raise ValueError("qfq_profile_invalid")
         self.path = path
         self.profile = profile
+        self._file_verification: VerifiedSqlitePublication | None = None
+        self._publication_depth = 0
+        self._file_dirty = False
 
     def _connection(self, *, write: bool = False) -> SqliteConnection:
         if self.path.is_symlink() or self.path.is_dir():
@@ -128,11 +131,40 @@ class SQLiteQfqWindowCache:
 
     @contextmanager
     def _write_connection(self) -> Iterator[SqliteConnection]:
+        if self._publication_depth == 0 and Path(f"{self.path}.sha256").is_file():
+            self.verify_integrity()
         with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
             EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
             for statement in _REPAIR_SQL:
                 connection.run(statement)
             yield connection
+        self._mark_publication()
+
+    @contextmanager
+    def publication(self, peer: QfqWindowPort) -> Iterator[None]:
+        """Batch committed writes into one physical file fingerprint."""
+        if not isinstance(peer, SQLiteQfqWindowCache) or peer.path != self.path or peer is self:
+            raise ValueError("qfq_pair_publication_invalid")
+        if self._publication_depth == 0 and Path(f"{self.path}.sha256").is_file():
+            self.verify_integrity()
+        self._publication_depth += 1
+        peer._publication_depth += 1
+        try:
+            yield
+        finally:
+            self._publication_depth -= 1
+            peer._publication_depth -= 1
+            if self._publication_depth == 0 and self.path.is_file() and (
+                self._file_dirty or peer._file_dirty or not Path(f"{self.path}.sha256").is_file()
+            ):
+                self.publish_file()
+                peer._file_dirty = False
+                peer._file_verification = None
+
+    def _mark_publication(self) -> None:
+        self._file_dirty = True
+        if self._publication_depth == 0:
+            self.publish_file()
 
     def RecordDownloadFailure(self, record: DownloadFailureRecord, *, configuration: DownloadFailureConfiguration) -> None:
         with self._write_connection() as connection:
@@ -200,9 +232,19 @@ class SQLiteQfqWindowCache:
             connection.run("UPDATE price_issue SET reason=? WHERE code=?", (reason, code))
 
     def verify_integrity(self) -> None:
-        with self._read_connection() as connection:
-            if connection is not None:
-                CheckSqliteIntegrity(connection)
+        if self.path.is_file():
+            self._file_verification = VerifySqliteFile(
+                self.path,
+                3,
+                sqlite_policy=self._sqlite_policy,
+                previous=self._file_verification,
+            )
+
+    def publish_file(self) -> None:
+        if self.path.is_file():
+            PublishSqliteFile(self.path, 3, sqlite_policy=self._sqlite_policy)
+            self._file_verification = None
+            self._file_dirty = False
 
     def codes(self) -> frozenset[str]:
         with self._read_connection() as connection:
@@ -238,7 +280,7 @@ class SQLiteQfqWindowCache:
                 (code, identity[1], identity[2]),
             )
         )
-        if len(rows) > self._session_limit(connection) or _digest(rows) != DecodeHash(identity[0]):
+        if len(rows) > self._session_limit(connection):
             raise RuntimeError("qfq_code_identity_mismatch")
         return rows
 
@@ -273,7 +315,7 @@ class SQLiteQfqWindowCache:
         for code in codes:
             rows = tuple(grouped.get(code, ()))
             digest = identities.get(code)
-            if digest is not None and (len(rows) > session_limit or _digest(rows) != digest):
+            if digest is not None and len(rows) > session_limit:
                 raise RuntimeError("qfq_code_identity_mismatch")
             result.append((code, rows))
         return tuple(result)
@@ -290,6 +332,8 @@ class SQLiteQfqWindowCache:
             with self._read_connection() as connection:
                 if connection is None:
                     return tuple(PublishedHistoryWindow(code, ()) for code in requested)
+                if self._publication_depth == 0 and self._publication_id(connection) is not None:
+                    self.verify_integrity()
                 for start in range(0, len(requested), 32):
                     batch = requested[start : start + 32]
                     with SqliteTransaction(connection):
@@ -305,6 +349,8 @@ class SQLiteQfqWindowCache:
         return tuple(result)
 
     def inspect_windows(self, allowed_codes: frozenset[str]) -> QfqWindowSnapshot:
+        if self._publication_depth == 0 and Path(f"{self.path}.sha256").is_file():
+            self.verify_integrity()
         states: list[QfqWindowState] = []
         with self._read_connection() as connection:
             if connection is None:
@@ -553,9 +599,12 @@ class SQLiteQfqWindowCache:
                 else "qfq_pair_publication_failed"
             )
             raise QfqPairPublicationError((), (), 0, reason=reason) from exc
+        if changed or not Path(f"{self.path}.sha256").is_file():
+            self._mark_publication()
         return ((self.path.name,) if changed else ()), count
 
     def manifest(self) -> PublishedHistoryManifest | None:
+        self.verify_integrity()
         try:
             with self._read_connection() as connection:
                 if connection is None:
@@ -670,6 +719,7 @@ class SQLiteQfqWindowCache:
         allowed: frozenset[str],
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
+        self.verify_integrity()
         if not 1 <= sessions <= len(manifest.calendar_dates):
             raise ValueError("qfq_read_window_invalid")
         requested = tuple(sorted(set(codes) & allowed))

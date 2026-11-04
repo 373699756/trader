@@ -5,8 +5,10 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import argparse
+import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -17,6 +19,7 @@ from pathlib import Path
 from statistics import median
 from tempfile import TemporaryDirectory
 from typing import Literal, TypedDict, TypeVar, cast
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import trader
@@ -47,6 +50,7 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.disk_types import DiskKind
+from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
@@ -315,7 +319,7 @@ class _SyncFixture:
         if not self.paths.daily_window.exists():
             return None
         codes = tuple(item.code for item in self.reference.eligible_universe)
-        return cast(str, CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2", sqlite_policy=self._sqlite_policy).read_codes(codes)))
+        return CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2", sqlite_policy=self._sqlite_policy).read_codes(codes))
 
 
 def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, disk_kind: DiskKind, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
@@ -361,13 +365,40 @@ def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, disk_kind: Disk
     return {"targets": runs, "joint_single_equivalent": True, "independent_targets": True}
 
 
-def _worker(size: int, sessions: int, disk_kind: DiskKind, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def _worker(
+    size: int,
+    sessions: int,
+    disk_kind: DiskKind,
+    *,
+    sqlite_policy: SqliteIoPolicy,
+    include_training: bool = False,
+) -> dict[str, object]:
     with TemporaryDirectory(prefix="trader-database-baseline-") as scratch:
         sync = MeasureSyncBaseline(Path(scratch), size=size, sessions=sessions, disk_kind=disk_kind, sqlite_policy=sqlite_policy)
         history = MeasureHistoryWrites(size, sessions, disk_kind=disk_kind, sqlite_policy=sqlite_policy)
+        training = None
+        if include_training:
+            from .sample_comparison_worker import MeasureSamples
+
+            with (
+                patch.object(SqliteConnection, "__init__", SqliteConnection.__init__),
+                patch.object(SqliteConnection, "close", SqliteConnection.close),
+                DatabaseMeasurement(Path(scratch)) as measurement,
+            ):
+                samples = MeasureSamples(
+                    PROJECT_ROOT,
+                    Path(scratch) / "training",
+                    size,
+                    min(sessions, 750),
+                    sqlite_policy=sqlite_policy,
+                )
+            training = {"samples": samples, "measurement": measurement.result}
     if history["status"] != "passed":
         raise RuntimeError("database_baseline_history_cases_failed")
-    return {"sync": sync, "history": history["summary"]}
+    result: dict[str, object] = {"sync": sync, "history": history["summary"]}
+    if training is not None:
+        result["training"] = training
+    return result
 
 
 def _numeric_metrics(value: object, prefix: str = "") -> dict[str, float]:
@@ -402,7 +433,14 @@ def _median_metrics(runs: list[dict[str, object]]) -> dict[str, float]:
     return {key: median(run[key] for run in measurements) for key in sorted(common)}
 
 
-def _run_worker(checkout: Path, size: int, sessions: int, disk_kind: DiskKind) -> dict[str, object]:
+def _run_worker(
+    checkout: Path,
+    size: int,
+    sessions: int,
+    disk_kind: DiskKind,
+    *,
+    include_training: bool = False,
+) -> dict[str, object]:
     completed = subprocess.run(
         [
             sys.executable,
@@ -417,16 +455,18 @@ def _run_worker(checkout: Path, size: int, sessions: int, disk_kind: DiskKind) -
             disk_kind,
             "--expected-product-root",
             str(checkout),
+            *(("--include-training",) if include_training else ()),
         ],
         cwd=checkout,
         env={**os.environ, "PYTHONPATH": str(checkout / "src"), "PYTHONHASHSEED": "0"},
         capture_output=True,
         text=True,
         check=True,
-        timeout=600,
+        timeout=1800 if include_training else 600,
     )
     decoded = json.loads(completed.stdout)
-    if not isinstance(decoded, dict) or set(decoded) != {"sync", "history"}:
+    expected = {"sync", "history", "training"} if include_training else {"sync", "history"}
+    if not isinstance(decoded, dict) or set(decoded) != expected:
         raise ValueError("database_baseline_invalid_worker_report")
     return cast(dict[str, object], decoded)
 
@@ -436,7 +476,7 @@ def _publication_facts(value: object, prefix: str = "") -> dict[str, object]:
     if isinstance(value, dict):
         for key, child in value.items():
             path = f"{prefix}.{key}"
-            if key in {"identities", "publication_hash", "rows", "gaps", "state", "requests", "requested_rows"}:
+            if key in {"identities", "publication_hash", "rows", "gaps", "state", "requests", "requested_rows", "numeric_hash"}:
                 facts[path] = child
             else:
                 facts.update(_publication_facts(child, path))
@@ -541,6 +581,19 @@ def _compare(
     }
 
 
+def _input_identity() -> str:
+    digest = hashlib.sha256()
+    paths = sorted((
+        *(PROJECT_ROOT / "src/trader").rglob("*.py"),
+        *(PROJECT_ROOT / "scripts/runtime_diagnostics").glob("*.py"),
+        *(PROJECT_ROOT / "config").glob("*.json"),
+    ))
+    for path in paths:
+        digest.update(path.relative_to(PROJECT_ROOT).as_posix().encode() + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--size", type=int, default=8)
@@ -548,6 +601,7 @@ def main() -> int:
     parser.add_argument("--rounds", type=int, choices=range(1, 6), default=5)
     parser.add_argument("--disk-kind", choices=("ssd", "hdd", "unknown"), default="unknown")
     parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--include-training", action="store_true")
     parser.add_argument("--baseline-checkout", type=Path)
     parser.add_argument("--acceptance-focus", choices=("history", "market-company"), default="history")
     parser.add_argument("--expected-product-root", type=Path, default=PROJECT_ROOT)
@@ -557,10 +611,12 @@ def main() -> int:
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if not 1 <= args.size <= 32 or not 5 <= args.sessions <= 2000:
         parser.error("database baseline requires 1..32 stocks and 5..2000 sessions")
+    if args.include_training and args.baseline_checkout is not None:
+        parser.error("training I/O baseline does not accept historical comparison checkouts")
     if args.worker:
         if Path(trader.__file__).resolve().parents[2] != args.expected_product_root.resolve():
             raise RuntimeError("database_comparison_wrong_product_import")
-        emit_report(_worker(args.size, args.sessions, args.disk_kind, sqlite_policy=sqlite_policy))
+        emit_report(_worker(args.size, args.sessions, args.disk_kind, sqlite_policy=sqlite_policy, include_training=args.include_training))
         return 0
     if args.baseline_checkout is not None:
         result = _compare(
@@ -569,8 +625,18 @@ def main() -> int:
         acceptance = cast(dict[str, object], result["acceptance"])
         status = "passed" if acceptance["accepted"] else "degraded"
     else:
-        runs = [_run_worker(PROJECT_ROOT, args.size, args.sessions, args.disk_kind) for _ in range(args.rounds)]
-        result = {"runs": runs, "median_metrics": _median_metrics(runs)}
+        identity = _input_identity()
+        runs = [
+            _run_worker(PROJECT_ROOT, args.size, args.sessions, args.disk_kind, include_training=args.include_training)
+            for _ in range(args.rounds)
+        ]
+        if _input_identity() != identity:
+            raise RuntimeError("database_baseline_code_or_configuration_changed")
+        if args.include_training:
+            fingerprints = [_publication_facts(run) for run in runs]
+            if any(value != fingerprints[0] for value in fingerprints):
+                raise RuntimeError("database_baseline_repeated_input_or_output_mismatch")
+        result = {"runs": runs, "median_metrics": _median_metrics(runs), "input_identity": identity}
         status = "passed"
     emit_report(
         {
@@ -583,6 +649,14 @@ def main() -> int:
                 "sessions": args.sessions,
                 "physical_http_requests": 0,
                 "disk_kind": args.disk_kind,
+                "training_sample_io": args.include_training,
+                "environment": {"python": platform.python_version(), "platform": platform.platform(), "cpu_count": os.cpu_count()},
+                "sqlite_policy": {
+                    "connection_timeout_seconds": sqlite_policy.connection_timeout_seconds,
+                    "read_window_rows": sqlite_policy.read_window_rows,
+                    "transaction_batch_rows": sqlite_policy.transaction_batch_rows,
+                    "checkpoint_mode": sqlite_policy.checkpoint_mode,
+                },
                 **result,
                 "cache_policy": "fresh worker and databases per round; operating-system cache is uncontrolled",
                 "measurement_policy": "scoped public SQLite wrapper instrumentation; statements count submitted run/run_many rows; successful BEGIN/COMMIT counts; WAL sampled every 50 ms; SQL time includes commit and fetch, excludes connection setup/PRAGMAs; RSS is process peak",

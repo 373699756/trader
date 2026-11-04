@@ -277,10 +277,64 @@ def test_reduction_deadline_and_completion_tail_do_not_extend_on_repeated_closur
     assert repeated.risks[0].expires_at == resolved.risks[0].expires_at
 
 
+@pytest.mark.parametrize(
+    ("body", "ratio"),
+    (
+        ("本公司控股股东拟减持不超过100万股，占公司总股本的比例不超过2%。", 2),
+        ("本公司控股股东计划减持股份，占公司总股本的1.5%。", 1.5),
+        ("本公司控股股东拟通过集中竞价减持股份，占总股本比例为0.3%。", 0.3),
+        ("本公司控股股东拟减持股份，占公司流通股本的比例为2%。", None),
+        ("本公司控股股东拟减持股份，占其持有股份的比例为2%。", None),
+        ("本公司控股股东拟减持股份，其持有股份占公司总股本的比例为2%。", None),
+        ("本公司控股股东拟减持股份，占公司总股本的比例为101%。", None),
+        ("本公司控股股东拟减持股份，占公司总股本的比例为2%；拟减持股份占总股本比例为1%。", None),
+        ("本公司控股股东张三及李四拟减持股份，占公司总股本的比例为2%。", None),
+        ("本公司控股股东张三、李四拟减持股份，占公司总股本的比例为2%。", None),
+        ("本公司控股股东与一致行动人拟减持股份，合计占公司总股本的比例为2%。", None),
+        ("本公司一、股东基本情况。二、减持计划。本公司控股股东拟减持股份，占公司总股本的比例为2%。", 2),
+        ("本公司报告期内合同合计10项。本公司控股股东拟减持股份，占公司总股本的比例为2%。", 2),
+        ("一、本公司控股股东拟减持股份，占公司总股本的比例为2%。二、其它说明。", 2),
+    ),
+)
+def test_reduction_plan_extracts_only_unique_planned_total_share_ratio(body, ratio):
+    result = ExtractCompanyEvents(
+        (_document("reduce", "控股股东减持计划公告", body),), AT, CompanyEventPolicy()
+    )
+    assert result.risks[0].reduction_plan.planned_ratio_pct == ratio
+
+
+def test_reduction_new_partial_disclosure_preserves_known_plan_fields_and_ignores_late_old_input():
+    initial = _document(
+        "reduce", "控股股东减持计划公告",
+        "本公司控股股东拟减持股份，占公司总股本的比例为2%，减持期间为2026年10月28日至2026年11月28日。",
+    )
+    previous = ExtractCompanyEvents((initial,), AT, CompanyEventPolicy())
+    later = AT + timedelta(days=1)
+    update = _document(
+        "update", "控股股东减持计划变更公告",
+        "本公司控股股东根据公告reduce，减持计划调整，减持期间为2026年11月1日至2026年11月30日。", later,
+    )
+    current = ExtractCompanyEvents((update,), later, CompanyEventPolicy(), previous_risks=previous.risks)
+    plan = current.risks[0].reduction_plan
+    assert plan.planned_ratio_pct == 2
+    assert plan.planned_end_date.isoformat() == "2026-11-30"
+    restored = ExtractCompanyEvents((initial,), later, CompanyEventPolicy(), previous_risks=current.risks)
+    assert restored.risks == current.risks
+
+
+@pytest.mark.parametrize("intent", ("不计划减持", "不拟减持", "尚未计划减持"))
+def test_negated_reduction_intent_does_not_create_a_hard_risk(intent):
+    document = _document(
+        "reduce", "控股股东减持计划公告", f"本公司控股股东{intent}股份，占公司总股本的比例为2%。"
+    )
+    assert not ExtractCompanyEvents((document,), AT, CompanyEventPolicy()).risks
+
+
 def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_inconsistent_risk(tmp_path):
     facts = _facts(
         (
             _document("warning", "关于收到警示函的公告", "本公司收到证监会出具警示函的决定。"),
+            _document("reduction", "控股股东减持计划公告", "本公司控股股东拟减持股份，占公司总股本的比例为2%。"),
             _document("buy", "关于回购股份的公告", "本公司已实际回购股份，占公司总股本的比例为0.5%，用于注销。"),
             _document("increase", "控股股东增持公告", "本公司控股股东已实际增持股份，占公司总股本的比例为0.3%。"),
             _document(
@@ -311,6 +365,7 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
         "operating_contract",
     }
     assert {item.positive_level for item in restored.positive_events} == {2, 3}
+    assert next(item for item in restored.risk_events if item.reduction_plan is not None).reduction_plan.planned_ratio_pct == 2
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         columns = {row[1] for row in connection.run("PRAGMA table_info(company_facts)")}
         assert not columns.intersection({"payload", "body", "risk_events_json", "positive_events_json"})
@@ -438,3 +493,61 @@ def test_contract_requires_separate_net_amounts_and_prior_annual_report_disclosu
         assert event.measurements.reference_disclosed_at.date().isoformat() == "2026-04-20"
     else:
         assert result.reviews and event.measurements.amount_basis == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("title", "body", "ratio"),
+    (
+        ("关于回购股份的公告", "本公司累计已回购股份100万股，占总股本比例为0.3%，用于注销。", 0.3),
+        ("控股股东增持公告", "本公司控股股东累计已增持股份，占公司总股本的0.3%。", 0.3),
+        ("关于回购股份的公告", "本公司累计已回购股份，计划回购股份占总股本比例为0.3%，用于注销。", None),
+        ("关于回购股份的公告", "本公司未累计已回购股份，占总股本比例为0.3%，用于注销。", None),
+        ("控股股东增持公告", "本公司控股股东累计已增持股份，目前持有股份占总股本比例为8%。", None),
+    ),
+)
+def test_share_action_common_actual_ratio_wording_keeps_plan_and_negation_guards(title, body, ratio):
+    event = ExtractCompanyEvents((_document("action", title, body),), AT, CompanyEventPolicy()).positives[0]
+    assert event.measurements.actual_ratio_pct == ratio
+
+
+def test_late_old_positive_input_cannot_replace_newer_measurement_or_cancel_it():
+    first = _document("buy", "关于回购股份的公告", "本公司已实际回购股份，占公司总股本的比例为0.3%，用于注销。")
+    later = AT + timedelta(days=2)
+    progress = _document(
+        "progress", "关于回购股份进展的公告",
+        "本公司根据公告buy，累计已回购股份，占公司总股本的比例为0.5%，用于注销。", later,
+    )
+    current = ExtractCompanyEvents((first, progress), later, CompanyEventPolicy())
+    cancellation = _document(
+        "old-cancellation", "关于取消回购股份的公告", "本公司根据公告buy取消回购股份。", AT + timedelta(days=1)
+    )
+    restored = ExtractCompanyEvents(
+        (first, cancellation), later, CompanyEventPolicy(), previous_positives=current.positives
+    )
+    assert restored.positives == current.positives
+
+
+def test_contract_formatted_cny_amounts_preserve_units_and_prior_annual_basis():
+    body = (
+        "本公司已签订正式合同。合同总金额：人民币2,000万元（不含税）。"
+        "2025年度经审计的营业收入：人民币10，000万元（不含税）。"
+        "2025年年度报告于2026年4月20日披露。"
+    )
+    result = ExtractCompanyEvents((_document("contract", "关于签订重大合同的公告", body),), AT, CompanyEventPolicy())
+    measurements = result.positives[0].measurements
+    assert measurements.contract_amount_cny == 20_000_000
+    assert measurements.reference_annual_revenue_cny == 100_000_000
+    assert measurements.amount_to_revenue_pct == 20
+
+
+def test_contract_conflicting_formatted_amounts_are_not_selected_arbitrarily():
+    body = (
+        "本公司已签订正式合同。合同总金额：人民币2,000万元（不含税）。"
+        "合同金额：人民币3,000万元（不含税）。"
+        "2025年度经审计的营业收入：人民币10，000万元（不含税）。"
+        "2025年年度报告于2026年4月20日披露。"
+    )
+    event = ExtractCompanyEvents((_document("contract", "关于签订重大合同的公告", body),), AT, CompanyEventPolicy()).positives[0]
+    assert event.measurements.contract_amount_cny is None
+    assert event.measurements.reference_annual_revenue_cny == 100_000_000
+    assert event.measurements.amount_to_revenue_pct is None

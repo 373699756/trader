@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import SqlitePublicationError, VerifySqliteFile
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,9 +61,10 @@ def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None, sql
     if not control_path.is_file():
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
+        VerifySqliteFile(control_path, 2, sqlite_policy=sqlite_policy)
         references: dict[str, PreparedReference] = {}
         state = HistoryControlIndex(control_path, sqlite_policy=sqlite_policy).load_published_state(sequence=sequence, references=references)
-    except HistoryControlError as exc:
+    except (HistoryControlError, SqlitePublicationError) as exc:
         raise HistorySnapshotInspectionError("history_control_invalid") from exc
     if state is None:
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")

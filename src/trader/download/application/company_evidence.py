@@ -79,6 +79,7 @@ class CompanyEvidenceIndex(Protocol):
         policies: CompanyDocumentPolicies,
         excluded: Sequence[tuple[str, str, str]] = (),
         repair: Literal["ocr", "limits"] | None = None,
+        local_only: bool = False,
     ) -> tuple[CompanyDocumentTask, ...]: ...
     def document_workload(
         self,
@@ -164,6 +165,7 @@ class _SyncState:
     changes: int = 0
     reused: int = 0
     completed: int = 0
+    published: int = 0
     current_stock: CompanyStockProgress | None = None
     failures: tuple[str, ...] = ()
     failed_documents: int = 0
@@ -215,12 +217,6 @@ def SyncCompanyEvidence(
         index.initialize()
         index.prepare_publication(population, observed_at)
         _report(dependencies, "resume", state, None, workload=documents.workload())
-        while documents.workload().local_pending and not _cancelled(dependencies):
-            completed = documents.completed
-            documents.run_batch(local_only=True)
-            if documents.completed == completed:
-                break
-            _publish_batch(dependencies, population, observed_at, started, state)
     news_population = tuple(sorted(set(news_codes).intersection(population))) if not request.fill_missing else ()
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
@@ -230,9 +226,19 @@ def SyncCompanyEvidence(
             _report(dependencies, component, state, None, completed=0, status="deferred")
             continue
         _structured(dependencies, component, observed_at, state)
+    if not _cancelled(dependencies):
+        _publish_batch(dependencies, population, observed_at, started, state)
+    if not _cancelled(dependencies) and documents.workload().local_pending:
+        # Recover one bounded local batch; directory discovery must not wait for
+        # the complete backlog, and later batches still reuse their local files.
+        completed = documents.completed
+        documents.run_batch(local_only=True)
+        if documents.completed != completed:
+            _publish_batch(dependencies, population, observed_at, started, state)
     pending, published = (
         (0, 0) if _cancelled(dependencies) else _run_batches(dependencies, population, state, context, documents)
     )
+    published = max(published, state.published)
     news_updates = () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
     if news_updates and not _cancelled(dependencies):
         _publish_batch(dependencies, population, observed_at, started, state)
@@ -305,6 +311,7 @@ def _run_batches(
             break
     if not _cancelled(dependencies):
         published = dependencies.index.published_count(population)
+        state.published = published
     return pending, published
 
 
@@ -332,6 +339,7 @@ def _publish_batch(
                 }:
                     raise
         published = dependencies.index.published_count(population)
+        state.published = published
         _report(dependencies, "publish", state, 0, completed=updated, status="complete")
         return published
     return None
@@ -708,6 +716,7 @@ class _DocumentRun:
                 limit=self.configuration.document_batch_size,
                 policies=self.policies,
                 excluded=tuple(self.failed_identities),
+                local_only=local_only,
             )
         )
         self.attempted_identities.clear()

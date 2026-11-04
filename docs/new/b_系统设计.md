@@ -119,7 +119,11 @@ flowchart TD
 | WAL/checkpoint | 在提交边界控制集中写入成本 | 比较 checkpoint 频率和写放大 | WAL 大小、关闭成本、故障恢复 |
 | 样本布局 | 顺序读取、连续数组候选 | 批读与映射读取候选 | 首次生成、复用、增量和清理总成本 |
 
-现状：`runtime.json.disk_medium` 是全局选择；`sqlite.json.sqlite_policy.hdd/ssd` 各有连接超时、读窗、事务批次和 checkpoint，但当前两组数值相同。`download.history.write_batches` 已有介质差异。不能把“有两个配置组”写成“所有模块都已调优”。工作区当前选择为 `ssd`，与旧台账某次 HDD 记录不同；本批不改用户配置，也没有重新确认物理介质。
+现状：`runtime.json.disk_medium` 是全局选择；`sqlite.json.sqlite_policy.hdd/ssd` 各有连接超时、读窗、驱动批次和 checkpoint，当前两组数值相同。本机当前配置为 `hdd`；实际介质由只读disk检测独立报告，不能用配置值代替检测证据。`download.history.write_batches` 已有介质差异，不表示所有模块都已调优。
+
+组合根`BuildSqlitePolicy`选择唯一不可变策略，显式配置优先，自动检测unknown使用HDD保守策略。下载、训练及荐股持久化adapter把同一个策略传到公共SQLite边界；只读HTTP/Web不自行选介质或打开业务数据库。`connection_timeout_seconds`进入连接超时，`read_window_rows`限制底层取行窗口，`transaction_batch_rows`限制一次驱动批量提交的行数，`checkpoint_mode`由显式checkpoint操作消费。驱动分批仍处于调用者原有事务内，不按每个小批次分别COMMIT。
+
+history另外通过`ChooseHistoryWriteTuning`选择业务writer的flush阈值：HDD首建8股/16384格，增量16股/8192格；SSD首建及增量16股/8192格，unknown按HDD。它与SQLite驱动批次是不同层的限制，不共享第二套默认值。策略和消费者证据及实测状态只记入g。
 
 不得关闭正式数据持久性或弱化完整性换取速度。SQLite、数组和列式候选必须把首建、增量、重复读、取消、恢复、关闭都计入，不只比较一次查询。
 
@@ -170,7 +174,7 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- |
 | `runtime_dir` | 运行状态目录 | 路径 | `.runtime/trader` | 组合根建立运行资源 | 启动读取；不得提交运行数据 |
 | `data_dir` | 业务数据根目录 | 路径 | `data` | 各业务构造自己的数据路径 | 启动读取；不是自动删除范围 |
-| `disk_medium` | 选择存储策略 | `hdd/ssd` | `ssd`，是工作区值 | 给实际读写 adapter 注入策略 | 不是物理介质证明 |
+| `disk_medium` | 选择存储策略 | `hdd/ssd` | `hdd`，是工作区值 | 给实际读写 adapter 注入策略 | 不是物理介质证明 |
 | `strategy_config` | 业务配置入口 | 文件名 | `strategy.json` | 统一配置解析 | 启动一次读取 |
 | `long_watchlist` | Long 名单文件 | 文件名 | `long_watchlist.json` | Long 只读名单 | 不影响短线模型身份 |
 
@@ -180,7 +184,7 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- |
 | `sqlite_policy.<介质>.connection_timeout_seconds` | SQLite 等锁超时 | 秒 | 两组均5 | 连接边界 | 有限正值；不能无限等待 |
 | `sqlite_policy.<介质>.read_window_rows` | 一批读取的行数 | 整数/行 | 两组均512 | 批读 adapter | 先测后调 |
-| `sqlite_policy.<介质>.transaction_batch_rows` | 一次事务的目标行数 | 整数/行 | 两组均64 | 批写 adapter | 不改变逻辑原子单位 |
+| `sqlite_policy.<介质>.transaction_batch_rows` | 每次向驱动批量提交的行数上限 | 整数/行 | 两组均64 | 公共SQLite批写边界 | 分批不拆业务事务，不改变逻辑原子单位 |
 | `sqlite_policy.<介质>.checkpoint_mode` | WAL 收尾方式 | 枚举 | 两组均TRUNCATE | 连接/任务收尾 | 计入真实收尾耗时 |
 
 这张表只是已核对的公共字段，不冒充全部参数字典已完成。其它文件逐叶清点和调用者对照是 g 中 P06、P07 及各业务任务的明确交付物。

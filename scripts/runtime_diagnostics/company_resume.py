@@ -102,6 +102,7 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
         policies: CompanyDocumentPolicies,
         excluded: Sequence[tuple[str, str, str]] = (),
         repair: Literal["ocr", "limits"] | None = None,
+        local_only: bool = False,
     ) -> tuple[CompanyDocumentTask, ...]:
         if self._directory_only:
             return ()
@@ -112,6 +113,7 @@ class _ReplayIndex(SQLiteCompanyEvidenceIndex):
             policies=policies,
             excluded=excluded,
             repair=repair,
+            local_only=local_only,
         )
 
     def document_workload(

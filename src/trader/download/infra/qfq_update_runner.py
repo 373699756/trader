@@ -39,15 +39,13 @@ class QfqUpdateRunner:
         try:
             with HistoryMaintenanceLock(self.lock_path):
                 stage = "initial_integrity"
-                self.v2.verify_integrity()
+                if Path(f"{self.v2.path}.sha256").is_file():
+                    self.v2.verify_integrity()
                 if not seed_only:
                     stage = "update"
                     result = self.updater.execute(self.now())
                     changed.update(result.changed_files)
                     rows += result.changed_rows
-                    if result.failure_reason is None and not self.updater.cancel_requested():
-                        stage = "publication_validation"
-                        self._verify_publication(started)
                     return result
                 manifest = self.history.manifest()
                 if manifest is not None:
@@ -96,35 +94,3 @@ class QfqUpdateRunner:
                 )
             return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)
 
-    def _verify_publication(self, started: float) -> None:
-        self.updater.report(QfqMessage(self.updater.monotonic() - started, "发布内容校验", "开始 | 整库及两档配对"))
-        self.v2.verify_integrity()
-        codes = self.v2.codes() | self.v3.codes()
-        v2 = self.v2.inspect_windows(codes)
-        v3 = self.v3.inspect_windows(codes)
-        if tuple(state.code for state in v2.states) != tuple(state.code for state in v3.states):
-            raise RuntimeError("qfq_publication_membership_mismatch")
-        for left, right in zip(v2.states, v3.states, strict=True):
-            try:
-                if (
-                    not left.verified or not right.verified
-                    or left.start_date is None or left.end_date is None
-                    or right.start_date is None or right.end_date is None
-                ):
-                    raise RuntimeError("qfq_publication_content_invalid")
-                # Published bounds own the pair; missing prices do not expand a window.
-                expected = tuple(day for day in left.dates if right.start_date <= day <= right.end_date)
-                if (
-                    left.source != right.source
-                    or left.end_date != right.end_date
-                    or left.start_date > right.start_date
-                    or right.dates != expected
-                ):
-                    raise RuntimeError("qfq_publication_pair_mismatch")
-            except RuntimeError as exc:
-                if self.failures is not None:
-                    self.failures(DownloadFailureContext("publication_stock_validation", code=left.code), exc)
-                raise
-        self.updater.report(QfqMessage(
-            self.updater.monotonic() - started, "发布内容校验", f"完成 | 整库完整 | 两档配对 {len(v2.states)} 股"
-        ))

@@ -169,6 +169,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--disk-path", type=Path, action="append", default=[], help="additional read-only disk probe path"
     )
+    parser.add_argument("--disk-policy-audit", action="store_true", help="audit SQLite policy consumers without opening business databases")
+    parser.add_argument("--database-training", action="store_true", help="include four-profile sample I/O in the isolated database baseline")
     parser.add_argument("--training-signal-date", type=date.fromisoformat, help="read-only V5 label horizon probe")
     parser.add_argument(
         "--training-profiles",
@@ -361,6 +363,10 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--database-probe-directory requires a database performance profile")
     if args.profile == "database-baseline" and args.database_probe_directory is None:
         raise ValueError("database-baseline requires --database-probe-directory")
+    if args.disk_policy_audit and args.profile != "disk":
+        raise ValueError("--disk-policy-audit requires --profile disk")
+    if args.database_training and (args.profile != "database-baseline" or args.baseline_checkout is not None):
+        raise ValueError("--database-training requires database-baseline without a comparison checkout")
     if args.profile == "database-baseline" and not 5 <= args.history_days <= 2000:
         raise ValueError("database-baseline requires 5..2000 history days")
     if args.profile == "database-baseline" and (len(args.download_sizes) != 1 or not 1 <= args.download_sizes[0] <= 32):
@@ -503,10 +509,12 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             if args.database_probe_directory is not None
             else None,
             database_rounds=args.database_rounds,
+            database_training=args.database_training,
             database_acceptance_focus=args.database_acceptance_focus,
             base_url=args.base_url,
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
             disk_paths=tuple(path.expanduser().resolve() for path in args.disk_path),
+            disk_policy_audit=args.disk_policy_audit,
             wide_sample_source=args.wide_sample_source.expanduser().resolve() if args.wide_sample_source else None,
             v5_sample_root=args.v5_sample_root.expanduser().resolve() if args.v5_sample_root else None,
             v5_candidate_config=args.v5_candidate_config.expanduser().resolve() if args.v5_candidate_config else None,
@@ -684,7 +692,8 @@ def build_commands(
                 "--config",
                 str(options.runtime_config),
             )
-            + tuple(value for path in options.disk_paths for value in ("--path", str(path))),
+            + tuple(value for path in options.disk_paths for value in ("--path", str(path)))
+            + (("--policy-audit",) if options.disk_policy_audit else ()),
             common_timeout,
         ),
         "training_coverage": DiagnosticCommand(
@@ -1066,6 +1075,7 @@ def build_commands(
                 "--rounds",
                 str(options.database_rounds),
             )
+            + (("--include-training",) if options.database_training else ())
             + (
                 ("--acceptance-focus", options.database_acceptance_focus)
                 if options.database_acceptance_focus != "history"

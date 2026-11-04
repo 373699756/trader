@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import VerifiedSqlitePublication, VerifySqliteFile
 
 import sqlite3
 from collections.abc import Callable, Sequence
@@ -33,11 +34,18 @@ class SQLiteCompanyEvidenceReader:
         self.path = path
         self._raw_path = raw_path
         self._extraction_hash = CompanyExtractionHash(event_policy)
+        self._file_verification: VerifiedSqlitePublication | None = None
 
     def _publication_version(self, connection: SqliteConnection) -> str:
         identity = ReadCompanyPublicationIdentity(connection)
         if identity is None:
             return ""
+        self._file_verification = VerifySqliteFile(
+            self.path,
+            3,
+            sqlite_policy=self._sqlite_policy,
+            previous=self._file_verification,
+        )
         if identity.extraction_hash != self._extraction_hash:
             raise ValueError("company_publication_identity_mismatch")
         return identity.content_hash.hex()

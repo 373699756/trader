@@ -72,6 +72,13 @@ from trader.download.infra.company_fact_inputs import (
     ReadCompanySnapshotShared,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_field_recovery import (
+    CompleteCompanyFieldRepairs,
+    CompanyFieldRepairReceipts,
+    EnsureCompanyFieldRepairs,
+    QueueCompanyFieldRepairs,
+    RestoreCompanyFieldRepairs,
+)
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES, DecodeCompanyLabel, RequireCompanyTime
 from trader.download.infra.company_pipeline_queries import (
@@ -127,6 +134,9 @@ class SQLiteCompanyEvidenceIndex:
     def _check_cancelled(self) -> None:
         if self._cancel_requested is not None and self._cancel_requested():
             raise InterruptedError("company_sync_cancelled")
+
+    def publish_file(self) -> None:
+        self._facts.publish_file()
 
     @contextmanager
     def _connect(self, *, accepted_document: bool = False) -> Iterator[SqliteConnection]:
@@ -185,6 +195,7 @@ class SQLiteCompanyEvidenceIndex:
                         connection.run(statement)
                     ActivateDisclosureQueryPolicy(connection)
                     EnsureCompanyPipelineQueries(connection)
+                    EnsureCompanyFieldRepairs(connection)
                     connection.run(FAILURE_DIAGNOSTICS_SQL)
             self._repair_pending_files()
         except sqlite3.Error as exc:
@@ -658,6 +669,7 @@ class SQLiteCompanyEvidenceIndex:
         policies: CompanyDocumentPolicies,
         excluded: Sequence[tuple[str, str, str]] = (),
         repair: DocumentRepairMode | None = None,
+        local_only: bool = False,
     ) -> tuple[CompanyDocumentTask, ...]:
         if limit is not None and not 1 <= limit <= 200:
             raise ValueError("company_document_batch_invalid")
@@ -668,11 +680,13 @@ class SQLiteCompanyEvidenceIndex:
                 "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN temp.requested_codes u ON u.code=c.code "
                 "JOIN temp.pending_documents p ON p.id=d.id WHERE d.id IN ("
                 "SELECT selected.id FROM temp.pending_documents selected JOIN disclosures s ON s.id=selected.id "
-                "WHERE (?=0 OR selected.due=1) ORDER BY EXISTS(SELECT 1 FROM document_tasks t "
+                "WHERE (?=0 OR selected.due=1) AND (?=0 OR EXISTS(SELECT 1 FROM document_tasks t "
+                "WHERE t.source=s.source AND t.source_key=s.source_key AND t.record_hash=s.record_hash AND t.path IS NOT NULL)) "
+                "ORDER BY s.published_at DESC,EXISTS(SELECT 1 FROM document_tasks t "
                 "WHERE t.source=s.source AND t.source_key=s.source_key AND t.record_hash=s.record_hash AND t.path IS NOT NULL) DESC,"
-                "s.published_at DESC,s.id LIMIT ?) "
+                "s.id LIMIT ?) "
                 "ORDER BY d.published_at DESC,d.id,c.code",
-                (limit is not None or bool(excluded) or repair is not None, -1 if limit is None else limit),
+                (limit is not None or bool(excluded) or repair is not None, local_only, -1 if limit is None else limit),
             ).fetchall()
         items: dict[tuple[str, str], CompanyDocumentTask] = {}
         for row in rows:
@@ -1109,11 +1123,14 @@ class SQLiteCompanyEvidenceIndex:
         # Formal receipts are authoritative across a crash between the commits.
         with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                RestoreCompanyFieldRepairs(connection, formal)
                 for row in formal.run("SELECT source,source_key,code,record_hash,extraction_hash,published_at FROM company_input_receipt WHERE outcome='valid'"):
                     connection.run(
                         "INSERT OR REPLACE INTO document_publications SELECT id,?,?,?,? FROM disclosures "
-                        "WHERE source=? AND source_key=? AND record_hash=?",
-                        (row[2], row[3], row[4], RequireCompanyTime(row[5]).isoformat(), row[0], row[1], row[3]),
+                        "WHERE source=? AND source_key=? AND record_hash=? AND NOT EXISTS("
+                        "SELECT 1 FROM company_field_repairs f WHERE f.disclosure_id=disclosures.id "
+                        "AND f.code=? AND f.record_hash=disclosures.record_hash AND f.state='pending')",
+                        (row[2], row[3], row[4], RequireCompanyTime(row[5]).isoformat(), row[0], row[1], row[3], row[2]),
                     )
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             PrepareCompanyPublication(connection, tuple(codes))
@@ -1135,6 +1152,9 @@ class SQLiteCompanyEvidenceIndex:
         # A new extraction identity requires fresh source verification, not old receipts.
         with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
             parent = ReadCompanyPublicationIdentity(formal)
+            if parent is not None and parent.extraction_hash == self._facts.extraction_hash:
+                with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                    QueueCompanyFieldRepairs(connection, formal, codes, observed_at, self.path.parent)
         if parent is not None and parent.extraction_hash != self._facts.extraction_hash:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 # Retained text is still a valid input for new field rules. Keep
@@ -1279,9 +1299,10 @@ class SQLiteCompanyEvidenceIndex:
                     sources,
                     parent,
                     observed_at,
-                    receipts=formal_receipts,
+                    receipts=(*formal_receipts, *CompanyFieldRepairReceipts(connection, requested, observed_at)),
                 )
                 connection.run_many("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)", receipts)
+                CompleteCompanyFieldRepairs(connection, prepared)
                 connection.run_many("DELETE FROM company_dirty_codes WHERE code=?", ((code,) for code in requested))
                 superseded_codes = PublishCompanySupersessions(connection, prepared, self._facts.extraction_hash)
                 MarkCompanyDirty(connection, superseded_codes)
@@ -1303,6 +1324,8 @@ class SQLiteCompanyEvidenceIndex:
     def _release_published_documents(self, connection: SqliteConnection) -> None:
         connection.run(
             "UPDATE disclosures SET body_retained=0 WHERE body_retained=1 AND NOT EXISTS("
+            "SELECT 1 FROM company_field_repairs f WHERE f.disclosure_id=disclosures.id "
+            "AND f.record_hash=disclosures.record_hash AND f.state<>'complete') AND NOT EXISTS("
             "SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
             "WHERE c.disclosure_id=disclosures.id AND NOT EXISTS("
             "SELECT 1 FROM document_publications p WHERE p.disclosure_id=disclosures.id "
@@ -1318,6 +1341,8 @@ class SQLiteCompanyEvidenceIndex:
                     "SELECT d.*,MIN(c.code) AS code,t.record_hash AS task_hash FROM document_tasks t JOIN disclosures d "
                     "ON d.source=t.source AND d.source_key=t.source_key JOIN disclosure_codes c ON c.disclosure_id=d.id "
                     "WHERE t.stage NOT IN ('cleaned','obsolete','expired') AND (t.record_hash<>d.record_hash OR d.published_at<?) "
+                    "AND NOT EXISTS(SELECT 1 FROM company_field_repairs f WHERE f.disclosure_id=d.id "
+                    "AND f.record_hash=t.record_hash AND f.state<>'complete') "
                     "GROUP BY t.source,t.source_key,t.record_hash",
                     (((self._run_cutoff.date() - timedelta(days=365)).isoformat() if self._run_cutoff else ""),),
                 ).fetchall()

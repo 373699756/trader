@@ -3,6 +3,31 @@ from pathlib import Path
 from scripts.diagnose_runtime import _parser, _validate, build_commands, build_report
 from scripts.runtime_diagnostics import disk_profile
 from scripts.runtime_diagnostics.diagnostic_types import DiagnosticResult
+from scripts.runtime_diagnostics.disk_policy_audit import AuditSqlitePolicyConsumers
+
+
+def test_policy_audit_reports_missing_and_unpacked_injection_without_touching_source(tmp_path):
+    source = tmp_path / "src/trader/download/infra/example.py"
+    source.parent.mkdir(parents=True)
+    content = (
+        "from trader.infra.sqlite_connection import SqliteSession as Session\n"
+        "Session(path, sqlite_policy=policy)\n"
+        "SqliteSession(path)\n"
+        "OpenSqliteConnection(path, **arguments)\n"
+    )
+    source.write_text(content)
+    report = AuditSqlitePolicyConsumers(tmp_path)
+    assert report["connection_calls"] == 3
+    assert report["explicit_policy_calls"] == 1
+    assert report["missing_policy_calls"][0]["line"] == 3
+    assert report["unpacked_policy_calls_require_review"][0]["line"] == 4
+    assert source.read_text() == content
+
+
+def test_policy_audit_is_explicitly_routed_to_the_disk_worker():
+    options, _ = _validate(_parser().parse_args(["--profile", "disk", "--disk-policy-audit"]))
+    command = build_commands(options, python_executable="/python3")[0]
+    assert command.argv[-1] == "--policy-audit"
 
 
 def test_disk_profile_routes_extra_paths_and_preserves_actionable_details(tmp_path: Path) -> None:

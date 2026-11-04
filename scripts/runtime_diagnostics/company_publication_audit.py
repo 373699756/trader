@@ -112,7 +112,7 @@ def AuditCompanyPublication(
                 findings.append("company_reviews_pending")
             if missing_risk_evidence:
                 findings.append("company_risk_evidence_missing")
-            field_audit = AuditCompanyFields(formal, path)
+            field_audit = AuditCompanyFields(formal, path, raw=raw, observed_at=now)
             field_findings = field_audit["findings"]
             if not isinstance(field_findings, list):
                 raise ValueError("company_field_findings_invalid")

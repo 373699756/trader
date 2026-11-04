@@ -41,6 +41,7 @@ def PublishHistorySnapshot(control: HistoryControlIndex, publication: HistoryPub
         except HistoryControlError:
             raise
         if published_hash == publication.snapshot.content_hash:
+            control.publish_file()
             return
         raise
 

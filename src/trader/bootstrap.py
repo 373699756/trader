@@ -422,7 +422,10 @@ def _sync_company_evidence(
             text_identity=text_capability.identity,
             failures=failures,
         )
-        return SyncCompanyEvidence(dependencies, request)
+        try:
+            return SyncCompanyEvidence(dependencies, request)
+        finally:
+            index.publish_file()
 
 
 def _prepare_reference(

@@ -186,15 +186,20 @@ class HistoryDownloadIndex:
         *,
         tasks: tuple[HistoryDownloadTask, ...] | None = None,
     ) -> None:
-        """Replace only an unpublished batch's parents, preserving all durable progress."""
-        if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
+        """Rebind or advance an unpublished batch, retaining committed prices and gap receipts."""
+        advancing = current.cutoff > previous.cutoff
+        if (
+            previous.sequence != current.sequence
+            or current.cutoff < previous.cutoff
+            or (advancing and tasks is None)
+        ):
             raise ValueError("history_download_identity_conflict")
         with (
             SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             updated = connection.run(
-                """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?
+                """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?,cutoff_date=?
                    WHERE singleton=1 AND sync_sequence=? AND cutoff_date=?
                      AND source_hash=? AND calendar_hash=? AND universe_hash=?
                      AND NOT EXISTS (SELECT 1 FROM published_snapshot WHERE sync_sequence>=?)""",
@@ -202,6 +207,7 @@ class HistoryDownloadIndex:
                     EncodeHash(current.source_hash),
                     EncodeHash(current.calendar_hash),
                     EncodeHash(current.universe_hash),
+                    EncodeDate(current.cutoff),
                     previous.sequence,
                     EncodeDate(previous.cutoff),
                     EncodeHash(previous.source_hash),
@@ -222,9 +228,15 @@ class HistoryDownloadIndex:
                     "INSERT OR IGNORE INTO download_tasks(code) VALUES(?)",
                     ((task.code,) for task in tasks),
                 )
+                if advancing:
+                    connection.run("DELETE FROM download_task_dates")
+                    connection.run_many(
+                        "UPDATE download_tasks SET tencent_done=? WHERE code=?",
+                        ((int(task.tencent_done), task.code) for task in tasks),
+                    )
                 connection.run_many(
                     "INSERT INTO download_task_dates VALUES(?,?)",
-                    ((task.code, EncodeDate(day)) for task in tasks if task.code not in existing for day in task.dates),
+                    ((task.code, EncodeDate(day)) for task in tasks if advancing or task.code not in existing for day in task.dates),
                 )
 
     def gap_codes(self) -> frozenset[str]:

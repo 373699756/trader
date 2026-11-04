@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, wait
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from itertools import islice
@@ -55,6 +56,8 @@ class QfqPairPublicationError(RuntimeError):
 
 
 class QfqWindowPort(Protocol):
+    def publication(self, peer: QfqWindowPort) -> AbstractContextManager[None]: ...
+
     def repair_cutoff(self) -> date | None: ...
 
     def price_issues(self) -> tuple[PriceIssue, ...]: ...
@@ -165,6 +168,12 @@ class UpdateQfqWindows:
     def seed(
         self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...]
     ) -> QfqUpdateResult:
+        with self._publication_check():
+            return self._seed(windows, identity, calendar=calendar)
+
+    def _seed(
+        self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...]
+    ) -> QfqUpdateResult:
         started = self.monotonic()
         changed: set[str] = set()
         rows = 0
@@ -202,6 +211,23 @@ class UpdateQfqWindows:
         return QfqUpdateResult(None, count, changed_files=tuple(sorted(changed)), changed_rows=rows)
 
     def execute(self, observed_at: datetime) -> QfqUpdateResult:
+        with self._publication_check():
+            return self._execute(observed_at)
+
+    @contextmanager
+    def _publication_check(self) -> Iterator[None]:
+        started = self.monotonic()
+        with self.v2.publication(self.v3):
+            yield
+            began = self.monotonic()
+            self.report(QfqMessage(began - started, "数据库文件校验", "开始 | 主文件及WAL整体指纹"))
+        self.report(QfqMessage(
+            self.monotonic() - started,
+            "数据库文件校验",
+            f"完成 | 阶段耗时 {self.monotonic() - began:.2f} 秒",
+        ))
+
+    def _execute(self, observed_at: datetime) -> QfqUpdateResult:
         started = self.monotonic()
         self.report(QfqMessage(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
         try:

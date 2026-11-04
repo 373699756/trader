@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
 from pathlib import Path
 from threading import get_ident
 from typing import Literal
@@ -21,6 +22,7 @@ from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_download_index import HistoryDownloadTask
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
+from trader.infra.sqlite_publication import PublishSqliteFile
 
 
 @dataclass(frozen=True)
@@ -260,14 +262,13 @@ class HistoryDirectPrices:
     def publishable_partitions(
         self,
         dates: tuple[date, ...],
-        progress: Callable[[Literal["started", "completed"], int, int, str], None],
+        progress: Callable[[Literal["started", "waiting", "completed"], int, int, str], None],
     ) -> tuple[HistorySnapshotPartition, ...]:
         months = tuple(sorted(set(self._previous) | {(day.year, day.month) for day in dates}))
         references: dict[tuple[int, int], HistorySnapshotPartition] = {}
         for year, month in months:
             self._activity.tick()
             target = self._month(year, month)
-            # Resume detects changes from persisted observation sequences, not an in-memory flag.
             if not (self._root / f"prices_{year:04d}.sqlite3").exists():
                 target.initialize()
             if (year, month) in self._previous and not target.has_observations_after(
@@ -275,30 +276,28 @@ class HistoryDirectPrices:
             ):
                 references[(year, month)] = self._previous[(year, month)]
 
-        changed_months = tuple(month for month in months if month not in references)
-        index = 0
-        while index < len(changed_months):
-            year, month = changed_months[index]
-            run = [(year, month)]
-            while index + len(run) < len(changed_months):
-                candidate = changed_months[index + len(run)]
-                if candidate in references or candidate != (year, run[-1][1] + 1):
-                    break
-                run.append(candidate)
-            label = (
-                f"{year:04d}-{run[0][1]:02d}"
-                if len(run) == 1
-                else f"{year:04d}-{run[0][1]:02d}..{year:04d}-{run[-1][1]:02d}"
-            )
-            progress("started", index, len(changed_months), label)
-            sealed = self._month(year, run[0][1]).seal_months(
-                tuple(selected_month for _, selected_month in run),
-                self._sequence,
-            )
-            references.update(zip(run, sealed, strict=True))
-            index += len(run)
-            progress("completed", index, len(changed_months), label)
+        years = tuple(sorted(
+            {year for year, month in months if (year, month) not in references}
+            | {year for year, _ in months if not (self._root / f"prices_{year:04d}.sqlite3.sha256").is_file()}
+        ))
+        for completed, year in enumerate(years):
+            label = f"prices_{year:04d}.sqlite3"
+            progress("started", completed, len(years), label)
+            selected = tuple(month for candidate_year, month in months if candidate_year == year and (year, month) not in references)
+            with self._activity.reporting(
+                partial(progress, "waiting", completed, len(years), label)
+            ):
+                if selected:
+                    sealed = self._month(year, selected[0]).seal_months(selected, self._sequence)
+                    references.update(((year, month), value) for month, value in zip(selected, sealed, strict=True))
+                else:
+                    PublishSqliteFile(
+                        self._root / label,
+                        2,
+                        sqlite_policy=self._sqlite_policy,
+                        check=self._activity.tick,
+                    )
+            progress("completed", completed + 1, len(years), label)
         return tuple(references[month] for month in months)
-
 
 __all__ = ["HistoryDirectPrices", "HistoryPriceContext", "HistoryPriceResult"]

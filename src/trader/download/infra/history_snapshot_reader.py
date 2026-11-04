@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from itertools import groupby
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.download.domain.history_control import HistorySnapshot, HistorySnapshotPartition
@@ -35,7 +35,7 @@ from trader.download.infra.history_reference_index import (
     ReadBoundHistoryReference,
     ReferenceFileStamp,
 )
-from trader.download.infra.history_sqlite_read_connection import PrefetchHistoryPricePages
+from trader.infra.sqlite_publication import SqlitePublicationError, VerifiedSqlitePublication, VerifySqliteFile
 
 _CODE = re.compile(r"^[0-9]{6}$")
 
@@ -45,35 +45,10 @@ class HistorySnapshotReadError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class _PartitionFileIdentity:
-    device: int
-    inode: int
-    size: int
-    modified_ns: int
-    changed_ns: int
-
-
-@dataclass(frozen=True, slots=True)
 class _VerifiedPartition:
     reference: HistorySnapshotPartition
-    identity: _PartitionFileIdentity
+    identity: VerifiedSqlitePublication
     partition: HistoryPricePartition
-    level: Literal["logical", "full"]
-
-
-def _partition_file_identity(path: Path) -> _PartitionFileIdentity:
-    stat = path.stat()
-    wal = Path(f"{path}-wal")
-    if wal.exists():
-        wal_stat = wal.stat()
-        return _PartitionFileIdentity(
-            stat.st_dev,
-            stat.st_ino,
-            stat.st_size + wal_stat.st_size,
-            max(stat.st_mtime_ns, wal_stat.st_mtime_ns),
-            max(stat.st_ctime_ns, wal_stat.st_ctime_ns),
-        )
-    return _PartitionFileIdentity(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 @dataclass(frozen=True)
@@ -137,6 +112,7 @@ class HistorySnapshotReader:
         self._sqlite_policy = sqlite_policy
         self._root = root
         self._verified: dict[tuple[str, int], _VerifiedPartition] = {}
+        self._file_verifications: dict[str, VerifiedSqlitePublication] = {}
         self._verification_lock = threading.Lock()
         self._references: dict[str, _ReferenceVersion] = {}
 
@@ -170,36 +146,19 @@ class HistorySnapshotReader:
         snapshot: HistorySnapshot,
         progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> None:
+        """Verify each database file once; no business-row audit runs while loading."""
         self.reference_index(snapshot)
-        total = len(snapshot.partitions)
-        for completed, reference in enumerate(snapshot.partitions, start=1):
+        files = {reference.relative_path: reference for reference in snapshot.partitions}
+        total = len(files)
+        for completed, reference in enumerate(files.values(), start=1):
             self._partition_with_trust(
                 reference,
                 None if progress is None else _partition_progress(progress, completed, total),
-                required_level="full",
-                establish_level="full",
             )
             if progress is not None:
-                progress(completed, total, completed, reference.row_count, reference.row_count, "logical")
-
-    def verify_published_snapshot(
-        self,
-        snapshot: HistorySnapshot,
-        progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
-    ) -> None:
-        """Verify sequence-bound content identities without a second payload decode pass."""
-
-        self.reference_index(snapshot)
-        total = len(snapshot.partitions)
-        for completed, reference in enumerate(snapshot.partitions, start=1):
-            self._partition_with_trust(
-                reference,
-                None if progress is None else _partition_progress(progress, completed, total),
-                required_level=None,
-                establish_level="logical",
-            )
-            if progress is not None:
-                progress(completed, total, completed, reference.row_count, reference.row_count, "logical")
+                fingerprint = self._file_verifications[reference.relative_path].fingerprint
+                size = fingerprint.database_size + fingerprint.wal_size
+                progress(completed, total, completed, size, size, "hash")
 
     def count_range(
         self,
@@ -580,8 +539,6 @@ class HistorySnapshotReader:
         return self._partition_with_trust(
             reference,
             progress,
-            required_level=None,
-            establish_level="full",
         )
 
     def _partition_with_trust(
@@ -589,9 +546,6 @@ class HistorySnapshotReader:
         reference: HistorySnapshotPartition,
         progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None,
         *,
-        required_level: Literal["full"] | None,
-        establish_level: Literal["logical", "full"],
-        retain_pages: bool = False,
         check: Callable[[], None] | None = None,
     ) -> HistoryPricePartition:
         if check is not None:
@@ -599,28 +553,28 @@ class HistorySnapshotReader:
         path = self._root / reference.relative_path
         with self._verification_lock:
             try:
-                identity = _partition_file_identity(path)
+                previous = self._file_verifications.get(reference.relative_path)
+                identity = VerifySqliteFile(
+                    path,
+                    2,
+                    sqlite_policy=self._sqlite_policy,
+                    previous=previous,
+                    check=check,
+                )
+                self._file_verifications[reference.relative_path] = identity
                 existing = self._verified.get((reference.relative_path, reference.calendar_month))
                 if (
                     existing is not None
                     and existing.reference == reference
                     and existing.identity == identity
-                    and (required_level is None or existing.level == required_level)
                 ):
                     return existing.partition
                 self._verified.pop((reference.relative_path, reference.calendar_month), None)
-                if establish_level == "full":
-                    HistoryPricePartition.verify(path, reference, progress, sqlite_policy=self._sqlite_policy)
-                else:
-                    if not any(
-                        value.reference.relative_path == reference.relative_path and value.identity == identity
-                        for value in self._verified.values()
-                    ):
-                        PrefetchHistoryPricePages(path, check)
-                    HistoryPricePartition.verify_logical_content(
-                        path, reference, progress, retain_pages=retain_pages, check=check, sqlite_policy=self._sqlite_policy
-                    )
-            except (HistorySnapshotReadError, HistoryPricePartitionError, OSError) as exc:
+                if progress is not None and identity is not previous:
+                    size = identity.fingerprint.database_size + identity.fingerprint.wal_size
+                    progress(size, size, "hash")
+            except (HistorySnapshotReadError, HistoryPricePartitionError, OSError, SqlitePublicationError) as exc:
+                self._file_verifications.pop(reference.relative_path, None)
                 self._verified.pop((reference.relative_path, reference.calendar_month), None)
                 if isinstance(exc, HistorySnapshotReadError):
                     raise
@@ -628,15 +582,13 @@ class HistorySnapshotReader:
             year, month = _reference_month(reference)
             partition = HistoryPricePartition(path, year, month, sqlite_policy=self._sqlite_policy)
             self._verified[(reference.relative_path, reference.calendar_month)] = _VerifiedPartition(
-                reference, identity, partition, establish_level
+                reference, identity, partition
             )
             return partition
 
     def _published_partition(self, reference: HistorySnapshotPartition) -> HistoryPricePartition:
-        """Read a download-published partition; publication owns content verification."""
-        return HistoryPricePartition(
-            self._root / reference.relative_path, reference.calendar_year, reference.calendar_month, sqlite_policy=self._sqlite_policy
-        )
+        """Use the same file-level boundary for published streaming consumers."""
+        return self._verified_partition(reference)
 
 
 def _training_codes(codes: Collection[str]) -> frozenset[str]:

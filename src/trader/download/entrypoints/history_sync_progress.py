@@ -41,7 +41,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "persisting_partitions": "正式月库提交",
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
-    "sealing_partitions": "发布内容校验",
+    "sealing_partitions": "数据库文件校验",
     "publishing_snapshot": "发布快照",
     "confirming_download": "下载断点提交",
     "synchronization": "同步流程",
@@ -63,7 +63,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "downloading_codes": "股票",
     "tencent_history": "股票",
     "persisting_partitions": "月份",
-    "sealing_partitions": "月份",
+    "sealing_partitions": "数据库",
     "history_published_gaps": "月份",
     "history_gap_resume": "处理项",
     "baostock_repair": "股票",
@@ -246,7 +246,7 @@ class StderrHistorySyncProgress:
             ):
                 label = "本批耗时"
             else:
-                label = "本月耗时" if monthly else "阶段耗时"
+                label = "本库耗时" if progress.stage == "sealing_partitions" else "本月耗时" if monthly else "阶段耗时"
             parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
         level = _progress_level(progress)
         self._output(
@@ -334,8 +334,6 @@ class StderrHistorySyncProgress:
             self._specific_failure = self._last_progress
 
     def _should_suppress(self, progress: HistorySyncProgress, now: float) -> bool:
-        if progress.stage == "sealing_partitions" and progress.state == "started":
-            return True
         if progress.stage == "supplier_routing":
             return True
         if progress.stage == "persisting_partitions" and progress.state == "waiting":

@@ -9,7 +9,15 @@ import pytest
 from tests.component import test_company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_events import CompanyDataState
-from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
+from trader.download.domain.company_evidence import (
+    CompanyFinancial,
+    CompanyListing,
+    DisclosurePage,
+    DisclosurePartition,
+    StructuredCompanyPage,
+    StructuredCompanyQuery,
+)
+from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from tests.helpers.configuration import (
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
@@ -18,6 +26,137 @@ from tests.helpers.configuration import (
 )
 
 NOW = fixtures.NOW
+
+
+def _local_backlog(tmp_path, count):
+    raw = CompanyRawFiles(tmp_path, capacity=10000000, analysis_reserve=1000000, free_reserve=1)
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "company_evidence.sqlite3",
+        facts_path=tmp_path / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles(tmp_path / "text"),
+        raw_files=raw,
+        listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),),
+    )
+    index.initialize()
+    partition = next(p for p in index.partitions(("sse",), NOW) if p.start == p.end == NOW.date())
+    items = tuple(
+        fixtures._disclosure(str(i), "关于收到立案告知书的公告", when=NOW - timedelta(minutes=i))
+        for i in range(count)
+    )
+    index.commit_page(partition, DisclosurePage(items, count, False), NOW)
+    # One unfinished directory day is enough to exercise batch interleaving.
+    day = (NOW - timedelta(days=1)).date().isoformat()
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE partitions SET is_complete=1,checked_at=?", (NOW.isoformat(),))
+        connection.run("UPDATE partitions SET is_complete=0 WHERE start_date=? AND end_date=?", (day, day))
+        connection.run(
+            "INSERT OR REPLACE INTO coverage VALUES('sse',?,?,?)",
+            ((NOW.date() - timedelta(days=365)).isoformat(), NOW.date().isoformat(), NOW.isoformat()),
+        )
+    for item in items:
+        directory = raw.directory(item)
+        directory.mkdir(parents=True)
+        partial = directory / "download.part"
+        partial.write_bytes(b"%PDF-isolated-local-backlog-fixture")
+        raw.complete(item, partial)
+        index.document_stage(item, "downloaded")
+    return index, raw, items
+
+
+@pytest.mark.parametrize("structured_failure", (False, True))
+def test_latest_structured_data_precedes_one_local_batch_then_directory_discovery(tmp_path, structured_failure):
+    index, raw, items = _local_backlog(tmp_path, 3)
+    order = []
+    financial = CompanyFinancial("600001", NOW.date() - timedelta(days=30), NOW, 1, 2, 3, 4, 5, 6, 7, 8)
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, *args, **kwargs):
+            if isinstance(query, StructuredCompanyQuery):
+                order.append(query.component)
+                if structured_failure and query.component == "financial":
+                    raise TimeoutError("fixture")
+                if query.component == "financial":
+                    return StructuredCompanyPage("financial", query.page, 1, 1, financials=(financial,))
+            else:
+                assert query.start >= NOW.date() - timedelta(days=365)
+                order.append("announcements")
+            return super().fetch(query, *args, **kwargs)
+
+        def document_ready(self, item):
+            return raw.local(item) is not None
+
+        def download_document(self, item):
+            pytest.fail("retained local PDF was downloaded again")
+
+        def extract_document(self, item, **kwargs):
+            assert raw.local(item) is not None
+            snapshot = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
+            assert snapshot.financial == (None if structured_failure else financial)
+            order.append(("local", item.identity))
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
+
+    source = Source()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0),
+        ("600001",),
+        NOW,
+        configuration=replace(fixtures._TEST_COMPANY_CONFIGURATION, document_batch_size=1, directory_batch_pages=1),
+    )
+    assert order[:3] == ["financial", "pledge", "unlock"]
+    assert order[3:5] == [("local", items[0].identity), "announcements"]
+    assert Counter(item[1] for item in order if isinstance(item, tuple)) == Counter(item.identity for item in items)
+    assert result.needs_retry is structured_failure and result.pending_documents == 0
+    snapshot = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
+    assert snapshot.risk_events
+    assert ("financial:timeout" in result.failures) is structured_failure
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT SUM(body_checked) FROM disclosures").require_one()[0] == len(items)
+
+
+@pytest.mark.parametrize("phase", ("structured", "local"))
+@pytest.mark.parametrize("fill_missing", (False, True))
+def test_structured_first_local_recovery_resumes_after_cancellation(tmp_path, phase, fill_missing):
+    from trader.download.application.company_evidence import SyncCompanyEvidence
+    from tests.helpers.configuration import CompanyEvidenceRequestFixture
+
+    index, raw, items = _local_backlog(tmp_path, 2)
+    cancelled = False
+    resumed = False
+    analyzed = []
+
+    def progress(event):
+        nonlocal cancelled
+        if not resumed and phase == "structured" and event.component == "pledge" and event.status == "running":
+            cancelled = True
+
+    class Source(fixtures.Sources):
+        def document_ready(self, item):
+            return raw.local(item) is not None
+
+        def download_document(self, item):
+            pytest.fail("retained local PDF was downloaded again")
+
+        def extract_document(self, item, **kwargs):
+            nonlocal cancelled
+            analyzed.append(item.identity)
+            if not resumed and phase == "local":
+                cancelled = True
+            return fixtures._extraction("本公司收到中国证监会立案告知书。")
+
+    source = Source()
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, progress, lambda: cancelled)
+    configuration = replace(fixtures._TEST_COMPANY_CONFIGURATION, document_batch_size=1)
+    request = CompanyEvidenceRequestFixture(("600001",), NOW, configuration, fill_missing=fill_missing)
+    first = SyncCompanyEvidence(dependencies, request)
+    assert "task:cancelled" in first.failures
+    assert first.published_codes == int(phase == "local")
+    assert analyzed == ([items[0].identity] if phase == "local" else [])
+    assert all(raw.local(item) is not None for item in items if item.identity not in analyzed)
+    cancelled, resumed = False, True
+    second = SyncCompanyEvidence(dependencies, request)
+    assert not second.needs_retry and second.pending_documents == 0
+    assert Counter(analyzed) == Counter(item.identity for item in items)
+    assert SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].risk_events
 
 
 def test_document_inventory_switches_progress_before_reading_after_announcement_failure(tmp_path):

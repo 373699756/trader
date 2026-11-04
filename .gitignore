@@ -24,6 +24,7 @@
 *.sqlite3-wal
 *.sqlite3-shm
 *.sqlite3-journal
+*.sqlite3.sha256
 .agents/*
 !.agents/skills/
 .agents/skills/*

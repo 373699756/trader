@@ -26,6 +26,19 @@ class HistorySqliteActivity:
     def cancel(self) -> None:
         self._stopped.set()
 
+    @contextmanager
+    def reporting(self, progress: Callable[[], None]) -> Iterator[None]:
+        """Report file publication heartbeats under their current phase."""
+        with self._report_lock:
+            previous = self._progress
+            self._progress = progress
+            self._reported = self._monotonic()
+        try:
+            yield
+        finally:
+            with self._report_lock:
+                self._progress = previous
+
     def tick(self) -> None:
         if self._stopped.is_set() or self._cancel_requested():
             raise KeyboardInterrupt

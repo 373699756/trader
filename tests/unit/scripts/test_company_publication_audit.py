@@ -213,3 +213,29 @@ def test_public_report_projects_only_aggregate_coverage_fields(tmp_path):
     assert "company_components_incomplete" in json.dumps(report)
     fields = report["checks"][0]["summary"]["database"]["publication"]["field_audit"]
     assert fields["invalid_value_types"] == publication["field_audit"]["invalid_value_types"]
+
+
+def test_field_recovery_preview_names_missing_field_without_writing_or_inventing_material(tmp_path):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("plan", "控股股东减持计划公告")
+    partition = index.partitions(("sse",), fixtures.NOW)[0]
+    index.commit_page(partition, DisclosurePage((item,), 1, False), fixtures.NOW)
+    index.commit_document(item, fixtures._extraction(
+        "本公司控股股东计划减持股份，占公司总股本的比例不超过1%。"
+    ), fixtures.NOW)
+    index.publish(item.codes, fixtures.NOW)
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE company_reduction_plan SET planned_pct=NULL")
+    before = (index.path.read_bytes(), index.facts_path.read_bytes())
+    result = _audit(index)
+    plan = result["field_audit"]["recovery_plan"]
+    ratio = next(item for item in plan["items"] if item["field"] == "planned_pct")
+    assert ratio["source_key"] == "plan"
+    assert ratio["next_step"] == "download" and ratio["network_required"]
+    assert plan["read_only"]
+    assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
+    from scripts.runtime_diagnostics.company_field_audit import ProjectCompanyFieldAudit
+
+    ratio["raw_body"] = "must-not-project"
+    projected = ProjectCompanyFieldAudit(result["field_audit"])
+    assert "must-not-project" not in json.dumps(projected)

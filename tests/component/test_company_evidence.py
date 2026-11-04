@@ -236,9 +236,12 @@ def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp
         news_codes=("600001",),
     )
     assert "task:cancelled" in result.failures and result.needs_retry
-    assert len(publications) == (1 if phase == "news" else 0)
-    assert result.published_codes == (1 if phase == "news" else 0)
-    if phase != "news":
+    structured_published = phase in {"announcements", "announcement_page", "risk_documents", "news"}
+    assert len(publications) == (2 if phase == "news" else int(structured_published))
+    assert result.published_codes == int(structured_published)
+    if structured_published:
+        assert reader.publication_version() != previous
+    else:
         assert reader.publication_version() == previous
 
 

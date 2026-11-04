@@ -20,7 +20,6 @@ from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellSta
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
-from trader.download.infra.history_partition_proof import CalculateHistoryProofs
 from trader.download.infra.history_revision_codec import (
     PublishedCellFromPriceColumns,
     RevisionColumnValues,
@@ -30,6 +29,8 @@ from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_sqlite_read_connection import OpenHistoryPriceReader, WatchHistoryRead
 from trader.download.infra.price_columns import PRICE_COLUMNS, PRICE_SQL, PriceValues
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
+from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError, VerifySqliteFile
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
@@ -731,12 +732,13 @@ class HistoryPricePartition:
         calendar_months: tuple[int, ...],
         sequence: int | None = None,
     ) -> tuple[HistorySnapshotPartition, ...]:
-        """Produce multiple monthly proofs through one ordered annual query."""
+        """Publish one annual file fingerprint and aggregate monthly row counts."""
         if not calendar_months or tuple(sorted(set(calendar_months))) != calendar_months or any(
             not 1 <= month <= 12 for month in calendar_months
         ):
             raise ValueError("history proof months are invalid")
         try:
+            counts = dict.fromkeys(calendar_months, 0)
             with (
                 closing(self._read_connection()) as connection,
                 SqliteTransaction(connection),
@@ -748,52 +750,42 @@ class HistoryPricePartition:
                     sequence = connection.run(
                         "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_price_observation"
                     ).require_one()[0]
-                proofs = CalculateHistoryProofs(
-                    connection,
-                    sequence,
-                    # Typed writes already validate the new values. Publication seals
-                    # visible identities; cold readers and offline audits verify payloads.
-                    validate_payloads=False,
-                    date_ranges=tuple(_month_bounds(self._calendar_year, month) for month in calendar_months),
-                    heartbeat=lambda count: self._activity.tick() if self._activity else None,
+                for day, count in connection.run(
+                    "SELECT trade_date,COUNT(DISTINCT code) FROM daily_price_observation "
+                    "WHERE trade_date>=? AND trade_date<? AND sync_sequence<=? GROUP BY trade_date",
+                    (*_month_bounds(self._calendar_year, calendar_months[0])[:1],
+                     _month_bounds(self._calendar_year, calendar_months[-1])[1], sequence),
+                ):
+                    month = DecodeDate(day).month
+                    if month in counts:
+                        counts[month] += count
+            fingerprint = PublishSqliteFile(
+                self._path, 2,
+                sqlite_policy=self._sqlite_policy,
+                check=self._activity.tick if self._activity else None,
+            )
+            return tuple(
+                HistorySnapshotPartition(
+                    f"prices_{self._calendar_year:04d}.sqlite3",
+                    CanonicalDigest(("sqlite-file-publication", fingerprint, month, sequence)),
+                    counts[month], month, sequence,
                 )
-                return tuple(
-                    HistorySnapshotPartition(
-                        f"prices_{self._calendar_year:04d}.sqlite3",
-                        proof.logical_hash,
-                        proof.row_count,
-                        month,
-                        sequence,
-                    )
-                    for month, proof in zip(calendar_months, proofs, strict=True)
-                )
-        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryPricePartitionError("history monthly logical proofs failed") from exc
+                for month in calendar_months
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError, SqlitePublicationError) as exc:
+            raise HistoryPricePartitionError("history file publication failed") from exc
 
     @classmethod
     def verify(
         cls,
         path: Path,
         reference: HistorySnapshotPartition,
-        progress: HistoryPartitionVerificationProgress | None = None, *, sqlite_policy: SqliteIoPolicy,
-    ) -> None:
-        cls.verify_logical_content(path, reference, progress, validate_payloads=True, sqlite_policy=sqlite_policy)
-
-    @classmethod
-    def verify_logical_content(
-        cls,
-        path: Path,
-        reference: HistorySnapshotPartition,
         progress: HistoryPartitionVerificationProgress | None = None,
         *,
-        retain_pages: bool = False,
-        validate_payloads: bool = False,
-        check: Callable[[], None] | None = None, sqlite_policy: SqliteIoPolicy,
+        check: Callable[[], None] | None = None,
+        sqlite_policy: SqliteIoPolicy,
     ) -> None:
-        del retain_pages
-        cls.verify_months(
-            path, (reference,), progress, validate_payloads=validate_payloads, check=check, sqlite_policy=sqlite_policy
-        )
+        cls.verify_months(path, (reference,), progress, check=check, sqlite_policy=sqlite_policy)
 
     @classmethod
     def verify_months(
@@ -802,46 +794,21 @@ class HistoryPricePartition:
         references: tuple[HistorySnapshotPartition, ...],
         progress: HistoryPartitionVerificationProgress | None = None,
         *,
-        validate_payloads: bool = True,
         check: Callable[[], None] | None = None,
         sqlite_policy: SqliteIoPolicy,
     ) -> None:
-        """Verify same-year monthly proofs, sharing the existing scan for each observation sequence."""
-        ordered = tuple(sorted(references, key=lambda item: item.calendar_month))
-        if not ordered or len({item.calendar_year for item in ordered}) != 1 or len(
-            {item.calendar_month for item in ordered}
-        ) != len(ordered):
+        """Verify the database file once, without selecting or decoding price rows."""
+        if not references or len({item.calendar_year for item in references}) != 1 or len(
+            {item.calendar_month for item in references}
+        ) != len(references):
             raise ValueError("history verification months invalid")
-        candidate = cls(path, ordered[0].calendar_year, ordered[0].calendar_month, sqlite_policy=sqlite_policy)
         try:
-            with (
-                closing(candidate._read_connection()) as connection,
-                WatchHistoryRead(connection, check),
-                SqliteTransaction(connection),
-            ):
-                candidate._require_metadata(connection)
-                candidate._require_schema(connection)
-                for sequence in sorted({item.sequence for item in ordered}):
-                    selected = tuple(item for item in ordered if item.sequence == sequence)
-                    total = sum(item.row_count for item in selected)
-
-                    def report(count: int, total: int = total) -> None:
-                        if progress is not None:
-                            progress(count, total, "logical")
-
-                    proofs = CalculateHistoryProofs(
-                        connection,
-                        sequence,
-                        validate_payloads=validate_payloads,
-                        date_ranges=tuple(_month_bounds(item.calendar_year, item.calendar_month) for item in selected),
-                        heartbeat=report,
-                        check=check,
-                    )
-                    for reference, proof in zip(selected, proofs, strict=True):
-                        if proof.logical_hash != reference.logical_hash or proof.row_count != reference.row_count:
-                            raise HistoryPricePartitionError("history month logical hash mismatch")
-        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryPricePartitionError("history month logical verification failed") from exc
+            verified = VerifySqliteFile(path, 2, sqlite_policy=sqlite_policy, check=check)
+            if progress is not None:
+                size = verified.fingerprint.database_size + verified.fingerprint.wal_size
+                progress(size, size, "hash")
+        except (OSError, SqlitePublicationError) as exc:
+            raise HistoryPricePartitionError("history file verification failed") from exc
 
     def release_read_pages(self) -> None:
         """Release clean OS pages only after a sequential consumer finishes."""

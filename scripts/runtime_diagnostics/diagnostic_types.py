@@ -131,6 +131,7 @@ class DiagnosticOptions:
     training_signal_date: date | None = None
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
     disk_paths: tuple[Path, ...] = ()
+    disk_policy_audit: bool = False
     wide_sample_source: Path | None = None
     v5_sample_root: Path | None = None
     v5_candidate_config: Path | None = None
@@ -139,6 +140,7 @@ class DiagnosticOptions:
     performance_replay_rows: int | None = None
     database_probe_directory: Path | None = None
     database_rounds: int = 5
+    database_training: bool = False
     database_acceptance_focus: Literal["history", "market-company"] = "history"
 
 

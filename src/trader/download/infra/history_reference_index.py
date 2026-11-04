@@ -224,7 +224,7 @@ def ReadBoundHistoryReference(
 def ReferenceFileStamp(catalog: Path, reference: Path) -> tuple[tuple[int, int, int, int, int] | None, ...]:
     """Include both databases and committed WAL pages when caching a verified binding."""
     stamps: list[tuple[int, int, int, int, int] | None] = []
-    for path in (catalog, Path(str(catalog) + "-wal"), reference, Path(str(reference) + "-wal")):
+    for path in (catalog, Path(str(catalog) + "-wal"), Path(f"{catalog}.sha256"), reference, Path(str(reference) + "-wal")):
         try:
             stat = path.stat()
         except FileNotFoundError:
