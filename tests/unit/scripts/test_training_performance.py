@@ -3,6 +3,8 @@
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
+import hashlib
+import shutil
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +16,11 @@ from scripts.diagnose_runtime import _parser, _validate, build_commands, build_r
 from scripts.runtime_diagnostics import training_alignment
 from scripts.runtime_diagnostics.diagnostic_types import DiagnosticResult
 from scripts.runtime_diagnostics.training_alignment import _numeric_fingerprints
-from scripts.runtime_diagnostics.training_performance import SummarizeTrainingBenchmark, TrainingReuseFailures
+from scripts.runtime_diagnostics.training_performance import (
+    SummarizeTrainingBenchmark,
+    TrainingReuseFailures,
+    TrainingSampleReuseFailures,
+)
 
 
 def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path):
@@ -47,6 +53,50 @@ def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path
         build_commands(options)
 
 
+def _sample_scenario(profile):
+    selected = profile["profile"]
+    if selected == "v1":
+        return {"profiles": [], "not_applicable_profiles": ["v1"], "run": None}
+    return {
+        "profiles": [selected],
+        "not_applicable_profiles": [],
+        "cache_verified": True,
+        "source_cache_unchanged": True,
+        "target_cache_cleared": True,
+        "copied_bytes": 4096,
+        "model_files_copied": 0,
+        "copy_verification_seconds": 0.25,
+        "preparation": {
+            "method": "controlled_failure_before_fit", "fault_injected": True, "fitter_restored": True,
+            "fit_entry_counts": {selected: 1}, "unexpected_workspaces": 0, "model_files_created": 0,
+            "exit_code": 1, "seconds": 1.0,
+            "execution": {
+                "status": "failed", "profiles": [selected], "history_scan_passes": 1, "history_rows_read": 100,
+            },
+            "profiles": [{
+                "profile": selected, "training_input_hash": profile["training_input_hash"], "reused": False,
+                "status": "blocked", "heads": [
+                    {"strategy": strategy, "status": "blocked", "model_hash": "", "report_hash": "",
+                     "failure_reasons": ["profile_training_failed"]}
+                    for strategy in ("tomorrow", "d25")
+                ],
+            }],
+        },
+        "run": {
+            "complete": True,
+            "seconds": 2.0,
+            "profiles": [dict(deepcopy(profile), reused=False)],
+            "execution": {
+                "status": "completed", "profiles": [selected], "history_scan_passes": 0, "history_rows_read": 0,
+            },
+            "numeric_fingerprints": [
+                {"profile": selected, "strategy": strategy, "model_values_and_metrics_sha256": "b" * 64}
+                for strategy in ("tomorrow", "d25")
+            ],
+        },
+    }
+
+
 def _serial_results():
     profile = {
         "profile": "v5",
@@ -65,10 +115,12 @@ def _serial_results():
                 "status": "passed",
                 "summary": {
                     "profiles": [profile],
-                    "initial": {"complete": True, "profiles": [profile], "seconds": duration / 1000},
+                    "initial": {"complete": True, "profiles": [profile], "seconds": duration / 1000,
+                                "numeric_fingerprints": _sample_scenario(profile)["run"]["numeric_fingerprints"]},
                     "repeat": {"complete": True, "profiles": [dict(deepcopy(profile), reused=True)], "seconds": duration / 10000,
                                "execution": {"status": "completed", "profiles": ["v5"], "history_scan_passes": 0, "history_rows_read": 0}},
                     "process_peak_rss_bytes": 100,
+                    "sample_reuse": _sample_scenario(profile),
                 },
             },
             None,
@@ -199,6 +251,7 @@ def _checkout_results():
                         "repeat": repeat,
                         "source_identity_unchanged": True,
                         "training_configuration_sha256": "d" * 64,
+                        "sample_reuse": _sample_scenario(profile),
                     },
                 },
                 None,
@@ -210,7 +263,9 @@ def _checkout_results():
 def test_checkout_comparison_uses_numeric_values_instead_of_source_sensitive_hashes():
     comparison = SummarizeTrainingBenchmark(_checkout_results())
     assert comparison["comparable"]
-    assert comparison["candidate_ratio_vs_best_baseline"] == {"initial_seconds": 5.0 / 9.0, "repeat_seconds": 0.1 / 9.0}
+    assert comparison["candidate_ratio_vs_best_baseline"] == {
+        "initial_seconds": 5.0 / 9.0, "sample_reuse_seconds": None, "repeat_seconds": 0.1 / 9.0,
+    }
     assert build_report("training-performance", _checkout_results())["status"] == "passed"
     assert comparison["rounds"][0]["reuse_failures"]
     assert comparison["rounds"][1]["reuse_failures"] == ()
@@ -388,3 +443,173 @@ def test_four_profile_reuse_requires_every_selected_member(profile):
     assert TrainingReuseFailures(initial, run, profiles) == ()
     next(item for item in run["profiles"] if item["profile"] == profile)["reused"] = False
     assert TrainingReuseFailures(initial, run, profiles) == ("reuse_profiles_not_reused",)
+
+
+@pytest.mark.parametrize("change", (
+    "missing", "history_scan", "history_rows", "boolean_zero", "model_reused", "different_input",
+    "different_weights", "cache_changed", "cache_unverified", "models_copied", "cache_missing", "wrong_profiles",
+    "cache_not_cleared", "preparation_missing", "preparation_not_restored", "preparation_unreached",
+    "preparation_models", "preparation_success", "preparation_other_failure", "preparation_no_scan",
+))
+def test_sample_refit_rejects_claimed_success_without_its_workload_evidence(change):
+    results = list(deepcopy(_serial_results()))
+    summary = results[1].payload["summary"]
+    scenario = summary["sample_reuse"]
+    run = scenario["run"]
+    if change == "missing":
+        del summary["sample_reuse"]
+    elif change == "history_scan":
+        run["execution"]["history_scan_passes"] = 1
+    elif change == "history_rows":
+        run["execution"]["history_rows_read"] = 1
+    elif change == "boolean_zero":
+        run["execution"]["history_rows_read"] = False
+    elif change == "model_reused":
+        run["profiles"][0]["reused"] = True
+    elif change == "different_input":
+        run["profiles"][0]["training_input_hash"] = "different"
+    elif change == "different_weights":
+        run["numeric_fingerprints"][0]["model_values_and_metrics_sha256"] = "c" * 64
+    elif change == "cache_changed":
+        scenario["source_cache_unchanged"] = False
+    elif change == "cache_not_cleared":
+        scenario["target_cache_cleared"] = False
+    elif change == "cache_unverified":
+        scenario["cache_verified"] = False
+    elif change == "models_copied":
+        scenario["model_files_copied"] = 4
+    elif change == "cache_missing":
+        scenario["copied_bytes"] = 0
+    elif change == "preparation_missing":
+        del scenario["preparation"]
+    elif change == "preparation_not_restored":
+        scenario["preparation"]["fitter_restored"] = False
+    elif change == "preparation_unreached":
+        scenario["preparation"]["fit_entry_counts"]["v5"] = 0
+    elif change == "preparation_models":
+        scenario["preparation"]["model_files_created"] = 1
+    elif change == "preparation_success":
+        scenario["preparation"]["exit_code"] = 0
+    elif change == "preparation_other_failure":
+        scenario["preparation"]["profiles"][0]["heads"][0]["failure_reasons"] = ["history_training_data_incomplete"]
+    elif change == "preparation_no_scan":
+        scenario["preparation"]["execution"]["history_scan_passes"] = 0
+    else:
+        scenario["profiles"] = ["v1"]
+    comparison = SummarizeTrainingBenchmark(results)
+    assert not comparison["comparable"]
+    assert comparison["rounds"][1]["sample_reuse_failures"]
+    assert build_report("training-performance", results)["status"] == "degraded"
+
+
+@pytest.mark.parametrize("invalid", (None, "digest", "size", "modified", "symlink"))
+def test_sample_refit_uses_verified_copy_without_deleting_or_copying_original_models(tmp_path, monkeypatch, invalid):
+    work = tmp_path / "work"
+    cache = work / "sample-preparation/samples/v5"
+    cache.mkdir(parents=True)
+    database = cache / "samples.sqlite3"
+    database.write_bytes(b"sealed sample fixture")
+    stamp = database.stat()
+    manifest = {
+        "sha256": hashlib.sha256(database.read_bytes()).hexdigest(),
+        "size_bytes": stamp.st_size,
+        "modified_ns": stamp.st_mtime_ns,
+    }
+    if invalid == "digest":
+        manifest["sha256"] = "0" * 64
+    elif invalid == "size":
+        manifest["size_bytes"] += 1
+    elif invalid == "modified":
+        manifest["modified_ns"] += 1
+    (cache / "complete.json").write_text(json.dumps(manifest))
+    if invalid == "symlink":
+        database.rename(cache / "original.sqlite3")
+        database.symlink_to(cache / "original.sqlite3")
+    model = work / "models/v5/model.json"
+    model.parent.mkdir(parents=True)
+    model.write_text("original model")
+    original = (model.read_bytes(), model.stat().st_mtime_ns)
+    initial = deepcopy(_serial_results()[1].payload["summary"]["initial"])
+    calls = []
+
+    def train(runtime, history, target, profiles):
+        calls.append(target)
+        assert profiles == ("v5",)
+        assert target == work / "sample-reuse"
+        assert not (target / "models").exists()
+        assert (target / "samples/v5/samples.sqlite3").read_bytes() == database.read_bytes()
+        shutil.rmtree(target / "samples/v5")
+        return _sample_scenario(initial["profiles"][0])["run"]
+
+    monkeypatch.setattr(training_alignment, "_prepare_sample_reuse", lambda *_args:
+                        _sample_scenario(initial["profiles"][0])["preparation"])
+    monkeypatch.setattr(training_alignment, "_train_once", train)
+    result = training_alignment._sample_reuse(None, tmp_path / "history", work, ("v1", "v5"), initial)
+    assert (model.read_bytes(), model.stat().st_mtime_ns) == original
+    assert result["not_applicable_profiles"] == ("v1",)
+    if invalid is None:
+        assert len(calls) == 1
+        assert result["failures"] == ()
+        assert result["cache_verified"] and result["source_cache_unchanged"] and result["target_cache_cleared"]
+        assert result["model_files_copied"] == 0
+        assert 0 < result["copy_verification_seconds"] <= result["preparation_seconds"]
+    else:
+        assert calls == []
+        assert result["failures"]
+
+
+def test_v1_sample_reuse_is_explicitly_not_applicable_and_never_runs_a_fake_cache(tmp_path, monkeypatch):
+    def forbidden(*_args):
+        pytest.fail("V1 has no sealed sample reuse workload")
+
+    monkeypatch.setattr(training_alignment, "_train_once", forbidden)
+    result = training_alignment._sample_reuse(None, tmp_path / "history", tmp_path / "work", ("v1",), {})
+    assert result["profiles"] == () and result["not_applicable_profiles"] == ("v1",)
+    assert TrainingSampleReuseFailures({}, result, ("v1",)) == ()
+    assert not (tmp_path / "work").exists()
+
+
+def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_cache(tmp_path, monkeypatch):
+    from tests.unit.training.infra.profile.v5.test_v5_training import _history
+    from trader.infra.settings import LoadRuntimeSettings
+    from trader.training.infra import engine, selected_training
+    from trader.training.infra.training_settings import LoadProfileTrainingSettings
+
+    project = Path(__file__).resolve().parents[3]
+    history = _history(tmp_path / "history")
+    monkeypatch.setattr(selected_training.SQLiteHistoryTrainingInputSnapshot, "open", lambda *_a, **_kw: history)
+    settings = LoadProfileTrainingSettings(project, "v3")
+    settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10))
+    monkeypatch.setattr(selected_training, "LoadProfileTrainingSettings", lambda *_args: settings)
+    monkeypatch.setattr("trader.training.entrypoints.selected_training.EvaluateAllHistoryTrainingDue", lambda *_a, **_kw: ())
+    runtime = LoadRuntimeSettings(project / "config/runtime.json")
+    work = tmp_path / "work"
+    fitter = engine.FitIndustryModels
+    initial = training_alignment._train_once(runtime, history.history_root, work, ("v3",))
+    assert initial["complete"]
+    assert not (work / "samples/v3").exists()
+    result = training_alignment._sample_reuse(runtime, history.history_root, work, ("v3",), initial)
+    assert result["failures"] == (), result
+    assert result["preparation"]["exit_code"] == 1
+    assert result["preparation"]["fit_entry_counts"] == {"v3": 1}
+    assert result["preparation"]["model_files_created"] == 0
+    assert engine.FitIndustryModels is fitter
+    assert (work / "sample-preparation/samples/v3/complete.json").is_file()
+    assert result["run"]["execution"]["history_scan_passes"] == 0
+    assert result["source_cache_unchanged"] and result["target_cache_cleared"]
+    assert not (work / "sample-reuse/samples/v3").exists()
+
+
+def test_sample_preparation_restores_fitter_when_execution_raises(tmp_path, monkeypatch):
+    from trader.training.infra import engine
+
+    fitter = engine.FitIndustryModels
+
+    def interrupt(*_args, **_kwargs):
+        assert engine.FitIndustryModels is not fitter
+        raise InterruptedError("fixture")
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", interrupt)
+    with pytest.raises(InterruptedError, match="fixture"):
+        training_alignment._prepare_sample_reuse(None, tmp_path / "history", tmp_path / "prepare", ("v3",))
+    assert engine.FitIndustryModels is fitter

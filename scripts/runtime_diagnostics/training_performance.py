@@ -17,6 +17,8 @@ class _Round(TypedDict):
     repeat_seconds: float | None
     peak_rss_bytes: int | None
     reuse_failures: tuple[str, ...]
+    sample_reuse_seconds: float | None
+    sample_reuse_failures: tuple[str, ...]
 
 
 class _CheckoutRound(TypedDict):
@@ -28,6 +30,9 @@ class _CheckoutRound(TypedDict):
     repeat_execution: object
     peak_rss_bytes: object
     reuse_failures: tuple[str, ...]
+    sample_reuse: object
+    sample_reuse_failures: tuple[str, ...]
+    sample_reuse_seconds: float | None
 
 
 def TrainingReuseFailures(initial: object, repeat: object, profiles: Sequence[str]) -> tuple[str, ...]:
@@ -58,6 +63,129 @@ def TrainingReuseFailures(initial: object, repeat: object, profiles: Sequence[st
         not isinstance(run, Mapping) or run.get("reused") is not True for run in runs
     ):
         failures.append("reuse_profiles_not_reused")
+    return tuple(failures)
+
+
+def TrainingSampleReuseFailures(initial: object, scenario: object, profiles: Sequence[str]) -> tuple[str, ...]:
+    """Require a real refit from copied sealed samples, with no raw history scan."""
+    if not isinstance(initial, Mapping) or not isinstance(scenario, Mapping):
+        return ("sample_reuse_run_missing",)
+    selected = tuple(profile for profile in profiles if profile != "v1")
+    excluded = tuple(profile for profile in profiles if profile == "v1")
+    if scenario.get("profiles") not in (selected, list(selected)) or scenario.get("not_applicable_profiles") not in (
+        excluded, list(excluded)
+    ):
+        return ("sample_reuse_profiles_mismatch",)
+    if not selected:
+        return () if scenario.get("run") is None else ("sample_reuse_v1_not_applicable",)
+    run = scenario.get("run")
+    if not isinstance(run, Mapping):
+        return ("sample_reuse_run_missing",)
+    failures = list(TrainingSamplePreparationFailures(initial, scenario.get("preparation"), selected))
+    if initial.get("complete") is not True or run.get("complete") is not True:
+        failures.append("sample_reuse_run_incomplete")
+    execution = run.get("execution")
+    if not isinstance(execution, Mapping) or execution.get("status") != "completed":
+        failures.append("sample_reuse_execution_missing_or_failed")
+    else:
+        for key in ("history_scan_passes", "history_rows_read"):
+            value = execution.get(key)
+            if type(value) is not int or value != 0:
+                failures.append("sample_reuse_" + key + "_not_zero")
+        if execution.get("profiles") not in (selected, list(selected)):
+            failures.append("sample_reuse_execution_profiles_mismatch")
+    runs = run.get("profiles")
+    baseline = initial.get("profiles")
+    if not isinstance(baseline, list) or not isinstance(runs, list):
+        failures.append("sample_reuse_profile_results_missing")
+    else:
+        before = [item for item in baseline if isinstance(item, Mapping) and item.get("profile") in selected]
+        if _reuse_identity(before, selected) is None or _reuse_identity(runs, selected) is None:
+            failures.append("sample_reuse_artifacts_incomplete")
+        elif sorted((item["profile"], item["training_input_hash"]) for item in before) != sorted(
+            (item["profile"], item["training_input_hash"]) for item in runs
+        ):
+            failures.append("sample_reuse_input_mismatch")
+        if not runs or any(not isinstance(item, Mapping) or item.get("reused") is not False for item in runs):
+            failures.append("sample_reuse_did_not_refit")
+    fingerprints = initial.get("numeric_fingerprints")
+    expected = (
+        [item for item in fingerprints if isinstance(item, Mapping) and item.get("profile") in selected]
+        if isinstance(fingerprints, (tuple, list)) else None
+    )
+    values = _fingerprint_values(expected, selected)
+    if values is None or values != _fingerprint_values(run.get("numeric_fingerprints"), selected):
+        failures.append("sample_reuse_model_values_mismatch")
+    if scenario.get("source_cache_unchanged") is not True:
+        failures.append("sample_reuse_source_cache_changed")
+    if scenario.get("target_cache_cleared") is not True:
+        failures.append("sample_reuse_target_cache_not_cleared")
+    if scenario.get("cache_verified") is not True:
+        failures.append("sample_reuse_cache_unverified")
+    copied = scenario.get("copied_bytes")
+    if type(copied) is not int or copied <= 0:
+        failures.append("sample_reuse_cache_copy_missing")
+    if type(scenario.get("model_files_copied")) is not int or scenario.get("model_files_copied") != 0:
+        failures.append("sample_reuse_models_copied")
+    if _seconds(run.get("seconds")) is None:
+        failures.append("sample_reuse_duration_invalid")
+    if _seconds(scenario.get("copy_verification_seconds")) is None:
+        failures.append("sample_reuse_copy_duration_invalid")
+    return tuple(failures)
+
+
+def TrainingSamplePreparationFailures(
+    initial: object, preparation: object, profiles: Sequence[str]
+) -> tuple[str, ...]:
+    if not isinstance(initial, Mapping) or not isinstance(preparation, Mapping) or not profiles:
+        return ("sample_preparation_missing",)
+    failures: list[str] = []
+    if (preparation.get("method") != "controlled_failure_before_fit"
+            or preparation.get("fault_injected") is not True or preparation.get("fitter_restored") is not True):
+        failures.append("sample_preparation_fault_scope_invalid")
+    counts = preparation.get("fit_entry_counts")
+    if (not isinstance(counts, Mapping) or set(counts) != set(profiles)
+            or any(type(count) is not int or count != 1 for count in counts.values())):
+        failures.append("sample_preparation_fit_entry_missing_or_repeated")
+    for key in ("unexpected_workspaces", "model_files_created"):
+        if type(preparation.get(key)) is not int or preparation.get(key) != 0:
+            failures.append("sample_preparation_" + key + "_not_zero")
+    if type(preparation.get("exit_code")) is not int or preparation.get("exit_code") != 1:
+        failures.append("sample_preparation_exit_invalid")
+    execution = preparation.get("execution")
+    if not isinstance(execution, Mapping) or execution.get("status") != "failed":
+        failures.append("sample_preparation_failure_result_missing")
+    else:
+        if execution.get("profiles") not in (tuple(profiles), list(profiles)):
+            failures.append("sample_preparation_execution_profiles_mismatch")
+        scans, rows = execution.get("history_scan_passes"), execution.get("history_rows_read")
+        if type(scans) is not int or scans != 1 or type(rows) is not int or rows <= 0:
+            failures.append("sample_preparation_history_scan_invalid")
+    baseline, prepared = initial.get("profiles"), preparation.get("profiles")
+    if (not isinstance(baseline, list) or not isinstance(prepared, list) or len(prepared) != len(profiles)
+            or any(not isinstance(item, Mapping) for item in prepared)):
+        failures.append("sample_preparation_profiles_missing")
+    else:
+        expected = {item.get("profile"): item.get("training_input_hash") for item in baseline
+                    if isinstance(item, Mapping) and item.get("profile") in profiles}
+        seen = set()
+        for item in prepared:
+            profile, heads = item.get("profile"), item.get("heads")
+            if (not isinstance(profile, str) or profile not in profiles or profile in seen
+                    or item.get("status") != "blocked" or item.get("reused") is not False
+                    or not expected.get(profile) or item.get("training_input_hash") != expected[profile]
+                    or not isinstance(heads, list) or len(heads) != 2
+                    or any(not isinstance(head, Mapping) for head in heads)):
+                failures.append("sample_preparation_profile_result_invalid")
+                continue
+            seen.add(profile)
+            if ({head.get("strategy") for head in heads} != {"tomorrow", "d25"}
+                    or any(head.get("status") != "blocked" or head.get("model_hash") != ""
+                           or head.get("report_hash") != "" or head.get("failure_reasons") != ["profile_training_failed"]
+                           for head in heads)):
+                failures.append("sample_preparation_head_result_invalid")
+    if _seconds(preparation.get("seconds")) is None:
+        failures.append("sample_preparation_duration_invalid")
     return tuple(failures)
 
 
@@ -162,7 +290,9 @@ def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str,
         peak = 0
         initial_times = []
         repeat_times = []
+        sample_times = []
         reuse_failures: list[str] = []
+        sample_failures: list[str] = []
         for result in selected:
             summary = result.payload.get("summary") if result.payload is not None else None
             if not isinstance(summary, Mapping):
@@ -185,6 +315,13 @@ def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str,
                 continue
             expected = result.name.rsplit(":", 1)[-1].split(",")
             reuse_failures.extend(TrainingReuseFailures(initial, repeat, expected))
+            scenario = summary.get("sample_reuse")
+            sample_failures.extend(TrainingSampleReuseFailures(initial, scenario, expected))
+            if isinstance(scenario, Mapping):
+                sample_run = scenario.get("run")
+                seconds = _seconds(sample_run.get("seconds")) if isinstance(sample_run, Mapping) else None
+                if seconds is not None:
+                    sample_times.append(seconds)
             if _reuse_identity(profiles, expected) is None:
                 ready = False
                 continue
@@ -215,11 +352,14 @@ def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str,
                 "repeat_seconds": sum(repeat_times) if selected and len(repeat_times) == len(selected) else None,
                 "peak_rss_bytes": peak or None,
                 "reuse_failures": tuple(sorted(set(reuse_failures))),
+                "sample_reuse_seconds": sum(sample_times) if sample_times and not sample_failures else None,
+                "sample_reuse_failures": tuple(sorted(set(sample_failures))),
             }
         )
     comparable = (
         all(item["complete"] for item in rounds)
         and all(not item["reuse_failures"] for item in rounds)
+        and all(not item["sample_reuse_failures"] for item in rounds)
         and bool(identities[0])
         and identities[0] == identities[1] == identities[2]
     )
@@ -270,6 +410,9 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
         profiles.append(tuple((profile.get("profile"), profile.get("training_input_hash")) for profile in runs))
         expected = selected[0].name.rsplit(":", 1)[-1].split(",") if selected else []
         reuse_failures = TrainingReuseFailures(initial, repeat, expected)
+        sample_reuse = summary.get("sample_reuse")
+        sample_failures = TrainingSampleReuseFailures(initial, sample_reuse, expected)
+        sample_run = sample_reuse.get("run") if isinstance(sample_reuse, Mapping) else None
         complete = (
             complete
             and selected[0].return_code == 0
@@ -282,6 +425,7 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
             and {profile.get("profile") for profile in runs} == set(expected)
             and all(profile.get("training_input_hash") for profile in runs)
             and (mode != "candidate" or not reuse_failures)
+            and not sample_failures
         )
         values = _fingerprint_values(initial.get("numeric_fingerprints"), expected)
         complete = (
@@ -302,6 +446,9 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
                 "repeat_execution": repeat.get("execution"),
                 "peak_rss_bytes": summary.get("process_peak_rss_bytes"),
                 "reuse_failures": reuse_failures,
+                "sample_reuse": sample_reuse,
+                "sample_reuse_failures": sample_failures,
+                "sample_reuse_seconds": _seconds(sample_run.get("seconds")) if isinstance(sample_run, Mapping) else None,
             }
         )
     comparable = (
@@ -311,7 +458,7 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
         and configuration_hashes[0] == configuration_hashes[1] == configuration_hashes[2]
     )
     ratios = {}
-    for scenario in ("initial_seconds", "repeat_seconds"):
+    for scenario in ("initial_seconds", "sample_reuse_seconds", "repeat_seconds"):
         old, current, old_after = (_seconds(item[scenario]) for item in rounds)
         ratios[scenario] = (
             current / min(old, old_after)
