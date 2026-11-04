@@ -100,8 +100,13 @@ def test_configured_medium_skips_prompt(tmp_path, monkeypatch):
 def test_train_entrypoint_saves_choice_before_running(tmp_path, monkeypatch):
     path = _config(tmp_path, monkeypatch)
     monkeypatch.setattr(storage_runtime.sys, "stdin", _Terminal("1\n"))
-    monkeypatch.setattr(cli, "_configuration_payload", lambda _runtime, _profile: {})
-    monkeypatch.setattr(cli, "_run_history_download", lambda _path, _profiles: 0)
+
+    def train(runtime, profiles):
+        assert runtime.storage_medium == "ssd"
+        assert profiles == ("v2",)
+        return 0
+
+    monkeypatch.setattr(cli, "_run_selected_training", train)
 
     assert cli.Main(["--config", str(path), "train", "v2"]) == 0
     assert LoadRuntimeSettings(path).storage_medium == "ssd"

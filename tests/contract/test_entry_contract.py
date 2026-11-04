@@ -395,18 +395,22 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
     assert completed.stdout == f"cli:--config {config} train{suffix}\n"
 
 
-@pytest.mark.parametrize("download_result", (0, 1, 130))
-def test_train_stops_before_training_on_history_failure(monkeypatch, download_result):
-    from trader.bootstrap import ExecuteDownloadTrain
+@pytest.mark.parametrize("error", (OSError, RuntimeError, ValueError))
+def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypatch, capsys, error):
+    config = _runtime_config(tmp_path)
 
-    calls = []
-    monkeypatch.setattr(research_commands, "ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr("trader.download.entrypoints.commands.RunDownload", lambda *args, **kwargs: download_result)
-    monkeypatch.setattr(
-        "trader.bootstrap.ExecuteSelectedTraining", lambda runtime, profiles: calls.append(runtime) or 7
-    )
-    assert ExecuteDownloadTrain(ROOT / "config/runtime.json", scoring_profiles=("v2", "v3")) == (download_result or 7)
-    assert len(calls) == int(download_result == 0)
+    def train(_runtime, _profiles):
+        raise error("private training details")
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", train)
+    assert Main(["--config", str(config), "train", "v2,v3"]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "schema_version": "selected_training_result",
+        "status": "failed",
+        "category": error.__name__,
+    }
+    assert "private training details" not in captured.out + captured.err
 
 
 def test_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
@@ -440,7 +444,7 @@ def test_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} train")
 
 
-def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: Path) -> None:
+def test_run_script_warns_when_training_scope_is_unavailable(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python3", "exit 99")

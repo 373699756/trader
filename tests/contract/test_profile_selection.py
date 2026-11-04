@@ -1,4 +1,4 @@
-"""Free profile combinations preserve one process, one preparation, and isolated delivery."""
+"""Profile combinations share resources and keep training independent of downloads."""
 
 import threading
 from datetime import datetime
@@ -10,6 +10,7 @@ import pytest
 from tests.contract.test_cold_start import _empty_config
 from trader import bootstrap
 from trader.entrypoints.cli import BuildParser as CliParser
+from trader.entrypoints.cli import Main as CliMain
 from trader.entrypoints.server import BuildParser as ServerParser
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -111,18 +112,19 @@ def test_every_profile_combination_shares_preview_authority_without_formal_initi
 
 
 @pytest.mark.parametrize("profiles", _SELECTIONS)
-def test_training_selection_prepares_history_once_and_runs_only_selected_profiles(
+def test_training_selection_uses_local_history_and_runs_only_selected_profiles(
     tmp_path, monkeypatch, capsys, profiles
 ):
     config = _empty_config(tmp_path)
     calls = []
 
     def download(*_args, **_kwargs):
-        calls.append("history")
-        return 0
+        pytest.fail("training must not prepare references or download")
 
-    monkeypatch.setattr("trader.download.entrypoints.commands.RunDownload", download)
-    monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda **_kwargs: None)
+    monkeypatch.setattr(bootstrap, "_prepare_reference", download)
+    monkeypatch.setattr(bootstrap, "ExecuteSync", download)
+    monkeypatch.setattr(bootstrap, "ExecuteHistoryDownload", download)
+    monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda: calls.append("resources"))
 
     def train(runtime, selected, *, executor, memory_admission, cpu_budget, paths, sqlite_policy):
         assert executor.status().workers == len(selected)
@@ -132,7 +134,10 @@ def test_training_selection_prepares_history_once_and_runs_only_selected_profile
         return 0
 
     monkeypatch.setattr(selected_training, "RunSelectedTraining", train)
-    assert bootstrap.ExecuteDownloadTrain(config, scoring_profiles=profiles) == 0
-    assert calls[0] == "history" and calls.count("history") == 1
+    assert CliMain(["--config", str(config), "train", ",".join(profiles)]) == 0
+    assert calls[0] == "resources" and calls.count("resources") == 1
     assert sorted(calls[1:]) == sorted(profiles)
+    captured = capsys.readouterr()
+    assert "./run.sh sync history" in captured.err
+    assert "正在准备官方总体" not in captured.err
     assert not (tmp_path / "data").exists()

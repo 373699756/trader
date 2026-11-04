@@ -14,7 +14,6 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
-from trader.download.infra.akshare_calendar import AkshareCalendarTimeoutError
 from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
@@ -54,7 +53,7 @@ def BuildParser() -> argparse.ArgumentParser:
     )
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
-    training = subparsers.add_parser("train", help="Maintain history once, then train all or the selected profiles.")
+    training = subparsers.add_parser("train", help="Train all or the selected profiles using published local history.")
     training.add_argument(
         "profiles",
         nargs="?",
@@ -108,16 +107,17 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command in ("sync", "train"):
         if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")
+        if args.command == "train":
+            profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
+            print(f"train: 本次训练档位 {', '.join(profile.upper() for profile in profiles)}。", file=sys.stderr)
+            print("train: 仅使用本地已发布资料；缺资料请先手动执行 ./run.sh sync history，再重新训练。", file=sys.stderr)
+            return _run_selected_training(runtime, profiles)
         try:
             _configuration_payload(runtime, None)
         except (OSError, RuntimeError, ValueError) as exc:
             print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
             return 2
-        print(f"{args.command}: 正在准备官方总体、ST资格、交易日历及当前行业。", file=sys.stderr)
-        if args.command == "train":
-            profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
-            print(f"train: 本次训练档位 {', '.join(profile.upper() for profile in profiles)}。", file=sys.stderr)
-            return _run_history_download(config_path, profiles)
+        print("sync: 正在准备官方总体、ST资格、交易日历及当前行业。", file=sys.stderr)
         from trader.bootstrap import ExecuteSync
         from trader.download.entrypoints.sync_projection import ProjectSyncResult
 
@@ -203,36 +203,14 @@ def _run_training_command(
     )
 
 
-def _run_history_download(config_path: Path, profiles: tuple[ScoringProfileId, ...]) -> int:
-    from trader.training.entrypoints.commands import ConfigureTrainingResources
-
-    ConfigureTrainingResources()
-    from trader.bootstrap import ExecuteDownloadTrain
+def _run_selected_training(runtime: RuntimeSettings, profiles: tuple[ScoringProfileId, ...]) -> int:
+    from trader.bootstrap import ExecuteSelectedTraining
 
     try:
-        return ExecuteDownloadTrain(config_path, scoring_profiles=profiles)
+        return ExecuteSelectedTraining(runtime, profiles)
     except KeyboardInterrupt:
         print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled"}, indent=2, ensure_ascii=False))
         return 130
-    except AkshareCalendarTimeoutError as exc:
-        print(
-            f"train: 交易日历准备超时，AkShare/Sina 在 {exc.timeout_seconds:g} 秒内未完成；"
-            "尚未进入模型训练，请稍后重试。",
-            file=sys.stderr,
-        )
-        print(
-            json.dumps(
-                {
-                    "schema_version": "selected_training_result",
-                    "status": "failed",
-                    "category": "TimeoutError",
-                    "stage": "reference_calendar",
-                    "source": "akshare_sina",
-                    "timeout_seconds": exc.timeout_seconds,
-                }, indent=2, ensure_ascii=False
-            )
-        )
-        return 1
     except (OSError, RuntimeError, ValueError) as exc:
         print(
             json.dumps(

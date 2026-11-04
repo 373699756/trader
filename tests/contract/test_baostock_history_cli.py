@@ -4,24 +4,18 @@ from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
 import re
-import signal
 import os
 import subprocess
-from concurrent.futures import CancelledError
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Literal
 
 import pytest
 
 from trader.download.domain.history_maintenance import (
     HistoryMaintenanceStatus,
-    HistoryPriceGapReason,
-    HistoryPriceGapSummary,
 )
 from trader.download.domain.history_sync import HistorySyncProgress
-from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.entrypoints.cli import BuildParser, Main
 from trader.infra.settings import LoadRuntimeSettings
@@ -87,56 +81,40 @@ def test_fill_selects_existing_price_repair_path_without_changing_normal_sync(tm
     assert not (tmp_path / "data").exists()
 
 
-@pytest.mark.parametrize("profile_args", ((), ("v1",)))
-def test_train_reports_calendar_timeout_before_model_training(monkeypatch, capsys, profile_args):
-    from trader.download.infra.akshare_calendar import FetchAkshareCalendar
+def test_train_missing_local_history_fails_without_download(tmp_path, monkeypatch, capsys):
+    from tests.contract.test_cold_start import _empty_config
 
-    def timeout(_operation, _timeout):
-        raise TimeoutError("private supplier details")
-
-    def prepare(*_args, **_kwargs):
-        return FetchAkshareCalendar(30, execute=timeout)
+    config = _empty_config(tmp_path)
+    (config.parent / "download.json").write_text("{}", encoding="utf-8")
 
     def forbidden(*_args, **_kwargs):
-        pytest.fail("calendar timeout must stop before model training")
+        pytest.fail("missing local history must not trigger download or reference preparation")
 
-    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", forbidden)
+    for target in ("ExecuteSync", "ExecuteHistoryDownload", "ExecuteQfqDownload", "_prepare_reference"):
+        monkeypatch.setattr(f"trader.bootstrap.{target}", forbidden)
+    monkeypatch.setattr("requests.Session.request", forbidden)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
 
-    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", *profile_args]) == 1
+    assert Main(["--config", str(config), "train", "v2"]) == 1
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {
         "schema_version": "selected_training_result",
         "status": "failed",
-        "category": "TimeoutError",
-        "stage": "reference_calendar",
-        "source": "akshare_sina",
-        "timeout_seconds": 30,
+        "failure": "HistoryTrainingInputError",
     }
-    assert "交易日历准备超时" in captured.err
-    assert "AkShare/Sina 在 30 秒内未完成" in captured.err
-    assert "尚未进入模型训练" in captured.err
-    assert "private supplier details" not in captured.out + captured.err
+    assert "./run.sh sync history" in captured.err
+    assert "正在准备官方总体" not in captured.err
+    assert not tuple((tmp_path / "data").rglob("*.sqlite3"))
+    assert not tuple((tmp_path / "data").rglob("model.json"))
 
 
-@pytest.mark.parametrize("price_gaps", (0, 1))
-def test_v1_training_uses_its_own_admission_after_published_history(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], price_gaps: int
+def test_v1_training_dispatch_preserves_its_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from tests.contract.test_cold_start import _empty_config
     from trader.training.infra.profile.v1.training import V1TrainingResult
 
-    status = HistoryMaintenanceStatus(
-        "completed",
-        None,
-        Path("data/history"),
-        "tencent",
-        None,
-        "a" * 64,
-        date(2026, 9, 10),
-        date(2026, 9, 9),
-        price_gaps,
-    )
+    config = _empty_config(tmp_path)
     calls = []
 
     def forbid_other_profiles(*_args, **_kwargs):
@@ -146,12 +124,10 @@ def test_v1_training_uses_its_own_admission_after_published_history(
         calls.append("v1")
         return V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0)
 
-    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", forbid_other_profiles)
     monkeypatch.setattr(
         "trader.training.entrypoints.selected_training.EvaluateAllHistoryTrainingDue", forbid_other_profiles
     )
-    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", forbid_other_profiles)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
 
     def selected(runtime, profiles, **_kwargs):
         assert profiles == ("v1",)
@@ -170,7 +146,7 @@ def test_v1_training_uses_its_own_admission_after_published_history(
 
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", selected)
 
-    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train", "v1"]) == 0
+    assert Main(["--config", str(config), "train", "v1"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert calls == ["v1"]
@@ -178,22 +154,19 @@ def test_v1_training_uses_its_own_admission_after_published_history(
     assert "双档" not in captured.err
 
 
-@pytest.mark.parametrize(("state", "exit_code"), (("cancelled", 130), ("failed", 1)))
-def test_train_preserves_history_cancellation_and_failure(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, state, exit_code
+@pytest.mark.parametrize("exit_code", (0, 1, 130))
+def test_train_preserves_selected_training_exit_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, exit_code: int
 ) -> None:
-    status = HistoryMaintenanceStatus(state, state, Path("data/market/history"), "tencent", None, None, None, None)
-    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
+    from tests.contract.test_cold_start import _empty_config
+
+    config = _empty_config(tmp_path)
     monkeypatch.setattr(
         "trader.bootstrap.ExecuteSelectedTraining",
-        lambda _runtime: pytest.fail("cancelled or failed history must not start training"),
+        lambda _runtime, _profiles: exit_code,
     )
-    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "train"]) == exit_code
-    captured = capsys.readouterr()
-    assert json.loads(captured.out)["state"] == state
-    if state == "cancelled":
-        assert "未通过训练准入" not in captured.err
+    assert Main(["--config", str(config), "train"]) == exit_code
+    assert capsys.readouterr().out == ""
 
 
 def test_download_is_a_zero_argument_command() -> None:
@@ -280,132 +253,24 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     assert "total_units" not in captured.err
 
 
-def test_train_download_honors_sigterm_and_restores_handlers_before_fitting(tmp_path, monkeypatch, capsys):
-    from tests.contract.test_cold_start import _empty_config
-    from tests.unit.application.test_sync_data import _history
-
-    config = _empty_config(tmp_path)
-    previous = signal.getsignal(signal.SIGTERM)
-    configured_medium = LoadRuntimeSettings(config).storage_medium
-
-    def download(
-        configuration,
-        *,
-        qfq_configuration,
-        shutdown_timeout_seconds,
-        progress,
-        cancel_requested,
-        storage_medium,
-        sqlite_policy,
-    ):
-        assert storage_medium == configured_medium
-        assert qfq_configuration == LoadQfqWindowConfiguration(PROJECT_ROOT)
-        assert shutdown_timeout_seconds == LoadRuntimeSettings(config).pipeline.shutdown_timeout_seconds
-        handler = signal.getsignal(signal.SIGTERM)
-        assert callable(handler)
-        handler(signal.SIGTERM, None)
-        assert cancel_requested()
-        return _history()
-
-    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", download)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", lambda *args, **kwargs: pytest.fail("training ran"))
-    assert Main(["--config", str(config), "train"]) == 130
-    assert signal.getsignal(signal.SIGTERM) == previous
-    assert json.loads(capsys.readouterr().out)["state"] == "cancelled"
-
-
-@pytest.mark.parametrize("error", (RuntimeError, CancelledError))
-def test_train_cancellation_during_reference_preparation_returns_130(tmp_path, monkeypatch, capsys, error):
+def test_train_resource_setup_interrupt_returns_130(tmp_path, monkeypatch, capsys):
     from tests.contract.test_cold_start import _empty_config
 
     config = _empty_config(tmp_path)
-    previous = signal.getsignal(signal.SIGTERM)
-    configured_medium = LoadRuntimeSettings(config).storage_medium
 
-    def prepare(
-        configuration,
-        *,
-        qfq_configuration,
-        shutdown_timeout_seconds,
-        progress,
-        cancel_requested,
-        storage_medium,
-        sqlite_policy,
-    ):
-        assert storage_medium == configured_medium
-        assert qfq_configuration == LoadQfqWindowConfiguration(PROJECT_ROOT)
-        assert shutdown_timeout_seconds == LoadRuntimeSettings(config).pipeline.shutdown_timeout_seconds
-        handler = signal.getsignal(signal.SIGTERM)
-        assert callable(handler)
-        handler(signal.SIGTERM, None)
-        assert cancel_requested()
-        raise error("reference_preparation_cancelled")
+    def interrupt():
+        raise KeyboardInterrupt
 
-    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", prepare)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
-    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", lambda *args, **kwargs: pytest.fail("training ran"))
-    assert Main(["--config", str(config), "train"]) == 130
-    assert signal.getsignal(signal.SIGTERM) == previous
-    assert json.loads(capsys.readouterr().out)["status"] == "cancelled"
-
-
-@pytest.mark.parametrize(
-    ("state", "gap_reason", "starts_training"),
-    (
-        ("completed", "tencent_qfq_invalid_price", True),
-        ("already_current", "history_price_pending", True),
-        ("failed", "tencent_qfq_invalid_price", False),
-    ),
-)
-def test_train_uses_valid_samples_despite_reported_price_gaps(
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-    state: Literal["completed", "already_current", "failed"],
-    gap_reason: str,
-    starts_training: bool,
-) -> None:
-    status = HistoryMaintenanceStatus(
-        state,
-        "history_price_gaps_remaining" if state != "failed" else "fixture_failure",
-        Path("data/history"),
-        "tencent_with_baostock_reference",
-        "tencent",
-        "a" * 64,
-        date(2026, 10, 16),
-        date(2026, 10, 15),
-        3267,
-        HistoryPriceGapSummary(
-            25,
-            3267,
-            date(2018, 7, 17),
-            date(2022, 4, 27),
-            (HistoryPriceGapReason(gap_reason, 3267),),
-        ),
-    )
-    calls: list[object] = []
-    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", interrupt)
     monkeypatch.setattr(
-        "trader.bootstrap.ExecuteSelectedTraining",
-        lambda runtime, profiles, **kwargs: calls.append(runtime) or 0,
+        "trader.training.entrypoints.selected_training.RunSelectedTraining",
+        lambda *args, **kwargs: pytest.fail("training ran after resource setup was interrupted"),
     )
-
-    result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train", "v2,v3"])
-
-    assert result == (0 if starts_training else 1)
-    assert len(calls) == int(starts_training)
-    captured = capsys.readouterr()
-    if starts_training:
-        assert captured.out == ""
-    else:
-        assert json.loads(captured.out)["price_gaps"]["cells"] == 3267
-    assert ("价格缺口待补" in captured.err) == (state != "failed")
-    if starts_training:
-        assert "按有效样本尝试所选档位训练" in captured.err
-        assert "未启动双档训练" not in captured.err
-    else:
-        assert "完整历史尚未完成合法发布" in captured.err
+    assert Main(["--config", str(config), "train"]) == 130
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_version": "selected_training_result",
+        "status": "cancelled",
+    }
 
 
 def test_download_contract_exposes_an_immutable_typed_status() -> None:

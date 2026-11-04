@@ -470,20 +470,6 @@ def _prepare_reference(
             raise RuntimeError("history ST worker shutdown exceeded configured deadline")
 
 
-def ExecuteDownloadTrain(
-    config_path: Path, *, scoring_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
-) -> int:
-    """One history maintenance, one executor sized to the selected profiles."""
-    from trader.download.entrypoints.commands import RunDownload
-    from trader.training.entrypoints.commands import ConfigureTrainingResources
-
-    scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
-    runtime = LoadRuntimeSettings(config_path)
-    ConfigureTrainingResources()
-    result = RunDownload(runtime.project_root, config_path, quiet_success=True, allow_price_gaps=True, sqlite_policy=BuildSqlitePolicy(runtime))
-    return result or ExecuteSelectedTraining(runtime, scoring_profiles)
-
-
 def ExecuteSelectedTraining(
     runtime: RuntimeSettings,
     scoring_profiles: tuple[ScoringProfileId, ...],
@@ -492,6 +478,11 @@ def ExecuteSelectedTraining(
     training_root: Path | None = None,
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
+    from trader.training.entrypoints.commands import ConfigureTrainingResources
+
+    scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
+    ConfigureTrainingResources()
+
     from trader.training.application.selected_training import TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget

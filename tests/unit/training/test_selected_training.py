@@ -309,6 +309,7 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
         )
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
     runtime = LoadRuntimeSettings(_empty_config(tmp_path))
     assert ExecuteSelectedTraining(runtime, ("v1", "v5")) == 1
     assert not executors[0].status().running
@@ -333,6 +334,7 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
         return SelectedTrainingRun((SelectedTrainingOutcome("v1", result),), scans, rows)
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
     assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1",)) == 0
     output = capsys.readouterr().out
     assert '\n  "schema_version": ' in output
@@ -364,6 +366,7 @@ def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_pa
         raise error("cancelled")
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
     assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1", "v5")) == 130
     assert signal.getsignal(signal.SIGTERM) == previous
     assert not workers[0].status().running

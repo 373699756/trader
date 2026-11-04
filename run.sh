@@ -25,8 +25,8 @@ usage() {
     "  ./run.sh sync market --fill      自动用BaoStock补行情窗口缺口" \
     "  ./run.sh sync company            单独更新公司资料" \
     "  ./run.sh sync company --fill     补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料" \
-    "  ./run.sh train                   历史维护后处理全部档位 V1、V2、V3、V5" \
-    "  ./run.sh train v1,v5             历史维护后只训练所列档位" \
+    "  ./run.sh train                   使用本地已发布历史训练全部档位 V1、V2、V3、V5" \
+    "  ./run.sh train v1,v5             使用本地已发布历史，只训练所列档位" \
     "" \
     "档位以逗号分隔，可自由组合；省略时选择全部。V1已正式接入，V5保持工程Shadow并需可选CPU依赖。" \
     "本地检测使用 scripts/diagnose_runtime.py --profile local。" \
@@ -165,7 +165,7 @@ if [[ "$MODE" == "train" ]]; then
         --property=IOWeight=20 \
         -- "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"
     fi
-    printf '%s\n' '警告：当前用户 systemd scope 不可用；联合下载训练仍使用有界资源，但不能提供 cgroup 硬隔离。' >&2
+    printf '%s\n' '警告：当前用户 systemd scope 不可用；训练仍使用有界资源，但不能提供 cgroup 硬隔离。' >&2
   fi
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"
 fi
