@@ -10,6 +10,7 @@ import pytest
 
 from trader import bootstrap
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
+from trader.download.application.progress_message import ProgressField, ProgressMessage
 from trader.download.domain.company_evidence import (
     CompanyDateProgress,
     CompanyEvidenceSyncResult,
@@ -64,6 +65,21 @@ def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window(
     assert "当前正文股票 600001 示例" in first and "已分析 0" not in first and "待分析 0" not in first
     assert "累计 00:09:51" in first and "591.1秒" not in first
     assert "已尝试 147/147 篇 | 已提取正文 147 篇" in final and "状态 本批结束" in final
+
+
+@pytest.mark.parametrize("command", ("sync", "sync market", "sync history", "sync company"))
+def test_reference_progress_keeps_the_invoked_command_and_flushes_each_stage(command):
+    stream = StringIO()
+    report = CompanyEvidenceProgress(stream, command=command, monotonic=lambda: 0)
+    report(EvidenceSyncProgress("st_eligibility", 1, 1, 0, 0, 0))
+    report(EvidenceSyncProgress("st_eligibility", 2, 0, 0, 0, 0))
+    report(EvidenceSyncProgress("calendar", 1, 0, 0, 0, 1, status="reused"))
+    report.report_preparation(ProgressMessage((ProgressField("当前行业"), ProgressField("开始准备"))))
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 4
+    assert all(line.startswith(f"{command} | ") for line in lines)
+    assert "状态 完成" in lines[1] and "状态 本地复用" in lines[2]
+    assert "当前行业 | 开始准备 | 命令累计 00:00:00" in lines[3]
 
 
 def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():

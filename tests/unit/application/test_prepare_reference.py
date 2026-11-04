@@ -11,6 +11,7 @@ from tests.helpers.configuration import SqlitePolicyFixture
 from tests.reference_fixtures import PreparedFixture
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
 from trader.download.application.sync_data import SyncData
+from trader.download.application.progress_message import ProgressLevel
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.qfq_window import QfqUpdateResult
@@ -213,3 +214,52 @@ def test_cancellation_between_reference_steps_stops_further_io(stage):
     )
     with pytest.raises(RuntimeError, match="reference_preparation_cancelled"):
         PrepareReference(reference.official_universe, _NOW, dependencies)
+
+
+@pytest.mark.parametrize("industry_status", ("available", "empty", "failed"))
+def test_industry_progress_explains_degradation_and_still_enters_market_update(industry_status):
+    expected = PreparedFixture(_NOW)
+    messages, published, downloaded = [], [], []
+
+    def industry(_at):
+        assert messages[-1].fields[0].text == "当前行业"
+        assert "开始准备" in messages[-1].fields[1].text
+        if industry_status == "failed":
+            raise RuntimeError("private supplier payload must not appear in progress")
+        return (_Industry(),) if industry_status == "available" else ()
+
+    dependencies = ReferencePreparationDependencies(
+        lambda *_args: expected.st_evidence,
+        lambda: expected.open_dates,
+        industry,
+        lambda reference, _evidence: published.append(reference),
+        lambda: False,
+    )
+
+    def forbidden(_reference):
+        pytest.fail("sync market must not run history or company")
+
+    def market(reference):
+        assert published == [reference]
+        assert messages[-1].fields[0].text == "参考发布"
+        assert messages[-1].fields[1].text == "完成"
+        downloaded.append(reference)
+        return QfqUpdateResult(_NOW.date(), 1)
+
+    result = SyncData(
+        lambda: PrepareReference(expected.official_universe, _NOW, dependencies, report=messages.append),
+        forbidden,
+        market,
+        forbidden,
+        lambda: False,
+    ).execute("market")
+
+    assert result.exit_code == 0 and len(downloaded) == 1
+    industry_message = messages[1].fields[1]
+    assert industry_message.level == (
+        ProgressLevel.SUCCESS if industry_status == "available" else ProgressLevel.WARNING
+    )
+    if industry_status != "available":
+        assert "继续资料同步" in industry_message.text
+        assert published[0].industry_version is None
+    assert "private supplier payload" not in str(messages)

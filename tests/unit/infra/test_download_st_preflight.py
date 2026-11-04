@@ -4,6 +4,7 @@ from tests.helpers.configuration import DownloadFailureConfigurationFixture, Sql
 
 from dataclasses import replace
 from datetime import timedelta
+from functools import partial
 from io import StringIO
 from pathlib import Path
 from threading import enumerate as enumerate_threads
@@ -21,6 +22,7 @@ from tests.helpers.configuration import HistorySyncConfigurationFixture as Histo
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadQfqWindowConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
+from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
@@ -120,7 +122,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     if not existing_cache:
         expected_queries |= {"600001", "600003"}
 
-    def download(root, progress, request, *, cancel_requested, sqlite_policy):
+    def download(root, progress, request, *, cancel_requested, sqlite_policy, failure_configuration):
         codes, observed_at = request.codes, request.observed_at
         assert request.configuration.source_timeout_seconds == 8.0
         assert set(calls) == expected_queries
@@ -133,7 +135,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     stream = StringIO()
     monkeypatch.setattr(
         "trader.bootstrap.company_evidence_progress.CompanyEvidenceProgress",
-        lambda: CompanyEvidenceProgress(stream),
+        lambda **kwargs: CompanyEvidenceProgress(stream, **kwargs),
     )
     result = bootstrap.ExecuteSync(Path("unused"), "company")
     assert result.tasks[0].company.requested_codes == 3
@@ -149,8 +151,10 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     assert not any(thread.name.startswith("risk-st-check") for thread in enumerate_threads())
 
 
-@pytest.mark.parametrize("command", ("history", "qfq"))
-def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, monkeypatch, st_sources, command):
+@pytest.mark.parametrize("command", ("history", "qfq", "market"))
+def test_price_commands_complete_st_filter_before_calendar_and_prices(
+    tmp_path, monkeypatch, st_sources, command, capsys
+):
     calls, sessions = st_sources
     reference_root = DataPaths(tmp_path / "data").reference
     _seed_st(reference_root / "company_st.sqlite3")
@@ -189,7 +193,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
             clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
         )
         assert result.state == "completed", result.reason
-    else:
+    elif command == "qfq":
         paths = DataPaths(tmp_path / "data")
         result = bootstrap.ExecuteQfqDownload(
             paths,
@@ -201,6 +205,27 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
         )
         assert result.completed_codes == 3
         assert not result.needs_retry
+    else:
+        paths = DataPaths(tmp_path / "data")
+        settings = replace(
+            LoadRuntimeSettings(_ROOT / "config/runtime.json"), data_paths=paths
+        )
+        monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
+        monkeypatch.setattr(bootstrap, "ExecuteQfqDownload", partial(bootstrap.ExecuteQfqDownload, now=lambda: NOW))
+        result = bootstrap.ExecuteSync(Path("unused"), "market")
+        assert result.exit_code == 0, result
+        assert result.tasks[0].market.completed_codes == 3
+        cache = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=SqlitePolicyFixture())
+        assert cache.codes() == frozenset({"600001", "600005", "600007"})
+        window = cache.read_code("600001")
+        assert len(window.cells) == LoadQfqWindowConfiguration(_ROOT).v2_sessions
+        assert all(cell.qfq is not None for cell in window.cells)
+        output = capsys.readouterr().err
+        assert "sync company" not in output
+        stages = ("ST资格", "交易日历", "当前行业", "参考发布", "行情更新", "qfq 准备")
+        assert [output.index(stage) for stage in stages] == sorted(output.index(stage) for stage in stages)
+        assert "sync market | ST资格" in output
+        assert "开始更新 raw/qfq 短窗口" in output
     assert set(downloaded) == {"600001", "600005", "600007"}
     assert all(session.closed for session in sessions)
 

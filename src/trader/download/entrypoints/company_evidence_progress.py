@@ -9,9 +9,10 @@ from dataclasses import replace
 from math import ceil
 from typing import TextIO
 
-from trader.download.application.progress_message import ProgressDuration
+from trader.download.application.progress_message import ProgressDuration, ProgressMessage
 from trader.download.domain.company_evidence import CompanyStockProgress, DisclosurePartition, EvidenceSyncProgress
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
+from trader.download.infra.terminal_progress import RenderProgress
 
 
 def ReportStPreparation(
@@ -50,8 +51,15 @@ def ReportCompanyStock(
 
 
 class CompanyEvidenceProgress:
-    def __init__(self, stream: TextIO | None = None, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        stream: TextIO | None = None,
+        *,
+        command: str = "sync company",
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._stream = stream if stream is not None else sys.stderr
+        self._command = command
         self._monotonic = monotonic
         self._started = monotonic()
         self._component_started = self._started
@@ -60,6 +68,15 @@ class CompanyEvidenceProgress:
         self._stocks: dict[str, CompanyStockProgress] = {}
         self._batch = 0
         self._reported_failures: set[str] = set()
+
+    def report_preparation(self, message: ProgressMessage) -> None:
+        """Flush reference preparation and download handoff feedback under the invoked command."""
+        print(
+            f"{self._command} | {RenderProgress(message)}"
+            f" | 命令累计 {ProgressDuration(self._monotonic() - self._started)}",
+            file=self._stream,
+            flush=True,
+        )
 
     def __call__(self, progress: EvidenceSyncProgress) -> None:
         now = self._monotonic()
@@ -121,7 +138,7 @@ class CompanyEvidenceProgress:
             failure = ",".join(sorted(current_failures - self._reported_failures))
             self._reported_failures.update(current_failures)
         print(
-            f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
+            f"{self._command} | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
             + (f" | 批次 {self._batch}" if self._batch and progress.component != "complete" else "")
             + _scope(progress)
             + _coverage(progress)

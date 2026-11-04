@@ -21,7 +21,7 @@ from trader.download.application.company_evidence import CompanyEvidenceDependen
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
-from trader.download.application.progress_message import ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
@@ -228,7 +228,9 @@ def ExecuteSync(
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
-    progress = company_evidence_progress.CompanyEvidenceProgress()
+    progress = company_evidence_progress.CompanyEvidenceProgress(
+        command="sync" if target == "all" else f"sync {target}"
+    )
     history_progress = StderrHistorySyncProgress()
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
@@ -244,6 +246,9 @@ def ExecuteSync(
     def sync_market(reference: PreparedReference) -> QfqUpdateResult:
         if qfq_configuration is None:
             raise RuntimeError("qfq_configuration_unavailable")
+        progress.report_preparation(
+            ProgressMessage((ProgressField("行情更新"), ProgressField("参考资料已准备，开始更新 raw/qfq 短窗口")))
+        )
         return ExecuteQfqDownload(
             paths,
             configuration,
@@ -275,6 +280,7 @@ def ExecuteSync(
             paths.reference,
             clock.now(),
             progress,
+            report=progress.report_preparation,
             cancel_requested=cancel_requested,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
         ),
@@ -424,6 +430,7 @@ def _prepare_reference(
     observed_at: datetime,
     progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
     *,
+    report: Callable[[ProgressMessage], None] | None = None,
     cancel_requested: Callable[[], bool],
     shutdown_timeout_seconds: float, sqlite_policy: SqliteIoPolicy,
 ) -> PreparedReference:
@@ -458,7 +465,7 @@ def _prepare_reference(
             publication.publish,
             cancel_requested,
         )
-        return PrepareReference(universe, observed_at, dependencies)
+        return PrepareReference(universe, observed_at, dependencies, report=report)
     finally:
         stopped = workers.stop(
             wait=True,
