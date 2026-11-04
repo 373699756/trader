@@ -201,7 +201,7 @@ def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_fai
         assert run["document_failures"] == [{"failure": "disclosure_document_ocr_low_quality", "documents": 1}]
 
 
-def test_disk_audit_needs_no_replay_directory_or_network_and_keeps_database_unchanged(tmp_path, monkeypatch, capsys):
+def test_database_audit_needs_no_replay_directory_or_network_and_keeps_database_unchanged(tmp_path, monkeypatch, capsys):
     index = fixtures._index(tmp_path)
     partition = index.partitions(("sse",), fixtures.NOW)[0]
     item = fixtures._disclosure(title="收到立案告知书")

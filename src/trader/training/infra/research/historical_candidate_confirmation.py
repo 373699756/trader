@@ -1,4 +1,4 @@
-"""Immutable disk for the historical confirmation no-data terminal."""
+"""Immutable records for the historical confirmation no-data terminal."""
 
 from __future__ import annotations
 

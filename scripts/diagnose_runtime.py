@@ -167,7 +167,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--v5-sample-root", type=Path, help="sealed compact V5 cache for isolated lite comparison")
     parser.add_argument("--v5-candidate-config", type=Path, help="explicit training JSON candidate for v5-lite")
     parser.add_argument(
-        "--database-path", type=Path, action="append", default=[], help="additional read-only database probe path"
+        "--disk-path", type=Path, action="append", default=[], help="additional read-only disk probe path"
     )
     parser.add_argument("--training-signal-date", type=date.fromisoformat, help="read-only V5 label horizon probe")
     parser.add_argument(
@@ -1268,7 +1268,7 @@ def execute_command(command: DiagnosticCommand) -> DiagnosticResult:
             location = PrepareDatabaseProbeDirectory(command.database_probe_directory, command.runtime_config)
             environment = DatabaseWorkerEnvironment(location.directory)
             if command.name in {"history_write_benchmark", "database_baseline"}:
-                argv += ("--database-kind", location.disk_kind)
+                argv += ("--disk-kind", location.disk_kind)
             completed = RunDatabaseProbe(argv, timeout=command.timeout_seconds, environment=environment)
         elif command.name == "training_samples":
             completed = RunDatabaseProbe(argv, timeout=command.timeout_seconds, environment=dict(os.environ))

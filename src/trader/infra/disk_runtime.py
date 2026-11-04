@@ -102,8 +102,8 @@ def ReportDiskProfiles(settings: RuntimeSettings, locations: tuple[DiskLocation,
             "[存储配置需修改] "
             f"原因：{_REASONS.get(profile.reason, profile.reason)}。unknown按保守策略处理。\n"
             f"受影响目录：{names}\n"
-            f"请修改 {DisplayDiskPath(settings.config_path, settings.project_root)} 的 disk，"
-            '例如："disk": "ssd" 或 "disk": "hdd"。\n'
+            f"请修改 {DisplayDiskPath(settings.config_path, settings.project_root)} 的 disk_medium，"
+            '例如："disk_medium": "ssd" 或 "disk_medium": "hdd"。\n'
             "此选项统一应用于程序的数据路径，保存后重新启动命令生效。",
             file=sys.stderr,
         )

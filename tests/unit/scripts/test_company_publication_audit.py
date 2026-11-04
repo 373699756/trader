@@ -50,7 +50,7 @@ def test_published_projection_keeps_unknown_components_and_valid_released_receip
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
     audit = result["field_audit"]
     assert audit["table_count"] == 13 and audit["field_count"] == 106
-    assert audit["invalid_disk_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
+    assert audit["invalid_value_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
 
 
 def test_field_audit_distinguishes_real_source_values_from_formal_corruption(tmp_path):
@@ -64,7 +64,7 @@ def test_field_audit_distinguishes_real_source_values_from_formal_corruption(tmp
     with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE company_facts SET eps='invalid' WHERE code='600001'")
     after = _audit(index)["field_audit"]
-    assert after["invalid_disk_types"] == 1
+    assert after["invalid_value_types"] == 1
     assert after["source_agreement"]["financial_value_mismatches"] == 1
     with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE company_facts SET eps=? WHERE code='600001'", (float("inf"),))
@@ -211,3 +211,5 @@ def test_public_report_projects_only_aggregate_coverage_fields(tmp_path):
     )])
     assert "must-not-project" not in json.dumps(report)
     assert "company_components_incomplete" in json.dumps(report)
+    fields = report["checks"][0]["summary"]["database"]["publication"]["field_audit"]
+    assert fields["invalid_value_types"] == publication["field_audit"]["invalid_value_types"]

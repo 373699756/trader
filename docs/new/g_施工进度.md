@@ -6,13 +6,17 @@
 
 ### 阶段326：codexA清理全仓泛化持久化命名
 
-- owner/状态：codexA / in_progress（用户要求先提交当前状态，命名切换已写，验证尚未全部通过；后续继续沿326，不另建阶段）；开工基线`23624ca0`，本次提交接在B已交付的`ed658d4d`之后，`Afuture`跟踪`origin/Afuture`。
+- owner/状态：codexA / completed（命名切换、消费者及本阶段验证已收口）；开工基线`23624ca0`，首次保存提交`30fe9294`接在B已交付的`ed658d4d`之后，本次接续基线`30fe9294`，开工工作区干净，`Afuture`跟踪`origin/Afuture`。
 - 范围：项目自定义模块、Python符号、配置文件/键、检测参数、调用者、测试及当前新文档；硬盘识别用disk，SQLite配置用sqlite，样本格式用format，公司资料检测用database。全部消费者同批改名，旧模块和别名删除；职责和owner不变。argparse、Python AST、SQLite、macOS及HTTP固定协议字面量保留，旧实施证据不改写。
 - 所有权与消费者：公共硬盘识别/选择、SQLite策略解析、下载路由和进度、训练样本格式、统一检测及全部导入/mock/公开投影同步切换；`test_storage_choice.py`等旧路径删除。同步修改唯一编码规范与既有命名检查器，覆盖大小写、下划线、类名和文件名。
-- 实施边界：不调HDD/SSD参数、评分公式、特征或标签，不执行下载/训练或改写活动库。配置保持用户现有SSD选择；模型和用户其它配置修改不混入提交。自定义配置和检测旧名不留兼容分支；样本清单字段切换可能使旧可丢弃缓存待重建，既有数据本批不删除。
-- 实际改动：13个旧文件路径改为disk/sqlite/database名称，包含`test_disk_choice.py`；全部活动导入、符号、配置和诊断消费者同步改名。配置使用`disk_medium`及`config/sqlite.json.sqlite_policy`，样本清单使用`sample_format`；命名规范和既有检查器补上storage/复数，回归覆盖类名、下划线及文件名。当前工作区SSD值保留，提交只改键名，不带入用户选择变化；B的性能改动已独立进入父提交，A对worker仅有5处命名替换。
-- 验证：配置只读加载通过，当前SSD及HDD/SSD读窗512保持；受影响Python文件Ruff E9/F通过。定向回归249 passed、4 failed（30.92秒），命名检查和样本缓存用例通过；失败为`test_disk_probe`提示仍输出disk而非disk_medium、`test_disk_diagnostic`的--disk-path与入口实际--database-path不一致，以及`test_current_product_contract`两处仍读取已重命名的旧文档。全仓mypy检查669个源码模块，`recommendation/application/pipeline/quality_check/input_quality_service.py:409`报告`HardFilterPolicy | None`参数不匹配；本批未改该文件，尚未基线对照确认归属。未运行格式脚本、真实下载/训练、活动库维护或性能测量；用户要求先提交后不再修实现。
-- 未完成项：先统一提示和诊断参数（另有--database-kind与--disk-kind的调用链需核对），再修上述两处文档读取路径，复跑4项失败及全部受影响入口/脚本消费者；补定向mypy、完整diff及旧名残留复核。不能把当前249项通过写成全量通过。命名任务和本阶段保持in_progress；用户模型及其它已有修改不纳入，后续沿326补齐交付。
+- 实施边界：不调HDD/SSD参数、评分公式、特征或标签，不执行下载/训练或改写活动库。保留接续时已有介质选择（本次HEAD和工作区的`disk_medium`均为`hdd`，不沿用首次保存时SSD工作区的描述）；模型和用户其它配置修改不混入提交。自定义配置和检测旧名不留兼容分支；样本清单字段切换可能使旧可丢弃缓存待重建，既有数据本批不删除。
+- 首次保存改动：13个旧文件路径改为disk/sqlite/database名称，包含`test_disk_choice.py`；全部活动导入、符号、配置和诊断消费者同步改名。配置使用`disk_medium`及`config/sqlite.json.sqlite_policy`，样本清单使用`sample_format`；命名规范和既有检查器补上storage/复数，回归覆盖类名、下划线及文件名。当时工作区SSD值保留，提交只改键名，不带入用户选择变化；B的性能改动已独立进入父提交，A对worker仅有5处命名替换。
+- 首次保存验证：配置只读加载通过，当时工作区SSD及HDD/SSD读窗512保持；受影响Python文件Ruff E9/F通过。定向回归249 passed、4 failed（30.92秒），命名检查和样本缓存用例通过；失败为`test_disk_probe`提示仍输出disk而非disk_medium、`test_disk_diagnostic`的--disk-path与入口实际--database-path不一致，以及`test_current_product_contract`两处仍读取已重命名的旧文档。全仓mypy检查669个源码模块，`recommendation/application/pipeline/quality_check/input_quality_service.py:409`报告`HardFilterPolicy | None`参数不匹配，当时尚未基线对照确认归属。未运行格式脚本、真实下载/训练、活动库维护或性能测量；按用户要求先提交。
+- 接续改动：配置提示及脚本说明统一为`disk_medium`，统一入口恢复`--disk-path`及隔离worker的`--disk-kind`；合同测试读取已有重命名后的b/c文档，不改写旧文档。字段值类型审计改为`invalid_value_types`并切换产生端、白名单投影和测试，修正公司库诊断与研究记录中机械替换失真的描述。扩展既有子进程夹具，覆盖两个隔离检测的介质参数传递；公开报告回归核对类型审计值和白名单保留。
+- 接续验证：先前4项失败所在的探测、诊断、文档合同及数据库夹具共46项通过；随后用`.venv/bin/python3 -m pytest -o addopts='' --strict-markers -q`检查前次修改的23个测试文件，追加统一诊断、样本缓存、V5序列及3组纯命名节点，共585 passed（876.57秒）。字段/提示修改另复核18 passed，最终公开审计投影与公司库入口2 passed；均为隔离夹具或静态合同，不是真实供应商/全市场作业。未运行格式检查、格式化或相关触发用例。
+- 类型与静态检查：75个受影响Python文件Ruff E9/F通过；32个生产模块及5个诊断模块定向mypy通过（`--follow-imports=silent`，诊断另用`MYPYPATH=src --explicit-package-bases`）。当前及改名前`ed658d4d`的仓库外完整源码副本分别检查669个模块，均仅报`input_quality_service.py:409`的同一`HardFilterPolicy | None`错误；该文件SHA-256相同，确认是既有问题，不作为本批通过项。当前配置只读加载为HDD，两介质读窗仍为512。
+- Review与交付：复核接续完整diff及原命名迁移的定义、导入、CLI、配置、投影和mock消费者；旧storage路径及自定义符号无活动残留，保留AST/argparse/SQLite/macOS/HTTP固定字面量、审计词表和负例。本批完整diff及空白检查通过；上游预检确认`30fe9294`同步，仅交付本批14个文件，不接管B阶段325或改动模型/配置值。收尾出现的其它下载准备、进度及其文档/测试修改保留，不纳入本提交或上述验证结论。
+- 未完成项：本阶段无；上述全仓既有类型错误仍存在，未在命名批次中改动荐股质量规则。未执行真实下载/训练、性能测量、活动库维护、数据切换或发布，不据本阶段关闭其它业务或性能验收。
 
 ### 阶段325：codexB优先定位SSD四档训练样本构建热点
 

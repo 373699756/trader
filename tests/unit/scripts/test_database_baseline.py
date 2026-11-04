@@ -106,17 +106,23 @@ def test_database_profile_requires_external_directory_and_bounds_workload(tmp_pa
             _validate(_parser().parse_args(base + list(bad)))
 
 
-def test_worker_tempfiles_and_filesystem_evidence_reach_the_report(tmp_path: Path) -> None:
+@pytest.mark.parametrize("command_name", ("fixture", "history_write_benchmark", "database_baseline"))
+def test_worker_tempfiles_and_filesystem_evidence_reach_the_report(tmp_path: Path, command_name: str) -> None:
     target = tmp_path / "isolated"
     script = (
-        "import json,tempfile; from pathlib import Path; "
-        "print(json.dumps({'status':'passed','summary':{'temporary_root':str(Path(tempfile.gettempdir()))}}))"
+        "import argparse,json,tempfile; from pathlib import Path; "
+        "parser=argparse.ArgumentParser(); parser.add_argument('--disk-kind',choices=('hdd','ssd','unknown')); "
+        "args=parser.parse_args(); "
+        "print(json.dumps({'status':'passed','summary':{'temporary_root':str(Path(tempfile.gettempdir())),"
+        "'disk_kind':args.disk_kind}}))"
     )
-    result = execute_command(DiagnosticCommand("fixture", (sys.executable, "-c", script), 10, target, _CONFIG))
+    result = execute_command(DiagnosticCommand(command_name, (sys.executable, "-c", script), 10, target, _CONFIG))
     assert result.error_code is None
     assert result.payload["summary"]["temporary_root"] == str(target)
     assert "database_workspace" in result.payload["summary"]
     assert result.payload["summary"]["database_workspace"]["filesystem"] != "unknown"
+    if command_name != "fixture":
+        assert result.payload["summary"]["disk_kind"] == result.payload["summary"]["database_workspace"]["disk_kind"]
 
 
 def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tmp_path: Path) -> None:

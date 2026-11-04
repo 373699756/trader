@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_authoritative_design_requires_one_final_product_chain_without_runtime_compatibility() -> None:
-    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/b_系统设计.md").read_text(encoding="utf-8")
 
     for statement in (
         "活动产品代码只在src/trader，组合根为bootstrap.py",
@@ -26,7 +26,7 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
 
 
 def test_strategy_contract_distinguishes_current_profile_authority_from_return_validation() -> None:
-    strategy = (ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/c_评分设计.md").read_text(encoding="utf-8")
     compact = " ".join(strategy.split())
 
     for statement in (

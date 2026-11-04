@@ -1,4 +1,4 @@
-"""Read-only supplier capability probes and immutable H1 audit disk."""
+"""Read-only supplier capability probes and immutable H1 audit records."""
 
 from __future__ import annotations
 

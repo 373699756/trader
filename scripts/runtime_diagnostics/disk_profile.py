@@ -46,7 +46,7 @@ def Main() -> int:
         expected = suggested_medium.upper() if suggested_medium is not None else "实际介质"
         print(
             "[存储配置需修改] "
-            f"runtime disk与物理检测不一致；请改为{expected}后重新启动命令。",
+            f"runtime.json.disk_medium与物理检测不一致；请改为{expected}后重新启动命令。",
             file=sys.stderr,
         )
     details = [
@@ -64,7 +64,7 @@ def Main() -> int:
         for item, actual in zip(locations, actual_profiles, strict=True)
     ]
     if configured_mismatches:
-        instruction = "runtime disk与物理介质不一致；按实际介质修改后重新启动命令。"
+        instruction = "runtime.json.disk_medium与物理介质不一致；按实际介质修改后重新启动命令。"
     elif unknown_app:
         instruction = '统一设置"disk_medium": "ssd"或"disk_medium": "hdd"；保存后重新启动命令。'
     elif actual_unknown_app:

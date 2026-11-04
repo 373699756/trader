@@ -308,7 +308,7 @@ def Main() -> int:
         if args.directory is not None:
             summary = report["summary"]
             if not isinstance(summary, dict):
-                raise ValueError("company_disk_summary_invalid")
+                raise ValueError("company_database_summary_invalid")
             summary["compaction"] = _compact_database(
                 source_path, args.directory.resolve(), budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy
             )

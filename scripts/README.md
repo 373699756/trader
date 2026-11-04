@@ -18,7 +18,7 @@ module and profile there; it is not added as another top-level script.
 
 `--profile disk`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
 可重复使用`--disk-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
-unknown结果附带实际runtime配置文件和单项`disk`修改示例：`"disk": "hdd"`或`"disk": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
+unknown结果附带实际runtime配置文件和单项`disk_medium`修改示例：`"disk_medium": "hdd"`或`"disk_medium": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
 
 `--profile tencent-transport`只读加载本地证券参考人口，以同一120只分片、3路并发分别测量直接HTTP和可复用隔离HTTP；两组均采用生产全市场覆盖校验、配置中的主源采集预算（当前12秒）及分片尝试上限（当前2次），外层仍受统一命令超时控制。真实请求腾讯，输出总体请求/返回数、物理尝试与失败数、尝试上限、单次及整批耗时，不保存供应商载荷或改动活动数据。单次对照不能证明长期尾延迟或完整推荐轮次；直连组的不可协作DNS等阻塞仍可能超过其本地采集预算。`runtime`报告另外保留预览状态、失败码与最多64项阶段计时，用于区分行情等待和下游阻断。
 
