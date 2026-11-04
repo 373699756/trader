@@ -200,7 +200,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float, sqlite_policy: Sql
     }
 
 
-def AuditCompanyStorage(
+def AuditCompanyDatabase(
     path: Path, *, now: datetime, budget_seconds: float, facts_path: Path | None = None, sqlite_policy: SqliteIoPolicy
 ) -> dict[str, object]:
     """Count local records and persisted retry reasons without reading bodies into the report."""
@@ -390,7 +390,7 @@ def AuditCompanyStorage(
         "schema_version": "company-resume",
         "status": "degraded" if partitions or pending or publication_findings else "passed",
         "summary": {
-            "local_storage": {
+            "database": {
                 "read_only": True,
                 "pdf_archived": (path.parent / "failed").exists(),
                 "retained_failed_pdfs": sum(1 for _ in (path.parent / "failed").rglob("*.pdf")),
@@ -404,8 +404,8 @@ def AuditCompanyStorage(
                 "publication": publication,
                 "pending_ranges": partitions,
                 "pending_documents": pending,
-                "stored_retry_cooling": cooling,
-                "stored_retry_ready": ready,
+                "recorded_retry_cooling": cooling,
+                "recorded_retry_ready": ready,
                 "deterministic_failures": deterministic,
                 "partition_failures": partition_failures,
                 "recent_document_failures": recent_failures,
@@ -432,4 +432,4 @@ def AuditCompanyStorage(
     }
 
 
-__all__ = ["AuditCompanyQueries", "AuditCompanyStorage"]
+__all__ = ["AuditCompanyQueries", "AuditCompanyDatabase"]

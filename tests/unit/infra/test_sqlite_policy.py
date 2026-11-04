@@ -1,4 +1,4 @@
-"""Nondefault storage configuration affects real SQLite without weakening publication atomicity."""
+"""Nondefault policy_config configuration affects real SQLite without weakening publication atomicity."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -11,14 +11,14 @@ import pytest
 
 from trader.bootstrap import BuildSqlitePolicy
 from trader.infra.settings import LoadRuntimeSettings
-from trader.infra.settings.models import StorageSettings
+from trader.infra.settings.models import SqliteSettings
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_observation import SqliteObservation
-from trader.infra.storage_types import StorageProfile
+from trader.infra.disk_types import DiskProfile
 
 
-def test_storage_json_reaches_download_training_and_recommendation_adapters(tmp_path, monkeypatch):
+def test_sqlite_json_reaches_download_training_and_recommendation_adapters(tmp_path, monkeypatch):
     from trader.download.infra.reference_index import SQLiteReferenceIndex
     from trader.infra import sqlite_connection
     from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
@@ -28,17 +28,17 @@ def test_storage_json_reaches_download_training_and_recommendation_adapters(tmp_
     shutil.copytree(root / "config", tmp_path / "config")
     runtime_path = tmp_path / "config/runtime.json"
     runtime = json.loads(runtime_path.read_text())
-    runtime["storage"] = "ssd"
+    runtime["disk_medium"] = "ssd"
     runtime_path.write_text(json.dumps(runtime))
-    storage_path = tmp_path / "config/storage.json"
-    storage = json.loads(storage_path.read_text())
-    storage["storage_policy"]["ssd"] = {
+    policy_path = tmp_path / "config/sqlite.json"
+    policy_config = json.loads(policy_path.read_text())
+    policy_config["sqlite_policy"]["ssd"] = {
         "connection_timeout_seconds": 0.041,
         "read_window_rows": 3,
         "transaction_batch_rows": 2,
         "checkpoint_mode": "PASSIVE",
     }
-    storage_path.write_text(json.dumps(storage))
+    policy_path.write_text(json.dumps(policy_config))
     policy = BuildSqlitePolicy(LoadRuntimeSettings(runtime_path))
     seen = []
     configure = sqlite_connection._configure_database
@@ -59,12 +59,12 @@ def test_composition_selects_explicit_detected_and_unknown_medium(monkeypatch):
     settings = LoadRuntimeSettings(Path(__file__).resolve().parents[3] / "config/runtime.json")
     hdd = SqliteIoPolicy(0.03, 3, 2, "PASSIVE")
     ssd = SqliteIoPolicy(0.07, 7, 5, "RESTART")
-    settings = replace(settings, storage_policy=StorageSettings(hdd, ssd))
-    assert BuildSqlitePolicy(replace(settings, storage_medium="hdd")) is hdd
-    assert BuildSqlitePolicy(replace(settings, storage_medium="ssd")) is ssd
+    settings = replace(settings, sqlite_policy=SqliteSettings(hdd, ssd))
+    assert BuildSqlitePolicy(replace(settings, disk_medium="hdd")) is hdd
+    assert BuildSqlitePolicy(replace(settings, disk_medium="ssd")) is ssd
     for medium, expected in (("ssd", ssd), ("hdd", hdd), ("unknown", hdd)):
-        monkeypatch.setattr("trader.bootstrap.StorageProbe.inspect", lambda _self, _path, kind=medium: StorageProfile(kind, "test", "automatic", "test"))
-        assert BuildSqlitePolicy(replace(settings, storage_medium=None)) is expected
+        monkeypatch.setattr("trader.bootstrap.DiskProbe.inspect", lambda _self, _path, kind=medium: DiskProfile(kind, "test", "automatic", "test"))
+        assert BuildSqlitePolicy(replace(settings, disk_medium=None)) is expected
 
 
 def test_policy_bounds_driver_batches_but_keeps_one_atomic_transaction():

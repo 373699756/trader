@@ -55,11 +55,11 @@ def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, 
         clock=lambda: NOW,
         cancel_requested=lambda: cancelled,
         progress=Interrupted(),
-        storage_kind="hdd",
+        disk_kind="hdd",
     )
     assert first.state == "cancelled"
     assert HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
-    resumed = RunHistoryFixture(configuration, FakeSupplier(DAYS), clock=lambda: NOW, storage_kind="hdd")
+    resumed = RunHistoryFixture(configuration, FakeSupplier(DAYS), clock=lambda: NOW, disk_kind="hdd")
     assert resumed.state == "completed"
     assert len(tunings) == 2 and tunings[0] == tunings[1]
     assert tunings[1].flush_cells == 16384

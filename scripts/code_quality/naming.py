@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from .files import SourceFile
 
-BANNED_WORDS = frozenset({"store", "stored", "repository", "archive", "registry", "active"})
+BANNED_WORDS = frozenset({"store", "stores", "stored", "storage", "repository", "archive", "registry", "active"})
 VAGUE_NAMES = frozenset({"data", "obj", "tmp", "manager"})
 BUILTIN_NAMES = frozenset(dir(builtins))
 

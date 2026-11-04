@@ -12,7 +12,7 @@ from datetime import datetime
 from trader.download.application.history_ports import HistorySupplierPort
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
-from trader.infra.storage_types import StorageKind
+from trader.infra.disk_types import DiskKind
 from trader.infra.workers import WorkerExecutor
 
 
@@ -28,7 +28,7 @@ class HistorySyncGateway:
 
     worker_pool: WorkerExecutor | None = None
     writer_pool: WorkerExecutor | None = None
-    storage_kind: StorageKind = "unknown"
+    disk_kind: DiskKind = "unknown"
     repair_only: bool = False
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
@@ -52,7 +52,7 @@ class HistorySyncGateway:
             cancel_requested=cancel_requested,
             worker_pool=self.worker_pool,
             writer_pool=self.writer_pool,
-            storage_kind=self.storage_kind,
+            disk_kind=self.disk_kind,
             repair_only=self.repair_only, sqlite_policy=self.sqlite_policy,
         )
 

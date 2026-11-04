@@ -12,7 +12,7 @@ import pytest
 from scripts.diagnose_runtime import DiagnosticResult, build_report
 from scripts.runtime_diagnostics import company_publication_audit
 from scripts.runtime_diagnostics.company_publication_audit import AuditCompanyPublication
-from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
+from scripts.runtime_diagnostics.company_query_audit import AuditCompanyDatabase
 from tests.component import test_company_evidence as fixtures
 from trader.download.domain.company_evidence import DisclosurePage
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext, DownloadFailureRecord
@@ -50,7 +50,7 @@ def test_published_projection_keeps_unknown_components_and_valid_released_receip
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
     audit = result["field_audit"]
     assert audit["table_count"] == 13 and audit["field_count"] == 106
-    assert audit["invalid_storage_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
+    assert audit["invalid_disk_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
 
 
 def test_field_audit_distinguishes_real_source_values_from_formal_corruption(tmp_path):
@@ -64,7 +64,7 @@ def test_field_audit_distinguishes_real_source_values_from_formal_corruption(tmp
     with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE company_facts SET eps='invalid' WHERE code='600001'")
     after = _audit(index)["field_audit"]
-    assert after["invalid_storage_types"] == 1
+    assert after["invalid_disk_types"] == 1
     assert after["source_agreement"]["financial_value_mismatches"] == 1
     with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE company_facts SET eps=? WHERE code='600001'", (float("inf"),))
@@ -144,13 +144,13 @@ def test_dirty_codes_outside_population_are_not_reported_as_unpublished_current_
 
 def test_empty_collection_without_formal_publication_cannot_pass(tmp_path):
     index = fixtures._index(tmp_path)
-    result = AuditCompanyStorage(index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10, sqlite_policy=SqlitePolicyFixture())
+    result = AuditCompanyDatabase(index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10, sqlite_policy=SqlitePolicyFixture())
     assert result["status"] == "degraded"
     assert "company_publication_missing" in result["findings"]
     assert "company_population_empty" in result["findings"]
 
 
-def test_storage_inventory_includes_history_beyond_summary_limit_without_touching_inputs(tmp_path):
+def test_disk_inventory_includes_history_beyond_summary_limit_without_touching_inputs(tmp_path):
     index = _published(tmp_path)
     item = fixtures._disclosure(title="关于收到立案告知书的公告")
     index.document_failure(item, "old-policy", "FileNotFoundError", fixtures.NOW, fixtures.NOW)
@@ -167,10 +167,10 @@ def test_storage_inventory_includes_history_beyond_summary_limit_without_touchin
             "FileNotFoundError:pathlib.py:_scandir:938 > stage=download;record=first;version=a",
         ), configuration=configuration)
     before = (index.path.read_bytes(), index.facts_path.read_bytes(), invalid.read_bytes())
-    result = AuditCompanyStorage(
+    result = AuditCompanyDatabase(
         index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10, sqlite_policy=SqlitePolicyFixture(),
     )
-    inventory = result["summary"]["local_storage"]
+    inventory = result["summary"]["database"]
     assert len(inventory["failure_history"]["events"]) == inventory["failure_history"]["total"] == 55
     assert inventory["retry_inventory"][0]["files"] == ["invalid.pdf"]
     assert inventory["retry_inventory"][0]["pdf_files"] == 1
@@ -178,7 +178,7 @@ def test_storage_inventory_includes_history_beyond_summary_limit_without_touchin
     assert not inventory["file_inventory_is_atomic"]
     report = build_report("company-resume", [DiagnosticResult("company_resume", 0, 1.0, result, None)])
     assert "not-a-valid-pdf-private-content" not in json.dumps(report)
-    assert len(report["checks"][0]["summary"]["local_storage"]["retry_inventory"]) == 1
+    assert len(report["checks"][0]["summary"]["database"]["retry_inventory"]) == 1
     assert (index.path.read_bytes(), index.facts_path.read_bytes(), invalid.read_bytes()) == before
 
 
@@ -207,7 +207,7 @@ def test_public_report_projects_only_aggregate_coverage_fields(tmp_path):
     publication["findings"].extend(["must-not-project", {"body": "must-not-project"}])
     report = build_report("company-resume", [DiagnosticResult(
         "company_resume", 0, 1.0, {"schema_version": "company-resume", "status": "degraded",
-                                 "summary": {"local_storage": {"publication": publication}}}, None,
+                                 "summary": {"database": {"publication": publication}}}, None,
     )])
     assert "must-not-project" not in json.dumps(report)
     assert "company_components_incomplete" in json.dumps(report)

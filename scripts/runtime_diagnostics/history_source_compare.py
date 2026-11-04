@@ -38,7 +38,7 @@ from trader.download.infra.tencent_qfq_supplier import (
     TencentSessionPool,
 )
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.storage_probe import StorageProbe
+from trader.infra.disk_probe import DiskProbe
 
 from .reporting import emit_report
 
@@ -122,7 +122,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float, 
                 config,
                 _ComparisonSupplier(context, baseline, prices, tencent_first),
                 worker_pool=pool,
-                storage_kind=StorageProbe().inspect(config.history_root).kind,
+                disk_kind=DiskProbe().inspect(config.history_root).kind,
                 clock=lambda: datetime.combine(dates[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai")), sqlite_policy=sqlite_policy,
             )
             results.append(

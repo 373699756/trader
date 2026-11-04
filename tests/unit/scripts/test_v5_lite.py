@@ -11,7 +11,7 @@ from scripts.runtime_diagnostics.v5_lite import QualityPassed, _prepare
 from trader.infra.atomic_files.json import AtomicWriteJson
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.training.infra.sample_sequences import SampleSequenceLayout
-from trader.training.infra.sample_schema import SampleStorageId
+from trader.training.infra.sample_schema import SampleFormatId
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from tests.helpers.configuration import TcnFittingParametersFixture
 
@@ -74,7 +74,7 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
     AtomicWriteJson(
         source / "complete.json",
         {
-            "storage": SampleStorageId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)),
+            "sample_format": SampleFormatId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)),
             "sha256": hashlib.sha256(original).hexdigest(),
         },
     )
@@ -98,7 +98,7 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
     AtomicWriteJson(
         source / "complete.json",
         {
-            "storage": SampleStorageId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)),
+            "sample_format": SampleFormatId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)),
             "sha256": "0" * 64,
         },
     )

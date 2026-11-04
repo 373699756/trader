@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
-class _StorageArguments(TypedDict, total=False):
+class _SqliteArguments(TypedDict, total=False):
     sqlite_policy: SqliteIoPolicy
 
 
@@ -37,10 +37,10 @@ def _inputs(history: Path, runtime_config: Path, *, sqlite_policy: SqliteIoPolic
 
     started = time.monotonic()
     settings = LoadRuntimeSettings(runtime_config)
-    storage_arguments: _StorageArguments = {}
+    sqlite_arguments: _SqliteArguments = {}
     if sqlite_policy is not None:
-        storage_arguments["sqlite_policy"] = sqlite_policy
-    source = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history, **storage_arguments))
+        sqlite_arguments["sqlite_policy"] = sqlite_policy
+    source = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history, **sqlite_arguments))
     manifest = source.manifest()
     if manifest is None:
         raise ValueError("history_manifest_unavailable")
@@ -108,10 +108,10 @@ def _probe(
         raise ValueError("training_alignment_requires_external_history_copy")
     if work.exists() or history.is_relative_to(work) or work.is_relative_to(history):
         raise ValueError("training_alignment_requires_new_separate_output")
-    storage_arguments: _StorageArguments = {}
+    sqlite_arguments: _SqliteArguments = {}
     if sqlite_policy is not None:
-        storage_arguments["sqlite_policy"] = sqlite_policy
-    source = SQLiteHistoryTrainingInputSnapshot.open(history, **storage_arguments)
+        sqlite_arguments["sqlite_policy"] = sqlite_policy
+    source = SQLiteHistoryTrainingInputSnapshot.open(history, **sqlite_arguments)
     identity = source.snapshot.snapshot_hash
     work.mkdir(parents=True)
     started = time.monotonic()
@@ -127,7 +127,7 @@ def _probe(
     ConfigureTrainingResources()
     initial = _train_once(runtime, history, work, profiles)
     repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
-    unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **storage_arguments).snapshot.snapshot_hash == identity
+    unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **sqlite_arguments).snapshot.snapshot_hash == identity
     complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged)
     equal = repeat is not None and initial["numeric_fingerprints"] == repeat["numeric_fingerprints"]
     reuse_failures = TrainingReuseFailures(initial, repeat, profiles)
@@ -275,7 +275,7 @@ def main() -> int:
 
         runtime_config = args.runtime_config or product / "config/runtime.json"
         sqlite_policy = None
-        # Explicit historical checkouts predate the injected storage policy.
+        # Explicit historical checkouts predate the injected disk policy.
         if (product / "src/trader/infra/sqlite_policy.py").is_file():
             from trader.bootstrap import BuildSqlitePolicy
             from trader.infra.settings import LoadRuntimeSettings

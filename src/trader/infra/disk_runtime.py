@@ -1,4 +1,4 @@
-"""Resolve configured data locations and render actionable storage diagnostics."""
+"""Resolve configured data locations and render actionable disk diagnostics."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from typing import TextIO
 
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.models import RuntimeSettings
-from trader.infra.settings.storage import SaveStorageMedium
-from trader.infra.storage_probe import StorageProbe
-from trader.infra.storage_types import StorageLocation, StorageMedium
+from trader.infra.settings.disk_medium import SaveDiskMedium
+from trader.infra.disk_probe import DiskProbe
+from trader.infra.disk_types import DiskLocation, DiskMedium
 
 _REASONS = {
     "path_unavailable": "目录或其父目录不可访问",
@@ -22,12 +22,12 @@ _REASONS = {
 }
 
 
-def InspectDataStorage(
+def InspectDataDisk(
     settings: RuntimeSettings,
-    probe: StorageProbe,
+    probe: DiskProbe,
     *,
     additional_paths: Sequence[Path] = (),
-) -> tuple[StorageLocation, ...]:
+) -> tuple[DiskLocation, ...]:
     paths = settings.data_paths
     locations = [
         ("runtime", settings.runtime_dir),
@@ -46,43 +46,43 @@ def InspectDataStorage(
                 (f"research.{profile}", paths.research(profile)),
             )
         )
-    result = [StorageLocation(role, path, probe.inspect(path)) for role, path in locations]
-    external_probe = StorageProbe()
+    result = [DiskLocation(role, path, probe.inspect(path)) for role, path in locations]
+    external_probe = DiskProbe()
     result.extend(
-        StorageLocation(f"external.{index}", path, external_probe.inspect(path))
+        DiskLocation(f"external.{index}", path, external_probe.inspect(path))
         for index, path in enumerate(additional_paths)
     )
     return tuple(result)
 
 
-def ConfigureStorage(
+def ConfigureDisk(
     settings: RuntimeSettings,
     *,
     additional_paths: Sequence[Path] = (),
     choose: bool = False,
     report: bool = True,
 ) -> RuntimeSettings:
-    """Resolve terminal choices before runtime resources use the storage profile."""
-    locations = InspectDataStorage(
-        settings, StorageProbe(settings.storage_medium), additional_paths=additional_paths
+    """Resolve terminal choices before runtime resources use the disk profile."""
+    locations = InspectDataDisk(
+        settings, DiskProbe(settings.disk_medium), additional_paths=additional_paths
     )
-    if choose and settings.storage_medium is None:
-        selected = PromptUnknownStorage(tuple(item for item in locations if not item.role.startswith("external.")))
+    if choose and settings.disk_medium is None:
+        selected = PromptUnknownDisk(tuple(item for item in locations if not item.role.startswith("external.")))
         if selected is not None:
-            SaveStorageMedium(settings.config_path, settings.storage_medium, selected)
+            SaveDiskMedium(settings.config_path, settings.disk_medium, selected)
             print("[存储选择] 已保存到运行配置；下次启动将复用此选择。", file=sys.stderr)
             settings = LoadRuntimeSettings(settings.config_path)
-            locations = InspectDataStorage(
-                settings, StorageProbe(settings.storage_medium), additional_paths=additional_paths
+            locations = InspectDataDisk(
+                settings, DiskProbe(settings.disk_medium), additional_paths=additional_paths
             )
     if report:
-        ReportStorageProfiles(settings, locations)
+        ReportDiskProfiles(settings, locations)
     return settings
 
 
-def ReportStorageProfiles(settings: RuntimeSettings, locations: tuple[StorageLocation, ...]) -> None:
+def ReportDiskProfiles(settings: RuntimeSettings, locations: tuple[DiskLocation, ...]) -> None:
     """Summarize known media and keep unknown warnings per device on stderr."""
-    groups: dict[tuple[str, ...], list[StorageLocation]] = {}
+    groups: dict[tuple[str, ...], list[DiskLocation]] = {}
     for item in locations:
         key: tuple[str, ...] = (item.profile.kind, item.profile.source)
         if item.profile.kind == "unknown":
@@ -94,7 +94,7 @@ def ReportStorageProfiles(settings: RuntimeSettings, locations: tuple[StorageLoc
         print(f"[存储检测] {profile.kind.upper()}（{source}）", file=sys.stderr)
         if profile.kind != "unknown":
             continue
-        names = ", ".join(DisplayStoragePath(item.path, settings.project_root) for item in items)
+        names = ", ".join(DisplayDiskPath(item.path, settings.project_root) for item in items)
         if items[0].role.startswith("external."):
             print(f"[存储检测] 外部目录介质仍未知：{names}；请核实该目录所在设备。", file=sys.stderr)
             continue
@@ -102,18 +102,18 @@ def ReportStorageProfiles(settings: RuntimeSettings, locations: tuple[StorageLoc
             "[存储配置需修改] "
             f"原因：{_REASONS.get(profile.reason, profile.reason)}。unknown按保守策略处理。\n"
             f"受影响目录：{names}\n"
-            f"请修改 {DisplayStoragePath(settings.config_path, settings.project_root)} 的 storage，"
-            '例如："storage": "ssd" 或 "storage": "hdd"。\n'
+            f"请修改 {DisplayDiskPath(settings.config_path, settings.project_root)} 的 disk，"
+            '例如："disk": "ssd" 或 "disk": "hdd"。\n'
             "此选项统一应用于程序的数据路径，保存后重新启动命令生效。",
             file=sys.stderr,
         )
 
 
-def PromptUnknownStorage(
-    locations: tuple[StorageLocation, ...],
+def PromptUnknownDisk(
+    locations: tuple[DiskLocation, ...],
     *,
     input_stream: TextIO | None = None,
-) -> StorageMedium | None:
+) -> DiskMedium | None:
     """Ask once for the global medium when automatic detection is inconclusive."""
     source = input_stream if input_stream is not None else sys.stdin
     if not source.isatty() or not any(item.profile.kind == "unknown" for item in locations):
@@ -132,5 +132,5 @@ def PromptUnknownStorage(
         print("请输入 1、2 或直接回车。", file=sys.stderr)
 
 
-def DisplayStoragePath(path: Path, project_root: Path) -> str:
+def DisplayDiskPath(path: Path, project_root: Path) -> str:
     return path.relative_to(project_root).as_posix() if path.is_relative_to(project_root) else str(path)

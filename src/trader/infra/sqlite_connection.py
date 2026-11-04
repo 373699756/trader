@@ -183,14 +183,14 @@ class SqliteConnectionOptions:
     page_size: int | None = None
     cache_kib: int | None = None
     mmap_bytes: int | None = None
-    temp_storage: Literal["DEFAULT", "FILE", "MEMORY"] | None = None
+    temp_mode: Literal["DEFAULT", "FILE", "MEMORY"] | None = None
     durability: Literal["durable", "rebuildable"] = "durable"
 
     def __post_init__(self) -> None:
         if (
             self.durability not in {"durable", "rebuildable"}
             or self.journal_mode not in {None, "WAL", "DELETE", "OFF"}
-            or self.temp_storage not in {None, "DEFAULT", "FILE", "MEMORY"}
+            or self.temp_mode not in {None, "DEFAULT", "FILE", "MEMORY"}
             or not isfinite(self.timeout_seconds)
             or self.timeout_seconds < 0
             or self.read_only
@@ -284,8 +284,8 @@ def OpenSqliteConnection(
             _configure_statement(connection, f"PRAGMA cache_size=-{options.cache_kib}")
         if options.mmap_bytes is not None:
             _configure_statement(connection, f"PRAGMA mmap_size={options.mmap_bytes}")
-        if options.temp_storage is not None:
-            _configure_statement(connection, f"PRAGMA temp_store={options.temp_storage}")
+        if options.temp_mode is not None:
+            _configure_statement(connection, f"PRAGMA temp_store={options.temp_mode}")
         return SqliteConnection(connection, sqlite_policy)
     except BaseException:
         connection.close()

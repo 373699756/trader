@@ -60,7 +60,7 @@ def OpenHistoryPriceReader(
             return OpenSqliteConnection(
                 path,
                 SqliteConnectionOptions(
-                    read_only=True, foreign_keys=True, cache_kib=8192, mmap_bytes=mmap_bytes, temp_storage="FILE"
+                    read_only=True, foreign_keys=True, cache_kib=8192, mmap_bytes=mmap_bytes, temp_mode="FILE"
                 ),
                 statement_trace=statement_trace, sqlite_policy=sqlite_policy,
             )

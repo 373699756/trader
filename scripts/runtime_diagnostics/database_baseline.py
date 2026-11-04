@@ -46,7 +46,7 @@ from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
-from trader.infra.storage_types import StorageKind
+from trader.infra.disk_types import DiskKind
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
@@ -103,7 +103,7 @@ class _Supplier(HistoryFixtureSupplier):
 class _SyncFixture:
     """Real sync coordinator and persistence adapters with finite synthetic supplier facts."""
 
-    def __init__(self, root: Path, size: int, sessions: int, storage_kind: StorageKind, *, sqlite_policy: SqliteIoPolicy) -> None:
+    def __init__(self, root: Path, size: int, sessions: int, disk_kind: DiskKind, *, sqlite_policy: SqliteIoPolicy) -> None:
         self._sqlite_policy = sqlite_policy
         self.preload_settings = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.history_preload
         self.company_configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
@@ -111,7 +111,7 @@ class _SyncFixture:
         self.paths = DataPaths(root)
         self.root = root
         self.sessions = sessions
-        self.storage_kind = storage_kind
+        self.disk_kind = disk_kind
         days = tuple(_NOW.date() - timedelta(days=sessions - offset - 1) for offset in range(sessions))
         self.supplier = _Supplier(days, size, sqlite_policy=sqlite_policy)
         context = self.supplier.load_context(_NOW.date(), sessions)
@@ -150,7 +150,7 @@ class _SyncFixture:
         )
         return self._measure(
             "history",
-            lambda: RunHistorySync(configuration, self.supplier, clock=lambda: _NOW, storage_kind=self.storage_kind, sqlite_policy=self._sqlite_policy),
+            lambda: RunHistorySync(configuration, self.supplier, clock=lambda: _NOW, disk_kind=self.disk_kind, sqlite_policy=self._sqlite_policy),
         )
 
     def market(self, reference: PreparedReference) -> QfqUpdateResult:
@@ -318,12 +318,12 @@ class _SyncFixture:
         return cast(str, CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2", sqlite_policy=self._sqlite_policy).read_codes(codes)))
 
 
-def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, storage_kind: StorageKind, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, disk_kind: DiskKind, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     targets: tuple[SyncTarget, ...] = ("all", "history", "market", "company")
     runs: dict[str, dict[str, object]] = {}
     identities: dict[str, _InputIdentities] = {}
     for target in targets:
-        fixture = _SyncFixture(root / target, size, sessions, storage_kind, sqlite_policy=sqlite_policy)
+        fixture = _SyncFixture(root / target, size, sessions, disk_kind, sqlite_policy=sqlite_policy)
         sync = fixture.execute(target)
         startup = fixture.startup()
         identities[target] = startup.identities
@@ -361,10 +361,10 @@ def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, storage_kind: S
     return {"targets": runs, "joint_single_equivalent": True, "independent_targets": True}
 
 
-def _worker(size: int, sessions: int, storage_kind: StorageKind, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def _worker(size: int, sessions: int, disk_kind: DiskKind, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     with TemporaryDirectory(prefix="trader-database-baseline-") as scratch:
-        sync = MeasureSyncBaseline(Path(scratch), size=size, sessions=sessions, storage_kind=storage_kind, sqlite_policy=sqlite_policy)
-        history = MeasureHistoryWrites(size, sessions, storage_kind=storage_kind, sqlite_policy=sqlite_policy)
+        sync = MeasureSyncBaseline(Path(scratch), size=size, sessions=sessions, disk_kind=disk_kind, sqlite_policy=sqlite_policy)
+        history = MeasureHistoryWrites(size, sessions, disk_kind=disk_kind, sqlite_policy=sqlite_policy)
     if history["status"] != "passed":
         raise RuntimeError("database_baseline_history_cases_failed")
     return {"sync": sync, "history": history["summary"]}
@@ -402,7 +402,7 @@ def _median_metrics(runs: list[dict[str, object]]) -> dict[str, float]:
     return {key: median(run[key] for run in measurements) for key in sorted(common)}
 
 
-def _run_worker(checkout: Path, size: int, sessions: int, storage_kind: StorageKind) -> dict[str, object]:
+def _run_worker(checkout: Path, size: int, sessions: int, disk_kind: DiskKind) -> dict[str, object]:
     completed = subprocess.run(
         [
             sys.executable,
@@ -413,8 +413,8 @@ def _run_worker(checkout: Path, size: int, sessions: int, storage_kind: StorageK
             str(size),
             "--sessions",
             str(sessions),
-            "--storage-kind",
-            storage_kind,
+            "--disk-kind",
+            disk_kind,
             "--expected-product-root",
             str(checkout),
         ],
@@ -451,7 +451,7 @@ def _compare(
     size: int,
     sessions: int,
     rounds: int,
-    storage_kind: StorageKind,
+    disk_kind: DiskKind,
     focus: Literal["history", "market-company"] = "history",
 ) -> dict[str, object]:
     baseline = baseline.resolve(strict=True)
@@ -462,7 +462,7 @@ def _compare(
         order = ("baseline", "candidate") if number % 2 == 0 else ("candidate", "baseline")
         for variant in order:
             checkout = baseline if variant == "baseline" else PROJECT_ROOT
-            runs[variant].append(_run_worker(checkout, size, sessions, storage_kind))
+            runs[variant].append(_run_worker(checkout, size, sessions, disk_kind))
         if _publication_facts(runs["baseline"][-1]) != _publication_facts(runs["candidate"][-1]):
             raise RuntimeError("database_comparison_publication_changed")
     old, new = _median_metrics(runs["baseline"]), _median_metrics(runs["candidate"])
@@ -546,7 +546,7 @@ def main() -> int:
     parser.add_argument("--size", type=int, default=8)
     parser.add_argument("--sessions", type=int, default=2000)
     parser.add_argument("--rounds", type=int, choices=range(1, 6), default=5)
-    parser.add_argument("--storage-kind", choices=("ssd", "hdd", "unknown"), default="unknown")
+    parser.add_argument("--disk-kind", choices=("ssd", "hdd", "unknown"), default="unknown")
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--baseline-checkout", type=Path)
     parser.add_argument("--acceptance-focus", choices=("history", "market-company"), default="history")
@@ -560,16 +560,16 @@ def main() -> int:
     if args.worker:
         if Path(trader.__file__).resolve().parents[2] != args.expected_product_root.resolve():
             raise RuntimeError("database_comparison_wrong_product_import")
-        emit_report(_worker(args.size, args.sessions, args.storage_kind, sqlite_policy=sqlite_policy))
+        emit_report(_worker(args.size, args.sessions, args.disk_kind, sqlite_policy=sqlite_policy))
         return 0
     if args.baseline_checkout is not None:
         result = _compare(
-            args.baseline_checkout, args.size, args.sessions, args.rounds, args.storage_kind, args.acceptance_focus
+            args.baseline_checkout, args.size, args.sessions, args.rounds, args.disk_kind, args.acceptance_focus
         )
         acceptance = cast(dict[str, object], result["acceptance"])
         status = "passed" if acceptance["accepted"] else "degraded"
     else:
-        runs = [_run_worker(PROJECT_ROOT, args.size, args.sessions, args.storage_kind) for _ in range(args.rounds)]
+        runs = [_run_worker(PROJECT_ROOT, args.size, args.sessions, args.disk_kind) for _ in range(args.rounds)]
         result = {"runs": runs, "median_metrics": _median_metrics(runs)}
         status = "passed"
     emit_report(
@@ -582,7 +582,7 @@ def main() -> int:
                 "stocks": args.size,
                 "sessions": args.sessions,
                 "physical_http_requests": 0,
-                "storage_kind": args.storage_kind,
+                "disk_kind": args.disk_kind,
                 **result,
                 "cache_policy": "fresh worker and databases per round; operating-system cache is uncontrolled",
                 "measurement_policy": "scoped public SQLite wrapper instrumentation; statements count submitted run/run_many rows; successful BEGIN/COMMIT counts; WAL sampled every 50 ms; SQL time includes commit and fetch, excludes connection setup/PRAGMAs; RSS is process peak",

@@ -18,7 +18,7 @@ from typing import Literal
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
 from trader.training.infra.sample_sequences import SampleSequenceLayout
-from trader.training.infra.sample_schema import SampleStorageId
+from trader.training.infra.sample_schema import SampleFormatId
 
 _LOGGER = logging.getLogger(__name__)
 SampleCachePhase = Literal["checking", "sealing"]
@@ -47,7 +47,7 @@ class TrainingSampleCache:
         self.feature_names = feature_names
         self.split_hash = split_hash
         self.sequence_layout = sequence_layout
-        self.storage_contract = SampleStorageId(feature_names, sequence_layout)
+        self.format_id = SampleFormatId(feature_names, sequence_layout)
         self.reused = False
         self._checkpoint = checkpoint
         self._progress = progress
@@ -104,7 +104,7 @@ class TrainingSampleCache:
         if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns):
             raise ValueError("training_sample_cache_changed_during_seal")
         AtomicWriteJson(self.manifest, {
-            "identity": self.identity, "sha256": digest, "storage": self.storage_contract, "split_hash": self.split_hash,
+            "identity": self.identity, "sha256": digest, "sample_format": self.format_id, "split_hash": self.split_hash,
             "size_bytes": stamp.st_size, "modified_ns": stamp.st_mtime_ns,
         })
         if self._progress:
@@ -143,7 +143,7 @@ class TrainingSampleCache:
             if (
                 not isinstance(value, dict)
                 or value.get("identity") != self.identity
-                or value.get("storage") != self.storage_contract
+                or value.get("sample_format") != self.format_id
                 or value.get("split_hash") != self.split_hash
             ):
                 return False

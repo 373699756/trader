@@ -97,6 +97,12 @@ def test_dynamic_exports_and_long_files_refused() -> None:
         "PriceStore",
         "company_repository",
         "StoredRow",
+        "Storage",
+        "StorageProfile",
+        "STORAGE_KIND",
+        "sample_storage",
+        "test_storage_choice",
+        "PhysicalStores",
         "Archive",
         "REGISTRY",
     ],
@@ -105,7 +111,7 @@ def test_banned_word_variants(name: str) -> None:
     assert any(rule == "NAME002" for rule, _, _ in NameIssues(name, "variable"))
 
 
-@pytest.mark.parametrize("name", ["RestorePrices", "inactive", "reactive", "Storage", "Models", "Artifacts"])
+@pytest.mark.parametrize("name", ["RestorePrices", "inactive", "reactive", "Disk", "Models", "Artifacts", "history"])
 def test_no_substring_bans(name: str) -> None:
     assert not any(rule == "NAME002" for rule, _, _ in NameIssues(name, "class"))
 

@@ -40,7 +40,7 @@ def DownloadFailureConfigurationFixture(**changes: object) -> DownloadFailureCon
 
 @lru_cache(maxsize=1)
 def SqlitePolicyFixture() -> SqliteIoPolicy:
-    return LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").storage_policy.hdd
+    return LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").sqlite_policy.hdd
 
 
 @lru_cache(maxsize=1)

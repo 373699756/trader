@@ -24,7 +24,7 @@ from scripts.runtime_diagnostics.database_workspace import (
 from scripts.runtime_diagnostics.diagnostic_types import PROJECT_ROOT, DiagnosticCommand
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
-from trader.infra.storage_types import StorageProfile
+from trader.infra.disk_types import DiskProfile
 
 _CONFIG = PROJECT_ROOT / "config/runtime.json"
 
@@ -65,17 +65,17 @@ def test_measurement_counts_wrapper_operations_and_preserves_rollback(tmp_path: 
 def test_workspace_ignores_app_medium_and_rejects_memory_disk_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filesystem, medium, expected, source
 ) -> None:
-    settings = replace(LoadRuntimeSettings(_CONFIG), storage_medium=medium)
+    settings = replace(LoadRuntimeSettings(_CONFIG), disk_medium=medium)
     monkeypatch.setattr(database_workspace, "LoadRuntimeSettings", lambda _: settings)
     monkeypatch.setattr(database_workspace, "_filesystem", lambda _: filesystem)
     monkeypatch.setattr(
-        database_workspace.StorageProbe,
+        database_workspace.DiskProbe,
         "inspect",
-        lambda *_: StorageProfile("unknown", "virtual", "automatic", "device_metadata_unavailable"),
+        lambda *_: DiskProfile("unknown", "virtual", "automatic", "device_metadata_unavailable"),
     )
     location = PrepareDatabaseProbeDirectory(tmp_path / "probe", _CONFIG)
-    assert location.storage_kind == expected
-    assert location.storage_source == source
+    assert location.disk_kind == expected
+    assert location.disk_source == source
     evidence = ProjectDatabaseProbeLocation(location)
     assert evidence["memory_backed"] is (filesystem == "tmpfs")
     assert evidence["disk_performance_evidence"] is False
@@ -153,7 +153,7 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
     candidate_round = 0
     calls = []
 
-    def worker(checkout, size, sessions, storage_kind):
+    def worker(checkout, size, sessions, disk_kind):
         nonlocal candidate_round
         candidate = checkout == PROJECT_ROOT
         candidate_round += int(candidate)
@@ -256,7 +256,7 @@ def test_timeout_terminates_nested_probe_workers(tmp_path: Path) -> None:
 
 
 def test_real_sync_adapters_preserve_joint_single_restart_and_memory_reads(tmp_path: Path) -> None:
-    result = MeasureSyncBaseline(tmp_path, size=2, sessions=61, storage_kind="unknown", sqlite_policy=SqlitePolicyFixture())
+    result = MeasureSyncBaseline(tmp_path, size=2, sessions=61, disk_kind="unknown", sqlite_policy=SqlitePolicyFixture())
     assert result["joint_single_equivalent"] is True
     assert result["independent_targets"] is True
     targets = result["targets"]

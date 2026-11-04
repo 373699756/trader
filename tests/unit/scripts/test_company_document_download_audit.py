@@ -95,7 +95,7 @@ def test_document_probe_routes_without_replay_directory_and_filters_report_field
     assert "--document-only" in build_commands(options)[0].argv
     with pytest.raises(ValueError, match="mutually exclusive"):
         _validate(_parser().parse_args([
-            "--profile", "company-resume", "--company-document-audit", "--company-storage-audit",
+            "--profile", "company-resume", "--company-document-audit", "--company-database-audit",
         ]))
     summary = {"document_download_audit": {
         "read_only": True, "url": "secret", "observations": [{

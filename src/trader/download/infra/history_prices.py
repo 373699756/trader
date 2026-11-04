@@ -1071,7 +1071,7 @@ class HistoryPricePartition:
         return OpenSqliteConnection(
             self._path,
             SqliteConnectionOptions(
-                journal_mode="WAL", foreign_keys=True, cache_kib=8192, mmap_bytes=0, temp_storage="FILE"
+                journal_mode="WAL", foreign_keys=True, cache_kib=8192, mmap_bytes=0, temp_mode="FILE"
             ),
             statement_trace=self._statement_trace, sqlite_policy=self._sqlite_policy,
         )

@@ -1,17 +1,17 @@
-"""Strict shared HDD/SSD storage policy parsing."""
+"""Strict shared HDD/SSD disk policy parsing."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.infra.settings.models import StorageSettings
+from trader.infra.settings.models import SqliteSettings
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.settings.parser import ConfigurationError, Integer, Number, RequireExactKeys, RequireMapping, Text
 
 
-def ParseStorageSettings(raw: Mapping[str, object]) -> StorageSettings:
-    RequireExactKeys(raw, {"hdd", "ssd"}, "storage_policy")
-    return StorageSettings(
+def ParseSqliteSettings(raw: Mapping[str, object]) -> SqliteSettings:
+    RequireExactKeys(raw, {"hdd", "ssd"}, "sqlite_policy")
+    return SqliteSettings(
         hdd=_parse_medium(RequireMapping(raw, "hdd"), "hdd"),
         ssd=_parse_medium(RequireMapping(raw, "ssd"), "ssd"),
     )
@@ -21,11 +21,11 @@ def _parse_medium(raw: Mapping[str, object], medium: str) -> SqliteIoPolicy:
     RequireExactKeys(
         raw,
         {"connection_timeout_seconds", "read_window_rows", "transaction_batch_rows", "checkpoint_mode"},
-        f"storage_policy.{medium}",
+        f"sqlite_policy.{medium}",
     )
     checkpoint_mode = Text(raw, "checkpoint_mode")
     if checkpoint_mode not in {"PASSIVE", "RESTART", "TRUNCATE"}:
-        raise ConfigurationError(f"storage_policy.{medium}.checkpoint_mode is invalid")
+        raise ConfigurationError(f"sqlite_policy.{medium}.checkpoint_mode is invalid")
     return SqliteIoPolicy(
         connection_timeout_seconds=Number(raw, "connection_timeout_seconds", minimum=0.001, maximum=120.0),
         read_window_rows=Integer(raw, "read_window_rows", minimum=1),
@@ -34,4 +34,4 @@ def _parse_medium(raw: Mapping[str, object], medium: str) -> SqliteIoPolicy:
     )
 
 
-__all__ = ["ParseStorageSettings"]
+__all__ = ["ParseSqliteSettings"]

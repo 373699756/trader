@@ -56,7 +56,7 @@ def test_preview_research_trace_rejects_before_initialization_or_audit_materiali
     assert not history_root.exists()
 
 
-def test_preview_freeze_and_restore_do_not_read_or_write_formal_storage(tmp_path) -> None:
+def test_preview_freeze_and_restore_do_not_read_or_write_formal_disk(tmp_path) -> None:
     current = preview_freeze()
     index = UnifiedFreezeIndex()
     assert index.publish(current, expected_version=None).accepted
@@ -64,7 +64,7 @@ def test_preview_freeze_and_restore_do_not_read_or_write_formal_storage(tmp_path
 
     class RejectRecords(SQLiteFreezeRecords):
         def load(self, strategy, trade_date):
-            pytest.fail("preview accessed formal storage")
+            pytest.fail("preview accessed formal disk")
 
     class Clock:
         def now(self):

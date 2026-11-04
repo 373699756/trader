@@ -125,7 +125,7 @@ def _cache(sessions=61, gap=0):
 
 @pytest.mark.parametrize("sessions", (61, 251))
 @pytest.mark.parametrize("gap", (0, 1, 3, 6))
-def test_candidate_history_never_reads_storage_after_preload(sessions, gap, monkeypatch):
+def test_candidate_history_never_reads_disk_after_preload(sessions, gap, monkeypatch):
     history, published = _cache(sessions, gap)
     before = history.entries()
 

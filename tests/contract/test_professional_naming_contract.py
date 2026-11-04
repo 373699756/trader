@@ -5,6 +5,7 @@ import re
 from functools import cache
 from pathlib import Path
 
+from scripts.code_quality.naming import Symbols, Words
 from tests.helpers.python_source import source_text, source_tree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -162,13 +163,13 @@ def test_source_paths_use_stable_business_responsibilities() -> None:
     assert [relative for relative in FORBIDDEN_NAMING_PATHS if (ROOT / relative).exists()] == []
 
 
-def test_storage_responsibility_naming_rule_is_authoritative() -> None:
+def test_responsibility_naming_rule_is_authoritative() -> None:
     collaboration_rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
     authority = ".agents/skills/python-engineering-guide/references/coding-standard.md"
     assert f"({authority}#3-命名格式与可读性)" in collaboration_rules
     coding_rules = (ROOT / authority).read_text(encoding="utf-8")
-    for term in ("`store`", "`stored`", "`*Store`", "`Repository`", "`Archive`", "`Registry`"):
+    for term in ("`store`", "`stored`", "`storage`", "`*Store`", "`*Storage`", "`Repository`", "`Archive`", "`Registry`"):
         assert term in coding_rules
     assert "兼容别名" in coding_rules
 
@@ -268,22 +269,19 @@ def test_shared_application_contract_names_are_unique() -> None:
     assert {name: values for name, values in occurrences.items() if len(values) > 1} == {}
 
 
-def test_project_owned_python_names_do_not_use_generic_storage_terms() -> None:
+def test_project_owned_python_names_follow_responsibility_rules() -> None:
     violations: list[str] = []
+    forbidden = {"store", "stores", "stored", "storage"}
     for path in _project_python_paths():
-        tree = source_tree(path)
-        for node in ast.walk(tree):
-            names: tuple[str, ...] = ()
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                names = (node.name,)
-            elif isinstance(node, ast.arg):
-                names = (node.arg,)
-            elif isinstance(node, ast.Name):
-                names = (node.id,)
-            for name in names:
-                words = name.split("_") if "_" in name else re.findall(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+", name)
-                if any(word.lower() in {"store", "stored"} for word in words):
-                    violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
+        for symbol in Symbols(source_text(path)):
+            if set(Words(symbol.name)) & forbidden:
+                violations.append(f"{path.relative_to(ROOT).as_posix()}:{symbol.line}:{symbol.name}")
+        for part in path.relative_to(ROOT).with_suffix("").parts:
+            if set(Words(part)) & forbidden:
+                violations.append(f"{path.relative_to(ROOT).as_posix()}:1:{part}")
+    for path in (ROOT / "config").glob("*.json"):
+        if set(Words(path.stem)) & forbidden:
+            violations.append(path.relative_to(ROOT).as_posix())
     assert violations == []
 
 

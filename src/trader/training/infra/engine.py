@@ -83,7 +83,7 @@ from trader.training.infra.sample_index import (
     TargetMetric,
 )
 from trader.training.infra.sample_schema import TrainingFeatureNames
-from trader.training.infra.sample_sequences import SEQUENCE_STORAGE_CONTRACT, SampleSequenceLayout
+from trader.training.infra.sample_sequences import SEQUENCE_FORMAT, SampleSequenceLayout
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
 TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
@@ -488,7 +488,7 @@ def _sample_cache_for(
             request.profile.profile_id,
             split.content_hash,
             feature_count,
-            SEQUENCE_STORAGE_CONTRACT if sequence_layout else "monthly_samples",
+            SEQUENCE_FORMAT if sequence_layout else "monthly_samples",
             HISTORY_ALIGNMENT_CONTRACT,
             PREDICTION_EVALUATION_CONTRACT,
             request.profile.history_sessions,

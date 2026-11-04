@@ -10,7 +10,7 @@ import numpy as np
 
 from trader.infra.sqlite_connection import SqliteConnection
 
-SEQUENCE_STORAGE_CONTRACT = "overlapping_sequence_blocks_float64_le_v1"
+SEQUENCE_FORMAT = "overlapping_sequence_blocks_float64_le_v1"
 _BLOCK_STEPS = 64
 _WRITER_CODES = 8192
 _READER_BYTES = 32 * 1024 * 1024

@@ -88,9 +88,9 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.shutdown import ShutdownDeadline
-from trader.infra.storage_probe import StorageProbe
-from trader.infra.storage_runtime import ConfigureStorage
-from trader.infra.storage_types import StorageMedium
+from trader.infra.disk_probe import DiskProbe
+from trader.infra.disk_runtime import ConfigureDisk
+from trader.infra.disk_types import DiskMedium
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
@@ -208,14 +208,14 @@ def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
     return BoundedExecutor(worker_count=workers, queue_capacity=workers, thread_name_prefix="performance-models")
 
 
-def PrepareRuntimeStorage(settings: RuntimeSettings, *, choose: bool = False, report: bool = True) -> RuntimeSettings:
-    return ConfigureStorage(settings, choose=choose, report=report)
+def PrepareRuntimeDisk(settings: RuntimeSettings, *, choose: bool = False, report: bool = True) -> RuntimeSettings:
+    return ConfigureDisk(settings, choose=choose, report=report)
 
 
 def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
     """Resolve the configured data medium once at composition; unknown uses conservative HDD policy."""
-    medium = settings.storage_medium or StorageProbe().inspect(settings.data_paths.root).kind
-    return settings.storage_policy.for_medium("hdd" if medium == "unknown" else medium)
+    medium = settings.disk_medium or DiskProbe().inspect(settings.data_paths.root).kind
+    return settings.sqlite_policy.for_medium("hdd" if medium == "unknown" else medium)
 
 
 def ExecuteSync(
@@ -265,7 +265,7 @@ def ExecuteSync(
             reference=reference,
             progress=history_progress,
             cancel_requested=cancel_requested,
-            storage_medium=settings.storage_medium,
+            disk_medium=settings.disk_medium,
             repair_only=fill_missing, sqlite_policy=sqlite_policy,
         )
 
@@ -489,7 +489,7 @@ def ExecuteSelectedTraining(
     from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
     if history_root is not None or training_root is not None:
-        ConfigureStorage(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
+        ConfigureDisk(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
     paths = TrainingLocations(
         history_root or runtime.data_paths.history,
         training_root / "models" if training_root else runtime.data_paths.models,
@@ -533,10 +533,10 @@ def ExecuteHistoryDownload(
     progress: HistorySyncProgressPort | None = None,
     clock: Callable[[], datetime] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
-    storage_medium: StorageMedium | None = None,
+    disk_medium: DiskMedium | None = None,
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
 ) -> HistoryMaintenanceStatus:
-    storage_kind = StorageProbe(storage_medium).inspect(configuration.history_root).kind
+    disk_kind = DiskProbe(disk_medium).inspect(configuration.history_root).kind
     if reference is None:
         reference = _prepare_reference(
             configuration.reference_root,
@@ -572,7 +572,7 @@ def ExecuteHistoryDownload(
                     retries=qfq_configuration.source_retries,
                 ),
             )
-            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, storage_kind, repair_only, sqlite_policy=sqlite_policy)).execute(
+            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, disk_kind, repair_only, sqlite_policy=sqlite_policy)).execute(
                 configuration,
                 HistorySupplierRouter(
                     baseline,
@@ -782,7 +782,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     if runtime_scope is not None:
         settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
     if owns_shared_runtime:
-        PrepareRuntimeStorage(settings)
+        PrepareRuntimeDisk(settings)
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=scoring_profile)
     paths = settings.data_paths
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)

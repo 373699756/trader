@@ -50,7 +50,7 @@ _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
 _MARKET_SOURCES = ("tencent", "eastmoney", "sina", "baostock")
 
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
-    "storage": ("storage_profile",),
+    "disk": ("disk_profile",),
     "local": ("configuration", "history_maintenance", "research_readiness", "production_performance"),
     "web": ("web_health",),
     "history": ("history_sources",),
@@ -138,7 +138,7 @@ def _parser() -> argparse.ArgumentParser:
         "--company-query-audit", action="store_true", help="read-only bounded CNInfo query coverage audit"
     )
     parser.add_argument(
-        "--company-storage-audit", action="store_true", help="read-only local company text and retry counts; no network"
+        "--company-database-audit", action="store_true", help="read-only local company text and retry counts; no network"
     )
     parser.add_argument(
         "--company-replay-directory",
@@ -163,11 +163,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cpu-profile-mode", choices=("functions", "gc"), default="functions")
     parser.add_argument("--qfq-database", type=Path)
-    parser.add_argument("--wide-sample-source", type=Path, help="bounded read-only V5 wide-cache storage comparison")
+    parser.add_argument("--wide-sample-source", type=Path, help="bounded read-only V5 wide-cache database comparison")
     parser.add_argument("--v5-sample-root", type=Path, help="sealed compact V5 cache for isolated lite comparison")
     parser.add_argument("--v5-candidate-config", type=Path, help="explicit training JSON candidate for v5-lite")
     parser.add_argument(
-        "--storage-path", type=Path, action="append", default=[], help="additional read-only storage probe path"
+        "--database-path", type=Path, action="append", default=[], help="additional read-only database probe path"
     )
     parser.add_argument("--training-signal-date", type=date.fromisoformat, help="read-only V5 label horizon probe")
     parser.add_argument(
@@ -429,7 +429,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         sum(
             (
                 args.company_query_audit,
-                args.company_storage_audit,
+                args.company_database_audit,
                 args.company_pagination_audit,
                 args.company_pipeline_audit,
                 args.company_ocr_audit,
@@ -443,7 +443,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     if (
         args.profile == "company-resume"
         and company_replay_directory is None
-        and not (args.company_query_audit or args.company_storage_audit or args.company_pagination_audit or args.company_document_audit)
+        and not (args.company_query_audit or args.company_database_audit or args.company_pagination_audit or args.company_document_audit)
     ):
         raise ValueError("company-resume requires --company-replay-directory")
     output = args.output
@@ -506,7 +506,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             database_acceptance_focus=args.database_acceptance_focus,
             base_url=args.base_url,
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
-            storage_paths=tuple(path.expanduser().resolve() for path in args.storage_path),
+            disk_paths=tuple(path.expanduser().resolve() for path in args.disk_path),
             wide_sample_source=args.wide_sample_source.expanduser().resolve() if args.wide_sample_source else None,
             v5_sample_root=args.v5_sample_root.expanduser().resolve() if args.v5_sample_root else None,
             v5_candidate_config=args.v5_candidate_config.expanduser().resolve() if args.v5_candidate_config else None,
@@ -542,7 +542,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_collection_database=args.company_collection_database,
             company_replay_directory=company_replay_directory,
             company_query_audit=args.company_query_audit,
-            company_storage_audit=args.company_storage_audit,
+            company_database_audit=args.company_database_audit,
             history_preload_audit=args.history_preload_audit,
             history_preload_cpu_profile=args.history_preload_cpu_profile,
             history_preload_feature_audit=args.history_preload_feature_audit,
@@ -614,7 +614,7 @@ def build_commands(
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
     if not options.v5_kernel_probe and options.profile not in {
-        "storage",
+        "disk",
         "v5-samples",
         "v5-lite",
         "training-samples",
@@ -675,16 +675,16 @@ def build_commands(
             + (("--wide-sample-source", str(options.wide_sample_source)) if options.wide_sample_source else ()),
             common_timeout,
         ),
-        "storage_profile": DiagnosticCommand(
-            "storage_profile",
+        "disk_profile": DiagnosticCommand(
+            "disk_profile",
             (
                 python_executable,
                 "-m",
-                "scripts.runtime_diagnostics.storage_profile",
+                "scripts.runtime_diagnostics.disk_profile",
                 "--config",
                 str(options.runtime_config),
             )
-            + tuple(value for path in options.storage_paths for value in ("--path", str(path))),
+            + tuple(value for path in options.disk_paths for value in ("--path", str(path))),
             common_timeout,
         ),
         "training_coverage": DiagnosticCommand(
@@ -1088,7 +1088,7 @@ def build_commands(
                 "--budget-seconds",
                 str(max(30.0, common_timeout - 30)),
                 *(("--audit-only",) if options.company_query_audit else ()),
-                *(("--storage-only",) if options.company_storage_audit else ()),
+                *(("--database-only",) if options.company_database_audit else ()),
                 *(("--pagination-only",) if options.company_pagination_audit else ()),
                 *(("--pipeline-only",) if options.company_pipeline_audit else ()),
                 *(("--ocr-only",) if options.company_ocr_audit else ()),
@@ -1268,7 +1268,7 @@ def execute_command(command: DiagnosticCommand) -> DiagnosticResult:
             location = PrepareDatabaseProbeDirectory(command.database_probe_directory, command.runtime_config)
             environment = DatabaseWorkerEnvironment(location.directory)
             if command.name in {"history_write_benchmark", "database_baseline"}:
-                argv += ("--storage-kind", location.storage_kind)
+                argv += ("--database-kind", location.disk_kind)
             completed = RunDatabaseProbe(argv, timeout=command.timeout_seconds, environment=environment)
         elif command.name == "training_samples":
             completed = RunDatabaseProbe(argv, timeout=command.timeout_seconds, environment=dict(os.environ))
@@ -1873,7 +1873,7 @@ def _company_resume_details(
                 if isinstance(row, dict)
             ],
         }
-    storage = _mapping(summary.get("local_storage"))
+    database = _mapping(summary.get("database"))
     compaction = _mapping(summary.get("compaction"))
     if compaction:
         selected["compaction"] = {
@@ -1886,9 +1886,9 @@ def _company_resume_details(
                 "retained_data_equal",
             )
         }
-    if storage:
-        projected_storage = {
-            key: storage.get(key)
+    if database:
+        projected_database = {
+            key: database.get(key)
             for key in (
                 "read_only",
                 "pdf_archived",
@@ -1899,8 +1899,8 @@ def _company_resume_details(
                 "retained_bodies",
                 "pending_ranges",
                 "pending_documents",
-                "stored_retry_cooling",
-                "stored_retry_ready",
+                "recorded_retry_cooling",
+                "recorded_retry_ready",
                 "deterministic_failures",
                 "retry_payload_hashes",
                 "ocr_diagnostics",
@@ -1911,13 +1911,13 @@ def _company_resume_details(
                 "file_inventory_is_atomic",
             )
         }
-        tables = storage.get("table_bytes")
-        projected_storage["table_bytes"] = [
+        tables = database.get("table_bytes")
+        projected_database["table_bytes"] = [
             {"name": row.get("name"), "bytes": row.get("bytes")}
             for row in (tables[:64] if isinstance(tables, list) else [])
             if isinstance(row, dict)
         ]
-        formal = _mapping(storage.get("formal"))
+        formal = _mapping(database.get("formal"))
         projected_formal = {key: formal.get(key) for key in ("available", "database_bytes", "stocks")}
         formal_tables = formal.get("table_bytes")
         projected_formal["table_bytes"] = [
@@ -1925,8 +1925,8 @@ def _company_resume_details(
             for row in (formal_tables[:64] if isinstance(formal_tables, list) else [])
             if isinstance(row, dict)
         ]
-        projected_storage["formal"] = projected_formal
-        publication = _mapping(storage.get("publication"))
+        projected_database["formal"] = projected_formal
+        publication = _mapping(database.get("publication"))
         projected_publication = {
             key: publication.get(key)
             for key in (
@@ -1968,33 +1968,33 @@ def _company_resume_details(
         field_audit = _mapping(publication.get("field_audit"))
         if field_audit:
             projected_publication["field_audit"] = ProjectCompanyFieldAudit(field_audit)
-        projected_storage["publication"] = projected_publication
+        projected_database["publication"] = projected_publication
         for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
-            rows = storage.get(name)
-            projected_storage[name] = [
+            rows = database.get(name)
+            projected_database[name] = [
                 {"failure": row.get("failure"), count_key: row.get(count_key)}
                 for row in (rows[:64] if isinstance(rows, list) else [])
                 if isinstance(row, dict)
             ]
-        classes = storage.get("document_failure_classes")
-        recent_failures = storage.get("recent_document_failures")
-        projected_storage["recent_document_failures"] = [
+        classes = database.get("document_failure_classes")
+        recent_failures = database.get("recent_document_failures")
+        projected_database["recent_document_failures"] = [
             {key: row.get(key) for key in ("disclosure_id", "failure", "attempted_at", "retry_at", "payload_hash")}
             for row in (recent_failures[:10] if isinstance(recent_failures, list) else [])
             if isinstance(row, dict)
         ]
-        projected_storage["document_failure_classes"] = [
+        projected_database["document_failure_classes"] = [
             {"class": row.get("class"), "documents": row.get("documents")}
             for row in (classes[:16] if isinstance(classes, list) else [])
             if isinstance(row, dict)
         ]
-        extractions = storage.get("document_extractions")
-        projected_storage["document_extractions"] = [
+        extractions = database.get("document_extractions")
+        projected_database["document_extractions"] = [
             {"method": row.get("method"), "documents": row.get("documents")}
             for row in (extractions[:4] if isinstance(extractions, list) else [])
             if isinstance(row, dict)
         ]
-        selected["local_storage"] = projected_storage
+        selected["database"] = projected_database
     selected["runs"] = (
         [
             {
@@ -2106,7 +2106,7 @@ def _maintenance_details(_result: DiagnosticResult, source: Mapping[str, object]
 
 
 _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
-    "storage_profile": _security_master_details,
+    "disk_profile": _security_master_details,
     "v5_samples": _security_master_details,
     "v5_lite": _security_master_details,
     "configuration": _configuration_details,

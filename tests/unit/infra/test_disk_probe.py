@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra import storage_platform, storage_probe
+from trader.infra import disk_platform, disk_probe
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.parser import ConfigurationError
-from trader.infra.settings.storage import ParseStorageMedium
-from trader.infra.storage_runtime import InspectDataStorage, ReportStorageProfiles
+from trader.infra.settings.disk_medium import ParseDiskMedium
+from trader.infra.disk_runtime import InspectDataDisk, ReportDiskProfiles
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -29,19 +29,19 @@ def _sysfs(tmp_path: Path, node: Path, monkeypatch) -> None:
     sysfs = tmp_path / "sysfs"
     sysfs.mkdir()
     (sysfs / f"{os.major(device)}:{os.minor(device)}").symlink_to(node)
-    monkeypatch.setattr(storage_probe, "_SYSFS_BLOCK_ROOT", sysfs)
-    monkeypatch.setattr(storage_probe.sys, "platform", "linux")
+    monkeypatch.setattr(disk_probe, "_SYSFS_BLOCK_ROOT", sysfs)
+    monkeypatch.setattr(disk_probe.sys, "platform", "linux")
 
 
 def test_cache_is_per_invocation_and_device(tmp_path, monkeypatch):
     disk = _disk(tmp_path / "disk", "1")
     _sysfs(tmp_path, disk, monkeypatch)
-    probe = storage_probe.StorageProbe()
+    probe = disk_probe.DiskProbe()
     first = probe.inspect(tmp_path / "not-created/history")
     (disk / "queue/rotational").write_text("0")
     assert probe.inspect(tmp_path / "other/samples") is first
     assert first.kind == "hdd"
-    assert storage_probe.StorageProbe().inspect(tmp_path).kind == "ssd"
+    assert disk_probe.DiskProbe().inspect(tmp_path).kind == "ssd"
     assert not (tmp_path / "not-created").exists()
 
 
@@ -53,12 +53,12 @@ def test_linux_mixed_devices_and_virtual_queue(tmp_path, monkeypatch):
     (volume / "slaves/a").symlink_to(hdd)
     (volume / "slaves/b").symlink_to(ssd)
     _sysfs(tmp_path, volume, monkeypatch)
-    assert storage_probe.StorageProbe().inspect(tmp_path).kind == "hdd"
+    assert disk_probe.DiskProbe().inspect(tmp_path).kind == "hdd"
     (hdd / "queue/rotational").write_text("bad")
-    assert storage_probe.StorageProbe().inspect(tmp_path).kind == "unknown"
+    assert disk_probe.DiskProbe().inspect(tmp_path).kind == "unknown"
     (volume / "slaves/a").unlink()
     (volume / "slaves/b").unlink()
-    assert storage_probe.StorageProbe().inspect(tmp_path).kind == "unknown"
+    assert disk_probe.DiskProbe().inspect(tmp_path).kind == "unknown"
 
 
 @pytest.mark.parametrize("rotational", ["0", "1"])
@@ -69,7 +69,7 @@ def test_linux_virtual_scsi_does_not_claim_host_medium(tmp_path, monkeypatch, ro
     (disk / "device/model").write_text("VMware Virtual S")
     _sysfs(tmp_path, disk, monkeypatch)
 
-    profile = storage_probe.StorageProbe().inspect(tmp_path / "data/history")
+    profile = disk_probe.DiskProbe().inspect(tmp_path / "data/history")
     assert profile.kind == "unknown"
     assert profile.reason == "device_metadata_unavailable"
 
@@ -78,7 +78,7 @@ def test_manual_medium_applies_to_all_paths(tmp_path):
     target = tmp_path / "mounted"
     target.mkdir()
     (tmp_path / "samples").symlink_to(target, target_is_directory=True)
-    probe = storage_probe.StorageProbe("ssd")
+    probe = disk_probe.DiskProbe("ssd")
     result = probe.inspect(tmp_path / "samples/new")
     assert result.kind == "ssd" and result.source == "configuration"
     assert probe.inspect(tmp_path / "history").kind == "ssd"
@@ -94,39 +94,39 @@ def test_manual_medium_applies_to_all_paths(tmp_path):
         {},
     ],
 )
-def test_invalid_storage_medium_is_error(value):
+def test_invalid_disk_medium_is_error(value):
     with pytest.raises(ConfigurationError):
-        ParseStorageMedium(value)
+        ParseDiskMedium(value)
 
 
-def test_runtime_config_storage_is_optional_and_uses_actual_config(tmp_path, monkeypatch, capsys):
+def test_runtime_config_disk_is_optional_and_uses_actual_config(tmp_path, monkeypatch, capsys):
     config = tmp_path / "config"
     shutil.copytree(ROOT / "config", config)
     path = config / "runtime.json"
     raw = json.loads(path.read_text())
-    raw.pop("storage")
+    raw.pop("disk_medium")
     path.write_text(json.dumps(raw))
     settings = LoadRuntimeSettings(path)
-    assert settings.storage_medium is None
-    monkeypatch.setattr(storage_probe, "_SYSFS_BLOCK_ROOT", tmp_path / "absent")
-    monkeypatch.setattr(storage_probe.sys, "platform", "linux")
-    locations = InspectDataStorage(settings, storage_probe.StorageProbe())
-    ReportStorageProfiles(settings, locations)
+    assert settings.disk_medium is None
+    monkeypatch.setattr(disk_probe, "_SYSFS_BLOCK_ROOT", tmp_path / "absent")
+    monkeypatch.setattr(disk_probe.sys, "platform", "linux")
+    locations = InspectDataDisk(settings, disk_probe.DiskProbe())
+    ReportDiskProfiles(settings, locations)
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err.count("[存储配置需修改]") == 1
     assert "config/runtime.json" in output.err
-    assert '"storage": "hdd"' in output.err
+    assert '"disk_medium": "hdd"' in output.err
     assert "data/training/samples/v5" in output.err
     assert "ssd" in output.err and "重新启动" in output.err
     assert len(locations) == 22
     assert not settings.data_paths.root.exists()
-    raw["storage"] = "ssd"
+    raw["disk_medium"] = "ssd"
     path.write_text(json.dumps(raw))
     configured = LoadRuntimeSettings(path)
-    assert configured.storage_medium == "ssd"
-    ReportStorageProfiles(
-        configured, InspectDataStorage(configured, storage_probe.StorageProbe(configured.storage_medium))
+    assert configured.disk_medium == "ssd"
+    ReportDiskProfiles(
+        configured, InspectDataDisk(configured, disk_probe.DiskProbe(configured.disk_medium))
     )
     output = capsys.readouterr()
     assert "已使用手动配置" in output.err and "需修改" not in output.err
@@ -137,9 +137,9 @@ def test_platform_timeout_becomes_actionable_unknown(tmp_path, monkeypatch):
         assert timeout == 3.0
         raise subprocess.TimeoutExpired("probe", timeout)
 
-    monkeypatch.setattr(storage_probe.sys, "platform", "win32")
-    monkeypatch.setattr(storage_probe, "ProbeWindowsStorage", timed_out)
-    profile = storage_probe.StorageProbe().inspect(tmp_path)
+    monkeypatch.setattr(disk_probe.sys, "platform", "win32")
+    monkeypatch.setattr(disk_probe, "ProbeWindowsDisk", timed_out)
+    profile = disk_probe.DiskProbe().inspect(tmp_path)
     assert profile.kind == "unknown" and profile.reason == "probe_timeout"
 
 
@@ -147,15 +147,15 @@ def test_windows_path_is_data_not_interpolated_code(tmp_path, monkeypatch):
     def run(argv, **kwargs):
         assert argv[:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
         assert str(tmp_path) not in argv[-1]
-        assert kwargs["env"]["TRADER_STORAGE_PROBE_PATH"].startswith(str(tmp_path))
+        assert kwargs["env"]["TRADER_DISK_PROBE_PATH"].startswith(str(tmp_path))
         assert kwargs["timeout"] == 3.0 and kwargs["check"] is True
         return subprocess.CompletedProcess(argv, 0, b"ssd\r\n")
 
-    monkeypatch.setattr(storage_platform.subprocess, "run", run)
-    assert storage_platform.ProbeWindowsStorage(tmp_path, timeout=3.0) == "ssd"
+    monkeypatch.setattr(disk_platform.subprocess, "run", run)
+    assert disk_platform.ProbeWindowsDisk(tmp_path, timeout=3.0) == "ssd"
 
 
-def test_mac_apfs_resolves_all_physical_stores(tmp_path, monkeypatch):
+def test_mac_apfs_resolves_all_physical_disks(tmp_path, monkeypatch):
     replies = iter(
         [
             {"APFSContainerReference": "disk3", "SolidState": True},
@@ -170,5 +170,5 @@ def test_mac_apfs_resolves_all_physical_stores(tmp_path, monkeypatch):
         assert argv[0] == "/usr/sbin/diskutil"
         return subprocess.CompletedProcess(argv, 0, plistlib.dumps(next(replies)))
 
-    monkeypatch.setattr(storage_platform.subprocess, "run", run)
-    assert storage_platform.ProbeMacStorage(tmp_path, timeout=3.0) == "hdd"
+    monkeypatch.setattr(disk_platform.subprocess, "run", run)
+    assert disk_platform.ProbeMacDisk(tmp_path, timeout=3.0) == "hdd"

@@ -70,7 +70,7 @@
 
 Trader 新增或迁移的项目模块、类、函数、类型和其它符号还须遵守以下职责命名约束：
 
-- 禁用 `store`、`stored`、`*Store`、`Repository`、`Archive`、`Registry`、`active`，包括大小写和 `snake_case` 变体。按单词边界匹配，`ActiveSnapshot`、`is_active`命中，`inactive`、`reactive`、`RestorePrices`不因子串命中。现有禁用名称随所属业务和全部消费者一次切换，不保留兼容别名或转发路径；外部协议、SQL/HTTP 标准字面量和不可变历史文本保持原样。
+- 禁用 `store`、`stored`、`storage`、`*Store`、`*Storage`、`Repository`、`Archive`、`Registry`、`active`，包括大小写、复数和 `snake_case` 变体；文件名、模块、类、函数、参数和其它项目自定义符号均适用。按单词边界匹配，`ActiveSnapshot`、`is_active`、`StorageProfile`、`test_storage_choice`命中，`inactive`、`reactive`、`RestorePrices`不因子串命中。现有禁用名称随所属业务和全部消费者一次切换，不保留兼容别名或转发路径；外部协议、SQL/HTTP 标准字面量和不可变历史文本保持原样。
 - 按真实职责选择 `Index`、`Cache`、`Snapshot` 或直接表达业务行为的具体名称，不把禁用词机械替换为 `Manager` 等泛称。`Artifacts` 不是全局禁词，但对象实际只是一组模型、样本或快照时，应直接写明 `Models`、`Samples` 或 `Snapshots`；不要用笼统的 `Artifacts` 掩盖内容和 owner，例如缺模型异常用 `ScoringModelsMissingError`。
 - 一个职责只设一个活动 owner；模块和目录名称应反映该 owner。顶层业务只用 `download/`、`training/`、`recommendation/`；`http_api/` 与 `web/` 是只读交付边界，顶层 `infra/` 只放跨业务技术 primitive。不得为旧路径造转发模块、兼容导出或重复实现。
 - 项目版本命名使用当前生产档位V2/V3，以及用户已授权的全新V1算法档位；不得新增其它 `vN` 项目版本命名。全新V1与退役旧V1身份分离，不按同名重解释旧实现、数据或冻结记录；业务准入与启用仍遵守AGENTS.md和评分权威。供应商模型名、Python/包版本、日期和随机种子不属于项目版本身份。

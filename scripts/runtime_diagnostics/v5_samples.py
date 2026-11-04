@@ -19,7 +19,7 @@ import numpy as np
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
-from trader.infra.storage_probe import StorageProbe
+from trader.infra.disk_probe import DiskProbe
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
@@ -48,7 +48,7 @@ def ProbeV5Samples(
     work = work.expanduser().resolve()
     if work.is_relative_to(project) or work.exists() or not 64 <= days <= 500 or not 2 <= codes <= 128:
         raise ValueError("v5_samples_requires_new_external_directory_and_bounded_workload")
-    storage = StorageProbe().inspect(work)
+    disk_profile = DiskProbe().inspect(work)
     work.mkdir(parents=True)
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
     source_started = time.perf_counter()
@@ -120,10 +120,10 @@ def ProbeV5Samples(
                 "full_training": False,
                 "rows": row_count,
                 "source_read_seconds": source_seconds,
-                "source_storage_kind": StorageProbe().inspect(wide_source).kind if wide_source else None,
+                "source_disk_kind": DiskProbe().inspect(wide_source).kind if wide_source else None,
                 "equal_values_and_order": bool(equal),
-                "storage_kind": storage.kind,
-                "storage_source": storage.source,
+                "disk_kind": disk_profile.kind,
+                "disk_source": disk_profile.source,
                 "sqlite_bytes_ratio": sizes[1] / sizes[0],
                 "build_time_ratio": measurements[1].build_seconds / measurements[0].build_seconds,
                 "read_time_ratio": measurements[1].read_seconds / measurements[0].read_seconds,
@@ -137,7 +137,7 @@ def ProbeV5Samples(
                     }
                     for item, size in zip(measurements, sizes, strict=True)
                 ],
-                "limitations": "Storage-only comparison; benchmark partition; dates and values retained. "
+                "limitations": "Format-only comparison; benchmark partition; dates and values retained. "
                 "OS cache uncontrolled; no model fitting or production writes.",
             },
         }

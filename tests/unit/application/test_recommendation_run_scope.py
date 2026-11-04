@@ -155,7 +155,7 @@ def test_unresolved_scope_discards_deferred_formal_initializers_when_preview_is_
 
 def test_failed_deferred_initializer_keeps_only_unfinished_work_and_live_mode_for_retry() -> None:
     ready = [False]
-    storage_ready = [False]
+    disk_ready = [False]
     clock = [SATURDAY - timedelta(days=1)]
     calls: list[str] = []
     attempts: list[str] = []
@@ -170,7 +170,7 @@ def test_failed_deferred_initializer_keeps_only_unfinished_work_and_live_mode_fo
 
     def records() -> None:
         attempts.append("records")
-        if not storage_ready[0]:
+        if not disk_ready[0]:
             raise OSError("records_unavailable")
         calls.append("records")
 
@@ -181,7 +181,7 @@ def test_failed_deferred_initializer_keeps_only_unfinished_work_and_live_mode_fo
     assert calls == ["sequence"] and attempts == ["records"]
     assert not scope.resolved and not scope.is_preview
     scope.run_live(lambda: calls.append("late_initializer"))
-    storage_ready[0] = True
+    disk_ready[0] = True
     clock[0] = SATURDAY
     scope.initialize()
     assert calls == ["sequence", "records", "restore", "late_initializer"]

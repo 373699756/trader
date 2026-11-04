@@ -252,7 +252,7 @@ flowchart TD
 
 “慢档多分资源”是待测策略。先测每档/算法随线程数变化的边际收益：I/O或Python单线程瓶颈加模型线程可能无用；小任务获得太多线程也会挤压长任务。比较现有固定申请、长任务优先、有空闲时借用等候选，以全部完成的时间裁决。
 
-下表是资源说明，不是数据库字段。训练线程、窗口和拟合参数来自 `config/training.json`；通用存储策略来自 `config/storage.json`，介质选择来自 `config/runtime.json`。CPU/cgroup、RSS和队列等待是运行时测量；尚未配置化的预算需沿实际实现清点，不能写成配置中已有字段。
+下表是资源说明，不是数据库字段。训练线程、窗口和拟合参数来自 `config/training.json`；通用存储策略来自 `config/sqlite.json`，介质选择来自 `config/runtime.json`。CPU/cgroup、RSS和队列等待是运行时测量；尚未配置化的预算需沿实际实现清点，不能写成配置中已有字段。
 
 | 资源 | 要测什么 | 配置化核对 |
 | --- | --- | --- |
@@ -413,7 +413,7 @@ flowchart TD
 | --- | --- | --- |
 | `identity` | string，摘要 | 当前历史、split、特征与存储语义身份 |
 | `sha256` | string，64位十六进制 | 首次封存计算的全文件摘要；显式audit重新计算 |
-| `storage` | string | 命名列schema/特征和序列布局合同 |
+| `sample_format` | string | 命名列schema/特征和序列布局合同 |
 | `split_hash` | string，SHA-256 | 日期分区身份，与库内BLOB解码值一致 |
 | `size_bytes` | int，字节 | 封存大小，普通复用检查 |
 | `modified_ns` | int，纳秒 | 文件修改戳，普通复用检查；不是训练业务时间 |
@@ -527,7 +527,7 @@ V1的两个文件使用独立白名单：model包含 `schema_version/profile_id/
 | `runtime_diagnostics/v5_lite.py` | 配置候选计算及指定样本行业双头质量对照，写外部副本/报告 | 公共入口、`test_v5_lite.py`；保留既有质量门，不把缺少样本的计算结果写质量通过 |
 | `check_tomorrow_training_memory.py` | 实为V3隔离重排训练/重复一致性/RSS及报告，显式history/train/sample/output路径；导入时设置原生线程环境 | `test_check_tomorrow_training_memory.py`直接导入；保留有效能力并入训练资源检查后删除独立入口，改掉误导名称；导入副作用须随迁移消除 |
 
-还要与A共同核对 `storage_layout_comparison.py`的训练样本/窄扫描负载、`history_sqlite_performance.py`的training_projection，以及 `history_parquet.py`的共享投影，owner不能仅凭文件名判定。前两者是跨业务检查，不由C擅自搬走；Parquet仅供现有诊断比较，不能因生产未采用就删除有效研究能力。
+还要与A共同核对 `database_layout_comparison.py`的训练样本/窄扫描负载、`history_sqlite_performance.py`的training_projection，以及 `history_parquet.py`的共享投影，owner不能仅凭文件名判定。前两者是跨业务检查，不由C擅自搬走；Parquet仅供现有诊断比较，不能因生产未采用就删除有效研究能力。
 
 内存检查的间接消费者还包括 `scripts/check_refactor_quality.py::TOP_LEVEL_SCRIPT_MANIFEST`、`scripts/README.md`的工具表、`tests/conftest.py::_TRAINING_SCRIPT_PATHS`。其输出schema `tomorrow_training_memory_gate`被 `training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
 

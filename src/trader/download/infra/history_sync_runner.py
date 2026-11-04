@@ -70,7 +70,7 @@ from trader.download.infra.history_write_tuning import (
     HistoryWriteTuning,
 )
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.infra.storage_types import StorageKind
+from trader.infra.disk_types import DiskKind
 from trader.infra.workers import InjectedExecutor, WorkerExecutor
 
 Clock: TypeAlias = Callable[[], datetime]
@@ -103,7 +103,7 @@ class _HistorySync:
     writer: WorkerExecutor
     control: HistoryControlIndex
     index: HistoryDownloadIndex
-    storage_kind: StorageKind
+    disk_kind: DiskKind
     write_tuning: HistoryWriteTuning | None
     repair_only: bool = False
 
@@ -288,7 +288,7 @@ class _HistorySync:
                 self.writer,
                 self.write_tuning
                 or ChooseHistoryWriteTuning(
-                    self.storage_kind,
+                    self.disk_kind,
                     self.configuration.write_batches,
                     fresh=current_snapshot is None,
                 ),
@@ -389,7 +389,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     worker_pool: WorkerExecutor | None = None,
     writer_pool: WorkerExecutor | None = None,
     write_tuning: HistoryWriteTuning | None = None,
-    storage_kind: StorageKind = "unknown",
+    disk_kind: DiskKind = "unknown",
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
 ) -> HistoryMaintenanceStatus:
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
@@ -405,7 +405,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(configuration.history_root.with_name(".history.lock")):
-            _publish_progress(progress, "storage_profile", "completed", current_item=storage_kind)
+            _publish_progress(progress, "disk_profile", "completed", current_item=disk_kind)
             if (configuration.history_root / "control.sqlite3").exists() or (
                 not (configuration.history_root / "catalog.sqlite3").exists()
                 and (
@@ -426,7 +426,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 writer_pool or InjectedExecutor(None),
                 control,
                 index,
-                storage_kind,
+                disk_kind,
                 write_tuning,
                 repair_only, sqlite_policy=sqlite_policy,
             ).execute()

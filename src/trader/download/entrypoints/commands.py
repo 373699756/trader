@@ -37,7 +37,7 @@ def RunDownload(
                 shutdown_timeout_seconds=runtime.pipeline.shutdown_timeout_seconds,
                 progress=progress,
                 cancel_requested=cancelled.is_set,
-                storage_medium=runtime.storage_medium, sqlite_policy=sqlite_policy,
+                disk_medium=runtime.disk_medium, sqlite_policy=sqlite_policy,
             )
         except (CancelledError, OSError, RuntimeError, ValueError) as exc:
             if not cancelled.is_set():

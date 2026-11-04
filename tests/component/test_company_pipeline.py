@@ -103,10 +103,10 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
         row = connection.run("SELECT failure,ocr_diagnostic FROM document_retries").require_one()
         assert row[0] == "disclosure_document_ocr_timeout_exhausted"
         assert json.loads(row[1])["phase"] == "recognition"
-    from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
+    from scripts.runtime_diagnostics.company_query_audit import AuditCompanyDatabase
 
-    audit = AuditCompanyStorage(index.path, now=NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
-    assert audit["summary"]["local_storage"]["ocr_diagnostics"][0]["diagnostic"]["phase"] == "recognition"
+    audit = AuditCompanyDatabase(index.path, now=NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
+    assert audit["summary"]["database"]["ocr_diagnostics"][0]["diagnostic"]["phase"] == "recognition"
     changed = replace(policies, ocr="next-ocr-policy")
     assert index.document_workload(("600001",), NOW, changed).due == 1
     assert index.document_ocr_timeouts(item, changed.ocr) == 0

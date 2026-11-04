@@ -11,7 +11,7 @@ from pathlib import Path
 from trader.infra.cache_contracts import CachePolicy
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.infra.storage_types import StorageKind, StorageMedium
+from trader.infra.disk_types import DiskKind, DiskMedium
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
     FeatureComponentWeightPolicy,
@@ -118,7 +118,7 @@ class DatabasePerformanceSettings:
     hdd: DatabaseMediumPerformanceSettings
     ssd: DatabaseMediumPerformanceSettings
 
-    def for_medium(self, medium: StorageKind) -> DatabaseMediumPerformanceSettings:
+    def for_medium(self, medium: DiskKind) -> DatabaseMediumPerformanceSettings:
         if medium == "hdd":
             return self.hdd
         if medium == "ssd":
@@ -127,16 +127,16 @@ class DatabasePerformanceSettings:
 
 
 @dataclass(frozen=True)
-class StorageSettings:
+class SqliteSettings:
     hdd: SqliteIoPolicy
     ssd: SqliteIoPolicy
 
-    def for_medium(self, medium: StorageKind) -> SqliteIoPolicy:
+    def for_medium(self, medium: DiskKind) -> SqliteIoPolicy:
         if medium == "hdd":
             return self.hdd
         if medium == "ssd":
             return self.ssd
-        raise ValueError("storage policy requires a detected HDD or SSD medium")
+        raise ValueError("disk policy requires a detected HDD or SSD medium")
 
 
 @dataclass(frozen=True)
@@ -201,8 +201,8 @@ class RuntimeSettings:
     performance_budgets: PerformanceBudgetSettings
     deepseek: DeepSeekSettings
     api: ApiSettings
-    storage_policy: StorageSettings
-    storage_medium: StorageMedium | None = None
+    sqlite_policy: SqliteSettings
+    disk_medium: DiskMedium | None = None
 
 
 @dataclass(frozen=True)

@@ -1,23 +1,23 @@
-"""Immutable storage configuration and detection evidence."""
+"""Immutable disk configuration and detection evidence."""
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-StorageKind = Literal["hdd", "ssd", "unknown"]
-StorageMedium = Literal["hdd", "ssd"]
+DiskKind = Literal["hdd", "ssd", "unknown"]
+DiskMedium = Literal["hdd", "ssd"]
 
 
 @dataclass(frozen=True)
-class StorageProfile:
-    kind: StorageKind
+class DiskProfile:
+    kind: DiskKind
     device: str
     source: Literal["automatic", "configuration"]
     reason: str
 
 
 @dataclass(frozen=True)
-class StorageLocation:
+class DiskLocation:
     role: str
     path: Path
-    profile: StorageProfile
+    profile: DiskProfile

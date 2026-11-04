@@ -1,11 +1,11 @@
-"""Bounded history write batches selected from shared storage evidence."""
+"""Bounded history write batches selected from shared disk evidence."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from trader.download.domain.history_sync import HistoryWriteBatchPolicy
-from trader.infra.storage_types import StorageKind
+from trader.infra.disk_types import DiskKind
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class HistoryWriteTuning:
 
 
 def ChooseHistoryWriteTuning(
-    kind: StorageKind,
+    kind: DiskKind,
     policy: HistoryWriteBatchPolicy,
     *,
     fresh: bool,

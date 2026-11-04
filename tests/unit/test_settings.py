@@ -35,7 +35,7 @@ _RUNTIME_FILES = {
     "market_data.json": ("market_data",),
     "cache.json": ("cache_policy",),
     "performance.json": ("performance_budgets",),
-    "storage.json": ("storage_policy",),
+    "sqlite.json": ("sqlite_policy",),
     "deepseek.json": ("deepseek",),
 }
 _STRATEGY_FILES = {
@@ -766,7 +766,7 @@ def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(
     raw["performance_budgets"]["database"]["hdd"].update(
         {"sqlite_improvement_percent": 11, "parquet_improvement_percent": 16, "minimum_wins": 3}
     )
-    raw["storage_policy"]["hdd"]["read_window_rows"] = 513
+    raw["sqlite_policy"]["hdd"]["read_window_rows"] = 513
 
     runtime = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
@@ -784,7 +784,7 @@ def test_runtime_tuning_values_are_loaded_from_their_single_configuration_owner(
     assert runtime.performance_budgets.memory.growth_percent == 21
     assert runtime.performance_budgets.relative_regression_percent == 6
     assert runtime.performance_budgets.database.hdd.minimum_wins == 3
-    assert runtime.storage_policy.hdd.read_window_rows == 513
+    assert runtime.sqlite_policy.hdd.read_window_rows == 513
 
 
 def test_runtime_rejects_round_timeout_above_business_limit(tmp_path) -> None:
@@ -795,14 +795,14 @@ def test_runtime_rejects_round_timeout_above_business_limit(tmp_path) -> None:
         LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
 
-def test_storage_policy_changes_do_not_invalidate_feature_identity(tmp_path) -> None:
+def test_sqlite_policy_changes_do_not_invalidate_feature_identity(tmp_path) -> None:
     baseline = LoadRuntimeSettings(RUNTIME_CONFIG)
     raw = _runtime_document()
-    raw["storage_policy"]["hdd"]["read_window_rows"] = 513
+    raw["sqlite_policy"]["hdd"]["read_window_rows"] = 513
 
     changed = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
-    assert changed.storage_policy.hdd.read_window_rows == 513
+    assert changed.sqlite_policy.hdd.read_window_rows == 513
     assert changed.config_version == baseline.config_version
 
 
@@ -815,9 +815,9 @@ def test_storage_policy_changes_do_not_invalidate_feature_identity(tmp_path) -> 
         ("ssd", "checkpoint_mode", "UNKNOWN"),
     ),
 )
-def test_storage_policy_rejects_invalid_values(tmp_path, medium: str, field: str, value: object) -> None:
+def test_sqlite_policy_rejects_invalid_values(tmp_path, medium: str, field: str, value: object) -> None:
     raw = _runtime_document()
-    raw["storage_policy"][medium][field] = value
+    raw["sqlite_policy"][medium][field] = value
 
     with pytest.raises(ConfigurationError):
         LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))

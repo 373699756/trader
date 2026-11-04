@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from trader.infra.sqlite_policy import SqliteIoPolicy
 
 
-class _StorageArguments(TypedDict, total=False):
+class _SqliteArguments(TypedDict, total=False):
     sqlite_policy: SqliteIoPolicy
 
 
@@ -200,7 +200,7 @@ def _measure_feature_construction(
 def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqlite_policy: SqliteIoPolicy | None) -> dict[str, object]:
     # The two explicitly selected offline checkouts have different physical APIs.
     # No compatibility selection is installed in the application.
-    storage_arguments: _StorageArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
+    sqlite_arguments: _SqliteArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
     import numpy as np
     import trader.training.infra.sample_index as sample_module
 
@@ -256,7 +256,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
         channels = np.random.default_rng(289).normal(size=(size, len(selected) + 60, 6)) if layout else None
         path = root / f"{profile.profile_id}.sqlite3"
         started = time.perf_counter()
-        with SQLiteTrainingSampleIndex(path, names if named else len(names), sequence_layout=layout, **storage_arguments) as samples:  # type: ignore[arg-type]  # Explicit historical checkout API.
+        with SQLiteTrainingSampleIndex(path, names if named else len(names), sequence_layout=layout, **sqlite_arguments) as samples:  # type: ignore[arg-type]  # Explicit historical checkout API.
             for index, day in enumerate(selected):
                 rows = []
                 for stock in range(size):
@@ -271,7 +271,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
         digest = hashlib.sha256()
         started = time.perf_counter()
         with SQLiteTrainingSampleIndex(
-            path, names if named else len(names), sequence_layout=layout, prepared_split_hash=split.content_hash, **storage_arguments  # type: ignore[arg-type]
+            path, names if named else len(names), sequence_layout=layout, prepared_split_hash=split.content_hash, **sqlite_arguments  # type: ignore[arg-type]
         ) as samples:
             for head in profile.heads:
                 digest.update(head.model_id.encode())
@@ -293,7 +293,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
     path = root / "v1.sqlite3"
     started = time.perf_counter()
     with ExitStack() as resources:
-        rank_index = LearnedRankSampleIndex(path, **storage_arguments)
+        rank_index = LearnedRankSampleIndex(path, **sqlite_arguments)
         resources.callback(rank_index.close)
         for number, day in enumerate(selected):
             pending = _PendingDay(day, number, {

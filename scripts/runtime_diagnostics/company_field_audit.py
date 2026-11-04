@@ -94,7 +94,7 @@ def AuditCompanyFields(formal: SqliteConnection, raw_path: Path) -> dict[str, ob
         findings.append("company_applicable_fields_missing")
     return {
         "read_only": True, "tables": tables, "table_count": len(tables), "field_count": field_count,
-        "invalid_storage_types": invalid_types,
+        "invalid_disk_types": invalid_types,
         "nonfinite_values": nonfinite_values,
         "source_agreement": {
             "financial_rows": finance[0], "financial_value_mismatches": finance[1],
@@ -118,7 +118,7 @@ def _rows(value: object, limit: int) -> tuple[dict[str, object], ...]:
 
 def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
     result = {key: source.get(key) for key in (
-        "read_only", "table_count", "field_count", "invalid_storage_types", "nonfinite_values", "interpretation",
+        "read_only", "table_count", "field_count", "invalid_disk_types", "nonfinite_values", "interpretation",
     )}
     for name, keys in (
         ("source_agreement", ("financial_rows", "financial_value_mismatches", "pledge_rows", "pledge_explicit_source_matches", "pledge_zeros_from_complete_snapshot", "pledge_unmatched", "unlock_rows", "unlock_value_mismatches", "unlocated_evidence_refs", "risk_events_without_evidence", "positive_events_without_evidence")),

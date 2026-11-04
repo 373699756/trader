@@ -147,7 +147,7 @@ class SQLiteTrainingSampleIndex:
                 durability="rebuildable" if prepared_split_hash is None else "durable",
                 cache_kib=TRAINING_SAMPLE_CACHE_MIB * 1024,
                 mmap_bytes=TRAINING_SAMPLE_MMAP_BYTES,
-                temp_storage="FILE",
+                temp_mode="FILE",
             ), sqlite_policy=self._sqlite_policy,
         )
         self._transaction = SqliteTransaction(self._connection, immediate=True)

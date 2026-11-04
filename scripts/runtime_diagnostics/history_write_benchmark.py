@@ -51,8 +51,8 @@ from trader.infra.sqlite_connection import (
     SqliteSession,
     SqliteTransaction,
 )
-from trader.infra.storage_probe import StorageProbe
-from trader.infra.storage_types import StorageKind
+from trader.infra.disk_probe import DiskProbe
+from trader.infra.disk_types import DiskKind
 
 from .database_measurement import DatabaseMeasurement
 from .reporting import emit_report
@@ -229,7 +229,7 @@ def _measure_case(
     config: HistorySyncConfiguration,
     supplier: HistoryFixtureSupplier,
     tuning: HistoryWriteTuning | None,
-    storage_kind: StorageKind | None, *, sqlite_policy: SqliteIoPolicy,
+    disk_kind: DiskKind | None, *, sqlite_policy: SqliteIoPolicy,
 ) -> dict[str, object]:
     supplier.requests.clear()
     now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
@@ -243,7 +243,7 @@ def _measure_case(
             clock=_clock(now),
             write_tuning=tuning,
             progress=stage_times,
-            storage_kind=storage_kind or StorageProbe().inspect(config.history_root).kind, sqlite_policy=sqlite_policy,
+            disk_kind=disk_kind or DiskProbe().inspect(config.history_root).kind, sqlite_policy=sqlite_policy,
         )
     rows = 0
     for path in config.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
@@ -271,7 +271,7 @@ def _measure_case(
 
 
 def MeasureHistoryWrites(
-    size: int, sessions: int, tuning: HistoryWriteTuning | None = None, *, storage_kind: StorageKind | None = None, sqlite_policy: SqliteIoPolicy
+    size: int, sessions: int, tuning: HistoryWriteTuning | None = None, *, disk_kind: DiskKind | None = None, sqlite_policy: SqliteIoPolicy
 ) -> dict[str, object]:
     days = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(sessions))
     supplier = HistoryFixtureSupplier(days, size, sqlite_policy=sqlite_policy)
@@ -289,7 +289,7 @@ def MeasureHistoryWrites(
         for name, added in (("initial", 0), ("next_day", 1), ("two_weeks", 10), ("same_day", 0)):
             if added:
                 supplier.days += tuple(supplier.days[-1] + timedelta(days=i + 1) for i in range(added))
-            results.append(_measure_case(name, config, supplier, tuning, storage_kind, sqlite_policy=sqlite_policy))
+            results.append(_measure_case(name, config, supplier, tuning, disk_kind, sqlite_policy=sqlite_policy))
         # Seed committed annual rows without publishing the first snapshot.
         # The measured restart includes disjoint stocks, unlike an empty-file write probe.
         resume_config = replace(config, history_root=Path(scratch) / "resume")
@@ -303,12 +303,12 @@ def MeasureHistoryWrites(
             cancel_requested=lambda: interrupted.cancelled,
             write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions),
             progress=interrupted,
-            storage_kind=storage_kind or StorageProbe().inspect(resume_config.history_root).kind, sqlite_policy=sqlite_policy,
+            disk_kind=disk_kind or DiskProbe().inspect(resume_config.history_root).kind, sqlite_policy=sqlite_policy,
         )
         if seeded.state != "cancelled":
             raise RuntimeError("history_write_resume_seed_failed")
-        results.append(_measure_case("initial_resume", resume_config, supplier, tuning, storage_kind, sqlite_policy=sqlite_policy))
-        storage_kind = storage_kind or StorageProbe().inspect(root).kind
+        results.append(_measure_case("initial_resume", resume_config, supplier, tuning, disk_kind, sqlite_policy=sqlite_policy))
+        disk_kind = disk_kind or DiskProbe().inspect(root).kind
     return {
         "schema_version": "history-write-benchmark",
         "status": "passed"
@@ -318,7 +318,7 @@ def MeasureHistoryWrites(
             "fixture": True,
             "stocks": size,
             "sessions": sessions,
-            "storage_kind": storage_kind,
+            "disk_kind": disk_kind,
             "process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
             "write_tuning": (
                 {"flush_codes": tuning.flush_codes, "flush_cells": tuning.flush_cells} if tuning else "auto"
@@ -336,13 +336,13 @@ def main() -> int:
     parser.add_argument("--sessions", type=int, default=2000)
     parser.add_argument("--flush-codes", type=int)
     parser.add_argument("--flush-cells", type=int)
-    parser.add_argument("--storage-kind", choices=("ssd", "hdd", "unknown"), default=None)
+    parser.add_argument("--disk-kind", choices=("ssd", "hdd", "unknown"), default=None)
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[2] / "config/runtime.json"))
     if args.baseline_checkout is not None:
-        from .storage_layout_comparison import CompareLayouts
+        from .database_layout_comparison import CompareLayouts
 
         report = CompareLayouts(
             args.baseline_checkout, rounds=args.comparison_rounds, size=args.size, sessions=args.sessions
@@ -360,7 +360,7 @@ def main() -> int:
         if args.flush_codes is not None
         else None
     )
-    report = MeasureHistoryWrites(args.size, args.sessions, tuning, storage_kind=args.storage_kind, sqlite_policy=sqlite_policy)
+    report = MeasureHistoryWrites(args.size, args.sessions, tuning, disk_kind=args.disk_kind, sqlite_policy=sqlite_policy)
     emit_report(report)
     return int(report["status"] != "passed")
 

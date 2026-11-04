@@ -1,4 +1,4 @@
-"""Read-only storage inventory for the unified diagnostic command."""
+"""Read-only disk inventory for the unified diagnostic command."""
 
 import argparse
 import json
@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 from trader.infra.settings import LoadRuntimeSettings
-from trader.infra.storage_probe import StorageProbe
-from trader.infra.storage_runtime import DisplayStoragePath, InspectDataStorage, ReportStorageProfiles
+from trader.infra.disk_probe import DiskProbe
+from trader.infra.disk_runtime import DisplayDiskPath, InspectDataDisk, ReportDiskProfiles
 
 
 def Main() -> int:
@@ -16,9 +16,9 @@ def Main() -> int:
     parser.add_argument("--path", type=Path, action="append", default=[])
     args = parser.parse_args()
     settings = LoadRuntimeSettings(args.config)
-    locations = InspectDataStorage(settings, StorageProbe(settings.storage_medium), additional_paths=args.path)
-    ReportStorageProfiles(settings, locations)
-    actual_probe = StorageProbe()
+    locations = InspectDataDisk(settings, DiskProbe(settings.disk_medium), additional_paths=args.path)
+    ReportDiskProfiles(settings, locations)
+    actual_probe = DiskProbe()
     actual_profiles = tuple(actual_probe.inspect(item.path) for item in locations)
     unknown = sum(item.profile.kind == "unknown" for item in locations)
     unknown_app = any(item.profile.kind == "unknown" and not item.role.startswith("external.") for item in locations)
@@ -46,13 +46,13 @@ def Main() -> int:
         expected = suggested_medium.upper() if suggested_medium is not None else "实际介质"
         print(
             "[存储配置需修改] "
-            f"runtime storage与物理检测不一致；请改为{expected}后重新启动命令。",
+            f"runtime disk与物理检测不一致；请改为{expected}后重新启动命令。",
             file=sys.stderr,
         )
     details = [
         {
             "role": item.role,
-            "path": DisplayStoragePath(item.path, settings.project_root),
+            "path": DisplayDiskPath(item.path, settings.project_root),
             "kind": item.profile.kind,
             "source": item.profile.source,
             "reason": item.profile.reason,
@@ -64,9 +64,9 @@ def Main() -> int:
         for item, actual in zip(locations, actual_profiles, strict=True)
     ]
     if configured_mismatches:
-        instruction = "runtime storage与物理介质不一致；按实际介质修改后重新启动命令。"
+        instruction = "runtime disk与物理介质不一致；按实际介质修改后重新启动命令。"
     elif unknown_app:
-        instruction = '统一设置"storage": "ssd"或"storage": "hdd"；保存后重新启动命令。'
+        instruction = '统一设置"disk_medium": "ssd"或"disk_medium": "hdd"；保存后重新启动命令。'
     elif actual_unknown_app:
         instruction = "物理介质无法独立验证；手动配置可用于运行策略，但不能作为磁盘性能证据。"
     elif unknown or actual_unknown:
@@ -74,14 +74,14 @@ def Main() -> int:
     else:
         instruction = "应用配置与可验证的物理介质一致。"
     configuration_example = (
-        {"storage": suggested_medium}
+        {"disk_medium": suggested_medium}
         if configured_mismatches and suggested_medium is not None
-        else {"storage": "hdd"} if unknown_app else None
+        else {"disk_medium": "hdd"} if unknown_app else None
     )
     print(
         json.dumps(
             {
-                "schema_version": "storage-profile-v1",
+                "schema_version": "disk-profile-v1",
                 "status": "degraded" if unknown or actual_unknown or configured_mismatches else "passed",
                 "summary": {
                     "locations": details,
@@ -89,11 +89,11 @@ def Main() -> int:
                     "actual_unknown": actual_unknown,
                     "configured_mismatches": len(configured_mismatches),
                     "read_only": True,
-                    "configuration_file": DisplayStoragePath(settings.config_path, settings.project_root),
-                    "configuration_field": "storage",
+                    "configuration_file": DisplayDiskPath(settings.config_path, settings.project_root),
+                    "configuration_field": "disk_medium",
                     "instruction": instruction,
                     "configuration_example": configuration_example,
-                    "storage_policies": {
+                    "sqlite_policies": {
                         medium: {
                             "connection_timeout_seconds": policy.connection_timeout_seconds,
                             "read_window_rows": policy.read_window_rows,
@@ -101,8 +101,8 @@ def Main() -> int:
                             "checkpoint_mode": policy.checkpoint_mode,
                         }
                         for medium, policy in (
-                            ("hdd", settings.storage_policy.hdd),
-                            ("ssd", settings.storage_policy.ssd),
+                            ("hdd", settings.sqlite_policy.hdd),
+                            ("ssd", settings.sqlite_policy.ssd),
                         )
                     },
                 },

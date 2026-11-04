@@ -1,4 +1,4 @@
-"""Bounded, read-only Windows and macOS storage metadata queries."""
+"""Bounded, read-only Windows and macOS disk metadata queries."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ import time
 from pathlib import Path
 from xml.parsers.expat import ExpatError
 
-from trader.infra.storage_types import StorageKind
+from trader.infra.disk_types import DiskKind
 
 _WINDOWS_QUERY = """
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$volume = Get-Volume -FilePath $env:TRADER_STORAGE_PROBE_PATH
+$volume = Get-Volume -FilePath $env:TRADER_DISK_PROBE_PATH
 $disks = @(Get-Partition -Volume $volume | Get-Disk)
 $physical = @(Get-PhysicalDisk)
 $kinds = @()
@@ -31,10 +31,10 @@ else { 'ssd' }
 """
 
 
-def ProbeWindowsStorage(path: Path, *, timeout: float) -> StorageKind:
+def ProbeWindowsDisk(path: Path, *, timeout: float) -> DiskKind:
     encoded = base64.b64encode(_WINDOWS_QUERY.encode("utf-16-le")).decode("ascii")
     environment = os.environ.copy()
-    environment["TRADER_STORAGE_PROBE_PATH"] = str(path) + (os.sep if path.is_dir() else "")
+    environment["TRADER_DISK_PROBE_PATH"] = str(path) + (os.sep if path.is_dir() else "")
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
         env=environment,
@@ -46,7 +46,7 @@ def ProbeWindowsStorage(path: Path, *, timeout: float) -> StorageKind:
     return "hdd" if value == "hdd" else "ssd" if value == "ssd" else "unknown"
 
 
-def ProbeMacStorage(path: Path, *, timeout: float) -> StorageKind:
+def ProbeMacDisk(path: Path, *, timeout: float) -> DiskKind:
     deadline = time.monotonic() + timeout
     info = _diskutil(("info", "-plist", str(path)), deadline)
     # APFS can span multiple devices (including Fusion); inspect every physical store.
@@ -57,11 +57,11 @@ def ProbeMacStorage(path: Path, *, timeout: float) -> StorageKind:
         if not isinstance(containers, list) or len(containers) != 1:
             return "unknown"
         item = containers[0]
-        stores = item.get("PhysicalStores") if isinstance(item, dict) else None
-        if not isinstance(stores, list) or not 1 <= len(stores) <= 16:
+        physical_disks = item.get("PhysicalStores") if isinstance(item, dict) else None
+        if not isinstance(physical_disks, list) or not 1 <= len(physical_disks) <= 16:
             return "unknown"
-        kinds: list[StorageKind] = []
-        for physical_disk in stores:
+        kinds: list[DiskKind] = []
+        for physical_disk in physical_disks:
             device = physical_disk.get("DeviceIdentifier") if isinstance(physical_disk, dict) else None
             if not isinstance(device, str) or not device.startswith("disk") or "/" in device:
                 return "unknown"
@@ -72,7 +72,7 @@ def ProbeMacStorage(path: Path, *, timeout: float) -> StorageKind:
     return _mac_kind(info)
 
 
-def _mac_kind(info: dict[str, object]) -> StorageKind:
+def _mac_kind(info: dict[str, object]) -> DiskKind:
     if info.get("VirtualOrPhysical") == "Virtual":
         return "unknown"
     value = info.get("SolidState")

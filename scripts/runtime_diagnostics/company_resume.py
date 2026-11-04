@@ -20,7 +20,7 @@ from scripts.runtime_diagnostics.company_pagination_audit import AuditCompanyPag
 from scripts.runtime_diagnostics.company_pipeline_audit import AuditCompanyPipeline
 from scripts.runtime_diagnostics.company_ocr_audit import AuditCompanyOcr
 from scripts.runtime_diagnostics.company_document_download_audit import AuditCompanyDocumentDownloads
-from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries, AuditCompanyStorage
+from scripts.runtime_diagnostics.company_query_audit import AuditCompanyQueries, AuditCompanyDatabase
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy
@@ -231,7 +231,7 @@ def _retained_digest(path: Path, deadline: float, *, sqlite_policy: SqliteIoPoli
     return digest.hexdigest()
 
 
-def _compact_storage(source: Path, directory: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def _compact_database(source: Path, directory: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     if not directory.is_absolute() or directory == _ROOT or _ROOT in directory.parents:
         raise ValueError("external absolute directory required")
     directory.mkdir(parents=True, exist_ok=True)
@@ -271,7 +271,7 @@ def Main() -> int:
     parser.add_argument("--budget-seconds", required=True, type=float)
     audit = parser.add_mutually_exclusive_group()
     audit.add_argument("--audit-only", action="store_true")
-    audit.add_argument("--storage-only", action="store_true")
+    audit.add_argument("--database-only", action="store_true")
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--ocr-only", action="store_true")
@@ -298,8 +298,8 @@ def Main() -> int:
         report = AuditCompanyDocumentDownloads(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
-    if args.storage_only:
-        report = AuditCompanyStorage(
+    if args.database_only:
+        report = AuditCompanyDatabase(
             source_path,
             now=datetime.now(ZoneInfo("Asia/Shanghai")),
             budget_seconds=min(180.0, args.budget_seconds),
@@ -308,8 +308,8 @@ def Main() -> int:
         if args.directory is not None:
             summary = report["summary"]
             if not isinstance(summary, dict):
-                raise ValueError("company_storage_summary_invalid")
-            summary["compaction"] = _compact_storage(
+                raise ValueError("company_disk_summary_invalid")
+            summary["compaction"] = _compact_database(
                 source_path, args.directory.resolve(), budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy
             )
         print(json.dumps(report, ensure_ascii=False, indent=2))

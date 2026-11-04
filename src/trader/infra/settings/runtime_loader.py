@@ -68,8 +68,8 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     Text as _text,
 )
-from trader.infra.settings.storage import ParseStorageMedium
-from trader.infra.settings.storage_policy import ParseStorageSettings
+from trader.infra.settings.disk_medium import ParseDiskMedium
+from trader.infra.settings.sqlite_policy import ParseSqliteSettings
 
 
 def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
@@ -82,13 +82,13 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             "scheduler.json": {"pipeline"},
             "market_data.json": {"market_data"},
             "performance.json": {"performance_budgets"},
-            "storage.json": {"storage_policy"},
+            "sqlite.json": {"sqlite_policy"},
             "deepseek.json": {"deepseek"},
         },
         label="runtime",
-        optional_root_keys=frozenset({"storage"}),
+        optional_root_keys=frozenset({"disk_medium"}),
     )
-    raw.setdefault("storage", None)
+    raw.setdefault("disk_medium", None)
     cache_sections = _read_json_object(path.parent / "cache.json")
     _require_exact_keys(cache_sections, {"cache_policy"}, "cache")
     market_section = _mapping(raw, "market_data")
@@ -106,10 +106,10 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             "pipeline",
             "market_data",
             "performance_budgets",
-            "storage_policy",
+            "sqlite_policy",
             "deepseek",
             "api",
-            "storage",
+            "disk_medium",
         },
         "runtime",
     )
@@ -119,7 +119,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     pipeline_raw = _mapping(raw, "pipeline")
     market_raw = _mapping(raw, "market_data")
     performance_raw = _mapping(raw, "performance_budgets")
-    storage_policy_raw = _mapping(raw, "storage_policy")
+    sqlite_policy_raw = _mapping(raw, "sqlite_policy")
     deepseek_raw = _mapping(raw, "deepseek")
     deepseek_adaptive_raw = _mapping(deepseek_raw, "adaptive")
     api_raw = _mapping(raw, "api")
@@ -216,12 +216,12 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         config_version=_configuration_identity(
             "runtime",
             {
-                **{key: value for key, value in raw.items() if key != "storage_policy"},
+                **{key: value for key, value in raw.items() if key != "sqlite_policy"},
                 "pipeline": {key: value for key, value in pipeline_raw.items() if key != "history_preload"},
             },
         ),
         config_path=path,
-        storage_medium=ParseStorageMedium(raw["storage"]),
+        disk_medium=ParseDiskMedium(raw["disk_medium"]),
         project_root=project_root,
         runtime_dir=runtime_dir,
         data_paths=data_paths,
@@ -271,7 +271,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             cache_policy=_parse_cache_policy(_mapping(market_raw, "cache_policy")),
         ),
         performance_budgets=_parse_performance_budgets(performance_raw),
-        storage_policy=ParseStorageSettings(storage_policy_raw),
+        sqlite_policy=ParseSqliteSettings(sqlite_policy_raw),
         deepseek=DeepSeekSettings(
             enabled=deepseek_enabled,
             base_url=_text(deepseek_raw, "base_url").rstrip("/"),

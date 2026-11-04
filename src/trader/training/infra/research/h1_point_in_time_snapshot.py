@@ -540,13 +540,13 @@ def _validate_h1_histories(
 def _db_int(value: object) -> int:
     if isinstance(value, (int, str)):
         return int(value)
-    raise H1PointInTimeSnapshotConflictError("H1 integer storage value is invalid")
+    raise H1PointInTimeSnapshotConflictError("H1 integer disk value is invalid")
 
 
 def _db_float(value: object) -> float:
     if isinstance(value, (int, float, str)):
         return float(value)
-    raise H1PointInTimeSnapshotConflictError("H1 numeric storage value is invalid")
+    raise H1PointInTimeSnapshotConflictError("H1 numeric disk value is invalid")
 
 
 def _offset_microseconds(value: datetime) -> int:

@@ -38,7 +38,7 @@ class CacheDatasetPolicy:
 
     def __post_init__(self) -> None:
         self._validate_timing()
-        self._validate_storage()
+        self._validate_limits()
 
     def _validate_timing(self) -> None:
         cadence_fields = (self.cadence_task, self.action_max_age_multiplier)
@@ -70,7 +70,7 @@ class CacheDatasetPolicy:
         if self.action_max_age_multiplier is not None and self.action_max_age_multiplier < 1:
             raise ValueError("cache action age multiplier must be at least one")
 
-    def _validate_storage(self) -> None:
+    def _validate_limits(self) -> None:
         if self.negative_ttl_seconds <= 0:
             raise ValueError("cache negative TTL must be positive")
         if self.capacity <= 0:

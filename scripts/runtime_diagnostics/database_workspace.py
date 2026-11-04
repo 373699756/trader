@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from trader.infra.settings import LoadRuntimeSettings
-from trader.infra.storage_probe import StorageProbe
-from trader.infra.storage_types import StorageKind
+from trader.infra.disk_probe import DiskProbe
+from trader.infra.disk_types import DiskKind
 
 from .diagnostic_types import PROJECT_ROOT
 
@@ -20,8 +20,8 @@ from .diagnostic_types import PROJECT_ROOT
 @dataclass(frozen=True)
 class DatabaseProbeLocation:
     directory: Path
-    storage_kind: StorageKind
-    storage_source: str
+    disk_kind: DiskKind
+    disk_source: str
     filesystem: str
     memory_backed: bool
 
@@ -44,7 +44,7 @@ def PrepareDatabaseProbeDirectory(directory: Path, runtime_config: Path) -> Data
         existing = existing.parent
     filesystem = _filesystem(existing)
     memory = filesystem in {"tmpfs", "ramfs"}
-    detected = StorageProbe().inspect(target)
+    detected = DiskProbe().inspect(target)
     kind = detected.kind
     source: str = detected.source
     # External probe media must be measured independently from the application's configured medium.
@@ -56,13 +56,13 @@ def PrepareDatabaseProbeDirectory(directory: Path, runtime_config: Path) -> Data
 
 def ProjectDatabaseProbeLocation(location: DatabaseProbeLocation) -> dict[str, object]:
     return {
-        "storage_kind": location.storage_kind,
-        "storage_source": location.storage_source,
+        "disk_kind": location.disk_kind,
+        "disk_source": location.disk_source,
         "filesystem": location.filesystem,
         "memory_backed": location.memory_backed,
         "disk_performance_evidence": not location.memory_backed
         and location.filesystem != "unknown"
-        and location.storage_kind != "unknown",
+        and location.disk_kind != "unknown",
     }
 
 

@@ -74,7 +74,7 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
 @pytest.mark.parametrize("inputs_only", (True, False))
 @pytest.mark.parametrize("explicit_config", (True, False))
 @pytest.mark.parametrize("benchmark_mode", (None, "baseline_before", "baseline_after", "candidate"))
-def test_entry_selects_checkout_before_loading_its_storage_policy(
+def test_entry_selects_checkout_before_loading_its_sqlite_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inputs_only: bool, explicit_config: bool, benchmark_mode: str | None,
 ):
     from scripts.runtime_diagnostics import training_alignment as module

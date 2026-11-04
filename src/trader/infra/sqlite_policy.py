@@ -23,4 +23,4 @@ class SqliteIoPolicy:
             or self.transaction_batch_rows < 1
             or self.checkpoint_mode not in {"PASSIVE", "RESTART", "TRUNCATE"}
         ):
-            raise ValueError("storage medium settings are invalid")
+            raise ValueError("disk medium settings are invalid")

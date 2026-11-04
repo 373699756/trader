@@ -16,9 +16,9 @@ module and profile there; it is not added as another top-level script.
 
 `--profile runtime --scoring-profile v1`只读采样指定档位的status与全部current端点；单档可选v1/v2/v3/v5，省略时保留服务默认档位，比较多个档位时分别执行。报告保留十一层输入/输出、淘汰/待补/失败、原因、耗时及已发布审计的分项耗时，缺失值保持null；全局异常保留累计次数、阶段、时间及active/recovered状态。运行中的新输入与已发布快照分别输出，不跨轮拼接；上游没有交给模型输入时，不将模型层0泛化为模型损坏。该模式不抓供应商、不改配置、不重启服务。
 
-`--profile storage`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
-可重复使用`--storage-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
-unknown结果附带实际runtime配置文件和单项`storage`修改示例：`"storage": "hdd"`或`"storage": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
+`--profile disk`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
+可重复使用`--disk-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
+unknown结果附带实际runtime配置文件和单项`disk`修改示例：`"disk": "hdd"`或`"disk": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
 
 `--profile tencent-transport`只读加载本地证券参考人口，以同一120只分片、3路并发分别测量直接HTTP和可复用隔离HTTP；两组均采用生产全市场覆盖校验、配置中的主源采集预算（当前12秒）及分片尝试上限（当前2次），外层仍受统一命令超时控制。真实请求腾讯，输出总体请求/返回数、物理尝试与失败数、尝试上限、单次及整批耗时，不保存供应商载荷或改动活动数据。单次对照不能证明长期尾延迟或完整推荐轮次；直连组的不可协作DNS等阻塞仍可能超过其本地采集预算。`runtime`报告另外保留预览状态、失败码与最多64项阶段计时，用于区分行情等待和下游阻断。
 
@@ -61,7 +61,7 @@ It samples up to three failed dates and three failed child cursors, at most 192 
 
 目录查询报告保留页面出现的三位证券代码前缀，用于核对供应商板块分类；不输出完整证券代码。公司发布审计的`dirty_stocks`只计当前采集人口，`outside_population_dirty_stocks`单列总体外标记，不将其报告为当前人口待发布。
 
-`--profile company-resume --company-storage-audit --output -` counts local announcement metadata, processing receipts, retained temporary text and retry reasons without network access or a replay directory. In the check summary, `local_storage.retained_bodies` reports retained text count; `local_storage.formal` separately reports facts availability, file bytes, stocks and table bytes. `--company-collection-database` selects the raw collection index and `--company-evidence-database` selects the separate compact facts database. PDFs and page checkpoints that fail processing are retained under raw/failed without automatic deletion; successful inputs alone enter receipt-based cleanup; compressed text under `data/company/raw/text` is deleted after every affected issuer is published and receipts are committed. Publication row counts do not establish complete risk coverage.
+`--profile company-resume --company-database-audit --output -` counts local announcement metadata, processing receipts, retained temporary text and retry reasons without network access or a replay directory. In the check summary, `database.retained_bodies` reports retained text count; `database.formal` separately reports facts availability, file bytes, stocks and table bytes. `--company-collection-database` selects the raw collection index and `--company-evidence-database` selects the separate compact facts database. PDFs and page checkpoints that fail processing are retained under raw/failed without automatic deletion; successful inputs alone enter receipt-based cleanup; compressed text under `data/company/raw/text` is deleted after every affected issuer is published and receipts are committed. Publication row counts do not establish complete risk coverage.
 
 该审计同时输出`failure_history`（现有保留上限内的完整异常历史）、`retry_inventory`（逐篇最新重试、策略、任务阶段和原件目录文件名）及`failure_receipts`（对应正式回执）。历史事件不等于当前未解决数，重试表会覆盖旧原因；文件盘点与数据库快照并非原子，运行中的下载可能继续改变文件。审计不读取正文，不调用会移动损坏文件的恢复方法。
 
@@ -69,7 +69,7 @@ It samples up to three failed dates and three failed child cursors, at most 192 
 
 另在同一网络预算内最多重取3篇`disclosure_document_encrypted`原件，校验与原失败摘要是否相同，在系统临时目录分别执行最长10秒的`pdfinfo`和`pdftotext`，区分加密标志、打开密码和实际文字提取结果；退出清理临时原件。`encrypted_observations`仅输出元数据、退出码和文字字节数，不输出正文，也不据此宣布全文核验成功。连同传输对照最多13次物理请求，不修改活动输入、重试或正式事实。
 
-`local_storage.publication`进一步核对采集人口与已发布人口、待发布股票、四类资料状态、公告覆盖起止、当前日期的180日解禁范围、持续风险及待核实原因。正文回执必须匹配公告版本、提取身份及全部相关采集股票；已释放正文缺回执单列。两库使用只读事务，读取期间检测到外部提交则标记`stable_read=false`及降级。缺正式发布、资料不完整或待核实不能因下载队列为空判为通过。报告只含聚合数量、日期和摘要，不输出证券、标题、正文或证据键；这些本地记录不能证明供应商目录无遗漏、事件提取准确或历史风险已完整回溯，也不以自然日比较代替交易日日历判断公告时效。
+`database.publication`进一步核对采集人口与已发布人口、待发布股票、四类资料状态、公告覆盖起止、当前日期的180日解禁范围、持续风险及待核实原因。正文回执必须匹配公告版本、提取身份及全部相关采集股票；已释放正文缺回执单列。两库使用只读事务，读取期间检测到外部提交则标记`stable_read=false`及降级。缺正式发布、资料不完整或待核实不能因下载队列为空判为通过。报告只含聚合数量、日期和摘要，不输出证券、标题、正文或证据键；这些本地记录不能证明供应商目录无遗漏、事件提取准确或历史风险已完整回溯，也不以自然日比较代替交易日日历判断公告时效。
 
 该存储审计的`publication.field_audit`覆盖正式库各表字段填充、存储类型和非有限数，并对财务数值、质押（含完整快照支持的无记录零值）、解禁及事件证据定位核对采集来源；合同等字段另报适用记录中的测量缺失，不把NULL一律判坏或用默认值补齐。pending目录另报已完成子查询数、计数之和、去重并集及来源ID数；这些统计不证明全部业务语义已核实。
 

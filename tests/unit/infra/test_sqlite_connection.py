@@ -307,7 +307,7 @@ def test_schema_validation_failure_rolls_back_initial_records(tmp_path):
         {"mmap_bytes": -1},
         {"durability": "invalid"},
         {"journal_mode": "off"},
-        {"temp_storage": "invalid"},
+        {"temp_mode": "invalid"},
     ),
 )
 def test_invalid_durability_and_cache_options_are_rejected(options):
@@ -318,7 +318,7 @@ def test_invalid_durability_and_cache_options_are_rejected(options):
 def test_cache_configuration_and_durability_are_applied_before_returning(tmp_path):
     with SqliteSession(
         tmp_path / "index.sqlite3",
-        SqliteConnectionOptions(cache_kib=8192, mmap_bytes=0, temp_storage="FILE"),
+        SqliteConnectionOptions(cache_kib=8192, mmap_bytes=0, temp_mode="FILE"),
     ) as connection:
         assert connection.run("PRAGMA synchronous").require_one()[0] == 2
         assert connection.run("PRAGMA cache_size").require_one()[0] == -8192

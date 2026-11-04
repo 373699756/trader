@@ -13,7 +13,7 @@ from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFIL
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 Profile = Literal[
-    "storage",
+    "disk",
     "local",
     "web",
     "history",
@@ -100,7 +100,7 @@ class DiagnosticOptions:
     company_collection_database: Path | None = None
     company_replay_directory: Path | None = None
     company_query_audit: bool = False
-    company_storage_audit: bool = False
+    company_database_audit: bool = False
     company_pagination_audit: bool = False
     company_pipeline_audit: bool = False
     company_ocr_audit: bool = False
@@ -130,7 +130,7 @@ class DiagnosticOptions:
     baseline_checkout: Path | None = None
     training_signal_date: date | None = None
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
-    storage_paths: tuple[Path, ...] = ()
+    disk_paths: tuple[Path, ...] = ()
     wide_sample_source: Path | None = None
     v5_sample_root: Path | None = None
     v5_candidate_config: Path | None = None

@@ -6,7 +6,7 @@ import re
 
 from trader.infra.sqlite_connection import SqliteSchema
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
-from trader.training.infra.sample_sequences import SEQUENCE_STORAGE_CONTRACT, SampleSequenceLayout
+from trader.training.infra.sample_sequences import SEQUENCE_FORMAT, SampleSequenceLayout
 
 SAMPLE_SCHEMA_VERSION = 2
 SAMPLE_TARGET_COLUMNS = (
@@ -37,7 +37,7 @@ def SampleFeatureHash(names: tuple[str, ...], layout: SampleSequenceLayout | Non
         raise ValueError("training_sample_feature_names_invalid")
     payload = (
         SAMPLE_SCHEMA_VERSION, names,
-        (SEQUENCE_STORAGE_CONTRACT, layout.auxiliary, layout.steps, layout.channels) if layout else None,
+        (SEQUENCE_FORMAT, layout.auxiliary, layout.steps, layout.channels) if layout else None,
     )
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).digest()
 
@@ -74,8 +74,8 @@ def TrainingSampleSchema(names: tuple[str, ...], layout: SampleSequenceLayout | 
     return SqliteSchema(SAMPLE_SCHEMA_VERSION, statements)
 
 
-def SampleStorageId(names: tuple[str, ...], layout: SampleSequenceLayout | None) -> str:
+def SampleFormatId(names: tuple[str, ...], layout: SampleSequenceLayout | None) -> str:
     return f"named_samples:{SAMPLE_SCHEMA_VERSION}:" + SampleFeatureHash(names, layout).hex()
 
 
-__all__ = ["SAMPLE_TARGET_COLUMNS", "TrainingFeatureNames", "SampleFeatureHash", "SampleStorageId", "TrainingSampleSchema"]
+__all__ = ["SAMPLE_TARGET_COLUMNS", "TrainingFeatureNames", "SampleFeatureHash", "SampleFormatId", "TrainingSampleSchema"]

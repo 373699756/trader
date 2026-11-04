@@ -315,7 +315,7 @@ company优先测：无用途正文比例、重复解析/重试、OCR页成本、
 
 ## 9. 下载配置字段说明计划
 
-配置来源：`config/download.json`。每个叶子字段按 b 第7章格式逐个列出，至少包括：目标日期/窗口、来源与重试/限速、worker、队列、读写批次、目录分页、PDF总时限与I/O时限、文本/OCR页预算及进程限制、文件容量、冷却、失败保留/查询、检查和发布。公共介质选择来自 `config/runtime.json`，通用SQLite参数来自 `config/storage.json`，说明见b，不在本篇再定义默认值。
+配置来源：`config/download.json`。每个叶子字段按 b 第7章格式逐个列出，至少包括：目标日期/窗口、来源与重试/限速、worker、队列、读写批次、目录分页、PDF总时限与I/O时限、文本/OCR页预算及进程限制、文件容量、冷却、失败保留/查询、检查和发布。公共介质选择来自 `config/runtime.json`，通用SQLite参数来自 `config/sqlite.json`，说明见b，不在本篇再定义默认值。
 
 参数调整必须有真实消费者和实测依据；凭据只写引用。字段覆盖清单及未使用/重复配置一并交付，不能只说明顶层模块名。
 
@@ -339,23 +339,23 @@ company优先测：无用途正文比例、重复解析/重试、OCR页成本、
 | `baostock_qfq_shadow.py`：历史raw/qfq可复用性 | `baostock-qfq-shadow`；history根；251/61日覆盖及shadow报告 | 本地只读；统一入口、同名测试 | 保留history/coverage中有实际用途的口径比较；shadow不是正式生产或收益证据，不因名称含旧词删除有效研究 |
 | `history_source_compare.py`：同输入供应商流程对照 | `history-source-compare`；发布历史、代码、窗口、超时；各来源时间与一致性 | 读固定发布、联网、写临时隔离库；统一入口 | 保留history/source-compare，必须显式联网/性能选择，不能并入默认只读覆盖 |
 | `history_industry_preparation.py`：冷/热行业缓存 | `history-industry`；history根与来源超时；查询日、缓存命中、登录次数和结果一致性 | 读取发布、联网、写临时行业库；统一入口 | 保留history/industry；行业准备与价格网络分别计量 |
-| `history_write_benchmark.py`：首建/增量写入 | `history-write`；规模、交易日数、介质、批次和可选baseline checkout；耗时/写入比较 | 合成供应商、隔离库；统一入口；`storage_layout_comparison.py`还引用其fixture供应商 | 保留history/persistence-benchmark；该fixture消费者必须同步处理，合成结果不签真实全市场性能 |
+| `history_write_benchmark.py`：首建/增量写入 | `history-write`；规模、交易日数、介质、批次和可选baseline checkout；耗时/写入比较 | 合成供应商、隔离库；统一入口；`database_layout_comparison.py`还引用其fixture供应商 | 保留history/persistence-benchmark；该fixture消费者必须同步处理，合成结果不签真实全市场性能 |
 | `history_sqlite_performance.py`：布局、查询、恢复样本和预载 | `history-sqlite`、`history-space`及预载参数；history根、采样、轮数和runtime配置 | `--inventory-only`为本地清点；其他模式有读取/性能成本，写入样本须核对隔离位置；统一入口、历史训练输入测试及诊断测试有导入 | 按职责拆分：B拥有历史存储读取，A拥有荐股预载，公共测量交A；两个profile调用同一实现不是两个独立能力 |
 | `qfq_sqlite.py`：配对窗口、完整性及缺口；含失败留痕视图 | `qfq-sqlite`、`download-failures`；短窗库与失败查询配置；两档身份、问题和脱敏失败报告 | 本地只读，内容审计会遍历窗口；统一入口、`test_qfq_sqlite.py`、入口测试及诊断合同 | 保留market/publication与market/failures，分清元数据快查和完整内容审计；不复制业务窗口规则 |
 | `tencent_download.py`：真实短窗下载与历史尾窗 | `tencent-download`、`tencent-history-window`；代码、规模/窗口和来源超时；下载/尾窗报告 | 联网、隔离短窗输出；统一入口、腾讯历史覆盖测试 | 保留market/source及history/tail有差异的工作量；相同输入可共享采集，但不能假定两项结果相同 |
 | `price_repair_audit.py`：真实缺口隔离恢复 | `price-repair-audit`；history根、可选仓库外work-root；缺口导出、修复和父发布不变验证 | 原历史只读，隔离库写入，修复会调用供应商；统一入口 | 保留history/recovery，不能伪装普通只读检查；与旧292证据关联而不改活动库 |
 | `download_performance.py`：公司写入/发布/预读及历史基础量 | `download-performance`；可选baseline checkout；离线测量与比较JSON | 合成总体和正文、临时库，含自身子进程调用；统一入口 | 保留有明确用途的company/persistence-benchmark；荐股预载部分交A。自身`-m`调用也是必切消费者，不能只改外层入口 |
 
-`database_baseline.py`、`database_measurement.py`、`database_workspace.py`及`storage_layout_comparison.py`属于跨业务测量/隔离设施，由A协调公共部分，B只交下载工作量与消费者。`history_parquet.py`是训练样本候选的内部投影，实际消费者含 `training_samples.py` 和其测试，交C核对，不按history文件名前缀抢改。`baostock_concurrency.py`的供应商并发属于公共来源/资源边界，和A确认归属后再切；不顺带执行。
+`database_baseline.py`、`database_measurement.py`、`database_workspace.py`及`database_layout_comparison.py`属于跨业务测量/隔离设施，由A协调公共部分，B只交下载工作量与消费者。`history_parquet.py`是训练样本候选的内部投影，实际消费者含 `training_samples.py` 和其测试，交C核对，不按history文件名前缀抢改。`baostock_concurrency.py`的供应商并发属于公共来源/资源边界，和A确认归属后再切；不顺带执行。
 
 ### 11.2 company检查及不同副作用
 
 | 现有文件与功能 | 现行选择、输入与输出 | 联网/写入边界和消费者 | 去留和目标职责 |
 | --- | --- | --- | --- |
 | `company_resume.py`：模式分派与隔离恢复 | `company-resume`；采集/正式库、预算及可选仓库外目录；恢复或各审计JSON | 无审计开关的默认模式会联网并写隔离副本，不是纯只读；统一入口子进程、`test_company_resume_diagnostic.py` | 检查实现下沉company各功能；公开模式分派归A统一入口，切换后删除旧模块CLI和重复参数分派 |
-| `company_query_audit.py:AuditCompanyStorage`：库存和覆盖 | `--company-storage-audit`；采集/正式库、时间、预算；工作量/重试/正式发布报告 | 无目录时本地只读；附外部目录会比较隔离压实结果。被resume调用，测试还由company流水线和发布审计文件导入 | 保留company/storage；只读库存与隔离写入分成明确选择，不能让一个storage名称隐藏两种副作用 |
-| `company_publication_audit.py`、`company_field_audit.py`：事实、凭证与来源一致性 | 经storage调用；两库固定读视图、预算；事实状态、回执、字段类型/非有限值、来源对照和findings | 本地只读，但会遍历正式表及关联来源；`company_query_audit.py`调用，统一入口直接导入字段报告投影，专项测试直接导入 | 保留company/publication与company/fields，复用同一读视图/字段实现；入口投影导入也须切换，不新增另一份字段审计 |
-| `company_query_audit.py:AuditCompanyQueries`：目录计数与过滤 | `--company-query-audit`；本地已保存查询、预算；真实巨潮查询对照 | 原库只读、联网；resume及专项测试调用 | 保留company/directory-query，不能与无网络storage合为一个隐式检查 |
+| `company_query_audit.py:AuditCompanyDatabase`：库存和覆盖 | `--company-database-audit`；采集/正式库、时间、预算；工作量/重试/正式发布报告 | 无目录时本地只读；附外部目录会比较隔离压实结果。被resume调用，测试还由company流水线和发布审计文件导入 | 保留company/disk；只读库存与隔离写入分成明确选择，不能让一个disk名称隐藏两种副作用 |
+| `company_publication_audit.py`、`company_field_audit.py`：事实、凭证与来源一致性 | 经disk调用；两库固定读视图、预算；事实状态、回执、字段类型/非有限值、来源对照和findings | 本地只读，但会遍历正式表及关联来源；`company_query_audit.py`调用，统一入口直接导入字段报告投影，专项测试直接导入 | 保留company/publication与company/fields，复用同一读视图/字段实现；入口投影导入也须切换，不新增另一份字段审计 |
+| `company_query_audit.py:AuditCompanyQueries`：目录计数与过滤 | `--company-query-audit`；本地已保存查询、预算；真实巨潮查询对照 | 原库只读、联网；resume及专项测试调用 | 保留company/directory-query，不能与无网络disk合为一个隐式检查 |
 | `company_pagination_audit.py`：不同页大小的完整集合 | `--company-pagination-audit`；保存分区、预算；完整集合对照 | 联网，原库不写；resume及专项测试调用 | 保留company/pagination；与查询筛选审计分别保留结论，待相同输入成本证据后考虑共享来源读取 |
 | `company_document_download_audit.py`：失败PDF请求对照 | `--company-document-audit`；持久失败样本及预算；至多2篇下载对照、加密输入另列 | 联网、有临时文件/外部工具检查，不写活动库；resume及同名测试 | 保留company/document-download，不等于文本/OCR成功，也不代表最新财务资料已可用 |
 | `company_pipeline_audit.py`：同PDF串行/并行 | `--company-pipeline-audit`；采集样本、外部目录、预算；文档/载荷/事实签名和耗时 | 真实网络与PDF处理，写外部隔离索引/文件；resume及专项测试 | 保留company/pipeline-benchmark；最多12篇样本是局部候选对照，不能替本轮完整任务基线 |

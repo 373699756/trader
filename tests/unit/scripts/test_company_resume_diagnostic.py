@@ -13,8 +13,8 @@ import pytest
 from scripts.diagnose_runtime import DiagnosticResult, _parser, _validate, build_commands, build_report
 from scripts.runtime_diagnostics import company_pagination_audit, company_pipeline_audit
 from scripts.runtime_diagnostics import company_ocr_audit
-from scripts.runtime_diagnostics.company_query_audit import AuditCompanyStorage
-from scripts.runtime_diagnostics.company_resume import Main, _compact_storage, _copy, _saved_pages
+from scripts.runtime_diagnostics.company_query_audit import AuditCompanyDatabase
+from scripts.runtime_diagnostics.company_resume import Main, _compact_database, _copy, _saved_pages
 from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import CompanyDocumentFailure, DisclosurePage, DisclosureQuery
@@ -201,7 +201,7 @@ def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_fai
         assert run["document_failures"] == [{"failure": "disclosure_document_ocr_low_quality", "documents": 1}]
 
 
-def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_unchanged(tmp_path, monkeypatch, capsys):
+def test_disk_audit_needs_no_replay_directory_or_network_and_keeps_database_unchanged(tmp_path, monkeypatch, capsys):
     index = fixtures._index(tmp_path)
     partition = index.partitions(("sse",), fixtures.NOW)[0]
     item = fixtures._disclosure(title="收到立案告知书")
@@ -211,27 +211,27 @@ def test_storage_audit_needs_no_replay_directory_or_network_and_keeps_database_u
     )
     index.publish(("600001",), fixtures.NOW)
     before = index.path.read_bytes()
-    report = AuditCompanyStorage(index.path, now=fixtures.NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
-    storage = report["summary"]["local_storage"]
-    assert storage["announcement_records"] == storage["pending_documents"] == storage["deterministic_failures"] == 1
-    assert storage["stored_retry_cooling"] == storage["stored_retry_ready"] == 0
-    assert storage["extracted_bodies"] == 0 and not storage["pdf_archived"]
-    assert storage["free_bytes"] >= 0
-    assert any(row["name"] == "disclosures" and row["bytes"] > 0 for row in storage["table_bytes"])
-    assert storage["document_failures"] == [{"failure": "disclosure_document_no_text", "documents": 1}]
-    recent = storage["recent_document_failures"]
+    report = AuditCompanyDatabase(index.path, now=fixtures.NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
+    database = report["summary"]["database"]
+    assert database["announcement_records"] == database["pending_documents"] == database["deterministic_failures"] == 1
+    assert database["recorded_retry_cooling"] == database["recorded_retry_ready"] == 0
+    assert database["extracted_bodies"] == 0 and not database["pdf_archived"]
+    assert database["free_bytes"] >= 0
+    assert any(row["name"] == "disclosures" and row["bytes"] > 0 for row in database["table_bytes"])
+    assert database["document_failures"] == [{"failure": "disclosure_document_no_text", "documents": 1}]
+    recent = database["recent_document_failures"]
     assert len(recent) == 1 and recent[0]["disclosure_id"] > 0
     assert recent[0]["failure"] == "disclosure_document_no_text"
     assert recent[0]["attempted_at"] == fixtures.NOW.isoformat()
-    options, _ = _validate(_parser().parse_args(["--profile", "company-resume", "--company-storage-audit"]))
+    options, _ = _validate(_parser().parse_args(["--profile", "company-resume", "--company-database-audit"]))
     command = build_commands(options)[0]
-    assert "--storage-only" in command.argv and "--directory" not in command.argv
+    assert "--database-only" in command.argv and "--directory" not in command.argv
     monkeypatch.setattr(
-        sys, "argv", ["company-resume", "--database", str(index.path), "--storage-only", "--budget-seconds", "30"]
+        sys, "argv", ["company-resume", "--database", str(index.path), "--database-only", "--budget-seconds", "30"]
     )
     assert Main() == 0
     output = json.loads(capsys.readouterr().out)
-    assert output["summary"]["local_storage"]["read_only"] and index.path.read_bytes() == before
+    assert output["summary"]["database"]["read_only"] and index.path.read_bytes() == before
 
 
 def test_backup_preserves_source_and_is_independently_writable(tmp_path):
@@ -262,7 +262,7 @@ def test_company_compaction_retains_failed_range_members_facts_bodies_and_retry_
             (complete.market, str(complete.start), str(complete.end), "done", "600001"),
         )
     before = index.path.read_bytes()
-    report = _compact_storage(index.path, tmp_path / "isolated", budget_seconds=10, sqlite_policy=SqlitePolicyFixture())
+    report = _compact_database(index.path, tmp_path / "isolated", budget_seconds=10, sqlite_policy=SqlitePolicyFixture())
     assert report["removed_completed_members"] == 1 and report["retained_data_equal"]
     with SqliteSession(tmp_path / "isolated/company_compacted.sqlite3") as connection:
         assert connection.run("SELECT source_key FROM partition_rows").require_one()[0] == "pending"
@@ -347,7 +347,7 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
                 "saved_pages_replayed": 0,
                 "private_database": "must-not-project",
                 "runs": [{"pages": 100, "document_attempts": 32, "raw_document": "must-not-project"}],
-                "local_storage": {
+                "database": {
                     "read_only": True,
                     "extracted_bodies": 2,
                     "retained_bodies": 1,
@@ -381,17 +381,17 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
     assert summary["runs"][0]["pages"] == 100 and summary["saved_pages_replayed"] == 0
     assert summary["query_audit"]["pages"][0]["same_issuer"] == 2
     assert summary["query_audit"]["pages"][0]["code_prefixes"] == ["302"]
-    assert summary["local_storage"]["extracted_bodies"] == 2
-    assert summary["local_storage"]["retained_bodies"] == 1
-    assert "body_characters" not in summary["local_storage"]
-    assert "published_stocks" not in summary["local_storage"]
-    assert summary["local_storage"]["formal"] == {
+    assert summary["database"]["extracted_bodies"] == 2
+    assert summary["database"]["retained_bodies"] == 1
+    assert "body_characters" not in summary["database"]
+    assert "published_stocks" not in summary["database"]
+    assert summary["database"]["formal"] == {
         "available": True,
         "database_bytes": 4096,
         "stocks": 2,
         "table_bytes": [{"name": "company_facts", "bytes": 4096}],
     }
-    assert summary["local_storage"]["document_failures"] == [{"failure": "no_text", "documents": 1}]
+    assert summary["database"]["document_failures"] == [{"failure": "no_text", "documents": 1}]
 
 
 def test_query_capture_distinguishes_an_issuer_alias_from_an_unrelated_response():

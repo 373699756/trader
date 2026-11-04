@@ -97,9 +97,9 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
         if args.command != "validate-config":
-            from trader.bootstrap import PrepareRuntimeStorage
+            from trader.bootstrap import PrepareRuntimeDisk
 
-            runtime = PrepareRuntimeStorage(runtime, choose=args.command in ("sync", "train"))
+            runtime = PrepareRuntimeDisk(runtime, choose=args.command in ("sync", "train"))
     except (OSError, RuntimeError, ValueError) as exc:
         print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
         return 2
@@ -280,18 +280,18 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "qfq_source_timeout_seconds": qfq.source_timeout_seconds,
         "qfq_source_retries": qfq.source_retries,
         "download_failure_diagnostics": {"retention_limit": failure.retention_limit, "query_limit": failure.query_limit},
-        "storage_policy": {
+        "sqlite_policy": {
             "hdd": {
-                "connection_timeout_seconds": runtime.storage_policy.hdd.connection_timeout_seconds,
-                "read_window_rows": runtime.storage_policy.hdd.read_window_rows,
-                "transaction_batch_rows": runtime.storage_policy.hdd.transaction_batch_rows,
-                "checkpoint_mode": runtime.storage_policy.hdd.checkpoint_mode,
+                "connection_timeout_seconds": runtime.sqlite_policy.hdd.connection_timeout_seconds,
+                "read_window_rows": runtime.sqlite_policy.hdd.read_window_rows,
+                "transaction_batch_rows": runtime.sqlite_policy.hdd.transaction_batch_rows,
+                "checkpoint_mode": runtime.sqlite_policy.hdd.checkpoint_mode,
             },
             "ssd": {
-                "connection_timeout_seconds": runtime.storage_policy.ssd.connection_timeout_seconds,
-                "read_window_rows": runtime.storage_policy.ssd.read_window_rows,
-                "transaction_batch_rows": runtime.storage_policy.ssd.transaction_batch_rows,
-                "checkpoint_mode": runtime.storage_policy.ssd.checkpoint_mode,
+                "connection_timeout_seconds": runtime.sqlite_policy.ssd.connection_timeout_seconds,
+                "read_window_rows": runtime.sqlite_policy.ssd.read_window_rows,
+                "transaction_batch_rows": runtime.sqlite_policy.ssd.transaction_batch_rows,
+                "checkpoint_mode": runtime.sqlite_policy.ssd.checkpoint_mode,
             },
         },
         "training_fit_dates": fit_dates,

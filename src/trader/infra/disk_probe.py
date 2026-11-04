@@ -1,4 +1,4 @@
-"""One storage detector, with device caching and a global manual medium."""
+"""One disk detector, with device caching and a global manual medium."""
 
 from __future__ import annotations
 
@@ -7,23 +7,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-from trader.infra.storage_platform import ProbeMacStorage, ProbeWindowsStorage
-from trader.infra.storage_types import StorageKind, StorageMedium, StorageProfile
+from trader.infra.disk_platform import ProbeMacDisk, ProbeWindowsDisk
+from trader.infra.disk_types import DiskKind, DiskMedium, DiskProfile
 
 _SYSFS_BLOCK_ROOT = Path("/sys/dev/block")
 _VIRTUAL_DISK_IDENTIFIERS = ("VMWARE", "QEMU", "VBOX", "VIRTUAL", "XEN")
 
 
-class StorageProbe:
+class DiskProbe:
     """Read metadata only; never create paths, benchmark disks or change mount settings."""
 
-    def __init__(self, medium: StorageMedium | None = None) -> None:
+    def __init__(self, medium: DiskMedium | None = None) -> None:
         self._medium = medium
-        self._devices: dict[int, StorageProfile] = {}
+        self._devices: dict[int, DiskProfile] = {}
 
-    def inspect(self, path: Path) -> StorageProfile:
+    def inspect(self, path: Path) -> DiskProfile:
         if self._medium is not None:
-            return StorageProfile(self._medium, "configured", "configuration", "manual_medium")
+            return DiskProfile(self._medium, "configured", "configuration", "manual_medium")
         try:
             target = path.resolve()
             existing = target
@@ -36,39 +36,39 @@ class StorageProbe:
                         raise
                     existing = existing.parent
         except (OSError, RuntimeError, ValueError):
-            return StorageProfile("unknown", "unresolved", "automatic", "path_unavailable")
+            return DiskProfile("unknown", "unresolved", "automatic", "path_unavailable")
         if device not in self._devices:
             self._devices[device] = _probe_device(existing, device)
         return self._devices[device]
 
 
-def _probe_device(path: Path, device: int) -> StorageProfile:
+def _probe_device(path: Path, device: int) -> DiskProfile:
     identity = f"{sys.platform}:{device}"
     try:
         if sys.platform.startswith("linux"):
             node = (_SYSFS_BLOCK_ROOT / f"{os.major(device)}:{os.minor(device)}").resolve(strict=True)
             kind, devices = _linux_kind(node, frozenset())
-            return StorageProfile(kind, "+".join(sorted(devices)) or identity, "automatic", _reason(kind))
+            return DiskProfile(kind, "+".join(sorted(devices)) or identity, "automatic", _reason(kind))
         if sys.platform == "win32":
-            kind = ProbeWindowsStorage(path, timeout=3.0)
+            kind = ProbeWindowsDisk(path, timeout=3.0)
         elif sys.platform == "darwin":
-            kind = ProbeMacStorage(path, timeout=3.0)
+            kind = ProbeMacDisk(path, timeout=3.0)
         else:
-            return StorageProfile("unknown", identity, "automatic", "platform_unsupported")
-        return StorageProfile(kind, identity, "automatic", _reason(kind))
+            return DiskProfile("unknown", identity, "automatic", "platform_unsupported")
+        return DiskProfile(kind, identity, "automatic", _reason(kind))
     except subprocess.TimeoutExpired:
-        return StorageProfile("unknown", identity, "automatic", "probe_timeout")
+        return DiskProfile("unknown", identity, "automatic", "probe_timeout")
     except PermissionError:
-        return StorageProfile("unknown", identity, "automatic", "permission_denied")
+        return DiskProfile("unknown", identity, "automatic", "permission_denied")
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError):
-        return StorageProfile("unknown", identity, "automatic", "device_metadata_unavailable")
+        return DiskProfile("unknown", identity, "automatic", "device_metadata_unavailable")
 
 
-def _reason(kind: StorageKind) -> str:
+def _reason(kind: DiskKind) -> str:
     return "rotational_metadata" if kind != "unknown" else "device_metadata_unavailable"
 
 
-def _linux_kind(node: Path, visited: frozenset[Path]) -> tuple[StorageKind, frozenset[str]]:
+def _linux_kind(node: Path, visited: frozenset[Path]) -> tuple[DiskKind, frozenset[str]]:
     node = node.resolve(strict=True)
     if node in visited or len(visited) >= 16:
         return "unknown", frozenset()
@@ -84,7 +84,7 @@ def _linux_kind(node: Path, visited: frozenset[Path]) -> tuple[StorageKind, froz
         results = tuple(_linux_kind(child, visited) for child in children)
         kinds = tuple(item[0] for item in results)
         devices = frozenset(device for _, values in results for device in values)
-        kind: StorageKind = "unknown" if "unknown" in kinds else "hdd" if "hdd" in kinds else "ssd"
+        kind: DiskKind = "unknown" if "unknown" in kinds else "hdd" if "hdd" in kinds else "ssd"
         return kind, devices
     # Hypervisors may expose a virtual SCSI disk as a physical sysfs device.
     # Its rotational flag describes the guest queue, not the host medium.

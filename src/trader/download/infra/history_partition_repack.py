@@ -660,7 +660,7 @@ def _read_connection(path: Path, *, copy_destination: bool = False, sqlite_polic
             query_only=not copy_destination,
             cache_kib=8192,
             mmap_bytes=0,
-            temp_storage="FILE",
+            temp_mode="FILE",
         ), sqlite_policy=sqlite_policy,
     )
 

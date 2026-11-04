@@ -4,6 +4,16 @@
 
 ## 1. 当前批次
 
+### 阶段326：codexA清理全仓泛化持久化命名
+
+- owner/状态：codexA / in_progress（用户要求先提交当前状态，命名切换已写，验证尚未全部通过；后续继续沿326，不另建阶段）；开工基线`23624ca0`，本次提交接在B已交付的`ed658d4d`之后，`Afuture`跟踪`origin/Afuture`。
+- 范围：项目自定义模块、Python符号、配置文件/键、检测参数、调用者、测试及当前新文档；硬盘识别用disk，SQLite配置用sqlite，样本格式用format，公司资料检测用database。全部消费者同批改名，旧模块和别名删除；职责和owner不变。argparse、Python AST、SQLite、macOS及HTTP固定协议字面量保留，旧实施证据不改写。
+- 所有权与消费者：公共硬盘识别/选择、SQLite策略解析、下载路由和进度、训练样本格式、统一检测及全部导入/mock/公开投影同步切换；`test_storage_choice.py`等旧路径删除。同步修改唯一编码规范与既有命名检查器，覆盖大小写、下划线、类名和文件名。
+- 实施边界：不调HDD/SSD参数、评分公式、特征或标签，不执行下载/训练或改写活动库。配置保持用户现有SSD选择；模型和用户其它配置修改不混入提交。自定义配置和检测旧名不留兼容分支；样本清单字段切换可能使旧可丢弃缓存待重建，既有数据本批不删除。
+- 实际改动：13个旧文件路径改为disk/sqlite/database名称，包含`test_disk_choice.py`；全部活动导入、符号、配置和诊断消费者同步改名。配置使用`disk_medium`及`config/sqlite.json.sqlite_policy`，样本清单使用`sample_format`；命名规范和既有检查器补上storage/复数，回归覆盖类名、下划线及文件名。当前工作区SSD值保留，提交只改键名，不带入用户选择变化；B的性能改动已独立进入父提交，A对worker仅有5处命名替换。
+- 验证：配置只读加载通过，当前SSD及HDD/SSD读窗512保持；受影响Python文件Ruff E9/F通过。定向回归249 passed、4 failed（30.92秒），命名检查和样本缓存用例通过；失败为`test_disk_probe`提示仍输出disk而非disk_medium、`test_disk_diagnostic`的--disk-path与入口实际--database-path不一致，以及`test_current_product_contract`两处仍读取已重命名的旧文档。全仓mypy检查669个源码模块，`recommendation/application/pipeline/quality_check/input_quality_service.py:409`报告`HardFilterPolicy | None`参数不匹配；本批未改该文件，尚未基线对照确认归属。未运行格式脚本、真实下载/训练、活动库维护或性能测量；用户要求先提交后不再修实现。
+- 未完成项：先统一提示和诊断参数（另有--database-kind与--disk-kind的调用链需核对），再修上述两处文档读取路径，复跑4项失败及全部受影响入口/脚本消费者；补定向mypy、完整diff及旧名残留复核。不能把当前249项通过写成全量通过。命名任务和本阶段保持in_progress；用户模型及其它已有修改不纳入，后续沿326补齐交付。
+
 ### 阶段325：codexB优先定位SSD四档训练样本构建热点
 
 - owner/状态：codexB / in_progress（局部热点修复与回归完成，用户要求先提交并记录状态；真实四档整作业对照尚未完成，继续沿325，不另建阶段）。用户报告HDD四档约90分钟、SSD四档约120分钟；缺同代码/资料/硬件的两机对照，未将30分钟差值归因于SSD。
@@ -438,13 +448,13 @@ V1读取回退、V5最大行业双头及SSD缺证分别闭合；Parquet未达门
 #### 11. 把确实可调且仍硬编码的参数补进现有配置
 
 - 代码证据：`published_company_research.py:110` 的30秒/3次预载尝试；`intraday_loader.py:91` 的最多5个worker；训练分发256行/队列2、`memory_admission.py:35` 的3GiB上限和1.5GiB预留；序列缓存32MiB、矩阵映射256MiB等仍写在实现中。
-- 计划：逐项分清可调运行参数、必要安全/业务上限和算法常数。可调项进入现有 `scheduler.json`、`download.json`、`training.json`、`cache.json` 或 `storage.json`，只定义一次，启动解析后显式注入。先按现值迁出；是否改值另看实测，120秒和168次上限不放宽。
+- 计划：逐项分清可调运行参数、必要安全/业务上限和算法常数。可调项进入现有 `scheduler.json`、`download.json`、`training.json`、`cache.json` 或 `sqlite.json`，只定义一次，启动解析后显式注入。先按现值迁出；是否改值另看实测，120秒和168次上限不放宽。
 - 验收：合法改值到达全部消费者；默认行为一致，非法组合明确拒绝；配置文档写来源、单位、范围、生效方式和身份影响，不因日志/端口变化重训。
 - 负责人和原计划：A整合公共配置，B/C提供业务消费者；P06/P12/P17/P54。
 
 #### 12. HDD/SSD先按业务测，不为两个配置名盲目改库
 
-- 代码证据：`config/storage.json` 的hdd/ssd四项当前相同；`config/download.json` 的history首建批次已有差异，`history_write_tuning.py` 已按介质选择。配置策略不等于物理设备证据，用户当前runtime选择不在本批改动范围。
+- 代码证据：`config/sqlite.json` 的hdd/ssd四项当前相同；`config/download.json` 的history首建批次已有差异，`history_write_tuning.py` 已按介质选择。配置策略不等于物理设备证据，用户当前runtime选择不在本批改动范围。
 - 计划：先用实际热点比较连接复用、按库归组、事务/读窗、checkpoint和索引/布局；HDD及SSD分别建立基线，连首建/增量/复用/收尾/恢复一起计。结构变化只在隔离副本、候选达门之后实施，并一次切换全部消费者。
 - 验收：完整业务总时间、实际I/O、锁等待、事务、RSS、写放大与恢复；不关闭持久性或少做必要检查换速度。未见瓶颈的history/market继续用，不重新清空现有有效库。
 - 负责人和原计划：A公共策略，B/C各业务；P08–P11/P44/P58/P64/P65。

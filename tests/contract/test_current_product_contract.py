@@ -42,7 +42,7 @@ def test_strategy_contract_distinguishes_current_profile_authority_from_return_v
 
 def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
+    operations = (ROOT / "docs/b_系统设计.md").read_text(encoding="utf-8")
 
     for content in (readme, operations):
         assert "/api/v2/" not in content
@@ -50,9 +50,9 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
         assert "scripts/diagnose_runtime.py" in content
     assert "GET /api/status" in operations
     assert "chokepoint/future_growth/low_price_potential" in operations
-    storage = (ROOT / "docs/4_下载训练.md").read_text(encoding="utf-8")
-    assert "runtime_dir/deepseek/state.json" in storage
-    assert "deepseek_budget.sqlite3" not in storage
+    download_design = (ROOT / "docs/d_下载设计.md").read_text(encoding="utf-8")
+    assert "runtime_dir/deepseek/state.json" in download_design
+    assert "deepseek_budget.sqlite3" not in download_design
     for public_command in (
         "./run.sh sync",
         "./run.sh train",
@@ -60,7 +60,7 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
         "./run.sh sync company",
     ):
         assert public_command in readme
-        assert public_command in storage
+        assert public_command in download_design
     for retired_command in ("./run.sh validate-config", "./run.sh performance-check"):
         assert retired_command not in readme
         assert retired_command not in operations
@@ -69,10 +69,10 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
 
 
 def test_database_dictionary_covers_all_profiles_and_separates_research_schemas() -> None:
-    storage = (ROOT / "docs/4_下载训练.md").read_text(encoding="utf-8")
+    download_design = (ROOT / "docs/d_下载设计.md").read_text(encoding="utf-8")
 
     for number in range(1, 33):
-        assert f"| DB{number:02d} |" in storage
+        assert f"| DB{number:02d} |" in download_design
     for path in (
         "data/recommendation/v5/freeze.sqlite3",
         "data/recommendation/v5/publication_state.sqlite3",
@@ -81,5 +81,5 @@ def test_database_dictionary_covers_all_profiles_and_separates_research_schemas(
         "experiments/historical_screening/samples.sqlite3",
         "experiments/h1_point_in_time/samples.sqlite3",
     ):
-        assert path in storage
-    assert "不得共用研究根的`samples.sqlite3`" in storage
+        assert path in download_design
+    assert "不得共用研究根的`samples.sqlite3`" in download_design

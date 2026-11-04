@@ -31,7 +31,7 @@ from trader.training.infra.profile.v5.configuration import ParseTcnParameters, T
 from trader.training.infra.profile.v5.settings import TcnArchitecture, TcnFittingParameters
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
 from trader.training.infra.sample_sequences import SampleSequenceLayout
-from trader.training.infra.sample_schema import SampleStorageId
+from trader.training.infra.sample_schema import SampleFormatId
 
 
 def ProbeLiteKernels() -> dict[str, object]:
@@ -107,7 +107,7 @@ def _peak_rss_mib() -> float | None:
 
 def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlite_policy: SqliteIoPolicy) -> tuple[Path, Path]:
     manifest = AtomicReadJson(source / "complete.json")
-    if not isinstance(manifest, dict) or manifest.get("storage") != SampleStorageId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)):
+    if not isinstance(manifest, dict) or manifest.get("sample_format") != SampleFormatId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)):
         raise ValueError("V5 comparison requires a sealed compact sample cache")
     database = source / "samples.sqlite3"
     identity = database.stat()

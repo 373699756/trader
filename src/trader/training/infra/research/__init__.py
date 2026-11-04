@@ -1,1 +1,1 @@
-"""Adapters and immutable stores used only by explicit offline research commands."""
+"""Adapters and immutable records used only by explicit offline research commands."""
