@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Executor, Future, wait
 from contextlib import AbstractContextManager, closing, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from itertools import islice
 from pathlib import Path
@@ -15,6 +15,7 @@ from typing import Generic, TypeVar
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.training.application.resources import TrainingExecutionObserver, TrainingExecutionTiming
 
 ResultT = TypeVar("ResultT")
 
@@ -46,6 +47,7 @@ class SelectedTrainingRun(Generic[ResultT]):
     outcomes: tuple[SelectedTrainingOutcome[ResultT], ...]
     history_scan_passes: int
     history_rows_read: int
+    timing: TrainingExecutionTiming | None = field(default=None, kw_only=True)
 
 
 def RunSelectedTrainingTasks(
@@ -55,10 +57,17 @@ def RunSelectedTrainingTasks(
     cancelled: Callable[[], bool],
     *,
     on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None = None,
+    observer: TrainingExecutionObserver | None = None,
 ) -> SelectedTrainingRun[ResultT]:
     if not tasks or len({task.profile for task in tasks}) != len(tasks):
         raise ValueError("training_requires_unique_selected_profiles")
-    return _TrainingFanout(tasks, executor, cancelled, on_outcome).execute(read_rows)
+    return _TrainingFanout(
+        tasks,
+        executor,
+        cancelled,
+        on_outcome,
+        observer,
+    ).execute(read_rows)
 
 
 class _TrainingFanout(Generic[ResultT]):
@@ -68,21 +77,25 @@ class _TrainingFanout(Generic[ResultT]):
         executor: Executor,
         cancelled: Callable[[], bool],
         on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None,
+        observer: TrainingExecutionObserver | None,
     ) -> None:
         self.tasks = tasks
         self.executor = executor
         self.cancelled = cancelled
         self.on_outcome = on_outcome
+        self.observer = observer
         self.queues: tuple[Queue[tuple[HistoryTrainingRow, ...] | None], ...] = tuple(Queue(maxsize=2) for _ in tasks)
         self.stopped = Event()
         self.futures: list[Future[SelectedTrainingOutcome[ResultT]]] = []
 
-    def _receive(self, queue: Queue[tuple[HistoryTrainingRow, ...] | None]) -> Generator[HistoryTrainingRow, None, None]:
+    def _receive(self, index: int) -> Generator[HistoryTrainingRow, None, None]:
+        queue = self.queues[index]
         while True:
             if self.cancelled() or self.stopped.is_set():
                 raise InterruptedError("selected_training_cancelled")
             try:
-                batch = queue.get(timeout=0.1)
+                with self.observer.receive_queue(self.tasks[index].profile) if self.observer is not None else nullcontext():
+                    batch = queue.get(timeout=0.1)
             except Empty:
                 continue
             if batch is None:
@@ -92,10 +105,11 @@ class _TrainingFanout(Generic[ResultT]):
     def _run(self, index: int) -> SelectedTrainingOutcome[ResultT]:
         task = self.tasks[index]
         try:
-            if self.cancelled():
-                raise InterruptedError("selected_training_cancelled")
-            with closing(self._receive(self.queues[index])) as rows:
-                outcome = SelectedTrainingOutcome(task.profile, task.execute(rows))
+            with self.observer.task(task.profile) if self.observer is not None else nullcontext():
+                if self.cancelled():
+                    raise InterruptedError("selected_training_cancelled")
+                with closing(self._receive(index)) as rows:
+                    outcome = SelectedTrainingOutcome(task.profile, task.execute(rows))
         except InterruptedError:
             outcome = SelectedTrainingOutcome(task.profile, None, "cancelled", True)
         except (OSError, RuntimeError, ValueError, ImportError) as exc:
@@ -106,6 +120,10 @@ class _TrainingFanout(Generic[ResultT]):
         return outcome
 
     def _send(self, index: int, batch: tuple[HistoryTrainingRow, ...] | None) -> None:
+        with self.observer.send_queue(self.tasks[index].profile) if self.observer is not None else nullcontext():
+            self._put(index, batch)
+
+    def _put(self, index: int, batch: tuple[HistoryTrainingRow, ...] | None) -> None:
         while not self.futures[index].done():
             if self.cancelled():
                 raise InterruptedError("selected_training_cancelled")
@@ -131,7 +149,8 @@ class _TrainingFanout(Generic[ResultT]):
                 for task, future in zip(self.tasks, self.futures, strict=True)
             ):
                 break
-            batch = list(islice(rows, 256))
+            with self.observer.read_source() if self.observer is not None else nullcontext():
+                batch = list(islice(rows, 256))
             scanned += len(batch)
             if not batch:
                 break

@@ -21,7 +21,12 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
     from trader.recommendation.infra.scoring import profile_factory
 
     profile = {"schema_version": "profile_training_result", "profile": reported_profile, "status": "engineering_ready", "message": "训练完成"}
-    execution = {"schema_version": "selected_training_result", "status": "completed", "history_rows_read": 0}
+    execution = {
+        "schema_version": "selected_training_result",
+        "status": "completed",
+        "history_rows_read": 0,
+        "timing": {"source_read_seconds": 0.0, "profiles": [{"profile": reported_profile, "queue_send_seconds": 1.25}]},
+    }
 
     def train(*args, **kwargs):
         print(json.dumps(profile, ensure_ascii=False, indent=2))

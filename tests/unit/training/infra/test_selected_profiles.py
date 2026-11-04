@@ -163,12 +163,18 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
     assert tcn_threads == [1]
     assert torch.get_num_threads() == original_threads
     assert torch.are_deterministic_algorithms_enabled() == original_deterministic
+    assert result.timing is not None
+    assert all(item.cpu.acquired_count == item.memory.acquired_count == 1 for item in result.timing.profiles)
+    assert all(item.cpu.inflight_count == item.memory.inflight_count == 0 for item in result.timing.profiles)
+    assert all(item.finished_after_seconds >= item.started_after_seconds >= 0 for item in result.timing.profiles)
     second = request
     with ThreadPoolExecutor(max_workers=4) as executor:
         reused = TrainSelectedProfiles(second, executor, sqlite_policy=SqlitePolicyFixture())
     assert len(scans) == 1
     assert reused.history_scan_passes == reused.history_rows_read == 0
     assert all(item.result.reused for item in reused.outcomes)
+    assert reused.timing is not None and reused.timing.source_read_seconds == 0
+    assert all(item.cpu.acquired_count == item.memory.acquired_count == 0 for item in reused.timing.profiles)
 
     def missing_dependency():
         raise ImportError("fixture missing optional torch")

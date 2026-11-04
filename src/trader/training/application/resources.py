@@ -2,7 +2,49 @@
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from typing import Protocol
+
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+
+
+@dataclass(frozen=True)
+class TrainingResourceTiming:
+    wait_seconds: float
+    hold_seconds: float
+    acquired_count: int
+    failed_acquisitions: int
+    inflight_count: int
+
+
+@dataclass(frozen=True)
+class TrainingProfileTiming:
+    profile: ScoringProfileId
+    started_after_seconds: float | None
+    finished_after_seconds: float | None
+    queue_send_seconds: float
+    queue_receive_seconds: float
+    cpu: TrainingResourceTiming
+    memory: TrainingResourceTiming
+    cpu_held_while_memory_wait_seconds: float
+
+
+@dataclass(frozen=True)
+class TrainingExecutionTiming:
+    source_read_seconds: float
+    peak_cpu_reservations: int
+    peak_memory_reservations: int
+    profiles: tuple[TrainingProfileTiming, ...]
+
+
+class TrainingExecutionObserver(Protocol):
+    def task(self, profile: ScoringProfileId) -> AbstractContextManager[None]: ...
+
+    def read_source(self) -> AbstractContextManager[None]: ...
+
+    def send_queue(self, profile: ScoringProfileId) -> AbstractContextManager[None]: ...
+
+    def receive_queue(self, profile: ScoringProfileId) -> AbstractContextManager[None]: ...
 
 
 class TrainingMemoryAdmission(Protocol):

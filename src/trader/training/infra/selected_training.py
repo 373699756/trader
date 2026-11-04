@@ -6,6 +6,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 from dataclasses import field
 
 import logging
+import time
 from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Executor
 from contextlib import ExitStack, closing, contextmanager
@@ -35,6 +36,7 @@ from trader.training.infra.engine import (
     ProfileTrainingRequest,
     TrainingRunResult,
 )
+from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
@@ -83,19 +85,31 @@ class SelectedTrainingRequest:
     paths: TrainingLocations
     cpu_budget: TrainingCpuBudget = field(kw_only=True)
     on_outcome: Callable[[SelectedTrainingOutcome[SelectedProfileResult]], None] | None = None
+    measurements: TrainingExecutionMeasurements | None = field(default=None, kw_only=True)
 
 
 def TrainSelectedProfiles(
     request: SelectedTrainingRequest, executor: Executor, *, sqlite_policy: SqliteIoPolicy
 ) -> SelectedTrainingRun[SelectedProfileResult]:
     paths = request.paths
+    measurements = (
+        request.measurements
+        if request.measurements is not None
+        else TrainingExecutionMeasurements(request.profiles, time.monotonic)
+    )
     with ExitStack() as scope:
         scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
         for profile in request.profiles:
             scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
         RequireHistoryRepackIdle(paths.history)
         history = SQLiteHistoryTrainingInputSnapshot.open(paths.history, sqlite_policy=sqlite_policy)
-        factory = _TrainingTaskFactory(request, history, scope, sqlite_policy=sqlite_policy)
+        factory = _TrainingTaskFactory(
+            request,
+            history,
+            scope,
+            measurements,
+            sqlite_policy=sqlite_policy,
+        )
         tasks = tuple(
             factory.prepare(profile, progress)
             for profile, progress in zip(request.profiles, request.progresses, strict=True)
@@ -121,8 +135,15 @@ def TrainSelectedProfiles(
             tasks = tuple(replace(task, execute=partial(
                 _run_with_native_limits, task.execute, controller, request.cpu_budget.native_threads
             )) for task in tasks)
-            run = RunSelectedTrainingTasks(tasks, read_rows, executor, request.cancelled, on_outcome=request.on_outcome)
-        return replace(run, history_rows_read=physical_rows)
+            run = RunSelectedTrainingTasks(
+                tasks,
+                read_rows,
+                executor,
+                request.cancelled,
+                on_outcome=request.on_outcome,
+                observer=measurements,
+            )
+        return replace(run, history_rows_read=physical_rows, timing=measurements.snapshot())
 
 
 @dataclass(frozen=True)
@@ -130,6 +151,7 @@ class _TrainingTaskFactory:
     selection: SelectedTrainingRequest
     history: SQLiteHistoryTrainingInputSnapshot
     resources: ExitStack
+    measurements: TrainingExecutionMeasurements
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
@@ -164,8 +186,8 @@ class _TrainingTaskFactory:
             settings=settings,
             progress=progress,
             cancel_requested=selection.cancelled,
-            memory_admission=selection.memory_admission,
-            cpu_admission=selection.cpu_budget,
+            memory_admission=self.measurements.memory_admission("v1", selection.memory_admission),
+            cpu_admission=self.measurements.cpu_admission("v1", selection.cpu_budget),
             sqlite_policy=self.sqlite_policy,
         )
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
@@ -207,8 +229,8 @@ class _TrainingTaskFactory:
                 settings,
                 progress,
                 sample_root=paths.samples,
-                memory_admission=selection.memory_admission,
-                cpu_admission=selection.cpu_budget,
+                memory_admission=self.measurements.memory_admission(profile, selection.memory_admission),
+                cpu_admission=self.measurements.cpu_admission(profile, selection.cpu_budget),
             ), sqlite_policy=self.sqlite_policy,
         )
         if reused is not None:

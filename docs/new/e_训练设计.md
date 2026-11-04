@@ -8,7 +8,7 @@
 
 每次作业固定一个已发布历史版本及配置、特征身份。四档各有 Tomorrow、D25，共八个模型头；每档双头合格才发布该档模型。某档失败不污染其它档位，不覆盖旧有效工件。
 
-独立训练入口已有 `ExecuteSelectedTraining`。本篇源码核对基线为 `e69d3e02`，该基线的 `bootstrap.py::ExecuteDownloadTrain` 仍先下载再训练；目标是CLI和交互直接调用独立训练并删除组合路径，不保留兼容入口。公共入口切换由A交付，C的字段字典与静态核对不表示入口切换已经验证。
+独立训练入口为 `ExecuteSelectedTraining`。A的提交 `7a562886`已将CLI切换到该入口并删除 `ExecuteDownloadTrain`及旧下载异常分支；该提交的远端交付状态见g，不由C推断。下面原始字段字典以 `e69d3e02`核对，第9.2节保留该基线旧消费者作为交接证据；C的计量改动不新增下载或组合入口。
 
 ## 2. 四档比较
 
@@ -362,7 +362,36 @@ flowchart TD
 | V2/V3/V5样本/矩阵 | `TrainingSampleCache`及 `SQLiteTrainingSampleIndex` | 已封存样本可复用，临时矩阵上下文关闭；异常不能把未封存样本当成功 |
 | V1临时库/矩阵 | `TemporaryTrainingSamples`与V1 ExitStack | 映射关闭后清理临时目录，不承诺跨作业样本恢复 |
 
-测量必须分别输出请求、授权和实际原生线程数，预约等待、持CPU等内存时长、实际并行区间、取消至归还时间和最终在途数。已有进度的 `model_fit` 心跳把多种等待放在同一阶段，目前不能据该阶段总时长反推CPU或内存等待各占多少。
+测量必须分别输出请求、授权和实际原生线程数，预约等待、持CPU等内存时长、实际并行区间、取消至归还时间和最终在途数。`model_fit` 心跳把多种等待放在同一阶段，不能据该阶段总时长反推CPU或内存等待各占多少；现有作业计量按第6.4节分开报告预约与队列区间。
+
+### 6.4 作业耗时的实际计量口径
+
+来源：`training/application/resources.py`的不可变计量类型、`infra/execution_timing.py::TrainingExecutionMeasurements`和 `entrypoints/training_timing_projection.py`的白名单投影。每次所选档位作业一份计量对象，注入单调时钟；不增加后台采样线程、不读取活动数据库，也不参与资源准入决策。
+
+`selected_training_result.timing`在成功、失败和取消报告中提供观测。纯编排测试或没有返回计量的调用保留null；尚未开始的档位起止为null，不能以0秒冒充已完成。现有统一训练诊断把该结果保留在 `summary.initial.execution`和 `summary.repeat.execution`，没有增加第二个入口或改A的公共分派。
+
+| 字段路径，相对timing | 单位与含义 | 不能据此推断 |
+| --- | --- | --- |
+| `source_read_seconds` | 秒；共享流每批取数的累计耗时，含价格读取、解码、日历对齐 | 不等于纯磁盘I/O，未包含打开历史和前期复用检查 |
+| `peak_cpu_reservations` | 同时进入CPU预约体的观测峰值，次数 | 不等于实际同时拟合的模型数或原生线程数 |
+| `peak_memory_reservations` | 同时进入内存预约体的观测峰值，次数 | 不等于实际RSS或宿主硬隔离 |
+| `profiles[].profile` | v1/v2/v3/v5，保持请求顺序 | 不按完成顺序重排档位身份 |
+| `started_after_seconds` | 秒；该档worker相对计量对象创建时点的开始偏移，可空 | 不包括该档worker开始前的准备工作 |
+| `finished_after_seconds` | 秒；worker退出偏移，可空；异常/取消也记录 | 不等于全部作业的收尾/提醒完成时点 |
+| `queue_send_seconds` | 秒；向该档队列发送的累计区间，含阻塞、轮询及终止通知 | 不全是纯阻塞时间，不能当特征计算时间 |
+| `queue_receive_seconds` | 秒；该档取下一批的累计区间，含空队列轮询 | 不等于源读取时间；不同worker之间会重叠 |
+| `cpu.wait_seconds`、`memory.wait_seconds` | 秒；进入原预约端口至授权的耗时，失败等待同样累计 | 包含快速路径、心跳与进入开销，不只统计Condition阻塞 |
+| `cpu.hold_seconds`、`memory.hold_seconds` | 秒；已授权预约体的累计持有区间，退出体时结束 | 不含底层释放收尾，CPU持有可能包含等内存和矩阵准备 |
+| `cpu.acquired_count`、`memory.acquired_count` | 次；成功授权数 | 不是拟合行业数或新训练次数 |
+| `cpu.failed_acquisitions`、`memory.failed_acquisitions` | 次；进入预约时未获授权即失败或取消 | 拟合体内失败不计为预约失败 |
+| `cpu.inflight_count`、`memory.inflight_count` | 次；快照时尚未退出的预约体数 | 归零不单独证明原生线程、映射和底层资源都已释放；仍需生命周期回归 |
+| `cpu_held_while_memory_wait_seconds` | 秒；该档已持CPU时进入内存预约的累计等待，包含失败等待 | 不能把CPU持有整段都当这类等待 |
+
+等待、持有、任务、队列和来源区间会相互重叠，不能把所有项相加当墙钟。全作业墙钟仍看 `selected_training_result.elapsed_seconds`；实际请求/授权线程沿用CPU预算字段，真实原生线程及RSS另测。计量只在批次和预约边界读时钟，不逐历史行采样。
+
+计量继续包住原 `TrainingCpuAdmission/TrainingMemoryAdmission`，原请求、授权、心跳、异常及释放语义不变；V1和其它三档都接入。全部工件复用时没有源批读或拟合预约，必须同时看到扫描0和预约授权0，不能只看耗时很短。
+
+当前 `TrainingImplementationIdentity`覆盖training全部源码；加入计量也会改变该实现摘要。这是现有身份范围的实际限制，不代表特征、标签或参数改变，不会自动重训或改写旧工件。复用验收要在同一源码身份内做，是否将纯观测从语义身份中分离另行核对全部消费者后裁决。
 
 ## 7. 缓存、复用、检查与工件发布
 
@@ -461,7 +490,7 @@ V1的两个文件使用独立白名单：model包含 `schema_version/profile_id/
 
 历史记录：阶段289有V1读取回退5.97%，Parquet没有接生产；阶段297仅部分V5质量组完成，不能签完整质量门。旧台账另记四档一次完整真实作业5822.446秒、7249083行一次扫描；这是一次运行事实，不是同输入串并行性能对照，也不说明90分钟目标或SSD已通过。
 
-本轮不重训、不测量、不改变窗口或线程。全部计划和证据状态只记g的P49–P60。
+窗口、线程或调度候选须经同输入实测后再决定；本篇的字段和计量不表示已取得真实全量性能结果。全部计划和证据状态只记g的P49–P60。
 
 长任务进度还要面向日常操作：当前阶段、真实行/日期/行业/头的单位、已完成工作、预约等待和心跳。未知总量不显示假百分比；软件资源目标和实际宿主硬限制分别报告。
 
@@ -477,7 +506,7 @@ V1的两个文件使用独立白名单：model包含 `schema_version/profile_id/
 
 现有 `diagnose_runtime.py --profile training-performance`在 `build_commands`中专门调用 `BuildTrainingBenchmarkCommands`，继而运行 `training_alignment`；不能仅看profile映射就判成无完整训练。它支持串行前/并行/串行后夹测，或指定隔离baseline checkout作基线前/候选/基线后；子进程的 `_train_once`调用 `ExecuteSelectedTraining`，初次与重复训练会检查八头可读、复用、数值/指标指纹及源身份未变。
 
-该入口仍不自动构造“只复用样本、重新拟合”负载，也没有CPU/内存等待、完整队列背压及实际拟合重叠的分段计量。现有 `stage_seconds`不足以代替这些指标；重放的工件/报告指纹一致也不等于独立输入上的全部预测回放一致。后续扩展原诊断模块，不能新开第二个公开训练检测入口。
+该入口仍不自动构造“只复用样本、重新拟合”负载。CPU/内存预约、队列与源批读已有第6.4节计量，但尚未获得真实全量的分段基线、实际拟合重叠和原生线程/RSS证据；`stage_seconds`不足以代替它们。重放的工件/报告指纹一致也不等于独立输入上的全部预测回放一致。后续继续扩展原诊断模块，不能新开第二个公开训练检测入口。
 
 ### 9.2 P61训练检测清单与A交接
 

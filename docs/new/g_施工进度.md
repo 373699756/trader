@@ -4,6 +4,16 @@
 
 ## 1. 当前批次
 
+### 阶段324：codexC补齐训练预约等待与队列耗时
+
+- owner/状态：codexC / completed（仅本阶段观测实现与定向验证，不代表真实全量性能验收完成）；开工基线 `2a3afb91`，最终隔离验证及交付父提交 `7a562886`，`Afuture` 跟踪 `origin/Afuture`。A父提交已到上游，用户已要求push，沿本阶段闭合独立交付；g只改本记录，不接管A/B文件或阶段。
+- 范围：P50/P51/P53/P59的观测前置；源码限 `training/application/resources.py`、`application/selected_training.py`、`infra/selected_training.py`、新增 `infra/execution_timing.py`、`entrypoints/selected_training.py`、新增 `entrypoints/training_timing_projection.py`；测试限新增 `tests/unit/training/infra/test_execution_timing.py`、`test_selected_profiles.py`及 `tests/unit/scripts/test_training_alignment.py`，另含e文档和本记录，共11个文件。原训练编排、资源预约和样本owner保持不变；仅新增有类型的计量对象与公开白名单投影，不迁移或删除活动路径。
+- 实际改动：V1与其它三档接入同一作业级计量，分开记录CPU/内存预约进入和持有、持CPU等待内存、各档起止、共享源批读及队列发送/接收。成功、失败和取消的 `selected_training_result.timing`均有明确投影，未开始档位起止保留null；无计量的调用不补造0。原预算、线程、队列容量、特征、标签和参数不变；统一训练诊断保留execution中的计量，不改A的公共入口/配置。e第6.4节列字段与重叠口径，第1章同步A的已提交入口切换事实及交付状态入口。
+- 验证：当前共享工作区170项定向回归通过（27.93秒）；随后在 `/tmp/trader-codexc-stage324-verify-hLZB1w`用已提交 `7a562886`的源码/配置/测试叠加C所属文件隔离复核，补齐原pytest.ini后以 `--strict-markers`重跑相同170项全部通过（28.40秒）。命令为 `.venv/bin/python3 -m pytest -o addopts='' --strict-markers -q tests/unit/training/infra/test_execution_timing.py tests/unit/training/infra/test_selected_profiles.py tests/unit/training/infra/test_cpu_admission.py tests/unit/training/test_selected_training.py tests/unit/scripts/test_training_alignment.py tests/contract/test_history_training_application_boundaries.py`。覆盖真实预算等待取消/异常归还、注入时钟精确计量、全队列背压、四档八头夹具训练及同源码工件复用、成功/失败/取消投影、诊断传递与层边界；不是活动全市场训练或性能对照。首次隔离启动有stream fd权限提示，最终退出0；未将其解释为原生线程实测。受影响9个Python文件Ruff E/F/B/UP通过、6个生产模块mypy通过；完整本批diff已Review，本批空白检查无错误。全工作区旧文档两处已有尾空白保留。未运行格式脚本、真实性能探测、供应商请求、活动库维护或发布。
+- 交付复核：本次push前HEAD与上游均为 `7a562886`；C的9个Python文件逐一SHA-256匹配已通过170项隔离回归的副本，源码与测试未再变化，本批空白检查无错误，沿用上述Ruff/mypy与回归结果。仅暂存上述11个C文件及本阶段记录，保留用户原有暂存重命名、配置/模型和其它任务未提交内容。
+- 未完成项：本阶段实现与定向验证无已知发现；真实四档三类负载基线、候选优化、V1/V5/SSD专项和P61迁移仍未执行，不因本阶段计量可用而关闭。训练实现摘要覆盖整个training源码，计量代码也会改变该摘要；复用只在同源码身份内比较，不改写旧模型或自动重训。
+- 下一步：本阶段独立提交、推送并核对远端后停止；后续真实负载测量继续使用现有统一诊断，在独立机器窗口和隔离历史副本中执行，不把当前夹具回归写成全量性能通过。
+
 ### 阶段323：codexB前置下载ST资格并核对恢复与检测边界
 
 - owner/状态：codexB / completed（本阶段参考门修复、公司资格回归与静态清点，不代表B全部计划完成）；接续上轮B尚未交付的参考准备修复，实施基线 `e69d3e02`，`Afuture` 跟踪 `origin/Afuture`。用户最新要求ABC各自独立处理；本记录只记B，不修改A/C记录。

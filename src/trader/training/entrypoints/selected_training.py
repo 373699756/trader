@@ -26,8 +26,10 @@ from trader.training.entrypoints.profile_training import (
     ProjectProfileTrainingResult,
 )
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+from trader.training.entrypoints.training_timing_projection import ProjectTrainingExecutionTiming
 from trader.training.infra.engine import TrainingRunResult
 from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -62,11 +64,13 @@ def _run_selected_training(
     cancelled: Event, *, cpu_budget: TrainingCpuBudget, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     started = time.monotonic()
+    measurements: TrainingExecutionMeasurements | None = None
     logging.getLogger(__name__).warning(
         "训练CPU预算 | 可用CPU %s | 拟合总线程 %s | 原生库基线线程 %s | 档位 %s",
         cpu_budget.available_cpus, cpu_budget.capacity, cpu_budget.native_threads, ",".join(profiles),
     )
     try:
+        measurements = TrainingExecutionMeasurements(profiles, time.monotonic)
         executor.start()
         with ExitStack() as scope:
             outputs = tuple(
@@ -94,6 +98,7 @@ def _run_selected_training(
                 SelectedTrainingRequest(
                     runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome,
                     cpu_budget=cpu_budget,
+                    measurements=measurements,
                 ),
                 WorkerFutureExecutor(executor), sqlite_policy=sqlite_policy,
             )
@@ -149,6 +154,7 @@ def _run_selected_training(
                     "history_scan_passes": run.history_scan_passes,
                     "history_rows_read": run.history_rows_read,
                     "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "timing": ProjectTrainingExecutionTiming(run.timing) if run.timing is not None else None,
                     "results": [
                         {"profile": profile, "exit_code": value}
                         for profile, value in zip(profiles, codes, strict=True)
@@ -160,16 +166,31 @@ def _run_selected_training(
         return code
     except (KeyboardInterrupt, InterruptedError, CancelledError):
         cancelled.set()
-        print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles}, indent=2, ensure_ascii=False))
+        print(json.dumps({
+            "schema_version": "selected_training_result",
+            "status": "cancelled",
+            "profiles": profiles,
+            "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
+        }, indent=2, ensure_ascii=False))
         return 130
     except (OSError, RuntimeError, ValueError) as exc:
         if cancelled.is_set():
             print(
-                json.dumps({"schema_version": "selected_training_result", "status": "cancelled", "profiles": profiles}, indent=2, ensure_ascii=False)
+                json.dumps({
+                    "schema_version": "selected_training_result",
+                    "status": "cancelled",
+                    "profiles": profiles,
+                    "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
+                }, indent=2, ensure_ascii=False)
             )
             return 130
         reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-        print(json.dumps({"schema_version": "selected_training_result", "status": "failed", "failure": reason}, indent=2, ensure_ascii=False))
+        print(json.dumps({
+            "schema_version": "selected_training_result",
+            "status": "failed",
+            "failure": reason,
+            "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
+        }, indent=2, ensure_ascii=False))
         return 1
     finally:
         executor.stop(
