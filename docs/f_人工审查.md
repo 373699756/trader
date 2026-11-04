@@ -112,3 +112,84 @@
 | 五轮页面验证是否真实有效 | 使用已加载本批代码的新进程和实际浏览器，对齐数量、身份、发布时间与来源年龄，并测试重连/轮询和正常关停 | 预览、HTTP 200、旧进程及fixture不替代盘中五轮；缺窗口或工件时如实保留未验证项 |
 
 旧冻结时点和退役流程退出活动设计；任何实际数据删除、模型替换或收益规则切换仍需独立任务，不随文档整理执行。
+
+
+
+#TODO 这个状态什么是pending
+
+00:10:15 | 发布内容校验   | 完成 |    100/   100 (100.00%) | 月份 2026-01..2026-11 | 本批耗时 00:00:31
+00:10:17 | 发布快照       | 完成 | 阶段耗时 00:00:02
+{
+  "failure": null,
+  "schema_version": "data_sync",
+  "status": "pending",
+  "tasks": [
+    {
+      "history": {
+        "data_cutoff": "2026-11-02",
+        "efficient_daily_source": "tencent",
+        "history_root": "/home/c/linux/trader/data/market/history",
+        "label_cutoff": "2026-10-30",
+        "price_gaps": {
+          "cells": 1,
+          "first_date": "2018-07-27",
+          "last_date": "2018-07-27",
+          "reasons": [
+            {
+              "cells": 1,
+              "reason": "tencent_qfq_invalid_price"
+            }
+          ],
+          "stocks": 1
+        },
+        "reason": "history_price_gaps_remaining",
+        "schema_version": "history_maintenance_status",
+        "selected_baseline_source": "tencent_then_baostock_repair",
+        "snapshot_hash": "c8b4e8a7f3d45b30821d7dcb8b1c8a5a48c3a3588cf4f1c66b80fbdfb1635bd0",
+        "state": "completed",
+        "unresolved_price_cells": 1
+      },
+      "reason": null,
+      "status": "pending",
+      "task": "history"
+    }
+  ]
+}
+
+
+
+#TODO  训练CPU预算 | 可用CPU 4 | 拟合总线程 3 | 原生库基线线程 2 | 档位 v1,v2,v3,v5  这个为什么拟合总线程3，搞多点不是速度更快点吗
+
+#TODO
+
+sync company | 公告正文下载提取 | 已尝试 958/15109 篇 | 已提取正文 953 篇 | 本轮失败 1 篇 | 未解决失败 1 篇 | 当前可处理 14155 篇 | 冷却暂缓 1 篇 | OCR分类 1 篇 | 不可提取/资料未知 0 篇 | 提取速度 8.7 篇/分 | 当前队列预计 27:09:24 | 最早重试 2026-11-03T10:30:57+08:00 | 批次 29 | 当前正文股票 002085 万丰奥威 | 本阶段 00:00:04 | 命令累计 01:55:40 | 状态 进行中
+
+
+
+这运行了2个小时，才提取了953篇，还有15109篇需要提取，这全套提取完需要猴年马月啊，这还是已经执行了一天后，剩余的15109篇，如何提速，给出优化计划
+
+
+
+运行中间出现如下错误
+
+127.0.0.1 - - [03/Nov/2026 13:47:17] "GET /api/status?profile=v5 HTTP/1.1" 200 -
+127.0.0.1 - - [03/Nov/2026 13:47:31] "GET /api/status?profile=v5 HTTP/1.1" 200 -
+Process SpawnProcess-16:
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/multiprocessing/process.py", line 320, in _bootstrap
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/lib/python3.14/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/c/linux/trader/src/trader/infra/isolated_http.py", line 28, in _serve
+    request = cast(HttpRequest, connection.recv())
+                                ~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/multiprocessing/connection.py", line 257, in recv
+    buf = self._recv_bytes()
+  File "/usr/lib/python3.14/multiprocessing/connection.py", line 448, in _recv_bytes
+    buf = self._recv(4)
+  File "/usr/lib/python3.14/multiprocessing/connection.py", line 413, in _recv
+    chunk = read(handle, to_read)
+ConnectionResetError: [Errno 104] Connection reset by peer
+127.0.0.1 - - [03/Nov/2026 13:47:47] "GET /api/status?profile=v5 HTTP/1.1" 200 -
