@@ -9,6 +9,25 @@ from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 
+def SelectEligibleSecurities(
+    universe: tuple[BaoStockSecurity, ...], st_evidence: tuple[HistoryStEvidence, ...]
+) -> tuple[BaoStockSecurity, ...]:
+    """Validate the complete ST cut and select securities before other preparation."""
+    codes = tuple(item.code for item in universe)
+    if (
+        not codes
+        or len(codes) > 12_000
+        or codes != tuple(sorted(set(codes)))
+        or tuple(item.code for item in st_evidence) != codes
+    ):
+        raise ValueError("prepared_reference_incomplete")
+    return tuple(
+        security
+        for security, evidence in zip(universe, st_evidence, strict=True)
+        if evidence.status == "clear" and not IsStSecurityName(security.name)
+    )
+
+
 @dataclass(frozen=True)
 class PreparedReference:
     official_universe: tuple[BaoStockSecurity, ...]
@@ -19,15 +38,10 @@ class PreparedReference:
     identity: str = field(init=False)
 
     def __post_init__(self) -> None:
-        codes = tuple(item.code for item in self.official_universe)
-        evidence_codes = tuple(item.code for item in self.st_evidence)
+        SelectEligibleSecurities(self.official_universe, self.st_evidence)
         if (
             self.checked_at.tzinfo is None
             or self.checked_at.utcoffset() != timedelta(hours=8)
-            or not codes
-            or len(codes) > 12_000
-            or codes != tuple(sorted(set(codes)))
-            or evidence_codes != codes
             or any(item.checked_on != self.checked_at.date() for item in self.st_evidence)
             or not self.open_dates
             or len(self.open_dates) > 20_000
@@ -51,11 +65,7 @@ class PreparedReference:
 
     @property
     def eligible_universe(self) -> tuple[BaoStockSecurity, ...]:
-        return tuple(
-            security
-            for security, evidence in zip(self.official_universe, self.st_evidence, strict=True)
-            if evidence.status == "clear" and not IsStSecurityName(security.name)
-        )
+        return SelectEligibleSecurities(self.official_universe, self.st_evidence)
 
     def calendar(self, as_of: date, sessions: int) -> BaoStockCalendar:
         dates = tuple(day for day in self.open_dates if day <= as_of)
@@ -64,4 +74,7 @@ class PreparedReference:
         return BaoStockCalendar(dates[-sessions:])
 
 
-__all__ = ["PreparedReference"]
+__all__ = [
+    "PreparedReference",
+    "SelectEligibleSecurities",
+]
