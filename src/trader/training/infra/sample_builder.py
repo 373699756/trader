@@ -88,6 +88,7 @@ class _PendingDay:
 class _RollingCodeState:
     points: deque[HistoryTrainingPoint]
     previous_position: int | None = None
+    sequence_points: deque[PriceVolumePoint | None] | None = None
 
 
 @dataclass
@@ -136,16 +137,27 @@ class _SampleBuildState:
             self._record_future_close(code, row.point, position)
         if row.point is None:
             rolling.points.clear()
+            if rolling.sequence_points is not None:
+                rolling.sequence_points.clear()
             self.missing_prices += 1
         else:
             rolling.points.append(row.point)
+            if rolling.sequence_points is not None:
+                rolling.sequence_points.append(_sequence_point(row.point))
             if row.cell_status not in {None, "complete"}:
                 rolling.previous_position = position
                 return
             if row.industry is None:
                 self.missing_industry += 1
             elif len(rolling.points) == _training_window_sessions(self.profile):
-                candidate = _pending_sample(row, rolling.points, position, self.readable_dates, self.profile)
+                candidate = _pending_sample(
+                    row,
+                    rolling.points,
+                    position,
+                    self.readable_dates,
+                    self.profile,
+                    rolling.sequence_points,
+                )
                 if candidate is not None:
                     self.pending_days[-1].samples[code] = candidate
                 else:
@@ -163,12 +175,18 @@ class _SampleBuildState:
             self.pending_days.append(_PendingDay(trade_date, position, {}))
 
     def _rolling_for(self, code: str, position: int) -> _RollingCodeState:
-        rolling = self.rolling_codes.setdefault(
-            code,
-            _RollingCodeState(deque(maxlen=_training_window_sessions(self.profile))),
-        )
+        rolling = self.rolling_codes.get(code)
+        if rolling is None:
+            sessions = _training_window_sessions(self.profile)
+            rolling = _RollingCodeState(
+                deque(maxlen=sessions),
+                sequence_points=deque(maxlen=sessions) if self.profile.algorithm == "tcn" else None,
+            )
+            self.rolling_codes[code] = rolling
         if rolling.previous_position is not None and position != rolling.previous_position + 1:
             rolling.points.clear()
+            if rolling.sequence_points is not None:
+                rolling.sequence_points.clear()
         return rolling
 
     def _record_future_close(self, code: str, point: HistoryTrainingPoint, position: int) -> None:
@@ -304,6 +322,7 @@ def _pending_sample(
     calendar_position: int,
     readable_dates: frozenset[date],
     profile: TrainedProfileContract,
+    sequence_points: deque[PriceVolumePoint | None] | None,
 ) -> _PendingSample | None:
     if points[0].trade_date not in readable_dates or row.trade_date not in readable_dates:
         return None
@@ -330,29 +349,18 @@ def _pending_sample(
         return None
     sequence: tuple[float, ...] = ()
     if profile.algorithm == "tcn":
-        completed = tuple(points)[:-1]
+        if sequence_points is None:
+            raise ValueError("training_sequence_state_missing")
+        completed = tuple(sequence_points)[:-1]
+        if any(point is None for point in completed):
+            return None
         ordered_dates = _ordered_dates(readable_dates)
         end = bisect_left(ordered_dates, row.trade_date)
         expected = ordered_dates[max(0, end - profile.history_sessions) : end]
         try:
             sequence = CalculatePriceVolumeSequence(
                 row.code,
-                tuple(
-                    PriceVolumePoint(
-                        p.trade_date,
-                        cast(float, p.qfq_open),
-                        cast(float, p.qfq_high),
-                        cast(float, p.qfq_low),
-                        cast(float, p.qfq_close_price),
-                        cast(float, p.raw_volume),
-                        cast(float, p.qfq_amount),
-                    )
-                    for p in completed
-                    if all(
-                        v is not None
-                        for v in (p.qfq_open, p.qfq_high, p.qfq_low, p.qfq_close_price, p.raw_volume, p.qfq_amount)
-                    )
-                ),
+                cast(tuple[PriceVolumePoint, ...], completed),
                 expected_dates=expected,
                 source_identity=profile.profile_id,
             ).values
@@ -368,6 +376,29 @@ def _pending_sample(
         (*raw_features.require_complete(), *sequence),
         close,
     )
+
+
+def _sequence_point(point: HistoryTrainingPoint) -> PriceVolumePoint | None:
+    if any(
+        value is None
+        for value in (
+            point.qfq_open, point.qfq_high, point.qfq_low,
+            point.qfq_close_price, point.raw_volume, point.qfq_amount,
+        )
+    ):
+        return None
+    try:
+        return PriceVolumePoint(
+            point.trade_date,
+            cast(float, point.qfq_open),
+            cast(float, point.qfq_high),
+            cast(float, point.qfq_low),
+            cast(float, point.qfq_close_price),
+            cast(float, point.raw_volume),
+            cast(float, point.qfq_amount),
+        )
+    except ValueError:
+        return None
 
 
 def _training_window_sessions(profile: TrainedProfileContract) -> int:
