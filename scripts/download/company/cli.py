@@ -34,6 +34,7 @@ def BuildParser(
         company_pagination_audit=False,
         company_pipeline_audit=False,
         company_pacing_audit=False,
+        company_io_candidates_audit=False,
         company_material_keys=(),
         company_audit_budget_seconds=None,
         company_ocr_audit=False,
@@ -63,6 +64,7 @@ def BuildParser(
         modes.add_argument('--company-pagination-audit', action='store_true', help='read-only CNInfo page-size comparison')
         modes.add_argument('--company-pipeline-audit', action='store_true', help='isolated same-PDF serial/parallel comparison')
         modes.add_argument('--company-pacing-audit', action='store_true', help='isolated same-PDF shared/per-host pacing comparison')
+        modes.add_argument('--company-io-candidates-audit', action='store_true', help='paired isolated publication candidates; never enables production settings')
         modes.add_argument('--company-material-keys', nargs='+', help='read-only source excerpts for one to six distinct source keys; requires published facts')
         modes.add_argument('--company-ocr-audit', action='store_true', help='compare OCR on up to seven failed announcements without active writes')
         modes.add_argument('--company-document-audit', action='store_true', help='read-only failed PDF request comparison')
@@ -98,6 +100,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_pagination_audit=args.company_pagination_audit,
         company_pipeline_audit=args.company_pipeline_audit,
         company_pacing_audit=args.company_pacing_audit,
+        company_io_candidates_audit=args.company_io_candidates_audit,
         company_material_keys=tuple(args.company_material_keys),
         company_audit_budget_seconds=(
             args.command_timeout_seconds - 30.0
@@ -128,7 +131,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
     if sum((
         options.company_query_audit, options.company_database_audit, options.company_pagination_audit,
         options.company_pipeline_audit, options.company_ocr_audit, options.company_document_audit,
-        options.company_directory_audit, options.company_pacing_audit,
+        options.company_directory_audit, options.company_pacing_audit, options.company_io_candidates_audit,
         bool(options.company_material_keys),
     )) > 1:
         raise ValueError("company audit modes are mutually exclusive")

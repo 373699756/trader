@@ -54,6 +54,7 @@ def BuildCommands(
                 *(("--pagination-only",) if options.company_pagination_audit else ()),
                 *(("--pipeline-only",) if options.company_pipeline_audit else ()),
                 *(("--pacing-only",) if options.company_pacing_audit else ()),
+                *(("--io-candidates-only",) if options.company_io_candidates_audit else ()),
                 *(("--material-keys", *options.company_material_keys) if options.company_material_keys else ()),
                 *(("--ocr-only",) if options.company_ocr_audit else ()),
                 *(("--document-only",) if options.company_document_audit else ()),

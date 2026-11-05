@@ -48,6 +48,7 @@ from trader.download.infra.company_disclosure_source import CninfoMarketDisclosu
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
 from trader.download.infra.company_document_parser import DetectCompanyText
+from trader.download.infra import company_evidence_index
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -81,6 +82,8 @@ _OPERATIONS = (
     "structured_unlock_fetch", "annual_income_fetch", "pledge_day", "news_fetch", "download_dispatch", "download_transfer",
     "extract_standard", "extract_ocr", "extract_limits", "analyze_standard", "analyze_ocr", "analyze_limits",
     "ocr_execute", "raw_usage", "raw_size_scan", "raw_digest", "pacer_wait", "collection_publish", "facts_publish",
+    "collection_initialize", "publication_prepare", "facts_inputs", "facts_compile", "facts_seal", "material_cleanup",
+    "raw_reservation_scan",
 )
 
 
@@ -262,9 +265,16 @@ def _observe_company_operations(stack: ExitStack, measurement: _CompanySyncMeasu
         (CompanyRawFiles, "usage", measurement.wrap("raw_usage", CompanyRawFiles.usage)),
         (CompanyRawFiles, "_size", staticmethod(measurement.wrap("raw_size_scan", CompanyRawFiles._size))),
         (CompanyRawFiles, "digest", staticmethod(measurement.wrap("raw_digest", CompanyRawFiles.digest))),
+        (CompanyRawFiles, "_reservation_usage", measurement.wrap("raw_reservation_scan", CompanyRawFiles._reservation_usage)),
         (CompanyRequestPacer, "wait", measurement.wrap("pacer_wait", CompanyRequestPacer.wait)),
+        (SQLiteCompanyEvidenceIndex, "initialize", measurement.wrap("collection_initialize", SQLiteCompanyEvidenceIndex.initialize)),
+        (SQLiteCompanyEvidenceIndex, "prepare_publication", measurement.wrap("publication_prepare", SQLiteCompanyEvidenceIndex.prepare_publication)),
+        (company_evidence_index, "ReadCompanySnapshotRows", measurement.wrap("facts_inputs", company_evidence_index.ReadCompanySnapshotRows)),
+        (company_evidence_index, "CompileCompanyFacts", measurement.wrap("facts_compile", company_evidence_index.CompileCompanyFacts)),
         (SQLiteCompanyEvidenceIndex, "publish", measurement.wrap("collection_publish", SQLiteCompanyEvidenceIndex.publish)),
         (SQLiteCompanyFactsIndex, "publish", measurement.wrap("facts_publish", SQLiteCompanyFactsIndex.publish)),
+        (SQLiteCompanyFactsIndex, "publish_file", measurement.wrap("facts_seal", SQLiteCompanyFactsIndex.publish_file)),
+        (SQLiteCompanyEvidenceIndex, "_release_files", measurement.wrap("material_cleanup", SQLiteCompanyEvidenceIndex._release_files)),
     ):
         stack.enter_context(patch.object(owner, name, replacement))
 
@@ -310,8 +320,15 @@ def MeasureCompanySync(runtime_config: Path, report_path: Path, *, fill_missing:
             "failure_category": None if running else failure,
             "wall_seconds": time.perf_counter() - started,
             "process_cpu_seconds": time.process_time() - cpu,
-            "operation_timing": "inclusive; nested operations overlap and must not be summed as total wall time",
+            "operation_timing": "inclusive; recursive, nested and concurrent operations overlap and must not be summed as total wall time",
             "operation_counts": "method invocations; directory_request and download_transfer count physical attempts",
+            "operation_boundaries": {
+                "publication_prepare": "prepare_publication startup/resume work; may include publication",
+                "facts_inputs": "ReadCompanySnapshotRows batch SQL input read and decode",
+                "facts_compile": "CompileCompanyFacts only; event linking and other publication work remain outside",
+                "facts_seal": "publish_file call including its no-file branch; not a pure hash or fsync duration",
+                "raw_reservation_scan": "candidate _reservation_usage call; not included in raw_usage or raw_size_scan",
+            },
             "route_classification": "dispatch route; OCR fallback is also measured by ocr_execute",
             "thread_cpu_includes_child_processes": False,
             "coverage": "company adapters and publication; CLI total also includes shared reference preparation",

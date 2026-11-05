@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 from threading import Event
@@ -25,6 +26,7 @@ from trader.download.domain.company_evidence import (
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra import company_evidence_index
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_http import CompanyRequestPacer
 from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
@@ -99,6 +101,13 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     monkeypatch.setattr(CompanyRequestPacer, "wait", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "publish", lambda *args, **kwargs: 1)
     monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish", lambda *args, **kwargs: None)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "initialize", lambda *args: None)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "prepare_publication", lambda *args: None)
+    monkeypatch.setattr(company_evidence_index, "ReadCompanySnapshotRows", lambda *args: ())
+    monkeypatch.setattr(company_evidence_index, "CompileCompanyFacts", lambda *args: None)
+    monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish_file", lambda *args: None)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "_release_files", lambda *args: None)
+    monkeypatch.setattr(CompanyRawFiles, "_reservation_usage", lambda *args: (0, 0, 0))
     original_digest, original_run = CompanyRawFiles.digest, SqliteConnection.run
 
     def main(argv):
@@ -115,8 +124,15 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
         assert raw.usage() == 9
         assert raw.digest(local.path) == b"d" * 32
         pacer.wait()
+        collection.initialize()
+        collection.prepare_publication(("600001",), _NOW)
+        company_evidence_index.ReadCompanySnapshotRows(None, ("600001",), _NOW, b"a" * 32)
+        company_evidence_index.CompileCompanyFacts(None, None)
         collection.publish(("600001",), _NOW)
         facts.publish((), {}, None, _NOW)
+        facts.publish_file()
+        collection._release_files()
+        assert raw._reservation_usage(tmp_path) == (0, 0, 0)
         with SqliteSession(tmp_path / "fixture.sqlite3") as connection, SqliteTransaction(connection):
             connection.run("CREATE TABLE fixture(value INTEGER)")
             connection.run("INSERT INTO fixture VALUES(1)")
@@ -134,12 +150,67 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     assert {name: row["calls"] for name, row in operations.items()} == expected
     assert all(row["wall_seconds"] >= 0 and row["thread_cpu_seconds"] >= 0 and not row["failures"] for row in operations.values())
     assert "inclusive" in payload["operation_timing"] and not payload["thread_cpu_includes_child_processes"]
+    assert "no-file" in payload["operation_boundaries"]["facts_seal"]
     assert not payload["database"]["wal_sampling_enabled"] and payload["database"]["connections"] == 1
     assert payload["database"]["statements"] >= 2
     assert CompanyRawFiles.digest is original_digest and raw.digest(local.path) == b"d" * 32
     assert CninfoMarketDisclosureSource.fetch is fetch and SqliteConnection.run is original_run
     assert "private" not in report.read_text(encoding="utf-8")
     assert "写入当前 company 数据" in capsys.readouterr().err
+
+
+def test_publication_phase_failure_restores_all_new_owners_and_keeps_only_failure_category(tmp_path, monkeypatch):
+    configuration, report = _paths(tmp_path)
+    original = RuntimeError("private-phase-payload-https://secret.invalid")
+
+    def failed_compile(*args, **kwargs):
+        raise original
+
+    def main(argv):
+        company_evidence_index.CompileCompanyFacts("private-input", "private-policy")
+
+    monkeypatch.setattr(company_evidence_index, "CompileCompanyFacts", failed_compile)
+    monkeypatch.setattr(cli, "Main", main)
+    owners = (
+        (SQLiteCompanyEvidenceIndex, "initialize"),
+        (SQLiteCompanyEvidenceIndex, "prepare_publication"),
+        (company_evidence_index, "ReadCompanySnapshotRows"),
+        (company_evidence_index, "CompileCompanyFacts"),
+        (SQLiteCompanyFactsIndex, "publish_file"),
+        (SQLiteCompanyEvidenceIndex, "_release_files"),
+        (CompanyRawFiles, "_reservation_usage"),
+    )
+    originals = tuple(getattr(owner, name) for owner, name in owners)
+    with pytest.raises(RuntimeError) as raised:
+        company_pipeline_audit.MeasureCompanySync(configuration, report)
+    assert raised.value is original
+    assert tuple(getattr(owner, name) for owner, name in owners) == originals
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    operation = next(row for row in payload["operations"] if row["operation"] == "facts_compile")
+    assert operation["calls"] == 1 and operation["failures"] == [{"category": "runtime_error", "calls": 1}]
+    assert "private" not in report.read_text(encoding="utf-8")
+
+
+def test_candidate_reservation_scan_is_observed_without_counting_it_as_legacy_usage(tmp_path):
+    raw = CompanyRawFiles(
+        tmp_path / "private-material",
+        capacity=10_000,
+        analysis_reserve=1000,
+        free_reserve=1,
+        scan_reservations_once=True,
+    )
+    measurement = company_pipeline_audit._CompanySyncMeasurement()
+    original_scan = CompanyRawFiles._reservation_usage
+    with ExitStack() as observers:
+        company_pipeline_audit._observe_company_operations(observers, measurement)
+        with raw.reserve(raw.root / "documents" / "private-evidence", 100):
+            pass
+    operations = {row["operation"]: row for row in measurement.report()}
+    assert operations["raw_reservation_scan"]["calls"] == 1
+    assert operations["raw_reservation_scan"]["failures"] == []
+    assert operations["raw_usage"]["calls"] == operations["raw_size_scan"]["calls"] == 0
+    assert CompanyRawFiles._reservation_usage is original_scan and not raw._reservations
+    assert "private" not in json.dumps(measurement.report())
 
 
 def test_live_measurement_aggregates_concurrent_failures_without_retaining_parameters(tmp_path, monkeypatch):

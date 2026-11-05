@@ -22,6 +22,7 @@ class CompanyOptions:
     company_pagination_audit: bool = False
     company_pipeline_audit: bool = False
     company_pacing_audit: bool = False
+    company_io_candidates_audit: bool = False
     company_material_keys: tuple[str, ...] = ()
     company_audit_budget_seconds: float = 150.0
     company_ocr_audit: bool = False
