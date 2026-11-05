@@ -13,6 +13,7 @@ import subprocess
 import json
 import os
 import sqlite3
+import time
 from types import SimpleNamespace
 from dataclasses import replace
 
@@ -397,8 +398,16 @@ def test_published_input_signature_detects_same_size_rewrite_with_restored_mtime
     path = database.with_name(database.name + suffix)
     before = _published_input_signature(history)
     stamp = path.stat()
-    path.write_bytes(b"modified")
-    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    deadline = time.monotonic() + 1.0
+    while True:
+        # Filesystems may update ctime only once per clock tick.
+        time.sleep(0.01)
+        path.write_bytes(b"modified")
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        if path.stat().st_ctime_ns != stamp.st_ctime_ns:
+            break
+        if time.monotonic() >= deadline:
+            pytest.skip("filesystem does not expose write-time ctime changes")
     assert path.stat().st_size == stamp.st_size
     assert path.stat().st_mtime_ns == stamp.st_mtime_ns
     assert before != _published_input_signature(history)
