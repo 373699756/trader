@@ -122,9 +122,14 @@ def TrainingSampleReuseFailures(initial: object, scenario: object, profiles: Seq
         failures.append("sample_reuse_target_cache_not_cleared")
     if scenario.get("cache_verified") is not True:
         failures.append("sample_reuse_cache_unverified")
-    copied = scenario.get("copied_bytes")
-    if type(copied) is not int or copied <= 0:
+    transfer = scenario.get("cache_transfer_method", "copy")
+    copied = scenario.get("linked_bytes") if transfer == "hardlink" else scenario.get("copied_bytes")
+    if transfer not in ("copy", "hardlink") or type(copied) is not int or copied <= 0:
         failures.append("sample_reuse_cache_copy_missing")
+    if transfer == "hardlink" and (type(scenario.get("copied_bytes")) is not int or scenario.get("copied_bytes") != 0):
+        failures.append("sample_reuse_cache_transfer_inconsistent")
+    if transfer == "copy" and (type(scenario.get("linked_bytes", 0)) is not int or scenario.get("linked_bytes", 0) != 0):
+        failures.append("sample_reuse_cache_transfer_inconsistent")
     if type(scenario.get("model_files_copied")) is not int or scenario.get("model_files_copied") != 0:
         failures.append("sample_reuse_models_copied")
     if _seconds(run.get("seconds")) is None:

@@ -7,16 +7,17 @@ import hashlib
 import io
 import json
 import math
+import os
 import shutil
 import sys
 import time
 from collections import Counter
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from datetime import datetime
 from datetime import time as daytime
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, NoReturn, TypedDict
+from typing import TYPE_CHECKING, Literal, NoReturn, TypedDict
 from zoneinfo import ZoneInfo
 
 from scripts.checks.reporting import ReadJsonReports, emit_report
@@ -33,6 +34,11 @@ class _SqliteArguments(TypedDict, total=False):
     sqlite_policy: SqliteIoPolicy
 
 
+class _MeasurementOptions(TypedDict, total=False):
+    published_history_read_only: bool
+    sample_cache_transfer: Literal["copy", "hardlink"]
+
+
 def PrepareTrainingHistoryCopy(
     source: Path,
     destination: Path,
@@ -43,6 +49,7 @@ def PrepareTrainingHistoryCopy(
     """Back up a published input and its references into a new external directory."""
     from trader.infra.atomic_files.json import AtomicWriteJson
     from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+    from trader.infra.sqlite_publication import PublishSqliteFile, VerifySqliteFile
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
     project = Path(__file__).resolve().parents[3]
@@ -58,11 +65,8 @@ def PrepareTrainingHistoryCopy(
     snapshot = SQLiteHistoryTrainingInputSnapshot.open(source, sqlite_policy=sqlite_policy).snapshot
     files = ((source / "catalog.sqlite3", Path("history/catalog.sqlite3")), *(
         (path, Path("history") / path.name) for path in sorted(source.glob("prices_*.sqlite3"))
-    ), *(
-        (source.parent / "reference" / name, Path("reference") / name)
-        for name in ("company_st.sqlite3", "industry.sqlite3")
-    ))
-    if len(files) < 4 or any(path.is_symlink() or not path.is_file() for path, _relative in files):
+    ), (source.parent / "reference/company_st.sqlite3", Path("reference/company_st.sqlite3")))
+    if len(files) < 3 or any(path.is_symlink() or not path.is_file() for path, _relative in files):
         raise ValueError("training_history_copy_source_incomplete")
     required = sum(path.stat().st_size for path, _relative in files)
     existing = destination.parent
@@ -70,9 +74,20 @@ def PrepareTrainingHistoryCopy(
         existing = existing.parent
     if shutil.disk_usage(existing).free < required * 2 + 1024**3:
         raise ValueError("training_history_copy_space_insufficient")
-    destination.mkdir(parents=True, exist_ok=False)
     deadline = started + timeout_seconds
+    source_files = _published_input_signature(source)
+
+    def check_deadline() -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("training_history_copy_timed_out")
+
+    for path, relative in files:
+        if relative.parent == Path("history"):
+            VerifySqliteFile(path, 2, sqlite_policy=sqlite_policy, check=check_deadline)
+    destination.mkdir(parents=True, exist_ok=False)
+    receipts = 0
     for number, (path, relative) in enumerate(files, 1):
+        check_deadline()
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         pending = target.with_suffix(".pending")
@@ -83,13 +98,17 @@ def PrepareTrainingHistoryCopy(
         ):
             original.backup_to(replica, deadline=deadline, monotonic=time.monotonic)
         pending.replace(target)
+        if relative.parent == Path("history"):
+            PublishSqliteFile(target, 2, sqlite_policy=sqlite_policy, check=check_deadline)
+            receipts += 1
         print(f"训练历史副本 | 已备份 {number}/{len(files)} 个数据库", file=sys.stderr, flush=True)
     _require_history_copy_reference(destination / "history", sqlite_policy)
     _require_history_copy_reference(source, sqlite_policy)
     copied = SQLiteHistoryTrainingInputSnapshot.open(destination / "history", sqlite_policy=sqlite_policy).snapshot
     after = SQLiteHistoryTrainingInputSnapshot.open(source, sqlite_policy=sqlite_policy).snapshot
-    if copied != snapshot or after != snapshot:
+    if copied != snapshot or after != snapshot or source_files != _published_input_signature(source):
         raise ValueError("training_history_copy_source_changed")
+    check_deadline()
     report: dict[str, object] = {
         "snapshot_hash": snapshot.snapshot_hash,
         "source_identity_hash": snapshot.source_identity_hash,
@@ -100,7 +119,9 @@ def PrepareTrainingHistoryCopy(
         "seconds": time.monotonic() - started,
         "source_data_writes": 0,
         "source_identity_unchanged": True,
-        "copy_method": "sqlite_online_backup; catalog_and_reference_identity_verified",
+        "source_files_unchanged": True,
+        "publication_receipts": receipts,
+        "copy_method": "sqlite_online_backup; verified_source; copied_file_receipts; catalog_and_reference_identity_verified",
     }
     AtomicWriteJson(destination / "copy-summary.json", report)
     return report
@@ -187,9 +208,12 @@ def _probe(
     *,
     runtime_config: Path | None = None, sqlite_policy: SqliteIoPolicy | None,
     require_reuse: bool = True,
+    published_history_read_only: bool = False,
+    sample_cache_transfer: Literal["copy", "hardlink"] = "copy",
 ) -> dict[str, object]:
     # Load diagnostic types only after main selects the measured product checkout.
     from scripts.checks.training.training_performance import TrainingReuseFailures
+    from scripts.checks.training.training_source_guard import ReadOnlyTrainingSource
 
     from trader.infra.settings import LoadRuntimeSettings
     from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
@@ -200,10 +224,23 @@ def _probe(
 
     project = Path(__file__).resolve().parents[3]
     history, work = history.resolve(), work.resolve()
-    if history.is_relative_to(project) or work.is_relative_to(project) or work == history:
+    if (history.is_relative_to(project) and not published_history_read_only) or work.is_relative_to(project) or work == history:
         raise ValueError("training_alignment_requires_external_history_copy")
     if work.exists() or history.is_relative_to(work) or work.is_relative_to(history):
         raise ValueError("training_alignment_requires_new_separate_output")
+    config = (runtime_config or project / "config/runtime.json").resolve()
+    runtime = LoadRuntimeSettings(config)
+    if published_history_read_only and history != runtime.data_paths.history.resolve():
+        raise ValueError("training_alignment_requires_configured_published_history")
+    if not published_history_read_only and history == runtime.data_paths.history.resolve():
+        raise ValueError("training_alignment_published_history_requires_explicit_read_only_mode")
+    if published_history_read_only:
+        if sqlite_policy is None:
+            raise ValueError("training_alignment_published_history_requires_sqlite_policy")
+        _require_history_copy_reference(history, sqlite_policy)
+    if work.is_relative_to(runtime.data_paths.root.resolve()) or work.is_relative_to(runtime.project_root.resolve()):
+        raise ValueError("training_alignment_requires_external_output")
+    source_files = _published_input_signature(history) if published_history_read_only else ()
     sqlite_arguments: _SqliteArguments = {}
     if sqlite_policy is not None:
         sqlite_arguments["sqlite_policy"] = sqlite_policy
@@ -212,8 +249,6 @@ def _probe(
     work.mkdir(parents=True)
     started = time.monotonic()
     profiles = SCORING_PROFILE_IDS if profiles is None else profiles
-    config = (runtime_config or project / "config/runtime.json").resolve()
-    runtime = LoadRuntimeSettings(config)
     configuration_hash = hashlib.sha256(
         b"".join(
             hashlib.sha256((runtime.project_root / "config" / name).read_bytes()).digest()
@@ -221,11 +256,16 @@ def _probe(
         )
     ).hexdigest()
     ConfigureTrainingResources()
-    initial = _train_once(runtime, history, work, profiles)
-    repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
-    sample_reuse = _sample_reuse(runtime, history, work, profiles, initial) if initial["complete"] else None
+    with ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext():
+        initial = _train_once(runtime, history, work, profiles)
+        repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
+        sample_reuse = (
+            _sample_reuse(runtime, history, work, profiles, initial, transfer=sample_cache_transfer)
+            if initial["complete"] else None
+        )
     unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **sqlite_arguments).snapshot.snapshot_hash == identity
-    complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged)
+    files_unchanged = not published_history_read_only or source_files == _published_input_signature(history)
+    complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged and files_unchanged)
     equal = repeat is not None and initial["numeric_fingerprints"] == repeat["numeric_fingerprints"]
     reuse_failures = TrainingReuseFailures(initial, repeat, profiles)
     return {
@@ -245,6 +285,11 @@ def _probe(
             "repeat_reuse_failures": reuse_failures,
             "source_codes": len(source.snapshot.training_codes),
             "source_identity_unchanged": unchanged,
+            "input_mode": "published_history_read_only" if published_history_read_only else "external_history_copy",
+            "source_files_unchanged": files_unchanged,
+            "source_data_writes": 0,
+            "published_source_guard": "sqlite_mode_ro; due_projection_persist_false; fitter_unmodified"
+            if published_history_read_only else "not_required_for_isolated_copy",
             "reloaded_heads": initial["reloaded_heads"],
             "process_peak_rss_bytes": _peak_rss_bytes(),
             "seconds": initial["seconds"],
@@ -260,12 +305,36 @@ def _probe(
     }
 
 
+def _published_input_signature(history: Path) -> tuple[tuple[str, int, int, int, int, int], ...]:
+    files = (
+        history / "catalog.sqlite3", *sorted(history.glob("prices_*.sqlite3")),
+        history.parent / "reference/company_st.sqlite3",
+    )
+    paths = tuple(
+        path for file in files
+        for path in (file, file.with_name(file.name + "-wal"), file.with_name(file.name + ".sha256"))
+        if path.exists() or path.is_symlink()
+    )
+    if any(path.is_symlink() or not path.is_file() for path in paths):
+        raise ValueError("training_alignment_published_input_invalid")
+    return tuple(
+        (
+            path.relative_to(history.parent).as_posix(), stamp.st_dev, stamp.st_ino,
+            stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns,
+        )
+        for path in paths for stamp in (path.stat(),)
+        if not path.name.endswith("-wal") or stamp.st_size > 0
+    )
+
+
 def _sample_reuse(
     runtime: RuntimeSettings,
     history: Path,
     work: Path,
     profiles: tuple[ScoringProfileId, ...],
     initial: dict[str, object],
+    *,
+    transfer: Literal["copy", "hardlink"] = "copy",
 ) -> dict[str, object]:
     from scripts.checks.training.training_performance import TrainingSamplePreparationFailures, TrainingSampleReuseFailures
 
@@ -278,6 +347,9 @@ def _sample_reuse(
         "preparation_seconds": None,
         "copy_verification_seconds": None,
         "copied_bytes": 0,
+        "linked_bytes": 0,
+        "cache_transfer_method": transfer,
+        "preparation_cache_released_after_verification": False,
         "cache_verified": False,
         "model_files_copied": 0,
         "source_cache_unchanged": None,
@@ -301,6 +373,7 @@ def _sample_reuse(
             return result
         copy_started = time.monotonic()
         before = _sample_signatures(preparation_root, selected)
+        result["source_cache_signatures_before"] = before
         copied = 0
         for profile in selected:
             source = preparation_root / "samples" / profile
@@ -312,33 +385,56 @@ def _sample_reuse(
                 path = source / name
                 if path.is_symlink() or not path.is_file():
                     raise ValueError("training_sample_probe_cache_missing")
-                shutil.copy2(path, destination / name)
+                if transfer == "hardlink":
+                    os.link(path, destination / name)
+                else:
+                    shutil.copy2(path, destination / name)
                 copied += path.stat().st_size
             manifest = json.loads((destination / "complete.json").read_text(encoding="utf-8"))
             database = destination / "samples.sqlite3"
-            digest = hashlib.sha256()
-            with database.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024**2), b""):
-                    digest.update(chunk)
-            if (not isinstance(manifest, dict) or manifest.get("sha256") != digest.hexdigest()
+            if (not isinstance(manifest, dict) or manifest.get("sha256") != _file_sha256(database)
                     or manifest.get("size_bytes") != database.stat().st_size
                     or manifest.get("modified_ns") != database.stat().st_mtime_ns):
                 raise ValueError("training_sample_probe_cache_invalid")
         result["cache_verified"] = True
         result["copy_verification_seconds"] = time.monotonic() - copy_started
         result["preparation_seconds"] = time.monotonic() - started
-        result["copied_bytes"] = copied
+        result["linked_bytes" if transfer == "hardlink" else "copied_bytes"] = copied
         result["run"] = _train_once(runtime, history, target, selected)
-        result["source_cache_unchanged"] = before == _sample_signatures(preparation_root, selected)
+        after = _sample_signatures(preparation_root, selected)
+        result["source_cache_signatures_after"] = after
+        result["source_cache_unchanged"] = before == after
         result["target_cache_cleared"] = all(
             not (target / "samples" / profile).exists() and not (target / "samples" / profile).is_symlink()
             for profile in selected
         )
         result["failures"] = TrainingSampleReuseFailures(initial, result, profiles)
+        if transfer == "hardlink" and not result["failures"]:
+            _release_prepared_samples(preparation_root, selected)
+            result["preparation_cache_released_after_verification"] = True
     except (OSError, ValueError) as exc:
         result["failures"] = (str(exc) if isinstance(exc, ValueError) and str(exc).startswith("training_sample_probe_")
                               else "training_sample_probe_" + type(exc).__name__,)
     return result
+
+
+def _release_prepared_samples(work: Path, profiles: tuple[ScoringProfileId, ...]) -> None:
+    root = work / "samples"
+    if root.is_symlink() or {path.name for path in root.iterdir()} != set(profiles):
+        raise ValueError("training_sample_probe_preparation_cleanup_unowned")
+    directories = tuple(root / profile for profile in profiles)
+    for directory in directories:
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("training_sample_probe_preparation_cleanup_unowned")
+        if {path.name for path in directory.iterdir()} != {"samples.sqlite3", "complete.json"} or any(
+            path.is_symlink() or not path.is_file() for path in directory.iterdir()
+        ):
+            raise ValueError("training_sample_probe_preparation_cleanup_unowned")
+    for directory in directories:
+        for path in directory.iterdir():
+            path.unlink()
+        directory.rmdir()
+    root.rmdir()
 
 
 def _prepare_sample_reuse(
@@ -374,7 +470,7 @@ def _prepare_sample_reuse(
     started = time.monotonic()
     try:
         engine.FitIndustryModels = stop_before_fit
-        with TrainingProcessMeasurement() as measurement, redirect_stdout(captured):
+        with TrainingProcessMeasurement(disk_root=work) as measurement, redirect_stdout(captured):
             code = ExecuteSelectedTraining(runtime, profiles, history_root=history, training_root=work)
     finally:
         engine.FitIndustryModels = original_fit
@@ -398,16 +494,25 @@ def _prepare_sample_reuse(
 
 def _sample_signatures(
     work: Path, profiles: tuple[ScoringProfileId, ...]
-) -> tuple[tuple[str, str, int, int], ...]:
+) -> tuple[tuple[str, str, int, int, str], ...]:
     return tuple(
         (
             profile,
             hashlib.sha256((work / "samples" / profile / "complete.json").read_bytes()).hexdigest(),
             (work / "samples" / profile / "samples.sqlite3").stat().st_size,
             (work / "samples" / profile / "samples.sqlite3").stat().st_mtime_ns,
+            _file_sha256(work / "samples" / profile / "samples.sqlite3"),
         )
         for profile in profiles
     )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024**2), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _train_once(
@@ -418,7 +523,7 @@ def _train_once(
 
     captured = io.StringIO()
     started = time.monotonic()
-    with TrainingProcessMeasurement() as measurement, redirect_stdout(captured):
+    with TrainingProcessMeasurement(disk_root=work) as measurement, redirect_stdout(captured):
         code = ExecuteSelectedTraining(runtime, profiles, history_root=history, training_root=work)
     seconds = time.monotonic() - started
     reports = ReadJsonReports(captured.getvalue())
@@ -514,6 +619,8 @@ def Main() -> int:
     parser.add_argument("--profiles")
     parser.add_argument("--runtime-config", type=Path)
     parser.add_argument("--product-checkout", type=Path)
+    parser.add_argument("--published-history-read-only", action="store_true")
+    parser.add_argument("--sample-cache-transfer", choices=("copy", "hardlink"), default="copy")
     parser.add_argument(
         "--benchmark-mode",
         choices=("serial_before", "parallel", "serial_after", "baseline_before", "candidate", "baseline_after"),
@@ -536,9 +643,15 @@ def Main() -> int:
         if args.inputs_only:
             report = _inputs(args.history_root, runtime_config, sqlite_policy=sqlite_policy)
         elif args.work_root is not None:
+            measurement_options: _MeasurementOptions = {}
+            if args.published_history_read_only:
+                measurement_options["published_history_read_only"] = True
+            if args.sample_cache_transfer != "copy":
+                measurement_options["sample_cache_transfer"] = args.sample_cache_transfer
             report = _probe(
                 args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy,
                 require_reuse=args.benchmark_mode not in {"baseline_before", "baseline_after"},
+                **measurement_options,
             )
             report["benchmark_mode"] = args.benchmark_mode
             report["product_checkout"] = str(product)

@@ -5,14 +5,16 @@ from scripts.checks.catalog import SelectionArguments
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
 from contextlib import nullcontext
 from threading import enumerate as enumerate_threads
 import sys
 import subprocess
 import json
+import os
 import sqlite3
 from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 
@@ -138,6 +140,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
     tmp_path, monkeypatch, source_changed
 ):
     from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy
+    from trader.infra.sqlite_publication import PublishSqliteFile
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
     market = tmp_path / "source/market"
@@ -151,6 +154,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
     for path in paths:
         connection = sqlite3.connect(path)
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA user_version=2")
         connection.execute("CREATE TABLE fixture(value INTEGER)")
         connection.execute("INSERT INTO fixture VALUES(17)")
         connection.commit()
@@ -158,6 +162,8 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
     connections[0].execute("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
     connections[0].execute("INSERT INTO schema_contract VALUES(1,'../reference/company_st.sqlite3')")
     connections[0].commit()
+    for path in paths[:2]:
+        PublishSqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture())
     before = tuple(path.read_bytes() for path in paths)
     snapshot = SimpleNamespace(
         snapshot_hash="a" * 64, source_identity_hash="b" * 64,
@@ -179,9 +185,11 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
             assert not (target / "copy-summary.json").exists()
         else:
             report = PrepareTrainingHistoryCopy(history, target, timeout_seconds=30, sqlite_policy=SqlitePolicyFixture())
-            assert report["files"] == 4 and report["source_data_writes"] == 0
+            assert report["files"] == 3 and report["source_data_writes"] == 0
+            assert report["publication_receipts"] == 2
             assert report["source_identity_unchanged"] is True
-            for path in paths:
+            assert not (target / "reference/industry.sqlite3").exists()
+            for path in paths[:3]:
                 with sqlite3.connect((target / path.relative_to(market)).as_uri() + "?mode=ro", uri=True) as copied:
                     assert copied.execute("SELECT value FROM fixture").fetchone() == (17,)
         assert tuple(path.read_bytes() for path in paths) == before
@@ -195,6 +203,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
 def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_path, monkeypatch, invalid):
     from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy
     from trader.infra.sqlite_connection import SqliteConnection
+    from trader.infra.sqlite_publication import PublishSqliteFile
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
     market = tmp_path / "source"
@@ -207,12 +216,15 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
     for path in paths:
         with sqlite3.connect(path) as connection:
             connection.execute("CREATE TABLE fixture(value INTEGER)")
+            connection.execute("PRAGMA user_version=2")
     binding = str(paths[2]) if invalid == "absolute" else "../../shared/company_st.sqlite3"
     with sqlite3.connect(paths[0]) as connection:
         connection.execute("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
         connection.execute("INSERT INTO schema_contract VALUES(1,?)", (
             "../reference/company_st.sqlite3" if invalid == "copy_escape" else binding,
         ))
+    for path in paths[:2]:
+        PublishSqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture())
     original_backup = SqliteConnection.backup_to
     backups = []
 
@@ -239,6 +251,40 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
     assert paths[0].read_bytes() == before
     assert opened == ([history] if invalid == "copy_escape" else [])
     assert bool(backups) == (invalid == "copy_escape")
+
+
+@pytest.mark.parametrize("receipt_state", ("valid", "missing", "corrupt"))
+def test_real_history_copy_preserves_readable_publication_and_rejects_invalid_source_receipts(tmp_path, receipt_state):
+    from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy, _published_input_signature
+    from scripts.checks.training.training_read_comparison import PrepareTrainingHistory, TrainingRowsHash
+    from trader.infra.sqlite_publication import SqlitePublicationError
+    from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+
+    policy = SqlitePolicyFixture()
+    history = PrepareTrainingHistory(tmp_path / "source", size=2, sessions=2000, sqlite_policy=policy)
+    database = next(history.glob("prices_*.sqlite3"))
+    receipt = database.with_name(database.name + ".sha256")
+    if receipt_state == "missing":
+        receipt.unlink()
+    elif receipt_state == "corrupt":
+        receipt.write_bytes(b"invalid")
+    before = _published_input_signature(history)
+    destination = tmp_path / "copy"
+    if receipt_state != "valid":
+        with pytest.raises(SqlitePublicationError, match="sqlite_publication_"):
+            PrepareTrainingHistoryCopy(history, destination, timeout_seconds=30, sqlite_policy=policy)
+        assert not (destination / "copy-summary.json").exists()
+    else:
+        result = PrepareTrainingHistoryCopy(history, destination, timeout_seconds=30, sqlite_policy=policy)
+        original = SQLiteHistoryTrainingInputSnapshot.open(history, sqlite_policy=policy)
+        copied = SQLiteHistoryTrainingInputSnapshot.open(destination / "history", sqlite_policy=policy)
+        dates = frozenset(original.snapshot.calendar.open_dates)
+        assert copied.snapshot == original.snapshot
+        assert TrainingRowsHash(copied.iter_training_rows(dates)) == TrainingRowsHash(original.iter_training_rows(dates))
+        assert result["source_data_writes"] == 0
+        assert result["source_files_unchanged"] is True
+        assert result["publication_receipts"] == 1 + len(tuple(history.glob("prices_*.sqlite3")))
+    assert _published_input_signature(history) == before
 
 
 @pytest.mark.parametrize("failure", (False, True))
@@ -271,3 +317,160 @@ def test_training_resource_observer_keeps_unavailable_measurements_unknown(tmp_p
     assert measurement.result["physical_read_bytes"] is None
     assert measurement.result["samples"] == 0
     assert measurement.result["sampling_failures"] == 2
+
+
+@pytest.mark.parametrize("failure", (False, True))
+def test_published_training_source_rejects_writes_and_restores_all_hooks(tmp_path, monkeypatch, failure):
+    from scripts.checks.training.training_source_guard import ReadOnlyTrainingSource
+    from trader.training.infra.history import history_training_due
+    from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+
+    source = tmp_path / "source/history"
+    source.mkdir(parents=True)
+    database = source / "catalog.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE sample (value INTEGER)")
+    before = database.read_bytes(), database.stat().st_mtime_ns
+    queries = []
+
+    def observe_due(query, *, sqlite_policy):
+        queries.append(query)
+        assert sqlite_policy is policy
+        return None
+
+    policy = SqlitePolicyFixture()
+    monkeypatch.setattr(history_training_due, "EvaluateHistoryTrainingDue", observe_due)
+    original_connect = sqlite3.connect
+    query = history_training_due.HistoryTrainingDueQuery(
+        source, tmp_path / "output", datetime.now(timezone.utc), V3_TRAINING_PROFILE,
+    )
+    with pytest.raises(InterruptedError) if failure else nullcontext():
+        with ReadOnlyTrainingSource(source):
+            with pytest.raises(ValueError, match="requires_read_only"):
+                sqlite3.connect(database)
+            with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+                assert connection.execute("SELECT count(*) FROM sample").fetchone() == (0,)
+            with sqlite3.connect(tmp_path / "output.sqlite3") as connection:
+                connection.execute("CREATE TABLE output (value INTEGER)")
+            assert history_training_due.EvaluateHistoryTrainingDue(query, sqlite_policy=policy) is None
+            if failure:
+                raise InterruptedError("fixture cancellation")
+    assert queries == [replace(query, persist=False)]
+    assert history_training_due.EvaluateHistoryTrainingDue is observe_due
+    assert sqlite3.connect is original_connect
+    assert (database.read_bytes(), database.stat().st_mtime_ns) == before
+
+
+def test_published_input_signature_detects_changed_prices_and_rejects_symlinks(tmp_path):
+    from scripts.checks.training.training_alignment import _published_input_signature
+
+    history = tmp_path / "history"
+    history.mkdir()
+    prices = history / "prices_2026.sqlite3"
+    prices.write_bytes(b"original")
+    before = _published_input_signature(history)
+    prices.write_bytes(b"changed")
+    assert before != _published_input_signature(history)
+    changed = _published_input_signature(history)
+    wal = prices.with_name(prices.name + "-wal")
+    wal.write_bytes(b"")
+    assert changed == _published_input_signature(history)
+    wal.write_bytes(b"committed")
+    assert changed != _published_input_signature(history)
+    prices.unlink()
+    prices.symlink_to(tmp_path / "foreign.sqlite3")
+    (tmp_path / "foreign.sqlite3").write_bytes(b"unowned")
+    with pytest.raises(ValueError, match="published_input_invalid"):
+        _published_input_signature(history)
+
+
+@pytest.mark.parametrize("suffix", ("", ".sha256"))
+def test_published_input_signature_detects_same_size_rewrite_with_restored_mtime(tmp_path, suffix):
+    from scripts.checks.training.training_alignment import _published_input_signature
+
+    history = tmp_path / "history"
+    history.mkdir()
+    database = history / "prices_2026.sqlite3"
+    database.write_bytes(b"original")
+    receipt = database.with_name(database.name + ".sha256")
+    receipt.write_bytes(b"original")
+    path = database.with_name(database.name + suffix)
+    before = _published_input_signature(history)
+    stamp = path.stat()
+    path.write_bytes(b"modified")
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert path.stat().st_size == stamp.st_size
+    assert path.stat().st_mtime_ns == stamp.st_mtime_ns
+    assert before != _published_input_signature(history)
+
+
+@pytest.mark.parametrize("kind", ("symlink", "directory"))
+def test_published_input_signature_rejects_unowned_publication_receipts(tmp_path, kind):
+    from scripts.checks.training.training_alignment import _published_input_signature
+
+    history = tmp_path / "history"
+    history.mkdir()
+    database = history / "prices_2026.sqlite3"
+    database.write_bytes(b"original")
+    receipt = database.with_name(database.name + ".sha256")
+    if kind == "symlink":
+        protected = tmp_path / "protected"
+        protected.write_bytes(b"keep")
+        receipt.symlink_to(protected)
+    else:
+        receipt.mkdir()
+    with pytest.raises(ValueError, match="published_input_invalid"):
+        _published_input_signature(history)
+    assert receipt.exists() and database.read_bytes() == b"original"
+
+
+def test_training_resource_observer_reports_filesystem_space_without_claiming_owned_bytes(tmp_path, monkeypatch):
+    from scripts.checks.training import training_process_measurement
+
+    (tmp_path / "status").write_text("VmRSS: 1024 kB\nThreads: 4\n")
+    (tmp_path / "io").write_text("read_bytes: 10\nwrite_bytes: 20\n")
+    available = 1000
+
+    def disk_usage(path):
+        assert path == tmp_path
+        return SimpleNamespace(free=available)
+
+    monkeypatch.setattr(training_process_measurement.shutil, "disk_usage", disk_usage)
+    with training_process_measurement.TrainingProcessMeasurement(proc_root=tmp_path, disk_root=tmp_path) as measurement:
+        available = 500
+    assert measurement.result["filesystem_free_bytes_at_start"] == 1000
+    assert measurement.result["filesystem_minimum_free_bytes"] == 500
+    assert "other_processes" in measurement.result["filesystem_measurement_scope"]
+
+
+def test_real_published_history_training_never_persists_due_observations(tmp_path, monkeypatch):
+    from scripts.checks.training import training_alignment
+    from scripts.checks.training.training_read_comparison import PrepareTrainingHistory
+    from trader.infra.settings import LoadRuntimeSettings
+    from trader.infra.settings.data_paths import DataPaths
+    from trader.training.infra import selected_training
+    from trader.training.infra.training_settings import LoadProfileTrainingSettings
+
+    project = Path(__file__).resolve().parents[3]
+    runtime = replace(LoadRuntimeSettings(project / "config/runtime.json"), data_paths=DataPaths(tmp_path / "source"))
+    history = PrepareTrainingHistory(tmp_path / "source", size=4, sessions=2000, sqlite_policy=SqlitePolicyFixture())
+    settings = LoadProfileTrainingSettings(project, "v3")
+    settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10))
+    monkeypatch.setattr(selected_training, "LoadProfileTrainingSettings", lambda *_args: settings)
+    monkeypatch.setattr("trader.infra.settings.LoadRuntimeSettings", lambda _path: runtime)
+    before = training_alignment._published_input_signature(history)
+    report = training_alignment._probe(
+        history,
+        tmp_path / "output",
+        ("v3",),
+        sqlite_policy=SqlitePolicyFixture(),
+        published_history_read_only=True,
+        sample_cache_transfer="hardlink",
+    )
+    assert report["status"] == "passed", report
+    summary = report["summary"]
+    assert summary["source_files_unchanged"] and summary["source_data_writes"] == 0
+    assert summary["input_mode"] == "published_history_read_only"
+    assert summary["repeat"]["execution"]["history_scan_passes"] == 0
+    assert summary["sample_reuse"]["run"]["execution"]["history_scan_passes"] == 0
+    assert before == training_alignment._published_input_signature(history)

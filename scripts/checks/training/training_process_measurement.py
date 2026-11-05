@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import shutil
 from pathlib import Path
 from threading import Event, Thread
 from types import TracebackType
@@ -11,7 +12,7 @@ from types import TracebackType
 class TrainingProcessMeasurement:
     """Sample Linux RSS and OS threads; peaks are observed lower bounds, not hard limits."""
 
-    def __init__(self, *, proc_root: Path = Path("/proc/self")) -> None:
+    def __init__(self, *, proc_root: Path = Path("/proc/self"), disk_root: Path | None = None) -> None:
         self._root = proc_root
         self._stop = Event()
         self._worker = Thread(target=self._observe, name="training-diagnostic-resources", daemon=False)
@@ -21,6 +22,9 @@ class TrainingProcessMeasurement:
         self._failures = 0
         self._cpu = 0.0
         self._io: tuple[int, int] | None = None
+        self._disk_root = disk_root
+        self._start_free: int | None = None
+        self._minimum_free: int | None = None
         self.result: dict[str, object] = {}
 
     def __enter__(self) -> TrainingProcessMeasurement:
@@ -31,6 +35,14 @@ class TrainingProcessMeasurement:
         return self
 
     def _sample(self) -> None:
+        if self._disk_root is not None:
+            try:
+                free = shutil.disk_usage(self._disk_root).free
+                if self._start_free is None:
+                    self._start_free = free
+                self._minimum_free = min(self._minimum_free, free) if self._minimum_free is not None else free
+            except OSError:
+                self._failures += 1
         try:
             with (self._root / "status").open(encoding="utf-8") as stream:
                 fields = dict(line.split(":", 1) for line in stream.read(65536).splitlines() if ":" in line)
@@ -73,6 +85,9 @@ class TrainingProcessMeasurement:
             "sampling_interval_seconds": 0.25,
             "scope": "current_process; OS_threads_include_one_observer; peaks_are_sampled_lower_bounds",
             "native_thread_utilization_verified": False,
+            "filesystem_free_bytes_at_start": self._start_free,
+            "filesystem_minimum_free_bytes": self._minimum_free,
+            "filesystem_measurement_scope": "whole_filesystem_including_other_processes; sampled_minimum",
         }
 
 

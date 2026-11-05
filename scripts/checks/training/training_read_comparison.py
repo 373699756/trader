@@ -25,6 +25,7 @@ from trader.download.infra.history_snapshot_inspection import LoadPublishedHisto
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.sqlite_publication import PublishSqliteFile
 from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
 
 from scripts.checks.download.history.history_parquet import ParquetHistoryProjection
@@ -58,6 +59,7 @@ def PrepareTrainingHistory(root: Path, *, size: int, sessions: int, sqlite_polic
     # A third committed revision is deliberately not published and must be invisible.
     hidden = replace(source, qfq=replace(source.qfq, amount=source.qfq.amount + 9876))
     partition.save_revisions((HistoryRevision(3, "main", hidden, False, "fixture", "fixture"),))
+    PublishSqliteFile(config.history_root / reference.relative_path, 2, sqlite_policy=sqlite_policy)
     return cast(Path, config.history_root)
 
 

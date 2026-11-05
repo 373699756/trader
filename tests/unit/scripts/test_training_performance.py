@@ -575,7 +575,8 @@ def test_v1_sample_reuse_is_explicitly_not_applicable_and_never_runs_a_fake_cach
     assert not (tmp_path / "work").exists()
 
 
-def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_cache(tmp_path, monkeypatch):
+@pytest.mark.parametrize("transfer", ("copy", "hardlink"))
+def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_cache(tmp_path, monkeypatch, transfer):
     from tests.unit.training.infra.profile.v5.test_v5_training import _history
     from trader.infra.settings import LoadRuntimeSettings
     from trader.training.infra import engine, selected_training
@@ -594,22 +595,54 @@ def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_
     initial = training_alignment._train_once(runtime, history.history_root, work, ("v3",))
     assert initial["complete"]
     assert not (work / "samples/v3").exists()
-    result = training_alignment._sample_reuse(runtime, history.history_root, work, ("v3",), initial)
+    result = training_alignment._sample_reuse(runtime, history.history_root, work, ("v3",), initial, transfer=transfer)
     assert result["failures"] == (), result
     assert result["preparation"]["exit_code"] == 1
     assert result["preparation"]["fit_entry_counts"] == {"v3": 1}
     assert result["preparation"]["model_files_created"] == 0
     assert engine.FitIndustryModels is fitter
-    assert (work / "sample-preparation/samples/v3/complete.json").is_file()
+    assert (work / "sample-preparation/samples/v3/complete.json").is_file() is (transfer == "copy")
     assert result["run"]["execution"]["history_scan_passes"] == 0
     assert result["source_cache_unchanged"] and result["target_cache_cleared"]
     assert not (work / "sample-reuse/samples/v3").exists()
+    assert result["cache_transfer_method"] == transfer
+    assert result["linked_bytes" if transfer == "hardlink" else "copied_bytes"] > 0
+    assert result["copied_bytes" if transfer == "hardlink" else "linked_bytes"] == 0
+    assert result["preparation_cache_released_after_verification"] is (transfer == "hardlink")
+    assert result["source_cache_signatures_before"] == result["source_cache_signatures_after"]
 
 
+def test_prepared_cache_release_rejects_unknown_objects_before_removing_anything(tmp_path):
+    for profile in ("v2", "v3"):
+        root = tmp_path / "samples" / profile
+        root.mkdir(parents=True)
+        (root / "samples.sqlite3").write_bytes(b"owned fixture")
+        (root / "complete.json").write_text("{}")
+    (tmp_path / "samples/v3/unowned").write_text("preserve")
+    with pytest.raises(ValueError, match="cleanup_unowned"):
+        training_alignment._release_prepared_samples(tmp_path, ("v2", "v3"))
+    assert (tmp_path / "samples/v2/samples.sqlite3").read_bytes() == b"owned fixture"
+    assert (tmp_path / "samples/v3/unowned").read_text() == "preserve"
 
 
+@pytest.mark.parametrize("transfer", ("copy", "hardlink"))
+@pytest.mark.parametrize("opposite_bytes", (0, 1, False, "0"))
+def test_cache_transfer_admission_requires_a_single_honest_byte_counter(transfer, opposite_bytes):
+    initial = deepcopy(_serial_results()[1].payload["summary"]["initial"])
+    scenario = _sample_scenario(initial["profiles"][0])
+    scenario["cache_transfer_method"] = transfer
+    scenario["copied_bytes"] = opposite_bytes if transfer == "hardlink" else 4096
+    scenario["linked_bytes"] = opposite_bytes if transfer == "copy" else 4096
+    failures = TrainingSampleReuseFailures(initial, scenario, ("v5",))
+    assert (not failures) is (type(opposite_bytes) is int and opposite_bytes == 0)
 
 
+@pytest.mark.parametrize("transfer", ([], {}, True, None, "unknown"))
+def test_cache_transfer_admission_rejects_unknown_json_values_without_crashing(transfer):
+    initial = deepcopy(_serial_results()[1].payload["summary"]["initial"])
+    scenario = _sample_scenario(initial["profiles"][0])
+    scenario["cache_transfer_method"] = transfer
+    assert "sample_reuse_cache_copy_missing" in TrainingSampleReuseFailures(initial, scenario, ("v5",))
 
 
 def test_sample_preparation_restores_fitter_when_execution_raises(tmp_path, monkeypatch):
