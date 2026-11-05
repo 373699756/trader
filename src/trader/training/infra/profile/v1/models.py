@@ -40,7 +40,7 @@ from trader.training.domain.v1.learned_rank import (
     LearnedRankPredictionMetrics,
 )
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
-from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock
+from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock, RecoverProfilePublication
 from trader.training.infra.profile.composition import SingleHeadCombiner
 from trader.training.infra.profile.v1.settings import ParseV1TrainingSettings
 
@@ -178,6 +178,7 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
         LearnedRankPredictor(head)
     model_root.mkdir(parents=True, exist_ok=True)
     profile_root = model_root / "v1"
+    RecoverLearnedRankPublication(model_root)
     if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
         raise ValueError("V1 model directory is invalid")
     staging = Path(tempfile.mkdtemp(prefix=".v1.publication.", dir=model_root))
@@ -281,6 +282,11 @@ def _require_replaceable_directory(profile_root: Path) -> None:
         for path in directory.iterdir():
             if path.name not in {"model.json", "metadata.json"} or path.is_symlink() or not path.is_file():
                 raise ValueError("V1 head directory has unexpected entries")
+
+
+def RecoverLearnedRankPublication(model_root: Path) -> None:
+    """Explicit training restores an interrupted V1 pair without promoting staged models."""
+    RecoverProfilePublication(model_root / "v1", _read_pair_directory)
 
 
 def ReadLearnedRankPair(model_root: Path) -> LearnedRankPair:
@@ -573,4 +579,10 @@ def _head(raw: object) -> LearnedRankHead:
     )
 
 
-__all__ = ["LearnedRankPredictor", "LoadV1ScoringProfile", "PublishLearnedRankPair", "ReadLearnedRankPair"]
+__all__ = [
+    "LearnedRankPredictor",
+    "LoadV1ScoringProfile",
+    "PublishLearnedRankPair",
+    "ReadLearnedRankPair",
+    "RecoverLearnedRankPublication",
+]

@@ -39,7 +39,12 @@ from trader.training.domain.v1.learned_rank import (
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions
-from trader.training.infra.profile.v1.models import LearnedRankPredictor, PublishLearnedRankPair, ReadLearnedRankPair
+from trader.training.infra.profile.v1.models import (
+    LearnedRankPredictor,
+    PublishLearnedRankPair,
+    ReadLearnedRankPair,
+    RecoverLearnedRankPublication,
+)
 from trader.training.infra.profile.v1.samples import (
     BuildLearnedRankSamples,
     CheckV1Cancellation,
@@ -87,6 +92,7 @@ def InspectV1Training(
 ) -> V1TrainingResult | None:
     """Reuse only a fully verified pair bound to this exact input and implementation."""
     CheckV1Cancellation(cancel_requested)
+    RecoverLearnedRankPublication(model_root)
     snapshot = source.snapshot
     identity = _training_identity(snapshot, settings)
     try:

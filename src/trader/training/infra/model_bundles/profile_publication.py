@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -49,6 +49,40 @@ def ProfilePublicationLock(profile_root: Path, timeout_seconds: float = 2.0) -> 
         lock.release()
 
 
+def RecoverProfilePublication(
+    profile_root: Path, validate: Callable[[Path], object], *, timeout_seconds: float = 2.0
+) -> None:
+    """Explicit writers recover a unique validated old pair under the publication lock."""
+    if not profile_root.parent.exists() or profile_root.exists() or profile_root.is_symlink():
+        return
+    with ProfilePublicationLock(profile_root, timeout_seconds):
+        if profile_root.exists() or profile_root.is_symlink():
+            return
+        previous = tuple(profile_root.parent.glob(f".{profile_root.name}.previous.*"))
+        if not previous:
+            return
+        if len(previous) != 1:
+            raise ValueError("model publication recovery has ambiguous previous directories")
+        candidate = previous[0]
+        suffix = candidate.name.removeprefix(f".{profile_root.name}.previous.")
+        if len(suffix) != 32 or any(character not in "0123456789abcdef" for character in suffix):
+            raise ValueError("model publication recovery has an unrecognized previous directory")
+        has_pair = _require_recoverable_directory(candidate)
+        if has_pair:
+            validate(candidate)
+        os.replace(candidate, profile_root)
+        _fsync_directory(profile_root.parent)
+
+
+def RecoverProfileBundles(
+    profile_root: Path, profile: TrainedProfileContract, *, timeout_seconds: float = 2.0
+) -> None:
+    """Training restores the previous pair before deciding whether it can be reused."""
+    RecoverProfilePublication(
+        profile_root, lambda path: _inspect_profile_directory(path, profile), timeout_seconds=timeout_seconds
+    )
+
+
 def PublishProfileBundles(
     profile_root: Path,
     profile: TrainedProfileContract,
@@ -68,6 +102,7 @@ def PublishProfileBundles(
     ):
         raise ValueError("profile publication heads have different source snapshots")
     profile_root.parent.mkdir(parents=True, exist_ok=True)
+    RecoverProfileBundles(profile_root, profile, timeout_seconds=timeout_seconds)
     if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
         raise ValueError("trained profile directory is invalid")
     publication = Path(tempfile.mkdtemp(prefix=f".{profile_root.name}.publication.", dir=profile_root.parent))
@@ -129,16 +164,52 @@ def InspectPublishedProfileBundles(
     if not profile_root.parent.exists():
         raise FileNotFoundError(profile_root)
     with ProfilePublicationLock(profile_root, timeout_seconds):
-        if not profile_root.exists() and not profile_root.is_symlink():
-            raise FileNotFoundError(profile_root)
-        if not profile_root.is_dir() or profile_root.is_symlink():
-            raise ValueError("trained profile directory is invalid")
-        heads = tuple(
-            InspectPublishedHeadBundle(profile_root / contract.directory_name, contract.strategy, profile)
-            for contract in profile.heads
-        )
-        _validate_profile_pair(heads)
-        return heads
+        return _inspect_profile_directory(profile_root, profile)
+
+
+def _inspect_profile_directory(
+    profile_root: Path, profile: TrainedProfileContract
+) -> tuple[LoadedPublishedHeadBundle, ...]:
+    if not profile_root.exists() and not profile_root.is_symlink():
+        raise FileNotFoundError(profile_root)
+    if not profile_root.is_dir() or profile_root.is_symlink():
+        raise ValueError("trained profile directory is invalid")
+    heads = tuple(
+        InspectPublishedHeadBundle(profile_root / contract.directory_name, contract.strategy, profile)
+        for contract in profile.heads
+    )
+    _validate_profile_pair(heads)
+    return heads
+
+
+def _require_recoverable_directory(profile_root: Path) -> bool:
+    if profile_root.is_symlink() or not profile_root.is_dir():
+        raise ValueError("model publication recovery directory is invalid")
+    heads = {path.name for path in profile_root.iterdir()} & {"tomorrow", "d25"}
+    if heads and heads != {"tomorrow", "d25"}:
+        raise ValueError("model publication recovery directory is missing a head")
+    for directory in profile_root.iterdir():
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("model publication recovery head is invalid")
+        files = {path.name for path in directory.iterdir()}
+        if directory.name in heads:
+            if files != {"model.json", "metadata.json"}:
+                raise ValueError("model publication recovery head has unexpected entries")
+        elif directory.name.startswith(".bundle-staging."):
+            suffix = directory.name.removeprefix(".bundle-staging.")
+            if (
+                len(suffix) != 8
+                or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in suffix)
+                or not files <= {"model.json", "metadata.json"}
+            ):
+                raise ValueError("model publication recovery staging has unexpected entries")
+        else:
+            raise ValueError("model publication recovery head has unexpected entries")
+        if any(path.is_symlink() or not path.is_file() for path in directory.iterdir()):
+            raise ValueError("model publication recovery file is invalid")
+    # A first installation has only owned staging directories, never a published
+    # pair. Restore that workspace so training can rebuild, without reusing a head.
+    return bool(heads)
 
 
 def _validate_profile_pair(heads: tuple[LoadedPublishedHeadBundle, ...]) -> None:
@@ -166,4 +237,6 @@ __all__ = [
     "ProfilePublicationBusyError",
     "ProfilePublicationLock",
     "PublishProfileBundles",
+    "RecoverProfileBundles",
+    "RecoverProfilePublication",
 ]

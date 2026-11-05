@@ -4,14 +4,17 @@ from tests.helpers.configuration import SqlitePolicyFixture
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from multiprocessing import get_context
 from pathlib import Path
 from threading import Event
 
 import pytest
 
+from tests.helpers.model_publication import CrashProfilePublication
 from tests.unit.training.infra.profile.v1.test_learned_rank_training import _settings
 from tests.unit.training.infra.profile.v5.test_v5_training import _history
 from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 from trader.training.application.selected_training import SelectedTrainingTask, TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
@@ -92,7 +95,8 @@ def test_shared_reader_closes_nested_streams_even_when_callers_retain_them(tmp_p
     assert all(rows.gi_frame is None for rows in (*retained, *worker_rows))
 
 
-def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path, monkeypatch):
+@pytest.mark.parametrize("publication_exit", ("old_moved", "new_moved"))
+def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path, monkeypatch, publication_exit):
     import torch
     from trader.training.infra.profile.v5 import network
 
@@ -167,12 +171,42 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
     assert all(item.cpu.acquired_count == item.memory.acquired_count == 1 for item in result.timing.profiles)
     assert all(item.cpu.inflight_count == item.memory.inflight_count == 0 for item in result.timing.profiles)
     assert all(item.finished_after_seconds >= item.started_after_seconds >= 0 for item in result.timing.profiles)
+    before = {
+        path.relative_to(request.paths.models): path.read_bytes()
+        for profile in request.profiles
+        for path in (request.paths.models / profile).rglob("*.json")
+    }
+    for profile in request.profiles:
+        process = get_context("spawn").Process(
+            target=CrashProfilePublication, args=(request.paths.models, profile, publication_exit)
+        )
+        process.start()
+        try:
+            process.join(45)
+            assert process.exitcode == 86
+        finally:
+            if process.is_alive():
+                process.kill()
+                process.join(5)
+            process.close()
+        root = request.paths.models / profile
+        assert root.exists() == (publication_exit == "new_moved")
+        assert len(tuple(root.parent.glob(f".{profile}.previous.*"))) == 1
+        if publication_exit == "old_moved":
+            with pytest.raises(ScoringModelsUnavailableError):
+                LoadScoringProfile(profile, training_root=request.paths.models)
+            assert not root.exists()  # The serving reader never repairs a model directory.
     second = request
     with ThreadPoolExecutor(max_workers=4) as executor:
         reused = TrainSelectedProfiles(second, executor, sqlite_policy=SqlitePolicyFixture())
     assert len(scans) == 1
     assert reused.history_scan_passes == reused.history_rows_read == 0
     assert all(item.result.reused for item in reused.outcomes)
+    assert all((request.paths.models / relative).read_bytes() == content for relative, content in before.items())
+    assert all(
+        len(tuple(request.paths.models.glob(f".{profile}.previous.*"))) == (publication_exit == "new_moved")
+        for profile in request.profiles
+    )
     assert reused.timing is not None and reused.timing.source_read_seconds == 0
     assert all(item.cpu.acquired_count == item.memory.acquired_count == 0 for item in reused.timing.profiles)
 

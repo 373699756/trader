@@ -63,6 +63,7 @@ from trader.training.infra.model_bundles.documents import (
 from trader.training.infra.model_bundles.profile_publication import (
     InspectPublishedProfileBundles,
     PublishProfileBundles,
+    RecoverProfileBundles,
 )
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 from trader.training.infra.model_fitting import FitIndustryModels, FittingParameterDocument, LightGBMFittingParameters
@@ -868,6 +869,7 @@ def _common_document(context: _TrainingRunContext) -> dict[str, object]:
 
 
 def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrainingRequest) -> TrainingRunResult | None:
+    RecoverProfileBundles(request.train_root, request.profile)
     try:
         bundles = InspectPublishedProfileBundles(request.train_root, request.profile)
     except (OSError, ValueError, RuntimeError):
