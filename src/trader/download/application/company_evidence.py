@@ -467,7 +467,11 @@ class _AnnouncementRun:
         dependencies, state = self._dependencies, self._state
         initial_pages = state.pages
         while self.can_continue and not _cancelled(dependencies) and state.pages - initial_pages < max_pages:
-            partition = self._queue.popleft()
+            # Splits and resumed cursors can put an older range at the head.
+            # Keep the newest date ahead of every market's older backlog;
+            # equal-date query leaves retain their durable dispatch order.
+            partition = max(self._queue, key=lambda item: item.end)
+            self._queue.remove(partition)
             self._report(partition, include_current=True)
             if _cancelled(dependencies):
                 self._queue.appendleft(partition)

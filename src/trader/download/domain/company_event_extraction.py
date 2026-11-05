@@ -122,6 +122,7 @@ def ResolveCompanyLinks(
         if not pending:
             continue
         matched = False
+        satisfied_positive_evidence: set[str] = set()
         for index, event in enumerate(risk_rows):
             if (event.risk_type not in candidate.closures or event.subject_type is not candidate.subject
                 or candidate.published_at < event.first_disclosed_at or len(candidate.cases) > 1
@@ -147,13 +148,18 @@ def ResolveCompanyLinks(
                     milestones = (*positive_event.level_milestones, *(m for m in candidate.positive.level_milestones if m.level not in {p.level for p in positive_event.level_milestones}))
                     positive_rows[index] = replace(candidate.positive, event_id=positive_event.event_id, first_disclosed_at=positive_event.first_disclosed_at,
                         evidence_ids=_evidence(positive_event.evidence_ids, candidate.evidence_id), level_milestones=milestones)
+                    if candidate.positive.not_eligible_reason is None:
+                        satisfied_positive_evidence.update(positive_event.evidence_ids)
                 matched = True
                 break
         if matched:
-            remaining = [r for r in remaining if r not in pending]
+            remaining = _retire_measurement_reviews(
+                [r for r in remaining if r not in pending], tuple(satisfied_positive_evidence)
+            )
             if candidate.positive is not None and not candidate.cancellation and candidate.positive.not_eligible_reason:
                 remaining.append(CompanyReviewReason("positive", candidate.positive.not_eligible_reason, candidate.evidence_id,
                                                     candidate.published_at, "实施数据仍待核实"))
+    _suspend_reviewed_positives(positive_rows, remaining)
     return CompanyExtractedEvents(tuple(risk_rows), tuple(positive_rows), tuple(remaining), 0)
 
 
@@ -213,7 +219,13 @@ def ExtractCompanyEvents(
             reason = _append_positive(positives, verified, positive_type, policy)
             if reason:
                 reviews.append(_review(document, observed_at, "positive", reason, "利好实施、数值或同案关系尚未核实"))
-    _suspend_reviewed_positives(positives, reviews, observed_at)
+            else:
+                for event in positives:
+                    if (item.identity in event.evidence_ids and event.last_disclosed_at == item.published_at
+                        and event.not_eligible_reason is None
+                        and event.status in {CompanyPositiveStatus.IMPLEMENTING, CompanyPositiveStatus.COMPLETED}):
+                        reviews = _retire_measurement_reviews(reviews, event.evidence_ids)
+    _suspend_reviewed_positives(positives, reviews)
     return CompanyExtractedEvents(
         tuple(sorted(risks, key=lambda event: (event.risk_type.value, event.event_id))),
         tuple(sorted(positives, key=lambda event: (event.event_type.value, event.event_id))),
@@ -222,13 +234,24 @@ def ExtractCompanyEvents(
     )
 
 
+def _retire_measurement_reviews(
+    reviews: list[CompanyReviewReason], evidence_ids: tuple[str, ...]
+) -> list[CompanyReviewReason]:
+    # Detection time is a collection timestamp, not the disclosure's effective
+    # time. A late first sync may detect the older gap after the new disclosure.
+    return [review for review in reviews if not (
+        review.scope == "positive" and review.reason_code == "implementation_or_measurement_unverified"
+        and review.evidence_id in evidence_ids
+    )]
+
+
 def _suspend_reviewed_positives(
-    positives: list[CompanyPositiveEvent], reviews: list[CompanyReviewReason], observed_at: datetime
+    positives: list[CompanyPositiveEvent], reviews: list[CompanyReviewReason]
 ) -> None:
     # A later progress document cannot override a pending/corrected prerequisite.
     for review in reviews:
         if review.scope == "positive" and review.evidence_id is not None:
-            _suspend_positive(positives, review.evidence_id, observed_at, refresh_time=False)
+            _suspend_positive(positives, review.evidence_id, review.detected_at, refresh_time=False)
 
 
 def _verify_document(
@@ -569,7 +592,10 @@ def _append_positive(
     title = "".join(item.title.split())
     if previous is not None and item.published_at < previous.last_disclosed_at:
         if item.identity in previous.evidence_ids and not _positive_measurements(verified, kind)[2]:
-            return "implementation_or_measurement_unverified"
+            # An already superseded prerequisite has re-entered with an
+            # unqualified conclusion. Unchanged progress cannot clear a source
+            # revision as though it were an older first-pass measurement gap.
+            return "revision_pending"
         return None
     if previous is not None and previous.status is CompanyPositiveStatus.CANCELLED:
         return None

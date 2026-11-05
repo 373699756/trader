@@ -201,6 +201,7 @@ def Main() -> int:
     parser.add_argument("--field-sources-only", action="store_true", help="Read one bounded page of structured company field alternatives; no database writes.")
     parser.add_argument("--field-source-rows", type=int, default=5, help="Rows per structured field sample (1..500); requires --field-sources-only.")
     parser.add_argument("--field-source-schema", action="store_true", help="Discover column names from exactly one row per source; requires --field-sources-only and --field-source-rows 1. Values remain projected.")
+    parser.add_argument("--field-source-identities", action="store_true", help="Project at most five bounded source identities and measurements; requires --field-sources-only.")
     parser.add_argument("--annual-income-period", type=date.fromisoformat, help="Read one explicit annual period with the production F10 decoder; requires exactly one --codes value.")
     args = parser.parse_args()
     if not (0 < args.timeout_seconds <= 30 and 0 < args.source_loop_seconds <= 120 and 0 < args.task_seconds <= 600):
@@ -209,6 +210,8 @@ def Main() -> int:
         parser.error("--field-source-rows requires --field-sources-only and a value within 1..500")
     if args.field_source_schema and (not args.field_sources_only or args.field_source_rows != 1):
         parser.error("--field-source-schema requires --field-sources-only and --field-source-rows 1")
+    if args.field_source_identities and (not args.field_sources_only or args.field_source_rows > 5):
+        parser.error("--field-source-identities requires --field-sources-only and at most five rows")
     if args.annual_income_period is not None and (args.field_sources_only or len(args.codes) != 1):
         parser.error("--annual-income-period requires one code and cannot be combined with --field-sources-only")
     if args.annual_income_period is not None:
@@ -230,6 +233,7 @@ def Main() -> int:
                 deadline=time.monotonic() + args.task_seconds,
                 sample_rows=args.field_source_rows,
                 discover_schema=args.field_source_schema,
+                include_identities=args.field_source_identities,
             )
     else:
         report = Collect(args)

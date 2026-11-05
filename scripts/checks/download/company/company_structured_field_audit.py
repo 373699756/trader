@@ -66,7 +66,7 @@ _SOURCES = (
         "SECURITYCODE",
         "DIM_RDATE",
         ("AMOUNTS", "SNDYYSR", "ZSNDYYSRBL", "OPERATEREVE"),
-        ("SIGNATORY", "SIGNATORYRELNAME", "SIGNDATE", "SIGNEFFECT", "ISABOLISHED", "YEAR"),
+        ("SIGNATORY", "SIGNATORYRELNAME", "SIGNDATE", "SIGNEFFECT", "ISABOLISHED", "YEAR", "CONTRACTNAME", "COUNTERPARTY", "UPDATEDATE"),
         ("contract_identity", "binding_effect", "revenue_original_year", "currency", "tax_basis", "historical_revisions"),
     ),
 )
@@ -120,6 +120,7 @@ def AuditCompanyStructuredSources(
     deadline: float,
     sample_rows: int = _SAMPLE_ROWS,
     discover_schema: bool = False,
+    include_identities: bool = False,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
     """Sample one page per source; report schemas and counts, without production writes.
@@ -136,6 +137,8 @@ def AuditCompanyStructuredSources(
         raise ValueError("company_field_probe_sample_limit_invalid")
     if type(discover_schema) is not bool or discover_schema and sample_rows != 1:
         raise ValueError("company_field_probe_schema_limit_invalid")
+    if type(include_identities) is not bool or include_identities and sample_rows > 5:
+        raise ValueError("company_field_probe_identity_limit_invalid")
     observed_at = observed_at.astimezone(_SHANGHAI)
     started = monotonic()
     begin, end = observed_at.date() - timedelta(days=365), observed_at.date()
@@ -180,6 +183,8 @@ def AuditCompanyStructuredSources(
                 limit=sample_rows,
             ))
             result = payload.get("result") if isinstance(payload, Mapping) else None
+            if include_identities and isinstance(result, Mapping):
+                sample["identity_samples"] = _identity_samples(result.get("data"), columns, sample_rows)
             if discover_schema and isinstance(result, Mapping):
                 rows = result.get("data")
                 if isinstance(rows, list) and len(rows) <= 1:
@@ -259,6 +264,24 @@ def _sample_summary(
             for field in fields
         ],
     }
+
+
+def _identity_samples(value: object, columns: tuple[str, ...], limit: int) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    samples: list[dict[str, object]] = []
+    for row in value[:limit]:
+        if not isinstance(row, Mapping):
+            continue
+        projected: dict[str, object] = {}
+        for key in columns:
+            field = row.get(key)
+            if isinstance(field, str):
+                projected[key] = field[:160]
+            elif field is None or _finite_number(field):
+                projected[key] = field
+        samples.append(projected)
+    return samples
 
 
 def _finite_number(value: object) -> bool:

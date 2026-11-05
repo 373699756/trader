@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import cast
 
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
+from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
+from trader.download.infra.company_announcement_links import (
+    EnsureCompanyAnnouncementLinks, LinkCompanyAnnouncementNumbers, WriteCompanyAnnouncementNumbers,
+)
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate, ResolveCompanyLinks
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
@@ -198,6 +202,7 @@ class SQLiteCompanyEvidenceIndex:
                 with SqliteTransaction(connection, immediate=True):
                     connection.run(DOCUMENT_RETRY_SCHEMA)
                     connection.run(DOCUMENT_EXTRACTION_SCHEMA)
+                    EnsureCompanyAnnouncementLinks(connection)
                     for statement in DISCLOSURE_QUERY_SCHEMA:
                         connection.run(statement)
                     ActivateDisclosureQueryPolicy(connection)
@@ -227,9 +232,10 @@ class SQLiteCompanyEvidenceIndex:
 
     def _repair_pending_files(self) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-            for row in connection.run("SELECT id,body_hash FROM disclosures WHERE body_retained=1").fetchall():
+            for row in connection.run("SELECT id,body_hash,record_hash FROM disclosures WHERE body_retained=1").fetchall():
+                self._check_cancelled()
                 try:
-                    self._documents.read(row[1])
+                    text = self._documents.read(row[1])
                 except (OSError, ValueError, EOFError):
                     connection.run(
                         "UPDATE disclosures SET body_checked=0,body_retained=0,body_hash=NULL WHERE id=?", (row[0],)
@@ -244,6 +250,8 @@ class SQLiteCompanyEvidenceIndex:
                             )
                         ),
                     )
+                else:
+                    WriteCompanyAnnouncementNumbers(connection, row[0], row[2], row[1], ExtractCompanyAnnouncementNumbers(text))
         self._release_files()
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
@@ -792,14 +800,16 @@ class SQLiteCompanyEvidenceIndex:
         # A result already accepted by the main thread is drained on cancellation.
         with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
             # Reject late or duplicate results before writing text or link candidates.
-            if connection.run(
-                "SELECT 1 FROM disclosures WHERE source=? AND source_key=? AND record_hash=? AND body_checked=0",
+            existing = connection.run(
+                "SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=? AND body_checked=0",
                 (item.source, item.identity, item.digest),
-            ).fetchone() is None:
+            ).fetchone()
+            if existing is None:
                 return False
             reservation = self._raw_files.reserve(self._documents.root, len(extraction.text.encode("utf-8")) + 4096, analysis=True) if self._raw_files is not None else nullcontext()
             with reservation:
                 digest = self._documents.write(extraction.text)
+            WriteCompanyAnnouncementNumbers(connection, existing[0], item.digest, digest, ExtractCompanyAnnouncementNumbers(extraction.text))
             candidate = ExtractCompanyLinkCandidate(CompanyDocument(item, extraction.text, True), extracted_at, self._event_policy)
             if candidate is not None:
                 connection.run("INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
@@ -1268,6 +1278,7 @@ class SQLiteCompanyEvidenceIndex:
                             "ON d.source=l.source AND d.source_key=l.source_key AND d.record_hash=l.record_hash "
                             "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE c.code=? AND l.extraction_hash=?",
                             (code, self._facts.extraction_hash)))
+                        candidates = LinkCompanyAnnouncementNumbers(source, code, candidates)
                         linked = ResolveCompanyLinks(candidates, facts.risk_events, facts.positive_events, facts.review_reasons, self._event_policy)
                         facts = replace(facts, risk_events=tuple(event for event in linked.risks if event.expires_at is None or event.expires_at > observed_at),
                                         positive_events=ApplyCompanyAnnualIncome(code, linked.positives, inputs[code].annual_incomes, observed_at, financials=snapshot.financials), review_reasons=linked.reviews,

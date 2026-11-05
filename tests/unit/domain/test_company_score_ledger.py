@@ -196,6 +196,47 @@ def test_positive_progress_cannot_replace_another_subjects_event():
     assert result.reviews[0].reason_code == "progress_unlinked"
 
 
+def test_latest_verified_measurement_retires_only_same_event_gap_even_when_first_sync_is_late():
+    plan = _document("plan", "关于回购股份的公告", "本公司拟回购股份，股份用于注销。")
+    other = _document("other", "关于回购股份的公告", "本公司拟回购股份，股份用于注销。")
+    later = AT + timedelta(days=3)
+    previous = ExtractCompanyEvents((plan, other), later, CompanyEventPolicy())
+    progress = _document(
+        "progress", "关于回购股份进展的公告",
+        "本公司根据公告plan，累计已回购股份占公司总股本的比例为0.3%，股份用于注销。", AT + timedelta(days=1),
+    )
+    result = ExtractCompanyEvents(
+        (progress,), later, CompanyEventPolicy(), previous_positives=previous.positives,
+        previous_reviews=previous.reviews,
+    )
+    event = next(event for event in result.positives if "plan" in event.evidence_ids)
+    assert event.measurements.actual_ratio_pct == 0.3 and event.positive_level == 2
+    assert not any(review.evidence_id == "plan" for review in result.reviews)
+    assert any(review.evidence_id == "other" for review in result.reviews)
+    restored = ExtractCompanyEvents(
+        (), later, CompanyEventPolicy(), previous_positives=result.positives, previous_reviews=result.reviews,
+    )
+    assert restored.positives == result.positives
+
+
+def test_verified_progress_cannot_clear_pending_original_source_revision():
+    plan = _document("plan", "关于回购股份的公告", "本公司拟回购股份，股份用于注销。")
+    previous = ExtractCompanyEvents((plan,), AT, CompanyEventPolicy())
+    later = AT + timedelta(days=2)
+    progress = _document(
+        "progress", "关于回购股份进展的公告",
+        "本公司根据公告plan，累计已回购股份占公司总股本的比例为0.3%，股份用于注销。", later,
+    )
+    pending = replace(plan, checked=False, text="")
+    result = ExtractCompanyEvents(
+        (pending, progress), later, CompanyEventPolicy(), previous_positives=previous.positives,
+        previous_reviews=previous.reviews,
+    )
+    assert any(review.reason_code == "document_pending" for review in result.reviews)
+    assert result.positives[0].positive_level == 0
+    assert result.positives[0].not_eligible_reason == "revision_pending"
+
+
 def test_positive_source_revision_with_another_subject_keeps_one_reviewed_event():
     first = _document(
         "holder", "控股股东增持公告", "控股股东累计已增持股份，占公司总股本的比例为0.3%。"

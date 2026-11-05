@@ -60,6 +60,55 @@ def test_date_completes_only_after_both_markets_finish(tmp_path, monkeypatch):
     assert final.dates.completed_days == final.dates.total_days == 366
 
 
+def test_date_split_keeps_newer_ranges_ahead_of_older_children_across_markets(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    last = NOW.date() - timedelta(days=7)
+    targets = tuple(
+        part for part in index.partitions(("sse", "szse"), NOW)
+        if part.end == last
+    )
+    assert len(targets) == 2
+    monkeypatch.setattr(index, "partitions", lambda *_: targets)
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if not isinstance(query, DisclosurePartition):
+                return super().fetch(query, **kwargs)
+            self.calls.append(query)
+            return DisclosurePage((), 3001 if query.end - query.start > timedelta(days=8) else 0, False)
+
+    source = Source()
+    assert not _run(index, source).needs_retry
+    dispatched = [part for part in source.calls if isinstance(part, DisclosurePartition)]
+    # Every newer half is discovered before either market's older half, even
+    # though the durable split returns its children in ascending date order.
+    assert [part.end for part in dispatched] == sorted((part.end for part in dispatched), reverse=True)
+    with SqliteSession(index.path) as connection:
+        assert connection.run(
+            "SELECT count(*) FROM partitions WHERE is_complete=0 AND end_date=?", (last.isoformat(),)
+        ).require_one()[0] == 0
+
+
+def test_newer_directory_precedes_resumed_older_cursor_without_resetting_it(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    newer, older = index.partitions(("sse",), NOW)[:2]
+    item = fixtures._disclosure("resume-head", when=NOW - timedelta(days=1))
+    index.commit_page(older, DisclosurePage((item,), 2, True), NOW)
+    older = replace(older, page=2, expected_rows=2, received_rows=1)
+    monkeypatch.setattr(index, "partitions", lambda *_: (older, newer))
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if not isinstance(query, DisclosurePartition):
+                return super().fetch(query, **kwargs)
+            self.calls.append(query)
+            return DisclosurePage((replace(item, identity="resume-tail"),), 2, False) if query == older else DisclosurePage((), 0, False)
+
+    source = Source()
+    assert not _run(index, source).needs_retry
+    assert [part.page for part in source.calls if isinstance(part, DisclosurePartition)] == [1, 2]
+
+
 @pytest.mark.parametrize("during_split", (False, True))
 def test_cancellation_preserves_cursor_without_source_circuit_or_retry_cooldown(tmp_path, monkeypatch, during_split):
     index, target = _scope(tmp_path, monkeypatch)

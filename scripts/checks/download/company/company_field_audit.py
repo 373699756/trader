@@ -11,6 +11,7 @@ from trader.infra.sqlite_connection import SqliteConnection
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.download.domain.company_events import ContractMeasurements
+from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES
@@ -65,6 +66,10 @@ def InspectCompanyFieldMaterial(
                     except (OSError, ValueError) as exc:
                         item["material_failure"] = type(exc).__name__
                     else:
+                        numbers = ExtractCompanyAnnouncementNumbers(text)
+                        item.update({"announcement_number": numbers.own,
+                                     "referenced_announcement_numbers": numbers.references,
+                                     "header_issuer_codes": numbers.issuer_codes})
                         lines = text.splitlines()
                         positions: set[int] = set()
                         for position, line in enumerate(lines):

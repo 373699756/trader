@@ -106,6 +106,35 @@ def test_four_structured_sources_sample_one_page_each_without_exposing_provider_
     assert "UNRELATED_PROVIDER_FIELD" not in json.dumps(result)
 
 
+def test_identity_samples_are_explicit_bounded_and_only_project_whitelisted_finite_values():
+    session = _Session()
+    row = session.payloads[audit._SOURCES[0].report]["result"]["data"][0]
+    row["REPUROBJECTIVE"] = "x" * 1000
+    row["REPURNUM"] = float("inf")
+    row["REPURAMOUNT"] = True
+    result = audit.AuditCompanyStructuredSources(
+        session, observed_at=_NOW, timeout_seconds=8, deadline=60,
+        sample_rows=3, include_identities=True, monotonic=lambda: 0,
+    )
+    projected = result["sources"][0]["identity_samples"][0]
+    assert projected["REPUROBJECTIVE"] == "x" * 160
+    assert "REPURNUM" not in projected and "REPURAMOUNT" not in projected
+    assert "UNRELATED_PROVIDER_FIELD" not in json.dumps(result)
+    assert "private-response-body" not in json.dumps(result)
+    assert all(len(source["identity_samples"]) <= 3 for source in result["sources"])
+
+
+@pytest.mark.parametrize("rows", (6, 500))
+def test_identity_sample_limit_is_checked_before_any_request(rows):
+    session = _Session()
+    with pytest.raises(ValueError, match="identity_limit"):
+        audit.AuditCompanyStructuredSources(
+            session, observed_at=_NOW, timeout_seconds=8, deadline=60,
+            sample_rows=rows, include_identities=True, monotonic=lambda: 0,
+        )
+    assert not session.requests
+
+
 @pytest.mark.parametrize("kind", ("old_notice", "future_notice", "wrong_annual_period", "missing_numeric_field"))
 def test_ignored_filters_and_missing_required_fields_cannot_pass_the_probe(kind):
     session = _Session()
