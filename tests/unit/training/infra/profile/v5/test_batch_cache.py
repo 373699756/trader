@@ -49,7 +49,23 @@ def test_cache_reads_two_partitions_once_and_preserves_batches(tmp_path, monkeyp
                     np.testing.assert_array_equal(actual.features, original.features)
                     np.testing.assert_array_equal(actual.labels, original.labels)
             assert bool(tuple(tmp_path.glob("tcn-batches-*"))) == (limit == 1)
+            buffers = (cache.training.base, cache.early_stopping.base) if limit == 1 else ()
         assert len(statements) == 2
+        assert not tuple(tmp_path.glob("tcn-batches-*"))
+        assert all(buffer.closed for buffer in buffers)
+
+        def cancelled():
+            raise InterruptedError("cancelled")
+
+        with pytest.raises(InterruptedError), batch_cache.CacheTcnBatches(samples, counts, contract, 2, cancelled):
+            pytest.fail("cancelled cache construction completed")
+        assert not tuple(tmp_path.glob("tcn-batches-*"))
+
+        with pytest.raises(InterruptedError):
+            with batch_cache.CacheTcnBatches(samples, counts, contract, 2, lambda: None) as cache:
+                buffers = (cache.training.base, cache.early_stopping.base) if limit == 1 else ()
+                raise InterruptedError("cancelled while fitting")
+        assert all(buffer.closed for buffer in buffers)
         assert not tuple(tmp_path.glob("tcn-batches-*"))
 
 
@@ -132,9 +148,28 @@ def test_hard_exit_releases_lock_and_reopens_sealed_samples_without_batch_residu
                 assert sum(len(batch.labels) for batch in batches.batches("training")) == 5
     assert (cache.path.read_bytes(), cache.manifest.read_bytes()) == sealed
 
-        def cancelled():
-            raise InterruptedError("cancelled")
 
-        with pytest.raises(InterruptedError), batch_cache.CacheTcnBatches(samples, counts, contract, 2, cancelled):
-            pytest.fail("cancelled cache construction completed")
-        assert not tuple(tmp_path.glob("tcn-batches-*"))
+@pytest.mark.parametrize("foreign", ("file", "directory", "symlink"))
+def test_recovery_preserves_unrecognized_tcn_files_and_all_owned_workspaces(tmp_path, foreign):
+    root = tmp_path / "samples/v5"
+    first = root / "tcn-batches-owned"
+    first.mkdir(parents=True)
+    owned = first / "training"
+    owned.write_bytes(b"owned scratch")
+    second = root / "tcn-batches-unrecognized"
+    second.mkdir()
+    protected = tmp_path / "protected"
+    protected.write_bytes(b"keep")
+    if foreign == "file":
+        (second / "unknown").write_bytes(b"keep")
+    elif foreign == "directory":
+        (second / "training").mkdir()
+        (second / "training" / "unknown").write_bytes(b"keep")
+    else:
+        (second / "training").symlink_to(protected)
+    with HistoryMaintenanceLock(tmp_path / "models/.v5.training.lock"):
+        with pytest.raises(ValueError, match="unknown_tcn_workspace"):
+            _restart_cache(root).open()
+    assert owned.read_bytes() == b"owned scratch"
+    assert second.exists()
+    assert protected.read_bytes() == b"keep"
