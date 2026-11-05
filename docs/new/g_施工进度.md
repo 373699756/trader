@@ -217,6 +217,8 @@
 
 ### 阶段338：codexA统一全部检测入口并按业务整理脚本
 
+- 本次遗留回归接续（2026-11-05）：用户明确处理A脚本/页面回归债务，基线9fce65ad，沿原338核销原有失败，不重做已完成迁移。首轮具名文件/节点14项中6项失败、8项通过：3项浏览器夹具未表达Long和quotes_complete，3项shadow替身缺必传sqlite_policy；旧内存JSON、Parquet及market-factor stdout节点已通过，共享采集节点待全文件复核。仅改直接测试消费者，下载/训练诊断业务及B/C未提交文件保留；页面旧文案另复核。
+- 本次回归债务核销：浏览器夹具覆盖四个短线视图及一个Long视图，并保留错视图、未就绪、报价缺失及代码不匹配拒绝；shadow替身显式接sqlite_policy，market-factor共享采集夹具改用真实已解析RuntimeSettings，补齐其遗漏的market_data，不改生产诊断。页面旧断言明确复现1 failed/15 passed（/tmp/trader-a338-page-before.xml），按当前“明天”文案修正；扩大集53项曾复现共享采集夹具1项失败，修正后从1f90e120与A暂存区导出的/tmp/trader-a338-debt-delivery七文件53 passed（21.83秒，/tmp/trader-a338-frozen-final.xml），包括旧10项的全部对应消费者，未排除失败用例。4修改文件Ruff E9/F/B/UP、完整diff及空白检查通过；没有运行格式、真实浏览器/供应商、训练或性能负载。原338十项既有失败和342旧页面断言已核销，P61工具性能仍由4.5验收，不据fixture关闭真实业务或性能。
 - owner/状态：codexA / completed（P61入口、原子迁移与功能验收；性能由D接管，P61整体未关闭）。本轮按用户“继续codexA中script任务”沿338闭合，未另建阶段；开工基线`d5dca95a`，接续/交付基线`604860b9`，`Afuture`跟踪`origin/Afuture`。原327及其真实资料待验项保留，不执行活动数据迁移、真实下载/训练或发布。
 - 范围与所有权：全量清点scripts、产品检测调用者、Makefile、README、pytest配置、相关测试与当前说明；A负责统一入口、公共执行/报告、工程检查及原子路径/导入切换，下载/训练检查仍归B/C各自业务。本轮只迁移其路径和调用，不纳入B/C已有未提交业务逻辑；具名诊断及其未提交改动按新路径保留。迁移期间B/C不再编辑旧scripts路径，业务源码和各自阶段记录保持原归属。
 - 实际改动：清点基线全部86个Python脚本，逐文件用途、副作用、消费者和去留见scripts/README；唯一入口按business/module/check选择，catalog单独拥有路由，参数、执行、投影/报告及业务实现分开。工程质量、安装、资源一致性、迁移verify、内存及skill评测统一接入；原profile别名、旧独立检测入口和旧包删除，维护生成/build/rollback/repack保留，无兼容转发。Makefile、README、两平台启动帮助、启用Python skill、测试及子进程全部切换；比较子进程固定当前绝对入口与指定产品checkout，避免误用旧入口。

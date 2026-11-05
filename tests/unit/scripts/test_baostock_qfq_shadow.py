@@ -33,11 +33,11 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive = _archive()
-    monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", lambda _root: archive)
+    monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", lambda _root, *, sqlite_policy: archive)
     monkeypatch.setattr(
         shadow,
         "HistorySnapshotReader",
-        lambda _root: SimpleNamespace(
+        lambda _root, *, sqlite_policy: SimpleNamespace(
             iter_shadow_facts=lambda *_args: iter(_fact(day) for day in archive.calendar.open_dates)
         ),
     )
@@ -53,11 +53,11 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
 
 def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch) -> None:
     archive = _archive()
-    monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", lambda _root: archive)
+    monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", lambda _root, *, sqlite_policy: archive)
     monkeypatch.setattr(
         shadow,
         "HistorySnapshotReader",
-        lambda _root: SimpleNamespace(
+        lambda _root, *, sqlite_policy: SimpleNamespace(
             iter_shadow_facts=lambda *_args: iter(
                 _fact(day, qfq=day != date(2026, 1, 5)) for day in archive.calendar.open_dates
             )
@@ -71,7 +71,7 @@ def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch
 
 
 def test_missing_published_snapshot_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    def unavailable(_root: object) -> None:
+    def unavailable(_root: object, *, sqlite_policy) -> None:
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
 
     monkeypatch.setattr(shadow, "LoadPublishedHistorySnapshot", unavailable)

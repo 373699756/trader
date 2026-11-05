@@ -32,7 +32,7 @@ from scripts.checks.download.market.market_factor_inputs import (
 from scripts.checks.download.market.market_factor_text import RenderMarketFactorText
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.settings import LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote, ModelIndustryReference
@@ -308,10 +308,11 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     replayed = []
     industry = ModelIndustryReference("制造业", "证监会行业分类", AT.date(), "baostock", "fixture")
     references = FixedReferences((), {"600001": industry}, (), ())
+    configured = LoadRuntimeSettings(Path("config/runtime.json"))
     monkeypatch.setattr(
         comparison,
         "LoadRuntimeSettings",
-        lambda path: SimpleNamespace(runtime_dir=path, strategy_config_path=path, data_paths=DataPaths(path)),
+        lambda path: replace(configured, strategy_config_path=path, data_paths=DataPaths(path)),
     )
     monkeypatch.setattr(
         comparison,
