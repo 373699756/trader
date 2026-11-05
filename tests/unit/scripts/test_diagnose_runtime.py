@@ -1,25 +1,25 @@
 from __future__ import annotations
 
+from scripts.checks.catalog import SelectionArguments
+
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from scripts.diagnose_runtime import (
-    DiagnosticCommand,
-    DiagnosticOptions,
-    DiagnosticResult,
-    _parser,
-    _validate,
-    build_commands,
-    build_report,
-    execute_command,
-    run_diagnostics,
-)
-from scripts.runtime_diagnostics import baostock_concurrency
-from scripts.runtime_diagnostics.browser_refresh import _seed
-from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_space
+from scripts.checks.contracts import DiagnosticCommand
+from scripts.checks.contracts import DiagnosticOptions
+from scripts.checks.contracts import DiagnosticResult
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.projections import BuildReport
+from scripts.checks.execution import ExecuteCommand
+from scripts.checks.execution import RunDiagnostics
+from scripts.checks.download.history import baostock_concurrency
+from scripts.checks.recommendation.browser_refresh import _seed
+from scripts.checks.download.history.history_sqlite_performance import inspect_history_space
 from trader.download.infra.baostock_session import RateLimitedBaoStockSdk
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.runtime.schedule import SHANGHAI
@@ -28,7 +28,7 @@ from trader.recommendation.domain.publication.models import Strategy
 
 def _options(**overrides: object) -> DiagnosticOptions:
     defaults = DiagnosticOptions(
-        profile="live",
+        check_id="web",
         base_url="http://127.0.0.1:5000",
         runtime_config=Path("config/runtime.json"),
         codes=("600519", "300750", "688981"),
@@ -54,17 +54,17 @@ def _options(**overrides: object) -> DiagnosticOptions:
 
 
 def test_removed_index_experiment_is_rejected_before_execution(capsys):
-    parser = _parser()
+    parser = BuildParser()
     assert "history-indexes" not in parser.format_help()
     with pytest.raises(SystemExit) as failure:
         parser.parse_args(["--profile", "history-indexes"])
     assert failure.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err
+    assert "required" in capsys.readouterr().err
 
 
 def test_price_repair_audit_can_resume_its_external_copy_without_empty_directory_preparation():
-    options, _ = _validate(_parser().parse_args(["--profile", "price-repair-audit", "--history-root", "data/market/history", "--database-probe-directory", "/tmp/trader-price-repair-test"]))
-    commands = build_commands(options, python_executable="/python3")
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('price-repair-audit'), "--history-root", "data/market/history", "--database-probe-directory", "/tmp/trader-price-repair-test"]))
+    commands = BuildCommands(options, python_executable="/python3")
     assert len(commands) == 1
     assert commands[0].name == "price_repair_audit"
     assert commands[0].argv[-2:] == ("--work-root", "/tmp/trader-price-repair-test")
@@ -73,7 +73,7 @@ def test_price_repair_audit_can_resume_its_external_copy_without_empty_directory
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
 def test_local_selected_profile_selects_only_offline_business_checks(profile):
-    commands = build_commands(_options(profile="local", scoring_profile=profile), python_executable="/python")
+    commands = BuildCommands(_options(check_id="snapshot", scoring_profile=profile), python_executable="/python")
     assert tuple(command.name for command in commands) == (
         f"configuration:{profile}",
         "history_maintenance",
@@ -89,16 +89,16 @@ def test_local_selected_profile_selects_only_offline_business_checks(profile):
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
 def test_runtime_profile_selection_reaches_each_read_only_web_probe(profile):
-    options, _ = _validate(_parser().parse_args(["--profile", "runtime", "--scoring-profile", profile]))
-    commands = build_commands(options, python_executable="/python")
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('web'), "--scoring-profile", profile]))
+    commands = BuildCommands(options, python_executable="/python")
     assert tuple(command.name for command in commands) == (f"web_health:{profile}",)
     assert commands[0].argv[-2:] == ("--profile", profile)
 
 
 @pytest.mark.parametrize("selection", ("v1,v2,v3,v5", "v5,v3,v1,v2"))
 def test_performance_four_profiles_share_one_child_command(selection: str) -> None:
-    options, _ = _validate(_parser().parse_args(["--profile", "performance", "--scoring-profile", selection]))
-    commands = build_commands(options, python_executable="/python")
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('performance'), "--scoring-profile", selection]))
+    commands = BuildCommands(options, python_executable="/python")
 
     assert options.scoring_profile == "v1,v2,v3,v5"
     assert len(commands) == 1
@@ -107,25 +107,24 @@ def test_performance_four_profiles_share_one_child_command(selection: str) -> No
     assert commands[0].argv[-2:] == ("--profile", "v1,v2,v3,v5")
 
 
-@pytest.mark.parametrize("profile", ("local", "research", "web", "runtime", "full"))
+@pytest.mark.parametrize("profile", ("snapshot", "research", "web", "web", "browser"))
 def test_four_profiles_are_rejected_outside_the_performance_diagnostic(profile: str) -> None:
     with pytest.raises(ValueError, match="only available for performance"):
-        _validate(_parser().parse_args(["--profile", profile, "--scoring-profile", "v1,v2,v3,v5"]))
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments(profile), "--scoring-profile", "v1,v2,v3,v5"]))
 
 
 @pytest.mark.parametrize("selection", ("v1,v5", "v1,v2,v3,v3", "v1,v2,v3,v9", "v1,"))
 def test_performance_rejects_partial_duplicate_or_invalid_profile_selections(selection: str) -> None:
     with pytest.raises(SystemExit) as error:
-        _parser().parse_args(["--profile", "performance", "--scoring-profile", selection])
+        BuildParser().parse_args([*SelectionArguments('performance'), "--scoring-profile", selection])
     assert error.value.code == 2
 
 
 def test_continuous_performance_option_reaches_the_existing_child_and_report():
-    options, _ = _validate(
-        _parser().parse_args(
+    options, _ = ValidateOptions(
+        BuildParser().parse_args(
             [
-                "--profile",
-                "performance",
+                *SelectionArguments('performance'),
                 "--scoring-profile",
                 "v3",
                 "--performance-replay-ticks",
@@ -135,7 +134,7 @@ def test_continuous_performance_option_reaches_the_existing_child_and_report():
             ]
         )
     )
-    command = build_commands(options, python_executable="/python")[0]
+    command = BuildCommands(options, python_executable="/python")[0]
     position = command.argv.index("--replay-ticks")
     assert command.argv[position + 1] == "100"
     assert command.argv[command.argv.index("--replay-rows") + 1] == "120"
@@ -149,36 +148,36 @@ def test_continuous_performance_option_reaches_the_existing_child_and_report():
         },
         None,
     )
-    report = build_report("performance", (result,))
+    report = BuildReport("performance", (result,))
     assert report["checks"][0]["summary"]["continuous_pipeline"]["contract"] == "fixture-replay"
 
 
 @pytest.mark.parametrize(
     "arguments",
     (
-        ["--profile", "runtime", "--performance-replay-ticks", "2"],
-        ["--profile", "performance", "--performance-replay-ticks", "1001"],
-        ["--profile", "performance", "--performance-replay-ticks", "-1"],
-        ["--profile", "performance", "--performance-replay-rows", "120"],
+        [*SelectionArguments('web'), "--performance-replay-ticks", "2"],
+        [*SelectionArguments('performance'), "--performance-replay-ticks", "1001"],
+        [*SelectionArguments('performance'), "--performance-replay-ticks", "-1"],
+        [*SelectionArguments('performance'), "--performance-replay-rows", "120"],
     ),
 )
 def test_continuous_performance_option_rejects_wrong_profile_and_unbounded_runs(arguments):
     with pytest.raises(ValueError, match="performance-replay-"):
-        _validate(_parser().parse_args(arguments))
+        ValidateOptions(BuildParser().parse_args(arguments))
 
 
-@pytest.mark.parametrize("profile", ("local", "research", "web", "runtime", "performance", "full"))
+@pytest.mark.parametrize("profile", ("snapshot", "research", "web", "web", "performance", "browser"))
 def test_removed_both_alias_is_rejected_before_execution(profile) -> None:
-    parser = _parser()
+    parser = BuildParser()
     assert "both" not in parser.format_help()
     with pytest.raises(SystemExit) as error:
-        parser.parse_args(["--profile", profile, "--scoring-profile", "both"])
+        parser.parse_args([*SelectionArguments(profile), "--scoring-profile", "both"])
     assert error.value.code == 2
 
 
 def test_only_the_performance_diagnostic_defaults_to_four_profiles() -> None:
-    performance = build_commands(_options(profile="performance"), python_executable="/python")
-    local = build_commands(_options(profile="local"), python_executable="/python")
+    performance = BuildCommands(_options(check_id="performance"), python_executable="/python")
+    local = BuildCommands(_options(check_id="snapshot"), python_executable="/python")
 
     assert len(performance) == 1
     assert performance[0].argv[-2:] == ("--profile", "v1,v2,v3,v5")
@@ -197,7 +196,7 @@ def test_four_profile_performance_report_retains_shared_process_and_model_eviden
         "memory": {"peak_rss_bytes": 1024},
         "failures": [],
     }
-    report = build_report(
+    report = BuildReport(
         "performance",
         (
             DiagnosticResult(
@@ -211,46 +210,46 @@ def test_four_profile_performance_report_retains_shared_process_and_model_eviden
 
 
 def test_history_resume_probe_routes_sample_bound_without_starting_downloads():
-    commands = build_commands(_options(profile="history-sqlite", history_resume_samples=8), python_executable="/python")
+    commands = BuildCommands(_options(check_id="history-sqlite", history_resume_samples=8), python_executable="/python")
     assert len(commands) == 1
     command = commands[0]
     assert command.argv[command.argv.index("--resume-samples") + 1] == "8"
     assert "sync" not in command.argv and "train" not in command.argv
-    args = _parser().parse_args(["--profile", "history-sqlite", "--history-resume-samples", "9"])
+    args = BuildParser().parse_args([*SelectionArguments('history-sqlite'), "--history-resume-samples", "9"])
     with pytest.raises(ValueError, match="--history-resume-samples"):
-        _validate(args)
+        ValidateOptions(args)
 
 
 def test_preload_timing_defaults_to_three_profiles_and_separates_feature_cpu_probe():
-    plain, _ = _validate(_parser().parse_args(["--profile", "history-sqlite", "--history-preload-audit"]))
-    command = build_commands(plain, python_executable="/python3")[0]
+    plain, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('history-sqlite'), "--history-preload-audit"]))
+    command = BuildCommands(plain, python_executable="/python3")[0]
     assert command.argv[command.argv.index("--preload-profiles") + 1] == "v1,v2,v3"
     assert "--preload-cpu-profile" not in command.argv
     assert "--preload-feature-audit" not in command.argv
-    detailed, _ = _validate(_parser().parse_args([
-        "--profile", "history-sqlite", "--history-preload-audit", "--history-preload-feature-audit",
+    detailed, _ = ValidateOptions(BuildParser().parse_args([
+        *SelectionArguments('history-sqlite'), "--history-preload-audit", "--history-preload-feature-audit",
         "--history-preload-profiles", "v3",
     ]))
-    command = build_commands(detailed, python_executable="/python3")[0]
+    command = BuildCommands(detailed, python_executable="/python3")[0]
     assert "--preload-feature-audit" in command.argv
     assert command.argv[command.argv.index("--preload-profiles") + 1] == "v3"
 
 
 def test_model_inputs_forwards_the_selected_runtime_configuration():
-    options = _options(profile="model-inputs", runtime_config=Path("config/runtime.json"))
-    command = build_commands(options, python_executable="/python3")[0]
+    options = _options(check_id="model-inputs", runtime_config=Path("config/runtime.json"))
+    command = BuildCommands(options, python_executable="/python3")[0]
     assert command.argv[command.argv.index("--runtime-config") + 1] == str(options.runtime_config)
 
 
 def test_local_invalid_configuration_skips_dependents():
-    commands = build_commands(_options(profile="local", scoring_profile="v2"), python_executable="/python")
+    commands = BuildCommands(_options(check_id="snapshot", scoring_profile="v2"), python_executable="/python")
     called = []
 
     def runner(command):
         called.append(command.name)
         return DiagnosticResult(command.name, 2, 0.0, {"status": "failed"}, None)
 
-    report = run_diagnostics("local", commands, runner=runner)
+    report = RunDiagnostics("snapshot", commands, runner=runner)
     assert called == ["configuration:v2"]
     skipped = [item for item in report["checks"] if not item["name"].startswith("configuration")]
     assert len(skipped) == 3
@@ -284,8 +283,8 @@ def test_local_research_insufficiency_is_degraded_but_specialist_stays_strict():
         },
         None,
     )
-    assert build_report("local", (result,))["status"] == "degraded"
-    assert build_report("research", (result,))["status"] == "failed"
+    assert BuildReport("snapshot", (result,))["status"] == "degraded"
+    assert BuildReport("research", (result,))["status"] == "failed"
 
 
 def test_browser_diagnostic_seed_matches_the_current_freeze_item_contract() -> None:
@@ -300,41 +299,31 @@ def test_browser_diagnostic_seed_matches_the_current_freeze_item_contract() -> N
     assert current.items[0].selection_rank == 1
 
 
-def test_live_profile_combines_runtime_and_all_source_probes() -> None:
-    commands = build_commands(_options(), python_executable="/python")
-
-    assert tuple(command.name for command in commands) == (
-        "web_health",
-        "exchange_security_master",
-        "history_sources",
-        "tencent_quotes",
-        "tushare_daily",
-        "history_daily_capability",
-    )
-    assert all(command.argv[0] == "/python" for command in commands)
-    assert all("--output" not in command.argv for command in commands)
+def test_web_selection_never_adds_supplier_probes() -> None:
+    commands = BuildCommands(_options(), python_executable="/python3")
+    assert tuple(command.name for command in commands) == ("web_health",)
+    assert all("sync" not in command.argv and "train" not in command.argv for command in commands)
 
 
 def test_cpu_profile_keeps_the_selected_diagnostic_and_external_output(tmp_path: Path) -> None:
-    args = _parser().parse_args(["--profile", "market-factor-compare", "--cpu-profile-dir", str(tmp_path)])
-    options, _ = _validate(args)
-    command = build_commands(options, python_executable="python3")[0]
+    args = BuildParser().parse_args([*SelectionArguments('market-factor-compare'), "--cpu-profile-dir", str(tmp_path)])
+    options, _ = ValidateOptions(args)
+    command = BuildCommands(options, python_executable="python3")[0]
 
     assert command.name == "market_factor_compare"
-    assert command.argv[:3] == ("python3", "-m", "scripts.runtime_diagnostics.market_factor_compare")
+    assert command.argv[:3] == ("python3", "-m", "scripts.diagnose_runtime")
     assert command.argv[-2:] == ("--cpu-profile-dir", str(tmp_path))
     with pytest.raises(ValueError, match="outside"):
-        _validate(
-            _parser().parse_args(
-                ["--profile", "market-factor-compare", "--cpu-profile-dir", str(Path.cwd() / "profiles")]
+        ValidateOptions(
+            BuildParser().parse_args(
+                [*SelectionArguments('market-factor-compare'), "--cpu-profile-dir", str(Path.cwd() / "profiles")]
             )
         )
 
 
 def test_continuous_cpu_trace_modes_reach_child_and_reject_unbounded_capture(tmp_path):
     arguments = [
-        "--profile",
-        "performance",
+        *SelectionArguments('performance'),
         "--scoring-profile",
         "v2",
         "--performance-replay-ticks",
@@ -344,64 +333,55 @@ def test_continuous_cpu_trace_modes_reach_child_and_reject_unbounded_capture(tmp
         "--cpu-profile-mode",
         "gc",
     ]
-    options, _ = _validate(_parser().parse_args(arguments))
-    command = build_commands(options, python_executable="python3")[0]
+    options, _ = ValidateOptions(BuildParser().parse_args(arguments))
+    command = BuildCommands(options, python_executable="python3")[0]
     assert command.argv[command.argv.index("--cpu-profile-dir") + 1] == str(tmp_path)
     assert command.argv[command.argv.index("--cpu-profile-mode") + 1] == "gc"
     arguments[arguments.index("--performance-replay-ticks") + 1] = "2"
     with pytest.raises(ValueError, match="replay-ticks 1"):
-        _validate(_parser().parse_args(arguments))
+        ValidateOptions(BuildParser().parse_args(arguments))
 
 
 def test_tencent_download_profile_uses_actual_updater_with_bounded_samples():
-    commands = build_commands(_options(profile="tencent-download", download_sizes=(10, 50, 100)))
+    commands = BuildCommands(_options(check_id="tencent-download", download_sizes=(10, 50, 100)))
     assert len(commands) == 1 and commands[0].name == "tencent_download"
     argv = commands[0].argv
-    assert "scripts.runtime_diagnostics.tencent_download" in argv
+    assert "scripts.checks.download.history.tencent_download" in argv
     offset = argv.index("--sizes")
     assert argv[offset + 1 : offset + 4] == ("10", "50", "100")
     assert argv[argv.index("--workers") + 1] == "3"
 
 
 def test_history_layout_comparison_requires_explicit_external_baseline(tmp_path):
-    args = _parser().parse_args(
+    args = BuildParser().parse_args(
         [
-            "--profile",
-            "history-write",
+            *SelectionArguments('history-write'),
             "--baseline-checkout",
             str(tmp_path),
             "--download-sizes",
             "5000",
         ]
     )
-    options, _ = _validate(args)
-    command = build_commands(options)[0]
+    options, _ = ValidateOptions(args)
+    command = BuildCommands(options)[0]
     assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path))
     assert command.argv[command.argv.index("--size") + 1] == "5000"
     with pytest.raises(ValueError, match="only available"):
-        _validate(_parser().parse_args(["--profile", "local", "--baseline-checkout", str(tmp_path)]))
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('snapshot'), "--baseline-checkout", str(tmp_path)]))
     with pytest.raises(ValueError, match="1..100"):
-        _validate(_parser().parse_args(["--profile", "history-write", "--download-sizes", "5000"]))
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('history-write'), "--download-sizes", "5000"]))
 
 
-def test_full_profile_adds_browser_and_offline_performance_without_duplicate_probes() -> None:
-    commands = build_commands(_options(profile="full"), python_executable="/python")
-
-    assert tuple(command.name for command in commands) == (
-        "web_health",
-        "exchange_security_master",
-        "history_sources",
-        "tencent_quotes",
-        "tushare_daily",
-        "history_daily_capability",
-        "browser_refresh",
-        "production_performance",
-    )
+def test_removed_composite_identities_cannot_start_unselected_probes() -> None:
+    from scripts.checks.catalog import CheckByIdentity
+    for identity in ("full", "live", "sources", "runtime", "local"):
+        with pytest.raises(ValueError, match="unknown diagnostic identity"):
+            CheckByIdentity(identity)
 
 
 @pytest.mark.parametrize("source", ("composite", "tencent", "eastmoney"))
 def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str) -> None:
-    commands = build_commands(_options(profile="history", history_source=source), python_executable="/python")
+    commands = BuildCommands(_options(check_id="history", history_source=source), python_executable="/python")
 
     assert commands[0].argv[commands[0].argv.index("--source") + 1] == source
 
@@ -432,7 +412,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
     ],
 )
 def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, expected: str) -> None:
-    commands = build_commands(_options(profile=profile), python_executable="/python")
+    commands = BuildCommands(_options(check_id=profile), python_executable="/python")
 
     assert tuple(command.name for command in commands) == (expected,)
     assert commands[0].argv[:2] == ("/python", "-m")
@@ -461,7 +441,7 @@ def test_history_space_counts_shared_inodes_once_without_cleanup(tmp_path: Path)
 
 def test_baostock_concurrency_profile_is_explicitly_non_production() -> None:
     codes = tuple(f"{index:06d}" for index in range(100))
-    commands = build_commands(_options(profile="baostock-concurrency", codes=codes), python_executable="/python")
+    commands = BuildCommands(_options(check_id="baostock-concurrency", codes=codes), python_executable="/python")
 
     assert tuple(command.name for command in commands) == ("baostock_concurrency",)
     assert "--sizes" in commands[0].argv
@@ -470,7 +450,7 @@ def test_baostock_concurrency_profile_is_explicitly_non_production() -> None:
 
 
 def test_baostock_concurrency_profile_discovers_universe_for_default_codes() -> None:
-    commands = build_commands(_options(profile="baostock-concurrency"), python_executable="/python")
+    commands = BuildCommands(_options(check_id="baostock-concurrency"), python_executable="/python")
 
     assert "--discover" in commands[0].argv
     assert "--codes" not in commands[0].argv
@@ -498,10 +478,9 @@ def test_serial_rate_experiment_never_starts_parallel_sessions(monkeypatch: pyte
 
 
 def test_public_serial_experiment_forwards_sizes_intervals_rounds_and_wall_timeout() -> None:
-    args = _parser().parse_args(
+    args = BuildParser().parse_args(
         [
-            "--profile",
-            "baostock-concurrency",
+            *SelectionArguments('baostock-concurrency'),
             "--baostock-serial-only",
             "--baostock-intervals",
             "2",
@@ -517,8 +496,8 @@ def test_public_serial_experiment_forwards_sizes_intervals_rounds_and_wall_timeo
             "365",
         ]
     )
-    options, _ = _validate(args)
-    command = build_commands(options)[0]
+    options, _ = ValidateOptions(args)
+    command = BuildCommands(options)[0]
     assert "--serial-only" in command.argv
     assert command.argv[command.argv.index("--intervals") + 1 :] == ("2.0", "1.5", "1.0")
     assert command.argv[command.argv.index("--rounds") + 1] == "3"
@@ -527,7 +506,7 @@ def test_public_serial_experiment_forwards_sizes_intervals_rounds_and_wall_timeo
     assert command.timeout_seconds == 400
     for bad_args in (["--baostock-rounds", "4"], ["--baostock-sizes", "101"], ["--baostock-intervals", "nan"]):
         with pytest.raises(ValueError):
-            _validate(_parser().parse_args(["--profile", "baostock-concurrency", "--baostock-serial-only", *bad_args]))
+            ValidateOptions(BuildParser().parse_args([*SelectionArguments('baostock-concurrency'), "--baostock-serial-only", *bad_args]))
 
 
 def test_real_sdk_fields_list_is_decoded_and_duplicate_dates_are_rejected() -> None:
@@ -613,7 +592,7 @@ def test_serial_probe_reuses_start_spacing_and_stops_after_first_failed_experime
 
 
 def test_public_experiment_report_keeps_metrics_and_drops_vendor_payloads() -> None:
-    report = build_report(
+    report = BuildReport(
         "baostock-concurrency",
         (
             DiagnosticResult(
@@ -683,15 +662,15 @@ def test_invalid_paired_dates_do_not_pass_rate_experiment(monkeypatch: pytest.Mo
 
 
 def test_baostock_qfq_shadow_profile_is_read_only_and_uses_configured_history_root() -> None:
-    commands = build_commands(_options(profile="baostock-qfq-shadow"), python_executable="/python")
+    commands = BuildCommands(_options(check_id="baostock-qfq-shadow"), python_executable="/python")
 
     assert tuple(command.name for command in commands) == ("baostock_qfq_shadow",)
-    assert commands[0].argv[:3] == ("/python", "-m", "scripts.runtime_diagnostics.baostock_qfq_shadow")
+    assert commands[0].argv[:3] == ("/python", "-m", "scripts.diagnose_runtime")
     assert commands[0].argv[-2:] == ("--history-root", "data/history")
 
 
 def test_research_profile_runs_only_research_readiness_probe() -> None:
-    commands = build_commands(_options(profile="research"), python_executable="/python")
+    commands = BuildCommands(_options(check_id="research"), python_executable="/python")
 
     assert tuple(command.name for command in commands) == ("research_readiness",)
     assert commands[0].argv == (
@@ -705,7 +684,7 @@ def test_research_profile_runs_only_research_readiness_probe() -> None:
 
 
 def test_research_source_compare_projects_bounded_component_errors() -> None:
-    report = build_report(
+    report = BuildReport(
         "research-source-compare",
         (
             DiagnosticResult(
@@ -768,7 +747,7 @@ def test_research_source_compare_projects_bounded_component_errors() -> None:
 
 
 def test_research_status_projects_target_selection_separately_from_previous_research() -> None:
-    report = build_report(
+    report = BuildReport(
         "research",
         (
             DiagnosticResult(
@@ -847,7 +826,7 @@ def test_research_status_projects_target_selection_separately_from_previous_rese
 
 
 def test_research_status_projection_rejects_unsupported_schema() -> None:
-    report = build_report(
+    report = BuildReport(
         "research",
         (
             DiagnosticResult(
@@ -865,13 +844,13 @@ def test_research_status_projection_rejects_unsupported_schema() -> None:
 
 
 def test_model_steady_only_routes_to_existing_performance_owner():
-    options, _ = _validate(_parser().parse_args(["--profile", "performance", "--performance-steady-only"]))
-    command = build_commands(options, python_executable="python3")[0]
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('performance'), "--performance-steady-only"]))
+    command = BuildCommands(options, python_executable="python3")[0]
     assert "--steady-only" in command.argv
-    for args in (["--profile", "runtime", "--performance-steady-only"],
-                 ["--profile", "performance", "--performance-steady-only", "--performance-replay-ticks", "1"]):
+    for args in ([*SelectionArguments('web'), "--performance-steady-only"],
+                 [*SelectionArguments('performance'), "--performance-steady-only", "--performance-replay-ticks", "1"]):
         with pytest.raises(ValueError, match="steady-only"):
-            _validate(_parser().parse_args(args))
+            ValidateOptions(BuildParser().parse_args(args))
 
 
 def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloads() -> None:
@@ -964,11 +943,11 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
         ),
     )
 
-    report = build_report("live", results)
+    report = BuildReport("web", results)
     rendered = str(report)
 
     assert report["status"] == "degraded"
-    assert report["summary"] == {"passed": 2, "degraded": 1, "failed": 0, "total": 3}
+    assert report["summary"] == {"passed": 2, "degraded": 1, "failed": 0, "total": 3, "timed_out": 0, "cancelled": 0, "skipped": 0, "empty": 0}
     assert "600519" not in rendered
     assert "999.0" not in rendered
     assert "secret vendor payload" not in rendered
@@ -1007,7 +986,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
 
 
 def test_daily_history_capability_projection_keeps_only_the_audit_whitelist() -> None:
-    report = build_report(
+    report = BuildReport(
         "history-daily-capability",
         (
             DiagnosticResult(
@@ -1053,7 +1032,7 @@ def test_daily_history_capability_projection_keeps_only_the_audit_whitelist() ->
 
 
 def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> None:
-    commands = build_commands(_options(profile="sources"), python_executable="/python")
+    commands = tuple(BuildCommands(_options(check_id=identity), python_executable="/python")[0] for identity in ("security-master", "history", "tencent", "tushare", "history-daily-capability"))
     called: list[str] = []
 
     def runner(command):
@@ -1068,7 +1047,7 @@ def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> No
             None,
         )
 
-    report = run_diagnostics("sources", commands, runner=runner)
+    report = RunDiagnostics("history", commands, runner=runner)
 
     assert called == [
         "exchange_security_master",
@@ -1087,9 +1066,9 @@ def test_child_launch_failure_becomes_a_result_instead_of_aborting_scan(
     def fail_launch(*args: object, **kwargs: object) -> None:
         raise OSError("diagnostic executable is unavailable")
 
-    monkeypatch.setattr("scripts.diagnose_runtime.subprocess.run", fail_launch)
+    monkeypatch.setattr("scripts.checks.execution.RunDatabaseProbe", fail_launch)
 
-    result = execute_command(DiagnosticCommand("web_health", ("missing",), 1.0))
+    result = ExecuteCommand(DiagnosticCommand("web_health", ("missing",), 1.0))
 
     assert result.return_code == 126
     assert result.error_code == "command_launch_failed"
@@ -1097,9 +1076,9 @@ def test_child_launch_failure_becomes_a_result_instead_of_aborting_scan(
 
 
 def test_qfq_sqlite_profile_audits_the_configured_root_read_only():
-    options, _ = _validate(_parser().parse_args(["--profile", "qfq-sqlite"]))
-    command = build_commands(options, python_executable="python3")[0]
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('qfq-sqlite')]))
+    command = BuildCommands(options, python_executable="python3")[0]
     assert command.name == "qfq_sqlite_audit"
-    assert "scripts.runtime_diagnostics.qfq_sqlite" in command.argv
+    assert "scripts.checks.download.history.qfq_sqlite" in command.argv
     assert "--database" in command.argv
     assert "--rounds" not in command.argv

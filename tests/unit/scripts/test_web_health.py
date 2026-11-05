@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.runtime_diagnostics.web_health import (
+from scripts.checks.recommendation.web_health import (
     WebSample,
     analyze_samples,
     build_report,
@@ -84,7 +84,7 @@ def test_runtime_collects_long_without_applying_short_strategy_scoring_rules(mon
         requests.append(url)
         return long_payload if url.endswith("/long/current") else {}
 
-    monkeypatch.setattr("scripts.runtime_diagnostics.web_health._fetch_mapping", fetch)
+    monkeypatch.setattr("scripts.checks.recommendation.web_health._fetch_mapping", fetch)
     samples = collect_samples(
         "http://127.0.0.1:5000", strategies=(_STRATEGY,), sample_count=1, interval_seconds=0, timeout_seconds=1
     )
@@ -235,7 +235,7 @@ def test_selected_profile_is_applied_to_status_and_every_current_endpoint(monkey
             else {}
         )
 
-    monkeypatch.setattr("scripts.runtime_diagnostics.web_health._fetch_mapping", fetch)
+    monkeypatch.setattr("scripts.checks.recommendation.web_health._fetch_mapping", fetch)
     samples = collect_samples(
         "http://127.0.0.1:5000",
         strategies=(_STRATEGY,),

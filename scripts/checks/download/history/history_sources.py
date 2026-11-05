@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Sample feature and raw/qfq outcome histories in bounded worker waves."""
+
+from __future__ import annotations
+
+import argparse
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
+from zoneinfo import ZoneInfo
+
+from scripts.checks.reporting import emit_report, summarize_latency_ms
+
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+from scripts.checks.download.history.history_fallback import FallbackHistoryClient  # noqa: E402
+from trader.bootstrap import OpenExternalHttp  # noqa: E402
+from trader.infra.market_data.history.history import DailyBar  # noqa: E402
+from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient  # noqa: E402
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_DEFAULT_CODES = ("600519", "000001", "300750", "688981", "601318")
+Source = Literal["composite", "tencent", "eastmoney"]
+TencentHistoryHost = Literal["proxy", "direct"]
+
+
+@dataclass(frozen=True)
+class HistoryObservation:
+    sample: int
+    code: str
+    source: Source
+    selected_source: str | None
+    row_count: int
+    outcome_selected_source: str | None
+    outcome_pair_count: int
+    latency_ms: float
+    error: str | None
+    outcome_error: str | None
+    bars: tuple[DailyBar, ...] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class HistorySamplingOptions:
+    samples: int
+    workers: int
+    source: Source
+    days: int
+    timeout_seconds: float
+    tencent_history_host: TencentHistoryHost = "proxy"
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--codes", nargs="+", default=_DEFAULT_CODES, help="six-digit A-share codes")
+    parser.add_argument("--samples", type=int, default=1, help="worker waves to collect (default: 1)")
+    parser.add_argument("--workers", type=int, default=5, help="parallel requests per wave (default: 5)")
+    parser.add_argument(
+        "--source",
+        choices=("composite", "tencent", "eastmoney"),
+        default="composite",
+        help="production history route to sample",
+    )
+    parser.add_argument("--days", type=int, default=61, help="daily rows requested per stock (default: 61)")
+    parser.add_argument("--timeout-seconds", type=float, default=12.0, help="timeout for each vendor HTTP attempt")
+    parser.add_argument(
+        "--tencent-history-host",
+        choices=("proxy", "direct"),
+        default="proxy",
+        help="Tencent K-line host; direct is a bounded fallback probe only",
+    )
+    return parser
+
+
+def _validate(args: argparse.Namespace) -> tuple[str, ...]:
+    codes = tuple(dict.fromkeys(args.codes))
+    if not codes or any(len(code) != 6 or not code.isdigit() for code in codes):
+        raise ValueError("--codes must contain six-digit A-share codes")
+    if args.samples < 1 or args.workers < 1 or args.days < 1:
+        raise ValueError("--samples, --workers and --days must be positive")
+    if args.timeout_seconds <= 0.0:
+        raise ValueError("--timeout-seconds must be positive")
+    return codes
+
+
+def _client(options: HistorySamplingOptions) -> TencentClient | EastmoneyClient | FallbackHistoryClient:
+    if options.source == "tencent":
+        return TencentClient(
+            worker_pool=None, session_factory=OpenExternalHttp, timeout_seconds=options.timeout_seconds
+        )
+    if options.source == "eastmoney":
+        return EastmoneyClient(
+            worker_pool=None, session_factory=OpenExternalHttp, timeout_seconds=options.timeout_seconds
+        )
+    return FallbackHistoryClient(
+        TencentClient(worker_pool=None, session_factory=OpenExternalHttp, timeout_seconds=options.timeout_seconds),
+        EastmoneyClient(worker_pool=None, session_factory=OpenExternalHttp, timeout_seconds=options.timeout_seconds),
+    )
+
+
+def _sample_one(sample: int, code: str, options: HistorySamplingOptions) -> HistoryObservation:
+    started = time.monotonic()
+    bars: tuple[DailyBar, ...] = ()
+    outcome_pair_count = 0
+    selected_source: str | None = None
+    outcome_selected_source: str | None = None
+    error: str | None = None
+    outcome_error: str | None = None
+    try:
+        client = _client(options)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        client_error = _error_code(exc)
+        return HistoryObservation(
+            sample,
+            code,
+            options.source,
+            None,
+            0,
+            None,
+            0,
+            round((time.monotonic() - started) * 1000.0, 1),
+            client_error,
+            client_error,
+            (),
+        )
+    try:
+        if options.source == "tencent":
+            assert isinstance(client, TencentClient)
+            bars = tuple(client.fetch_history(code, days=options.days, history_host=options.tencent_history_host))
+        else:
+            bars = tuple(client.fetch_history(code, days=options.days))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        error = _error_code(exc)
+    else:
+        selected_source = bars[-1].source if bars else None
+    try:
+        if options.source == "tencent":
+            assert isinstance(client, TencentClient)
+            outcome_bars = tuple(
+                client.fetch_outcome_history(
+                    code,
+                    days=options.days,
+                    history_host=options.tencent_history_host,
+                )
+            )
+        else:
+            outcome_bars = tuple(client.fetch_outcome_history(code, days=options.days))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        outcome_error = _error_code(exc)
+    else:
+        outcome_pair_count = len(outcome_bars)
+        outcome_selected_source = outcome_bars[-1].source if outcome_bars else None
+    return HistoryObservation(
+        sample,
+        code,
+        options.source,
+        selected_source,
+        len(bars),
+        outcome_selected_source,
+        outcome_pair_count,
+        round((time.monotonic() - started) * 1000.0, 1),
+        error,
+        outcome_error,
+        bars,
+    )
+
+
+def _error_code(exc: OSError | RuntimeError | TypeError | ValueError) -> str:
+    if isinstance(exc, ValueError) and str(exc):
+        return str(exc)
+    return type(exc).__name__
+
+
+def collect_history_samples(
+    codes: tuple[str, ...],
+    options: HistorySamplingOptions,
+) -> tuple[HistoryObservation, ...]:
+    observations: list[HistoryObservation] = []
+    with ThreadPoolExecutor(max_workers=min(options.workers, len(codes)), thread_name_prefix="history-sample") as pool:
+        for sample in range(1, options.samples + 1):
+            futures = {pool.submit(_sample_one, sample, code, options): code for code in codes}
+            observations.extend(future.result() for future in as_completed(futures))
+    return tuple(sorted(observations, key=lambda item: (item.sample, item.code)))
+
+
+def _latency_summary(observations: tuple[HistoryObservation, ...]) -> dict[str, float | int | None]:
+    return summarize_latency_ms([item.latency_ms for item in observations])
+
+
+def build_report(
+    codes: tuple[str, ...],
+    observations: tuple[HistoryObservation, ...],
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    feature_usable = sum(item.row_count >= 20 for item in observations)
+    outcome_usable = sum(item.outcome_pair_count >= 20 for item in observations)
+    usable = sum(item.row_count >= 20 and item.outcome_pair_count >= 20 for item in observations)
+    return {
+        "schema_version": "history-source-sampling",
+        "status": "passed" if usable == len(observations) else "degraded",
+        "collected_at": datetime.now(_SHANGHAI).isoformat(),
+        "configuration": {
+            "codes": list(codes),
+            "samples": args.samples,
+            "workers": min(args.workers, len(codes)),
+            "source": args.source,
+            "days": args.days,
+            "timeout_seconds_per_attempt": args.timeout_seconds,
+            "tencent_history_host": args.tencent_history_host,
+        },
+        "summary": {
+            "usable_observations": usable,
+            "feature_usable_observations": feature_usable,
+            "outcome_pair_usable_observations": outcome_usable,
+            "empty_observations": sum(item.row_count == 0 or item.outcome_pair_count == 0 for item in observations),
+            "error_observations": sum(
+                item.error is not None or item.outcome_error is not None for item in observations
+            ),
+            "latency": _latency_summary(observations),
+        },
+        "observations": [
+            {
+                "sample": item.sample,
+                "code": item.code,
+                "requested_source": item.source,
+                "selected_source": item.selected_source,
+                "row_count": item.row_count,
+                "outcome_selected_source": item.outcome_selected_source,
+                "outcome_pair_count": item.outcome_pair_count,
+                "latency_ms": item.latency_ms,
+                "error": item.error,
+                "outcome_error": item.outcome_error,
+            }
+            for item in observations
+        ],
+    }
+
+
+def Main() -> int:
+    parser = _parser()
+    args = parser.parse_args()
+    try:
+        codes = _validate(args)
+        observations = collect_history_samples(
+            codes,
+            HistorySamplingOptions(
+                samples=args.samples,
+                workers=args.workers,
+                source=args.source,
+                days=args.days,
+                timeout_seconds=args.timeout_seconds,
+                tencent_history_host=args.tencent_history_host,
+            ),
+        )
+        report = build_report(codes, observations, args)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        report = {
+            "schema_version": "history-source-sampling",
+            "status": "failed",
+            "error": type(exc).__name__,
+        }
+    emit_report(report)
+    return 0 if report.get("status") in {"passed", "degraded"} else 1

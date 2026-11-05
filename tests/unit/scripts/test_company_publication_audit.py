@@ -9,10 +9,11 @@ from datetime import timedelta
 
 import pytest
 
-from scripts.diagnose_runtime import DiagnosticResult, build_report
-from scripts.runtime_diagnostics import company_publication_audit
-from scripts.runtime_diagnostics.company_publication_audit import AuditCompanyPublication
-from scripts.runtime_diagnostics.company_query_audit import AuditCompanyDatabase
+from scripts.checks.contracts import DiagnosticResult
+from scripts.checks.projections import BuildReport
+from scripts.checks.download.company import company_publication_audit
+from scripts.checks.download.company.company_publication_audit import AuditCompanyPublication
+from scripts.checks.download.company.company_query_audit import AuditCompanyDatabase
 from tests.component import test_company_evidence as fixtures
 from trader.download.domain.company_evidence import DisclosurePage
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext, DownloadFailureRecord
@@ -176,7 +177,7 @@ def test_disk_inventory_includes_history_beyond_summary_limit_without_touching_i
     assert inventory["retry_inventory"][0]["pdf_files"] == 1
     assert inventory["failure_receipts"][0]["outcome"] == "valid"
     assert not inventory["file_inventory_is_atomic"]
-    report = build_report("company-resume", [DiagnosticResult("company_resume", 0, 1.0, result, None)])
+    report = BuildReport("company-resume", [DiagnosticResult("company_resume", 0, 1.0, result, None)])
     assert "not-a-valid-pdf-private-content" not in json.dumps(report)
     assert len(report["checks"][0]["summary"]["database"]["retry_inventory"]) == 1
     assert (index.path.read_bytes(), index.facts_path.read_bytes(), invalid.read_bytes()) == before
@@ -205,7 +206,7 @@ def test_public_report_projects_only_aggregate_coverage_fields(tmp_path):
     publication["reviews"][0]["body"] = "must-not-project"
     publication["receipts"]["path"] = "must-not-project"
     publication["findings"].extend(["must-not-project", {"body": "must-not-project"}])
-    report = build_report("company-resume", [DiagnosticResult(
+    report = BuildReport("company-resume", [DiagnosticResult(
         "company_resume", 0, 1.0, {"schema_version": "company-resume", "status": "degraded",
                                  "summary": {"database": {"publication": publication}}}, None,
     )])
@@ -234,7 +235,7 @@ def test_field_recovery_preview_names_missing_field_without_writing_or_inventing
     assert ratio["next_step"] == "download" and ratio["network_required"]
     assert plan["read_only"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
-    from scripts.runtime_diagnostics.company_field_audit import ProjectCompanyFieldAudit
+    from scripts.checks.download.company.company_field_audit import ProjectCompanyFieldAudit
 
     ratio["raw_body"] = "must-not-project"
     projected = ProjectCompanyFieldAudit(result["field_audit"])

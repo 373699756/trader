@@ -111,4 +111,4 @@ def test_release_target_builds_then_verifies_the_wheel_outside_the_repository() 
     )
 
     assert ".venv/bin/python3 -m build" in result.stdout
-    assert "scripts/verify_wheel_install.py --dist-dir dist" in result.stdout
+    assert "scripts/diagnose_runtime.py --business engineering --module packaging --check install -- --dist-dir dist" in result.stdout

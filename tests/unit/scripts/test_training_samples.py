@@ -6,9 +6,10 @@ from dataclasses import replace
 
 import pytest
 
-from scripts import diagnose_runtime
-from scripts.runtime_diagnostics.history_parquet import ParquetHistoryProjection
-from scripts.runtime_diagnostics.training_read_comparison import PrepareTrainingHistory, TrainingRowsHash
+from scripts.checks.arguments import BuildParser, ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.download.history.history_parquet import ParquetHistoryProjection
+from scripts.checks.training.training_read_comparison import PrepareTrainingHistory, TrainingRowsHash
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
@@ -86,12 +87,12 @@ def test_missing_price_and_zero_amount_keep_nulls_and_exact_float_values(history
 
 
 def test_public_training_sample_probe_is_explicit_and_runs_only_its_worker(tmp_path):
-    parser = diagnose_runtime._parser()
+    parser = BuildParser()
     args = parser.parse_args([
-        "--profile", "training-samples", "--training-probe-directory", str(tmp_path / "probe"),
+        "--business", "training", "--module", "samples", "--check", "comparison", "--training-probe-directory", str(tmp_path / "probe"),
         "--baseline-checkout", str(tmp_path / "baseline"),
     ])
-    options, _ = diagnose_runtime._validate(args)
-    commands = diagnose_runtime.build_commands(options)
+    options, _ = ValidateOptions(args)
+    commands = BuildCommands(options)
     assert len(commands) == 1 and commands[0].name == "training_samples"
-    assert commands[0].argv[1:3] == ("-m", "scripts.runtime_diagnostics.training_samples")
+    assert commands[0].argv[1:3] == ("-m", "scripts.diagnose_runtime")

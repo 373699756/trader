@@ -1,5 +1,7 @@
 """Benchmark isolation, direct supervision, and honest comparison admission."""
 
+from scripts.checks.catalog import SelectionArguments
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
@@ -12,11 +14,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.diagnose_runtime import _parser, _validate, build_commands, build_report
-from scripts.runtime_diagnostics import training_alignment
-from scripts.runtime_diagnostics.diagnostic_types import DiagnosticResult
-from scripts.runtime_diagnostics.training_alignment import _numeric_fingerprints
-from scripts.runtime_diagnostics.training_performance import (
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.projections import BuildReport
+from scripts.checks.training import training_alignment
+from scripts.checks.contracts import DiagnosticResult
+from scripts.checks.training.training_alignment import _numeric_fingerprints
+from scripts.checks.training.training_performance import (
     SummarizeTrainingBenchmark,
     TrainingReuseFailures,
     TrainingSampleReuseFailures,
@@ -24,10 +29,9 @@ from scripts.runtime_diagnostics.training_performance import (
 
 
 def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path):
-    args = _parser().parse_args(
+    args = BuildParser().parse_args(
         [
-            "--profile",
-            "training-performance",
+            *SelectionArguments('training-performance'),
             "--history-root",
             str(tmp_path / "history"),
             "--training-probe-directory",
@@ -36,8 +40,8 @@ def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path
             "v1,v5",
         ]
     )
-    options, _ = _validate(args)
-    commands = build_commands(options)
+    options, _ = ValidateOptions(args)
+    commands = BuildCommands(options)
     assert len(commands) == 5
     assert [command.name for command in commands] == [
         "training_alignment:serial_before:v1",
@@ -46,11 +50,11 @@ def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path
         "training_alignment:serial_after:v1",
         "training_alignment:serial_after:v5",
     ]
-    assert all("scripts.runtime_diagnostics.training_alignment" in command.argv for command in commands)
+    assert all("scripts.checks.training.training_alignment" in command.argv for command in commands)
     assert len({command.argv[command.argv.index("--work-root") + 1] for command in commands}) == 5
     (tmp_path / "work").mkdir()
     with pytest.raises(ValueError, match="new_output"):
-        build_commands(options)
+        BuildCommands(options)
 
 
 def _sample_scenario(profile):
@@ -149,7 +153,7 @@ def test_benchmark_requires_all_rounds_and_matching_model_identity():
     )
     mismatch = (results[0], changed, results[2])
     assert not SummarizeTrainingBenchmark(mismatch)["comparable"]
-    assert build_report("training-performance", mismatch)["status"] == "degraded"
+    assert BuildReport("training-performance", mismatch)["status"] == "degraded"
 
 
 def test_serial_comparison_times_initial_and_repeat_separately():
@@ -187,11 +191,10 @@ def test_serial_comparison_rejects_missing_run_instead_of_using_total_duration(m
 def test_checkout_comparison_uses_same_harness_config_and_distinct_outputs(tmp_path):
     baseline = tmp_path / "baseline"
     (baseline / "src/trader").mkdir(parents=True)
-    options, _ = _validate(
-        _parser().parse_args(
+    options, _ = ValidateOptions(
+        BuildParser().parse_args(
             [
-                "--profile",
-                "training-performance",
+                *SelectionArguments('training-performance'),
                 "--history-root",
                 str(tmp_path / "history"),
                 "--training-probe-directory",
@@ -201,7 +204,7 @@ def test_checkout_comparison_uses_same_harness_config_and_distinct_outputs(tmp_p
             ]
         )
     )
-    commands = build_commands(replace(options, baseline_checkout=baseline))
+    commands = BuildCommands(replace(options, baseline_checkout=baseline))
     assert [command.name for command in commands] == [
         "training_alignment:baseline_before:v1,v5",
         "training_alignment:candidate:v1,v5",
@@ -213,7 +216,7 @@ def test_checkout_comparison_uses_same_harness_config_and_distinct_outputs(tmp_p
     assert len({command.argv[command.argv.index("--work-root") + 1] for command in commands}) == 3
     assert len({command.argv[command.argv.index("--runtime-config") + 1] for command in commands}) == 1
     with pytest.raises(ValueError, match="external_product_checkout"):
-        build_commands(replace(options, baseline_checkout=tmp_path))
+        BuildCommands(replace(options, baseline_checkout=tmp_path))
 
 
 def _checkout_results():
@@ -266,7 +269,7 @@ def test_checkout_comparison_uses_numeric_values_instead_of_source_sensitive_has
     assert comparison["candidate_ratio_vs_best_baseline"] == {
         "initial_seconds": 5.0 / 9.0, "sample_reuse_seconds": None, "repeat_seconds": 0.1 / 9.0,
     }
-    assert build_report("training-performance", _checkout_results())["status"] == "passed"
+    assert BuildReport("training-performance", _checkout_results())["status"] == "passed"
     assert comparison["rounds"][0]["reuse_failures"]
     assert comparison["rounds"][1]["reuse_failures"] == ()
 
@@ -351,7 +354,10 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
     source = SimpleNamespace(snapshot=SimpleNamespace(snapshot_hash="a" * 64, training_codes=("600001",)))
     monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", lambda _path, *, sqlite_policy: source)
     monkeypatch.setattr(
-        settings, "LoadRuntimeSettings", lambda _path: SimpleNamespace(project_root=Path(__file__).resolve().parents[3])
+        settings, "LoadRuntimeSettings", lambda _path: SimpleNamespace(
+            project_root=Path(__file__).resolve().parents[3],
+            data_paths=SimpleNamespace(root=tmp_path / "configured-data", history=tmp_path / "configured-data/history"),
+        )
     )
     monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda: None)
     calls = []
@@ -427,7 +433,7 @@ def test_comparison_rejects_false_reuse_even_when_child_claims_passed(checkout, 
         profile["heads"][0]["status"] = "failed"
     else:
         profile["status"] = "failed"
-    report = build_report("training-performance", results)
+    report = BuildReport("training-performance", results)
     assert report["status"] == "degraded"
     assert not report["benchmark"]["comparable"]
     assert report["benchmark"]["rounds"][1]["reuse_failures"]
@@ -499,7 +505,7 @@ def test_sample_refit_rejects_claimed_success_without_its_workload_evidence(chan
     comparison = SummarizeTrainingBenchmark(results)
     assert not comparison["comparable"]
     assert comparison["rounds"][1]["sample_reuse_failures"]
-    assert build_report("training-performance", results)["status"] == "degraded"
+    assert BuildReport("training-performance", results)["status"] == "degraded"
 
 
 @pytest.mark.parametrize("invalid", (None, "digest", "size", "modified", "symlink"))
@@ -598,6 +604,12 @@ def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_
     assert result["run"]["execution"]["history_scan_passes"] == 0
     assert result["source_cache_unchanged"] and result["target_cache_cleared"]
     assert not (work / "sample-reuse/samples/v3").exists()
+
+
+
+
+
+
 
 
 def test_sample_preparation_restores_fitter_when_execution_raises(tmp_path, monkeypatch):

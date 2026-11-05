@@ -237,7 +237,7 @@ flowchart TD
 
 ### 9.1 先清点现有脚本和调用者
 
-来源：当前仓库 `scripts/` 文件、`Makefile`、`README.md`、`scripts/README.md` 及测试中的调用。下表是本次已找到的入口范围，不是完整扫描已结束的声明；后续必须继续核对导入、子进程命令和间接调用。
+来源：仓库 `scripts/` 全部Python文件及Makefile、README、测试、子进程和启用的Python skill调用。逐文件用途、副作用、消费者及原路径到目标路径的清单见[scripts说明](../../scripts/README.md#全量文件去留与消费者清点)；下表保留本轮整理的原始范围。实施与验证证据只记入g阶段338。
 
 | 现有范围 | 负责的事情 | 重整方向 |
 | --- | --- | --- |
@@ -253,7 +253,7 @@ flowchart TD
 
 ### 9.2 一个入口，按三层参数选择功能
 
-目标公开入口继续使用 `scripts/diagnose_runtime.py`，不再增加第二个检测命令。下面是拟定参数形式，只是设计，当前尚未实现：
+公开入口使用 `scripts/diagnose_runtime.py`，实现以下三层选择；`--list`列出唯一catalog中的有效组合：
 
 ```text
 --business recommendation --module pipeline --check latency
@@ -263,7 +263,7 @@ flowchart TD
 --business engineering    --module packaging --check install
 ```
 
-`business`选择业务，`module`选择业务内部功能，`check`选择具体检查。`--help`按这三层列出功能和副作用；另提供统一的配置、输入位置、时间/工作量上限和输出参数。公开名称、默认值和范围在实现前按全量清点确认，不能一边保留旧profile分派，一边再建一套平行入口。
+`business`选择业务，`module`选择业务内部功能，`check`选择具体检查。选择关系唯一声明在`checks/catalog.py`，`--help`提供统一配置、输入位置、时间/工作量上限和输出参数。原profile分派及live/full/sources/runtime别名删除，无参数拒绝执行；内部worker仅由同一入口在隔离子进程调用，不保留旧独立入口或转发模块。原维护脚本的生成/build/rollback/repack职责保留，检查分支统一收口；普通产品CLI合同仍由产品实现拥有。
 
 默认只运行明确选中的只读检查。真实网络、性能探测、训练样本/隔离数据构建、安装验证等必须显式选择；格式检查、自动格式化、改名和破坏性迁移不能被普通检查或聚合命令间接触发，仍遵守用户授权限制。
 

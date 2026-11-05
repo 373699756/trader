@@ -3,7 +3,7 @@ PYTHON ?= .venv/bin/python3
 PYTEST_WORKERS ?= 4
 SOURCE_PATHS := src/trader tests scripts
 
-.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-train test-history test-recommendation test-recommendation-runtime test-recommendation-suppliers test-static-contracts test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
+.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-train test-history test-recommendation test-recommendation-runtime test-recommendation-suppliers test-static-contracts test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-list diagnose-local
 
 help:
 	@echo "make install-dev   - install editable package and development tools"
@@ -27,8 +27,8 @@ help:
 	@echo "make package       - build wheel and source distribution"
 	@echo "make performance-check - run the offline active-production performance gate"
 	@echo "make browser-performance-check - run Firefox SSE patch-to-paint and refresh gate"
-	@echo "make diagnose-live - run bounded Web and real-provider runtime diagnostics"
-	@echo "make diagnose-full - add Firefox and offline performance diagnostics"
+	@echo "make diagnose-list - list explicit diagnostic selections"
+	@echo "make diagnose-local - run the explicitly selected local snapshot checks"
 
 install-dev:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -42,10 +42,10 @@ format-check:
 
 lint: long-watchlist-check
 	$(PYTHON) -m ruff check --select E,F,I,B,UP --ignore E501 $(SOURCE_PATHS)
-	$(PYTHON) scripts/check_refactor_quality.py
+	$(PYTHON) scripts/diagnose_runtime.py --business engineering --module quality --check debt
 
 long-watchlist-check:
-	$(PYTHON) scripts/generate_long_watchlist_asset.py --check
+	$(PYTHON) scripts/diagnose_runtime.py --business engineering --module assets --check consistency
 
 type-check:
 	$(PYTHON) -m mypy src/trader
@@ -89,7 +89,7 @@ test-integration:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/integration
 
 test-release: package
-	$(PYTHON) scripts/verify_wheel_install.py --dist-dir dist
+	$(PYTHON) scripts/diagnose_runtime.py --business engineering --module packaging --check install -- --dist-dir dist
 
 quality: format-check lint type-check test
 
@@ -97,13 +97,13 @@ package:
 	$(PYTHON) -m build
 
 performance-check:
-	$(PYTHON) -m trader.entrypoints.performance --config config/runtime.json
+	$(PYTHON) scripts/diagnose_runtime.py --business recommendation --module pipeline --check latency --runtime-config config/runtime.json
 
 browser-performance-check:
-	$(PYTHON) scripts/diagnose_runtime.py --profile browser --browser-duration-seconds 35 --browser-minimum-updates 3 --output -
+	$(PYTHON) scripts/diagnose_runtime.py --business recommendation --module web --check browser --browser-duration-seconds 35 --browser-minimum-updates 3 --output -
 
-diagnose-live:
-	$(PYTHON) scripts/diagnose_runtime.py --profile live --output -
+diagnose-list:
+	$(PYTHON) scripts/diagnose_runtime.py --list
 
-diagnose-full:
-	$(PYTHON) scripts/diagnose_runtime.py --profile full --output -
+diagnose-local:
+	$(PYTHON) scripts/diagnose_runtime.py --business recommendation --module pipeline --check snapshot --output -

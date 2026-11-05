@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts import check_tomorrow_training_memory
+from scripts.checks.training import memory as check_tomorrow_training_memory
 
 
 @pytest.mark.parametrize("repeat_matches", (True, False))
@@ -20,6 +20,7 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
         sample_root,
         progress,
         expected_history_snapshot_hash: str,
+        sqlite_policy,
     ):
         del progress, settings
         assert sample_root == tmp_path / "samples"
@@ -39,14 +40,14 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
             sample_database_peak_bytes=1234,
         )
 
-    monkeypatch.setattr(check_tomorrow_training_memory, "RunRepackV3Training", train)
+    monkeypatch.setattr("trader.training.infra.profile.v3.training.RunRepackV3Training", train)
     monkeypatch.setattr(check_tomorrow_training_memory, "_peak_rss_bytes", lambda: 100)
     monkeypatch.setattr(check_tomorrow_training_memory.os, "nice", lambda _increment: None)
     history = tmp_path / "history"
     output = tmp_path / "train"
     evidence = tmp_path / "historyless/training-memory-result.json"
 
-    assert check_tomorrow_training_memory.main(
+    assert check_tomorrow_training_memory.Main(
         [
             "--history-root",
             str(history),

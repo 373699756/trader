@@ -1,9 +1,13 @@
+from scripts.checks.catalog import SelectionArguments
 from pathlib import Path
 
-from scripts.diagnose_runtime import _parser, _validate, build_commands, build_report
-from scripts.runtime_diagnostics import disk_profile
-from scripts.runtime_diagnostics.diagnostic_types import DiagnosticResult
-from scripts.runtime_diagnostics.disk_policy_audit import AuditSqlitePolicyConsumers
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.projections import BuildReport
+from scripts.checks.infra import disk_profile
+from scripts.checks.contracts import DiagnosticResult
+from scripts.checks.infra.disk_policy_audit import AuditSqlitePolicyConsumers
 
 
 def test_policy_audit_reports_missing_and_unpacked_injection_without_touching_source(tmp_path):
@@ -25,14 +29,14 @@ def test_policy_audit_reports_missing_and_unpacked_injection_without_touching_so
 
 
 def test_policy_audit_is_explicitly_routed_to_the_disk_worker():
-    options, _ = _validate(_parser().parse_args(["--profile", "disk", "--disk-policy-audit"]))
-    command = build_commands(options, python_executable="/python3")[0]
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('disk'), "--disk-policy-audit"]))
+    command = BuildCommands(options, python_executable="/python3")[0]
     assert command.argv[-1] == "--policy-audit"
 
 
 def test_disk_profile_routes_extra_paths_and_preserves_actionable_details(tmp_path: Path) -> None:
-    options, _ = _validate(_parser().parse_args(["--profile", "disk", "--disk-path", str(tmp_path)]))
-    commands = build_commands(options, python_executable="/python3")
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('disk'), "--disk-path", str(tmp_path)]))
+    commands = BuildCommands(options, python_executable="/python3")
     assert len(commands) == 1
     assert commands[0].argv[-2:] == ("--path", str(tmp_path))
     summary = {
@@ -41,7 +45,7 @@ def test_disk_profile_routes_extra_paths_and_preserves_actionable_details(tmp_pa
         "configuration_field": "disk_medium",
         "configuration_example": {"disk_medium": "hdd"},
     }
-    report = build_report(
+    report = BuildReport(
         "disk", [DiagnosticResult("disk_profile", 0, 1.0, {"status": "degraded", "summary": summary}, None)]
     )
     assert report["status"] == "degraded"

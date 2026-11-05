@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from scripts.checks.catalog import SelectionArguments
+
 from tests.helpers.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture, PROJECT_ROOT
 from functools import partial
 import shutil
@@ -11,7 +13,7 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.runtime_diagnostics.qfq_sqlite import AuditQfqDatabase, ClassifyQfqDiagnosticError
+from scripts.checks.download.history.qfq_sqlite import AuditQfqDatabase, ClassifyQfqDiagnosticError
 from tests.helpers.qfq import QFQ_CONFIGURATION, qfq_window
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -54,11 +56,15 @@ def test_audit_reports_unconfirmed_publication(tmp_path):
     assert report["summary"]["database_not_checkpointed"] == 1
 
 
+
+
 def test_audit_reports_checkpoint_source_conflict(tmp_path):
     path = tmp_path / "daily_window.sqlite3"
     _seed(path)
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE window_completion SET source='other'")
+    # Test the explicit logical audit after a valid physical publication.
+    SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture()).publish_file()
     report = AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
     assert report["status"] == "degraded"
     assert report["summary"]["checkpoint_not_paired"] == 1
@@ -124,8 +130,12 @@ def test_valid_pair_does_not_hide_current_price_issues(tmp_path):
 
 
 def test_failure_profile_reads_only_diagnostic_rows_and_survives_bad_price_content(tmp_path, monkeypatch, capsys):
-    from scripts.diagnose_runtime import _parser, _validate, build_commands, build_report, DiagnosticResult
-    from scripts.runtime_diagnostics import qfq_sqlite
+    from scripts.checks.arguments import BuildParser
+    from scripts.checks.arguments import ValidateOptions
+    from scripts.checks.commands import BuildCommands
+    from scripts.checks.projections import BuildReport
+    from scripts.checks.contracts import DiagnosticResult
+    from scripts.checks.download.history import qfq_sqlite
     from trader.download.domain.download_failure import DownloadFailureContext
     from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
     from tests.unit.infra.research.test_history_sync import NOW
@@ -146,15 +156,15 @@ def test_failure_profile_reads_only_diagnostic_rows_and_survives_bad_price_conte
     document = json.loads((config / "download.json").read_text())
     document["failure_diagnostics"] = {"retention_limit": 7, "query_limit": 2}
     (config / "download.json").write_text(json.dumps(document))
-    options, _ = _validate(_parser().parse_args([
-        "--profile", "download-failures", "--qfq-database", str(path), "--runtime-config", str(config / "runtime.json"),
+    options, _ = ValidateOptions(BuildParser().parse_args([
+        *SelectionArguments('download-failures'), "--qfq-database", str(path), "--runtime-config", str(config / "runtime.json"),
     ]))
-    command, = build_commands(options)
+    command, = BuildCommands(options)
     assert "--failures-only" in command.argv and str(path) in command.argv
-    monkeypatch.setattr(sys, "argv", ["qfq_sqlite", *command.argv[3:]])
-    assert qfq_sqlite.main() == 0
+    monkeypatch.setattr(sys, "argv", ["qfq_sqlite", *command.argv[command.argv.index("--") + 1:]])
+    assert qfq_sqlite.Main() == 0
     output = json.loads(capsys.readouterr().out)
-    report = build_report("download-failures", [DiagnosticResult(command.name, 0, 1, output, None)])
+    report = BuildReport("download-failures", [DiagnosticResult(command.name, 0, 1, output, None)])
     assert report["checks"][0]["summary"]["events"][0]["code"] == "600001"
     assert report["checks"][0]["summary"]["retention_limit"] == 7
     assert report["checks"][0]["summary"]["query_limit"] == 2

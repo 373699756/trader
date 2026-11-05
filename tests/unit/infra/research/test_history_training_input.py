@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.training.infra.history.history_training_due as due_module
-from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_sqlite_performance
+from scripts.checks.download.history.history_sqlite_performance import inspect_history_sqlite_performance
 from tests.helpers.history import RunHistoryFixture
 from tests.helpers.qfq import publish_windows
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -37,7 +37,6 @@ from trader.download.domain.history_sync import HistorySupplierContext
 from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.published_history_snapshot import PublishedHistoryReadError, SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache

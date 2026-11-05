@@ -1,3 +1,4 @@
+from scripts.checks.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 import hashlib
@@ -6,8 +7,10 @@ import time
 
 import pytest
 
-from scripts.diagnose_runtime import _parser, _validate, build_commands
-from scripts.runtime_diagnostics.v5_lite import QualityPassed, _prepare
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.training.v5_lite import QualityPassed, _prepare
 from trader.infra.atomic_files.json import AtomicWriteJson
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.training.infra.sample_sequences import SampleSequenceLayout
@@ -27,12 +30,11 @@ def test_lite_quality_limits_and_missing_values_fail_closed():
 
 def test_lite_diagnostic_requires_explicit_output_and_routes_sample_input(tmp_path):
     with pytest.raises(ValueError, match="training-probe-directory"):
-        _validate(_parser().parse_args(["--profile", "v5-lite"]))
-    options, _ = _validate(
-        _parser().parse_args(
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('v5-lite')]))
+    options, _ = ValidateOptions(
+        BuildParser().parse_args(
             [
-                "--profile",
-                "v5-lite",
+                *SelectionArguments('v5-lite'),
                 "--training-probe-directory",
                 str(tmp_path / "new"),
                 "--v5-candidate-config",
@@ -42,13 +44,13 @@ def test_lite_diagnostic_requires_explicit_output_and_routes_sample_input(tmp_pa
             ]
         )
     )
-    (command,) = build_commands(options)
+    (command,) = BuildCommands(options)
     assert command.name == "v5_lite"
     assert command.argv[-2:] == ("--sample-root", str(tmp_path / "source"))
     assert "--candidate-config" in command.argv
     with pytest.raises(ValueError, match="v5-candidate-config"):
-        _validate(_parser().parse_args([
-            "--profile", "v5-lite", "--training-probe-directory", str(tmp_path / "new"),
+        ValidateOptions(BuildParser().parse_args([
+            *SelectionArguments('v5-lite'), "--training-probe-directory", str(tmp_path / "new"),
             "--v5-sample-root", str(tmp_path / "source"),
         ]))
 
@@ -109,7 +111,7 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
 def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path):
     from dataclasses import replace
 
-    from scripts.runtime_diagnostics.v5_lite import _quality
+    from scripts.checks.training.v5_lite import _quality
     parameters = TcnFittingParametersFixture(minimum_industry_training_rows=5000)
     for candidate in ((250, parameters), (61, replace(parameters, minimum_industry_training_rows=10000))):
         with pytest.raises(ValueError, match="identical fit dates"):
@@ -119,7 +121,7 @@ def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path)
 
 @pytest.mark.parametrize("interrupted", (False, True))
 def test_compute_only_or_interrupted_probe_cannot_claim_quality_passed(tmp_path, monkeypatch, capsys, interrupted):
-    from scripts.runtime_diagnostics import v5_lite
+    from scripts.checks.training import v5_lite
 
     work = tmp_path / "probe"
     monkeypatch.setattr("sys.argv", ["v5_lite", "--work-root", str(work)])

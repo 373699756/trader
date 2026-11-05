@@ -104,10 +104,10 @@ Tushare不承担生产qfq或财务补缺；无密钥时按其职责降级，不�
 
 ~~~bash
 # 不需要运行服务的本地检查
-.venv/bin/python3 scripts/diagnose_runtime.py --profile local --output -
+.venv/bin/python3 scripts/diagnose_runtime.py --business recommendation --module pipeline --check snapshot --output -
 
 # 运行中的服务和数据源检查
-.venv/bin/python3 scripts/diagnose_runtime.py --profile live \
+.venv/bin/python3 scripts/diagnose_runtime.py --business recommendation --module web --check health \
   --base-url http://127.0.0.1:5000 --output -
 ~~~
 

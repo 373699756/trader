@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from scripts.runtime_diagnostics.history_daily_capability import (
+from scripts.checks.download.history.history_daily_capability import (
     BaoStockProbe,
     build_report,
     minimum_baostock_duration,

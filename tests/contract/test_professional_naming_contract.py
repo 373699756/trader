@@ -5,7 +5,7 @@ import re
 from functools import cache
 from pathlib import Path
 
-from scripts.code_quality.naming import Symbols, Words
+from scripts.checks.engineering.quality.naming import Symbols, Words
 from tests.helpers.python_source import source_text, source_tree
 
 ROOT = Path(__file__).resolve().parents[2]

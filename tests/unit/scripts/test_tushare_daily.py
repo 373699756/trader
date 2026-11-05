@@ -4,7 +4,7 @@ from argparse import Namespace
 
 import pytest
 
-from scripts.runtime_diagnostics.tushare_daily import _validate
+from scripts.checks.download.market.tushare_daily import _validate
 
 
 def _args(**overrides: object) -> Namespace:

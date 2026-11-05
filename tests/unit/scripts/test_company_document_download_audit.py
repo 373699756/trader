@@ -1,5 +1,7 @@
 """Failed-PDF diagnostics are bounded, read-only and expose only aggregate request metadata."""
 
+from scripts.checks.catalog import SelectionArguments
+
 from dataclasses import replace
 import hashlib
 from pathlib import Path
@@ -7,8 +9,12 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from scripts.diagnose_runtime import DiagnosticResult, _parser, _validate, build_commands, build_report
-from scripts.runtime_diagnostics import company_document_download_audit as audit
+from scripts.checks.contracts import DiagnosticResult
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.projections import BuildReport
+from scripts.checks.download.company import company_document_download_audit as audit
 from tests.component import test_company_evidence as fixtures
 from tests.helpers.configuration import SqlitePolicyFixture
 from trader.download.domain.company_evidence import DisclosurePage
@@ -89,20 +95,20 @@ def test_encrypted_probe_checks_identical_pdf_and_password_requirement_without_a
 
 
 def test_document_probe_routes_without_replay_directory_and_filters_report_fields():
-    options, _ = _validate(_parser().parse_args([
-        "--profile", "company-resume", "--company-document-audit",
+    options, _ = ValidateOptions(BuildParser().parse_args([
+        *SelectionArguments('company-resume'), "--company-document-audit",
     ]))
-    assert "--document-only" in build_commands(options)[0].argv
+    assert "--document-only" in BuildCommands(options)[0].argv
     with pytest.raises(ValueError, match="mutually exclusive"):
-        _validate(_parser().parse_args([
-            "--profile", "company-resume", "--company-document-audit", "--company-database-audit",
+        ValidateOptions(BuildParser().parse_args([
+            *SelectionArguments('company-resume'), "--company-document-audit", "--company-database-audit",
         ]))
     summary = {"document_download_audit": {
         "read_only": True, "url": "secret", "observations": [{
             "disclosure_id": 1, "url": "secret", "body": "private", "attempts": [{"seconds": 1, "raw": "private"}],
         }],
     }}
-    result = build_report("company-resume", [DiagnosticResult(
+    result = BuildReport("company-resume", [DiagnosticResult(
         "company_resume", 0, 1, {"schema_version": "company-resume", "status": "passed", "summary": summary}, None,
     )])
     assert "secret" not in str(result) and "private" not in str(result)

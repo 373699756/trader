@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.runtime_diagnostics import baostock_qfq_shadow as shadow
+from scripts.checks.download.history import baostock_qfq_shadow as shadow
 from trader.download.infra.history_snapshot_inspection import HistorySnapshotInspectionError
 
 

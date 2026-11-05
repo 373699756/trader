@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.runtime_diagnostics.history_fallback import FallbackHistoryClient
+from scripts.checks.download.history.history_fallback import FallbackHistoryClient
 from tests.reference_fixtures import PreparedFixture
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra import tushare_records as tushare_records_module

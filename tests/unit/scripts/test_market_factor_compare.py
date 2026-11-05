@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from scripts.checks.catalog import SelectionArguments
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from argparse import Namespace
@@ -10,26 +12,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.diagnose_runtime import (
-    DiagnosticResult,
-    _parser,
-    _validate,
-    build_commands,
-    build_report,
-)
-from scripts.runtime_diagnostics import market_factor_auxiliary as auxiliary
-from scripts.runtime_diagnostics import market_factor_compare as comparison
-from scripts.runtime_diagnostics import market_factor_eastmoney as eastmoney_probe
-from scripts.runtime_diagnostics.market_factor_audit import FactorAudit, MissingQuoteCodes, QuoteAudit
-from scripts.runtime_diagnostics.market_factor_baostock import BaostockCapability, BaoStockSourceResults
-from scripts.runtime_diagnostics.market_factor_budget import DiagnosticBudget
-from scripts.runtime_diagnostics.market_factor_inputs import (
+from scripts.checks.contracts import DiagnosticResult
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.projections import BuildReport
+from scripts.checks.download.market import market_factor_auxiliary as auxiliary
+from scripts.checks.download.market import market_factor_compare as comparison
+from scripts.checks.download.market import market_factor_eastmoney as eastmoney_probe
+from scripts.checks.download.market.market_factor_audit import FactorAudit, MissingQuoteCodes, QuoteAudit
+from scripts.checks.download.market.market_factor_baostock import BaostockCapability, BaoStockSourceResults
+from scripts.checks.download.market.market_factor_budget import DiagnosticBudget
+from scripts.checks.download.market.market_factor_inputs import (
     FixedReferences,
     HistoryAtCut,
     ModelFeatureRequirements,
     ReadReferences,
 )
-from scripts.runtime_diagnostics.market_factor_text import RenderMarketFactorText
+from scripts.checks.download.market.market_factor_text import RenderMarketFactorText
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadStrategySettings
@@ -230,12 +230,12 @@ def test_successful_primary_does_not_start_backup(monkeypatch: pytest.MonkeyPatc
 
 
 def test_market_factor_profile_uses_unified_output_and_explicit_bounds() -> None:
-    parser = _parser()
-    args = parser.parse_args(["--profile", "market-factor-compare", "--market-sizes", "120", "--market-mode", "single"])
-    options, _output = _validate(args)
-    command = build_commands(options)[0]
+    parser = BuildParser()
+    args = parser.parse_args([*SelectionArguments('market-factor-compare'), "--market-sizes", "120", "--market-mode", "single"])
+    options, _output = ValidateOptions(args)
+    command = BuildCommands(options)[0]
     assert command.name == "market_factor_compare"
-    assert "scripts.runtime_diagnostics.market_factor_compare" in command.argv
+    assert "scripts.checks.download.market.market_factor_compare" in command.argv
     assert "--batch-seconds" in command.argv
     assert command.argv[command.argv.index("--source-loop-seconds") + 1] == "120.0"
     assert command.argv[command.argv.index("--task-seconds") + 1] == "600.0"
@@ -249,23 +249,22 @@ def test_market_factor_profile_uses_unified_output_and_explicit_bounds() -> None
     )
     assert options.output_format == "text"
 
-    file_args = parser.parse_args(["--profile", "market-factor-compare", "--output", "/tmp/market-factor-result.json"])
-    file_options, _output = _validate(file_args)
+    file_args = parser.parse_args([*SelectionArguments('market-factor-compare'), "--output", "/tmp/market-factor-result.json"])
+    file_options, _output = ValidateOptions(file_args)
     assert file_options.output_format == "json"
 
-    long_args = parser.parse_args(["--profile", "market-factor-compare", "--command-timeout-seconds", "1800"])
-    long_options, _output = _validate(long_args)
-    assert build_commands(long_options)[0].timeout_seconds == 600.0
+    long_args = parser.parse_args([*SelectionArguments('market-factor-compare'), "--command-timeout-seconds", "1800"])
+    long_options, _output = ValidateOptions(long_args)
+    assert BuildCommands(long_options)[0].timeout_seconds == 600.0
 
     with pytest.raises(ValueError, match="market-task-seconds"):
-        _validate(parser.parse_args(["--profile", "market-factor-compare", "--market-task-seconds", "601"]))
+        ValidateOptions(parser.parse_args([*SelectionArguments('market-factor-compare'), "--market-task-seconds", "601"]))
 
     with pytest.raises(ValueError, match="Tencent"):
-        _validate(
+        ValidateOptions(
             parser.parse_args(
                 [
-                    "--profile",
-                    "market-factor-compare",
+                    *SelectionArguments('market-factor-compare'),
                     "--market-sources",
                     "eastmoney",
                     "sina",
@@ -462,7 +461,7 @@ def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> No
     assert summary["input_owners"]["validation_realtime_fields"] == ["previous_close", "open_price"]
     assert summary["input_owners"]["ignored_realtime_fields"] == ["speed", "change_5m"]
 
-    report = build_report(
+    report = BuildReport(
         "market-factor-compare",
         (
             DiagnosticResult(
@@ -714,7 +713,7 @@ def test_child_sdk_stdout_cannot_corrupt_json_report(
 
     monkeypatch.setattr(comparison, "Collect", Collect)
     monkeypatch.setattr(sys, "argv", ["probe", "--config", "config/runtime.json", "--qfq-database", "data/qfq"])
-    assert comparison.main() == 0
+    assert comparison.Main() == 0
     output = capfd.readouterr()
     assert json.loads(output.out)["status"] == "degraded"
     assert "supplier login success" in output.err

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.runtime_diagnostics import tencent_download
+from scripts.checks.download.history import tencent_download
 from trader.infra.http_contracts import HttpRequest, HttpResponse
 
 

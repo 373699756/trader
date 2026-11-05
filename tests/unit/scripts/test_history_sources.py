@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from scripts.runtime_diagnostics.history_sources import (
+from scripts.checks.download.history.history_sources import (
     HistoryObservation,
     build_report,
 )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from scripts.checks.catalog import SelectionArguments
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
@@ -12,21 +14,24 @@ from pathlib import Path
 
 import pytest
 
-from scripts.diagnose_runtime import _parser, _validate, build_commands, execute_command
-from scripts.runtime_diagnostics import database_workspace
-from scripts.runtime_diagnostics.database_baseline import MeasureSyncBaseline, _compare
-from scripts.runtime_diagnostics.database_measurement import DatabaseMeasurement
-from scripts.runtime_diagnostics.database_workspace import (
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.execution import ExecuteCommand
+from scripts.checks.infra import database_workspace
+from scripts.checks.infra.database_baseline import MeasureSyncBaseline, _compare
+from scripts.checks.infra.database_measurement import DatabaseMeasurement
+from scripts.checks.infra.database_workspace import (
     DatabaseWorkerEnvironment,
     PrepareDatabaseProbeDirectory,
     ProjectDatabaseProbeLocation,
     RunDatabaseProbe,
 )
-from scripts.runtime_diagnostics.diagnostic_types import PROJECT_ROOT, DiagnosticCommand
+from scripts.checks.contracts import PROJECT_ROOT, DiagnosticCommand
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
 from trader.infra.disk_types import DiskProfile
-from scripts.runtime_diagnostics import database_baseline
+from scripts.checks.infra import database_baseline
 
 _CONFIG = PROJECT_ROOT / "config/runtime.json"
 
@@ -46,13 +51,13 @@ def test_training_io_baseline_measures_all_profiles_and_restores_instrumentation
 
 
 def test_training_baseline_is_routed_only_to_a_new_isolated_baseline(tmp_path):
-    base = ["--profile", "database-baseline", "--database-probe-directory", str(tmp_path / "probe")]
-    options, _ = _validate(_parser().parse_args(base + ["--database-training"]))
-    assert "--include-training" in build_commands(options, python_executable="/python3")[0].argv
+    base = [*SelectionArguments('database-baseline'), "--database-probe-directory", str(tmp_path / "probe")]
+    options, _ = ValidateOptions(BuildParser().parse_args(base + ["--database-training"]))
+    assert "--include-training" in BuildCommands(options, python_executable="/python3")[0].argv
     with pytest.raises(ValueError, match="without a comparison checkout"):
-        _validate(_parser().parse_args(base + ["--database-training", "--baseline-checkout", str(tmp_path / "baseline")]))
-    with pytest.raises(ValueError, match="requires --profile disk"):
-        _validate(_parser().parse_args(["--profile", "local", "--disk-policy-audit"]))
+        ValidateOptions(BuildParser().parse_args(base + ["--database-training", "--baseline-checkout", str(tmp_path / "baseline")]))
+    with pytest.raises(ValueError, match="requires --business infra --module disk --check profile"):
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('snapshot'), "--disk-policy-audit"]))
 
 
 @pytest.mark.parametrize("training", (False, True))
@@ -74,16 +79,16 @@ def test_baseline_checks_cross_round_facts_in_every_mode(training, changed, monk
     )
     if changed:
         with pytest.raises(RuntimeError, match="repeated_input_or_output_mismatch"):
-            database_baseline.main()
+            database_baseline.Main()
         assert not capsys.readouterr().out
     else:
-        assert database_baseline.main() == 0
+        assert database_baseline.Main() == 0
         assert json.loads(capsys.readouterr().out)["status"] == "passed"
 
 
 @pytest.mark.parametrize(
     "relative",
-    ("src/trader/example.py", "scripts/runtime_diagnostics/example.py", "config/runtime.json"),
+    ("src/trader/example.py", "scripts/checks/infra/example.py", "config/runtime.json"),
 )
 def test_baseline_identity_tracks_each_selected_checkout_input(tmp_path, relative):
     source = tmp_path / relative
@@ -161,15 +166,15 @@ def test_workspace_rejects_source_existing_relative_and_symlink_targets(tmp_path
 
 def test_database_profile_requires_external_directory_and_bounds_workload(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="requires --database-probe-directory"):
-        _validate(_parser().parse_args(["--profile", "database-baseline"]))
-    base = ["--profile", "database-baseline", "--database-probe-directory", str(tmp_path / "new")]
-    options, _ = _validate(_parser().parse_args(base))
-    command = build_commands(options, python_executable=sys.executable)[0]
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('database-baseline')]))
+    base = [*SelectionArguments('database-baseline'), "--database-probe-directory", str(tmp_path / "new")]
+    options, _ = ValidateOptions(BuildParser().parse_args(base))
+    command = BuildCommands(options, python_executable=sys.executable)[0]
     assert command.database_probe_directory == tmp_path / "new"
     assert command.argv[-6:] == ("--size", "8", "--sessions", "61", "--rounds", "5")
     for bad in (("--download-sizes", "33"), ("--history-days", "2001"), ("--download-sizes", "1", "2")):
         with pytest.raises(ValueError):
-            _validate(_parser().parse_args(base + list(bad)))
+            ValidateOptions(BuildParser().parse_args(base + list(bad)))
 
 
 @pytest.mark.parametrize("command_name", ("fixture", "history_write_benchmark", "database_baseline"))
@@ -182,7 +187,7 @@ def test_worker_tempfiles_and_filesystem_evidence_reach_the_report(tmp_path: Pat
         "print(json.dumps({'status':'passed','summary':{'temporary_root':str(Path(tempfile.gettempdir())),"
         "'disk_kind':args.disk_kind}}))"
     )
-    result = execute_command(DiagnosticCommand(command_name, (sys.executable, "-c", script), 10, target, _CONFIG))
+    result = ExecuteCommand(DiagnosticCommand(command_name, (sys.executable, "-c", script), 10, target, _CONFIG))
     assert result.error_code is None
     assert result.payload["summary"]["temporary_root"] == str(target)
     assert "database_workspace" in result.payload["summary"]
@@ -192,11 +197,10 @@ def test_worker_tempfiles_and_filesystem_evidence_reach_the_report(tmp_path: Pat
 
 
 def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tmp_path: Path) -> None:
-    options, _ = _validate(
-        _parser().parse_args(
+    options, _ = ValidateOptions(
+        BuildParser().parse_args(
             [
-                "--profile",
-                "database-baseline",
+                *SelectionArguments('database-baseline'),
                 "--database-probe-directory",
                 str(tmp_path / "probe"),
                 "--baseline-checkout",
@@ -208,7 +212,7 @@ def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tm
             ]
         )
     )
-    command = build_commands(options, python_executable=sys.executable)[0]
+    command = BuildCommands(options, python_executable=sys.executable)[0]
     assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path / "baseline"))
     assert command.argv[command.argv.index("--rounds") + 1] == "5"
     assert command.argv[command.argv.index("--acceptance-focus") + 1] == "market-company"
@@ -295,7 +299,7 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
             },
         }
 
-    monkeypatch.setattr("scripts.runtime_diagnostics.database_baseline._run_worker", worker)
+    monkeypatch.setattr("scripts.checks.infra.database_baseline._run_worker", worker)
     if failure == "identity":
         with pytest.raises(RuntimeError, match="publication_changed"):
             _compare(baseline, 2, 61, 5, "unknown", focus)

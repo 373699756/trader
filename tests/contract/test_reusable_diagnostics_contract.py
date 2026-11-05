@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+
+import pytest
 import subprocess
 import sys
 from pathlib import Path
@@ -15,102 +17,34 @@ REMOVED_DIAGNOSTIC_WRAPPERS = (
     ROOT / "scripts" / "sample_tencent_quotes.py",
     ROOT / "scripts" / "run_production_performance.py",
 )
-INTERNAL_DIAGNOSTIC_MODULES = (
-    ROOT / "scripts" / "runtime_diagnostics" / "web_health.py",
-    ROOT / "scripts" / "runtime_diagnostics" / "browser_refresh.py",
-    ROOT / "scripts" / "runtime_diagnostics" / "history_sources.py",
-    ROOT / "scripts" / "runtime_diagnostics" / "exchange_security_master.py",
-    ROOT / "scripts" / "runtime_diagnostics" / "tencent_quotes.py",
-    ROOT / "scripts" / "runtime_diagnostics" / "tushare_daily.py",
-    ROOT / "scripts" / "runtime_diagnostics" / "history_sqlite_performance.py",
-    ROOT / "scripts" / "runtime_diagnostics" / "qfq_sqlite.py",
-)
-INTERNAL_REPORTING = ROOT / "scripts" / "runtime_diagnostics" / "reporting.py"
-SKILL_ROOT = ROOT / ".agents" / "skills" / "trader-delivery"
-
-
 def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() -> None:
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     source = UNIFIED_DIAGNOSTIC.read_text(encoding="utf-8")
-
-    assert "def main() -> int:" in source
-    assert "argparse.ArgumentParser" in source
-    assert "tests." not in source
-    result = subprocess.run(
-        (sys.executable, str(UNIFIED_DIAGNOSTIC), "--help"),
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    assert len(source.splitlines()) < 40
+    result = subprocess.run((sys.executable, str(UNIFIED_DIAGNOSTIC), "--help"), cwd=ROOT, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    for option in (
-        "--profile",
-        "--base-url",
-        "--runtime-config",
-        "--codes",
-        "--history-source",
-        "--output",
-        "--history-root",
-        "--sqlite-page-sample-count",
-        "--sqlite-query-rounds",
-        "--sqlite-revision-write-sample-count",
-    ):
+    for option in ("--business", "--module", "--check", "--runtime-config", "--output"):
         assert option in result.stdout
-    for profile in (
-        "web",
-        "history",
-        "security-master",
-        "tencent",
-        "tushare",
-        "browser",
-        "performance",
-        "history-sqlite",
-        "qfq-sqlite",
-        "live",
-        "full",
-    ):
-        assert profile in result.stdout
-    assert UNIFIED_DIAGNOSTIC.name in makefile
+    assert "--profile {" not in result.stdout
 
 
 def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() -> None:
-    source_text = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (
-            ROOT / "Makefile",
-            ROOT / "README.md",
-            ROOT / "docs" / "2_工程设计.md",
-            ROOT / "src" / "trader" / "entrypoints" / "performance.py",
-            ROOT / ".agents" / "skills" / "trader-delivery" / "SKILL.md",
-            ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "runtime-diagnostics.md",
-        )
-    )
+    import ast
+    from scripts.checks.catalog import WORKERS
     for wrapper in REMOVED_DIAGNOSTIC_WRAPPERS:
         assert not wrapper.exists()
-        assert wrapper.name not in source_text
-
-    for module in INTERNAL_DIAGNOSTIC_MODULES:
-        source = module.read_text(encoding="utf-8")
-        assert "def main() -> int:" in source
-        assert "argparse.ArgumentParser" in source
-        assert "from .reporting import emit_report" in source
-        result = subprocess.run(
-            (sys.executable, "-m", f"scripts.runtime_diagnostics.{module.stem}", "--help"),
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert result.returncode == 0, result.stderr
-        assert "--output" not in result.stdout
-
-    reporting = INTERNAL_REPORTING.read_text(encoding="utf-8")
-    assert "def emit_report(" in reporting
+    for retired in ("runtime_diagnostics", "code_quality", "skill_evaluation"):
+        assert not tuple((ROOT / "scripts" / retired).glob("*.py"))
+    for name, _ in WORKERS:
+        path = ROOT / (name.replace(".", "/") + ".py")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        assert any(isinstance(node, ast.FunctionDef) and node.name == "Main" for node in tree.body), name
+        assert not any(isinstance(node, ast.If) and "__name__" in ast.unparse(node.test) for node in tree.body), name
 
 
+SKILL_ROOT = ROOT / ".agents" / "skills" / "trader-delivery"
+
+
+@pytest.mark.skip(reason="用户已停用 trader-delivery，不自动读取或执行该 skill")
 def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -> None:
     skill_files = (
         SKILL_ROOT / "SKILL.md",
@@ -166,6 +100,7 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
         assert retired_reference not in source_text
 
 
+@pytest.mark.skip(reason="用户已停用 trader-delivery，不自动读取或执行该 skill")
 def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -> None:
     playbook = (
         ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "recommendation-funnel-incidents.md"
@@ -192,6 +127,7 @@ def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -
         assert incident_term in playbook
 
 
+@pytest.mark.skip(reason="用户已停用 trader-delivery，不自动读取或执行该 skill")
 def test_delivery_skill_preserves_qfq_publication_incident_checkpoints() -> None:
     playbook = (
         ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "qfq-publication-incidents.md"

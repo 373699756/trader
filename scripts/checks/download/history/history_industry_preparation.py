@@ -1,0 +1,126 @@
+"""Measure cold/warm two-date industry preparation using isolated query evidence."""
+
+from __future__ import annotations
+
+from trader.infra.sqlite_policy import SqliteIoPolicy
+
+import argparse
+import tempfile
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from time import monotonic
+
+from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockSecurity
+from trader.download.domain.history_sync import HistorySyncProgress
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration
+from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.infra.settings.data_paths import DataPaths
+
+from scripts.checks.reporting import emit_report
+
+
+@dataclass
+class _Progress:
+    values: list[HistorySyncProgress] = field(default_factory=list)
+
+    def publish(self, progress: HistorySyncProgress) -> None:
+        self.values.append(progress)
+
+
+def _measure(root: Path, timeout: float, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    published_snapshot = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
+    if published_snapshot is None:
+        raise ValueError("industry_probe_requires_published_context")
+    universe = tuple(
+        BaoStockSecurity(item.code, item.name, item.board, item.listed_on, item.delisted_on, "industry-probe")
+        for item in published_snapshot.universe.securities[:3]
+    )
+    progress = _Progress()
+    measurements = []
+    intervals = []
+    with tempfile.TemporaryDirectory(prefix="trader-industry-preparation-") as temporary:
+        cache = HistoryIndustryQueryCache(Path(temporary) / "industry_queries.sqlite3", sqlite_policy=sqlite_policy)
+        project_root = Path(__file__).resolve().parents[4]
+        settings = replace(
+            LoadHistorySyncConfiguration(project_root, DataPaths(Path(temporary) / "data")),
+            supplier_timeout_seconds=timeout,
+            supplier_retries=0,
+            progress_heartbeat_seconds=min(5, timeout),
+        )
+        for label in ("cold", "warm"):
+            progress.values.clear()
+            started = monotonic()
+            # A fresh supplier object must not log in for the warm-cache run.
+            with BaoStockHistorySupplier(settings, progress=progress) as supplier:
+                context = supplier.load_industry_context(
+                    BaoStockCalendar(published_snapshot.calendar.open_dates[-2:]), universe, industry_cache=cache
+                )
+            completed = [value for value in progress.values if value.cache_hit is not None]
+            intervals.append(context.industry_intervals)
+            measurements.append(
+                {
+                    "mode": label,
+                    "login_attempts": sum(
+                        value.stage == "supplier_login" and value.state == "started" for value in progress.values
+                    ),
+                    "seconds": round(monotonic() - started, 3),
+                    "queried_dates": sum(value.cache_hit is False for value in completed),
+                    "cached_dates": sum(value.cache_hit is True for value in completed),
+                    "industry_intervals": len(context.industry_intervals),
+                }
+            )
+        passed = (
+            measurements[0]["queried_dates"] == 2
+            and measurements[1]["queried_dates"] == 0
+            and measurements[1]["cached_dates"] == 2
+            and measurements[1]["login_attempts"] == 0
+            and bool(intervals[0])
+            and intervals[0] == intervals[1]
+        )
+        return {
+            "schema_version": "history-industry-preparation",
+            "status": "passed" if passed else "degraded",
+            "summary": {
+                "sessions": 2,
+                "measurements": measurements,
+                "identical_intervals": intervals[0] == intervals[1],
+                "source_data_modified": False,
+            },
+        }
+
+
+def Main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--history-root", type=Path, required=True)
+    parser.add_argument("--timeout-seconds", type=float, default=15)
+    args = parser.parse_args()
+    from trader.bootstrap import BuildSqlitePolicy
+    from trader.infra.settings import LoadRuntimeSettings
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[4] / "config/runtime.json"))
+    if not 1 <= args.timeout_seconds <= 45:
+        parser.error("attempt timeout must be 1..45 seconds")
+    try:
+        report = _measure(args.history_root, args.timeout_seconds, sqlite_policy=sqlite_policy)
+    except (OSError, RuntimeError, ValueError) as exc:
+        known_failures = {
+            "supplier_login_timeout",
+            "supplier_login_network_denied",
+            "supplier_login_network_failed",
+            "supplier_login_transport_failed",
+            "supplier_industry_timeout",
+            "industry_query_failed",
+            "industry_query_cache_unavailable",
+            "industry_probe_requires_published_context",
+        }
+        report = {
+            "schema_version": "history-industry-preparation",
+            "status": "failed",
+            "summary": {
+                "failure": type(exc).__name__,
+                "reason": str(exc) if str(exc) in known_failures else "industry_probe_failed",
+            },
+        }
+    emit_report(report)
+    return 0 if report["status"] == "passed" else 1

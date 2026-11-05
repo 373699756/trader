@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import pytest
 
-from scripts.runtime_diagnostics.reporting import ReadJsonReports, emit_report, summarize_latency_ms
+from scripts.checks.reporting import ReadJsonReports, emit_report, summarize_latency_ms
 
 
 def test_summarize_latency_ms_uses_nearest_rank_p95() -> None:

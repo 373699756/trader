@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.runtime_diagnostics.long_watchlist import audit_code, financial_admission, historical_exclusions
+from scripts.checks.recommendation.long_watchlist import audit_code, financial_admission, historical_exclusions
 from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery
 from tests.helpers.configuration import (
     CompanyDocumentFilesFixture as CompanyDocumentFiles,

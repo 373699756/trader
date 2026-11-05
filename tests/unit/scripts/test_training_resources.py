@@ -1,10 +1,15 @@
 """Resource diagnostics exercise the real admission lifecycle without training."""
 
+from scripts.checks.catalog import SelectionArguments
+
 import pytest
 
-from scripts.diagnose_runtime import _parser, _validate, build_commands, build_report
-from scripts.runtime_diagnostics import training_resources
-from scripts.runtime_diagnostics.diagnostic_types import DiagnosticResult
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.projections import BuildReport
+from scripts.checks.training import training_resources
+from scripts.checks.contracts import DiagnosticResult
 
 
 @pytest.mark.parametrize("profiles", (("v5",), ("v1", "v5"), ("v1", "v2", "v3", "v5")))
@@ -28,7 +33,7 @@ def test_missing_native_library_evidence_is_failed_not_passed(monkeypatch):
     report = training_resources.ProbeTrainingResources(("v1",))
     assert report["status"] == "failed"
     result = DiagnosticResult("training_resources", 1, 300, report, None)
-    assert build_report("training-resources", (result,))["status"] == "failed"
+    assert BuildReport("training-resources", (result,))["status"] == "failed"
 
 
 @pytest.mark.parametrize("profiles", ((), ("v1", "v1"), ("unknown",)))
@@ -42,13 +47,13 @@ def test_invalid_selection_is_rejected_before_resource_access(monkeypatch, profi
 
 
 def test_unified_command_preserves_selection_and_caps_child_lifetime():
-    options, _ = _validate(_parser().parse_args([
-        "--profile", "training-resources", "--training-profiles", "v1,v5",
+    options, _ = ValidateOptions(BuildParser().parse_args([
+        *SelectionArguments('training-resources'), "--training-profiles", "v1,v5",
         "--command-timeout-seconds", "600",
     ]))
-    commands = build_commands(options)
+    commands = BuildCommands(options)
     assert len(commands) == 1
     assert commands[0].argv[1:] == (
-        "-m", "scripts.runtime_diagnostics.training_resources", "--profiles", "v1,v5",
+        "-m", "scripts.diagnose_runtime", "--internal-worker", "scripts.checks.training.training_resources", "--", "--profiles", "v1,v5",
     )
     assert commands[0].timeout_seconds == 30

@@ -103,7 +103,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
         row = connection.run("SELECT failure,ocr_diagnostic FROM document_retries").require_one()
         assert row[0] == "disclosure_document_ocr_timeout_exhausted"
         assert json.loads(row[1])["phase"] == "recognition"
-    from scripts.runtime_diagnostics.company_query_audit import AuditCompanyDatabase
+    from scripts.checks.download.company.company_query_audit import AuditCompanyDatabase
 
     audit = AuditCompanyDatabase(index.path, now=NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
     assert audit["summary"]["database"]["ocr_diagnostics"][0]["diagnostic"]["phase"] == "recognition"

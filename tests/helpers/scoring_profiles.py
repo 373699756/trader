@@ -26,6 +26,6 @@ def IsScoringProfilePath(relative: Path) -> bool:
             return True
     if relative.parts[0] == "tests":
         return any(relative.name.startswith(f"test_{profile}_") for profile in SCORING_PROFILE_IDS)
-    if relative.parent == Path("scripts/runtime_diagnostics"):
+    if relative.parent == Path("scripts/checks/training"):
         return any(relative.name.startswith(f"{profile}_") for profile in SCORING_PROFILE_IDS)
     return False

@@ -1,617 +1,143 @@
 # Scripts
 
-终端及诊断报告JSON统一使用两空格缩进、换行和中文直显。训练命令按档位依次输出完整JSON对象，最后输出整轮汇总；消费者应按完整JSON文档解析，不能逐行调用json.loads。模型、缓存、摘要、网络和JSONL机器协议保持各自编码合同。
+检测唯一入口是 `scripts/diagnose_runtime.py`。先运行 `--list` 查找业务、模块、检查；运行时必须同时明确 `--business`、`--module`、`--check`。无参数不执行检查，旧 `--profile`、live/full/sources/runtime 组合与别名已删除。内部文件只提供函数，不提供独立命令或兼容转发。
 
-`diagnose_runtime.py --profile price-repair-audit --history-root data/market/history --command-timeout-seconds 1800`
-exports up to 50 locally recorded problem stocks into an external SQLite copy, rehearses additive repair metadata,
-requests complete BaoStock windows serially (minimum 1.5 seconds between daily queries), and checks that the previous
-snapshot remains unchanged. It never repairs active prices. An explicit `--database-probe-directory /absolute/external/path`
-retains the isolated copy for inspection or continuation; reuse only the copy created by this audit. Report output uses
-the usual external `--output` option. A timeout is an incomplete run, not a successful repair audit.
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --list
+.venv/bin/python3 scripts/diagnose_runtime.py --business infra --module disk --check profile
+.venv/bin/python3 scripts/diagnose_runtime.py --business recommendation --module web --check health --scoring-profile v3
+.venv/bin/python3 scripts/diagnose_runtime.py --business download --module company --check coverage --company-database-audit
+.venv/bin/python3 scripts/diagnose_runtime.py --business engineering --module assets --check consistency
+```
 
-`scripts/diagnose_runtime.py` is the only public runtime diagnostic command.
-Its profile implementations live under `scripts/runtime_diagnostics/` and
-must return bounded, sanitized summaries. A new runtime probe is added as a
-module and profile there; it is not added as another top-level script.
+业务检查沿用原有具名参数和上限，`--help` 展示完整参数。不会因选择某项检查而运行其它业务；训练、真实网络、浏览器、性能探针和隔离样本构建都需要明确选中对应检查。`recommendation/pipeline/snapshot` 明确选择配置、维护状态、研究就绪和离线性能四项；配置失败后其它三项报告 skipped。
 
-`--profile runtime --scoring-profile v1`只读采样指定档位的status与全部current端点；单档可选v1/v2/v3/v5，省略时保留服务默认档位，比较多个档位时分别执行。报告保留十一层输入/输出、淘汰/待补/失败、原因、耗时及已发布审计的分项耗时，缺失值保持null；全局异常保留累计次数、阶段、时间及active/recovered状态。运行中的新输入与已发布快照分别输出，不跨轮拼接；上游没有交给模型输入时，不将模型层0泛化为模型损坏。该模式不抓供应商、不改配置、不重启服务。
+检测目录按 recommendation、download/history、download/market、download/company、training、infra、engineering 归属。`checks/catalog.py` 是选择关系的唯一可执行来源；`arguments.py` 校验边界，`commands.py` 组装明确选中命令，`execution.py` 管理子进程，`contracts.py` 保存不可变类型，`projections.py` 与 `reporting.py` 负责白名单投影及输出。未选 worker 不导入，入口帮助和清单不加载交易、下载或训练模块。
 
-`--profile disk`只读检查配置中的全部数据目录，输出HDD/SSD/unknown、自动/手动来源及失败原因。
-可重复使用`--disk-path /absolute/source-or-output`检查隔离诊断的源和输出；不创建目录或执行写盘测速。
-显式添加`--disk-policy-audit`会只读清点活动源码的SQLite打开调用，分别列出显式注入、缺失注入及待人工追踪的参数展开，并报告组合根选出的实际策略。该清单不能代替真实adapter的哨兵值验证；普通disk检查不扫描源码。
-unknown结果附带实际runtime配置文件和单项`disk_medium`修改示例：`"disk_medium": "hdd"`或`"disk_medium": "ssd"`，统一用于程序的数据路径，重启后生效。省略或设为null时自动检测；不再配置逐路径覆盖。
+输出为两空格缩进、中文直显 JSON。顶层 selection 保存业务/模块/检查，逐项报告 passed、degraded、failed、timed_out、cancelled、skipped、empty；超时和取消不能算通过。工程 debt 只记录退出码及输出字节数；显式 transform/skills 另保留受限的工具报告文本，供审阅命名清单、预览或评测比较，不转发行情与供应商原文。原生检查的 `-- --help` 直接显示参数帮助，不运行检查。单个子进程默认 180 秒，公共超时上限沿业务校验；原生工程参数路径前使用 `--`。捕获输出合计上限 20 MiB；POSIX 超时、取消、完成均清理自己创建的进程组。Windows 清理直接子进程，不宣称通过后代清理验收。
 
-`--profile tencent-transport`只读加载本地证券参考人口，以同一120只分片、3路并发分别测量直接HTTP和可复用隔离HTTP；两组均采用生产全市场覆盖校验、配置中的主源采集预算（当前12秒）及分片尝试上限（当前2次），外层仍受统一命令超时控制。真实请求腾讯，输出总体请求/返回数、物理尝试与失败数、尝试上限、单次及整批耗时，不保存供应商载荷或改动活动数据。单次对照不能证明长期尾延迟或完整推荐轮次；直连组的不可协作DNS等阻塞仍可能超过其本地采集预算。`runtime`报告另外保留预览状态、失败码与最多64项阶段计时，用于区分行情等待和下游阻断。
+默认报告写标准输出，`--output` 只接受仓库外路径。业务数据保持只读；样本、布局比较和修复演练只使用显式外部副本或既有隔离 fixture。网络检查输出聚合计数、阶段耗时、失败类别及来源年龄，不输出行情、证券清单、密钥或供应商原文。磁盘 profile 是只读盘点，unknown 不能当作 SSD/HDD 性能证据；SSD 与另一台 PC 的 HDD 分别记录，工具整理的启动耗时也不能充当硬盘吞吐结论。
 
-`--profile browser-live --base-url http://127.0.0.1:5000`用独立临时Chrome会话读取实际服务，遍历界面启用的全部档位及Tomorrow/D25，比较DOM证券顺序与同档位current，记录数量、预览状态、SSE连通和浏览器错误数。实际选中视图必须与请求一致、current必须ready；两边都为空但未就绪不能算通过。不启动fixture、不修改业务数据、不输出证券内容。复用既有桌面CDP控制器，每页等待上限15秒，四档可设置`--command-timeout-seconds 180`；检查完成关闭Chrome并清理临时浏览器目录。该模式不替代历史、布局或连续五轮验收。
+## 显式工程与资源检查
 
-`runtime`报告的`latest_runtime.recommendation_round`保留服务端轮次序号、实际启用档位、结果、总耗时/撤销后清理耗时和任务状态，以及本地链连接尝试、SQL提交、子任务在途/峰值计数。只保留当前或最近一轮；重复HTTP采样同一sequence不算多个完整轮次。零SQL要求轮次完成、实际发布且在途为0，资料等待或超时空跑的零计数不构成通过；启动预读、独立异步写入、DeepSeek、Long、正式冻结和历史查询需另计。
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --business engineering --module quality --check debt
+.venv/bin/python3 scripts/diagnose_runtime.py --business engineering --module quality --check transform -- --naming-audit --all --json
+.venv/bin/python3 scripts/diagnose_runtime.py --business engineering --module packaging --check install -- --dist-dir /external/dist
+.venv/bin/python3 scripts/diagnose_runtime.py --business engineering --module migration --check verify -- --source /external/candidate --config /external/runtime.json
+.venv/bin/python3 scripts/diagnose_runtime.py --business engineering --module skills --check evaluate -- compare --before /external/before --after /external/after
+.venv/bin/python3 scripts/diagnose_runtime.py --business training --module resources --check memory -- --help
+```
 
-`--profile performance --performance-steady-only --command-timeout-seconds 600`直接复用现有100 tick模型稳态测量，加载所选实模及相同完整fixture人口，跳过其它冷启动/单股变化/剖析负载。起点、缓存复用、GC与RSS采样规则沿用原测量；报告单列`model_steady_only`，不产生延迟通过结论，也不代表供应商到发布的整链100轮或发布门禁。不能与连续replay、CPU tracing或延迟baseline混用。
+quality/transform 保留明确的 `--format check|preview|write` 与 `--rename check|preview|write`，仍须用户单独授权，普通继续、验证和本次回归不会自动执行这些分支及触发用例。仅命名审计不写文件；改名要求绑定完整路径、内容摘要、基准提交的 manifest，拒绝猜测动态消费者。quality/debt 只运行 Ruff 规则检查及清点，不运行格式检查。
 
-`--profile v5-samples --training-probe-directory /absolute/new/external/directory`
-隔离比较V5宽表与float64紧凑序列块的大小、构建、封存及双头批量读取，逐值检查顺序和标签。
-默认使用8192条合成样本；附加`--wide-sample-source /absolute/samples.sqlite3`可只读抽取格式2具名宽表一个行业前4096行、最多500个日期，源查询限30秒。
-源文件不写入，输出目录必须为仓库外新路径；不拟合模型，不把子集和未控制操作系统缓存的时延当成完整训练成绩。
+packaging/install 在隔离 venv 安装指定 wheel，验证资源、公开命令和依赖；需要明确选择，不在帮助、清单或默认回归中安装。training/resources/memory 是受限 V3 训练与重复身份/RSS验收，会消耗计算资源并写外部结果，必须显式选中并提供全部参数。skills/evaluate 的 compare 只读报告；run 会调用付费 Codex 推理、创建新外部合成仓库，不能由普通测试或质量门禁间接触发。停用的 trader-delivery 不纳入自动 skill 输入，也不会被复制或执行。
 
-`--profile training-samples --training-probe-directory /absolute/new/external/directory --baseline-checkout /absolute/isolated/checkout --command-timeout-seconds 900`
-进行五组交替、独立进程对照：四档双头样本写入/读取、float64字节摘要、RSS，以及已发布SQLite历史与具名Parquet的首次生成、重复准备、单月增量更新加对齐。默认64股、750个拟合日期，另含早停、校准与确认分区；不拟合模型、不下载真实数据。必须使用仓库外非内存文件系统；报告标注磁盘类型和热操作系统缓存。Parquet候选仅位于诊断模块，月份文件绑定来源、版本、行数和摘要，未发布修订不可见，manifest失败保留旧发布；未达计划门槛不得接入生产。
-
-`--profile download-performance` runs three rounds on disposable synthetic SQLite databases outside the repository.
-It reports company write/publication/cold and warm reads, unchanged publication, and equivalent per-stock versus batch gap queries.
-It makes zero HTTP requests and cannot establish full-market supplier download speed.
-With `--baseline-checkout /absolute/isolated/checkout`, it alternates five baseline/candidate runs using the same synthetic issuer corpus and reports publication bytes, preload latency and RSS separately. Both diagnostic fixtures must use the same document bodies; this is not a live database benchmark.
-
-`--profile company-ledger` renders the production score column and drawer using isolated V1/V2/legacy fixtures in headless Chrome. It checks actual score text, model/local separation, evidence controls and layout overflow. `TRADER_DIAGNOSTIC_CHROME` can select an installed Chrome executable. The probe does not read the active database or contact suppliers; it does not replace a live recommendation acceptance run.
-
-The isolated layout migration leaves company facts and market/industry references for a fresh download. It imports neither legacy company evidence nor the old ST database, reference JSON or industry-query layout. Fresh reference preparation publishes `market/reference/company_st.sqlite3`; history catalogs bind its immutable publication identities.
-
-`--profile company-resume --company-replay-directory /absolute/external/path`
-backs up `--company-evidence-database` through SQLite, then resumes the failed
-date slices against real CNInfo only in that external copy. The first run interrupts
-after two successful page responses; later runs verify cursor recovery and completed
-coverage, with at most 32 pending PDFs sampled per run. Structured sources are skipped.
-Use `--command-timeout-seconds 2400` for a bounded long replay; the child receives
-30 seconds less for its logical budget. The directory retains the resumable copy,
-selection and sanitized `report.json`; the unified `--output` remains the report entrypoint.
-The active database stays read-only. A passed replay covers selected slices only,
-and does not mean the whole year or all pending PDFs are complete.
-
-Adding `--company-query-audit` to that profile performs a read-only count/filter audit instead of a backup or replay.
-It samples up to three failed dates and three failed child cursors, at most 192 logical page queries and 300 seconds (transport retries remain bounded). Reports contain counts and issuer-match diagnostics, never stock identities or source payloads. Matching sampled totals alone does not prove full date coverage.
-
-目录查询报告保留页面出现的三位证券代码前缀，用于核对供应商板块分类；不输出完整证券代码。公司发布审计的`dirty_stocks`只计当前采集人口，`outside_population_dirty_stocks`单列总体外标记，不将其报告为当前人口待发布。
-
-`--profile company-resume --company-database-audit --output -` counts local announcement metadata, processing receipts, retained temporary text and retry reasons without network access or a replay directory. In the check summary, `database.retained_bodies` reports retained text count; `database.formal` separately reports facts availability, file bytes, stocks and table bytes. `--company-collection-database` selects the raw collection index and `--company-evidence-database` selects the separate compact facts database. PDFs and page checkpoints that fail processing are retained under raw/failed without automatic deletion; successful inputs alone enter receipt-based cleanup; compressed text under `data/company/raw/text` is deleted after every affected issuer is published and receipts are committed. Publication row counts do not establish complete risk coverage.
-
-该审计同时输出`failure_history`（现有保留上限内的完整异常历史）、`retry_inventory`（逐篇最新重试、策略、任务阶段和原件目录文件名）及`failure_receipts`（对应正式回执）。历史事件不等于当前未解决数，重试表会覆盖旧原因；文件盘点与数据库快照并非原子，运行中的下载可能继续改变文件。审计不读取正文，不调用会移动损坏文件的恢复方法。
-
-`--profile company-resume --company-document-audit --command-timeout-seconds 180 --output -` selects at most two recorded transport-failed PDFs and compares the former 8-second total deadline, browser headers, a 30-second deadline, a repeated former request and the configured PDF deadline with its separate I/O timeout. At most ten physical requests run within 150 seconds; it reads the active index without changing retries or facts and does not parse or save PDFs. The corrected-parameter probe uses the existing 64 MiB expanded size bound; production still enters that route only after exceeding its ordinary 16 MiB limit. Output contains record IDs, status, received bytes, phase, timing and hashes, with no URLs or bodies. `production_passed` covers only these downloads, not extraction, publication or whole-company completeness.
-
-另在同一网络预算内最多重取3篇`disclosure_document_encrypted`原件，校验与原失败摘要是否相同，在系统临时目录分别执行最长10秒的`pdfinfo`和`pdftotext`，区分加密标志、打开密码和实际文字提取结果；退出清理临时原件。`encrypted_observations`仅输出元数据、退出码和文字字节数，不输出正文，也不据此宣布全文核验成功。连同传输对照最多13次物理请求，不修改活动输入、重试或正式事实。
-
-`database.publication`进一步核对采集人口与已发布人口、待发布股票、四类资料状态、公告覆盖起止、当前日期的180日解禁范围、持续风险及待核实原因。正文回执必须匹配公告版本、提取身份及全部相关采集股票；已释放正文缺回执单列。两库使用只读事务，读取期间检测到外部提交则标记`stable_read=false`及降级。缺正式发布、资料不完整或待核实不能因下载队列为空判为通过。报告只含聚合数量、日期和摘要，不输出证券、标题、正文或证据键；这些本地记录不能证明供应商目录无遗漏、事件提取准确或历史风险已完整回溯，也不以自然日比较代替交易日日历判断公告时效。
-
-该存储审计的`publication.field_audit`覆盖正式库各表字段填充、存储类型和非有限数，并对财务数值、质押（含完整快照支持的无记录零值）、解禁及事件证据定位核对采集来源；合同等字段另报适用记录中的测量缺失，不把NULL一律判坏或用默认值补齐。pending目录另报已完成子查询数、计数之和、去重并集及来源ID数；这些统计不证明全部业务语义已核实。
-
-`--profile company-resume --company-directory-audit --company-replay-directory /absolute/external/path --command-timeout-seconds 600 --output -`在显式仓库外副本中恢复待补目录，不下载正文、不改活动库；仅在副本释放所选范围的冷却以进行恢复实测。允许切分后的子范围完成后按连续coverage证明核验原范围，并区分修复时的首页重新核验与普通断点重放；`directory_only=true`不宣称正文或字段完整。
-
-`--profile company-resume --company-ocr-audit --company-replay-directory /absolute/external/ocr-probe --command-timeout-seconds 910`最多选择7篇已记录低质量失败的公告，在仓库外保留PDF及页面，比较150 DPI原策略、150 DPI逐页方向/版面/旋转策略；仍失败才测300 DPI。同一输入只下载一次，每次物理下载总期限最多30秒；整项最多1800秒，支持取消。结果记录载荷是否相同、字符数/置信度、耗时或失败阶段，不写活动数据库、不运行公司全量流程。每篇结果保存在ocr-progress.json，最终写ocr-result.json；失败不冒充修复成功。存储只读审计另投影最近10条已持久化OCR失败诊断及raw/failed保留PDF数。
-
-`--profile company-resume --company-pagination-audit` compares complete CNInfo record identities for page sizes 30/50/100 using bounded historical samples and read-only local metadata. Production remains at 30 unless the larger contract is proven equivalent. `--company-pipeline-audit --company-replay-directory /absolute/external/fresh-directory` instead downloads the same sampled PDFs with one and two independent clients into fresh disposable indexes, compares facts and measures repeat-run reuse. This is a real PDF probe over sampled metadata, not a full-market coverage audit or a whole-download completion estimate. Audit modes are mutually exclusive; use `--command-timeout-seconds` to bound the diagnostic, never production sync.
-
-流水线对照按生产配置注入文本及OCR能力与策略身份，分别报告PDF载荷、提取正文、事实摘要是否一致，并列出实际提取成功数及失败类别。两组必须完整提取全部样本、摘要一致、无任务失败且重跑不重复处理，才判通过；两组同时失败、确定性失败不再重试或仅有可读降级事实，均不能充当成功提取或提速证据。
-
-`--profile training-coverage` audits format-2 sample caches read-only through named statistics. Older formats require an explicit rebuild; no legacy wide-row fallback is retained. `observed_label_projection` reports the per-horizon observed-return rule's T+1 coverage and a conservative D25 lower bound from missing-return counts; it does not refit, rewrite the cache, or certify a trained model.
-Add `--training-signal-date YYYY-MM-DD` to inspect the five future price horizons of a V5 signal with observed T+1 samples.
-The report contains population counts, missing dates and source status counts; it does not repair data or generate labels.
-`--profile training-resources`检查当前进程可用CPU、共享拟合名额、原生线程限制、排队取消和退出后的恢复；裸机与容器使用同一入口。可用`--training-profiles v1,v5`选择任意非空档位组合。诊断只用固定线程申请与64×64矩阵乘法，不读取训练配置或历史，不训练模型、不写业务数据、不联网；子进程最多30秒。预约峰值包含故意占满名额的取消探测，不能当成真实拟合峰值；通过不代表全量训练耗时、内存、磁盘或所有原生库已验收。CPU预算也不是操作系统级资源隔离，不能保证同时运行其它程序时桌面不卡顿。
-`--profile training-alignment --history-root /external/history --training-probe-directory /external/new-output`
-runs the shared four-profile training pipeline only on an external history copy.
-`--profile training-performance` uses the same required paths and compares serial, shared parallel, then serial runs in fresh subprocesses.
-Both training probes accept `--training-profiles v1,v5` or any other nonempty combination; the default selects all four.
-Each worker now records both the initial training and a second execution in the same model directory, including reuse and history-scan counts. Add `--baseline-checkout /external/baseline` to `training-performance` to run the same harness and configuration against baseline, candidate, then baseline again. The comparison checks persisted model values and validation metrics while recording configuration and implementation identities separately; it does not replay a separate prediction dataset or include history download time. Incomplete or changed results are not comparable, and one bracketed comparison does not prove a stable production speedup.
-All outputs use separate directories; any blocked training marks the comparison incomplete. It no longer gates concurrency or reads an enablement environment variable.
-Single-profile and multi-profile training both emit actual history scan passes and rows. Alignment and candidate acceptance
-require every selected profile to report `reused=true`, completed execution with integer zero scans/rows, and unchanged
-input and both head model/report identities. Missing evidence fails acceptance; `repeat_reuse_failures` lists the reasons.
-Serial/parallel comparison applies this check to every round. Cross-checkout baseline reruns may rebuild, with their
-reuse failures reported separately so their measured repeat cost remains usable; the candidate must pass the reuse check.
+isolated 比较可读取明确指定的旧 checkout；只在隔离演练内处理旧持久化格式，不给产品增加双读或兼容层。数据库和样本比较使用当前绝对路径诊断入口及明确的旧产品 PYTHONPATH，避免调用旧 checkout 中的入口；不尝试旧命令 fallback。迁移 build/rollback 和历史 repack 是维护动作，仍需原授权，不属于本次执行范围。
 
 ## Retained tools
 
-This table is the sole declaration of the eight retained top-level tools.
-`check_refactor_quality.py` checks its complete fields, unique inventory and
-agreement with the approved script manifest. Declarations describe actual
-behavior; they do not grant permission to write active data.
-
 | Tool | Owner | Network | Writes | Output | Resource boundary |
 | --- | --- | --- | --- | --- | --- |
-| `check_refactor_quality.py` | Repository quality gate and opt-in source tools | None | Default gate/audit/format check are read-only; rename analysis writes an external temporary copy; only explicit write mode replaces selected sources | stdout findings/diff/summary; stderr failures | Ruff 60 s per invocation, Rope worker 300 s; source input 4 MiB/file and 128 MiB/job; no whole-format-job or hard RSS limit |
-| `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models and samples under required `--train-root` and `--sample-root`; explicit external `--output` | Result JSON to stdout and result file; progress to stderr | Two sequential full rebuilds; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; stage durations are recorded, with no artificial total deadline |
-| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; history revision benchmarks and qfq integrity checks write only disposable system-temporary targets, while active qfq data remains read-only; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output and stock identities are not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq audits one shared bounded database and emits aggregate counts; child capture has no fixed byte/RSS cap |
-| `generate_long_watchlist_asset.py` | Packaged Long build asset | None | Without `--check`, writes only `src/trader/web/static/long_watchlist_data.js` from `config/long_watchlist.json`; `--check` is read-only | Stale-asset message to stdout; silent success | One JSON document and one asset; no hard byte/RSS/deadline cap; does not fetch quotes |
-| `migrate_runtime_data.py` | Explicit isolated layout migration; codecs in `runtime_migration.py` | None | Required external stopped workspace copy and a new target; rejects live WAL, symlinks, conflicting identities and existing targets/staging; failed staging is retained | Aggregate candidate manifest; `verify` is read-only; no active switch | Streaming file hashes, SQLite integrity and budget union; old freeze records, publication sequences, outcomes, traces and research remain in the stopped source copy and are not imported; the manifest lists these fresh-generation requirements alongside history/windows/models/samples |
-| `repack_history_partitions.py` | Explicit annual history compaction | None | Required source `history` and sibling target `history-repacked`; external maintenance lock and activation journal; build preserves snapshot identity, explicit activation swaps whole directories, rollback retains candidate, finalize requires training evidence | Aggregate status JSON; progress to stderr | Each annual file compacted once, every monthly logical proof verified; no automatic production execution |
-| `runtime_migration.py` | Internal codecs for `migrate_runtime_data.py`; no standalone command | None | Called by migration command on its isolated candidate only; no independent target selection | Typed migration results and errors to caller; no direct CLI output | Sequential SQLite and file-hash operations under the migration command; no independent hard RSS or deadline cap |
-| `verify_wheel_install.py` | Isolated installed-wheel release gate | Local wheel install with `--no-deps` and version check disabled; no supplier requests; pip index access is not explicitly disabled | Temporary external virtualenv and dependency `.pth`, removed on exit; input wheel/config/resources read-only | Aggregate verification JSON to stdout; exceptions can produce stderr traceback | One wheel and sequential CLI/resource checks; subprocesses and virtualenv creation have no timeout; no hard RSS/disk cap |
-
-Repeated download, training, scoring, or status workflows belong to
-`trader-cli` or a business `entrypoints/commands.py`, not to this directory.
-Every retained or newly added tool must have a bounded input/output contract,
-an explicit network/write declaration, and an entry in this table before it is
-used by a gate or documented command. Missing limits must be stated explicitly;
-an RSS acceptance threshold, SQLite busy timeout or HTTP socket timeout must not
-be described as a hard whole-job resource bound. Migration requires a
-repository-external destination; for repack acceptance, pass explicit isolated
-external paths. For training evidence, also explicitly
-set external `--history-root`, `--train-root` and `--output`.
-
-## Source formatting and naming (opt-in)
-
-现有无参数门禁和`make format-check`保持原行为。以下新模式不自动运行，不触发模型调用；格式与重命名分别执行，批量改名不顺带格式化。Ruff及Rope版本由`pyproject.toml`的dev依赖固定，先用项目虚拟环境安装`.[dev]`。Linux/macOS使用`.venv/bin/python3`，Windows使用`.venv\Scripts\python.exe`执行同一脚本。
-
-```bash
-# 只检查／预览指定文件；这些是使用示例，不表示已对仓库执行转换。
-.venv/bin/python3 scripts/check_refactor_quality.py --format check scripts/example.py
-.venv/bin/python3 scripts/check_refactor_quality.py --format preview scripts/example.py
-# 全范围必须显式指定 --all；命名审计可输出带源码身份的清单模板。
-.venv/bin/python3 scripts/check_refactor_quality.py --naming-audit --all --json
-# 唯有 write 写入目标；改名清单默认放在仓库外，不提交运行清单。
-.venv/bin/python3 scripts/check_refactor_quality.py --rename preview --manifest /external/rename.json
-.venv/bin/python3 scripts/check_refactor_quality.py --rename write --manifest /external/rename.json
-.venv/bin/python3 scripts/check_refactor_quality.py --format write scripts/example.py
-```
-
-格式规则：函数定义/调用5项及以上逐行（含self/cls，展开项各算一项，分隔符不算）；0–4项允许收拢，长行和注释仍可多行。f-string插值内部表达式交给Ruff，避免跨Python版本修改字符串内部语法；外部真实调用仍应用参数规则。静态`__all__`两项及以上逐行；动态导出拒绝猜测。Ruff统一120字符目标行宽、四空格、双引号与LF。实际新规则只在显式工具入口生效，存量代码尚未转换。完整命名规则见[Python工程规范](../.agents/skills/python-engineering-guide/references/coding-standard.md#3-命名格式与可读性)。
-
-审计输出NAME001–NAME011：合法标识符、禁词、内置遮蔽、易混淆字符、单字母语义、含糊职责、双下划线、命名形态、丢弃值用途、私有导出、未授权档位目录。error与review分开；review不会自动变成改名指令。`active`按词段禁用，不误报`inactive`；字符串及第三方原始导入不按项目定义检查，第三方别名属于项目定义。没有引用不等于私有；第三方覆盖或动态边界需要人工确认，工具不能证明所有可见性关系。
-
-`--naming-audit --all --json`输出`findings`和`manifest_template`，将后者保存到仓库外，填写确认后的`renames`；模板的`files`必须保留全部Python消费者的路径和SHA-256。局部审计模板不能直接用于全项目改名。规范性示例（摘要、提交号和坐标必须取真实扫描结果）：
-
-```json
-{
-  "version": 1,
-  "base_commit": "<完整HEAD提交号>",
-  "files": [{"path": "src/trader/example.py", "sha256": "<内容SHA-256>"}],
-  "renames": [{
-    "path": "src/trader/example.py", "scope": "", "kind": "function",
-    "old": "OldPrice", "new": "LoadPrice", "line": 1, "column": 0,
-    "visibility": "public", "reason": "已核对跨模块消费者和公开合同"
-  }],
-  "references": []
-}
-```
-
-`scope`为点分隔的父作用域；`kind`使用审计分类：function/class/method/attribute/parameter/variable/global/constant/type。`line`为1起始行，`column`为AST的0起始UTF-8字节列，指声明节点（函数/类从声明起点，参数从名称，实例成员从self属性表达式）。`visibility`为public/internal，新名称与之吻合；普通局部变量用public表示不加前导下划线，不代表对外API。批处理按清单顺序重新定位，不能重复目标或使用已存在的新名。
-
-字符串入口、mock和外部固定字面量通过`references`精确登记：`path`、`line`、`old`（完整字符串值）、`new`、`reason`。外部合同保留可用相同old/new并说明原因；未使用、重复或未登记的疑似字符串引用阻断写入。定义模块中的静态`__all__`自动同步，跨模块重新导出的字符串须显式登记。字符串拼接、反射、继承/外部覆盖等不能完整由静态分析证明，继承类的方法默认拒绝，不能把预览成功当作业务验证通过。
-
-Rope在仓库外副本计算变更，不创建`.ropeproject`、不执行项目代码；其不确定引用阻断，不采用全局文本替换。仅允许清单中的标识符token变更和精确字符串变更，不自动移动文件/模块。重名策略保守：新名称只要已在扫描范围定义就拒绝，交换名称需另行迁移。改名清单基线和全部源码哈希必须一致，重复使用旧清单会失败。
-
-批量改名范围为Python消费者；命中`pyproject.toml`中完整限定的入口引用会拒绝，须另行完成元数据与消费者的原子迁移。工具不解析所有非Python配置或运行时生成的引用，调用方仍须核对外部合同；动态`__all__`同样拒绝。禁用词审计不授予公开接口迁移权限。
-
-模式退出码：0成功，1有格式差异或命名error，2输入/环境/分析失败；review单独报告。预览有diff时返回1。源码范围限`src/trader`、`scripts`、`tests`中的Python，拒绝符号链接；manifest最多4 MiB。格式检查不写目标，rename检查/预览仅写外部临时副本并清理。write先验证全部候选与消费者身份，再逐文件临时替换；并行修改或I/O失败立即停止并报告已完成路径，不承诺跨文件原子事务。普通外部编辑器不参与锁，写入前校验不能消除最后一次检查后的竞态，应在工作区停止其他写入后执行。没有自动Git提交、全仓转换、模块拆分或全局编辑器设置。
-
-## Skill evaluation (opt-in internal module)
-
-`skill_evaluation/` owns synthetic agent evaluations, separate from runtime
-diagnostics and the nine retained top-level scripts. It is not a product entry
-and is never invoked by default tests or quality gates. Explicit `run` makes
-Codex model requests using the current CLI login and model configuration;
-`compare`, help and offline unit tests make no requests.
-
-| Tool | Owner | Network | Writes | Output | Resource boundary |
-| --- | --- | --- | --- | --- | --- |
-| `python3 -m scripts.skill_evaluation` | Repository skill execution evidence | `run` invokes Codex model inference; agent shell network disabled, no live supplier requests | Required new absolute external directory, one synthetic repository and local bare origin per case; no active data or original remote copied | Versioned aggregate `summary.json`, readable `summary.md`, external per-case raw JSONL/stderr; compare prints a table | Eight sequential cases, repeat 1–3 (default 1); 600 s and 20 MiB combined child output per case, process group terminated on limit; local Git calls 15 s; no hard RSS/disk limit on agent-created files |
-
-```bash
-.venv/bin/python3 -m scripts.skill_evaluation run --suite all --repeat 1 --output-dir /tmp/trader-skills-before
-.venv/bin/python3 -m scripts.skill_evaluation compare --before /tmp/trader-skills-before --after /tmp/trader-skills-after
-```
-
-`--suite` also accepts one case name for a focused repeat. Use new output
-directories for each run. `--skill-source` accepts a previously saved skill
-snapshot; each run copies its inputs once and records both skill and evaluator
-digests, so editing the checkout cannot mix versions within a suite.
-The disposable venv contains the existing Ruff package and binary, with no
-editable product installation. Only the fixture's own Git metadata and local
-bare origin are explicitly added to the agent's writable roots.
-If Codex cannot execute any commands, subsequent cases are marked not started
-instead of repeating a known infrastructure failure. Exit `0` means all required evidence passed, `1`
-means an observed behavior failure, `2` means an execution error or evidence
-gap. Unknown JSONL events, missing final claims and unavailable model identity
-remain explicit; null identity means Codex did not report it, not an inferred
-model match. Raw traces may contain local paths and are retained only outside
-the checkout. These fixtures do not prove production recovery or a stable
-success rate. The current checks recognize shell reads and static task shapes;
-alternate tool formats or equivalent code outside those shapes need review.
-
-Makefile checks all of `src/trader`, `tests` and `scripts`, including internal
-probes and migration tools. Strict source debt is anchored to rule, relative file
-and qualified function, so unchanged aggregate counts cannot hide relocated
-violations. Changing a debt owner requires diff review and an explicit baseline
-update. This gate does not prove the accuracy of declarations or enforce the
-runtime limits of every tool; review and isolated execution evidence remain
-necessary.
-
-Tencent qfq supplier and actual updater measurements use the unified CLI:
-
-`--profile history-industry --source-timeout-seconds 15 --command-timeout-seconds 90 --output -` measures real login, calendar, and two dated industry queries, followed by a fresh supplier-process run reusing the same temporary query cache. It reports cold/warm time, queried/cached dates, and interval equality. It uses the published cutoff and up to three eligible codes for projection; supplier industry requests are market-wide, including all pages. It never fetches price history, updates active data, or measures the full multi-year preparation phase. Interrupted probes may leave an isolated temporary directory.
-
-`--profile history-space` inventories published/pending/seal files using inode-deduplicated allocated bytes; it never deletes files or infers that pending files are obsolete. `--profile history-source-compare --codes 600519 300750 688981 --history-days 251 --source-timeout-seconds 20 --command-timeout-seconds 180 --output -` compares identical active-calendar/filtered-universe inputs through BaoStock and Tencent-plus-gap pipelines. It uses real network requests and disposable system-temporary outputs only, including annual writing, sealing and publication. Limits are 1–10 codes, 1–2000 sessions and 1–45 seconds per attempt; the outer diagnostic deadline bounds the child. A timeout may leave an isolated temporary directory for diagnosis. Neither probe modifies active history or authorizes a production source switch; a short-window win does not prove 2000-day coverage or full-market speed.
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile tencent-download \
-  --download-sizes 10 50 100 --history-workers 8 --output -
-```
-
-This profile fetches the official universe and Tencent calendar, writes only
-disposable temporary V2/V3 caches, measures paired publication and restart
-idempotency, and reads any available history for a bounded shadow comparison.
-Sizes are limited to three samples of 1–100 stocks and workers to 1–12.
-Missing trading dates remain pending. Supplier socket timeouts are inactivity
-limits; the diagnostic child deadline bounds the whole child command.
-The report never authorizes replacing complete history with Tencent.
-
-V5卷积执行可通过统一入口与冻结的原Conv1d执行做合成float64 CPU对照（需v5可选依赖）：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile v5-training \
-  --v5-kernel-probe --command-timeout-seconds 180 \
-  --output /tmp/trader-v5-kernel-report.json
-```
-
-该模式不读取历史、不写活动模型或样本，比较原Conv1d与当前卷积执行的固定种子多步更新及预测误差，并报告5组交替顺序的单批耗时、算子CPU时间和进程RSS；任一线程设置的成对中位数变慢则标记degraded。RSS是包含算子分析开销的进程峰值，系统不支持时为null。该合成对照只用于定位计算内核，不能证明完整训练提速或收益准入。优先在无其它训练负载时测量；存在后台负载时须记录，不能据此推算全市场训练时长。
-
-V5的真实小范围训练通过同一入口执行（先安装v5可选CPU依赖）：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile v5-training \
-  --v5-probe-directory /tmp/trader-v5-industry-probe \
-  --command-timeout-seconds 600 --output /tmp/trader-v5-industry-report.json
-```
-
-输出目录必须位于仓库及活动历史之外且尚不存在。工具只读捕获已发布历史身份，按当前最大行业选择上市最早的最多40股，在输出目录导出真实日线与参考副本；导出核验所选revision身份和行哈希，不冒充全历史完整性扫描。随后按生产20000行行业门槛进行两个epoch的真实CPU双头拟合、校准、发布及重载，报告实际样本、耗时、RSS和失败原因。网络调用及活动数据写入为零；源码、模型与样本都不会自动切到活动目录。该小范围工程探测不证明全市场资源、默认100epoch训练、收益或生产准入通过；超时或取消可能保留外部副本用于诊断。
-
-V5参数候选的速度及质量门以当前`config/training.json`为基线，显式提供相同格式的候选配置：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile v5-lite \
-  --training-probe-directory /tmp/trader-v5-lite-comparison \
-  --v5-sample-root /absolute/trader/data/training/samples/v5 \
-  --v5-candidate-config /absolute/external/candidate-training.json \
-  --command-timeout-seconds 10980 --output /tmp/trader-v5-lite-report.json
-```
-
-输出目录必须是尚不存在、与样本目录独立的仓库外目录。先做5组交替顺序的256行CPU批次测量，比较8/4通道、float32及本机可用的1/2/4线程；微基准仅用于选择计算参数，不代替质量门。基线与候选必须使用相同拟合日期数和行业行数门，候选文件包含完整training JSON结构，使用生产解析器校验V5参数。提供样本路径时接受已封存且拟合日期足够的格式2紧凑缓存，核验摘要后复制两份，均只保留配置要求的末尾拟合日期，评估日期、特征和标签不变；250日旧缓存可用于61日隔离对照，但不等于生产缓存身份可复用。
-
-按双头资格交集选最小、中位、最大三个行业，交替基线/候选执行顺序，分别按各自配置拟合；每组RMSE≤基线×1.05且每日RankIC≥基线−0.01，任一失败提前结束，真实对照最多3小时。记录完整配置及摘要、实际轮数、样本复制/摘要核验、行业缓存、标准化、梯度训练、早停、校准、张量重载与确认区预测耗时；RSS为共享诊断进程累计高水位，不能解释成各候选的独立峰值。未运行历史维护、样本重建或模型发布，不能将这些阶段当作零耗时，也不能把一次行业对照推算为全市场训练时间。候选必须预先定义，不根据确认区结果反复搜索参数，不读取封存留出。
-
-current.json、progress.json、latest_pair.json和comparisons.json保留当前案例与进度，result.json保存质量结论和各组耗时比；passed只代表本次三行业双头质量门，不保证提速。正常退出、可处理异常或中断清理本工具的两份数据库副本，只保留报告。外层强制超时可能留下副本，确认子进程退出后才可删除。省略--v5-sample-root只测计算，结果仍标degraded及quality_not_requested，不冒充质量通过。该诊断不改活动样本、模型或默认配置，不自动启动整轮训练；门槛与失败回退见下载训练第5.5节。
-
-已有仓库外冻结历史副本后，可用未修改配置的参数核验V1/V2/V3/V5全部八头、样本缺失原因和重载结果：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile training-alignment \
-  --history-root /absolute/external/history \
-  --training-probe-directory /absolute/external/new-training-probe \
-  --command-timeout-seconds 1800 --output /absolute/external/alignment.json
-```
-
-历史和输出均须位于仓库外且彼此独立，输出目录必须尚不存在。报告区分训练工程状态和未验收收益，不切换活动工件；输入副本包含多少股票就只验证该范围。
-
-仅核对V1历史输入可运行`--profile model-inputs --history-root <历史目录> --command-timeout-seconds 360`；该模式只读启动投影，报告窗口/日期缺口、估算覆盖与耗时，不训练、不预测、不写活动数据。
-
-Audit active qfq paired publication and checkpoint state:
-
-For `sync market` failures, run `.venv/bin/python3 scripts/diagnose_runtime.py --profile download-failures --output -`.
-This reads only the existing `download_failure` table in the configured shared daily window, with stage/reason counts
-and recent failure events (run, Shanghai timestamp, stock, request window, provider/endpoint class, attempt,
-measured timing, safe exception causes and source location). It makes no supplier requests and reads no price payloads.
-Failed attempts remain visible after recovery; they are not the current pending state. Only failures are retained,
-using `download.json.failure_diagnostics.retention_limit` (currently 20000); terminal output is not archived.
-`query_limit` bounds both returned events and groups (currently 50). Both settings follow `--runtime-config`.
-Reducing retention takes effect on the next failure write; diagnostics never trim rows.
-Old databases return `available=false` without initialization and report the configured limits.
-Use `--qfq-database /absolute/external/copy.sqlite3` for an isolated copy.
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile qfq-sqlite \
-  --output -
-```
-
-The probe opens the shared daily window read-only, verifies both profile manifests and
-price hashes, checks SQLite integrity and WAL mode, and reports aggregate pairing
-and checkpoint differences, plus current pending stock/day counts. Existing valid
-windows do not hide pending repairs. It checks publication identity and price issues
-before and after the audit, emits no stock identities, and does not prove supplier availability.
-
-For the complete published history and its durable repair receipts:
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile history-publication \
-  --command-timeout-seconds 1800 --output -
-```
-
-This read-only audit checks catalog and annual database integrity, every published
-month's payload, logical hash and row count through the existing production codec
-(one batched proof scan per annual database and observation sequence),
-and pending gaps, unfinished tasks, replacement candidates and repair receipts.
-It rejects publication or receipt changes during the audit. It makes no supplier
-requests, initializes no tables, and writes no source data. `--history-root` can select an
-isolated copy; its bound reference database must also be available. The explicit
-timeout bounds the diagnostic subprocess; a timeout is not successful validation.
-Passing proves the captured publication and local receipts, not source completeness,
-company coverage, model eligibility or performance. Resolved attempts remain evidence
-of completed repair and do not count as pending work.
-
-Local configuration, history-maintenance state, research readiness and offline
-performance share the existing implementations:
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile local --output -
-.venv/bin/python3 scripts/diagnose_runtime.py --profile local --scoring-profile v2 --output -
-.venv/bin/python3 scripts/diagnose_runtime.py --profile local --scoring-profile v3 --output -
-```
-
-No service or supplier is required. Invalid configuration marks dependent checks
-as unexecuted. Insufficient research evidence is degraded locally; the standalone
-research profile remains strict. Performance results are separate for each profile.
-
-The standalone performance diagnostic defaults to one process concurrently exercising
-all eight Tomorrow/D25 heads. Select one profile when measuring an isolated profile:
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --output /tmp/trader-performance.json
-.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --scoring-profile v3 --output /tmp/trader-performance-v3.json
-```
-
-The explicit selection `--scoring-profile v1,v2,v3,v5` is equivalent to that default;
-`local` keeps its configured single-profile default. Models are loaded through the
-production contract, never trained or substituted. Missing/dependency/contract failures
-retain per-profile reasons and empty measurements. V5 remains Shadow and no DeepSeek
-HTTP is issued.
-
-Fixture history and input preparation occur outside model latency samples. The
-report separates first computation, exact reuse, one-stock fact changes and cold
-score-to-draft wall time, includes a separately profiled native-call count, and
-measures actual current RSS across 100 ticks using the same scoring caches.
-The process peak is reported separately. Source, complete input, model, strategy,
-cost, budget and environment identities bind comparisons; the existing performance
-entrypoint's `--baseline` requires matching inputs, models, contracts and environment,
-while retaining different source digests to compare implementations. This is a synthetic
-scoring workload: history disk scans, shared market-cache occupancy, real suppliers,
-browser latency and formal freeze equivalence remain unmeasured, not passed.
-
-For continuous calculations after quote acquisition, select the same performance
-entrypoint with an explicit replay length:
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --scoring-profile v3 --performance-replay-ticks 5 --command-timeout-seconds 1800 --output /tmp/trader-continuous-v3.json
-.venv/bin/python3 scripts/diagnose_runtime.py --profile performance --scoring-profile v3 --performance-replay-ticks 3 --performance-replay-rows 120 --output /tmp/trader-continuous-small.json
-```
-
-`--performance-replay-ticks` accepts 1–1000 measured rounds **per scenario**;
-zero retains the existing model microbenchmarks. One cold round is followed by
-unchanged inputs, observation-time-only, delivery-time-only, source-time-only,
-one-price, all-price and stale-input cases. The same model services, synthetic
-history projection, factor cache, injected clock and in-memory publication indices
-survive all rounds. Four-profile selection runs profiles concurrently with one
-shared factor-cache budget and serial Tomorrow/D25 calculations within each profile.
-Models are read once; no training or active data writes occur.
-Optional `--performance-replay-rows` bounds this diagnostic to 1–5500 generated
-stocks, records both measured/configured populations and binds baseline comparisons
-to that exact population. It requires continuous replay; the existing production
-performance configuration and its fixed 5500-stock gate remain unchanged.
-
-For the requested post-ST population size, use `--performance-replay-rows 4401`;
-the inputs remain synthetic.
-To locate a slow phase, add `--cpu-profile-dir /tmp/trader-replay-cpu` with
-`--performance-replay-ticks 1`. Each selected profile gets a separate subdirectory
-containing flushed `progress.jsonl` phase/GC events, completed round projections
-and per-phase `.pstats` files. Interrupted commands retain finished phases and
-rounds. `--cpu-profile-mode gc` omits function profiling to observe GC pauses with
-less interference. Both modes are instrumented diagnostics, not latency acceptance
-or valid latency baselines; run again without these options for comparisons.
-
-The `continuous_pipeline` report includes actual whole-process wall/CPU samples,
-per-profile and per-strategy stages, cold/steady P50/P95, RSS, logical factor-cache
-bytes, cache lookups, factor computations and distinct recomputed stocks,
-model prediction-batch deltas, input revision changes, and result fingerprints.
-Input preparation and fingerprint collection are timed separately. Model timings
-are children of score-to-draft; do not add them to their parent. A separate final
-CPU probe is labelled with its stale-input scenario and excluded from latency/RSS
-samples. A cache hit can still require a same-key replacement; computation counts
-do not infer the reason for invalidation. Controlled scenario changes and observed
-input/model revisions are reported separately.
-
-This is a calculation baseline, not a service-cycle measurement: every round
-requests the calculations, including unchanged inputs. Supplier I/O, scheduler
-skip gates, industry refresh cadence, minute/research inputs, disk preload,
-formal freezing and Web delivery remain excluded. Synthetic missing research and
-minute facts retain their normal quality restrictions. No absolute whole-chain
-latency pass is claimed; existing memory limits still apply. Large full-market
-runs can exceed the default 180-second child deadline; choose an explicit bounded
-timeout and keep the report outside the repository. Missing models retain the
-existing per-profile unavailable result rather than silently substituting fixtures.
-
-`--profile history-write --download-sizes 16 --history-days 2000` also measures
-`initial_resume`: it first commits half the stocks without publishing the initial
-snapshot, then times the restart against the populated annual files. Reports split
-the Tencent pipeline and sealing/publication wall time from cumulative supplier and
-writer time. This is an offline synthetic workload; it does not modify active data
-or establish full-market download speed. Run comparisons sequentially to avoid
-competing for the same disk.
-
-数据库下载与启动基线使用显式、尚不存在的仓库外目录：
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile database-baseline \
-  --database-probe-directory /absolute/external/database-probe \
-  --download-sizes 8 --history-days 2000 --database-rounds 5 \
-  --command-timeout-seconds 900 --output /absolute/external/database-baseline.json
-```
-
-每轮使用新进程和空数据库，顺序运行历史首建、次日、隔周、同日重跑与首次续传，
-以及联合下载、三个独立下载、启动预读和重启。联合准备只调用一次；独立任务不得生成
-其它任务的数据，联合/独立及同日重跑的发布身份必须一致。四档历史预读共用一次主扫描，
-加载完成后的重复取数验证为零连接、零SQL；仅有market或company时不报告history已就绪。
-测量复用现有SQLite封装，记录连接、提交的语句/批量行数、成功BEGIN/COMMIT、调用与提交耗时、
-进程物理读写、50ms采样WAL峰值和进程峰值RSS，保留每轮值及中位数。SQL时间包含取行和提交，
-不包含打开连接时的内部PRAGMA；采样WAL可能漏掉短峰值，操作系统缓存未清空。
-
-这是合成价格、每股3条且每页30条公司公告和真实持久化/启动投影的fixture，不包含供应商HTTP、PDF、模型或
-完整服务启动，不能据此声称生产全市场提速。`--download-sizes`在本profile限一个1–32的数量，
-默认8；日期数5–2000，轮数1–5，默认5。显式目录模式当前限POSIX，超时清理整个子进程组。
-报告同时给出文件系统、介质与识别来源；同文件系统的唯一手动配置标记为
-`configuration_same_filesystem`，不冒充自动检测。tmpfs/ramfs始终标记为内存文件系统，
-不能作为SSD/HDD性能证据。介质未知时保留unknown。
-
-添加`--database-training`可在每轮下载及启动预读之后，复用现有样本检测worker测量V1/V2/V3/V5的写入和双头矩阵读取。样本为固定合成值，最多750个拟合日期，另保留早停、校准和验证日期；不执行模型拟合或收益验收。报告包含四档输出摘要、连接关闭、SQL/事务、物理I/O及RSS；跨轮发布身份和样本摘要必须一致。该选项只用于单版本基线，不与`--baseline-checkout`组合。
-
-普通基线和带训练I/O的基线都要求各轮发布身份、行数、缺口及请求范围一致；耗时与资源计量允许变化。报告记录Python/平台、实际SQLite策略和源码/配置摘要，并在结束前复核未变化。比较模式分别冻结并报告两套代码/配置摘要，逐轮复核；同一对和不同对之间的业务输入/输出都须一致，不能把两边一起漂移当作固定输入。共享工作区有并行修改时，应从固定提交加本批变动形成的仓库外冻结副本运行；同机HDD测量分时执行，记录OS缓存未清空，不将新进程等同于物理冷缓存。真实全市场读取、完整拟合、供应商网络与PDF/OCR负载另行测量。
-
-SSD和HDD分别使用独立目录、代码/配置身份及报告；同一磁盘切换两组策略不构成两种介质实测。虚拟机的`ROTA`不能证明宿主机介质，自动检测unknown应原样保留；用户确认宿主机介质时另记确认来源、来宾检测结果和实际文件系统。内部worker的`--disk-kind`只选择历史写入策略，不提供物理介质证明；显式选择SSD时仍须在报告旁保存上述环境证据。系统临时目录为tmpfs时，必须另选实际磁盘上的仓库外目录。
-
-`--database-probe-directory`也适用于`history-write`、`history-sqlite`和`download-performance`，
-将子进程及其对照进程的临时数据库放在指定文件系统上；不提供该参数时沿用系统临时目录，
-其结果不能仅凭目录名认定为磁盘性能。活动数据目录和已存在的目标目录均被拒绝。
-
-`database-baseline`可再加`--baseline-checkout /absolute/external/baseline`做新旧对照。
-每个worker从对应checkout加载产品与同版本诊断代码，先核对固定输入的逻辑发布身份，再比较测量结果；结构升级后不能用新fixture调用旧接口，或将不同输入的结果称为对照。
-两边使用相同的固定输入与插桩口径，通过子进程工作目录和`PYTHONPATH`选择相应版本，并校验实际导入位置；
-配置和输入保持相同，新旧执行顺序每组交替。报告逐组核对历史五场景发布摘要、请求/行/缺口数量，
-以及联合/单项下载和重启输入身份，再给出耗时、语句、I/O、空间和RSS中位数及逐组胜出数。
-`history.cases`测量准备好参考输入后的历史同步；`sync.targets`的首次及同日总耗时包含公共参考准备，不能用前者替代后者的整轮成本。
-默认5组；至少一个历史场景墙钟中位数减少10%、胜出至少4组，其余场景墙钟回退不超过5%、
-RSS不超过2 GiB才标记`acceptance.accepted=true`，否则报告degraded。
-数据库大小仍记录，`database_size_within_5_percent`只作观察，不参与accepted判定。
-SQL次数减少本身不能替代整轮收益；保持单独指标，不能相加解释为墙钟。可按负载显式提高
-`--command-timeout-seconds`，例如1800秒；小于5组只作诊断，不能通过收益门。
-
-market/company候选加`--database-acceptance-focus market-company`，两项目标各自至少一个首次/同日
-场景达到10%和4/5胜出，其它耗时和内存门保持；同时核对公司启动预读回退。
-例如使用`--download-sizes 32 --history-days 251 --database-rounds 5`覆盖多页公告与短窗。
-公司计量覆盖初始化、多页提交、发布及最终连接关闭/checkpoint；不把延后写盘漏出计量范围。
-每个联合/独立任务收尾统计SQLite及其WAL/SHM字节，与历史五场景一并保留为占用证据。
-
-Compare the annual layout with an isolated checkout of the pre-migration monthly
-layout (for example, commit `c235ffa3` extracted outside this repository):
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile history-write \
-  --baseline-checkout /absolute/external/baseline \
-  --download-sizes 8 --command-timeout-seconds 900 --output -
-```
-
-The comparison alternates old and new workers for five rounds by default. It
-uses 8 synthetic stocks, 100 logical months and 2000 simulated sessions, and
-reports medians, connections, transactions, database and auxiliary file counts,
-allocated bytes, sampled WAL peak and process RSS. It requires improvement in
-the main hot reads, training scan and incremental writes; startup projections
-must stay within the 10% regression limit. Files
-and databases are disposable; warm operating-system cache and the small fixture
-do not establish full-market or physical cold-cache performance.
-
-With an annual-layout baseline, the same command compares shared-window
-publication reads and writes instead. `--download-sizes` accepts up to 5000
-synthetic securities, and `--history-days` sets the window length (capped at 251).
-Each worker publishes bounded batches, reads both profiles through `iter_windows`,
-and reports complete identity scans, connections, transactions, elapsed time,
-sampled WAL peak, and process RSS. It also measures history batch writes and
-narrow training reads, training sample writes/reads, and company publication
-writes/reads, using up to 1000 stocks and 20 dates per adapter fixture. Five alternating rounds
-must improve reads and keep initial/incremental writes within 10% of the baseline.
-For a focused identity-scan measurement use `--download-sizes 5000 --history-days 5`;
-this is a synthetic metadata workload, not full-market service acceptance.
-
-Build an isolated migration candidate from a stopped copy containing `data/`
-and `.runtime/trader/`:
-
-```bash
-.venv/bin/python3 scripts/migrate_runtime_data.py build \
-  --source /absolute/external/legacy-workspace \
-  --target /absolute/external/data-candidate --default-profile v2
-.venv/bin/python3 scripts/migrate_runtime_data.py verify \
-  --source /absolute/external/data-candidate
-```
-
-The default profile must reflect the old unscoped runtime's actual identity.
-Conflicting duplicate identities stop the candidate. Frozen payloads/checkpoints,
-budget request histories, reserved publication coordinates, outcomes and valid
-research evidence are preserved. References, company facts, history, short windows,
-models and samples are declared for regeneration; old caches remain cleanup candidates.
-The source is fingerprinted before and after; failures retain staging. Active
-switching, deletion, scheduler installation and bulk downloading require separate
-authorization. The old qfq shard conversion tool has been removed.
-
-## BaoStock rate experiments
-
-Use the existing public diagnostic entrypoint for one-session measurements:
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile baostock-concurrency \
-  --baostock-serial-only --baostock-intervals 2 1.5 1 --baostock-sizes 10 \
-  --baostock-rounds 3 --history-days 400 --source-timeout-seconds 15 \
-  --command-timeout-seconds 450 --output /absolute/outside/repository/rate-screen.json
-```
-
-The serial experiment uses the production start-to-start limiter, one active SDK
-session and no retries. Sizes are bounded to 1–100, intervals to at most three
-unique values of at least one second, and repetitions to 1–3. The socket default
-timeout applies only inside the diagnostic process and is restored afterwards;
-the public child-command deadline is the hard whole-experiment limit. A failed
-experiment stops the remaining rate/size/round matrix. Empty responses, invalid dates,
-and duplicate or mismatched raw/qfq dates fail the experiment. This does not verify
-every expected trading date or price value. Auto-discovery selects active
-A-shares across main, growth and STAR boards; explicit `--codes` fix a comparison
-population when at least the largest requested size is supplied.
-
-Reports include interval, repetition, raw/qfq row counts, bounded error categories,
-elapsed time and successful stocks per minute. They contain no stock-level prices
-or external payloads, never access the history archive/checkpoints, and always
-retain `production_eligible=false`. Throughput measures supplier reads only;
-neither a small successful sample nor zero observed errors proves full-market
-stability, retry/resume behavior or safe qfq request skipping. Production parameters
-are not changed by this command. Compare promising intervals with
-`--baostock-sizes 50 100 --baostock-rounds 3` before selecting a deployment candidate.
-
-## Research commands
-
-All HTTP diagnostics obtain the project transport from `bootstrap.OpenExternalHttp`;
-raw Requests/urllib calls and mutable response hooks are confined to the shared driver.
-Responses are immutable and already closed before parsing. The driver has no automatic
-retries or redirects and ignores environment proxy settings. Its default response cap
-is 16 MiB; official files/WebDriver use 32 MiB, PDFs/research samples 4 MiB, and Web health
-1 MiB. Timeout/cancellation checks run between raw reads and compressed content is also
-bounded after decompression. Supplier parsers belong to the product adapters; the
-Eastmoney spot diagnostic does not add a production source route.
-
-Research execution belongs to `trader-cli`; the four former standalone research
-scripts have been removed. Pass `--config /absolute/path/config/runtime.json`
-before the subcommand. Dependency construction and HTTP session lifetime belong
-to `bootstrap.py`; the use cases live under `training/application/`.
-
-| Command | Network | Writes and output | Resource boundary |
-| --- | --- | --- | --- |
-| `research-h1-capability` | Tencent and Eastmoney sample requests | Reads `--h1-runtime-dir`; seals existing H1 formats into explicit external `--artifact-dir`; summary to stdout or external `--output` | One code, two attempts, no retries/redirects/proxy fallback; default 8 s per request, maximum 60 s; deadline from first request at twice that timeout, checked between chunks with finite socket timeouts; 4 MiB per response; two strategies |
-| `research-data-qualification` | Same two sample requests | Explicit `--history-root` read-only; summary only; no archive download/write | Same HTTP limits; archive validation and industry audit scan the full existing snapshot |
-| `research-industry-audit` | None; `--tushare-access-points` is metadata | Explicit `--history-root` read-only; stdout aggregation or external report; details require external `--output` | One sequential full-snapshot audit; sample count is an eligibility threshold, not a scan cap |
-| `research-terminal-holdout` | None | Reads external `--parent-artifact-dir`; writes immutable Tomorrow/D25/conclusion reports into separate external `--output-dir`; summary to stdout or external `--output` | Two strategy evaluations; preserves insufficient-parent closure, hash verification, conflict and repeat-run semantics |
-
-Exit codes: `0` qualified/validated, `1` insufficient evidence, `2` invalid
-arguments/evidence or execution/output failure. Execution failures emit a bounded
-error report to stdout, including when the requested report path cannot be written;
-the failed destination is never retried. Summary paths must be separate from
-evidence input and artifact directories. The capability closure produces
-only insufficient evidence, so its normal exit code remains `1`. No command
-grants production authority. Ordinary CLI help/config checks do not load these
-research implementations. The HTTP deadline is checked during transport; socket
-timeouts and deadline checks do not guarantee a hard wall-clock limit. Full archive
-audits and report I/O have no hard RSS or total offline execution limit.
-Use isolated external copies for refactor acceptance, not active data.
-
-History SQLite performance is available through the unified read-only diagnostic:
-
-```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile history-sqlite --output -
-```
-
-It reads annual SQLite headers, samples page classes, benchmarks latest-row,
-training-projection and active-gap queries, and measures bounded revision writes
-and sealing only in a disposable temporary database. It does not compact or switch the active history database. Maintenance rules
-are in [the download guide](../docs/4_下载训练.md), section 3.4;
-training performance is explained in [the training guide](../docs/4_下载训练.md),
-section 5. The repack tool remains a separate explicit maintenance operation;
-its default paths do not authorize active-data changes. During refactoring,
-rehearse only on explicit repository-external copies as required by the
-[architecture contract](../docs/2_工程设计.md), section 14.
-
-Test commands and fast/full boundaries are defined by Makefile and documented
-in the architecture contract, section 13. Default `make test` runs the fast
-set; release acceptance also requires `make test-full`. Work status and pending
-optimizations are recorded only in `docs/3_工程实施.md`.
-
-
-完整history当前仅从空库重建，不提供旧格式转换。只读诊断`--profile tencent-history-window --codes 600519`核对整窗2000条实际返回；`--profile history-write --download-sizes 8 --history-days 2000`在仓库外临时目录对合成数据测量首建、日更、隔周与同日重跑，报告目标设备类型、分阶段耗时、物理写入量与峰值RSS，不写活动历史。隔离fixture和真实供应商/全市场下载耗时分别判断。
+| `diagnose_runtime.py` | A 公共执行；业务 owner 各自负责实现 | 仅显式选中的来源/浏览器/skill run | 标准输出或显式仓库外报告；受选中检查边界限制 | 白名单聚合 JSON | 默认180秒；20MiB子输出；限定进程生命周期 |
+| `generate_long_watchlist_asset.py` | 荐股静态资源生成 | 无 | 明确重建仓库JS资源 | 退出码 | 单个配置及资源；检查已迁入统一入口 |
+| `migrate_runtime_data.py` | 隔离旧数据迁移维护 | 无 | 显式外部新候选或回滚目录 | 聚合迁移摘要 | 只接受隔离外部路径；verify已迁入统一入口 |
+| `repack_history_partitions.py` | 下载历史分区维护 | 无 | 显式隔离repack工件及获授权的切换 | 分区/身份/阶段结果 | 保留原构建/激活/回滚围栏；本轮不执行 |
+| `runtime_migration.py` | 旧数据迁移内部codec | 无 | 无独立写入口 | 类型化摘要/摘要值 | 仅由隔离迁移维护调用 |
+
+## 全量文件去留与消费者清点
+
+下表以迁移前已推送版本的全部 Python 脚本为范围，逐文件登记用途、目标 owner、副作用和直接消费者；不以名字决定删除有效能力。所有迁移行均删除旧路径，包初始化行删除旧包或移入新包；没有兼容模块。消费者包含库调用者、测试、Makefile；文档示例在本说明、根 README 与启用的 Python skill 中统一切换。旧工程记录及停用 skill 是只读历史，不作为活动调用者。
+
+| 原路径 | 目标路径／处置 | 用途 | I/O边界 | 直接消费者 |
+| --- | --- | --- | --- | --- |
+| `scripts/check_refactor_quality.py` | `scripts/checks/engineering/quality/debt.py` | Keep refactor naming and complexity debt from changing without review. | 限定子进程；不写活动数据 | `Makefile` |
+| `scripts/check_tomorrow_training_memory.py` | `scripts/checks/training/memory.py` | Run the fenced V3 training job and emit Tomorrow-compatible repack evidence. | 显式外部样本/工件；受限真实训练、RSS采样 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/code_quality/__init__.py` | `scripts/checks/engineering/quality/__init__.py` | Opt-in source transformations; importing this package performs no work. | 审计只读；format/rename须明确授权，write才写 | `scripts/code_quality/cli.py`, `tests/contract/test_professional_naming_contract.py`, `tests/unit/scripts/test_code_quality_tools.py` |
+| `scripts/code_quality/cli.py` | `scripts/checks/engineering/quality/cli.py` | Explicit opt-in commands; the existing no-argument gate is unchanged. | 审计只读；format/rename须明确授权，write才写 | `tests/unit/scripts/test_code_quality_tools.py` |
+| `scripts/code_quality/files.py` | `scripts/checks/engineering/quality/files.py` | Bounded source selection and optimistic, per-file replacement. | 审计只读；format/rename须明确授权，write才写 | `tests/unit/scripts/test_code_quality_tools.py` |
+| `scripts/code_quality/formatting.py` | `scripts/checks/engineering/quality/formatting.py` | Deterministic comma policy followed by the pinned Ruff formatter. | 审计只读；format/rename须明确授权，write才写 | `tests/unit/scripts/test_code_quality_tools.py` |
+| `scripts/code_quality/manifest.py` | `scripts/checks/engineering/quality/manifest.py` | Strict JSON boundary for reviewable, content-bound rename batches. | 审计只读；format/rename须明确授权，write才写 | `tests/unit/scripts/test_code_quality_tools.py` |
+| `scripts/code_quality/naming.py` | `scripts/checks/engineering/quality/naming.py` | Single machine rule set for opt-in naming audits and rename admission. | 审计只读；format/rename须明确授权，write才写 | `tests/contract/test_professional_naming_contract.py`, `tests/unit/scripts/test_code_quality_tools.py` |
+| `scripts/code_quality/rename_worker.py` | `scripts/checks/engineering/quality/rename_worker.py` | Rope runs only in a disposable source copy under a parent-enforced timeout. | 审计只读；format/rename须明确授权，write才写 | `scripts/code_quality/cli.py`, `tests/unit/scripts/test_code_quality_tools.py` |
+| `scripts/diagnose_runtime.py` | `scripts/diagnose_runtime.py；参数/执行/投影拆入checks/` | Run bounded Trader diagnostics through one command and emit a sanitized combined report. | 限定子进程；不写活动数据 | `tests/contract/test_entry_contract.py`, `tests/contract/test_current_product_contract.py`, `tests/unit/scripts/test_v5_samples.py`, `tests/unit/scripts/test_v5_lite.py`, `tests/unit/scripts/test_v5_diagnostic.py`, `tests/unit/scripts/test_training_resources.py`, `tests/unit/scripts/test_training_performance.py`, `tests/unit/scripts/test_training_alignment.py`, `tests/unit/scripts/test_qfq_sqlite.py`, `tests/unit/scripts/test_market_factor_compare.py`, `tests/unit/scripts/test_history_publication_audit.py`, `tests/unit/scripts/test_disk_diagnostic.py`, `tests/unit/scripts/test_diagnose_runtime.py`, `tests/unit/scripts/test_database_baseline.py`, `tests/unit/scripts/test_company_resume_diagnostic.py`, `tests/unit/scripts/test_company_publication_audit.py`, `tests/unit/scripts/test_company_document_download_audit.py`, `Makefile` |
+| `scripts/generate_long_watchlist_asset.py` | `scripts/generate_long_watchlist_asset.py；检查分支移入checks/engineering/assets.py` | Generate the packaged long-watchlist JavaScript asset from its JSON source. | 显式生成JS；只读一致性检查迁走 | `Makefile` |
+| `scripts/migrate_runtime_data.py` | `scripts/migrate_runtime_data.py；verify移入checks/engineering/migration.py` | Build and verify a data candidate from an external, stopped legacy workspace copy. | 维护写入；保留原授权与隔离围栏，本轮不执行 | `tests/unit/scripts/test_migrate_runtime_data.py` |
+| `scripts/repack_history_partitions.py` | `scripts/repack_history_partitions.py` | Build and switch the fixed-path BaoStock archive to compact 8 KiB SQLite files. | 维护写入；保留原授权与隔离围栏，本轮不执行 | `tests/contract/test_history_partition_repack_contract.py` |
+| `scripts/runtime_diagnostics/__init__.py` | `删除旧包；checks及业务子包显式初始化` | Internal implementations owned by the unified runtime diagnostic CLI. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `scripts/runtime_diagnostics/training_samples.py`, `scripts/runtime_diagnostics/training_performance.py`, `scripts/runtime_diagnostics/history_sources.py`, `scripts/runtime_diagnostics/download_performance.py`, `scripts/runtime_diagnostics/database_layout_comparison.py`, `scripts/runtime_diagnostics/database_baseline.py`, `scripts/runtime_diagnostics/company_resume.py`, `scripts/runtime_diagnostics/company_query_audit.py`, `scripts/runtime_diagnostics/company_publication_audit.py`, `tests/contract/test_reusable_diagnostics_contract.py`, `tests/component/test_qfq_windows.py`, `tests/component/test_company_pipeline.py`, `tests/component/market_data_test_support.py`, `tests/unit/training/test_selected_training.py`, `tests/unit/scripts/test_web_health.py`, `tests/unit/scripts/test_v5_samples.py`, `tests/unit/scripts/test_v5_lite.py`, `tests/unit/scripts/test_tushare_daily.py`, `tests/unit/scripts/test_training_samples.py`, `tests/unit/scripts/test_training_resources.py`, `tests/unit/scripts/test_training_performance.py`, `tests/unit/scripts/test_training_coverage.py`, `tests/unit/scripts/test_training_alignment.py`, `tests/unit/scripts/test_tencent_history_coverage.py`, `tests/unit/scripts/test_security_master_probe.py`, `tests/unit/scripts/test_runtime_diagnostics_reporting.py`, `tests/unit/scripts/test_qfq_sqlite.py`, `tests/unit/scripts/test_market_factor_compare.py`, `tests/unit/scripts/test_long_watchlist.py`, `tests/unit/scripts/test_history_sources.py`, `tests/unit/scripts/test_history_publication_audit.py`, `tests/unit/scripts/test_history_daily_capability.py`, `tests/unit/scripts/test_disk_diagnostic.py`, `tests/unit/scripts/test_diagnose_runtime.py`, `tests/unit/scripts/test_desktop_dashboard.py`, `tests/unit/scripts/test_database_baseline.py`, `tests/unit/scripts/test_company_resume_diagnostic.py`, `tests/unit/scripts/test_company_publication_audit.py`, `tests/unit/scripts/test_company_document_download_audit.py`, `tests/unit/scripts/test_baostock_qfq_shadow.py`, `tests/unit/infra/research/test_history_training_input.py`, `tests/unit/training/infra/test_execution_timing.py`, `tests/unit/training/infra/profile/v5/test_network.py` |
+| `scripts/runtime_diagnostics/baostock_concurrency.py` | `scripts/checks/download/history/baostock_concurrency.py` | Run an isolated BaoStock serial rate-limit experiment. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/baostock_qfq_shadow.py` | `scripts/checks/download/history/baostock_qfq_shadow.py` | Read-only BaoStock qfq reuse shadow report for the active history snapshot. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/browser_refresh.py` | `scripts/checks/recommendation/browser_refresh.py` | Measure production scheduler-to-SSE-to-Firefox DOM refresh intervals with deterministic quotes. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/company_document_download_audit.py` | `scripts/checks/download/company/company_document_download_audit.py` | Compare bounded requests for recorded failed PDFs without parsing or active writes. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/runtime_diagnostics/company_resume.py` |
+| `scripts/runtime_diagnostics/company_field_audit.py` | `scripts/checks/download/company/company_field_audit.py` | Read-only field population, source agreement and saved query-union diagnostics. | 只读本地输入/类型/投影；不发布 | `scripts/diagnose_runtime.py`, `scripts/runtime_diagnostics/company_publication_audit.py`, `tests/unit/scripts/test_company_publication_audit.py` |
+| `scripts/runtime_diagnostics/company_ledger_browser.py` | `scripts/checks/download/company/company_ledger_browser.py` | Render the production score column and drawer in isolated desktop Chrome. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/company_ocr_audit.py` | `scripts/checks/download/company/company_ocr_audit.py` | Compare OCR candidates on seven failed PDFs without changing the source database. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/runtime_diagnostics/company_resume.py` |
+| `scripts/runtime_diagnostics/company_pagination_audit.py` | `scripts/checks/download/company/company_pagination_audit.py` | Compare complete CNInfo record sets at different page sizes without database writes. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/runtime_diagnostics/company_resume.py` |
+| `scripts/runtime_diagnostics/company_pipeline_audit.py` | `scripts/checks/download/company/company_pipeline_audit.py` | Same-document serial/parallel probe with real PDFs and disposable company indexes. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/runtime_diagnostics/company_resume.py` |
+| `scripts/runtime_diagnostics/company_publication_audit.py` | `scripts/checks/download/company/company_publication_audit.py` | Aggregate local company output and receipt evidence without reading document bodies. | 只读本地输入/类型/投影；不发布 | `scripts/runtime_diagnostics/company_query_audit.py`, `tests/unit/scripts/test_company_publication_audit.py` |
+| `scripts/runtime_diagnostics/company_query_audit.py` | `scripts/checks/download/company/company_query_audit.py` | Bounded real CNInfo count/filter audit; local databases are strictly read-only. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/runtime_diagnostics/company_resume.py`, `tests/component/test_company_pipeline.py`, `tests/unit/scripts/test_company_resume_diagnostic.py`, `tests/unit/scripts/test_company_publication_audit.py` |
+| `scripts/runtime_diagnostics/company_resume.py` | `scripts/checks/download/company/company_resume.py` | Replay failed company slices against real CNInfo only in an external SQLite backup. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_company_resume_diagnostic.py` |
+| `scripts/runtime_diagnostics/database_baseline.py` | `scripts/checks/infra/database_baseline.py` | Offline joint/single sync and startup-input baselines on disposable databases. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_database_baseline.py` |
+| `scripts/runtime_diagnostics/database_layout_comparison.py` | `scripts/checks/infra/database_layout_comparison.py` | Isolated, alternating measurements of the retired and current persistence layouts. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/runtime_diagnostics/database_measurement.py` | `scripts/checks/infra/database_measurement.py` | Scoped SQLite instrumentation for isolated diagnostic workers only. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `tests/unit/scripts/test_database_baseline.py` |
+| `scripts/runtime_diagnostics/database_workspace.py` | `scripts/checks/infra/database_workspace.py` | Explicit external database workspaces and truthful filesystem evidence. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_database_baseline.py` |
+| `scripts/runtime_diagnostics/diagnostic_types.py` | `scripts/checks/contracts.py` | Shared immutable value types for the unified runtime diagnostic entrypoint. | 只读本地输入/类型/投影；不发布 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_training_resources.py`, `tests/unit/scripts/test_training_performance.py`, `tests/unit/scripts/test_disk_diagnostic.py`, `tests/unit/scripts/test_database_baseline.py` |
+| `scripts/runtime_diagnostics/disk_policy_audit.py` | `scripts/checks/infra/disk_policy_audit.py` | Read-only source inventory of the shared SQLite policy injection boundary. | 只读本地输入/类型/投影；不发布 | `tests/unit/scripts/test_disk_diagnostic.py` |
+| `scripts/runtime_diagnostics/disk_profile.py` | `scripts/checks/infra/disk_profile.py` | Read-only disk inventory for the unified diagnostic command. | 只读本地输入/类型/投影；不发布 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/download_performance.py` | `scripts/checks/download/history/download_performance.py` | Offline download persistence measurements on disposable, synthetic databases. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/exchange_security_master.py` | `scripts/checks/download/market/exchange_security_master.py` | Probe the official SSE/SZSE security-master snapshot and report bounded coverage counts. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_security_master_probe.py` |
+| `scripts/runtime_diagnostics/history_daily_capability.py` | `scripts/checks/download/history/history_daily_capability.py` | Audit the configured daily-history sources without writing an archive. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_history_daily_capability.py` |
+| `scripts/runtime_diagnostics/history_fallback.py` | `scripts/checks/download/history/history_fallback.py` | Remote daily-history fallback for the standalone source diagnostic. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/runtime_diagnostics/history_sources.py`, `tests/component/market_data_test_support.py` |
+| `scripts/runtime_diagnostics/history_industry_preparation.py` | `scripts/checks/download/history/history_industry_preparation.py` | Measure cold/warm two-date industry preparation using isolated query evidence. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/history_parquet.py` | `scripts/checks/download/history/history_parquet.py` | Offline Parquet candidate, derived exclusively from a pinned SQLite publication. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `tests/unit/scripts/test_training_samples.py` |
+| `scripts/runtime_diagnostics/history_publication_audit.py` | `scripts/checks/download/history/history_publication_audit.py` | Read-only verification of published history and durable download receipts. | 只读本地输入/类型/投影；不发布 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_history_publication_audit.py` |
+| `scripts/runtime_diagnostics/history_source_compare.py` | `scripts/checks/download/history/history_source_compare.py` | Bounded same-input history pipelines; network and temporary output only. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/history_sources.py` | `scripts/checks/download/history/history_sources.py` | Sample feature and raw/qfq outcome histories in bounded worker waves. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_history_sources.py` |
+| `scripts/runtime_diagnostics/history_sqlite_performance.py` | `scripts/checks/download/history/history_sqlite_performance.py` | Read-only physical layout summary for the published monthly history SQLite databases. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_diagnose_runtime.py`, `tests/unit/infra/research/test_history_training_input.py` |
+| `scripts/runtime_diagnostics/history_write_benchmark.py` | `scripts/checks/download/history/history_write_benchmark.py` | Repeatable offline first-build and incremental-write measurements outside active data. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `scripts/runtime_diagnostics/database_layout_comparison.py` |
+| `scripts/runtime_diagnostics/long_watchlist.py` | `scripts/checks/recommendation/long_watchlist.py` | Read-only admission audit; supplier coverage never proves absence of unknown risk. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_long_watchlist.py` |
+| `scripts/runtime_diagnostics/market_factor_audit.py` | `scripts/checks/download/market/market_factor_audit.py` | Field-level completeness projections for supplier/factor diagnostics. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `tests/unit/scripts/test_market_factor_compare.py` |
+| `scripts/runtime_diagnostics/market_factor_auxiliary.py` | `scripts/checks/download/market/market_factor_auxiliary.py` | Bounded, read-only probes for inputs unavailable from spot quote endpoints. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/runtime_diagnostics/market_factor_baostock.py` | `scripts/checks/download/market/market_factor_baostock.py` | BaoStock current-industry capability for market-factor comparisons. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `tests/unit/scripts/test_market_factor_compare.py` |
+| `scripts/runtime_diagnostics/market_factor_budget.py` | `scripts/checks/download/market/market_factor_budget.py` | Hard wall-clock budgets for live market-factor diagnostics. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_market_factor_compare.py` |
+| `scripts/runtime_diagnostics/market_factor_compare.py` | `scripts/checks/download/market/market_factor_compare.py` | Bounded live quote comparisons with fixed qfq inputs and isolated production scoring. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_market_factor_compare.py`, `tests/unit/scripts/test_diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/market_factor_eastmoney.py` | `scripts/checks/download/market/market_factor_eastmoney.py` | Diagnostic-only Eastmoney spot probe; this endpoint has no production lane. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/runtime_diagnostics/market_factor_inputs.py` | `scripts/checks/download/market/market_factor_inputs.py` | Read-only, fixed local inputs for real supplier comparisons. | 只读本地输入/类型/投影；不发布 | `tests/unit/scripts/test_market_factor_compare.py` |
+| `scripts/runtime_diagnostics/market_factor_routes.py` | `scripts/checks/download/market/market_factor_routes.py` | Route plans for the live market-factor comparison. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/runtime_diagnostics/market_factor_text.py` | `scripts/checks/download/market/market_factor_text.py` | Human-readable terminal projection for the market factor comparison. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_market_factor_compare.py` |
+| `scripts/runtime_diagnostics/price_repair_audit.py` | `scripts/checks/download/history/price_repair_audit.py` | Export real problem windows, repair isolated SQLite files, verify immutable parents. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/qfq_sqlite.py` | `scripts/checks/download/history/qfq_sqlite.py` | Read-only integrity and paired-publication audit of the shared daily window. | 只读本地输入/类型/投影；不发布 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_qfq_sqlite.py`, `tests/unit/scripts/test_diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/reporting.py` | `scripts/checks/reporting.py` | Shared output and measurement helpers for internal runtime diagnostics. | 只读本地输入/类型/投影；不发布 | `tests/unit/training/test_selected_training.py`, `tests/unit/scripts/test_runtime_diagnostics_reporting.py`, `tests/unit/training/infra/test_execution_timing.py` |
+| `scripts/runtime_diagnostics/research_source_compare.py` | `scripts/checks/download/company/research_source_compare.py` | Read-only qualification of production company evidence source adapters. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/sample_comparison_worker.py` | `scripts/checks/training/sample_comparison_worker.py` | One isolated checkout's sample write/read measurements; never trains or publishes models. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/runtime_diagnostics/tencent_download.py` | `scripts/checks/download/history/tencent_download.py` | Measure the actual Tencent qfq updater and compare history tails without publication. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/component/test_qfq_windows.py`, `tests/unit/scripts/test_diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/tencent_quotes.py` | `scripts/checks/download/market/tencent_quotes.py` | Sample Tencent quotes repeatedly and report source-version stability and request latency. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py` |
+| `scripts/runtime_diagnostics/training_alignment.py` | `scripts/checks/training/training_alignment.py` | Train all alignment contracts against an explicitly external frozen history copy. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `scripts/runtime_diagnostics/training_performance.py`, `tests/unit/scripts/test_training_performance.py`, `tests/unit/scripts/test_training_alignment.py` |
+| `scripts/runtime_diagnostics/training_coverage.py` | `scripts/checks/training/training_coverage.py` | Read-only coverage audit of the current named sample format. | 只读本地输入/类型/投影；不发布 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_training_coverage.py` |
+| `scripts/runtime_diagnostics/training_performance.py` | `scripts/checks/training/training_performance.py` | Plan fresh, directly supervised training processes for comparable benchmark rounds. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_training_performance.py` |
+| `scripts/runtime_diagnostics/training_process_measurement.py` | `scripts/checks/training/training_process_measurement.py` | Observe each diagnostic training call without changing product resource limits. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `tests/unit/scripts/test_training_alignment.py` |
+| `scripts/runtime_diagnostics/training_read_comparison.py` | `scripts/checks/training/training_read_comparison.py` | Published-history fixtures and end-to-end SQLite/Parquet preparation probes. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/runtime_diagnostics/training_samples.py`, `tests/unit/scripts/test_training_samples.py` |
+| `scripts/runtime_diagnostics/training_resources.py` | `scripts/checks/training/training_resources.py` | Bounded CPU admission smoke test; no history, models, configuration writes or network. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_training_resources.py` |
+| `scripts/runtime_diagnostics/training_samples.py` | `scripts/checks/training/training_samples.py` | Five alternating sample-layout and columnar-read experiments on external fixed fixtures. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_training_samples.py` |
+| `scripts/runtime_diagnostics/tushare_daily.py` | `scripts/checks/download/market/tushare_daily.py` | Probe the configured Tushare daily capability without exposing credentials or prices. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_tushare_daily.py` |
+| `scripts/runtime_diagnostics/v5_kernels.py` | `scripts/checks/training/v5_kernels.py` | Bounded synthetic float64 comparison against a frozen Conv1d reference. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `tests/unit/training/infra/profile/v5/test_network.py` |
+| `scripts/runtime_diagnostics/v5_lite.py` | `scripts/checks/training/v5_lite.py` | Bounded paired V5 lightweight compute and real-sample acceptance diagnostic. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_v5_lite.py` |
+| `scripts/runtime_diagnostics/v5_samples.py` | `scripts/checks/training/v5_samples.py` | Isolated exact-value comparison of V5 wide columns and compact sequence blocks. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_v5_samples.py` |
+| `scripts/runtime_diagnostics/v5_training.py` | `scripts/checks/training/v5_training.py` | Real bounded-industry V5 fit with read-only source and external disposable outputs. | 显式受限计算或外部副本；不改活动数据；辅助继承调用者边界 | `scripts/diagnose_runtime.py`, `tests/contract/test_version_naming_boundary.py` |
+| `scripts/runtime_diagnostics/web_health.py` | `scripts/checks/recommendation/web_health.py` | Sample live 统一 Web APIs and detect recommendation-funnel state anomalies. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | `scripts/diagnose_runtime.py`, `tests/unit/scripts/test_web_health.py` |
+| `scripts/runtime_diagnostics/web_health_contract.py` | `scripts/checks/recommendation/web_health_contract.py` | Typed parsing boundary for sanitized 统一 Web-health samples. | 显式只读本地/网络/浏览器探针；临时资源受调用者限制；不自动运行 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/runtime_migration.py` | `scripts/runtime_migration.py` | Explicit legacy-format decoding for isolated data migration; never an active read path. | 内部辅助，无独立命令；继承调用者边界 | `scripts/migrate_runtime_data.py`, `tests/unit/scripts/test_migrate_runtime_data.py` |
+| `scripts/skill_evaluation/__init__.py` | `scripts/checks/engineering/skills/__init__.py` | Opt-in, isolated behavioral evaluation of the repository skills. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/skill_evaluation/__main__.py` | `scripts/checks/engineering/skills/cli.py` | Opt-in CLI; no model requests occur when imported or when running tests/help. | compare/辅助只读；run明确付费推理及外部合成目录 | 包导入或统一入口间接调用；无独立外部调用 |
+| `scripts/skill_evaluation/cases.py` | `scripts/checks/engineering/skills/cases.py` | Small synthetic tasks; acceptance rules remain outside the agent workspace. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/skill_evaluation/contracts.py` | `scripts/checks/engineering/skills/contracts.py` | Immutable inputs and evidence; JSON is decoded only by trace/report adapters. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/skill_evaluation/process.py` | `scripts/checks/engineering/skills/process.py` | Bounded subprocess lifetime, including descendants and combined output. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/skill_evaluation/reports.py` | `scripts/checks/engineering/skills/reports.py` | Explicit JSON/Markdown projection and bounded report comparison. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/skill_evaluation/scoring.py` | `scripts/checks/engineering/skills/scoring.py` | Independent static and Git acceptance checks; never execute generated Python. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/skill_evaluation/trace.py` | `scripts/checks/engineering/skills/trace.py` | Decode Codex exec JSONL conservatively; unknown events never prove a pass. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/skill_evaluation/workspace.py` | `scripts/checks/engineering/skills/workspace.py` | Disposable repositories, with no production files or original remote copied. | compare/辅助只读；run明确付费推理及外部合成目录 | `tests/unit/scripts/test_skill_evaluation.py` |
+| `scripts/verify_wheel_install.py` | `scripts/checks/engineering/packaging.py` | Install the built wheel outside the repository and verify public entrypoints and resources. | 明确选中后隔离venv安装；不切换活动环境 | `tests/contract/test_test_command_contract.py`, `Makefile` |
+
+代码之外的调用者：Makefile 的 lint、long-watchlist-check、test-release、performance-check、browser-performance-check 均进入统一入口；diagnose-list/local 替代旧隐式网络组合目标。普通产品 CLI 的配置、状态与性能用例是已安装产品合同，统一诊断复用它们，不把 scripts 反向导入产品包。pytest只调整脚本消费者，不添加全局路径注入或新的收集钩子。
+
+C 在共享工作区新增的 training_source_guard 随目录移入 checks/training；其未提交业务逻辑及相关用例仍由 C 交付，不混入 A 的路径整理提交。B/C 其它未提交逻辑也在新路径保留。进度与验证只在 docs/new/g_施工进度.md 原阶段338记录。

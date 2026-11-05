@@ -1,5 +1,7 @@
 """Isolation and explicit invocation of the all-profile alignment probe."""
 
+from scripts.checks.catalog import SelectionArguments
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from pathlib import Path
@@ -14,13 +16,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.diagnose_runtime import _parser, _validate, build_commands
-from scripts.runtime_diagnostics.training_alignment import _probe
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.training.training_alignment import _probe
 
 
 @pytest.mark.parametrize("reported_profile", ("v1", "v2"))
 def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, monkeypatch, reported_profile):
-    from scripts.runtime_diagnostics import training_alignment
+    from scripts.checks.training import training_alignment
     from trader import bootstrap
     from trader.recommendation.infra.scoring import profile_factory
 
@@ -48,7 +52,7 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
 
 def test_alignment_import_does_not_preload_the_product_before_checkout_selection():
     completed = subprocess.run(
-        [sys.executable, "-c", "import sys; import scripts.runtime_diagnostics.training_alignment; assert 'trader' not in sys.modules"],
+        [sys.executable, "-c", "import sys; import scripts.checks.training.training_alignment; assert 'trader' not in sys.modules"],
         check=False, capture_output=True, text=True, timeout=10,
     )
     assert completed.returncode == 0, completed.stderr
@@ -56,19 +60,18 @@ def test_alignment_import_does_not_preload_the_product_before_checkout_selection
 
 def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp_path: Path):
     with pytest.raises(ValueError, match="requires --history-root"):
-        _validate(_parser().parse_args(["--profile", "training-alignment"]))
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('training-alignment')]))
     args = [
-        "--profile",
-        "training-alignment",
+        *SelectionArguments('training-alignment'),
         "--history-root",
         str(tmp_path / "history"),
         "--training-probe-directory",
         str(tmp_path / "probe"),
     ]
-    options, _ = _validate(_parser().parse_args(args))
-    commands = build_commands(options)
+    options, _ = ValidateOptions(BuildParser().parse_args(args))
+    commands = BuildCommands(options)
     assert commands[0].name == "training_alignment"
-    assert "scripts.runtime_diagnostics.training_alignment" in commands[0].argv
+    assert "scripts.checks.training.training_alignment" in commands[0].argv
     with pytest.raises(ValueError, match="external_history_copy"):
         _probe(Path(__file__).resolve().parents[3] / "data/market/history", tmp_path / "probe", sqlite_policy=SqlitePolicyFixture())
     with pytest.raises(ValueError, match="new_separate_output"):
@@ -81,7 +84,7 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
 def test_entry_selects_checkout_before_loading_its_sqlite_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inputs_only: bool, explicit_config: bool, benchmark_mode: str | None,
 ):
-    from scripts.runtime_diagnostics import training_alignment as module
+    from scripts.checks.training import training_alignment as module
     import trader.bootstrap as bootstrap
     import trader.infra.settings as settings
 
@@ -127,14 +130,14 @@ def test_entry_selects_checkout_before_loading_its_sqlite_policy(
     monkeypatch.setattr(module, "_inputs", inputs)
     monkeypatch.setattr(module, "_probe", probe)
     monkeypatch.setattr(module, "emit_report", lambda report: None)
-    assert module.main() == 0
+    assert module.Main() == 0
 
 
 @pytest.mark.parametrize("source_changed", (False, True))
 def test_history_copy_includes_committed_wal_and_references_without_source_writes(
     tmp_path, monkeypatch, source_changed
 ):
-    from scripts.runtime_diagnostics.training_alignment import PrepareTrainingHistoryCopy
+    from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
     market = tmp_path / "source/market"
@@ -190,7 +193,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
 
 @pytest.mark.parametrize("invalid", ("absolute", "escape", "copy_escape"))
 def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_path, monkeypatch, invalid):
-    from scripts.runtime_diagnostics.training_alignment import PrepareTrainingHistoryCopy
+    from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy
     from trader.infra.sqlite_connection import SqliteConnection
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
@@ -240,7 +243,7 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
 
 @pytest.mark.parametrize("failure", (False, True))
 def test_training_resource_observer_stops_on_success_and_exception(tmp_path, failure):
-    from scripts.runtime_diagnostics.training_process_measurement import TrainingProcessMeasurement
+    from scripts.checks.training.training_process_measurement import TrainingProcessMeasurement
 
     (tmp_path / "status").write_text("VmRSS: 1024 kB\nThreads: 4\n")
     (tmp_path / "io").write_text("read_bytes: 10\nwrite_bytes: 20\n")
@@ -260,7 +263,7 @@ def test_training_resource_observer_stops_on_success_and_exception(tmp_path, fai
 
 
 def test_training_resource_observer_keeps_unavailable_measurements_unknown(tmp_path):
-    from scripts.runtime_diagnostics.training_process_measurement import TrainingProcessMeasurement
+    from scripts.checks.training.training_process_measurement import TrainingProcessMeasurement
 
     with TrainingProcessMeasurement(proc_root=tmp_path) as measurement:
         pass

@@ -23,7 +23,7 @@ _PERCENTILE_METRIC = re.compile(r"(?:^|_)p\d+_(?:ms|seconds)(?:$|_)", re.IGNOREC
         ("src/trader/training/infra/profile/v1/training.py", True),
         ("src/trader/recommendation/domain/market/v5/features.py", True),
         ("tests/contract/test_v5_web_contract.py", True),
-        ("scripts/runtime_diagnostics/v5_training.py", True),
+        ("scripts/checks/training/v5_training.py", True),
         ("src/trader/recommendation/application/runtime/v5/worker.py", False),
         ("src/trader/training/infra/profile/v4/training.py", False),
         ("scripts/runtime_diagnostics/runtime_" + "v5.py", False),

@@ -64,8 +64,6 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--default-profile", choices=("v2", "v3"), required=True, help="documented identity of the old unscoped runtime"
     )
-    verify = subparsers.add_parser("verify", help="Read-only verification of an isolated candidate.")
-    verify.add_argument("--source", type=Path, required=True)
     rollback_parser = subparsers.add_parser("rollback", help="Explicitly restore an external candidate backup.")
     rollback_parser.add_argument("--target", type=Path, required=True)
     rollback_parser.add_argument("--backup", type=Path, required=True)
@@ -81,8 +79,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "build":
             manifest = migrate(args.source, args.target, default_profile=args.default_profile, sqlite_policy=sqlite_policy)
             result = {"state": "candidate_verified", **ProjectManifest(manifest)}
-        elif args.action == "verify":
-            result = {"state": "verified", **ProjectManifest(inspect_layout(args.source, sqlite_policy=sqlite_policy))}
         else:
             rollback(args.target, args.backup)
             result = {"state": "rolled_back"}

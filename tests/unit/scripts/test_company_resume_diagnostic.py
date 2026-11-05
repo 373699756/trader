@@ -1,5 +1,7 @@
 """The public company diagnostic isolates writes and retains bounded recovery evidence."""
 
+from scripts.checks.catalog import SelectionArguments
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
@@ -10,11 +12,16 @@ from datetime import timedelta
 
 import pytest
 
-from scripts.diagnose_runtime import DiagnosticResult, _parser, _validate, build_commands, build_report
-from scripts.runtime_diagnostics import company_pagination_audit, company_pipeline_audit
-from scripts.runtime_diagnostics import company_ocr_audit
-from scripts.runtime_diagnostics.company_query_audit import AuditCompanyDatabase
-from scripts.runtime_diagnostics.company_resume import Main, _compact_database, _copy, _saved_pages
+from scripts.checks.contracts import DiagnosticResult
+from scripts.checks.arguments import BuildParser
+from scripts.checks.arguments import ValidateOptions
+from scripts.checks.commands import BuildCommands
+from scripts.checks.projections import BuildReport
+from scripts.checks.download.company import company_pagination_audit
+from scripts.checks.download.company import company_pipeline_audit
+from scripts.checks.download.company import company_ocr_audit
+from scripts.checks.download.company.company_query_audit import AuditCompanyDatabase
+from scripts.checks.download.company.company_resume import Main, _compact_database, _copy, _saved_pages
 from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import CompanyDocumentFailure, DisclosurePage, DisclosureQuery
@@ -99,13 +106,13 @@ def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_p
 @pytest.mark.parametrize("mode", ("pipeline", "ocr"))
 def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_path, mode):
     with pytest.raises(ValueError, match="company-replay-directory"):
-        _validate(_parser().parse_args(["--profile", "company-resume", f"--company-{mode}-audit"]))
-    options, _ = _validate(
-        _parser().parse_args(
-            ["--profile", "company-resume", f"--company-{mode}-audit", "--company-replay-directory", str(tmp_path)]
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume'), f"--company-{mode}-audit"]))
+    options, _ = ValidateOptions(
+        BuildParser().parse_args(
+            [*SelectionArguments('company-resume'), f"--company-{mode}-audit", "--company-replay-directory", str(tmp_path)]
         )
     )
-    assert f"--{mode}-only" in build_commands(options)[0].argv
+    assert f"--{mode}-only" in BuildCommands(options)[0].argv
 
 
 def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, monkeypatch):
@@ -156,27 +163,26 @@ def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(t
 
 def test_company_profile_requires_explicit_external_directory(tmp_path):
     with pytest.raises(ValueError, match="company-replay-directory"):
-        _validate(_parser().parse_args(["--profile", "company-resume"]))
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume')]))
     with pytest.raises(ValueError, match="outside the repository"):
-        _validate(_parser().parse_args(["--profile", "company-resume", "--company-replay-directory", "data/replay"]))
-    options, _ = _validate(
-        _parser().parse_args(["--profile", "company-resume", "--company-replay-directory", str(tmp_path)])
+        ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume'), "--company-replay-directory", "data/replay"]))
+    options, _ = ValidateOptions(
+        BuildParser().parse_args([*SelectionArguments('company-resume'), "--company-replay-directory", str(tmp_path)])
     )
-    commands = build_commands(options)
+    commands = BuildCommands(options)
     assert len(commands) == 1 and commands[0].name == "company_resume"
     assert str(tmp_path) in commands[0].argv
-    audit, _ = _validate(
-        _parser().parse_args(
+    audit, _ = ValidateOptions(
+        BuildParser().parse_args(
             [
-                "--profile",
-                "company-resume",
+                *SelectionArguments('company-resume'),
                 "--company-replay-directory",
                 str(tmp_path),
                 "--company-query-audit",
             ]
         )
     )
-    assert "--audit-only" in build_commands(audit)[0].argv
+    assert "--audit-only" in BuildCommands(audit)[0].argv
 
 
 def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_failures(tmp_path, monkeypatch):
@@ -223,8 +229,8 @@ def test_database_audit_needs_no_replay_directory_or_network_and_keeps_database_
     assert len(recent) == 1 and recent[0]["disclosure_id"] > 0
     assert recent[0]["failure"] == "disclosure_document_no_text"
     assert recent[0]["attempted_at"] == fixtures.NOW.isoformat()
-    options, _ = _validate(_parser().parse_args(["--profile", "company-resume", "--company-database-audit"]))
-    command = build_commands(options)[0]
+    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume'), "--company-database-audit"]))
+    command = BuildCommands(options)[0]
     assert "--database-only" in command.argv and "--directory" not in command.argv
     monkeypatch.setattr(
         sys, "argv", ["company-resume", "--database", str(index.path), "--database-only", "--budget-seconds", "30"]
@@ -373,7 +379,7 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
         },
         None,
     )
-    report = build_report("company-resume", [result])
+    report = BuildReport("company-resume", [result])
     text = json.dumps(report)
     assert "must-not-project" not in text
     summary = report["checks"][0]["summary"]
@@ -395,7 +401,7 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
 
 
 def test_query_capture_distinguishes_an_issuer_alias_from_an_unrelated_response():
-    from scripts.runtime_diagnostics.company_query_audit import _Capture
+    from scripts.checks.download.company.company_query_audit import _Capture
     from trader.infra.http_contracts import HttpRequest, HttpResponse
 
     capture = _Capture()

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import check_refactor_quality as quality
+from scripts.checks.engineering.quality import debt as quality
 
 
 @pytest.fixture
@@ -33,6 +33,7 @@ def gate_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(quality, "NAMING_ROOTS", (source, scripts, tmp_path / "tests"))
     monkeypatch.setattr(quality, "TOP_LEVEL_SCRIPT_MANIFEST", frozenset({"gate.py"}))
     monkeypatch.setattr(quality, "EXPECTED_DEBT", frozenset({("PLR0913", "core.py", "Allowed.work")}))
+    monkeypatch.setattr("sys.argv", ["quality"])
     return tmp_path
 
 
@@ -41,7 +42,7 @@ def test_real_ruff_gate_accepts_baseline_without_repository_writes(gate_reposito
         path.relative_to(gate_repository): path.read_bytes() for path in gate_repository.rglob("*") if path.is_file()
     }
 
-    assert quality.main() == 0
+    assert quality.Main() == 0
 
     after = {
         path.relative_to(gate_repository): path.read_bytes() for path in gate_repository.rglob("*") if path.is_file()
@@ -58,7 +59,7 @@ def test_same_count_debt_relocation_fails_public_gate(gate_repository: Path, rel
         original, changed = ("Allowed", "Moved") if relocation == "class" else ("work", "moved")
         source.write_text(source.read_text(encoding="utf-8").replace(original, changed), encoding="utf-8")
 
-    assert quality.main() == 1
+    assert quality.Main() == 1
 
 
 @pytest.mark.parametrize("fault", ("empty_field", "missing_row", "duplicate_row", "unknown_script", "missing_section"))
@@ -77,7 +78,7 @@ def test_incomplete_inventory_fails_public_gate(gate_repository: Path, fault: st
         text = text.replace("## Retained tools", "## Removed section")
     readme.write_text(text, encoding="utf-8")
 
-    assert quality.main() == 1
+    assert quality.Main() == 1
 
 
 @pytest.mark.parametrize("stdout", ("", "{}", "[null]", '[{"code":"C901"}]', "[]"))
@@ -88,7 +89,7 @@ def test_invalid_ruff_output_is_not_accepted(
         quality.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess((), 1, stdout, "")
     )
 
-    assert quality.main() == 2
+    assert quality.Main() == 2
 
 
 @pytest.mark.parametrize("failed_call", (1, 2))
@@ -111,7 +112,7 @@ def test_each_ruff_timeout_fails_closed_without_forwarding_raw_output(
 
     monkeypatch.setattr(quality.subprocess, "run", run)
 
-    assert quality.main() == 2
+    assert quality.Main() == 2
     captured = capsys.readouterr()
     assert "deadline" in captured.err
     assert "private raw" not in captured.out + captured.err

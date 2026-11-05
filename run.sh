@@ -29,7 +29,7 @@ usage() {
     "  ./run.sh train v1,v5             使用本地已发布历史，只训练所列档位" \
     "" \
     "档位以逗号分隔，可自由组合；省略时选择全部。V1已正式接入，V5保持工程Shadow并需可选CPU依赖。" \
-    "本地检测使用 scripts/diagnose_runtime.py --profile local。" \
+    "本地检测使用 scripts/diagnose_runtime.py --business recommendation --module pipeline --check snapshot。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \

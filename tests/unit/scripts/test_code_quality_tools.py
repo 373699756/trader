@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.code_quality.cli import Main
-from scripts.code_quality.files import Change, ReadSources, SourceFile, WriteChanges
-from scripts.code_quality.formatting import FormatSource
-from scripts.code_quality.manifest import ParseManifest
-from scripts.code_quality.naming import Audit, NameIssues, Symbols, Words
+from scripts.checks.engineering.quality.cli import Main
+from scripts.checks.engineering.quality.files import Change, ReadSources, SourceFile, WriteChanges
+from scripts.checks.engineering.quality.formatting import FormatSource
+from scripts.checks.engineering.quality.manifest import ParseManifest
+from scripts.checks.engineering.quality.naming import Audit, NameIssues, Symbols, Words
 
 CONFIG = Path(__file__).resolve().parents[3] / "pyproject.toml"
 
@@ -358,7 +358,7 @@ def test_single_export_tuple_preserves_required_comma() -> None:
 
 
 def test_worker_timeout_and_version_failure_do_not_write(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from scripts.code_quality import cli
+    from scripts.checks.engineering.quality import cli
 
     path = workspace / "scripts/example.py"
     path.write_text("def OldPrice():\n    pass\n")
@@ -367,7 +367,7 @@ def test_worker_timeout_and_version_failure_do_not_write(workspace: Path, monkey
     original_run = cli.subprocess.run
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if "scripts.code_quality.rename_worker" in command:
+        if "scripts.checks.engineering.quality.rename_worker" in command:
             raise subprocess.TimeoutExpired(command, 300)
         return original_run(command, **kwargs)
 
@@ -398,7 +398,7 @@ def test_entry_metadata_blocks_python_only_rename(workspace: Path) -> None:
 
 
 def test_partial_io_failure_reports_completed_files(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from scripts.code_quality import files
+    from scripts.checks.engineering.quality import files
 
     for name in ("one.py", "two.py"):
         (workspace / "scripts" / name).write_text("value = 1\n")

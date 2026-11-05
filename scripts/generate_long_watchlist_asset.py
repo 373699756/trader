@@ -21,19 +21,8 @@ def render_asset() -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="fail when the packaged asset is not the deterministic rendering of the JSON source",
-    )
-    args = parser.parse_args()
+    parser.parse_args()
     expected = render_asset()
-    if args.check:
-        actual = ASSET_PATH.read_text(encoding="utf-8") if ASSET_PATH.exists() else ""
-        if actual != expected:
-            print(f"long watchlist asset is stale; run {Path(__file__).relative_to(PROJECT_ROOT)} without --check")
-            return 1
-        return 0
     ASSET_PATH.write_text(expected, encoding="utf-8")
     return 0
 
