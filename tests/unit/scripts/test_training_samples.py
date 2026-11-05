@@ -1,15 +1,17 @@
 """The offline columnar candidate cannot change publication visibility or input values."""
 
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from scripts.checks.arguments import BuildParser, ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.download.history.history_parquet import ParquetHistoryProjection
-from scripts.checks.training.training_read_comparison import PrepareTrainingHistory, TrainingRowsHash
+from scripts.download.history.history_parquet import ParquetHistoryProjection
+from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
+from scripts.training.samples.training_read_comparison import TrainingRowsHash
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
@@ -87,12 +89,12 @@ def test_missing_price_and_zero_amount_keep_nulls_and_exact_float_values(history
 
 
 def test_public_training_sample_probe_is_explicit_and_runs_only_its_worker(tmp_path):
-    parser = BuildParser()
-    args = parser.parse_args([
-        "--business", "training", "--module", "samples", "--check", "comparison", "--training-probe-directory", str(tmp_path / "probe"),
+    args = ParseToolArguments([
+        "--business", "training", "--module", "samples", "--action", "comparison", "--training-probe-directory", str(tmp_path / "probe"),
         "--baseline-checkout", str(tmp_path / "baseline"),
     ])
-    options, _ = ValidateOptions(args)
-    commands = BuildCommands(options)
+    options = ParseBusinessOptions(args)
+    commands = BuildToolCommands(options)
     assert len(commands) == 1 and commands[0].name == "training_samples"
-    assert commands[0].argv[1:3] == ("-m", "scripts.diagnose_runtime")
+    assert Path(commands[0].argv[1]).resolve() == Path(__file__).resolve().parents[3] / "scripts/tools.py"
+    assert commands[0].argv[2] == "--internal-worker"

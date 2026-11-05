@@ -1,0 +1,1412 @@
+#!/usr/bin/env python3
+"""Sample live 统一 Web APIs and detect recommendation-funnel state anomalies."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+import urllib.parse
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from types import MappingProxyType
+from typing import Literal
+from zoneinfo import ZoneInfo
+
+from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VERSION
+from trader.infra.http_contracts import HttpConnectionError, HttpResponseTooLarge, HttpStatusError
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+
+from scripts.core.reporting import emit_report
+from scripts.recommendation.web.web_health_contract import FetchIssue
+from scripts.recommendation.web.web_health_contract import InputQualitySnapshot
+from scripts.recommendation.web.web_health_contract import PipelineSnapshot
+from scripts.recommendation.web.web_health_contract import ProjectionSnapshot
+from scripts.recommendation.web.web_health_contract import ScoringProfileSnapshot
+from scripts.recommendation.web.web_health_contract import WebPipelineStageSnapshot
+from scripts.recommendation.web.web_health_contract import WebSample
+from scripts.recommendation.web.web_health_contract import parse_web_sample
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_STRATEGIES = ("tomorrow", "d25")
+_SCORING_PHASES = frozenset({"before_close"})
+_MONITORED_PIPELINE_COUNTS = (
+    "issuer_eligible_population",
+    "input_ready_population",
+    "dynamic_filter_eligible",
+    "strategy_history_eligible",
+    "model_input_eligible",
+    "scoring_input_eligible",
+    "scoring_input_count",
+    "requested_candidates",
+    "candidate_features",
+    "candidate_quote_eligible",
+    "security_master",
+    "history",
+    "full_scored",
+)
+_MAX_RESPONSE_BYTES = 1_048_576
+_QUOTE_MAX_AGE_SECONDS = 30.0
+_REPORT_SCHEMA_VERSION = "web_recommendation_health"
+_EvidenceValue = str | int | float | bool | None
+
+
+@dataclass(frozen=True)
+class Finding:
+    severity: Literal["warning", "error"]
+    code: str
+    strategy: str | None
+    first_sample: int
+    last_sample: int
+    occurrences: int
+    message: str
+    evidence: Mapping[str, _EvidenceValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence", MappingProxyType(dict(self.evidence)))
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
+    parser.add_argument("--profile", choices=SCORING_PROFILE_IDS, help="read the selected running scoring profile")
+    parser.add_argument("--samples", type=int, default=6, help="number of API sample rounds (default: 6)")
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=5.0,
+        help="wall-clock delay between samples (default: 5)",
+    )
+    parser.add_argument("--timeout-seconds", type=float, default=3.0, help="timeout per HTTP request")
+    parser.add_argument(
+        "--consecutive-zero-threshold",
+        type=int,
+        default=3,
+        help="consecutive eligible zero samples required for a persistent-zero finding",
+    )
+    parser.add_argument(
+        "--strategy",
+        action="append",
+        choices=_STRATEGIES,
+        dest="strategies",
+        help="short strategy to inspect; repeat to select multiple (default: all)",
+    )
+    return parser
+
+
+def analyze_samples(
+    samples: Sequence[WebSample],
+    *,
+    strategies: tuple[str, ...] = _STRATEGIES,
+    consecutive_zero_threshold: int = 3,
+) -> tuple[Finding, ...]:
+    if consecutive_zero_threshold < 1:
+        raise ValueError("consecutive zero threshold must be positive")
+    findings: list[Finding] = []
+    for sample in samples:
+        findings.extend(_sample_findings(sample, strategies))
+    findings.extend(_regression_findings(samples, strategies))
+    findings.extend(_persistent_zero_findings(samples, strategies, consecutive_zero_threshold))
+    return _coalesce_findings(findings)
+
+
+def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Finding]:
+    findings = [
+        _finding(
+            "error",
+            "http_fetch_failed",
+            sample,
+            None,
+            "Web diagnostic endpoint could not be read",
+            {"endpoint": issue.endpoint, "error_code": issue.error_code},
+        )
+        for issue in sample.fetch_issues
+    ]
+    status = sample.status
+    if status is None:
+        return findings
+    long_current = sample.freezes.get("long")
+    if long_current is not None and long_current.status != "ready":
+        findings.append(
+            _finding(
+                "warning",
+                "long_projection_unavailable",
+                sample,
+                "long",
+                "Long current projection is unavailable independently of short-strategy model readiness",
+                {"status": long_current.status, "item_count": long_current.item_count},
+            )
+        )
+    if status.schema_version != _STATUS_SCHEMA_VERSION:
+        findings.append(
+            _finding("error", "status_schema_mismatch", sample, None, "status schema is missing or unsupported")
+        )
+    if not status.runtime_started or status.runtime_status != "running":
+        findings.append(_finding("error", "runtime_not_running", sample, None, "runtime is not reported as running"))
+    findings.extend(_observer_findings(sample, status.degraded_reasons))
+    if not status.release_freeze_schema:
+        findings.append(
+            _finding("error", "release_identity_missing", sample, None, "status release identity is incomplete")
+        )
+    if status.phase in _SCORING_PHASES and (
+        status.market_feature_rows is None or status.candidate_quote_entries is None
+    ):
+        findings.append(
+            _finding(
+                "error",
+                "market_telemetry_missing",
+                sample,
+                None,
+                "status lacks recommendation market-cache telemetry during a scoring phase",
+            )
+        )
+    if status.phase in _SCORING_PHASES and (status.candidate_quote_entries or 0) > 0:
+        candidate_age = status.candidate_quote_age
+        age_limit = _QUOTE_MAX_AGE_SECONDS
+        if candidate_age.p95_seconds is None:
+            findings.append(
+                _finding(
+                    "error",
+                    "candidate_quote_age_missing",
+                    sample,
+                    None,
+                    "candidate quote cache is populated but its age telemetry is missing",
+                )
+            )
+        elif candidate_age.p95_seconds > age_limit:
+            findings.append(
+                _finding(
+                    "error",
+                    "candidate_quotes_stale",
+                    sample,
+                    None,
+                    "most candidate quotes exceeded the scoring-phase freshness limit",
+                    {
+                        "p50_seconds": candidate_age.p50_seconds,
+                        "p95_seconds": candidate_age.p95_seconds,
+                        "maximum_seconds": candidate_age.maximum_seconds,
+                        "sample_count": candidate_age.sample_count,
+                        "limit_seconds": age_limit,
+                    },
+                )
+            )
+    if status.company_research.state is None:
+        findings.append(
+            _finding(
+                "error",
+                "company_research_telemetry_missing",
+                sample,
+                None,
+                "status lacks the bounded company-research runtime projection",
+            )
+        )
+    findings.extend(_scoring_starvation_findings(sample, strategies))
+    for strategy in strategies:
+        strategy_status = status.strategies.get(strategy)
+        freeze = sample.freezes.get(strategy)
+        if freeze is not None:
+            findings.extend(
+                _freeze_contract_findings(
+                    sample,
+                    strategy,
+                    strategy_status,
+                    freeze,
+                    status.release_freeze_schema,
+                )
+            )
+            if freeze.pipeline is not None:
+                audit = freeze.pipeline.committed_audit
+                if audit.invalid_fields:
+                    findings.append(
+                        _finding(
+                            "error",
+                            "committed_pipeline_audit_invalid",
+                            sample,
+                            strategy,
+                            "committed fourteen-stage audit violates order, population or batch continuity",
+                            {"fields": ",".join(audit.invalid_fields)},
+                        )
+                    )
+        quality = status.input_quality.get(strategy)
+        if quality is not None:
+            if quality.status is None or quality.trade_date is None or quality.primary_blocker is None:
+                findings.append(
+                    _finding(
+                        "error",
+                        "input_quality_shape_invalid",
+                        sample,
+                        strategy,
+                        "input quality lacks status, trade date, or primary blocker",
+                    )
+                )
+            findings.extend(_pipeline_consistency_findings(sample, strategy, quality.pipeline))
+            findings.extend(_history_gate_findings(sample, strategy, quality))
+            findings.extend(_market_population_findings(sample, strategy, quality))
+            findings.extend(_market_liquidity_history_findings(sample, strategy, quality))
+            findings.extend(_model_input_findings(sample, strategy, quality))
+            findings.extend(_model_industry_reference_findings(sample, strategy, quality))
+            findings.extend(_scoring_output_findings(sample, strategy, quality, freeze))
+        elif freeze is not None and freeze.pipeline is not None:
+            findings.extend(_pipeline_consistency_findings(sample, strategy, freeze.pipeline))
+    return findings
+
+
+def _observer_findings(sample: WebSample, degraded_reasons: tuple[str, ...]) -> list[Finding]:
+    return [
+        _finding(
+            "error",
+            "research_observer_failed",
+            sample,
+            None,
+            "the committed-freeze research observer failed",
+            {"error_code": reason.partition(":")[2]},
+        )
+        for reason in degraded_reasons
+        if reason.startswith("observer:") and reason.partition(":")[2]
+    ]
+
+
+def _market_population_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    stale_count = quality.population_filter_reason_counts.get("stale_quote", 0)
+    if quality.primary_blocker != "market_population_stale" or stale_count <= 0:
+        return []
+    return [
+        _finding(
+            "error",
+            "market_population_stale",
+            sample,
+            strategy,
+            "stale full-market quotes blocked candidate discovery before model scoring",
+            {
+                "population_count": quality.population_count,
+                "stale_quote_count": stale_count,
+            },
+        )
+    ]
+
+
+def _market_liquidity_history_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    missing_count = quality.population_filter_reason_counts.get("missing_liquidity_history", 0)
+    if quality.primary_blocker != "market_liquidity_history_unavailable" or missing_count <= 0:
+        return []
+    return [
+        _finding(
+            "error",
+            "market_liquidity_history_unavailable",
+            sample,
+            strategy,
+            "full-market liquidity history was unavailable before candidate discovery",
+            {
+                "population_count": quality.population_count,
+                "missing_liquidity_history_count": missing_count,
+            },
+        )
+    ]
+
+
+def _model_input_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    history_eligible = quality.pipeline.count("strategy_history_eligible") or 0
+    model_eligible = quality.pipeline.count("model_input_eligible")
+    if history_eligible <= 0 or model_eligible != 0:
+        return []
+    model_stage = quality.pipeline.stage("model_filter")
+    if (
+        model_stage is not None
+        and model_stage.input_count == 0
+        and quality.primary_blocker
+        not in {
+            "model_input_unavailable",
+            "production_model_features_missing",
+        }
+    ):
+        return []  # Upstream quote/history preparation did not hand any rows to the model.
+    return [
+        _finding(
+            "error",
+            "model_input_unavailable",
+            sample,
+            strategy,
+            "strategy-history-qualified rows did not satisfy the active model input contract",
+            {
+                "strategy_history_eligible": history_eligible,
+                "model_input_eligible": model_eligible,
+            },
+        )
+    ]
+
+
+def _model_industry_reference_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    status = sample.status
+    if status is None:
+        return []
+    source = status.model_industry_source
+    history_eligible = quality.pipeline.count("strategy_history_eligible") or 0
+    if (
+        quality.primary_blocker != "model_input_unavailable"
+        or history_eligible <= 0
+        or quality.pipeline.count("model_input_eligible") != 0
+        or source.snapshot_rows != 0
+    ):
+        return []
+    return [
+        _finding(
+            "error",
+            "model_industry_reference_unavailable",
+            sample,
+            strategy,
+            "the current CSRC industry reference is empty, so industry-aware model inputs cannot be built",
+            {
+                "snapshot_rows": source.snapshot_rows,
+                "error_count": source.error_count,
+                "timeout_count": source.timeout_count,
+                "last_error_code": source.last_error_code,
+            },
+        )
+    ]
+
+
+def _scoring_output_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+    freeze: ProjectionSnapshot | None,
+) -> list[Finding]:
+    candidate_features = quality.pipeline.count("candidate_features") or 0
+    full_scored = quality.pipeline.count("full_scored")
+    if quality.status == "ready" and (quality.pipeline.count("model_passed") or 0) > 0 and full_scored == 0:
+        return [
+            _finding(
+                "error",
+                "scored_candidates_missing",
+                sample,
+                strategy,
+                "strategy reported ready without any scored candidate despite populated candidate features",
+                {"candidate_features": candidate_features, "full_scored": full_scored},
+            )
+        ]
+    if full_scored is None or full_scored <= 0:
+        return []
+    findings: list[Finding] = []
+    if quality.highest_final_score is None:
+        findings.append(
+            _finding(
+                "error",
+                "highest_final_score_missing",
+                sample,
+                strategy,
+                "input quality omitted the highest final score despite scored candidates",
+                {"field": "input_quality", "full_scored": full_scored},
+            )
+        )
+    if freeze is not None and freeze.status == "ready" and freeze.maximum_final_score is None:
+        findings.append(
+            _finding(
+                "error",
+                "highest_final_score_missing",
+                sample,
+                strategy,
+                "ready freeze omitted the maximum final score despite scored candidates",
+                {"field": "current", "full_scored": full_scored},
+            )
+        )
+    score_values = tuple(
+        score
+        for score in (
+            quality.highest_final_score,
+            freeze.maximum_final_score if freeze is not None else None,
+            freeze.highest_top_score if freeze is not None else None,
+        )
+        if score is not None
+    )
+    if score_values and min(score_values) <= 0.0:
+        findings.append(
+            _finding(
+                "error",
+                "highest_final_score_non_positive",
+                sample,
+                strategy,
+                "scored candidates exist but a published highest final score is not positive",
+                {
+                    "highest_final_score": quality.highest_final_score,
+                    "freeze_maximum_final_score": freeze.maximum_final_score if freeze is not None else None,
+                    "top_score": freeze.highest_top_score if freeze is not None else None,
+                    "full_scored": full_scored,
+                },
+            )
+        )
+    if freeze is not None and freeze.status == "ready":
+        if not freeze.top_score_count:
+            findings.append(
+                _finding(
+                    "error",
+                    "scored_top_scores_missing",
+                    sample,
+                    strategy,
+                    "ready freeze omitted top score rows despite scored candidates",
+                    {"full_scored": full_scored, "evaluated_count": freeze.coverage.evaluated_count},
+                )
+            )
+        elif freeze.top_score_count is not None and freeze.highest_top_score is None:
+            findings.append(
+                _finding(
+                    "error",
+                    "top_score_value_invalid",
+                    sample,
+                    strategy,
+                    "ready freeze top score rows lack a valid final score",
+                    {"top_score_count": freeze.top_score_count},
+                )
+            )
+    return findings
+
+
+def _scoring_starvation_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Finding]:
+    status = sample.status
+    if status is None:
+        return []
+    supersession_counts: dict[str, int] = {}
+    checkpoint_miss_counts: dict[str, int] = {}
+    for issue in status.recent_errors:
+        if issue.strategy not in strategies or issue.count is None:
+            continue
+        if issue.code in {"refresh:input_superseded", "freeze:input_superseded"}:
+            supersession_counts[issue.strategy] = supersession_counts.get(issue.strategy, 0) + issue.count
+        elif issue.code == "checkpoint:no_eligible_freeze":
+            checkpoint_miss_counts[issue.strategy] = checkpoint_miss_counts.get(issue.strategy, 0) + issue.count
+    return [
+        _finding(
+            "error",
+            "scoring_input_supersession_starvation",
+            sample,
+            strategy,
+            "repeated input supersession prevented a scored current before its checkpoint",
+            {
+                "supersession_count": supersession_count,
+                "checkpoint_miss_count": checkpoint_miss_counts[strategy],
+            },
+        )
+        for strategy, supersession_count in supersession_counts.items()
+        if supersession_count >= 3 and checkpoint_miss_counts.get(strategy, 0) > 0
+    ]
+
+
+def _history_gate_findings(
+    sample: WebSample,
+    strategy: str,
+    quality: InputQualitySnapshot,
+) -> list[Finding]:
+    if quality.primary_blocker != "history_coverage_incomplete" or (quality.pipeline.count("full_scored") or 0) == 0:
+        return []
+    return [
+        _finding(
+            "error",
+            "global_history_gate_blocked_eligible_candidates",
+            sample,
+            strategy,
+            "a legacy batch history gate blocked candidates that already had valid scores",
+            {
+                "full_scored": quality.pipeline.count("full_scored"),
+                "history": quality.pipeline.count("history"),
+                "requested": quality.pipeline.count("requested_candidates"),
+            },
+        )
+    ]
+
+
+def _freeze_contract_findings(
+    sample: WebSample,
+    strategy: str,
+    strategy_status: ProjectionSnapshot | None,
+    freeze: ProjectionSnapshot,
+    release_schema: str | None,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    comparisons = (
+        ()
+        if strategy_status is None
+        else (
+            ("status", "status", strategy_status.status, freeze.status),
+            ("trade_date", "trade_date", strategy_status.trade_date, freeze.trade_date),
+            (
+                "projection",
+                "projection_version",
+                strategy_status.projection_version,
+                freeze.projection_version,
+            ),
+            (
+                "candidate_count",
+                "candidate_count",
+                strategy_status.coverage.candidate_count,
+                freeze.coverage.candidate_count,
+            ),
+            (
+                "evaluated_count",
+                "evaluated_count",
+                strategy_status.coverage.evaluated_count,
+                freeze.coverage.evaluated_count,
+            ),
+            (
+                "selected_count",
+                "selected_count",
+                strategy_status.coverage.selected_count,
+                freeze.coverage.selected_count,
+            ),
+        )
+    )
+    for code_field, evidence_field, status_value, freeze_value in comparisons:
+        if status_value != freeze_value:
+            findings.append(
+                _finding(
+                    "warning" if code_field == "projection" else "error",
+                    f"status_current_{code_field}_mismatch",
+                    sample,
+                    strategy,
+                    "status and current freeze identities disagree",
+                    {"field": evidence_field},
+                )
+            )
+    if strategy_status is None:
+        findings.append(
+            _finding(
+                "error",
+                "status_strategy_missing",
+                sample,
+                strategy,
+                "status lacks the requested strategy projection",
+            )
+        )
+    if freeze.strategy != strategy:
+        findings.append(
+            _finding("error", "current_strategy_mismatch", sample, strategy, "current freeze strategy is incorrect")
+        )
+    if release_schema and freeze.schema_version != release_schema:
+        findings.append(
+            _finding(
+                "error",
+                "release_contract_mismatch",
+                sample,
+                strategy,
+                "current freeze schema does not match the loaded release identity",
+            )
+        )
+    selected_count = freeze.coverage.selected_count
+    if selected_count is None or freeze.item_count is None or freeze.selected_item_count is None:
+        findings.append(
+            _finding(
+                "error",
+                "current_projection_shape_invalid",
+                sample,
+                strategy,
+                "current freeze coverage or item collection is invalid",
+            )
+        )
+    if (
+        selected_count is not None
+        and freeze.selected_item_count is not None
+        and selected_count != freeze.selected_item_count
+    ):
+        findings.append(
+            _finding(
+                "error",
+                "coverage_item_count_mismatch",
+                sample,
+                strategy,
+                "current freeze selected count does not match selected display rows",
+                {
+                    "selected_count": selected_count,
+                    "item_count": freeze.item_count,
+                    "selected_item_count": freeze.selected_item_count,
+                },
+            )
+        )
+    if freeze.status == "ready" and selected_count == 0 and freeze.frozen is not True and not freeze.empty_reason:
+        findings.append(
+            _finding(
+                "error",
+                "legal_empty_diagnostics_missing",
+                sample,
+                strategy,
+                "ready freeze with zero selected items lacks a legal-empty explanation",
+            )
+        )
+    if freeze.empty_reason == "no_positive_net_utility" and freeze.coverage.evaluated_count == 0:
+        findings.append(
+            _finding(
+                "warning" if freeze.frozen is True else "error",
+                "no_positive_net_utility_without_scored_candidates",
+                sample,
+                strategy,
+                (
+                    "formal freeze retains a non-positive-utility claim without any scored candidate"
+                    if freeze.frozen is True
+                    else "freeze claims non-positive model utility without any scored candidate"
+                ),
+                {"evaluated_count": freeze.coverage.evaluated_count, "frozen": freeze.frozen},
+            )
+        )
+    if freeze.degraded_reasons:
+        findings.append(
+            _finding(
+                "warning",
+                "snapshot_quality_degraded",
+                sample,
+                strategy,
+                "current freeze retains controlled snapshot-quality degradation",
+                {"reason_count": len(freeze.degraded_reasons), "frozen": freeze.frozen},
+            )
+        )
+    return findings
+
+
+def _pipeline_consistency_findings(
+    sample: WebSample,
+    strategy: str,
+    pipeline: PipelineSnapshot,
+) -> list[Finding]:
+    if pipeline.invalid_fields:
+        return [
+            _finding(
+                "error",
+                "pipeline_count_invalid",
+                sample,
+                strategy,
+                "recommendation pipeline contains non-integer or negative counts",
+                {"fields": ",".join(pipeline.invalid_fields)},
+            )
+        ]
+    requested = pipeline.count("requested_candidates") or 0
+    candidates = pipeline.count("candidate_features") or 0
+    full_scored = pipeline.count("full_scored") or 0
+    selected = (pipeline.count("selected_executable") or 0) + (pipeline.count("selected_observe") or 0)
+    filtered = (
+        (pipeline.count("filter_pass") or 0)
+        + (pipeline.count("filter_observe") or 0)
+        + (pipeline.count("filter_reject") or 0)
+    )
+    dynamic_filter = pipeline.stage("dynamic_filter")
+    inconsistent = {
+        "candidate_features": candidates > requested,
+        "security_master": (pipeline.count("security_master") or 0) > requested,
+        "history": (pipeline.count("history") or 0) > requested,
+        "filter_total": filtered > (dynamic_filter.input_count or 0) if dynamic_filter else False,
+        "full_scored": full_scored > candidates,
+        "selected_total": selected > full_scored,
+    }
+    fields = tuple(name for name, failed in inconsistent.items() if failed)
+    if not fields:
+        return []
+    return [
+        _finding(
+            "error",
+            "pipeline_count_inconsistent",
+            sample,
+            strategy,
+            "recommendation pipeline stages violate their count bounds",
+            {"fields": ",".join(fields)},
+        )
+    ]
+
+
+def _regression_findings(samples: Sequence[WebSample], strategies: tuple[str, ...]) -> list[Finding]:
+    findings: list[Finding] = []
+    for previous, current in zip(samples, samples[1:], strict=False):
+        if _runtime_restarted(previous, current):
+            findings.append(
+                _finding(
+                    "warning",
+                    "runtime_restart_observed",
+                    current,
+                    None,
+                    "event sequence regressed; cross-sample funnel comparisons were reset",
+                )
+            )
+            continue
+        previous_status = previous.status
+        current_status = current.status
+        if previous_status is not None and current_status is not None:
+            before = previous_status.history_archive.error_count
+            after = current_status.history_archive.error_count
+            if before is not None and after is not None and after > before:
+                findings.append(
+                    _finding(
+                        "warning",
+                        "history_archive_errors_increased",
+                        current,
+                        None,
+                        "published history archive error counter increased while sampling",
+                        {"previous": before, "current": after, "delta": after - before},
+                    )
+                )
+        for strategy in strategies:
+            previous_quality = _strategy_quality(previous, strategy)
+            current_quality = _strategy_quality(current, strategy)
+            if (
+                previous_quality is not None
+                and current_quality is None
+                and _strategy_expected_to_score(current, strategy)
+            ):
+                findings.append(
+                    _finding(
+                        "error",
+                        "input_quality_disappeared",
+                        current,
+                        strategy,
+                        "strategy input quality disappeared without a runtime restart",
+                    )
+                )
+                continue
+            if current_quality is None or previous_quality is None:
+                continue
+            if not _strategy_expected_to_score(current, strategy):
+                continue
+            if previous_quality.trade_date != current_quality.trade_date:
+                continue
+            previous_counts = dict(previous_quality.pipeline.monitored_counts())
+            for name, after in current_quality.pipeline.monitored_counts():
+                before = previous_counts[name]
+                if before is not None and before > 0 and after == 0:
+                    findings.append(
+                        _finding(
+                            "error",
+                            "pipeline_regressed_to_zero",
+                            current,
+                            strategy,
+                            "a populated recommendation-pipeline stage regressed to zero",
+                            {"field": name, "previous": before},
+                        )
+                    )
+    return findings
+
+
+def _persistent_zero_findings(
+    samples: Sequence[WebSample],
+    strategies: tuple[str, ...],
+    threshold: int,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for strategy in strategies:
+        missing_quality = [
+            sample
+            for sample in samples
+            if _strategy_expected_to_score(sample, strategy)
+            and _candidate_quote_entries(sample) > 0
+            and _strategy_quality(sample, strategy) is None
+        ]
+        run = _longest_consecutive_run(missing_quality)
+        if len(run) >= threshold:
+            findings.append(
+                _run_finding(
+                    "input_quality_persistently_missing",
+                    strategy,
+                    run,
+                    "strategy input quality stayed missing while candidate quotes were available",
+                )
+            )
+        for field_name in _MONITORED_PIPELINE_COUNTS:
+            zero_samples = [sample for sample in samples if _eligible_zero(sample, strategy, field_name)]
+            run = _longest_consecutive_run(zero_samples)
+            if len(run) < threshold:
+                continue
+            findings.append(
+                _run_finding(
+                    f"pipeline_{field_name}_persistently_zero",
+                    strategy,
+                    run,
+                    "recommendation-pipeline stage stayed zero despite populated upstream inputs",
+                    {"field": field_name},
+                )
+            )
+    return findings
+
+
+def _eligible_zero(sample: WebSample, strategy: str, field_name: str) -> bool:
+    quality = _strategy_quality(sample, strategy)
+    if not _strategy_expected_to_score(sample, strategy) or quality is None:
+        return False
+    pipeline = quality.pipeline
+    counts = dict(pipeline.monitored_counts())
+    if counts[field_name] != 0 or (field_name == "full_scored" and quality.status == "business_empty"):
+        return False
+    upstream_fields = {
+        "input_ready_population": "issuer_eligible_population",
+        "dynamic_filter_eligible": "input_ready_population",
+        "strategy_history_eligible": "dynamic_filter_eligible",
+        "model_input_eligible": "strategy_history_eligible",
+        "scoring_input_eligible": "model_input_eligible",
+        "scoring_input_count": "scoring_input_eligible",
+        "requested_candidates": "scoring_input_count",
+        "candidate_quote_eligible": "candidate_features",
+    }
+    if field_name == "issuer_eligible_population":
+        return _market_feature_rows(sample) > 0
+    if upstream_field := upstream_fields.get(field_name):
+        return (counts.get(upstream_field) or 0) > 0
+    if field_name == "full_scored":
+        return (pipeline.count("model_passed") or 0) > 0
+    requested = pipeline.count("requested_candidates") or 0
+    candidate_features = pipeline.count("candidate_features") or 0
+    if field_name == "candidate_features":
+        return requested > 0 and _candidate_quote_entries(sample) > 0
+    return candidate_features > 0
+
+
+def _strategy_expected_to_score(sample: WebSample, strategy: str) -> bool:
+    status = sample.status
+    if status is None or not status.runtime_started:
+        return False
+    phase = status.phase
+    if phase not in _SCORING_PHASES:
+        return False
+    return strategy in _STRATEGIES
+
+
+def _strategy_quality(sample: WebSample, strategy: str) -> InputQualitySnapshot | None:
+    return sample.status.input_quality.get(strategy) if sample.status is not None else None
+
+
+def _candidate_quote_entries(sample: WebSample) -> int:
+    if sample.status is None:
+        return 0
+    return sample.status.candidate_quote_entries or 0
+
+
+def _market_feature_rows(sample: WebSample) -> int:
+    if sample.status is None:
+        return 0
+    return sample.status.market_feature_rows or 0
+
+
+def _runtime_restarted(previous: WebSample, current: WebSample) -> bool:
+    previous_sequence = previous.status.event_sequence if previous.status is not None else None
+    current_sequence = current.status.event_sequence if current.status is not None else None
+    return previous_sequence is not None and current_sequence is not None and current_sequence < previous_sequence
+
+
+def _longest_consecutive_run(samples: Sequence[WebSample]) -> tuple[WebSample, ...]:
+    best: tuple[WebSample, ...] = ()
+    current: list[WebSample] = []
+    for sample in samples:
+        if current and (
+            sample.sample_number != current[-1].sample_number + 1 or _runtime_restarted(current[-1], sample)
+        ):
+            if len(current) > len(best):
+                best = tuple(current)
+            current = []
+        current.append(sample)
+    if len(current) > len(best):
+        best = tuple(current)
+    return best
+
+
+def _finding(
+    severity: Literal["warning", "error"],
+    code: str,
+    sample: WebSample,
+    strategy: str | None,
+    message: str,
+    evidence: Mapping[str, _EvidenceValue] | None = None,
+) -> Finding:
+    return Finding(severity, code, strategy, sample.sample_number, sample.sample_number, 1, message, evidence or {})
+
+
+def _run_finding(
+    code: str,
+    strategy: str,
+    run: Sequence[WebSample],
+    message: str,
+    evidence: Mapping[str, _EvidenceValue] | None = None,
+) -> Finding:
+    return Finding(
+        "error",
+        code,
+        strategy,
+        run[0].sample_number,
+        run[-1].sample_number,
+        len(run),
+        message,
+        evidence or {},
+    )
+
+
+def _coalesce_findings(findings: Sequence[Finding]) -> tuple[Finding, ...]:
+    grouped: dict[tuple[str, str | None, str], Finding] = {}
+    for finding in findings:
+        discriminator = _text(finding.evidence.get("field")) or _text(finding.evidence.get("endpoint")) or ""
+        key = finding.code, finding.strategy, discriminator
+        existing = grouped.get(key)
+        if existing is None:
+            grouped[key] = finding
+            continue
+        grouped[key] = Finding(
+            "error" if "error" in {existing.severity, finding.severity} else "warning",
+            finding.code,
+            finding.strategy,
+            min(existing.first_sample, finding.first_sample),
+            max(existing.last_sample, finding.last_sample),
+            existing.occurrences + finding.occurrences,
+            finding.message,
+            finding.evidence,
+        )
+    return tuple(
+        sorted(
+            grouped.values(),
+            key=lambda item: (
+                0 if item.severity == "error" else 1,
+                item.strategy or "",
+                item.code,
+                item.first_sample,
+            ),
+        )
+    )
+
+
+def collect_samples(
+    base_url: str,
+    *,
+    strategies: tuple[str, ...],
+    sample_count: int,
+    interval_seconds: float,
+    timeout_seconds: float,
+    scoring_profile: str | None = None,
+) -> tuple[WebSample, ...]:
+    samples: list[WebSample] = []
+    for sample_number in range(1, sample_count + 1):
+        samples.append(_collect_sample(base_url, strategies, sample_number, timeout_seconds, scoring_profile))
+        if sample_number < sample_count:
+            time.sleep(interval_seconds)
+    return tuple(samples)
+
+
+def _collect_sample(
+    base_url: str,
+    strategies: tuple[str, ...],
+    sample_number: int,
+    timeout_seconds: float,
+    scoring_profile: str | None = None,
+) -> WebSample:
+    status_payload: Mapping[str, object] | None = None
+    freeze_payloads: dict[str, Mapping[str, object]] = {}
+    issues: list[FetchIssue] = []
+    suffix = "?" + urllib.parse.urlencode({"profile": scoring_profile}) if scoring_profile else ""
+    try:
+        status_payload = _fetch_mapping(f"{base_url}/api/status{suffix}", timeout_seconds)
+    except FetchError as exc:
+        issues.append(FetchIssue("status", exc.error_code))
+    for strategy in (*strategies, "long"):
+        endpoint = f"freeze:{strategy}"
+        try:
+            freeze_payloads[strategy] = _fetch_mapping(
+                f"{base_url}/api/freezes/{strategy}/current{suffix}",
+                timeout_seconds,
+            )
+        except FetchError as exc:
+            issues.append(FetchIssue(endpoint, exc.error_code))
+    return parse_web_sample(
+        sample_number,
+        datetime.now(_SHANGHAI).isoformat(),
+        status_payload=status_payload,
+        freeze_payloads=freeze_payloads,
+        fetch_issues=tuple(issues),
+    )
+
+
+class FetchError(RuntimeError):
+    def __init__(self, error_code: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
+def _fetch_mapping(url: str, timeout_seconds: float) -> Mapping[str, object]:
+    from trader.bootstrap import OpenExternalHttp
+
+    try:
+        with OpenExternalHttp() as transport:
+            response = transport.get(
+                url,
+                headers={"Accept": "application/json"},
+                timeout=timeout_seconds,
+                max_response_bytes=_MAX_RESPONSE_BYTES,
+            )
+        response.raise_for_status()
+        payload = response.content
+    except HttpStatusError as exc:
+        raise FetchError(f"http_{exc.status_code}") from exc
+    except HttpConnectionError as exc:
+        raise FetchError("connection_failed") from exc
+    except HttpResponseTooLarge as exc:
+        raise FetchError("response_too_large") from exc
+    except TimeoutError as exc:
+        raise FetchError("request_timeout") from exc
+    except OSError as exc:
+        raise FetchError("request_os_error") from exc
+    if len(payload) > _MAX_RESPONSE_BYTES:
+        raise FetchError("response_too_large")
+    try:
+        value = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FetchError("invalid_json") from exc
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise FetchError("invalid_json_root")
+    return value
+
+
+def build_report(
+    base_url: str,
+    samples: tuple[WebSample, ...],
+    findings: tuple[Finding, ...],
+    *,
+    strategies: tuple[str, ...],
+    consecutive_zero_threshold: int,
+) -> dict[str, object]:
+    error_count = sum(finding.severity == "error" for finding in findings)
+    warning_count = sum(finding.severity == "warning" for finding in findings)
+    return {
+        "schema_version": _REPORT_SCHEMA_VERSION,
+        "status": "failed" if error_count else "degraded" if warning_count else "passed",
+        "collected_at": datetime.now(_SHANGHAI).isoformat(),
+        "target": base_url,
+        "configuration": {
+            "strategies": list(strategies),
+            "sample_count": len(samples),
+            "consecutive_zero_threshold": consecutive_zero_threshold,
+        },
+        "summary": {
+            "successful_samples": sum(not sample.fetch_issues for sample in samples),
+            "error_count": error_count,
+            "warning_count": warning_count,
+        },
+        "findings": [_finding_payload(finding) for finding in findings],
+        "samples": [_sample_payload(sample, strategies) for sample in samples],
+    }
+
+
+def _finding_payload(finding: Finding) -> dict[str, object]:
+    return {
+        "severity": finding.severity,
+        "code": finding.code,
+        "strategy": finding.strategy,
+        "first_sample": finding.first_sample,
+        "last_sample": finding.last_sample,
+        "occurrences": finding.occurrences,
+        "message": finding.message,
+        "evidence": dict(finding.evidence),
+    }
+
+
+def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str, object]:
+    status = sample.status
+    result: dict[str, object] = {}
+    long_current = sample.freezes.get("long")
+    if long_current is not None:
+        result["long"] = {
+            "current_projection": _projection_summary(long_current),
+            "current_item_count": long_current.item_count,
+            "available_quote_count": long_current.available_quote_count,
+            "degraded_reasons": list(long_current.degraded_reasons),
+        }
+    for strategy in strategies:
+        current = sample.freezes.get(strategy)
+        quality = _strategy_quality(sample, strategy)
+        result[strategy] = {
+            "status_projection": _projection_summary(status.strategies.get(strategy) if status is not None else None),
+            "current_projection": _projection_summary(current),
+            "committed_pipeline": _pipeline_payload(current.pipeline if current is not None else None),
+            "current_item_count": current.item_count if current is not None else None,
+            "empty_reason": current.empty_reason if current is not None else None,
+            "input_quality_status": quality.status if quality is not None else None,
+            "primary_blocker": quality.primary_blocker if quality is not None else None,
+            "population_count": quality.population_count if quality is not None else None,
+            "history_required_sessions": quality.history_required_sessions if quality is not None else None,
+            "highest_final_score": quality.highest_final_score if quality is not None else None,
+            "pipeline": _pipeline_payload(
+                quality.pipeline if quality is not None else current.pipeline if current is not None else None
+            ),
+            "population_filter_reason_counts": (
+                dict(quality.population_filter_reason_counts) if quality is not None else {}
+            ),
+            "candidate_filter_reason_counts": (
+                dict(quality.candidate_filter_reason_counts) if quality is not None else {}
+            ),
+            "candidate_transient_reason_counts": (
+                dict(quality.candidate_transient_reason_counts) if quality is not None else {}
+            ),
+            "candidate_optional_reason_counts": (
+                dict(quality.candidate_optional_reason_counts) if quality is not None else {}
+            ),
+            "supply_reason_counts": dict(quality.supply_reason_counts) if quality is not None else {},
+        }
+    return {
+        "sample": sample.sample_number,
+        "collected_at": sample.collected_at,
+        "runtime_status": status.runtime_status if status is not None else None,
+        "runtime_started": status.runtime_started if status is not None else False,
+        "deepseek_budget": {
+            "enabled": status.deepseek_enabled if status else False,
+            "available": status.deepseek_available if status else False,
+            "budget_date": status.deepseek_budget_date if status else None,
+            "used": status.deepseek_used if status else None,
+            "remaining": status.deepseek_remaining if status else None,
+            "error": status.deepseek_error if status else None,
+        },
+        "runtime_version": status.runtime_version if status is not None else None,
+        "run_mode": status.run_mode if status is not None else None,
+        "preview_state": status.preview_state if status is not None else None,
+        "preview_error": status.preview_error if status is not None else None,
+        "preview_started_at": status.preview_started_at if status is not None else None,
+        "recommendation_round": asdict(status.recommendation_round)
+        if status is not None and status.recommendation_round is not None else None,
+        "stage_timings": [
+            {"stage": timing.stage, "maximum_ms": timing.maximum_ms,
+             "p50_ms": timing.p50_ms, "sample_count": timing.sample_count}
+            for timing in status.stage_timings
+        ] if status is not None else [],
+        "phase": status.phase if status is not None else None,
+        "degraded_reasons": list(status.degraded_reasons) if status is not None else [],
+        "recent_errors": [
+            {
+                "code": issue.code,
+                "strategy": issue.strategy,
+                "stage": issue.stage,
+                "severity": issue.severity,
+                "count": issue.count,
+                "recovery_status": issue.recovery_status,
+                "occurred_at": issue.occurred_at,
+                "last_occurred_at": issue.last_occurred_at,
+                "resolved_at": issue.resolved_at,
+            }
+            for issue in status.recent_errors
+        ]
+        if status is not None
+        else [],
+        "event_sequence": status.event_sequence if status is not None else None,
+        "scoring_profile": _scoring_profile_payload(status.scoring_profile if status is not None else None),
+        "market": {
+            "market_feature_rows": status.market_feature_rows if status is not None else None,
+            "candidate_quote_cache_entries": status.candidate_quote_entries if status is not None else None,
+            "candidate_quote_latest_source": status.candidate_quote_source if status is not None else None,
+            "candidate_quote_age": (
+                {
+                    "p50_seconds": status.candidate_quote_age.p50_seconds,
+                    "p95_seconds": status.candidate_quote_age.p95_seconds,
+                    "maximum_seconds": status.candidate_quote_age.maximum_seconds,
+                    "sample_count": status.candidate_quote_age.sample_count,
+                }
+                if status is not None
+                else None
+            ),
+            "history_archive": (
+                {
+                    "state": status.history_archive.state,
+                    "snapshot_hash": status.history_archive.snapshot_hash,
+                    "data_cutoff": status.history_archive.data_cutoff,
+                    "universe_rows": status.history_archive.universe_rows,
+                    "covered_rows": status.history_archive.covered_rows,
+                    "coverage_ratio": status.history_archive.coverage_ratio,
+                    "error_count": status.history_archive.error_count,
+                    "maintenance_state": status.history_archive.maintenance_state,
+                    "maintenance_reason": status.history_archive.maintenance_reason,
+                    "maintenance_stage": status.history_archive.maintenance_stage,
+                    "maintenance_completed_units": status.history_archive.maintenance_completed_units,
+                    "maintenance_total_units": status.history_archive.maintenance_total_units,
+                }
+                if status is not None
+                else None
+            ),
+        },
+        "company_research": (
+            {
+                "state": status.company_research.state,
+                "running_codes": status.company_research.running_codes,
+                "pending_codes": status.company_research.pending_codes,
+                "completed_batches": status.company_research.completed_batches,
+                "partial_batches": status.company_research.partial_batches,
+                "failed_batches": status.company_research.failed_batches,
+                "deferred_codes": status.company_research.deferred_codes,
+                "cooldown_codes": status.company_research.cooldown_codes,
+                "retry_wait_codes": status.company_research.retry_wait_codes,
+                "next_retry_seconds": status.company_research.next_retry_seconds,
+                "gated_offer_codes": status.company_research.gated_offer_codes,
+                "short_circuited_batches": status.company_research.short_circuited_batches,
+                "short_circuited_codes": status.company_research.short_circuited_codes,
+                "tracked_code_gates": status.company_research.tracked_code_gates,
+                "evicted_code_gates": status.company_research.evicted_code_gates,
+                "batch_size": status.company_research.batch_size,
+                "batch_budget_seconds": status.company_research.batch_budget_seconds,
+                "success_cooldown_seconds": status.company_research.success_cooldown_seconds,
+                "retry_delays_seconds": list(status.company_research.retry_delays_seconds),
+                "trade_date": status.company_research.trade_date,
+                "tracked_strategies": status.company_research.tracked_strategies,
+                "tracked_output_codes": status.company_research.tracked_output_codes,
+                "next_periodic_at": status.company_research.next_periodic_at,
+                "intent_offer_count": status.company_research.intent_offer_count,
+                "periodic_offer_count": status.company_research.periodic_offer_count,
+                "result_count": status.company_research.result_count,
+                "rescore_result_count": status.company_research.rescore_result_count,
+            }
+            if status is not None
+            else None
+        ),
+        "strategies": result,
+        "fetch_issues": [{"endpoint": issue.endpoint, "error_code": issue.error_code} for issue in sample.fetch_issues],
+    }
+
+
+def _projection_summary(payload: ProjectionSnapshot | None) -> dict[str, object]:
+    return {
+        "status": payload.status if payload is not None else None,
+        "trade_date": payload.trade_date if payload is not None else None,
+        "projection_version": payload.projection_version if payload is not None else None,
+        "frozen": payload.frozen if payload is not None else None,
+        "candidate_count": payload.coverage.candidate_count if payload is not None else None,
+        "evaluated_count": payload.coverage.evaluated_count if payload is not None else None,
+        "selected_count": payload.coverage.selected_count if payload is not None else None,
+        "maximum_final_score": payload.maximum_final_score if payload is not None else None,
+        "top_score_count": payload.top_score_count if payload is not None else None,
+        "highest_top_score": payload.highest_top_score if payload is not None else None,
+    }
+
+
+def _scoring_profile_payload(payload: ScoringProfileSnapshot | None) -> dict[str, object]:
+    return {
+        "profile_id": payload.profile_id if payload is not None else None,
+        "heads": (
+            {
+                strategy: {
+                    "profile_id": head.profile_id,
+                    "is_enable": head.is_enabled,
+                    "model_id": head.model_id,
+                    "model_hash": head.model_hash,
+                    "request_count": head.request_count,
+                    "candidate_count": head.candidate_count,
+                    "predictor_batch_count": head.predictor_batch_count,
+                    "cache_hit_count": head.cache_hit_count,
+                    "score_scale": head.score_scale,
+                    "production_authority": head.production_authority,
+                    "training_label_cutoff": head.training_label_cutoff,
+                }
+                for strategy, head in payload.heads.items()
+            }
+            if payload is not None
+            else {}
+        ),
+    }
+
+
+def _pipeline_payload(payload: PipelineSnapshot | None) -> dict[str, object] | None:
+    if payload is None:
+        return None
+    return {
+        "current_stage": payload.current_stage,
+        "stage_audit": {
+            "observed": payload.committed_audit.observed,
+            "stage_count": payload.committed_audit.stage_count,
+            "continuous": not payload.committed_audit.invalid_fields if payload.committed_audit.observed else None,
+            "invalid_fields": list(payload.committed_audit.invalid_fields),
+            "stages": [_stage_payload(stage) for stage in payload.committed_audit.stages],
+        },
+        "stages": [_stage_payload(stage) for stage in payload.stages],
+    }
+
+
+def _stage_payload(stage: WebPipelineStageSnapshot) -> dict[str, object]:
+    return {
+        "key": stage.key,
+        "state": stage.state,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "rejected_count": stage.rejected_count,
+        "pending_count": stage.pending_count,
+        "failed_count": stage.failed_count,
+        "not_selected_count": stage.not_selected_count,
+        "duration_ms": stage.duration_ms,
+        "reasons": [{"code": code, "count": count} for code, count in stage.reasons],
+        "operation_durations": [
+            {"operation": name, "duration_ms": duration} for name, duration in stage.operation_durations
+        ],
+        "facets": [{"key": facet.key, "count": facet.count, "total": facet.total} for facet in stage.facets],
+    }
+
+
+def _normalize_base_url(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("--base-url must be an absolute HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        raise ValueError("--base-url cannot contain credentials, query parameters, or fragments")
+    path = parsed.path.rstrip("/")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _validate_args(args: argparse.Namespace) -> tuple[str, tuple[str, ...]]:
+    if args.samples < 1:
+        raise ValueError("--samples must be positive")
+    if args.interval_seconds < 0.0:
+        raise ValueError("--interval-seconds must not be negative")
+    if args.timeout_seconds <= 0.0:
+        raise ValueError("--timeout-seconds must be positive")
+    if not 1 <= args.consecutive_zero_threshold <= args.samples:
+        raise ValueError("--consecutive-zero-threshold must be between 1 and --samples")
+    strategies = tuple(dict.fromkeys(args.strategies or _STRATEGIES))
+    return _normalize_base_url(args.base_url), strategies
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): item for key, item in value.items() if isinstance(key, str)}
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def Main() -> int:
+    parser = _parser()
+    args = parser.parse_args()
+    try:
+        base_url, strategies = _validate_args(args)
+        samples = collect_samples(
+            base_url,
+            strategies=strategies,
+            sample_count=args.samples,
+            interval_seconds=args.interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+            scoring_profile=args.profile,
+        )
+        findings = analyze_samples(
+            samples,
+            strategies=strategies,
+            consecutive_zero_threshold=args.consecutive_zero_threshold,
+        )
+        report = build_report(
+            base_url,
+            samples,
+            findings,
+            strategies=strategies,
+            consecutive_zero_threshold=args.consecutive_zero_threshold,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        report = {
+            "schema_version": _REPORT_SCHEMA_VERSION,
+            "status": "failed",
+            "error": type(exc).__name__,
+        }
+    emit_report(report)
+    return 0 if report.get("status") in {"passed", "degraded"} else 1

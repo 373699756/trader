@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from scripts.checks.download.market.exchange_security_master import collect
+from scripts.download.market.exchange_security_master import collect
 from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
 )

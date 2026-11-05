@@ -229,7 +229,7 @@ def test_full_queue_wait_is_separate_from_source_reading_and_reuse_reads_nothing
 def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
     tmp_path, monkeypatch, capsys, failure, expected_exit
 ):
-    from scripts.checks.reporting import ReadJsonReports
+    from scripts.core.reporting import ReadJsonReports
     from tests.contract.test_cold_start import _empty_config
     from tests.helpers.configuration import SqlitePolicyFixture
     from trader.infra.settings import LoadRuntimeSettings

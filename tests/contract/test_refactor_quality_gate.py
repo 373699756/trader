@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.checks.engineering.quality import debt as quality
+from scripts.engineering.quality import debt as quality
 
 
 @pytest.fixture

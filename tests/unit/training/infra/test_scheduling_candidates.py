@@ -9,13 +9,11 @@ from threading import Event
 
 import pytest
 
-from scripts.checks.training.scheduling_candidates import (
-    LoadSchedulingEvidence,
-    ProfileFitEstimate,
-    ProjectSchedulingExperiment,
-    SchedulingEvidence,
-    UseSchedulingCandidate,
-)
+from scripts.training.resources.scheduling_candidates import LoadSchedulingEvidence
+from scripts.training.resources.scheduling_candidates import ProfileFitEstimate
+from scripts.training.resources.scheduling_candidates import ProjectSchedulingExperiment
+from scripts.training.resources.scheduling_candidates import SchedulingEvidence
+from scripts.training.resources.scheduling_candidates import UseSchedulingCandidate
 from tests.helpers.training_resources import TrainingResourceSettingsFixture
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
@@ -38,6 +36,17 @@ def _evidence(budget, profiles=PROFILES):
 def _ports(budget, profiles=PROFILES):
     measured = TrainingExecutionMeasurements(profiles, time.monotonic)
     return {profile: measured.cpu_admission(profile, budget) for profile in profiles}
+
+
+def test_candidate_preserves_keyword_arguments_and_restores_the_method():
+    budget = _budget()
+    original = TrainingExecutionMeasurements.cpu_admission
+    measured = TrainingExecutionMeasurements(PROFILES, time.monotonic)
+    with UseSchedulingCandidate("fixed", _evidence(budget)):
+        admission = measured.cpu_admission(profile="v1", admission=budget)
+        with admission.reserve(1, lambda: None) as threads:
+            assert threads == 1
+    assert TrainingExecutionMeasurements.cpu_admission is original
 
 
 @pytest.mark.parametrize("candidate,expected", (("fixed", ("v2", "v5")), ("long_task_first", ("v5", "v2")), ("borrowing", ("v5", "v2"))))
@@ -196,8 +205,8 @@ def test_candidate_runs_real_isolated_fit_and_zero_scan_model_and_sample_reuse(t
     import hashlib
     from pathlib import Path
 
-    from scripts.checks.training import training_alignment
-    from scripts.checks.training.training_read_comparison import PrepareTrainingHistory
+    from scripts.training.jobs import training_alignment
+    from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
     from tests.helpers.configuration import SqlitePolicyFixture
     from trader.infra.settings import LoadRuntimeSettings
     from trader.infra.settings.data_paths import DataPaths

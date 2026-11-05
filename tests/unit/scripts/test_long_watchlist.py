@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from datetime import date, datetime
@@ -8,10 +10,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.checks.recommendation.long_watchlist import audit_code, financial_admission, historical_exclusions
-from scripts.checks.arguments import BuildParser, ValidateOptions
-from scripts.checks.catalog import SelectionArguments
-from scripts.checks.commands import BuildCommands
+from scripts.recommendation.long.long_watchlist import audit_code
+from scripts.recommendation.long.long_watchlist import financial_admission
+from scripts.recommendation.long.long_watchlist import historical_exclusions
+from scripts.core.catalog import SelectionArguments
 from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery
 from tests.helpers.configuration import (
     CompanyDocumentFilesFixture as CompanyDocumentFiles,
@@ -27,12 +29,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_dispatcher_uses_runtime_company_preload_settings() -> None:
-    options, _ = ValidateOptions(BuildParser().parse_args(SelectionArguments("long-watchlist")))
+    options = ParseBusinessOptions(ParseToolArguments(SelectionArguments("long-watchlist")))
 
-    commands = BuildCommands(options)
+    commands = BuildToolCommands(options)
 
     assert len(commands) == 1
-    assert "scripts.checks.recommendation.long_watchlist" in commands[0].argv
+    assert "scripts.recommendation.long.long_watchlist" in commands[0].argv
     assert "--runtime-config" in commands[0].argv
     assert "--timeout-seconds" not in commands[0].argv
 

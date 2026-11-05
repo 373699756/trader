@@ -104,14 +104,14 @@ Tushare不承担生产qfq或财务补缺；无密钥时按其职责降级，不�
 
 ~~~bash
 # 不需要运行服务的本地检查
-.venv/bin/python3 scripts/diagnose_runtime.py --business recommendation --module pipeline --check snapshot --output -
+.venv/bin/python3 scripts/tools.py --business recommendation --module pipeline --action snapshot --report -
 
 # 运行中的服务和数据源检查
-.venv/bin/python3 scripts/diagnose_runtime.py --business recommendation --module web --check health \
-  --base-url http://127.0.0.1:5000 --output -
+.venv/bin/python3 scripts/tools.py --business recommendation --module web --action health \
+  --base-url http://127.0.0.1:5000 --report -
 ~~~
 
-统一脚本的专项参数见[scripts说明](scripts/README.md)。报告需要保存时使用显式仓库外路径。
+统一工具的专项参数见[scripts说明](scripts/README.md)。`--list`列出全部业务、模块和动作；报告通过`--report`保存到显式仓库外路径，业务原有`--output`仍表示工件。
 
 | 现象 | 先检查什么 |
 | --- | --- |

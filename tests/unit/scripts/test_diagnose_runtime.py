@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BusinessOptions, BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from dataclasses import replace
 from datetime import datetime
@@ -8,72 +10,45 @@ from pathlib import Path
 
 import pytest
 
-from scripts.checks.contracts import DiagnosticCommand
-from scripts.checks.contracts import DiagnosticOptions
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.execution import ExecuteCommand
-from scripts.checks.execution import RunDiagnostics
-from scripts.checks.download.history import baostock_concurrency
-from scripts.checks.recommendation.browser_refresh import _seed
-from scripts.checks.download.history.history_sqlite_performance import inspect_history_space
+from scripts.core.contracts import DiagnosticCommand
+from scripts.core.contracts import DiagnosticResult
+from scripts.core.paths import PROJECT_ROOT
+from scripts.core.projections import BuildReport, NormalizeActionResult, ResultStatus
+from scripts.core.execution import ExecuteCommand
+from scripts.core.execution import RunDiagnostics
+from scripts.download.history import baostock_concurrency
+from scripts.recommendation.web.browser_refresh import _seed
+from scripts.download.history.history_sqlite_performance import inspect_history_space
 from trader.download.infra.baostock_session import RateLimitedBaoStockSdk
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.publication.models import Strategy
 
 
-def _options(**overrides: object) -> DiagnosticOptions:
-    defaults = DiagnosticOptions(
-        check_id="web",
-        base_url="http://127.0.0.1:5000",
-        runtime_config=Path("config/runtime.json"),
-        codes=("600519", "300750", "688981"),
-        web_samples=3,
-        web_interval_seconds=2.0,
-        source_samples=1,
-        source_interval_seconds=1.0,
-        history_workers=3,
-        history_days=61,
-        history_source="composite",
-        tencent_history_host="proxy",
-        web_timeout_seconds=3.0,
-        source_timeout_seconds=4.5,
-        browser_duration_seconds=8.0,
-        browser_minimum_updates=3,
-        command_timeout_seconds=180.0,
-        history_root=Path("data/history"),
-        sqlite_page_sample_count=1,
-        sqlite_query_rounds=3,
-        sqlite_revision_write_sample_count=512,
-    )
+def _options(action_identity: str = "web", **overrides: object) -> BusinessOptions:
+    defaults = ParseBusinessOptions(ParseToolArguments(list(SelectionArguments(action_identity))))
     return replace(defaults, **overrides)
 
 
 def test_removed_index_experiment_is_rejected_before_execution(capsys):
-    parser = BuildParser()
-    assert "history-indexes" not in parser.format_help()
     with pytest.raises(SystemExit) as failure:
-        parser.parse_args(["--profile", "history-indexes"])
+        ParseToolArguments(["--profile", "history-indexes"])
     assert failure.value.code == 2
     assert "required" in capsys.readouterr().err
 
 
 def test_price_repair_audit_can_resume_its_external_copy_without_empty_directory_preparation():
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('price-repair-audit'), "--history-root", "data/market/history", "--database-probe-directory", "/tmp/trader-price-repair-test"]))
-    commands = BuildCommands(options, python_executable="/python3")
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('price-repair-audit'), "--history-root", "data/market/history", "--database-probe-directory", "/tmp/trader-price-repair-test"]))
+    commands = BuildToolCommands(options, python_executable="/python3")
     assert len(commands) == 1
     assert commands[0].name == "price_repair_audit"
-    assert commands[0].argv[-2:] == ("--work-root", "/tmp/trader-price-repair-test")
-    assert commands[0].database_probe_directory is None
+    assert commands[0].argv[commands[0].argv.index("--work-root") + 1] == "/tmp/trader-price-repair-test"
+    assert commands[0].prepare is None
 
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
 def test_local_selected_profile_selects_only_offline_business_checks(profile):
-    commands = BuildCommands(_options(check_id="snapshot", scoring_profile=profile), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity="snapshot", scoring_profile=profile), python_executable="/python")
     assert tuple(command.name for command in commands) == (
         f"configuration:{profile}",
         "history_maintenance",
@@ -89,16 +64,16 @@ def test_local_selected_profile_selects_only_offline_business_checks(profile):
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
 def test_runtime_profile_selection_reaches_each_read_only_web_probe(profile):
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('web'), "--scoring-profile", profile]))
-    commands = BuildCommands(options, python_executable="/python")
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('web'), "--scoring-profile", profile]))
+    commands = BuildToolCommands(options, python_executable="/python")
     assert tuple(command.name for command in commands) == (f"web_health:{profile}",)
     assert commands[0].argv[-2:] == ("--profile", profile)
 
 
 @pytest.mark.parametrize("selection", ("v1,v2,v3,v5", "v5,v3,v1,v2"))
 def test_performance_four_profiles_share_one_child_command(selection: str) -> None:
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('performance'), "--scoring-profile", selection]))
-    commands = BuildCommands(options, python_executable="/python")
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('performance'), "--scoring-profile", selection]))
+    commands = BuildToolCommands(options, python_executable="/python")
 
     assert options.scoring_profile == "v1,v2,v3,v5"
     assert len(commands) == 1
@@ -107,22 +82,28 @@ def test_performance_four_profiles_share_one_child_command(selection: str) -> No
     assert commands[0].argv[-2:] == ("--profile", "v1,v2,v3,v5")
 
 
-@pytest.mark.parametrize("profile", ("snapshot", "research", "web", "web", "browser"))
+@pytest.mark.parametrize("profile", ("snapshot", "research", "web"))
 def test_four_profiles_are_rejected_outside_the_performance_diagnostic(profile: str) -> None:
     with pytest.raises(ValueError, match="only available for performance"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments(profile), "--scoring-profile", "v1,v2,v3,v5"]))
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments(profile), "--scoring-profile", "v1,v2,v3,v5"]))
+
+
+def test_browser_parser_rejects_unrelated_scoring_profile() -> None:
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments("browser"), "--scoring-profile", "v1,v2,v3,v5"])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("selection", ("v1,v5", "v1,v2,v3,v3", "v1,v2,v3,v9", "v1,"))
 def test_performance_rejects_partial_duplicate_or_invalid_profile_selections(selection: str) -> None:
     with pytest.raises(SystemExit) as error:
-        BuildParser().parse_args([*SelectionArguments('performance'), "--scoring-profile", selection])
+        ParseToolArguments([*SelectionArguments('performance'), "--scoring-profile", selection])
     assert error.value.code == 2
 
 
 def test_continuous_performance_option_reaches_the_existing_child_and_report():
-    options, _ = ValidateOptions(
-        BuildParser().parse_args(
+    options = ParseBusinessOptions(
+        ParseToolArguments(
             [
                 *SelectionArguments('performance'),
                 "--scoring-profile",
@@ -134,7 +115,7 @@ def test_continuous_performance_option_reaches_the_existing_child_and_report():
             ]
         )
     )
-    command = BuildCommands(options, python_executable="/python")[0]
+    command = BuildToolCommands(options, python_executable="/python")[0]
     position = command.argv.index("--replay-ticks")
     assert command.argv[position + 1] == "100"
     assert command.argv[command.argv.index("--replay-rows") + 1] == "120"
@@ -154,45 +135,50 @@ def test_continuous_performance_option_reaches_the_existing_child_and_report():
 
 def test_raw_factor_candidate_reaches_only_explicit_continuous_performance():
     selected = [*SelectionArguments('performance'), "--performance-replay-ticks", "1"]
-    options, _ = ValidateOptions(BuildParser().parse_args(selected))
+    options = ParseBusinessOptions(ParseToolArguments(selected))
     assert options.performance_factor_candidate == "baseline"
     candidate = ["--performance-factor-candidate", "raw_factor_reuse"]
-    options, _ = ValidateOptions(BuildParser().parse_args([*selected, *candidate]))
-    command = BuildCommands(options, python_executable="/python")[0]
+    options = ParseBusinessOptions(ParseToolArguments([*selected, *candidate]))
+    command = BuildToolCommands(options, python_executable="/python")[0]
     assert command.argv[command.argv.index("--factor-candidate") + 1] == "raw_factor_reuse"
-    for arguments in ([*SelectionArguments('performance'), *candidate], [*SelectionArguments('web'), *candidate]):
-        with pytest.raises(ValueError, match="performance-factor-candidate"):
-            ValidateOptions(BuildParser().parse_args(arguments))
+    with pytest.raises(ValueError, match="performance-factor-candidate"):
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('performance'), *candidate]))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('web'), *candidate])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("candidate", ("prepared_reuse", "v5_industry_parallel", "combined"))
 def test_scoring_candidates_are_explicit_and_reach_only_continuous_performance(candidate):
     selected = [*SelectionArguments('performance'), "--performance-replay-ticks", "1"]
     flag = ["--performance-scoring-candidate", candidate]
-    options, _ = ValidateOptions(BuildParser().parse_args([*selected, *flag]))
-    command = BuildCommands(options, python_executable="/python3")[0]
+    options = ParseBusinessOptions(ParseToolArguments([*selected, *flag]))
+    command = BuildToolCommands(options, python_executable="/python3")[0]
     assert command.argv[command.argv.index("--scoring-candidate") + 1] == candidate
-    for arguments in ([*SelectionArguments('performance'), *flag], [*SelectionArguments('web'), *flag]):
-        with pytest.raises(ValueError, match="performance-scoring-candidate"):
-            ValidateOptions(BuildParser().parse_args(arguments))
+    with pytest.raises(ValueError, match="performance-scoring-candidate"):
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('performance'), *flag]))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('web'), *flag])
+    assert error.value.code == 2
 
 
 def test_preload_context_candidate_requires_and_reaches_only_explicit_preload():
     flag = ["--history-preload-context-candidate", "metrics_reuse"]
     selected = [*SelectionArguments('history-sqlite'), "--history-preload-audit", *flag]
-    options, _ = ValidateOptions(BuildParser().parse_args(selected))
-    command = BuildCommands(options, python_executable="/python3")[0]
+    options = ParseBusinessOptions(ParseToolArguments(selected))
+    command = BuildToolCommands(options, python_executable="/python3")[0]
     assert command.argv[command.argv.index("--preload-context-candidate") + 1] == "metrics_reuse"
     assert "--preload-feature-audit" not in command.argv
-    for arguments in ([*SelectionArguments('history-sqlite'), *flag], [*SelectionArguments('web'), *flag]):
-        with pytest.raises(ValueError, match="history-preload-context-candidate"):
-            ValidateOptions(BuildParser().parse_args(arguments))
+    with pytest.raises(ValueError, match="history-preload-context-candidate"):
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('history-sqlite'), *flag]))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('web'), *flag])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize(
     "arguments",
     (
-        [*SelectionArguments('web'), "--performance-replay-ticks", "2"],
         [*SelectionArguments('performance'), "--performance-replay-ticks", "1001"],
         [*SelectionArguments('performance'), "--performance-replay-ticks", "-1"],
         [*SelectionArguments('performance'), "--performance-replay-rows", "120"],
@@ -200,21 +186,25 @@ def test_preload_context_candidate_requires_and_reaches_only_explicit_preload():
 )
 def test_continuous_performance_option_rejects_wrong_profile_and_unbounded_runs(arguments):
     with pytest.raises(ValueError, match="performance-replay-"):
-        ValidateOptions(BuildParser().parse_args(arguments))
+        ParseBusinessOptions(ParseToolArguments(arguments))
+
+
+def test_web_parser_rejects_unrelated_performance_replay() -> None:
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('web'), "--performance-replay-ticks", "2"])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("profile", ("snapshot", "research", "web", "web", "performance", "browser"))
 def test_removed_both_alias_is_rejected_before_execution(profile) -> None:
-    parser = BuildParser()
-    assert "both" not in parser.format_help()
     with pytest.raises(SystemExit) as error:
-        parser.parse_args([*SelectionArguments(profile), "--scoring-profile", "both"])
+        ParseToolArguments([*SelectionArguments(profile), "--scoring-profile", "both"])
     assert error.value.code == 2
 
 
 def test_only_the_performance_diagnostic_defaults_to_four_profiles() -> None:
-    performance = BuildCommands(_options(check_id="performance"), python_executable="/python")
-    local = BuildCommands(_options(check_id="snapshot"), python_executable="/python")
+    performance = BuildToolCommands(_options(action_identity="performance"), python_executable="/python")
+    local = BuildToolCommands(_options(action_identity="snapshot"), python_executable="/python")
 
     assert len(performance) == 1
     assert performance[0].argv[-2:] == ("--profile", "v1,v2,v3,v5")
@@ -247,39 +237,39 @@ def test_four_profile_performance_report_retains_shared_process_and_model_eviden
 
 
 def test_history_resume_probe_routes_sample_bound_without_starting_downloads():
-    commands = BuildCommands(_options(check_id="history-sqlite", history_resume_samples=8), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity="history-sqlite", history_resume_samples=8), python_executable="/python")
     assert len(commands) == 1
     command = commands[0]
     assert command.argv[command.argv.index("--resume-samples") + 1] == "8"
     assert "sync" not in command.argv and "train" not in command.argv
-    args = BuildParser().parse_args([*SelectionArguments('history-sqlite'), "--history-resume-samples", "9"])
+    args = ParseToolArguments([*SelectionArguments('history-sqlite'), "--history-resume-samples", "9"])
     with pytest.raises(ValueError, match="--history-resume-samples"):
-        ValidateOptions(args)
+        ParseBusinessOptions(args)
 
 
 def test_preload_timing_defaults_to_three_profiles_and_separates_feature_cpu_probe():
-    plain, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('history-sqlite'), "--history-preload-audit"]))
-    command = BuildCommands(plain, python_executable="/python3")[0]
+    plain = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('history-sqlite'), "--history-preload-audit"]))
+    command = BuildToolCommands(plain, python_executable="/python3")[0]
     assert command.argv[command.argv.index("--preload-profiles") + 1] == "v1,v2,v3"
     assert "--preload-cpu-profile" not in command.argv
     assert "--preload-feature-audit" not in command.argv
-    detailed, _ = ValidateOptions(BuildParser().parse_args([
+    detailed = ParseBusinessOptions(ParseToolArguments([
         *SelectionArguments('history-sqlite'), "--history-preload-audit", "--history-preload-feature-audit",
         "--history-preload-profiles", "v3",
     ]))
-    command = BuildCommands(detailed, python_executable="/python3")[0]
+    command = BuildToolCommands(detailed, python_executable="/python3")[0]
     assert "--preload-feature-audit" in command.argv
     assert command.argv[command.argv.index("--preload-profiles") + 1] == "v3"
 
 
 def test_model_inputs_forwards_the_selected_runtime_configuration():
-    options = _options(check_id="model-inputs", runtime_config=Path("config/runtime.json"))
-    command = BuildCommands(options, python_executable="/python3")[0]
+    options = _options(action_identity="model-inputs", runtime_config=Path("config/runtime.json"))
+    command = BuildToolCommands(options, python_executable="/python3")[0]
     assert command.argv[command.argv.index("--runtime-config") + 1] == str(options.runtime_config)
 
 
 def test_local_invalid_configuration_skips_dependents():
-    commands = BuildCommands(_options(check_id="snapshot", scoring_profile="v2"), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity="snapshot", scoring_profile="v2"), python_executable="/python")
     called = []
 
     def runner(command):
@@ -290,7 +280,7 @@ def test_local_invalid_configuration_skips_dependents():
     assert called == ["configuration:v2"]
     skipped = [item for item in report["checks"] if not item["name"].startswith("configuration")]
     assert len(skipped) == 3
-    assert all(item["executed"] is False and item["reason"] == "configuration_invalid" for item in skipped)
+    assert all(item["executed"] is False and item["reason"] == "dependency_invalid" for item in skipped)
 
 
 def test_local_research_insufficiency_is_degraded_but_specialist_stays_strict():
@@ -322,6 +312,11 @@ def test_local_research_insufficiency_is_degraded_but_specialist_stays_strict():
     )
     assert BuildReport("snapshot", (result,))["status"] == "degraded"
     assert BuildReport("research", (result,))["status"] == "failed"
+    normalized = NormalizeActionResult("snapshot", result)
+    assert NormalizeActionResult("snapshot", normalized) == normalized
+    assert ResultStatus(normalized) == "degraded"
+    explicit_failure = replace(result, return_code=1, payload=dict(result.payload or {}, status="failed"))
+    assert ResultStatus(NormalizeActionResult("snapshot", explicit_failure)) == "degraded"
 
 
 def test_browser_diagnostic_seed_matches_the_current_freeze_item_contract() -> None:
@@ -337,22 +332,22 @@ def test_browser_diagnostic_seed_matches_the_current_freeze_item_contract() -> N
 
 
 def test_web_selection_never_adds_supplier_probes() -> None:
-    commands = BuildCommands(_options(), python_executable="/python3")
+    commands = BuildToolCommands(_options(), python_executable="/python3")
     assert tuple(command.name for command in commands) == ("web_health",)
     assert all("sync" not in command.argv and "train" not in command.argv for command in commands)
 
 
 def test_cpu_profile_keeps_the_selected_diagnostic_and_external_output(tmp_path: Path) -> None:
-    args = BuildParser().parse_args([*SelectionArguments('market-factor-compare'), "--cpu-profile-dir", str(tmp_path)])
-    options, _ = ValidateOptions(args)
-    command = BuildCommands(options, python_executable="python3")[0]
+    args = ParseToolArguments([*SelectionArguments('market-factor-compare'), "--cpu-profile-dir", str(tmp_path)])
+    options = ParseBusinessOptions(args)
+    command = BuildToolCommands(options, python_executable="python3")[0]
 
     assert command.name == "market_factor_compare"
-    assert command.argv[:3] == ("python3", "-m", "scripts.diagnose_runtime")
+    assert command.argv[:3] == ("python3", str(PROJECT_ROOT / "scripts/tools.py"), "--internal-worker")
     assert command.argv[-2:] == ("--cpu-profile-dir", str(tmp_path))
     with pytest.raises(ValueError, match="outside"):
-        ValidateOptions(
-            BuildParser().parse_args(
+        ParseBusinessOptions(
+            ParseToolArguments(
                 [*SelectionArguments('market-factor-compare'), "--cpu-profile-dir", str(Path.cwd() / "profiles")]
             )
         )
@@ -370,27 +365,27 @@ def test_continuous_cpu_trace_modes_reach_child_and_reject_unbounded_capture(tmp
         "--cpu-profile-mode",
         "gc",
     ]
-    options, _ = ValidateOptions(BuildParser().parse_args(arguments))
-    command = BuildCommands(options, python_executable="python3")[0]
+    options = ParseBusinessOptions(ParseToolArguments(arguments))
+    command = BuildToolCommands(options, python_executable="python3")[0]
     assert command.argv[command.argv.index("--cpu-profile-dir") + 1] == str(tmp_path)
     assert command.argv[command.argv.index("--cpu-profile-mode") + 1] == "gc"
     arguments[arguments.index("--performance-replay-ticks") + 1] = "2"
     with pytest.raises(ValueError, match="replay-ticks 1"):
-        ValidateOptions(BuildParser().parse_args(arguments))
+        ParseBusinessOptions(ParseToolArguments(arguments))
 
 
 def test_tencent_download_profile_uses_actual_updater_with_bounded_samples():
-    commands = BuildCommands(_options(check_id="tencent-download", download_sizes=(10, 50, 100)))
+    commands = BuildToolCommands(_options(action_identity="tencent-download", download_sizes=(10, 50, 100), history_workers=3))
     assert len(commands) == 1 and commands[0].name == "tencent_download"
     argv = commands[0].argv
-    assert "scripts.checks.download.history.tencent_download" in argv
+    assert "scripts.download.history.tencent_download" in argv
     offset = argv.index("--sizes")
     assert argv[offset + 1 : offset + 4] == ("10", "50", "100")
     assert argv[argv.index("--workers") + 1] == "3"
 
 
 def test_history_layout_comparison_requires_explicit_external_baseline(tmp_path):
-    args = BuildParser().parse_args(
+    args = ParseToolArguments(
         [
             *SelectionArguments('history-write'),
             "--baseline-checkout",
@@ -399,26 +394,27 @@ def test_history_layout_comparison_requires_explicit_external_baseline(tmp_path)
             "5000",
         ]
     )
-    options, _ = ValidateOptions(args)
-    command = BuildCommands(options)[0]
+    options = ParseBusinessOptions(args)
+    command = BuildToolCommands(options)[0]
     assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path))
     assert command.argv[command.argv.index("--size") + 1] == "5000"
-    with pytest.raises(ValueError, match="only available"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('snapshot'), "--baseline-checkout", str(tmp_path)]))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('snapshot'), "--baseline-checkout", str(tmp_path)])
+    assert error.value.code == 2
     with pytest.raises(ValueError, match="1..100"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('history-write'), "--download-sizes", "5000"]))
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('history-write'), "--download-sizes", "5000"]))
 
 
 def test_removed_composite_identities_cannot_start_unselected_probes() -> None:
-    from scripts.checks.catalog import CheckByIdentity
+    from scripts.core.catalog import ToolByIdentity
     for identity in ("full", "live", "sources", "runtime", "local"):
-        with pytest.raises(ValueError, match="unknown diagnostic identity"):
-            CheckByIdentity(identity)
+        with pytest.raises(ValueError, match="unknown tool identity"):
+            ToolByIdentity(identity)
 
 
 @pytest.mark.parametrize("source", ("composite", "tencent", "eastmoney"))
 def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str) -> None:
-    commands = BuildCommands(_options(check_id="history", history_source=source), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity="history", history_source=source), python_executable="/python")
 
     assert commands[0].argv[commands[0].argv.index("--source") + 1] == source
 
@@ -449,10 +445,13 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
     ],
 )
 def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, expected: str) -> None:
-    commands = BuildCommands(_options(check_id=profile), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity=profile), python_executable="/python")
 
     assert tuple(command.name for command in commands) == (expected,)
-    assert commands[0].argv[:2] == ("/python", "-m")
+    if "--internal-worker" in commands[0].argv:
+        assert commands[0].argv[:3] == ("/python", str(PROJECT_ROOT / "scripts/tools.py"), "--internal-worker")
+    else:
+        assert commands[0].argv[:2] == ("/python", "-m")
 
 
 def test_history_space_counts_shared_inodes_once_without_cleanup(tmp_path: Path) -> None:
@@ -478,7 +477,7 @@ def test_history_space_counts_shared_inodes_once_without_cleanup(tmp_path: Path)
 
 def test_baostock_concurrency_profile_is_explicitly_non_production() -> None:
     codes = tuple(f"{index:06d}" for index in range(100))
-    commands = BuildCommands(_options(check_id="baostock-concurrency", codes=codes), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity="baostock-concurrency", codes=codes), python_executable="/python")
 
     assert tuple(command.name for command in commands) == ("baostock_concurrency",)
     assert "--sizes" in commands[0].argv
@@ -487,7 +486,7 @@ def test_baostock_concurrency_profile_is_explicitly_non_production() -> None:
 
 
 def test_baostock_concurrency_profile_discovers_universe_for_default_codes() -> None:
-    commands = BuildCommands(_options(check_id="baostock-concurrency"), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity="baostock-concurrency"), python_executable="/python")
 
     assert "--discover" in commands[0].argv
     assert "--codes" not in commands[0].argv
@@ -515,7 +514,7 @@ def test_serial_rate_experiment_never_starts_parallel_sessions(monkeypatch: pyte
 
 
 def test_public_serial_experiment_forwards_sizes_intervals_rounds_and_wall_timeout() -> None:
-    args = BuildParser().parse_args(
+    args = ParseToolArguments(
         [
             *SelectionArguments('baostock-concurrency'),
             "--baostock-serial-only",
@@ -533,8 +532,8 @@ def test_public_serial_experiment_forwards_sizes_intervals_rounds_and_wall_timeo
             "365",
         ]
     )
-    options, _ = ValidateOptions(args)
-    command = BuildCommands(options)[0]
+    options = ParseBusinessOptions(args)
+    command = BuildToolCommands(options)[0]
     assert "--serial-only" in command.argv
     assert command.argv[command.argv.index("--intervals") + 1 :] == ("2.0", "1.5", "1.0")
     assert command.argv[command.argv.index("--rounds") + 1] == "3"
@@ -543,7 +542,7 @@ def test_public_serial_experiment_forwards_sizes_intervals_rounds_and_wall_timeo
     assert command.timeout_seconds == 400
     for bad_args in (["--baostock-rounds", "4"], ["--baostock-sizes", "101"], ["--baostock-intervals", "nan"]):
         with pytest.raises(ValueError):
-            ValidateOptions(BuildParser().parse_args([*SelectionArguments('baostock-concurrency'), "--baostock-serial-only", *bad_args]))
+            ParseBusinessOptions(ParseToolArguments([*SelectionArguments('baostock-concurrency'), "--baostock-serial-only", *bad_args]))
 
 
 def test_real_sdk_fields_list_is_decoded_and_duplicate_dates_are_rejected() -> None:
@@ -699,15 +698,16 @@ def test_invalid_paired_dates_do_not_pass_rate_experiment(monkeypatch: pytest.Mo
 
 
 def test_baostock_qfq_shadow_profile_is_read_only_and_uses_configured_history_root() -> None:
-    commands = BuildCommands(_options(check_id="baostock-qfq-shadow"), python_executable="/python")
+    options = _options(action_identity="baostock-qfq-shadow", history_root=Path("data/history"))
+    commands = BuildToolCommands(options, python_executable="/python")
 
     assert tuple(command.name for command in commands) == ("baostock_qfq_shadow",)
-    assert commands[0].argv[:3] == ("/python", "-m", "scripts.diagnose_runtime")
-    assert commands[0].argv[-2:] == ("--history-root", "data/history")
+    assert commands[0].argv[:3] == ("/python", str(PROJECT_ROOT / "scripts/tools.py"), "--internal-worker")
+    assert commands[0].argv[commands[0].argv.index("--history-root") + 1] == str(options.history_root)
 
 
 def test_research_profile_runs_only_research_readiness_probe() -> None:
-    commands = BuildCommands(_options(check_id="research"), python_executable="/python")
+    commands = BuildToolCommands(_options(action_identity="research"), python_executable="/python")
 
     assert tuple(command.name for command in commands) == ("research_readiness",)
     assert commands[0].argv == (
@@ -715,7 +715,7 @@ def test_research_profile_runs_only_research_readiness_probe() -> None:
         "-m",
         "trader.entrypoints.cli",
         "--config",
-        "config/runtime.json",
+        str(PROJECT_ROOT / "config/runtime.json"),
         "research-status",
     )
 
@@ -881,13 +881,14 @@ def test_research_status_projection_rejects_unsupported_schema() -> None:
 
 
 def test_model_steady_only_routes_to_existing_performance_owner():
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('performance'), "--performance-steady-only"]))
-    command = BuildCommands(options, python_executable="python3")[0]
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('performance'), "--performance-steady-only"]))
+    command = BuildToolCommands(options, python_executable="python3")[0]
     assert "--steady-only" in command.argv
-    for args in ([*SelectionArguments('web'), "--performance-steady-only"],
-                 [*SelectionArguments('performance'), "--performance-steady-only", "--performance-replay-ticks", "1"]):
-        with pytest.raises(ValueError, match="steady-only"):
-            ValidateOptions(BuildParser().parse_args(args))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('web'), "--performance-steady-only"])
+    assert error.value.code == 2
+    with pytest.raises(ValueError, match="steady-only"):
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('performance'), "--performance-steady-only", "--performance-replay-ticks", "1"]))
 
 
 def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloads() -> None:
@@ -980,11 +981,12 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
         ),
     )
 
-    report = BuildReport("web", results)
-    rendered = str(report)
+    reports = tuple(BuildReport(identity, (result,)) for identity, result in zip(("web", "history", "tencent"), results, strict=True))
+    report = reports[0]
+    rendered = str(reports)
 
-    assert report["status"] == "degraded"
-    assert report["summary"] == {"passed": 2, "degraded": 1, "failed": 0, "total": 3, "timed_out": 0, "cancelled": 0, "skipped": 0, "empty": 0}
+    assert [item["status"] for item in reports] == ["passed", "degraded", "passed"]
+    assert all(item["summary"]["total"] == 1 for item in reports)
     assert "600519" not in rendered
     assert "999.0" not in rendered
     assert "secret vendor payload" not in rendered
@@ -1069,7 +1071,7 @@ def test_daily_history_capability_projection_keeps_only_the_audit_whitelist() ->
 
 
 def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> None:
-    commands = tuple(BuildCommands(_options(check_id=identity), python_executable="/python")[0] for identity in ("security-master", "history", "tencent", "tushare", "history-daily-capability"))
+    commands = tuple(BuildToolCommands(_options(action_identity=identity), python_executable="/python")[0] for identity in ("security-master", "history", "tencent", "tushare", "history-daily-capability"))
     called: list[str] = []
 
     def runner(command):
@@ -1103,7 +1105,7 @@ def test_child_launch_failure_becomes_a_result_instead_of_aborting_scan(
     def fail_launch(*args: object, **kwargs: object) -> None:
         raise OSError("diagnostic executable is unavailable")
 
-    monkeypatch.setattr("scripts.checks.execution.RunDatabaseProbe", fail_launch)
+    monkeypatch.setattr("scripts.core.execution.RunBoundedCommand", fail_launch)
 
     result = ExecuteCommand(DiagnosticCommand("web_health", ("missing",), 1.0))
 
@@ -1113,9 +1115,9 @@ def test_child_launch_failure_becomes_a_result_instead_of_aborting_scan(
 
 
 def test_qfq_sqlite_profile_audits_the_configured_root_read_only():
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('qfq-sqlite')]))
-    command = BuildCommands(options, python_executable="python3")[0]
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('qfq-sqlite')]))
+    command = BuildToolCommands(options, python_executable="python3")[0]
     assert command.name == "qfq_sqlite_audit"
-    assert "scripts.checks.download.history.qfq_sqlite" in command.argv
+    assert "scripts.download.history.qfq_sqlite" in command.argv
     assert "--database" in command.argv
     assert "--rounds" not in command.argv

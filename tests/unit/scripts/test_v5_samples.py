@@ -1,6 +1,8 @@
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
 
 from tests.helpers.training_resources import TrainingSampleSettingsFixture
-from scripts.checks.catalog import SelectionArguments
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 import hashlib
@@ -8,10 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.training.v5_samples import ProbeV5Samples
+from scripts.training.samples.v5_samples import ProbeV5Samples
 
 
 def test_isolated_disk_benchmark_and_read_only_real_input_replay(tmp_path):
@@ -33,7 +32,7 @@ def test_isolated_disk_benchmark_and_read_only_real_input_replay(tmp_path):
 
 
 def test_sample_probe_routes_explicit_source_and_output(tmp_path):
-    args = BuildParser().parse_args(
+    args = ParseToolArguments(
         [
             *SelectionArguments('v5-samples'),
             "--training-probe-directory",
@@ -42,8 +41,8 @@ def test_sample_probe_routes_explicit_source_and_output(tmp_path):
             str(tmp_path / "source.sqlite3"),
         ]
     )
-    options, _ = ValidateOptions(args)
-    (command,) = BuildCommands(options, python_executable="/python3")
+    options = ParseBusinessOptions(args)
+    (command,) = BuildToolCommands(options, python_executable="/python3")
     assert command.name == "v5_samples"
     assert command.argv[-2:] == ("--wide-sample-source", str(tmp_path / "source.sqlite3"))
     assert command.argv[command.argv.index("--work-root") + 1] == str(tmp_path)
@@ -51,6 +50,7 @@ def test_sample_probe_routes_explicit_source_and_output(tmp_path):
 
 def test_sample_probe_requires_explicit_external_work_directory():
     with pytest.raises(ValueError, match="training-probe-directory"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('v5-samples')]))
-    with pytest.raises(ValueError, match="requires --check v5-samples"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('disk'), "--wide-sample-source", str(Path("source"))]))
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('v5-samples')]))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('disk'), "--wide-sample-source", str(Path("source"))])
+    assert error.value.code == 2

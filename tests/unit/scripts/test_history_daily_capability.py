@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from scripts.checks.download.history.history_daily_capability import (
-    BaoStockProbe,
-    build_report,
-    minimum_baostock_duration,
-)
+from scripts.download.history.history_daily_capability import BaoStockProbe
+from scripts.download.history.history_daily_capability import build_report
+from scripts.download.history.history_daily_capability import minimum_baostock_duration
 
 
 def test_baostock_lower_bound_counts_both_raw_and_qfq_per_security_queries() -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 
@@ -13,24 +15,22 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.download.market import market_factor_auxiliary as auxiliary
-from scripts.checks.download.market import market_factor_compare as comparison
-from scripts.checks.download.market import market_factor_eastmoney as eastmoney_probe
-from scripts.checks.download.market.market_factor_audit import FactorAudit, MissingQuoteCodes, QuoteAudit
-from scripts.checks.download.market.market_factor_baostock import BaostockCapability, BaoStockSourceResults
-from scripts.checks.download.market.market_factor_budget import DiagnosticBudget
-from scripts.checks.download.market.market_factor_inputs import (
-    FixedReferences,
-    HistoryAtCut,
-    ModelFeatureRequirements,
-    ReadReferences,
-)
-from scripts.checks.download.market.market_factor_text import RenderMarketFactorText
+from scripts.core.contracts import DiagnosticResult
+from scripts.core.projections import BuildReport
+from scripts.download.market import market_factor_auxiliary as auxiliary
+from scripts.download.market import market_factor_compare as comparison
+from scripts.download.market import market_factor_eastmoney as eastmoney_probe
+from scripts.download.market.market_factor_audit import FactorAudit
+from scripts.download.market.market_factor_audit import MissingQuoteCodes
+from scripts.download.market.market_factor_audit import QuoteAudit
+from scripts.download.market.market_factor_baostock import BaostockCapability
+from scripts.download.market.market_factor_baostock import BaoStockSourceResults
+from scripts.download.market.market_factor_budget import DiagnosticBudget
+from scripts.download.market.market_factor_inputs import FixedReferences
+from scripts.download.market.market_factor_inputs import HistoryAtCut
+from scripts.download.market.market_factor_inputs import ModelFeatureRequirements
+from scripts.download.market.market_factor_inputs import ReadReferences
+from scripts.download.market.market_factor_text import RenderMarketFactorText
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
@@ -255,13 +255,12 @@ def test_successful_primary_does_not_start_backup(monkeypatch: pytest.MonkeyPatc
     assert calls == ["tencent"]
 
 
-def test_market_factor_profile_uses_unified_output_and_explicit_bounds() -> None:
-    parser = BuildParser()
-    args = parser.parse_args([*SelectionArguments('market-factor-compare'), "--market-sizes", "120", "--market-mode", "single"])
-    options, _output = ValidateOptions(args)
-    command = BuildCommands(options)[0]
+def test_market_factor_profile_uses_unified_output_and_explicit_bounds(tmp_path) -> None:
+    args = ParseToolArguments([*SelectionArguments('market-factor-compare'), "--market-sizes", "120", "--market-mode", "single"])
+    options = ParseBusinessOptions(args)
+    command = BuildToolCommands(options)[0]
     assert command.name == "market_factor_compare"
-    assert "scripts.checks.download.market.market_factor_compare" in command.argv
+    assert "scripts.download.market.market_factor_compare" in command.argv
     assert "--batch-seconds" in command.argv
     assert command.argv[command.argv.index("--source-loop-seconds") + 1] == "120.0"
     assert command.argv[command.argv.index("--task-seconds") + 1] == "600.0"
@@ -273,22 +272,21 @@ def test_market_factor_profile_uses_unified_output_and_explicit_bounds() -> None
         "sina",
         "baostock",
     )
-    assert options.output_format == "text"
+    assert args[1].report_format == "text"
 
-    file_args = parser.parse_args([*SelectionArguments('market-factor-compare'), "--output", "/tmp/market-factor-result.json"])
-    file_options, _output = ValidateOptions(file_args)
-    assert file_options.output_format == "json"
+    file_args = ParseToolArguments([*SelectionArguments('market-factor-compare'), "--report", str(tmp_path / "market-factor-result.json")])
+    assert file_args[1].report_format == "json"
 
-    long_args = parser.parse_args([*SelectionArguments('market-factor-compare'), "--command-timeout-seconds", "1800"])
-    long_options, _output = ValidateOptions(long_args)
-    assert BuildCommands(long_options)[0].timeout_seconds == 600.0
+    long_args = ParseToolArguments([*SelectionArguments('market-factor-compare'), "--command-timeout-seconds", "1800"])
+    long_options = ParseBusinessOptions(long_args)
+    assert BuildToolCommands(long_options)[0].timeout_seconds == 600.0
 
     with pytest.raises(ValueError, match="market-task-seconds"):
-        ValidateOptions(parser.parse_args([*SelectionArguments('market-factor-compare'), "--market-task-seconds", "601"]))
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('market-factor-compare'), "--market-task-seconds", "601"]))
 
     with pytest.raises(ValueError, match="Tencent"):
-        ValidateOptions(
-            parser.parse_args(
+        ParseBusinessOptions(
+            ParseToolArguments(
                 [
                     *SelectionArguments('market-factor-compare'),
                     "--market-sources",

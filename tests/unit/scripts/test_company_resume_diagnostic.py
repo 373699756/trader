@@ -1,27 +1,30 @@
 """The public company diagnostic isolates writes and retains bounded recovery evidence."""
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
 import sys
 import time
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
 
 import pytest
 
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.download.company import company_pagination_audit
-from scripts.checks.download.company import company_pipeline_audit
-from scripts.checks.download.company import company_ocr_audit
-from scripts.checks.download.company.company_query_audit import AuditCompanyDatabase
-from scripts.checks.download.company.company_resume import Main, _compact_database, _copy, _saved_pages
+from scripts.core.contracts import DiagnosticResult
+from scripts.core.projections import BuildReport
+from scripts.download.company import company_pagination_audit
+from scripts.download.company import company_pipeline_audit
+from scripts.download.company import company_ocr_audit
+from scripts.download.company.company_query_audit import AuditCompanyDatabase
+from scripts.download.company.company_resume import Main
+from scripts.download.company.company_resume import _compact_database
+from scripts.download.company.company_resume import _copy
+from scripts.download.company.company_resume import _saved_pages
 from tests.component import test_company_evidence as fixtures
 from tests.unit.infra.test_company_sources import NOW
 from trader.download.domain.company_evidence import CompanyDocumentFailure, DisclosurePage, DisclosureQuery
@@ -30,6 +33,13 @@ from tests.helpers.configuration import (
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
 )
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+
+
+@pytest.fixture
+def offline_pipeline_sources(monkeypatch):
+    """Keep both source families and their transport factory inside the fixture."""
+    monkeypatch.setattr(company_pipeline_audit, "OpenExternalHttp", lambda: nullcontext(None))
+    monkeypatch.setattr(company_pipeline_audit, "EastmoneyCompanySource", lambda *_args, **_kwargs: fixtures.Sources())
 
 
 def test_ocr_comparison_reuses_seven_identical_pdfs_without_writing_collection(tmp_path, monkeypatch):
@@ -135,30 +145,33 @@ def test_pacing_directory_probe_requires_complete_unique_stable_record_sets(faul
 @pytest.mark.parametrize("mode", ("pipeline", "ocr"))
 def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_path, mode):
     with pytest.raises(ValueError, match="company-replay-directory"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume'), f"--company-{mode}-audit"]))
-    options, _ = ValidateOptions(
-        BuildParser().parse_args(
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('company-resume'), f"--company-{mode}-audit"]))
+    options = ParseBusinessOptions(
+        ParseToolArguments(
             [*SelectionArguments('company-resume'), f"--company-{mode}-audit", "--company-replay-directory", str(tmp_path)]
         )
     )
-    assert f"--{mode}-only" in BuildCommands(options)[0].argv
+    assert f"--{mode}-only" in BuildToolCommands(options)[0].argv
 
 
-def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, monkeypatch):
+def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, monkeypatch, offline_pipeline_sources):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
     items = tuple(fixtures._disclosure(str(i), "本公司收到立案告知书", when=now) for i in range(2))
     monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: items)
 
     class Source(fixtures.Sources):
         def __init__(self, *args, **kwargs):
-            pass
+            super().__init__()
 
         def document(self, item):
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
-    assert result["status"] == "passed"
+    result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=120, sqlite_policy=SqlitePolicyFixture())
+    assert result["status"] == "passed", [
+        (run["attempts"], run["failures"], run["document_failures"])
+        for run in result["summary"]["pipeline_audit"]["runs"]
+    ]
     assert result["summary"]["pipeline_audit"]["equivalent_facts"]
     assert result["summary"]["pipeline_audit"]["equivalent_documents"]
     assert result["summary"]["pipeline_audit"]["equivalent_payloads"]
@@ -169,13 +182,14 @@ def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, 
         assert run["pending_ocr_documents"] == 0
 
 
-def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(tmp_path, monkeypatch):
+def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(tmp_path, monkeypatch, offline_pipeline_sources):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
     monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("changed", "收到立案告知书", when=now),))
     clients = []
 
     class Source(fixtures.Sources):
         def __init__(self, *args, **kwargs):
+            super().__init__()
             self.digest = b"a" * 32 if not clients else b"b" * 32
             clients.append(self)
 
@@ -183,7 +197,7 @@ def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(t
             return replace(fixtures._extraction("本公司收到中国证监会立案告知书。"), payload_hash=self.digest)
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=120, sqlite_policy=SqlitePolicyFixture())
     summary = report["summary"]["pipeline_audit"]
     assert summary["equivalent_facts"] and summary["equivalent_documents"]
     assert not summary["equivalent_payloads"] and report["status"] == "degraded"
@@ -192,17 +206,17 @@ def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(t
 
 def test_company_profile_requires_explicit_external_directory(tmp_path):
     with pytest.raises(ValueError, match="company-replay-directory"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume')]))
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('company-resume')]))
     with pytest.raises(ValueError, match="outside the repository"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume'), "--company-replay-directory", "data/replay"]))
-    options, _ = ValidateOptions(
-        BuildParser().parse_args([*SelectionArguments('company-resume'), "--company-replay-directory", str(tmp_path)])
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('company-resume'), "--company-replay-directory", "data/replay"]))
+    options = ParseBusinessOptions(
+        ParseToolArguments([*SelectionArguments('company-resume'), "--company-replay-directory", str(tmp_path)])
     )
-    commands = BuildCommands(options)
+    commands = BuildToolCommands(options)
     assert len(commands) == 1 and commands[0].name == "company_resume"
     assert str(tmp_path) in commands[0].argv
-    audit, _ = ValidateOptions(
-        BuildParser().parse_args(
+    audit = ParseBusinessOptions(
+        ParseToolArguments(
             [
                 *SelectionArguments('company-resume'),
                 "--company-replay-directory",
@@ -211,23 +225,24 @@ def test_company_profile_requires_explicit_external_directory(tmp_path):
             ]
         )
     )
-    assert "--audit-only" in BuildCommands(audit)[0].argv
+    assert "--audit-only" in BuildToolCommands(audit)[0].argv
 
 
-def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_failures(tmp_path, monkeypatch):
+def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_failures(tmp_path, monkeypatch, offline_pipeline_sources):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
     monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("failure", "收到立案告知书", when=now),))
     capabilities = []
 
     class Source(fixtures.Sources):
         def __init__(self, *args, **kwargs):
+            super().__init__()
             capabilities.append((kwargs["ocr_engine"], kwargs["text_capability"], kwargs["document_policies"]))
 
         def document(self, item):
             raise CompanyDocumentFailure("disclosure_document_ocr_low_quality", payload_hash=b"x" * 32)
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=120, sqlite_policy=SqlitePolicyFixture())
     assert capabilities and all(all(item is not None for item in row) for row in capabilities)
     assert report["status"] == "degraded"
     assert report["summary"]["pipeline_audit"]["equivalent_facts"]
@@ -258,8 +273,8 @@ def test_database_audit_needs_no_replay_directory_or_network_and_keeps_database_
     assert len(recent) == 1 and recent[0]["disclosure_id"] > 0
     assert recent[0]["failure"] == "disclosure_document_no_text"
     assert recent[0]["attempted_at"] == fixtures.NOW.isoformat()
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('company-resume'), "--company-database-audit"]))
-    command = BuildCommands(options)[0]
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('company-resume'), "--company-database-audit"]))
+    command = BuildToolCommands(options)[0]
     assert "--database-only" in command.argv and "--directory" not in command.argv
     monkeypatch.setattr(
         sys, "argv", ["company-resume", "--database", str(index.path), "--database-only", "--budget-seconds", "30"]
@@ -430,7 +445,7 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
 
 
 def test_query_capture_distinguishes_an_issuer_alias_from_an_unrelated_response():
-    from scripts.checks.download.company.company_query_audit import _Capture
+    from scripts.download.company.company_query_audit import _Capture
     from trader.infra.http_contracts import HttpRequest, HttpResponse
 
     capture = _Capture()

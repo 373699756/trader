@@ -549,9 +549,9 @@ flowchart TD
 
 慢SSE客户端不得阻塞发布。游标超前、过期、不连续或身份不匹配时重同步；策略/日期切换后，迟到结果不能覆盖当前页。具体队列和超时参数由delivery配置逐字段解释。
 
-## 9. 检测脚本全面重整：按业务和功能划分，只留一个接口
+## 9. 工具脚本全面重整：按业务和功能划分，只留一个接口
 
-这是单独的完整任务，不只是精简 `diagnose_runtime.py`。范围是 `scripts/` 下全部检测脚本、内部检测模块、重复功能和调用它们的Makefile、文档及测试。对每项功能明确保留、合并或删除；最终所有检测都从同一个入口按参数选择。
+范围是 `scripts/` 下全部工具、内部模块、重复功能和调用它们的Makefile、文档及测试。对每项功能明确保留、合并或删除；检查、生成、迁移与重排都从 `scripts/tools.py` 按参数选择，内部模块不再提供独立命令或兼容转发。
 
 ### 9.1 先清点现有脚本和调用者
 
@@ -563,50 +563,61 @@ flowchart TD
 | `check_tomorrow_training_memory.py` | 独立训练内存/重排验证 | 核对有效消费者，仍需要的检查并入训练资源模块，删除独立检测入口 |
 | `check_refactor_quality.py`、`code_quality/` | 架构、命名、质量，以及显式格式/改名操作 | 检测能力归工程检查模块；修改类操作与只读检查严格区分，不默认运行 |
 | `verify_wheel_install.py` | 安装包及公开入口验证，会创建隔离环境 | 检查归工程包验证模块，必须显式选择和指定隔离工作区；切换调用者后删除独立检测入口 |
-| `generate_long_watchlist_asset.py --check` | 生成物与配置一致性检查 | 检查模式并入工程资源检查；纯生成职责单独保留或合并，不形成第二个检测接口 |
+| `generate_long_watchlist_asset.py --check` | 生成物与配置一致性检查 | 检查与生成归荐股资源模块，分别以consistency/generate动作进入统一入口 |
 | `skill_evaluation/` | skill评测 | 核对是否仍有有效用途和消费者；停用skill遗留且无消费者的功能列入删除，不仅凭目录名认定无用 |
-| `migrate_runtime_data.py`、`runtime_migration.py`、`repack_history_partitions.py` | 数据维护、迁移和重排 | 区分其中的检查与实际写入，检查统一入口；维护能力是否仍需要另行裁决，不在清理时执行 |
+| `migrate_runtime_data.py`、`runtime_migration.py`、`repack_history_partitions.py` | 数据维护、迁移和重排 | 迁移归工程migration，重排归下载history；原操作和codec迁入业务目录，所有动作进入统一入口，不在整理时执行 |
 
 清单每项记录现有文件、功能、业务归属、读取/联网/写入行为、输入输出、全部消费者、保留/合并/删除决定、目标位置和必删路径。不能仅凭名称老、没有直接导入或运行较慢就删除。
 
 ### 9.2 一个入口，按三层参数选择功能
 
-公开入口使用 `scripts/diagnose_runtime.py`，实现以下三层选择；`--list`列出唯一catalog中的有效组合：
+公开入口使用 `scripts/tools.py`，实现以下三层选择；`--list`列出唯一catalog中的有效组合：
 
 ```text
---business recommendation --module pipeline --check latency
---business download       --module company  --check coverage
---business training       --module resources --check memory
---business infra          --module disk  --check profile
---business engineering    --module packaging --check install
+--business recommendation --module pipeline --action latency
+--business recommendation --module assets   --action consistency
+--business recommendation --module web      --action company-ledger
+--business download       --module company  --action coverage
+--business training       --module resources --action memory
+--business infra          --module disk     --action profile
+--business engineering    --module packaging --action install
 ```
 
-`business`选择业务，`module`选择业务内部功能，`check`选择具体检查。选择关系唯一声明在`checks/catalog.py`，`--help`提供统一配置、输入位置、时间/工作量上限和输出参数。原profile分派及live/full/sources/runtime别名删除，无参数拒绝执行；内部worker仅由同一入口在隔离子进程调用，不保留旧独立入口或转发模块。原维护脚本的生成/build/rollback/repack职责保留，检查分支统一收口；普通产品CLI合同仍由产品实现拥有。
+`business`选择业务，`module`选择业务内部功能，`action`选择具体动作。选择关系唯一声明在`core/catalog.py`，当前57项，包括原49项功能及资源generate、迁移build/rollback、重排build/activate/rollback/finalize和公司live-sync前台同步计量。公司coverage另以互斥具名参数公开pacing及材料键审计，沿用所属业务的事实输入、外部目录及回收预算围栏；公司I/O候选由B独立交付，不纳入本批候选或功能验收。根帮助只展示中立公共选项；选中动作的帮助只导入其参数模块，展示该动作输入、上限和副作用。原profile分派、`--check`及live/full/sources/runtime别名删除，无参数拒绝执行；内部worker仅由同一入口在隔离子进程调用，不保留旧独立入口或转发模块。普通产品CLI合同仍由产品实现拥有。
 
-默认只运行明确选中的只读检查。真实网络、性能探测、训练样本/隔离数据构建、安装验证等必须显式选择；格式检查、自动格式化、改名和破坏性迁移不能被普通检查或聚合命令间接触发，仍遵守用户授权限制。
+公共报告参数为`--report`及`--report-format`，默认标准输出，保存时只能使用显式仓库外路径的新文件；解析时拒绝已有文件、目录和链接，最终独占创建，不能覆盖配置、输入或旧报告。业务原有`--output`保留其工件含义，不作为公共报告别名。公共报告必须与原生工件文件、维护source/target/backup及skills工件目录分离；相同路径及双向祖先重叠都在执行前拒绝。业务参数先由所属解析器转换为不可变类型，不再有包含所有业务字段的全局Options对象。
+
+只运行明确选中的动作。真实网络、浏览器、性能探测、训练样本/隔离数据构建、安装验证及维护等必须显式选择，并沿用各自授权和隔离围栏；格式检查、自动格式化、改名和破坏性迁移不能被普通检查或聚合命令间接触发，仍遵守用户授权限制。
 
 ### 9.3 内部按业务和功能分目录
 
-以下是目标职责示意，实施前核对全部调用者后确定实际文件名；不为目录整齐制造空模块或转发层。
+业务目录与中立公共能力直接位于`scripts/`下，不再放在`checks/`之内；不为目录整齐制造空模块或转发层。
 
 ```text
 scripts/
-  diagnose_runtime.py          唯一公开检测入口
-  checks/
-    cli.py                    参数解析和功能选择
-    contracts.py              有类型的检查输入、结果和状态
-    reporting.py              中文终端与JSON报告
-    recommendation/           行情、链路、评分、发布、Web检查
-    download/
-      history/                完整历史、来源、发布和恢复检查
-      market/                 短窗、配对、缺口和恢复检查
-      company/                字段、目录、正文、OCR、续传和发布检查
-    training/                 历史输入、样本、模型、资源和性能检查
-    infra/                    存储、介质、HTTP和进程检查
-    engineering/              架构、命名、包和资源一致性检查
+  tools.py                    唯一公开工具入口
+  core/                       中立选择、执行、报告及公共类型
+  recommendation/
+    pipeline/                 荐股链路、就绪与性能
+    web/                      只读Web、浏览器与公司账本展示
+    long/                     长期观察准入
+    assets/                   荐股静态资源检查与生成
+  download/
+    history/                  历史、来源、发布、恢复、布局对照与分区重排
+    market/                   市场来源与短窗检查
+    company/                  字段、目录、正文、OCR、续传和发布
+  training/                   历史输入、样本、模型、资源和性能
+  infra/
+    disk/                     介质和SQLite策略检查
+    database/                 隔离数据库基线
+  engineering/
+    quality/                  架构、命名与显式格式/改名
+    packaging/                隔离安装验证
+    migration/                隔离旧数据迁移与codec
+    skills/                   显式skill评测
 ```
 
-入口只选功能，不包含业务检查实现；各模块只使用自己需要的依赖，不启动未选择的检查。业务与功能的对应关系只声明一次，不能又在JSON又在代码维护两套名单。公共报告和执行上限共用，业务规则仍由实际业务拥有，检测代码不复制评分或下载规则。
+入口只选功能，不包含业务实现；各业务持有自己的解析器、不可变输入、校验和命令构造，不启动未选择的动作。`core`不导入业务选项或参数默认值，通用执行器不依赖业务目录；仅在选择后按catalog加载所属处理器。业务与功能的对应关系只声明一次，不能又在JSON又在代码维护两套名单。公共报告和执行上限共用，业务规则仍由实际业务拥有，工具代码不复制评分或下载规则。
 
 ### 9.4 删除无用功能，并一次切换调用者
 
@@ -620,7 +631,7 @@ scripts/
 
 验收必须证明：只剩一个公开检测入口；每项保留功能有唯一实现；无旧路径/参数/文档/测试残留；选择一个检查不会执行其它检查；错误、超时、取消、跳过和合法空分别报告；退出码和中文/JSON结果一致。未授权格式脚本及其触发用例排除在本次自动验证之外；测试基础设施受影响时按实际范围补相应功能回归，不用运行禁止脚本凑门禁。
 
-负责人：A负责入口、公共执行/报告和工程/公共检查，B负责下载检查，C负责训练检查。具体文件和交接按g中的P61工作包登记；当前仅规划，未移动或删除任何脚本。
+负责人：A负责入口、公共执行/报告及工程与荐股工具，B负责下载工具，C负责训练工具。具体文件、交接和本次实施状态以g中的原P61工作包及阶段338为准，功能迁移不代表实际运行、性能或发布已验收。
 
 ## 10. 性能与交付证据
 

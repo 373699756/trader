@@ -1,6 +1,8 @@
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
 
 from tests.helpers.training_resources import TrainingSampleSettingsFixture
-from scripts.checks.catalog import SelectionArguments
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 import hashlib
@@ -10,10 +12,8 @@ import time
 
 import pytest
 
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.training.v5_lite import QualityPassed, _prepare
+from scripts.training.models.v5_lite import QualityPassed
+from scripts.training.models.v5_lite import _prepare
 from trader.infra.atomic_files.json import AtomicWriteJson
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.training.infra.sample_sequences import SampleSequenceLayout
@@ -33,9 +33,9 @@ def test_lite_quality_limits_and_missing_values_fail_closed():
 
 def test_lite_diagnostic_requires_explicit_output_and_routes_sample_input(tmp_path):
     with pytest.raises(ValueError, match="training-probe-directory"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('v5-lite')]))
-    options, _ = ValidateOptions(
-        BuildParser().parse_args(
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('v5-lite')]))
+    options = ParseBusinessOptions(
+        ParseToolArguments(
             [
                 *SelectionArguments('v5-lite'),
                 "--training-probe-directory",
@@ -47,12 +47,12 @@ def test_lite_diagnostic_requires_explicit_output_and_routes_sample_input(tmp_pa
             ]
         )
     )
-    (command,) = BuildCommands(options)
+    (command,) = BuildToolCommands(options)
     assert command.name == "v5_lite"
     assert command.argv[-2:] == ("--sample-root", str(tmp_path / "source"))
     assert "--candidate-config" in command.argv
     with pytest.raises(ValueError, match="v5-candidate-config"):
-        ValidateOptions(BuildParser().parse_args([
+        ParseBusinessOptions(ParseToolArguments([
             *SelectionArguments('v5-lite'), "--training-probe-directory", str(tmp_path / "new"),
             "--v5-sample-root", str(tmp_path / "source"),
         ]))
@@ -114,7 +114,7 @@ def test_real_comparison_snapshots_keep_source_and_evaluation_dates_unchanged(tm
 def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path):
     from dataclasses import replace
 
-    from scripts.checks.training.v5_lite import _quality
+    from scripts.training.models.v5_lite import _quality
     parameters = TcnFittingParametersFixture(minimum_industry_training_rows=5000)
     for candidate in ((250, parameters), (61, replace(parameters, minimum_industry_training_rows=10000))):
         with pytest.raises(ValueError, match="identical fit dates"):
@@ -124,7 +124,7 @@ def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path)
 
 @pytest.mark.parametrize("interrupted", (False, True))
 def test_compute_only_or_interrupted_probe_cannot_claim_quality_passed(tmp_path, monkeypatch, capsys, interrupted):
-    from scripts.checks.training import v5_lite
+    from scripts.training.models import v5_lite
 
     work = tmp_path / "probe"
     monkeypatch.setattr("sys.argv", ["v5_lite", "--work-root", str(work)])
@@ -148,7 +148,7 @@ def test_compute_only_or_interrupted_probe_cannot_claim_quality_passed(tmp_path,
 
 
 def test_quality_only_uses_explicit_reference_and_never_runs_kernel_performance_probe(tmp_path, monkeypatch, capsys):
-    from scripts.checks.training import v5_lite
+    from scripts.training.models import v5_lite
 
     reference = tmp_path / "reference.json"
     candidate = tmp_path / "candidate.json"
@@ -157,7 +157,7 @@ def test_quality_only_uses_explicit_reference_and_never_runs_kernel_performance_
     monkeypatch.setattr(v5_lite, "_parameters", lambda path, **_kwargs: (selected.append(path) or (61, parameters)))
     monkeypatch.setattr(v5_lite, "ProbeLiteKernels", lambda: pytest.fail("quality mode ran a performance probe"))
     monkeypatch.setattr(
-        "scripts.checks.training.v5_quality_samples.PrepareV5QualitySamples",
+        "scripts.training.samples.v5_quality_samples.PrepareV5QualitySamples",
         lambda *_args, **_kwargs: pytest.fail("quality mode rebuilt existing sample inputs"),
     )
     monkeypatch.setattr(v5_lite, "_quality", lambda *_args, **_kwargs: {"passed": True, "fixture": True})
@@ -186,7 +186,7 @@ def test_quality_snapshot_rejects_source_links_before_copying(tmp_path, name):
 
 
 def test_quality_entry_preserves_root_link_until_snapshot_validation(tmp_path, monkeypatch, capsys):
-    from scripts.checks.training import v5_lite
+    from scripts.training.models import v5_lite
 
     source = tmp_path / "source"
     source.mkdir()

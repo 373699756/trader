@@ -65,6 +65,20 @@ def test_makefile_is_the_single_test_command_source() -> None:
         ("unit/infra/research/test_history_training_input.py", "train"),
         ("unit/application/test_tomorrow_freezing.py", "recommendation"),
         ("contract/test_test_command_contract.py", "crosscut"),
+        ("unit/scripts/test_company_live_sync_tool.py", "history"),
+        ("unit/scripts/test_company_material_reporting.py", "history"),
+        ("unit/scripts/test_company_output_isolation.py", "history"),
+        ("unit/scripts/test_company_source_reporting.py", "history"),
+        ("unit/scripts/test_company_source_runtime.py", "history"),
+        ("unit/scripts/test_company_source_options.py", "history"),
+        ("unit/scripts/test_company_ledger_tool.py", "recommendation"),
+        ("unit/scripts/test_tools_recommendation_options.py", "recommendation"),
+        ("unit/scripts/test_training_alignment.py", "train"),
+        ("unit/scripts/test_training_output_isolation.py", "train"),
+        ("unit/scripts/test_tools_maintenance.py", "crosscut"),
+        ("unit/scripts/test_tools_business_options.py", "crosscut"),
+        ("unit/scripts/test_tools_control_options.py", "crosscut"),
+        ("unit/scripts/test_diagnose_runtime.py", "crosscut"),
     ),
 )
 def test_business_owner_mapping_is_explicit(relative_path: str, expected_owner: str) -> None:
@@ -111,4 +125,4 @@ def test_release_target_builds_then_verifies_the_wheel_outside_the_repository() 
     )
 
     assert ".venv/bin/python3 -m build" in result.stdout
-    assert "scripts/diagnose_runtime.py --business engineering --module packaging --check install -- --dist-dir dist" in result.stdout
+    assert "scripts/tools.py --business engineering --module packaging --action install -- --dist-dir dist" in result.stdout

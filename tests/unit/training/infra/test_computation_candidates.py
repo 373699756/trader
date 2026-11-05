@@ -8,7 +8,7 @@ from contextlib import nullcontext
 
 import pytest
 
-from scripts.checks.training.computation_candidates import UseComputationCandidate
+from scripts.training.samples.computation_candidates import UseComputationCandidate
 from trader.recommendation.domain.market.feature_contracts import CalculateProfileQfqAlpha, QfqPriceAnchors
 from trader.training.infra import sample_builder, sample_index, sample_schema
 from trader.training.infra.sample_sequences import SampleSequenceLayout
@@ -109,7 +109,7 @@ def test_job_scope_counts_concurrent_profiles_and_restores_after_worker_failure(
 
 
 def test_nonmatching_populations_are_never_shared_and_raw_formula_owns_the_calculation():
-    from scripts.checks.training.computation_candidates import _IndexedPriceAnchors
+    from scripts.training.samples.computation_candidates import _IndexedPriceAnchors
 
     first = QfqPriceAnchors(10.0, ((1, 9.0), (3, 8.0), (5, 7.0), (20, 6.0)))
     second = QfqPriceAnchors(10.0, ((1, 8.0), (3, 7.0), (5, 6.0), (20, 5.0)))
@@ -166,7 +166,7 @@ def test_full_fixture_sample_rows_partitions_and_sequences_match_baseline(tmp_pa
 
 
 def test_existing_worker_projects_candidate_counts_without_claiming_performance(tmp_path, monkeypatch):
-    from scripts.checks.training import sample_comparison_worker
+    from scripts.training.samples import sample_comparison_worker
     from tests.helpers.configuration import SqlitePolicyFixture
 
     def construct(*_args, **_kwargs):

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from scripts.checks.download.history.history_sources import (
-    HistoryObservation,
-    build_report,
-)
+from scripts.download.history.history_sources import HistoryObservation
+from scripts.download.history.history_sources import build_report
 
 
 def _args(**overrides: object) -> Namespace:

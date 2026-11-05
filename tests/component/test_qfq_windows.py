@@ -1518,7 +1518,7 @@ def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(
 
 
 def test_tencent_diagnostic_counts_pending_with_new_batch_feedback():
-    from scripts.checks.download.history.tencent_download import _benchmark
+    from scripts.download.history.tencent_download import _benchmark
 
     supplier = _IncompleteSupplier(codes=("600001", "600002"))
     context = supplier.load_qfq_context(DAYS[-1], 251)

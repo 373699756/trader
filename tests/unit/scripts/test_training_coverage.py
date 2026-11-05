@@ -4,7 +4,7 @@ from tests.helpers.configuration import SqlitePolicyFixture
 
 import pytest
 
-from scripts.checks.training.training_coverage import _audit
+from scripts.training.samples.training_coverage import _audit
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 import hashlib
 import json
@@ -8,12 +10,9 @@ from datetime import date
 
 import pytest
 
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.download.history.history_publication_audit import AuditHistoryPublication
+from scripts.core.contracts import DiagnosticResult
+from scripts.core.projections import BuildReport
+from scripts.download.history.history_publication_audit import AuditHistoryPublication
 from tests.helpers.configuration import HistorySyncConfigurationFixture, SqlitePolicyFixture
 from tests.helpers.history import RunHistoryFixture
 from tests.unit.infra.research.test_history_sync import FakeSupplier, NOW
@@ -43,11 +42,11 @@ def test_complete_history_is_verified_without_mutation_and_projected(tmp_path):
     assert report["summary"]["receipts"]["gap_days"] == 0
     assert before == tuple((p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).digest()) for p in paths)
     assert "600001" not in json.dumps(report)
-    options, _ = ValidateOptions(BuildParser().parse_args([
+    options = ParseBusinessOptions(ParseToolArguments([
         *SelectionArguments('history-publication'), "--history-root", str(root),
     ]))
-    command, = BuildCommands(options)
-    assert "scripts.checks.download.history.history_publication_audit" in command.argv
+    command, = BuildToolCommands(options)
+    assert "scripts.download.history.history_publication_audit" in command.argv
     assert str(root) in command.argv
     projected = BuildReport("history-publication", [DiagnosticResult(command.name, 0, 1, report, None)])
     assert projected["checks"][0]["summary"]["verified_rows"] == 6

@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(find_spec("torch") is None, reason="V5 requires 
 def test_float64_network_matches_reference_outputs_input_and_parameter_gradients(batch, auxiliary, training):
     import torch
 
-    from scripts.checks.training.v5_kernels import ReferenceTcnNetwork
+    from scripts.training.models.v5_kernels import ReferenceTcnNetwork
     from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
 
     ConfigureTcnRuntime(training=True)
@@ -45,7 +45,7 @@ def test_float64_network_matches_reference_outputs_input_and_parameter_gradients
 def test_float64_network_preserves_seeded_adam_updates_and_roundtrip(auxiliary):
     import torch
 
-    from scripts.checks.training.v5_kernels import ReferenceTcnNetwork
+    from scripts.training.models.v5_kernels import ReferenceTcnNetwork
     from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
 
     ConfigureTcnRuntime(training=True)

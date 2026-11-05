@@ -27,7 +27,7 @@ function Show-Usage {
   .\run.ps1 train v1,v5             历史维护后只训练所列档位
 
 档位以逗号分隔，可自由组合；省略时选择全部。V1已正式接入，V5保持工程Shadow并需可选CPU依赖。
-本地检测使用 scripts/diagnose_runtime.py --business recommendation --module pipeline --check snapshot。
+本地检测使用 scripts/tools.py --business recommendation --module pipeline --action snapshot。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json

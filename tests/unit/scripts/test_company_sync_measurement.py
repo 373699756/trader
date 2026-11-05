@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.checks.download.company import company_pipeline_audit
-from scripts.checks.download.company import company_resume
+from scripts.download.company import company_pipeline_audit
+from scripts.download.company import company_resume
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
     CompanyDocumentFailure,
@@ -410,27 +410,15 @@ def test_live_measurement_rejects_unsafe_report_before_calling_cli(tmp_path, mon
         assert report.read_text(encoding="utf-8") == "keep"
 
 
-def test_company_resume_live_mode_routes_explicit_options_without_loading_another_runtime(tmp_path, monkeypatch):
-    configuration, report = _paths(tmp_path)
-    calls = []
-    monkeypatch.setattr(
-        company_resume, "MeasureCompanySync",
-        lambda runtime_config, output, *, fill_missing: calls.append((runtime_config, output, fill_missing)) or 7,
-    )
-    monkeypatch.setattr(
-        sys, "argv", ["company-resume", "--live-sync", "--runtime-config", str(configuration), "--report", str(report), "--fill"]
-    )
-    assert company_resume.Main() == 7 and calls == [(configuration, report, True)]
-
-
 @pytest.mark.parametrize("arguments", (
     ["--live-sync"],
-    ["--live-sync", "--runtime-config", "config/runtime.json", "--report", "/outside/report.json", "--budget-seconds", "30"],
+    ["--runtime-config", "config/runtime.json"],
+    ["--report", "/outside/report.json"],
+    ["--fill"],
     ["--database", "missing.sqlite3"],
     ["--budget-seconds", "30"],
-    ["--database", "missing.sqlite3", "--budget-seconds", "30", "--fill"],
 ))
-def test_company_resume_keeps_isolated_requirements_and_rejects_ambiguous_live_options(monkeypatch, arguments):
+def test_company_resume_requires_isolated_inputs_and_rejects_retired_live_options(monkeypatch, arguments):
     monkeypatch.setattr(sys, "argv", ["company-resume", *arguments])
     with pytest.raises(SystemExit) as raised:
         company_resume.Main()

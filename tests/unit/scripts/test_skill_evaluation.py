@@ -11,13 +11,19 @@ from pathlib import Path
 
 import pytest
 
-from scripts.checks.engineering.skills.cases import Cases
-from scripts.checks.engineering.skills.contracts import CommandEvidence, FinalClaim, TraceEvidence
-from scripts.checks.engineering.skills.process import RunBounded
-from scripts.checks.engineering.skills.reports import CompareReports, WriteReport
-from scripts.checks.engineering.skills.scoring import ScoreCase
-from scripts.checks.engineering.skills.trace import ParseTrace
-from scripts.checks.engineering.skills.workspace import ExternalPath, Git, PrepareWorkspace, SkillDigest
+from scripts.engineering.skills.cases import Cases
+from scripts.engineering.skills.contracts import CommandEvidence
+from scripts.engineering.skills.contracts import FinalClaim
+from scripts.engineering.skills.contracts import TraceEvidence
+from scripts.engineering.skills.process import RunBounded
+from scripts.engineering.skills.reports import CompareReports
+from scripts.engineering.skills.reports import WriteReport
+from scripts.engineering.skills.scoring import ScoreCase
+from scripts.engineering.skills.trace import ParseTrace
+from scripts.engineering.skills.workspace import ExternalPath
+from scripts.engineering.skills.workspace import Git
+from scripts.engineering.skills.workspace import PrepareWorkspace
+from scripts.engineering.skills.workspace import SkillDigest
 
 ROOT = Path(__file__).resolve().parents[3]
 SKILLS = ROOT / ".agents/skills"

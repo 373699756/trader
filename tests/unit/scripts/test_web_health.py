@@ -5,13 +5,11 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.checks.recommendation.web_health import (
-    WebSample,
-    analyze_samples,
-    build_report,
-    collect_samples,
-    parse_web_sample,
-)
+from scripts.recommendation.web.web_health import WebSample
+from scripts.recommendation.web.web_health import analyze_samples
+from scripts.recommendation.web.web_health import build_report
+from scripts.recommendation.web.web_health import collect_samples
+from scripts.recommendation.web.web_health import parse_web_sample
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES
 
 _STRATEGY = "tomorrow"
@@ -84,7 +82,7 @@ def test_runtime_collects_long_without_applying_short_strategy_scoring_rules(mon
         requests.append(url)
         return long_payload if url.endswith("/long/current") else {}
 
-    monkeypatch.setattr("scripts.checks.recommendation.web_health._fetch_mapping", fetch)
+    monkeypatch.setattr("scripts.recommendation.web.web_health._fetch_mapping", fetch)
     samples = collect_samples(
         "http://127.0.0.1:5000", strategies=(_STRATEGY,), sample_count=1, interval_seconds=0, timeout_seconds=1
     )
@@ -235,7 +233,7 @@ def test_selected_profile_is_applied_to_status_and_every_current_endpoint(monkey
             else {}
         )
 
-    monkeypatch.setattr("scripts.checks.recommendation.web_health._fetch_mapping", fetch)
+    monkeypatch.setattr("scripts.recommendation.web.web_health._fetch_mapping", fetch)
     samples = collect_samples(
         "http://127.0.0.1:5000",
         strategies=(_STRATEGY,),

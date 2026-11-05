@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture, PROJECT_ROOT
 from functools import partial
@@ -13,7 +15,8 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.checks.download.history.qfq_sqlite import AuditQfqDatabase, ClassifyQfqDiagnosticError
+from scripts.download.history.qfq_sqlite import AuditQfqDatabase
+from scripts.download.history.qfq_sqlite import ClassifyQfqDiagnosticError
 from tests.helpers.qfq import QFQ_CONFIGURATION, qfq_window
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -151,12 +154,9 @@ def test_valid_pair_does_not_hide_current_price_issues(tmp_path):
 
 
 def test_failure_profile_reads_only_diagnostic_rows_and_survives_bad_price_content(tmp_path, monkeypatch, capsys):
-    from scripts.checks.arguments import BuildParser
-    from scripts.checks.arguments import ValidateOptions
-    from scripts.checks.commands import BuildCommands
-    from scripts.checks.projections import BuildReport
-    from scripts.checks.contracts import DiagnosticResult
-    from scripts.checks.download.history import qfq_sqlite
+    from scripts.core.projections import BuildReport
+    from scripts.core.contracts import DiagnosticResult
+    from scripts.download.history import qfq_sqlite
     from trader.download.domain.download_failure import DownloadFailureContext
     from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
     from tests.unit.infra.research.test_history_sync import NOW
@@ -177,10 +177,10 @@ def test_failure_profile_reads_only_diagnostic_rows_and_survives_bad_price_conte
     document = json.loads((config / "download.json").read_text())
     document["failure_diagnostics"] = {"retention_limit": 7, "query_limit": 2}
     (config / "download.json").write_text(json.dumps(document))
-    options, _ = ValidateOptions(BuildParser().parse_args([
+    options = ParseBusinessOptions(ParseToolArguments([
         *SelectionArguments('download-failures'), "--qfq-database", str(path), "--runtime-config", str(config / "runtime.json"),
     ]))
-    command, = BuildCommands(options)
+    command, = BuildToolCommands(options)
     assert "--failures-only" in command.argv and str(path) in command.argv
     monkeypatch.setattr(sys, "argv", ["qfq_sqlite", *command.argv[command.argv.index("--") + 1:]])
     assert qfq_sqlite.Main() == 0

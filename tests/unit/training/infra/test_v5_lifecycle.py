@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from scripts.checks.training import v5_lite
+from scripts.training.models import v5_lite
 from tests.helpers.configuration import SqlitePolicyFixture, TcnFittingParametersFixture
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE

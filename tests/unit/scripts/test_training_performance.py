@@ -1,6 +1,8 @@
 """Benchmark isolation, direct supervision, and honest comparison admission."""
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 
@@ -14,22 +16,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.training import training_alignment
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.training.training_alignment import _numeric_fingerprints
-from scripts.checks.training.training_performance import (
-    SummarizeTrainingBenchmark,
-    TrainingReuseFailures,
-    TrainingSampleReuseFailures,
-)
+from scripts.core.projections import BuildReport
+from scripts.training.jobs import training_alignment
+from scripts.core.contracts import DiagnosticResult
+from scripts.training.jobs.training_alignment import _numeric_fingerprints
+from scripts.training.jobs.training_performance import SummarizeTrainingBenchmark
+from scripts.training.jobs.training_performance import TrainingReuseFailures
+from scripts.training.jobs.training_performance import TrainingSampleReuseFailures
 
 
 def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path):
-    args = BuildParser().parse_args(
+    args = ParseToolArguments(
         [
             *SelectionArguments('training-performance'),
             "--history-root",
@@ -40,8 +37,8 @@ def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path
             "v1,v5",
         ]
     )
-    options, _ = ValidateOptions(args)
-    commands = BuildCommands(options)
+    options = ParseBusinessOptions(args)
+    commands = BuildToolCommands(options)
     assert len(commands) == 5
     assert [command.name for command in commands] == [
         "training_alignment:serial_before:v1",
@@ -50,11 +47,11 @@ def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path
         "training_alignment:serial_after:v1",
         "training_alignment:serial_after:v5",
     ]
-    assert all("scripts.checks.training.training_alignment" in command.argv for command in commands)
+    assert all("scripts.training.jobs.training_alignment" in command.argv for command in commands)
     assert len({command.argv[command.argv.index("--work-root") + 1] for command in commands}) == 5
     (tmp_path / "work").mkdir()
     with pytest.raises(ValueError, match="new_output"):
-        BuildCommands(options)
+        BuildToolCommands(options)
 
 
 def _sample_scenario(profile):
@@ -191,8 +188,8 @@ def test_serial_comparison_rejects_missing_run_instead_of_using_total_duration(m
 def test_checkout_comparison_uses_same_harness_config_and_distinct_outputs(tmp_path):
     baseline = tmp_path / "baseline"
     (baseline / "src/trader").mkdir(parents=True)
-    options, _ = ValidateOptions(
-        BuildParser().parse_args(
+    options = ParseBusinessOptions(
+        ParseToolArguments(
             [
                 *SelectionArguments('training-performance'),
                 "--history-root",
@@ -204,7 +201,7 @@ def test_checkout_comparison_uses_same_harness_config_and_distinct_outputs(tmp_p
             ]
         )
     )
-    commands = BuildCommands(replace(options, baseline_checkout=baseline))
+    commands = BuildToolCommands(replace(options, baseline_checkout=baseline))
     assert [command.name for command in commands] == [
         "training_alignment:baseline_before:v1,v5",
         "training_alignment:candidate:v1,v5",
@@ -216,7 +213,7 @@ def test_checkout_comparison_uses_same_harness_config_and_distinct_outputs(tmp_p
     assert len({command.argv[command.argv.index("--work-root") + 1] for command in commands}) == 3
     assert len({command.argv[command.argv.index("--runtime-config") + 1] for command in commands}) == 1
     with pytest.raises(ValueError, match="external_product_checkout"):
-        BuildCommands(replace(options, baseline_checkout=tmp_path))
+        BuildToolCommands(replace(options, baseline_checkout=tmp_path))
 
 
 def _checkout_results():

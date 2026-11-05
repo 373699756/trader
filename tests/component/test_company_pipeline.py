@@ -103,7 +103,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
         row = connection.run("SELECT failure,ocr_diagnostic FROM document_retries").require_one()
         assert row[0] == "disclosure_document_ocr_timeout_exhausted"
         assert json.loads(row[1])["phase"] == "recognition"
-    from scripts.checks.download.company.company_query_audit import AuditCompanyDatabase
+    from scripts.download.company.company_query_audit import AuditCompanyDatabase
 
     audit = AuditCompanyDatabase(index.path, now=NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
     assert audit["summary"]["database"]["ocr_diagnostics"][0]["diagnostic"]["phase"] == "recognition"
@@ -291,7 +291,7 @@ def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_can
         )
     finally:
         workers.stop(wait=True, cancel_futures=True)
-    assert "task:cancelled" in result.failures
+    assert "task:cancelled" in result.failures, (barrier.broken, len(set(worker_threads)), len(write_threads))
     assert len(set(worker_threads)) == 2 and write_threads == [get_ident(), get_ident()]
     pending = index.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert len(pending) == len(items) - 2

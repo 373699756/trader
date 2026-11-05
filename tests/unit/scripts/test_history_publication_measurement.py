@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -10,14 +12,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.checks.arguments import BuildParser, ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.contracts import PROJECT_ROOT
-from scripts.checks.download.history.history_publication_measurement import (
-    HistoryPublicationMeasurement,
-    ProfilePublishedHistory,
-)
-from scripts.checks.download.history.history_write_benchmark import HistoryFixtureSupplier, MeasureHistoryWrites
+from scripts.core.paths import PROJECT_ROOT
+from scripts.download.history.history_publication_measurement import HistoryPublicationMeasurement
+from scripts.download.history.history_publication_measurement import ProfilePublishedHistory
+from scripts.download.history.history_write_benchmark import HistoryFixtureSupplier
+from scripts.download.history.history_write_benchmark import MeasureHistoryWrites
 from tests.helpers.configuration import SqlitePolicyFixture
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_prices import HistoryPricePartition
@@ -124,20 +123,21 @@ def test_parallel_phases_keep_distinct_parent_stacks() -> None:
 
 
 def test_unified_entrypoint_passes_only_explicit_publication_profile(tmp_path: Path) -> None:
-    selection = ["--business", "download", "--module", "history", "--check", "write"]
+    selection = ["--business", "download", "--module", "history", "--action", "write"]
     arguments = [*selection, "--history-publication-profile", "--history-root", str(tmp_path)]
-    options, _ = ValidateOptions(BuildParser().parse_args(arguments))
-    command = BuildCommands(options)[0]
+    options = ParseBusinessOptions(ParseToolArguments(arguments))
+    command = BuildToolCommands(options)[0]
     assert "--publication-profile" in command.argv
     assert command.argv[command.argv.index("--history-root") + 1] == str(tmp_path)
     assert command.argv[command.argv.index("--runtime-config") + 1] == str(options.runtime_config)
-    plain, _ = ValidateOptions(BuildParser().parse_args(selection))
-    assert "--publication-profile" not in BuildCommands(plain)[0].argv
-    fixture, _ = ValidateOptions(BuildParser().parse_args([*selection, "--history-publication-profile"]))
-    assert "--history-root" not in BuildCommands(fixture)[0].argv
+    plain = ParseBusinessOptions(ParseToolArguments(selection))
+    assert "--publication-profile" not in BuildToolCommands(plain)[0].argv
+    fixture = ParseBusinessOptions(ParseToolArguments([*selection, "--history-publication-profile"]))
+    assert "--history-root" not in BuildToolCommands(fixture)[0].argv
     with pytest.raises(ValueError, match="layout comparison"):
-        ValidateOptions(BuildParser().parse_args([*arguments, "--baseline-checkout", str(tmp_path)]))
-    with pytest.raises(ValueError, match="download/history/write"):
-        ValidateOptions(BuildParser().parse_args([
-            "--business", "infra", "--module", "database", "--check", "baseline", "--history-publication-profile",
-        ]))
+        ParseBusinessOptions(ParseToolArguments([*arguments, "--baseline-checkout", str(tmp_path)]))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([
+            "--business", "infra", "--module", "database", "--action", "baseline", "--history-publication-profile",
+        ])
+    assert error.value.code == 2

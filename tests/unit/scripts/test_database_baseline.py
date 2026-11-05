@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 
@@ -14,24 +16,22 @@ from pathlib import Path
 
 import pytest
 
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.execution import ExecuteCommand
-from scripts.checks.infra import database_workspace
-from scripts.checks.infra.database_baseline import MeasureSyncBaseline, _compare
-from scripts.checks.infra.database_measurement import DatabaseMeasurement
-from scripts.checks.infra.database_workspace import (
-    DatabaseWorkerEnvironment,
-    PrepareDatabaseProbeDirectory,
-    ProjectDatabaseProbeLocation,
-    RunDatabaseProbe,
-)
-from scripts.checks.contracts import PROJECT_ROOT, DiagnosticCommand
+from scripts.core.execution import ExecuteCommand
+from scripts.infra.database import database_workspace
+from scripts.infra.database.database_baseline import MeasureSyncBaseline
+from scripts.infra.database.database_baseline import _compare
+from scripts.infra.database.database_measurement import DatabaseMeasurement
+from scripts.infra.database.database_workspace import DatabaseWorkerEnvironment
+from scripts.infra.database.database_workspace import PrepareDatabaseProbeDirectory
+from scripts.infra.database.database_workspace import ProjectDatabaseProbeLocation
+from scripts.core.process import RunBoundedCommand
+from scripts.core.contracts import CommandPreparation
+from scripts.core.paths import PROJECT_ROOT
+from scripts.core.contracts import DiagnosticCommand
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
 from trader.infra.disk_types import DiskProfile
-from scripts.checks.infra import database_baseline
+from scripts.infra.database import database_baseline
 
 _CONFIG = PROJECT_ROOT / "config/runtime.json"
 
@@ -52,12 +52,13 @@ def test_training_io_baseline_measures_all_profiles_and_restores_instrumentation
 
 def test_training_baseline_is_routed_only_to_a_new_isolated_baseline(tmp_path):
     base = [*SelectionArguments('database-baseline'), "--database-probe-directory", str(tmp_path / "probe")]
-    options, _ = ValidateOptions(BuildParser().parse_args(base + ["--database-training"]))
-    assert "--include-training" in BuildCommands(options, python_executable="/python3")[0].argv
+    options = ParseBusinessOptions(ParseToolArguments(base + ["--database-training"]))
+    assert "--include-training" in BuildToolCommands(options, python_executable="/python3")[0].argv
     with pytest.raises(ValueError, match="without a comparison checkout"):
-        ValidateOptions(BuildParser().parse_args(base + ["--database-training", "--baseline-checkout", str(tmp_path / "baseline")]))
-    with pytest.raises(ValueError, match="requires --business infra --module disk --check profile"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('snapshot'), "--disk-policy-audit"]))
+        ParseBusinessOptions(ParseToolArguments(base + ["--database-training", "--baseline-checkout", str(tmp_path / "baseline")]))
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([*SelectionArguments('snapshot'), "--disk-policy-audit"])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("training", (False, True))
@@ -88,7 +89,7 @@ def test_baseline_checks_cross_round_facts_in_every_mode(training, changed, monk
 
 @pytest.mark.parametrize(
     "relative",
-    ("src/trader/example.py", "scripts/checks/infra/example.py", "config/runtime.json"),
+    ("src/trader/example.py", "scripts/infra/database/example.py", "config/runtime.json"),
 )
 def test_baseline_identity_tracks_each_selected_checkout_input(tmp_path, relative):
     source = tmp_path / relative
@@ -164,17 +165,25 @@ def test_workspace_rejects_source_existing_relative_and_symlink_targets(tmp_path
     assert not (PROJECT_ROOT / "probe").exists()
 
 
-def test_database_profile_requires_external_directory_and_bounds_workload(tmp_path: Path) -> None:
+def test_database_profile_requires_external_directory_and_bounds_workload(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(ValueError, match="requires --database-probe-directory"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('database-baseline')]))
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('database-baseline')]))
     base = [*SelectionArguments('database-baseline'), "--database-probe-directory", str(tmp_path / "new")]
-    options, _ = ValidateOptions(BuildParser().parse_args(base))
-    command = BuildCommands(options, python_executable=sys.executable)[0]
-    assert command.database_probe_directory == tmp_path / "new"
+    options = ParseBusinessOptions(ParseToolArguments(base))
+    calls = []
+    def prepare(directory, configuration, command_name):
+        calls.append((directory, configuration, command_name))
+        return CommandPreparation()
+    monkeypatch.setattr("scripts.infra.database.commands.PrepareDatabaseCommand", prepare)
+    command = BuildToolCommands(options, python_executable=sys.executable)[0]
+    assert command.prepare is not None
+    assert calls == []
+    assert command.prepare() == CommandPreparation()
+    assert calls == [(tmp_path / "new", options.runtime_config, "database_baseline")]
     assert command.argv[-6:] == ("--size", "8", "--sessions", "61", "--rounds", "5")
     for bad in (("--download-sizes", "33"), ("--history-days", "2001"), ("--download-sizes", "1", "2")):
         with pytest.raises(ValueError):
-            ValidateOptions(BuildParser().parse_args(base + list(bad)))
+            ParseBusinessOptions(ParseToolArguments(base + list(bad)))
 
 
 @pytest.mark.parametrize("command_name", ("fixture", "history_write_benchmark", "database_baseline"))
@@ -187,7 +196,15 @@ def test_worker_tempfiles_and_filesystem_evidence_reach_the_report(tmp_path: Pat
         "print(json.dumps({'status':'passed','summary':{'temporary_root':str(Path(tempfile.gettempdir())),"
         "'disk_kind':args.disk_kind}}))"
     )
-    result = ExecuteCommand(DiagnosticCommand(command_name, (sys.executable, "-c", script), 10, target, _CONFIG))
+    target.mkdir()
+    preparation = CommandPreparation(
+        ("--disk-kind", "unknown") if command_name != "fixture" else (),
+        DatabaseWorkerEnvironment(target),
+        {"database_workspace": {"filesystem": "fixture", "disk_kind": "unknown"}},
+    )
+    result = ExecuteCommand(DiagnosticCommand(
+        command_name, (sys.executable, "-c", script), 10, prepare=lambda: preparation,
+    ))
     assert result.error_code is None
     assert result.payload["summary"]["temporary_root"] == str(target)
     assert "database_workspace" in result.payload["summary"]
@@ -197,8 +214,8 @@ def test_worker_tempfiles_and_filesystem_evidence_reach_the_report(tmp_path: Pat
 
 
 def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tmp_path: Path) -> None:
-    options, _ = ValidateOptions(
-        BuildParser().parse_args(
+    options = ParseBusinessOptions(
+        ParseToolArguments(
             [
                 *SelectionArguments('database-baseline'),
                 "--database-probe-directory",
@@ -212,7 +229,7 @@ def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tm
             ]
         )
     )
-    command = BuildCommands(options, python_executable=sys.executable)[0]
+    command = BuildToolCommands(options, python_executable=sys.executable)[0]
     assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path / "baseline"))
     assert command.argv[command.argv.index("--rounds") + 1] == "5"
     assert command.argv[command.argv.index("--acceptance-focus") + 1] == "market-company"
@@ -248,8 +265,9 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
 
     monkeypatch.setattr(database_baseline, "_input_identity", input_identity)
 
-    def worker(checkout, size, sessions, disk_kind):
+    def worker(checkout, size, sessions, disk_kind, *, runtime_config):
         nonlocal candidate_round
+        assert runtime_config == _CONFIG
         candidate = checkout == PROJECT_ROOT
         candidate_round += int(candidate)
         calls.append("candidate" if candidate else "baseline")
@@ -299,7 +317,7 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
             },
         }
 
-    monkeypatch.setattr("scripts.checks.infra.database_baseline._run_worker", worker)
+    monkeypatch.setattr("scripts.infra.database.database_baseline._run_worker", worker)
     if failure == "identity":
         with pytest.raises(RuntimeError, match="publication_changed"):
             _compare(baseline, 2, 61, 5, "unknown", focus)
@@ -341,7 +359,7 @@ def test_timeout_terminates_nested_probe_workers(tmp_path: Path) -> None:
         "Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(30)"
     )
     with pytest.raises(subprocess.TimeoutExpired):
-        RunDatabaseProbe(
+        RunBoundedCommand(
             (sys.executable, "-c", script, str(child_file)), timeout=1, environment=DatabaseWorkerEnvironment(tmp_path)
         )
     pid = int(child_file.read_text())

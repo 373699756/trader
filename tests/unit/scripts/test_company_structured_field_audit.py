@@ -1,13 +1,15 @@
 """Structured source samples remain bounded observations with no production writes."""
 
+import hashlib
 import json
 from contextlib import nullcontext
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from scripts.checks.download.company import company_structured_field_audit as audit
+from scripts.download.company import company_structured_field_audit as audit
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.infra.http_contracts import HttpConnectionError, HttpResponse
 
@@ -256,11 +258,15 @@ def test_unverified_numeric_values_are_not_counted_as_valid_numbers(value):
 
 
 def test_existing_source_check_routes_the_explicit_field_mode_without_running_directory_discovery(monkeypatch, capsys):
-    from scripts.checks.download.company import research_source_compare as entrypoint
+    from scripts.download.company import research_source_compare as entrypoint
 
     monkeypatch.setattr(entrypoint, "OpenExternalHttp", lambda: nullcontext(_Session()))
     monkeypatch.setattr(entrypoint, "Collect", lambda args: pytest.fail("directory discovery must stay unselected"))
     monkeypatch.setattr(entrypoint, "AuditCompanyStructuredSources", lambda *args, **kwargs: {"read_only": True})
-    monkeypatch.setattr("sys.argv", ["research-source-compare", "--config", "config/runtime.json", "--codes", "600001", "--field-sources-only"])
+    configuration = Path(__file__).resolve().parents[3] / "config/runtime.json"
+    monkeypatch.setattr("sys.argv", ["research-source-compare", "--config", str(configuration), "--field-sources-only"])
     assert entrypoint.Main() == 0
-    assert json.loads(capsys.readouterr().out) == {"read_only": True}
+    assert json.loads(capsys.readouterr().out) == {
+        "read_only": True,
+        "runtime_configuration_sha256": hashlib.sha256(configuration.read_bytes()).hexdigest(),
+    }

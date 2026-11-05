@@ -87,7 +87,7 @@ def test_configuration_has_one_required_strict_resource_schema(tmp_path, mutatio
 
 
 def test_only_explicit_archived_diagnostic_configuration_accepts_old_root_schema(tmp_path):
-    from scripts.checks.training.v5_lite import _parameters
+    from scripts.training.models.v5_lite import _parameters
 
     document = _configuration(tmp_path)
     _write(tmp_path, document)

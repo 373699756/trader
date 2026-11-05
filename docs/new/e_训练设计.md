@@ -549,9 +549,9 @@ P52/P55的候选由既有`sample_comparison_worker --construct-features`或完�
 - schema_cache最多保留64个完全相同的不可变列序/序列布局校验摘要；实际摘要仍由`SampleFeatureHash`首次校验/计算。列序、布局值与标量类型均区分，异常不缓存。库内schema、feature/split身份、样本形状/值、标签成熟和防泄漏检查全部保留，不把“曾校验”当作跳过逐行或外部内容审计的资格。
 - 候选只允许在隔离worker主线程安装；完整作业的四档线程沿原执行器运行并在退出候选作用域前收尾，计数加锁，LRU允许并发首次计算同一键。样本构建/拟合过程中可按原语义失败或取消；finally恢复三个原调用绑定并清空本轮缓存。唯一白名单投影列出索引调用、schema请求/实际计算和缓存容量，production_enabled及performance_evidence均为false；计数锁与钩子开销包含在候选耗时内，完整对照另行裁决。
 
-使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.diagnose_runtime --internal-worker scripts.checks.training.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
+使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.tools --internal-worker scripts.training.samples.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
 
-完整三负载沿用同一个注册worker：`python3 -m scripts.diagnose_runtime --internal-worker scripts.checks.training.training_alignment -- --history-root <本机合法历史> --work-root <全新仓库外目录> --profiles v1,v2,v3,v5 --product-checkout <冻结版本> --runtime-config <冻结且绑定本机资料的配置> --published-history-read-only --sample-cache-transfer hardlink --computation-candidate combined`。同一候选覆盖首次全训练、全工件复用及样本复用重拟合，保留每次资源计量、数值/指标指纹、源只读守卫和身份核对；V1样本复用仍明确不适用。baseline不安装候选钩子，单候选及combined分别与同输入baseline比较；这里只提供诊断选择，不授权生产启用、活动模型切换或调整10轮方案。
+完整三负载沿用同一个注册worker：`python3 -m scripts.tools --internal-worker scripts.training.jobs.training_alignment -- --history-root <本机合法历史> --work-root <全新仓库外目录> --profiles v1,v2,v3,v5 --product-checkout <冻结版本> --runtime-config <冻结且绑定本机资料的配置> --published-history-read-only --sample-cache-transfer hardlink --computation-candidate combined`。同一候选覆盖首次全训练、全工件复用及样本复用重拟合，保留每次资源计量、数值/指标指纹、源只读守卫和身份核对；V1样本复用仍明确不适用。baseline不安装候选钩子，单候选及combined分别与同输入baseline比较；这里只提供诊断选择，不授权生产启用、活动模型切换或调整10轮方案。
 
 ## 8. 质量和收益的边界
 
@@ -589,7 +589,7 @@ P52/P55的候选由既有`sample_comparison_worker --construct-features`或完�
 | 样本复用后拟合 | V2/V3/V5相同有效封存样本，模型确需训练 | 仅从封存样本读取，单列矩阵/序列/拟合成本；V1记不适用。准备该负载需显式隔离布局，不能删除活动模型 |
 | 全工件复用 | 同配置/输入，八头工件合法 | 原始价格扫描0次、拟合0次、原工件身份/拟合时点不刷新 |
 
-现有 `diagnose_runtime.py --profile training-performance`在 `build_commands`中专门调用 `BuildTrainingBenchmarkCommands`，继而运行 `training_alignment`；不能仅看profile映射就判成无完整训练。它支持串行前/并行/串行后夹测，或指定隔离baseline checkout作基线前/候选/基线后；子进程的 `_train_once`调用 `ExecuteSelectedTraining`，初次与重复训练会检查八头可读、复用、数值/指标指纹及源身份未变。
+现有`tools.py --business training --module resources --action performance`由`scripts/training/commands.py::BuildCommands`调用 `BuildTrainingBenchmarkCommands`，继而运行 `training_alignment`；不能仅看profile映射就判成无完整训练。它支持串行前/并行/串行后夹测，或指定隔离baseline checkout作基线前/候选/基线后；子进程的 `_train_once`调用 `ExecuteSelectedTraining`，初次与重复训练会检查八头可读、复用、数值/指标指纹及源身份未变。
 
 生产训练成功后会清理封存样本，样本复用负载对应的是失败后合法保留的缓存。该入口在首次及全工件复用后，用独立准备目录构造V2/V3/V5的这一状态：仍调用真实训练编排，仅在准备期间于拟合入口注入明确失败，核对三档均完成样本封存及覆盖检查、各自恰好到达一次拟合入口、没有生成模型，并恢复原拟合函数。准备报告明确标为故障注入，不能算作正常训练成功，也不计入首次或复用拟合耗时；取消、缺依赖或未到拟合入口不能当成准备完成。
 
@@ -601,27 +601,27 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 
 ### 9.2 P61训练检测清单与A交接
 
-下表是静态清点和去留建议，未实施搬移或删除。公共入口、报告白名单、`DiagnosticOptions`、Makefile与README由A拥有；训练模块的移动、参数和退出码在A确定统一合同后由C原子切换。新接口拟采用b第9章的业务/模块/检查选择，当前调用仍是现有profile体系，不能把拟定命令写成已可执行。
+下表保留训练工具的用途和消费者清点；当前路径与公共命令以scripts/README及b第9章为准。公共入口、报告白名单、Makefile与README由A拥有；训练参数、校验、不可变TrainingOptions和命令构造由scripts/training持有，core不再保存全业务DiagnosticOptions。公开选择统一为tools.py的business/module/action，训练内部worker仍由同一入口限定调用；迁移不改变训练输出schema或性能验收结论。
 
-| 现有路径，均在scripts下 | 功能/输入输出与副作用 | 消费者及去留建议 |
+| 当前路径，均在scripts下 | 功能/输入输出与副作用 | 消费者及去留建议 |
 | --- | --- | --- |
-| `runtime_diagnostics/training_alignment.py` | 隔离历史全训练/复用/工件加载；也含只读V1 model-inputs；训练模式写外部模型/样本 | `diagnose_runtime.py`、`training_performance.py`及对应测试；保留功能，按输入与整作业检查分组，不能误删model-inputs |
-| `runtime_diagnostics/training_performance.py` | 生成串并行/隔离checkout子进程命令，比较总耗时、身份、复用；无网络，子进程写隔离输出 | 公共入口及alignment的复用检查、`test_training_performance.py`；保留编排与唯一比较实现，不能删除仍被alignment调用的函数 |
-| `runtime_diagnostics/training_coverage.py` | 格式2样本统计、标签覆盖，只读；不重训 | 公共入口、`test_training_coverage.py`；保留，不将T+1观察投影当完整D25结果 |
-| `runtime_diagnostics/training_resources.py` | 合成64×64矩阵，CPU预约/原生限制/取消归还；不读历史、不训练 | 公共入口、`test_training_resources.py`；保留资源冒烟，不作为真实四档并行基线 |
-| 当前`scripts/checks/training/training_process_measurement.py`、`training_source_guard.py`（325新增/扩展） | 内部资源采样及已发布历史只读守卫；无独立入口，源SQLite只读、提醒不持久化，退出恢复函数/采样线程 | training_alignment及其定向测试；沿338的当前目录交付，保留显式模式、空间口径和守卫标记 |
-| `runtime_diagnostics/training_samples.py` | 五轮样本布局/SQLite–Parquet读取对照，外部checkout及新目录；生成合成库/报告 | 公共入口、`test_training_samples.py`；保留显式实验，不接生产Parquet |
-| `runtime_diagnostics/sample_comparison_worker.py` | 指定checkout的样本构建/读取工作进程；写外部夹具 | training_samples子进程；保留为内部worker，随模块路径一起切换 |
-| `runtime_diagnostics/training_read_comparison.py` | 已发布历史夹具及SQLite/Parquet准备、对齐、哈希和读测；写外部夹具 | training_samples导入/子进程；保留内部能力，避免与history布局检查重复建夹具 |
-| `runtime_diagnostics/v5_samples.py` | 合成或显式只读源子集，宽表/重叠块等价及耗时；写外部样本 | 公共入口、`test_v5_samples.py`；保留序列存储专项，不能当整行业双头训练 |
-| `runtime_diagnostics/v5_training.py` | 最多40股隔离导出及有界行业拟合/加载；写外部历史和模型 | 公共入口、`test_v5_diagnostic.py`；保留有界验证，不能关闭最大行业验收 |
-| `runtime_diagnostics/v5_kernels.py` | V5数值核对/计时，不读活动历史或生产工件 | v5_training的显式kernel模式、`test_v5_diagnostic.py`；保留内部纯计算检查 |
-| `runtime_diagnostics/v5_lite.py` | 配置候选计算及指定样本行业双头质量对照，写外部副本/报告 | 公共入口、`test_v5_lite.py`；保留既有质量门，不把缺少样本的计算结果写质量通过 |
-| `check_tomorrow_training_memory.py` | 实为V3隔离重排训练/重复一致性/RSS及报告，显式history/train/sample/output路径；导入时设置原生线程环境 | `test_check_tomorrow_training_memory.py`直接导入；保留有效能力并入训练资源检查后删除独立入口，改掉误导名称；导入副作用须随迁移消除 |
+| `training/jobs/training_alignment.py` | 隔离历史全训练/复用/工件加载；也含只读V1 model-inputs；训练模式写外部模型/样本 | `tools.py`、`jobs/training_performance.py`及对应测试；保留功能，按输入与整作业检查分组，不能误删model-inputs |
+| `training/jobs/training_performance.py` | 生成串并行/隔离checkout子进程命令，比较总耗时、身份、复用；无网络，子进程写隔离输出 | 公共入口及alignment的复用检查、`test_training_performance.py`；保留编排与唯一比较实现，不能删除仍被alignment调用的函数 |
+| `training/samples/training_coverage.py` | 格式2样本统计、标签覆盖，只读；不重训 | 公共入口、`test_training_coverage.py`；保留，不将T+1观察投影当完整D25结果 |
+| `training/resources/training_resources.py` | 合成64×64矩阵，CPU预约/原生限制/取消归还；不读历史、不训练 | 公共入口、`test_training_resources.py`；保留资源冒烟，不作为真实四档并行基线 |
+| `training/resources/training_process_measurement.py`、`training/jobs/training_source_guard.py`（325新增/扩展） | 内部资源采样及已发布历史只读守卫；无独立入口，源SQLite只读、提醒不持久化，退出恢复函数/采样线程 | training_alignment及其定向测试；沿338的当前scripts/training目录交付，保留显式模式、空间口径和守卫标记 |
+| `training/samples/training_samples.py` | 五轮样本布局/SQLite–Parquet读取对照，外部checkout及新目录；生成合成库/报告 | 公共入口、`test_training_samples.py`；保留显式实验，不接生产Parquet |
+| `training/samples/sample_comparison_worker.py` | 指定checkout的样本构建/读取工作进程；写外部夹具 | training_samples子进程；保留为内部worker，随模块路径一起切换 |
+| `training/samples/training_read_comparison.py` | 已发布历史夹具及SQLite/Parquet准备、对齐、哈希和读测；写外部夹具 | training_samples导入/子进程；保留内部能力，避免与history布局检查重复建夹具 |
+| `training/samples/v5_samples.py` | 合成或显式只读源子集，宽表/重叠块等价及耗时；写外部样本 | 公共入口、`test_v5_samples.py`；保留序列存储专项，不能当整行业双头训练 |
+| `training/models/v5_training.py` | 最多40股隔离导出及有界行业拟合/加载；写外部历史和模型 | 公共入口、`test_v5_diagnostic.py`；保留有界验证，不能关闭最大行业验收 |
+| `training/models/v5_kernels.py` | V5数值核对/计时，不读活动历史或生产工件 | v5_training的显式kernel模式、`test_v5_diagnostic.py`；保留内部纯计算检查 |
+| `training/models/v5_lite.py` | 配置候选计算及指定样本行业双头质量对照，写外部副本/报告 | 公共入口、`test_v5_lite.py`；保留既有质量门，不把缺少样本的计算结果写质量通过 |
+| `training/resources/memory.py` | 受限V3隔离重排训练、重复一致性、RSS及报告，显式history/train/sample/output路径；只在执行后设置资源环境，导入无资源设置副作用 | 统一`training/resources/memory`动作及`test_check_tomorrow_training_memory.py`；无独立脚本入口，保留原重排证据schema及隔离围栏 |
 
-还要与A共同核对 `database_layout_comparison.py`的训练样本/窄扫描负载、`history_sqlite_performance.py`的training_projection，以及 `history_parquet.py`的共享投影，owner不能仅凭文件名判定。前两者是跨业务检查，不由C擅自搬走；Parquet仅供现有诊断比较，不能因生产未采用就删除有效研究能力。
+还要与A共同核对`infra/database/database_layout_comparison.py`的训练样本/窄扫描负载、`download/history/history_sqlite_performance.py`的training_projection，以及`download/history/history_parquet.py`的共享投影，owner不能仅凭文件名判定。前两者是跨业务检查，不由C擅自搬走；Parquet仅供现有诊断比较，不能因生产未采用就删除有效研究能力。
 
-内存检查的间接消费者还包括 `scripts/check_refactor_quality.py::TOP_LEVEL_SCRIPT_MANIFEST`、`scripts/README.md`的工具表、`tests/conftest.py::_TRAINING_SCRIPT_PATHS`。其输出schema `tomorrow_training_memory_gate`被 `training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
+内存检查由`core/catalog.py`的memory动作注册，脚本工具表与`tests/conftest.py::_TRAINING_SCRIPT_PATHS`同步；`scripts/engineering/quality/debt.py::TOP_LEVEL_SCRIPT_MANIFEST`只核对tools.py公开根入口，不维护另一份内存入口名单。其输出schema `tomorrow_training_memory_gate`被产品`src/trader/training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
 
 A需接收的具体接口需求如下：
 
@@ -648,4 +648,4 @@ V1以具名列的float64位模式、负零、每头缺失标签、日期/代码/
 
 缺少封存输入时显式使用`--prepare-samples --sample-root <配置samples下的独立子目录>`；`--prepare-only`只准备输入，并明确`quality_evidence=false`。`v5_quality_samples.py`复用同一生产日历/对齐/特征/标签/切分owner，只读已发布历史，在历史及V5训练锁内构建独立诊断身份的封存缓存，保留`samples.sqlite3/complete.json/quality-input.json`供后续复核。正式窗口前的因果预热也报告物理行进度并检查预算，所有源迭代器由调用者关闭。已有目录身份或摘要不符时保留现场并拒绝；合法封存缓存可显式审计后零扫描复用。
 
-质量比较只在新外部工作目录创建两份快照，先检查空间、源文件/完成标记身份、修改时间与ctime，校验两份摘要后再按相同日期读取；源样本及活动模型保持只读。Torch设置在比较退出时恢复，快照仅按确切文件名清理，源缓存和报告保留。执行仍经过唯一`diagnose_runtime.py`入口的已注册内部worker；高层参数解析/统一投影由A拥有，本批不改公共路由。实际命令、冻结版本、输入及配置身份、功能和真实质量结果只记g阶段344。
+质量比较只在新外部工作目录创建两份快照，先检查空间、源文件/完成标记身份、修改时间与ctime，校验两份摘要后再按相同日期读取；源样本及活动模型保持只读。Torch设置在比较退出时恢复，快照仅按确切文件名清理，源缓存和报告保留。执行仍经过唯一`tools.py`入口的已注册内部worker；高层参数解析/统一投影由A拥有，本批不改公共路由。实际命令、冻结版本、输入及配置身份、功能和真实质量结果只记g阶段344。

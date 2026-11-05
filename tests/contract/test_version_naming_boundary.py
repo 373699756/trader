@@ -23,7 +23,8 @@ _PERCENTILE_METRIC = re.compile(r"(?:^|_)p\d+_(?:ms|seconds)(?:$|_)", re.IGNOREC
         ("src/trader/training/infra/profile/v1/training.py", True),
         ("src/trader/recommendation/domain/market/v5/features.py", True),
         ("tests/contract/test_v5_web_contract.py", True),
-        ("scripts/checks/training/v5_training.py", True),
+        ("scripts/training/models/v5_training.py", True),
+        ("scripts/training/samples/v5_samples.py", True),
         ("src/trader/recommendation/application/runtime/v5/worker.py", False),
         ("src/trader/training/infra/profile/v4/training.py", False),
         ("scripts/runtime_diagnostics/runtime_" + "v5.py", False),
@@ -50,7 +51,7 @@ def test_numbered_names_are_owned_only_by_scoring_profile_directories() -> None:
     assert violations == []
 
 
-def test_runtime_configuration_has_no_numbered_version_controllers() -> None:
+def _configuration_version_controllers(document: object, document_name: str) -> list[str]:
     violations: list[str] = []
 
     def inspect(value: object, location: str) -> None:
@@ -59,8 +60,13 @@ def test_runtime_configuration_has_no_numbered_version_controllers() -> None:
                 child = f"{location}.{key}"
                 if key == "version" or key.endswith("_version") or key.endswith("_versions"):
                     violations.append(child)
-                if (_NUMBERED_STAGE.search(key) and not _PERCENTILE_METRIC.search(key)) or _NUMBERED_VERSION.search(
-                    key
+                profile_sample_resource = (
+                    location in {"training.json.resources.hdd.samples", "training.json.resources.ssd.samples"}
+                    and key in {"v1_batch_rows", "v1_sqlite_cache_bytes"}
+                )
+                if not profile_sample_resource and (
+                    (_NUMBERED_STAGE.search(key) and not _PERCENTILE_METRIC.search(key))
+                    or _NUMBERED_VERSION.search(key)
                 ):
                     violations.append(child)
                 inspect(item, child)
@@ -75,8 +81,39 @@ def test_runtime_configuration_has_no_numbered_version_controllers() -> None:
             if _NUMBERED_STAGE.search(value) or _NUMBERED_VERSION.search(value):
                 violations.append(location)
 
-    for path in sorted((ROOT / "config").rglob("*.json")):
-        inspect(json.loads(path.read_text(encoding="utf-8")), path.name)
+    inspect(document, document_name)
+    return violations
+
+
+@pytest.mark.parametrize("medium", ("hdd", "ssd"))
+def test_profile_sample_resources_are_owned_only_by_their_declared_configuration_path(medium: str) -> None:
+    location = f"training.json.resources.{medium}.samples"
+    assert _configuration_version_controllers({"v1_batch_rows": 256, "v1_sqlite_cache_bytes": 1024}, location) == []
+
+
+@pytest.mark.parametrize(
+    ("location", "key"),
+    (
+        ("runtime.json.resources.hdd.samples", "v1_batch_rows"),
+        ("nested/training.json.resources.hdd.samples", "v1_batch_rows"),
+        ("training.json.resources.hdd.cpu", "v1_batch_rows"),
+        ("training.json.resources.hdd.samples.nested", "v1_sqlite_cache_bytes"),
+        ("training.json.resources.ssd.samples", "v2_batch_rows"),
+        ("training.json.resources.ssd.samples", "v1_other_budget"),
+    ),
+)
+def test_other_numbered_configuration_keys_remain_rejected(location: str, key: str) -> None:
+    assert _configuration_version_controllers({key: 256}, location) == [f"{location}.{key}"]
+
+
+def test_runtime_configuration_has_no_numbered_version_controllers() -> None:
+    violations = [
+        violation
+        for path in sorted((ROOT / "config").rglob("*.json"))
+        for violation in _configuration_version_controllers(
+            json.loads(path.read_text(encoding="utf-8")), path.relative_to(ROOT / "config").as_posix()
+        )
+    ]
 
     assert sorted(set(violations)) == []
 

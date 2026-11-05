@@ -530,7 +530,7 @@ company的交付合同按第5.9–5.12节：字段取得、证据及数据库读
 
 ## 11. 下载检测功能与P61交接清单
 
-这是下载范围的源码清点，供A整合b第9章的唯一检测入口；不代表全部scripts已清点或已迁移。以下路径均相对 `scripts/runtime_diagnostics/`，读取的是脚本定义、参数和消费者，没有执行这些脚本。表中的目标位置按 `scripts/checks/download/{history,market,company}/` 职责分组，实际文件名和公共结果类型由A统一确定。
+本节保留P61迁移前的下载源码清点，表中的旧路径、profile与目标建议仅供回溯，当时没有执行脚本。当前统一入口为`scripts/tools.py`，下载模块位于`scripts/download/{history,market,company}/`；有效business/module/action、现行参数、去留及消费者以[scripts说明](../../scripts/README.md)为准，实际迁移和验证只记g原阶段338。
 
 ### 11.1 history、market及相邻公共能力
 

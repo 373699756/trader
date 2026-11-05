@@ -42,10 +42,10 @@ format-check:
 
 lint: long-watchlist-check
 	$(PYTHON) -m ruff check --select E,F,I,B,UP --ignore E501 $(SOURCE_PATHS)
-	$(PYTHON) scripts/diagnose_runtime.py --business engineering --module quality --check debt
+	$(PYTHON) scripts/tools.py --business engineering --module quality --action debt
 
 long-watchlist-check:
-	$(PYTHON) scripts/diagnose_runtime.py --business engineering --module assets --check consistency
+	$(PYTHON) scripts/tools.py --business recommendation --module assets --action consistency
 
 type-check:
 	$(PYTHON) -m mypy src/trader
@@ -89,7 +89,7 @@ test-integration:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/integration
 
 test-release: package
-	$(PYTHON) scripts/diagnose_runtime.py --business engineering --module packaging --check install -- --dist-dir dist
+	$(PYTHON) scripts/tools.py --business engineering --module packaging --action install -- --dist-dir dist
 
 quality: format-check lint type-check test
 
@@ -97,13 +97,13 @@ package:
 	$(PYTHON) -m build
 
 performance-check:
-	$(PYTHON) scripts/diagnose_runtime.py --business recommendation --module pipeline --check latency --runtime-config config/runtime.json
+	$(PYTHON) scripts/tools.py --business recommendation --module pipeline --action latency --runtime-config config/runtime.json
 
 browser-performance-check:
-	$(PYTHON) scripts/diagnose_runtime.py --business recommendation --module web --check browser --browser-duration-seconds 35 --browser-minimum-updates 3 --output -
+	$(PYTHON) scripts/tools.py --business recommendation --module web --action browser --browser-duration-seconds 35 --browser-minimum-updates 3 --report -
 
 diagnose-list:
-	$(PYTHON) scripts/diagnose_runtime.py --list
+	$(PYTHON) scripts/tools.py --list
 
 diagnose-local:
-	$(PYTHON) scripts/diagnose_runtime.py --business recommendation --module pipeline --check snapshot --output -
+	$(PYTHON) scripts/tools.py --business recommendation --module pipeline --action snapshot --report -

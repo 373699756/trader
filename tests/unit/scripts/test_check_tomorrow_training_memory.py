@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.checks.training import memory as check_tomorrow_training_memory
+from scripts.training.resources import memory as check_tomorrow_training_memory
 from tests.helpers.training_resources import TrainingSampleSettingsFixture
 
 

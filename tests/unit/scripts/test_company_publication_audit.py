@@ -9,11 +9,11 @@ from datetime import timedelta
 
 import pytest
 
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.projections import BuildReport
-from scripts.checks.download.company import company_publication_audit
-from scripts.checks.download.company.company_publication_audit import AuditCompanyPublication
-from scripts.checks.download.company.company_query_audit import AuditCompanyDatabase
+from scripts.core.contracts import DiagnosticResult
+from scripts.core.projections import BuildReport
+from scripts.download.company import company_publication_audit
+from scripts.download.company.company_publication_audit import AuditCompanyPublication
+from scripts.download.company.company_query_audit import AuditCompanyDatabase
 from tests.component import test_company_evidence as fixtures
 from trader.download.domain.company_evidence import DisclosurePage
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext, DownloadFailureRecord
@@ -236,7 +236,7 @@ def test_field_recovery_preview_names_missing_field_without_writing_or_inventing
     assert not ratio["network_required"]
     assert plan["read_only"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
-    from scripts.checks.download.company.company_field_audit import ProjectCompanyFieldAudit
+    from scripts.download.company.company_field_audit import ProjectCompanyFieldAudit
 
     ratio["raw_body"] = "must-not-project"
     projected = ProjectCompanyFieldAudit(result["field_audit"])
@@ -244,7 +244,7 @@ def test_field_recovery_preview_names_missing_field_without_writing_or_inventing
 
 
 def test_local_material_inspection_verifies_text_and_compares_formal_contract_without_writes(tmp_path):
-    from scripts.checks.download.company.company_field_audit import InspectCompanyFieldMaterial
+    from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
     from tests.component.test_company_annual_income import _contract
 
     index = fixtures._index(tmp_path)
@@ -263,7 +263,7 @@ def test_local_material_inspection_verifies_text_and_compares_formal_contract_wi
 
 @pytest.mark.parametrize("keys", ((), ("x",) * 7, ("duplicate", "duplicate")))
 def test_material_inspection_rejects_unbounded_or_duplicate_keys_before_io(tmp_path, keys):
-    from scripts.checks.download.company.company_field_audit import InspectCompanyFieldMaterial
+    from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
 
     with pytest.raises(ValueError, match="company_material_keys_invalid"):
         InspectCompanyFieldMaterial(tmp_path / "missing.sqlite3", tmp_path / "missing-facts.sqlite3", keys, sqlite_policy=SqlitePolicyFixture())

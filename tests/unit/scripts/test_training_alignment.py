@@ -1,6 +1,8 @@
 """Isolation and explicit invocation of the all-profile alignment probe."""
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
 
@@ -19,15 +21,12 @@ from dataclasses import replace
 
 import pytest
 
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.training.training_alignment import _probe
+from scripts.training.jobs.training_alignment import _probe
 
 
 @pytest.mark.parametrize("reported_profile", ("v1", "v2"))
 def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, monkeypatch, reported_profile):
-    from scripts.checks.training import training_alignment
+    from scripts.training.jobs import training_alignment
     from trader import bootstrap
     from trader.recommendation.infra.scoring import profile_factory
 
@@ -55,7 +54,7 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
 
 def test_alignment_import_does_not_preload_the_product_before_checkout_selection():
     completed = subprocess.run(
-        [sys.executable, "-c", "import sys; import scripts.checks.training.training_alignment; assert 'trader' not in sys.modules"],
+        [sys.executable, "-c", "import sys; import scripts.training.jobs.training_alignment; assert 'trader' not in sys.modules"],
         check=False, capture_output=True, text=True, timeout=10,
     )
     assert completed.returncode == 0, completed.stderr
@@ -63,7 +62,7 @@ def test_alignment_import_does_not_preload_the_product_before_checkout_selection
 
 def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp_path: Path):
     with pytest.raises(ValueError, match="requires --history-root"):
-        ValidateOptions(BuildParser().parse_args([*SelectionArguments('training-alignment')]))
+        ParseBusinessOptions(ParseToolArguments([*SelectionArguments('training-alignment')]))
     args = [
         *SelectionArguments('training-alignment'),
         "--history-root",
@@ -71,10 +70,10 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
         "--training-probe-directory",
         str(tmp_path / "probe"),
     ]
-    options, _ = ValidateOptions(BuildParser().parse_args(args))
-    commands = BuildCommands(options)
+    options = ParseBusinessOptions(ParseToolArguments(args))
+    commands = BuildToolCommands(options)
     assert commands[0].name == "training_alignment"
-    assert "scripts.checks.training.training_alignment" in commands[0].argv
+    assert "scripts.training.jobs.training_alignment" in commands[0].argv
     with pytest.raises(ValueError, match="external_history_copy"):
         _probe(Path(__file__).resolve().parents[3] / "data/market/history", tmp_path / "probe", sqlite_policy=SqlitePolicyFixture())
     with pytest.raises(ValueError, match="new_separate_output"):
@@ -87,7 +86,7 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
 def test_entry_selects_checkout_before_loading_its_sqlite_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inputs_only: bool, explicit_config: bool, benchmark_mode: str | None,
 ):
-    from scripts.checks.training import training_alignment as module
+    from scripts.training.jobs import training_alignment as module
     import trader.bootstrap as bootstrap
     import trader.infra.settings as settings
 
@@ -138,7 +137,7 @@ def test_entry_selects_checkout_before_loading_its_sqlite_policy(
 
 @pytest.mark.parametrize("inputs_only", (False, True))
 def test_computation_candidate_is_explicit_and_requires_training_mode(tmp_path, monkeypatch, inputs_only):
-    from scripts.checks.training import training_alignment as module
+    from scripts.training.jobs import training_alignment as module
 
     project = Path(__file__).resolve().parents[3]
     calls = []
@@ -166,7 +165,7 @@ def test_computation_candidate_is_explicit_and_requires_training_mode(tmp_path, 
 def test_history_copy_includes_committed_wal_and_references_without_source_writes(
     tmp_path, monkeypatch, source_changed
 ):
-    from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy
+    from scripts.training.jobs.training_alignment import PrepareTrainingHistoryCopy
     from trader.infra.sqlite_publication import PublishSqliteFile
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
@@ -228,7 +227,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
 
 @pytest.mark.parametrize("invalid", ("absolute", "escape", "copy_escape"))
 def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_path, monkeypatch, invalid):
-    from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy
+    from scripts.training.jobs.training_alignment import PrepareTrainingHistoryCopy
     from trader.infra.sqlite_connection import SqliteConnection
     from trader.infra.sqlite_publication import PublishSqliteFile
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
@@ -282,8 +281,10 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
 
 @pytest.mark.parametrize("receipt_state", ("valid", "missing", "corrupt"))
 def test_real_history_copy_preserves_readable_publication_and_rejects_invalid_source_receipts(tmp_path, receipt_state):
-    from scripts.checks.training.training_alignment import PrepareTrainingHistoryCopy, _published_input_signature
-    from scripts.checks.training.training_read_comparison import PrepareTrainingHistory, TrainingRowsHash
+    from scripts.training.jobs.training_alignment import PrepareTrainingHistoryCopy
+    from scripts.training.jobs.training_alignment import _published_input_signature
+    from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
+    from scripts.training.samples.training_read_comparison import TrainingRowsHash
     from trader.infra.sqlite_publication import SqlitePublicationError
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
@@ -316,7 +317,7 @@ def test_real_history_copy_preserves_readable_publication_and_rejects_invalid_so
 
 @pytest.mark.parametrize("failure", (False, True))
 def test_training_resource_observer_stops_on_success_and_exception(tmp_path, failure):
-    from scripts.checks.training.training_process_measurement import TrainingProcessMeasurement
+    from scripts.training.resources.training_process_measurement import TrainingProcessMeasurement
 
     (tmp_path / "status").write_text("VmRSS: 1024 kB\nThreads: 4\n")
     (tmp_path / "io").write_text("read_bytes: 10\nwrite_bytes: 20\n")
@@ -336,7 +337,7 @@ def test_training_resource_observer_stops_on_success_and_exception(tmp_path, fai
 
 
 def test_training_resource_observer_keeps_unavailable_measurements_unknown(tmp_path):
-    from scripts.checks.training.training_process_measurement import TrainingProcessMeasurement
+    from scripts.training.resources.training_process_measurement import TrainingProcessMeasurement
 
     with TrainingProcessMeasurement(proc_root=tmp_path) as measurement:
         pass
@@ -348,7 +349,7 @@ def test_training_resource_observer_keeps_unavailable_measurements_unknown(tmp_p
 
 @pytest.mark.parametrize("failure", (False, True))
 def test_published_training_source_rejects_writes_and_restores_all_hooks(tmp_path, monkeypatch, failure):
-    from scripts.checks.training.training_source_guard import ReadOnlyTrainingSource
+    from scripts.training.jobs.training_source_guard import ReadOnlyTrainingSource
     from trader.training.infra.history import history_training_due
     from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -389,7 +390,7 @@ def test_published_training_source_rejects_writes_and_restores_all_hooks(tmp_pat
 
 
 def test_published_input_signature_detects_changed_prices_and_rejects_symlinks(tmp_path):
-    from scripts.checks.training.training_alignment import _published_input_signature
+    from scripts.training.jobs.training_alignment import _published_input_signature
 
     history = tmp_path / "history"
     history.mkdir()
@@ -413,7 +414,7 @@ def test_published_input_signature_detects_changed_prices_and_rejects_symlinks(t
 
 @pytest.mark.parametrize("suffix", ("", ".sha256"))
 def test_published_input_signature_detects_same_size_rewrite_with_restored_mtime(tmp_path, suffix):
-    from scripts.checks.training.training_alignment import _published_input_signature
+    from scripts.training.jobs.training_alignment import _published_input_signature
 
     history = tmp_path / "history"
     history.mkdir()
@@ -441,7 +442,7 @@ def test_published_input_signature_detects_same_size_rewrite_with_restored_mtime
 
 @pytest.mark.parametrize("kind", ("symlink", "directory"))
 def test_published_input_signature_rejects_unowned_publication_receipts(tmp_path, kind):
-    from scripts.checks.training.training_alignment import _published_input_signature
+    from scripts.training.jobs.training_alignment import _published_input_signature
 
     history = tmp_path / "history"
     history.mkdir()
@@ -460,7 +461,7 @@ def test_published_input_signature_rejects_unowned_publication_receipts(tmp_path
 
 
 def test_training_resource_observer_reports_filesystem_space_without_claiming_owned_bytes(tmp_path, monkeypatch):
-    from scripts.checks.training import training_process_measurement
+    from scripts.training.resources import training_process_measurement
 
     (tmp_path / "status").write_text("VmRSS: 1024 kB\nThreads: 4\n")
     (tmp_path / "io").write_text("read_bytes: 10\nwrite_bytes: 20\n")
@@ -480,8 +481,8 @@ def test_training_resource_observer_reports_filesystem_space_without_claiming_ow
 
 @pytest.mark.parametrize("computation_candidate", ("baseline", "combined"))
 def test_real_published_history_training_never_persists_due_observations(tmp_path, monkeypatch, computation_candidate):
-    from scripts.checks.training import training_alignment
-    from scripts.checks.training.training_read_comparison import PrepareTrainingHistory
+    from scripts.training.jobs import training_alignment
+    from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
     from trader.infra.settings import LoadRuntimeSettings
     from trader.infra.settings.data_paths import DataPaths
     from trader.training.infra import selected_training

@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import pytest
 
-from scripts.checks.reporting import ReadJsonReports, emit_report, summarize_latency_ms
+from scripts.core.reporting import ReadJsonReports
+from scripts.core.reporting import WriteReport
+from scripts.core.reporting import emit_report
+from scripts.core.reporting import summarize_latency_ms
 
 
 def test_summarize_latency_ms_uses_nearest_rank_p95() -> None:
@@ -23,6 +26,15 @@ def test_emit_report_writes_one_json_document_to_stdout(capsys) -> None:
     assert '\n  "message": "检查完成"\n' in captured.out
     assert captured.out.endswith("\n")
     assert captured.err == ""
+
+
+def test_public_report_refuses_to_overwrite_an_existing_file(tmp_path) -> None:
+    report = tmp_path / "report.json"
+    WriteReport({"status": "passed"}, str(report))
+    original = report.read_bytes()
+    with pytest.raises(FileExistsError):
+        WriteReport({"status": "failed"}, str(report))
+    assert report.read_bytes() == original
 
 
 @pytest.mark.parametrize("indent", (None, 2))

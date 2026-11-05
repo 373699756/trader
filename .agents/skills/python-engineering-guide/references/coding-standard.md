@@ -82,7 +82,7 @@ Trader 新增或迁移的项目模块、类、函数、类型和其它符号还�
 - 新增代码一次按仓库 formatter 要求书写。已有代码只有在用户明确要求格式整理，或本批实际修改的语句无法通过既有格式门禁时，才调整必要的最小范围；不得借 formatter 扩大到未涉及语句、整文件、目录或全仓。提交前剔除与任务无关的纯格式 diff。
 - 一行一个逻辑语句，不使用分号拼接。
 - 新增的显式格式工具将函数/方法定义及调用的5个及以上参数逐项换行，末项保留逗号；0–4项由120字符目标行宽和注释决定。`self`、`cls`计入，`*args`、`**kwargs`各一项，单独的`/`、`*`不计数；lambda和f-string插值内部表达式沿用Ruff，不跨字符串token插入换行。`__all__`两项及以上逐项换行，普通容器由Ruff排版。该规则尚未批量应用存量代码，不借业务修改扩大排版范围。
-- 格式和批量命名通过`scripts/diagnose_runtime.py --business engineering --module quality --check transform --`的显式模式处理，命令及清单合同见`scripts/README.md`。默认检查/预览不写目标文件，只有`write`才写入。改名必须绑定定义、作用域、源码身份、用途理由及全部消费者，禁止按全仓字符串替换或依据无引用猜测私有性。
+- 格式和批量命名通过`scripts/tools.py --business engineering --module quality --action transform --`的显式模式处理，命令及清单合同见`scripts/README.md`。默认检查/预览不写目标文件，只有`write`才写入。改名必须绑定定义、作用域、源码身份、用途理由及全部消费者，禁止按全仓字符串替换或依据无引用猜测私有性。
 - 命名审计将禁用词、内置名称遮蔽及确定形态错误列为error；`data/obj/tmp/manager`等含糊名称、`Artifacts`及未使用参数下划线用途列为review，不自动替换。固定外部接口疑点需提供具体合同，不以宽泛忽略消除报告。机器词表唯一维护于质量工具内部命名模块，审计和改名准入共用。
 - 比较 `None` 使用 `is`/`is not`；比较布尔值通常直接使用真值，不写 `== True`。
 - 对序列使用真值判断空/非空；当 `0`、空容器和 `None` 语义不同，显式判断。
@@ -212,4 +212,4 @@ Trader 新增或迁移的项目模块、类、函数、类型和其它符号还�
 7. 公开函数/类型、内部实现与方法是否按各自规则命名，全部导出和消费者是否同步？
 8. 所选门禁是否实际运行，未运行项和既有失败是否如实区分？
 
-Trader 的公开顶层函数由 `scripts/diagnose_runtime.py --business engineering --module quality --check transform --` 中的 AST 门禁检查；`N802/N813` 不用于强制公开函数改回小写。复用现有门禁，不新增第二套命名检查或调整无关基线。纯 skill 文档修改不要求运行全仓代码门禁。
+Trader 的公开顶层函数由 `scripts/tools.py --business engineering --module quality --action transform --` 中的 AST 门禁检查；`N802/N813` 不用于强制公开函数改回小写。复用现有门禁，不新增第二套命名检查或调整无关基线。纯 skill 文档修改不要求运行全仓代码门禁。

@@ -9,8 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.migrate_runtime_data import MigrationError, inspect_layout, migrate
-from scripts.runtime_migration import MergeDatabase
+from scripts.engineering.migration.operations import MigrationError
+from scripts.engineering.migration.operations import inspect_layout
+from scripts.engineering.migration.operations import migrate
+from scripts.engineering.migration.codec import MergeDatabase
 from tests.unit.infra.test_freeze_records import NOW, record
 from tests.unit.infra.test_issuer_eligibility_index import _fact
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction

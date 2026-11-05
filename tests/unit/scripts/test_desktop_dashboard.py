@@ -31,7 +31,7 @@ def test_chrome_profile_cleanup_retries_a_bounded_filesystem_race() -> None:
 
 @pytest.mark.parametrize("state", ("ready", "not_ready", "wrong_view", "long_quote_missing", "codes_mismatch"))
 def test_live_probe_checks_every_enabled_view_and_rejects_unready_empty_results(monkeypatch, state):
-    from scripts.checks.recommendation import browser_refresh
+    from scripts.recommendation.web import browser_refresh
     from tests.performance import run_desktop_dashboard
 
     class Chrome:

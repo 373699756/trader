@@ -10,7 +10,7 @@ from threading import Barrier, Event
 
 import pytest
 
-from scripts.checks.reporting import ReadJsonReports
+from scripts.core.reporting import ReadJsonReports
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.training.infra.history.history_training_due as due_module
-from scripts.checks.download.history.history_sqlite_performance import inspect_history_sqlite_performance
+from scripts.download.history.history_sqlite_performance import inspect_history_sqlite_performance
 from tests.helpers.history import RunHistoryFixture
 from tests.helpers.qfq import publish_windows
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase

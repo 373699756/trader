@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from scripts.checks.training.v5_quality_samples import PrepareV5QualitySamples
+from scripts.training.samples.v5_quality_samples import PrepareV5QualitySamples
 from tests.helpers.configuration import SqlitePolicyFixture
 from tests.unit.training.infra.profile.v5.test_v5_training import _history
 from trader.infra.atomic_files.json import AtomicReadJson
@@ -23,7 +23,7 @@ def _inputs(tmp_path, monkeypatch):
     runtime.data_paths.history.parent.mkdir(parents=True)
     history = _history(runtime.data_paths.history)
     monkeypatch.setattr(
-        "scripts.checks.training.v5_quality_samples.SQLiteHistoryTrainingInputSnapshot.open",
+        "scripts.training.samples.v5_quality_samples.SQLiteHistoryTrainingInputSnapshot.open",
         lambda _root, *, sqlite_policy: history,
     )
     report = tmp_path / "reports"
@@ -81,7 +81,7 @@ def test_sample_output_must_be_a_child_of_the_configured_samples_directory(tmp_p
 
 
 def test_earlier_history_warmup_obeys_the_budget_and_closes_the_source(tmp_path, monkeypatch):
-    from scripts.checks.training import v5_quality_samples
+    from scripts.training.samples import v5_quality_samples
 
     runtime, history, samples, report = _inputs(tmp_path, monkeypatch)
     closed = []

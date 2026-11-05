@@ -1,15 +1,14 @@
 """Resource diagnostics exercise the real admission lifecycle without training."""
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 import pytest
 
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.training import training_resources
-from scripts.checks.contracts import DiagnosticResult
+from scripts.core.projections import BuildReport
+from scripts.training.resources import training_resources
+from scripts.core.contracts import DiagnosticResult
 
 
 @pytest.mark.parametrize("profiles", (("v5",), ("v1", "v5"), ("v1", "v2", "v3", "v5")))
@@ -47,13 +46,14 @@ def test_invalid_selection_is_rejected_before_resource_access(monkeypatch, profi
 
 
 def test_unified_command_preserves_selection_and_caps_child_lifetime():
-    options, _ = ValidateOptions(BuildParser().parse_args([
+    options = ParseBusinessOptions(ParseToolArguments([
         *SelectionArguments('training-resources'), "--training-profiles", "v1,v5",
         "--command-timeout-seconds", "600",
     ]))
-    commands = BuildCommands(options)
+    commands = BuildToolCommands(options)
     assert len(commands) == 1
-    assert commands[0].argv[1:] == (
-        "-m", "scripts.diagnose_runtime", "--internal-worker", "scripts.checks.training.training_resources", "--", "--profiles", "v1,v5",
+    assert commands[0].argv[1].endswith("/scripts/tools.py")
+    assert commands[0].argv[2:] == (
+        "--internal-worker", "scripts.training.resources.training_resources", "--", "--profiles", "v1,v5",
     )
     assert commands[0].timeout_seconds == 30

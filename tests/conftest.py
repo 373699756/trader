@@ -67,6 +67,22 @@ _HISTORY_PATHS = frozenset(
         "unit/scripts/test_history_daily_capability.py",
         "unit/scripts/test_history_sources.py",
         "unit/scripts/test_tushare_daily.py",
+        "unit/scripts/test_company_document_download_audit.py",
+        "unit/scripts/test_company_publication_audit.py",
+        "unit/scripts/test_company_resume_diagnostic.py",
+        "unit/scripts/test_company_structured_field_audit.py",
+        "unit/scripts/test_company_sync_measurement.py",
+        "unit/scripts/test_company_live_sync_tool.py",
+        "unit/scripts/test_company_material_reporting.py",
+        "unit/scripts/test_company_output_isolation.py",
+        "unit/scripts/test_company_source_reporting.py",
+        "unit/scripts/test_company_source_runtime.py",
+        "unit/scripts/test_company_source_options.py",
+        "unit/scripts/test_history_publication_audit.py",
+        "unit/scripts/test_history_publication_measurement.py",
+        "unit/scripts/test_market_factor_compare.py",
+        "unit/scripts/test_qfq_sqlite.py",
+        "unit/scripts/test_security_master_probe.py",
     }
 )
 _TRAINING_CONTRACT_PATHS = frozenset(
@@ -106,6 +122,15 @@ _RECOMMENDATION_CONTRACT_PATHS = frozenset(
 _TRAINING_SCRIPT_PATHS = frozenset(
     {
         "unit/scripts/test_check_tomorrow_training_memory.py",
+        "unit/scripts/test_training_alignment.py",
+        "unit/scripts/test_training_coverage.py",
+        "unit/scripts/test_training_performance.py",
+        "unit/scripts/test_training_resources.py",
+        "unit/scripts/test_training_samples.py",
+        "unit/scripts/test_training_output_isolation.py",
+        "unit/scripts/test_v5_diagnostic.py",
+        "unit/scripts/test_v5_lite.py",
+        "unit/scripts/test_v5_samples.py",
     }
 )
 _TRAINING_ENTRYPOINT_PATHS = frozenset(
@@ -125,10 +150,9 @@ _RECOMMENDATION_INFRA_PATHS = frozenset(
 _RECOMMENDATION_SCRIPT_PATHS = frozenset(
     {
         "unit/scripts/test_desktop_dashboard.py",
-        "unit/scripts/test_diagnose_runtime.py",
-        "unit/scripts/test_migrate_runtime_data.py",
-        "unit/scripts/test_runtime_diagnostics_reporting.py",
-        "unit/scripts/test_security_master_probe.py",
+        "unit/scripts/test_company_ledger_tool.py",
+        "unit/scripts/test_long_watchlist.py",
+        "unit/scripts/test_tools_recommendation_options.py",
         "unit/scripts/test_web_health.py",
     }
 )
@@ -141,6 +165,17 @@ _CROSSCUT_PATHS = frozenset(
         "unit/test_infra_failures.py",
         "unit/test_server_entrypoint.py",
         "unit/test_settings.py",
+        "unit/scripts/test_check_entrypoint.py",
+        "unit/scripts/test_code_quality_tools.py",
+        "unit/scripts/test_database_baseline.py",
+        "unit/scripts/test_diagnose_runtime.py",
+        "unit/scripts/test_disk_diagnostic.py",
+        "unit/scripts/test_migrate_runtime_data.py",
+        "unit/scripts/test_runtime_diagnostics_reporting.py",
+        "unit/scripts/test_skill_evaluation.py",
+        "unit/scripts/test_tools_business_options.py",
+        "unit/scripts/test_tools_control_options.py",
+        "unit/scripts/test_tools_maintenance.py",
     }
 )
 _SLOW_MARKERS_BY_PATH = {

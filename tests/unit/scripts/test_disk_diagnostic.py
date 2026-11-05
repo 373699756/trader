@@ -1,13 +1,12 @@
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 from pathlib import Path
 
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.infra import disk_profile
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.infra.disk_policy_audit import AuditSqlitePolicyConsumers
+from scripts.core.projections import BuildReport
+from scripts.infra.disk import disk_profile
+from scripts.core.contracts import DiagnosticResult
+from scripts.infra.disk.disk_policy_audit import AuditSqlitePolicyConsumers
 
 
 def test_policy_audit_reports_missing_and_unpacked_injection_without_touching_source(tmp_path):
@@ -29,14 +28,14 @@ def test_policy_audit_reports_missing_and_unpacked_injection_without_touching_so
 
 
 def test_policy_audit_is_explicitly_routed_to_the_disk_worker():
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('disk'), "--disk-policy-audit"]))
-    command = BuildCommands(options, python_executable="/python3")[0]
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('disk'), "--disk-policy-audit"]))
+    command = BuildToolCommands(options, python_executable="/python3")[0]
     assert command.argv[-1] == "--policy-audit"
 
 
 def test_disk_profile_routes_extra_paths_and_preserves_actionable_details(tmp_path: Path) -> None:
-    options, _ = ValidateOptions(BuildParser().parse_args([*SelectionArguments('disk'), "--disk-path", str(tmp_path)]))
-    commands = BuildCommands(options, python_executable="/python3")
+    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('disk'), "--disk-path", str(tmp_path)]))
+    commands = BuildToolCommands(options, python_executable="/python3")
     assert len(commands) == 1
     assert commands[0].argv[-2:] == ("--path", str(tmp_path))
     summary = {

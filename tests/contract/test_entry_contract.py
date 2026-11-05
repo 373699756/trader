@@ -188,7 +188,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh                         同时启动全部档位 V1、V2、V3、V5" in completed.stdout
     assert "./run.sh v2                      只启动 V2" in completed.stdout
     assert "./run.sh v1,v2,v3                同时启动所列档位，Web按钮互斥切换" in completed.stdout
-    assert "scripts/diagnose_runtime.py --business recommendation --module pipeline --check snapshot" in completed.stdout
+    assert "scripts/tools.py --business recommendation --module pipeline --action snapshot" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh train                   使用本地已发布历史训练全部档位 V1、V2、V3、V5" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout

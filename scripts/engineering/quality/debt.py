@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Keep refactor naming and complexity debt from changing without review."""
+
+from __future__ import annotations
+
+from scripts.core.paths import PROJECT_ROOT as TOOL_ROOT
+
+import argparse
+import ast
+import json
+import re
+import subprocess
+import sys
+from collections import Counter
+from pathlib import Path
+
+PROJECT_ROOT = TOOL_ROOT
+SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
+NAMING_ROOTS = (SOURCE_ROOT, PROJECT_ROOT / "scripts", PROJECT_ROOT / "tests")
+SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
+# Reviewed for stage 203 against pushed d8866ea7; equal totals cannot move debt to another owner.
+EXPECTED_DEBT = frozenset(
+    {
+        ("PLR0913", "download/application/download_history.py", "DownloadHistory"),
+        ("C901", "download/application/sync_data.py", "SyncData.execute"),
+        ("PLR0911", "download/application/sync_data.py", "SyncData.execute"),
+        ("C901", "download/application/update_qfq.py", "UpdateQfqWindows._download_rolling"),
+        ("PLR0912", "download/application/update_qfq.py", "UpdateQfqWindows._download_rolling"),
+        ("PLR0913", "download/application/company_evidence.py", "_report"),
+        ("C901", "download/infra/baostock_gateway.py", "_reconstruct_unavailable_qfq"),
+        ("C901", "download/infra/history_st_source.py", "HistoryStNameSource.fetch"),
+        ("C901", "download/infra/qfq_sqlite.py", "SQLiteQfqWindowCache._matches_windows"),
+        ("C901", "download/infra/qfq_sqlite.py", "SQLiteQfqWindowCache.replace_paired_windows"),
+        ("PLR0912", "download/infra/qfq_sqlite.py", "SQLiteQfqWindowCache.replace_paired_windows"),
+        ("N818", "download/domain/company_evidence.py", "CompanySourceFailure"),
+        ("C901", "entrypoints/cli.py", "Main"),
+        ("C901", "http_api/handlers/product_handler.py", "_market_data"),
+        ("N818", "infra/http_contracts.py", "HttpCancelled"),
+        ("N818", "infra/http_contracts.py", "HttpResponseTooLarge"),
+        ("N818", "infra/http_contracts.py", "HttpTimeout"),
+        ("PLR0913", "infra/http_contracts.py", "HttpTransport.get"),
+        ("PLR0913", "infra/http_contracts.py", "HttpTransport.post"),
+        ("C901", "infra/http_transport.py", "RequestsHttpTransport._attempt"),
+        ("PLR0912", "infra/http_transport.py", "RequestsHttpTransport._attempt"),
+        ("PLR0913", "infra/http_transport.py", "RequestsHttpTransport.get"),
+        ("PLR0913", "infra/http_transport.py", "RequestsHttpTransport.post"),
+        ("PLR0915", "infra/http_transport.py", "RequestsHttpTransport._attempt"),
+        ("C901", "infra/isolated_call.py", "RunIsolatedCall"),
+        ("PLR0912", "infra/isolated_call.py", "RunIsolatedCall"),
+        ("C901", "infra/market_data/observations.py", "SourceObservation.__post_init__"),
+        (
+            "PLR0915",
+            "recommendation/application/pipeline/data_source/source_router.py",
+            "MarketInputCoordinator._refresh_candidates",
+        ),
+        ("PLR0913", "recommendation/application/pipeline/data_source/source_quality.py", "BuildSourceStageOutput"),
+        (
+            "PLR0913",
+            "recommendation/application/pipeline/final_selection/freeze_projection.py",
+            "BuildScoredHybrid",
+        ),
+        (
+            "PLR0913",
+            "recommendation/application/pipeline/freeze_publish/freeze_coordinator.py",
+            "ScoredFreezeCoordinator.__init__",
+        ),
+        (
+            "PLR0913",
+            "recommendation/application/pipeline/freeze_publish/publication_io.py",
+            "PublicationIoTracker.finish",
+        ),
+        (
+            "PLR0913",
+            "recommendation/application/pipeline/freeze_publish/runtime_adapters.py",
+            "DeepSeekAdapter.__init__",
+        ),
+        ("PLR0913", "recommendation/application/pipeline/quality_check/pipeline_status.py", "BuildSupplyStatus"),
+        ("PLR0913", "recommendation/application/pipeline/stage_output.py", "StageOutput"),
+        ("C901", "recommendation/domain/evidence/pipeline.py", "PipelineStageStatus.__post_init__"),
+        ("C901", "recommendation/domain/market/refresh.py", "ResearchRefreshResult.__post_init__"),
+        ("PLR0913", "recommendation/infra/market_data/published_history_cache.py", "PublishedHistoryCache.__init__"),
+        ("C901", "recommendation/domain/outcomes/models.py", "RecommendationOutcome.__post_init__"),
+        ("C901", "training/infra/engine.py", "_run_locked"),
+        ("PLR0912", "training/infra/engine.py", "_run_locked"),
+        ("PLR0915", "training/infra/engine.py", "_run_locked"),
+        ("C901", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
+        ("PLR0912", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
+        ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackTomorrowTraining"),
+        ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackV3Training"),
+    }
+)
+RUFF_TIMEOUT_SECONDS = 60
+DECLARATION_HEADER = "| Tool | Owner | Network | Writes | Output | Resource boundary |"
+TOP_LEVEL_SCRIPT_MANIFEST = frozenset(
+    {
+        "tools.py",
+    }
+)
+
+
+def _check_inventory() -> None:
+    actual_scripts = frozenset(path.name for path in (PROJECT_ROOT / "scripts").glob("*.py") if path.name != "__init__.py")
+    if actual_scripts != TOP_LEVEL_SCRIPT_MANIFEST:
+        raise ValueError("top-level script inventory changed; review the owner and manifest")
+    readme = (PROJECT_ROOT / "scripts" / "README.md").read_text(encoding="utf-8")
+    section = readme.partition("## Retained tools\n")[2].split("\n## ", 1)[0]
+    rows = [line.strip() for line in section.splitlines() if line.startswith("|")]
+    if len(rows) < 2 or rows[0] != DECLARATION_HEADER or rows[1] != "| --- | --- | --- | --- | --- | --- |":
+        raise ValueError("scripts/README.md must declare owner, network, writes, output and resource boundary")
+    names: list[str] = []
+    for row in rows[2:]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) != 6 or any(not cell or cell.upper() in {"TODO", "TBD", "UNKNOWN"} for cell in cells):
+            raise ValueError("retained tool declarations must contain six explicit fields")
+        names.append(cells[0].strip("`"))
+    if Counter(names) != Counter(TOP_LEVEL_SCRIPT_MANIFEST):
+        raise ValueError("retained tool declarations must cover each top-level script exactly once")
+
+
+def _declaration_symbols(source: Path) -> dict[int, str]:
+    symbols: dict[int, str] = {}
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = (*scope, node.name)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            symbols[node.lineno] = ".".join(scope)
+        for child in ast.iter_child_nodes(node):
+            visit(child, scope)
+
+    visit(ast.parse(source.read_text(encoding="utf-8")), ())
+    return symbols
+
+
+def _read_debt(stdout: str) -> Counter[tuple[str, str, str]]:
+    diagnostics = json.loads(stdout)
+    if not isinstance(diagnostics, list):
+        raise ValueError("Ruff diagnostics root must be a list")
+    debt: Counter[tuple[str, str, str]] = Counter()
+    for diagnostic in diagnostics:
+        if not isinstance(diagnostic, dict):
+            raise ValueError("Ruff diagnostic must be an object")
+        code, filename, location = diagnostic.get("code"), diagnostic.get("filename"), diagnostic.get("location")
+        if not isinstance(code, str) or not isinstance(filename, str) or not isinstance(location, dict):
+            raise ValueError("Ruff diagnostic is missing its rule, filename or location")
+        row = location.get("row")
+        if type(row) is not int or row <= 0:
+            raise ValueError("Ruff diagnostic has an invalid row")
+        source = Path(filename).resolve()
+        relative = source.relative_to(SOURCE_ROOT).as_posix()
+        symbol = _declaration_symbols(source).get(row)
+        if symbol is None:
+            raise ValueError("strict diagnostic must identify a class or function definition")
+        debt[(code, relative, symbol)] += 1
+    return debt
+
+
+def _run_ruff(
+    roots: tuple[Path, ...], rules: tuple[str, ...], *, json_output: bool = False, ignore: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        (
+            sys.executable,
+            "-m",
+            "ruff",
+            "check",
+            *(str(path) for path in roots),
+            "--no-cache",
+            "--select",
+            ",".join(rules),
+            *(("--ignore", ",".join(ignore)) if ignore else ()),
+            *(("--output-format", "json") if json_output else ()),
+        ),
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=RUFF_TIMEOUT_SECONDS,
+    )
+
+
+def _check_public_function_names() -> None:
+    for path in SOURCE_ROOT.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+                if re.fullmatch(r"[A-Z][A-Za-z0-9]*", node.name) is None:
+                    raise ValueError(
+                        f"public function must use PascalCase: {path.relative_to(SOURCE_ROOT)}:{node.lineno}"
+                    )
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets
+            ):
+                for item in ast.walk(node.value):
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value[:1].islower():
+                        raise ValueError(
+                            f"public export must use PascalCase: {path.relative_to(SOURCE_ROOT)}:{item.lineno}"
+                        )
+
+
+def Main(argv: list[str] | None = None) -> int:
+    argparse.ArgumentParser(description=__doc__).parse_args(argv)
+    try:
+        _check_inventory()
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (OSError, UnicodeError):
+        print("cannot read retained tool declarations", file=sys.stderr)
+        return 2
+    try:
+        result = _run_ruff((SOURCE_ROOT,), SELECTED_RULES, json_output=True, ignore=("N802", "N813"))
+        if result.returncode not in {0, 1}:
+            print("strict Ruff invocation failed", file=sys.stderr)
+            return 2
+        actual = _read_debt(result.stdout)
+        if (result.returncode == 0) != (not actual):
+            raise ValueError("Ruff status disagrees with its diagnostics")
+        expected = Counter(EXPECTED_DEBT)
+        if actual != expected:
+            print("strict refactor debt changed; review owners before updating EXPECTED_DEBT", file=sys.stderr)
+            print(f"removed: {sorted((expected - actual).elements())}", file=sys.stderr)
+            print(f"added:   {sorted((actual - expected).elements())}", file=sys.stderr)
+            return 1
+        _check_public_function_names()
+        # Source N818 exceptions are already pinned by exact owner in EXPECTED_DEBT.
+        naming = _run_ruff(NAMING_ROOTS, ("N",), ignore=("N802", "N813", "N818"))
+    except (OSError, UnicodeError, ValueError, SyntaxError):
+        print("cannot execute Ruff or resolve strict diagnostics", file=sys.stderr)
+        return 2
+    except subprocess.TimeoutExpired:
+        print("Ruff quality check exceeded its 60 second deadline", file=sys.stderr)
+        return 2
+    if naming.returncode != 0:
+        sys.stderr.write(naming.stdout)
+        sys.stderr.write(naming.stderr)
+        return 1 if naming.returncode == 1 else 2
+
+    print("Retained tool declarations, strict debt owners and repository-wide naming rules verified")
+    return 0

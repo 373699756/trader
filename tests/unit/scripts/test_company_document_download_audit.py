@@ -1,6 +1,8 @@
 """Failed-PDF diagnostics are bounded, read-only and expose only aggregate request metadata."""
 
-from scripts.checks.catalog import SelectionArguments
+from tests.helpers.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+
+from scripts.core.catalog import SelectionArguments
 
 from dataclasses import replace
 import hashlib
@@ -9,12 +11,9 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from scripts.checks.contracts import DiagnosticResult
-from scripts.checks.arguments import BuildParser
-from scripts.checks.arguments import ValidateOptions
-from scripts.checks.commands import BuildCommands
-from scripts.checks.projections import BuildReport
-from scripts.checks.download.company import company_document_download_audit as audit
+from scripts.core.contracts import DiagnosticResult
+from scripts.core.projections import BuildReport
+from scripts.download.company import company_document_download_audit as audit
 from tests.component import test_company_evidence as fixtures
 from tests.helpers.configuration import SqlitePolicyFixture
 from trader.download.domain.company_evidence import DisclosurePage
@@ -95,14 +94,15 @@ def test_encrypted_probe_checks_identical_pdf_and_password_requirement_without_a
 
 
 def test_document_probe_routes_without_replay_directory_and_filters_report_fields():
-    options, _ = ValidateOptions(BuildParser().parse_args([
+    options = ParseBusinessOptions(ParseToolArguments([
         *SelectionArguments('company-resume'), "--company-document-audit",
     ]))
-    assert "--document-only" in BuildCommands(options)[0].argv
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        ValidateOptions(BuildParser().parse_args([
+    assert "--document-only" in BuildToolCommands(options)[0].argv
+    with pytest.raises(SystemExit) as error:
+        ParseToolArguments([
             *SelectionArguments('company-resume'), "--company-document-audit", "--company-database-audit",
-        ]))
+        ])
+    assert error.value.code == 2
     summary = {"document_download_audit": {
         "read_only": True, "url": "secret", "observations": [{
             "disclosure_id": 1, "url": "secret", "body": "private", "attempts": [{"seconds": 1, "raw": "private"}],
