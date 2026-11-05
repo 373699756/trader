@@ -30,6 +30,10 @@ def BuildParser() -> argparse.ArgumentParser:
     parser.add_argument("--company-document-audit", action="store_true", help="read-only failed PDF request comparison")
     parser.add_argument("--company-directory-audit", action="store_true", help="repair failed directories only in an external backup")
     parser.add_argument("--history-preload-audit", action="store_true", help="read-only shared startup timing")
+    parser.add_argument(
+        "--history-publication-profile", action="store_true",
+        help="history-write: profile isolated publication; optional history-root replays published files, no network",
+    )
     parser.add_argument("--history-preload-cpu-profile", action="store_true", help="include CPU profiling overhead in preload timing")
     parser.add_argument("--history-preload-feature-audit", action="store_true", help="profile concurrent feature builds with published inputs and synthetic quotes")
     parser.add_argument("--history-preload-profiles", type=ParseProfileSelection, default=("v1", "v2", "v3"))
@@ -257,6 +261,10 @@ def _scoring_profile_selection(value: str) -> ScoringProfileSelection:
 
 
 def ValidateOptions(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
+    if args.history_publication_profile and (args.check != "write" or args.business != "download" or args.module != "history"):
+        raise ValueError("--history-publication-profile requires download/history/write")
+    if args.history_publication_profile and args.baseline_checkout is not None:
+        raise ValueError("--history-publication-profile cannot be used as a layout comparison")
     args.check_id = SelectCheck(args.business, args.module, args.check).identity
     if args.performance_steady_only and (
         args.check_id != "performance" or args.performance_replay_ticks or args.cpu_profile_dir is not None
@@ -477,6 +485,7 @@ def ValidateOptions(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_query_audit=args.company_query_audit,
             company_database_audit=args.company_database_audit,
             history_preload_audit=args.history_preload_audit,
+            history_publication_profile=args.history_publication_profile,
             history_preload_cpu_profile=args.history_preload_cpu_profile,
             history_preload_feature_audit=args.history_preload_feature_audit,
             history_preload_profiles=args.history_preload_profiles,

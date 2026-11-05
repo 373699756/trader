@@ -10,6 +10,7 @@ import resource
 import time
 from _thread import LockType
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as daytime
@@ -51,10 +52,15 @@ from trader.infra.sqlite_connection import (
     SqliteSession,
     SqliteTransaction,
 )
+from trader.infra.sqlite_publication import SqlitePublicationError
 from trader.infra.disk_probe import DiskProbe
 from trader.infra.disk_types import DiskKind
 
 from scripts.checks.infra.database_measurement import DatabaseMeasurement
+from scripts.checks.download.history.history_publication_measurement import (
+    HistoryPublicationMeasurement,
+    ProfilePublishedHistory,
+)
 from scripts.checks.reporting import emit_report
 
 
@@ -229,14 +235,15 @@ def _measure_case(
     config: HistorySyncConfiguration,
     supplier: HistoryFixtureSupplier,
     tuning: HistoryWriteTuning | None,
-    disk_kind: DiskKind | None, *, sqlite_policy: SqliteIoPolicy,
+    disk_kind: DiskKind | None, *, sqlite_policy: SqliteIoPolicy, publication_profile: bool = False,
 ) -> dict[str, object]:
     supplier.requests.clear()
     now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
     supplier.publish_reference(config.reference_root / "company_st.sqlite3", now.date(), config.sessions)
     started, written = time.monotonic(), _write_bytes()
     stage_times = _StageTimes()
-    with DatabaseMeasurement(config.history_root) as measurement:
+    publication = HistoryPublicationMeasurement() if publication_profile else None
+    with DatabaseMeasurement(config.history_root) as measurement, publication if publication is not None else nullcontext():
         result = RunHistorySync(
             config,
             supplier,
@@ -245,6 +252,7 @@ def _measure_case(
             progress=stage_times,
             disk_kind=disk_kind or DiskProbe().inspect(config.history_root).kind, sqlite_policy=sqlite_policy,
         )
+    sync_seconds = time.monotonic() - started
     rows = 0
     for path in config.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
         with (
@@ -256,6 +264,8 @@ def _measure_case(
     return {
         "case": name,
         "seconds": round(time.monotonic() - started, 3),
+        "sync_seconds": sync_seconds,
+        "postcheck_included_in_seconds": True,
         "physical_write_bytes": _write_bytes() - written,
         "state": result.state,
         "reason": result.reason,
@@ -267,11 +277,13 @@ def _measure_case(
         "files_bytes": sum(path.stat().st_size for path in config.history_root.rglob("*") if path.is_file()),
         "phase_seconds": stage_times.summary(),
         "database": measurement.result,
+        "publication": publication.report() if publication is not None else None,
     }
 
 
 def MeasureHistoryWrites(
-    size: int, sessions: int, tuning: HistoryWriteTuning | None = None, *, disk_kind: DiskKind | None = None, sqlite_policy: SqliteIoPolicy
+    size: int, sessions: int, tuning: HistoryWriteTuning | None = None, *, disk_kind: DiskKind | None = None,
+    sqlite_policy: SqliteIoPolicy, publication_profile: bool = False,
 ) -> dict[str, object]:
     days = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(sessions))
     supplier = HistoryFixtureSupplier(days, size, sqlite_policy=sqlite_policy)
@@ -289,7 +301,10 @@ def MeasureHistoryWrites(
         for name, added in (("initial", 0), ("next_day", 1), ("two_weeks", 10), ("same_day", 0)):
             if added:
                 supplier.days += tuple(supplier.days[-1] + timedelta(days=i + 1) for i in range(added))
-            results.append(_measure_case(name, config, supplier, tuning, disk_kind, sqlite_policy=sqlite_policy))
+            results.append(_measure_case(
+                name, config, supplier, tuning, disk_kind,
+                sqlite_policy=sqlite_policy, publication_profile=publication_profile,
+            ))
         # Seed committed annual rows without publishing the first snapshot.
         # The measured restart includes disjoint stocks, unlike an empty-file write probe.
         resume_config = replace(config, history_root=Path(scratch) / "resume")
@@ -307,7 +322,10 @@ def MeasureHistoryWrites(
         )
         if seeded.state != "cancelled":
             raise RuntimeError("history_write_resume_seed_failed")
-        results.append(_measure_case("initial_resume", resume_config, supplier, tuning, disk_kind, sqlite_policy=sqlite_policy))
+        results.append(_measure_case(
+            "initial_resume", resume_config, supplier, tuning, disk_kind,
+            sqlite_policy=sqlite_policy, publication_profile=publication_profile,
+        ))
         disk_kind = disk_kind or DiskProbe().inspect(root).kind
     return {
         "schema_version": "history-write-benchmark",
@@ -337,10 +355,39 @@ def Main() -> int:
     parser.add_argument("--flush-codes", type=int)
     parser.add_argument("--flush-cells", type=int)
     parser.add_argument("--disk-kind", choices=("ssd", "hdd", "unknown"), default=None)
+    parser.add_argument("--publication-profile", action="store_true", help="include intrusive per-phase profiling overhead")
+    parser.add_argument("--history-root", type=Path, help="published input for isolated re-sealing; requires publication-profile")
+    parser.add_argument("--runtime-config", type=Path, default=Path(__file__).resolve().parents[4] / "config/runtime.json")
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
-    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[4] / "config/runtime.json"))
+    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
+    if args.history_root is not None and not args.publication_profile:
+        parser.error("history-root requires publication-profile")
+    if args.publication_profile and args.baseline_checkout is not None:
+        parser.error("publication-profile cannot be used as a layout comparison")
+    if args.history_root is not None:
+        try:
+            report = ProfilePublishedHistory(args.history_root, sqlite_policy=sqlite_policy)
+        except (OSError, RuntimeError, ValueError) as exc:
+            reason = str(exc)
+            safe_reasons = {
+                "history_publication_profile_requires_closed_writers",
+                "history_publication_profile_requires_published_snapshot",
+                "history_publication_profile_source_changed",
+            }
+            emit_report({
+                "schema_version": "history-publication-profile", "status": "failed",
+                "summary": {
+                    "failure_type": type(exc).__name__,
+                    "reason": reason if isinstance(exc, SqlitePublicationError) or reason in safe_reasons
+                    else "history_publication_profile_failed",
+                    "performance_acceptance": False,
+                },
+            })
+            return 1
+        emit_report(report)
+        return 0 if report["status"] == "passed" else 1
     if args.baseline_checkout is not None:
         from scripts.checks.infra.database_layout_comparison import CompareLayouts
 
@@ -360,6 +407,9 @@ def Main() -> int:
         if args.flush_codes is not None
         else None
     )
-    report = MeasureHistoryWrites(args.size, args.sessions, tuning, disk_kind=args.disk_kind, sqlite_policy=sqlite_policy)
+    report = MeasureHistoryWrites(
+        args.size, args.sessions, tuning, disk_kind=args.disk_kind,
+        sqlite_policy=sqlite_policy, publication_profile=args.publication_profile,
+    )
     emit_report(report)
     return int(report["status"] != "passed")

@@ -29,6 +29,17 @@
 
 默认报告写标准输出，`--output` 只接受仓库外路径。业务数据保持只读；样本、布局比较和修复演练只使用显式外部副本或既有隔离 fixture。网络检查输出聚合计数、阶段耗时、失败类别及来源年龄，不输出行情、证券清单、密钥或供应商原文。磁盘 profile 是只读盘点，unknown 不能当作 SSD/HDD 性能证据；SSD 与另一台 PC 的 HDD 分别记录，工具整理的启动耗时也不能充当硬盘吞吐结论。
 
+历史发布分段沿用`download/history/write`，只有显式`--history-publication-profile`才安装进程内观测钩子。无`--history-root`时观察既有合成首建、增量、无变化和恢复；指定已发布历史时，先验证原凭据，再在系统临时目录逐年复制并重放封存，峰值副本为一个年库或catalog，不联网、不改源数据库/凭据。非空WAL、缺凭据或源文件变化拒绝本轮；临时目录应位于实际测量介质，复制会预热页缓存，报告不会声称冷盘或完整真实同步已验收。
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --business download --module history --check write \
+  --history-publication-profile --history-root /external/frozen-data/market/history \
+  --runtime-config /external/frozen/config/runtime.json --command-timeout-seconds 3600 \
+  --output /external/history-publication-profile.json
+```
+
+`publication.phases`分别列出变更探测、writer关闭、年度封存、catalog封存及文件摘要；`parent_id`表示包含关系，不能把父子耗时相加。`primitive_seconds`按底层execute/fetch、SQLite关闭、文件读取、SHA-256更新和fsync的自身耗时分类；fsync只计Python显式调用，SQLite内部同步仍包含在相应驱动调用中。`operation_calls`与逐文件摘要可识别重复封存。另记录进程CPU、实际/逻辑I/O和RSS，源核验/副本准备/副本复核均计入真实重放总墙钟；合成模式的`sync_seconds`与包含结果复核的`seconds`分列。cProfile开销已计入，`performance_acceptance=false`；需另以关闭profiler的同输入对照校准开销并验收收益，不把诊断轮次当作提速通过。
+
 ## 显式工程与资源检查
 
 ```bash

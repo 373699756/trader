@@ -13,6 +13,7 @@ def BuildCommands(
     if definition.worker is not None:
         raise ValueError("worker arguments must be passed through the unified CLI")
     common_timeout = options.command_timeout_seconds
+    publication_root = options.history_root
     if not options.v5_kernel_probe and options.check_id not in {
         "disk",
         "v5-samples",
@@ -433,6 +434,9 @@ def BuildCommands(
                 ),
                 "--sessions",
                 str(options.history_days),
+                "--runtime-config", str(options.runtime_config),
+                *(("--publication-profile",) if options.history_publication_profile else ()),
+                *(("--history-root", str(publication_root)) if options.history_publication_profile and publication_root is not None else ()),
             )
             + (
                 ("--baseline-checkout", str(options.baseline_checkout)) if options.baseline_checkout is not None else ()

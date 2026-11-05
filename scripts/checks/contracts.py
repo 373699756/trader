@@ -76,6 +76,7 @@ class DiagnosticOptions:
     cpu_profile_dir: Path | None = None
     cpu_profile_mode: str = "functions"
     history_preload_audit: bool = False
+    history_publication_profile: bool = False
     history_preload_cpu_profile: bool = False
     history_preload_feature_audit: bool = False
     history_preload_profiles: tuple[ScoringProfileId, ...] = ("v1", "v2", "v3")
