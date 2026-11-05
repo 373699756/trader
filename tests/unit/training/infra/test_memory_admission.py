@@ -1,5 +1,7 @@
 """Mounted cgroup memory limits and atomic cancellation-safe fitting budgets."""
 
+from tests.helpers.training_resources import TrainingResourceSettingsFixture
+
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
@@ -10,6 +12,7 @@ import pytest
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
+RESOURCE_SETTINGS = TrainingResourceSettingsFixture()
 _GIB = 1024**3
 
 
@@ -47,7 +50,7 @@ def test_capacity_honors_mounted_controller_and_tightest_visible_parent(monkeypa
         f"/fixture/{name}": "max" if unified else str(2**63 - 4096),
     })
     _memory_files(monkeypatch, files)
-    assert FittingMemoryCapacity() == _GIB // 2
+    assert FittingMemoryCapacity(RESOURCE_SETTINGS.memory) == _GIB // 2
 
 
 @pytest.mark.parametrize("limit,expected", (("max", 3 * _GIB), (str(2 * _GIB), _GIB // 2), ("0", 1)))
@@ -59,7 +62,7 @@ def test_unified_high_limit_is_a_conservative_budget_bound(monkeypatch, limit, e
         "/fixture/job/memory.max": "max",
         "/fixture/memory.high": limit,
     })
-    assert FittingMemoryCapacity() == expected
+    assert FittingMemoryCapacity(RESOURCE_SETTINGS.memory) == expected
 
 
 @pytest.mark.parametrize("failure", ("membership", "mount", "mapping", "malformed", "unreadable"))
@@ -82,7 +85,7 @@ def test_unknown_memory_constraints_fail_before_creating_a_fitting_budget(monkey
         files["/fixture/job/memory.max"] = PermissionError("fixture unreadable")
     _memory_files(monkeypatch, files)
     with pytest.raises(ValueError, match="training_memory_limit_unavailable") as caught:
-        FittingMemoryCapacity()
+        FittingMemoryCapacity(RESOURCE_SETTINGS.memory)
     assert isinstance(caught.value.__cause__, (OSError, ValueError, IndexError))
 
 
@@ -93,7 +96,7 @@ def test_non_linux_keeps_the_existing_capacity_without_reading_cgroup_files(monk
         raise FileNotFoundError("fixture no proc filesystem")
 
     monkeypatch.setattr(Path, "read_text", absent)
-    assert FittingMemoryCapacity() == 3 * _GIB
+    assert FittingMemoryCapacity(RESOURCE_SETTINGS.memory) == 3 * _GIB
 
 
 @pytest.mark.parametrize("value", (True, False, 1.5, float("nan"), float("inf"), 0, -1))
@@ -108,7 +111,7 @@ def test_budget_and_request_require_positive_integer_bytes(value):
 
 
 def test_cancelled_memory_wait_returns_the_already_held_cpu_reservation():
-    cpu, memory = TrainingCpuBudget(3), TrainingMemoryBudget(100)
+    cpu, memory = TrainingCpuBudget(3, settings=TrainingResourceSettingsFixture().cpu), TrainingMemoryBudget(100)
     waiting, cancelled = Event(), Event()
 
     def heartbeat():
@@ -135,7 +138,7 @@ def test_cancelled_memory_wait_returns_the_already_held_cpu_reservation():
 
 @pytest.mark.parametrize("failure", (RuntimeError, InterruptedError))
 def test_failure_inside_fitting_returns_both_full_budgets(failure):
-    cpu, memory = TrainingCpuBudget(3), TrainingMemoryBudget(100)
+    cpu, memory = TrainingCpuBudget(3, settings=TrainingResourceSettingsFixture().cpu), TrainingMemoryBudget(100)
     with pytest.raises(failure, match="fixture_fit_failed"):
         with cpu.reserve(2, lambda: None), memory.reserve(100, lambda: None):
             raise failure("fixture_fit_failed")

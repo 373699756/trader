@@ -20,7 +20,7 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.settings import RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.application.resources import TrainingMemoryAdmission
+from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission
 from trader.training.application.selected_training import (
     RunSelectedTrainingTasks,
     SelectedTrainingOutcome,
@@ -84,6 +84,7 @@ class SelectedTrainingRequest:
     memory_admission: TrainingMemoryAdmission
     paths: TrainingLocations
     cpu_budget: TrainingCpuBudget = field(kw_only=True)
+    fanout_settings: TrainingFanoutSettings = field(kw_only=True)
     on_outcome: Callable[[SelectedTrainingOutcome[SelectedProfileResult]], None] | None = None
     measurements: TrainingExecutionMeasurements | None = field(default=None, kw_only=True)
 
@@ -140,6 +141,7 @@ def TrainSelectedProfiles(
                 read_rows,
                 executor,
                 request.cancelled,
+                settings=request.fanout_settings,
                 on_outcome=request.on_outcome,
                 observer=measurements,
             )

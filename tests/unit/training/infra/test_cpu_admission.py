@@ -1,5 +1,7 @@
 """Shared CPU admission with real worker/native limits and bounded cancellation."""
 
+from tests.helpers.training_resources import TrainingResourceSettingsFixture
+
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date
@@ -23,7 +25,7 @@ SELECTIONS = tuple(group for count in range(1, 5) for group in combinations(SCOR
 @pytest.mark.parametrize("profiles", SELECTIONS)
 @pytest.mark.parametrize("cpus", (1, 2, 4))
 def test_small_job_capacity_keeps_one_stream_and_every_selected_profile_completes(profiles, cpus):
-    budget = TrainingCpuBudget(cpus)
+    budget = TrainingCpuBudget(cpus, settings=TrainingResourceSettingsFixture().cpu)
     day = date(2026, 1, 5)
     source = tuple(HistoryTrainingRow(f"{index:06d}", day, "main", "bank", None) for index in range(1200))
     scans, active, maximum = [], 0, 0
@@ -51,6 +53,7 @@ def test_small_job_capacity_keeps_one_stream_and_every_selected_profile_complete
         result = RunSelectedTrainingTasks(
             tuple(SelectedTrainingTask(profile, frozenset((day,)), fit) for profile in profiles),
             lambda dates: closing(read(dates)), executor, lambda: False,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
     assert len(scans) == result.history_scan_passes == 1
     assert all(outcome.result == len(source) for outcome in result.outcomes)
@@ -59,7 +62,7 @@ def test_small_job_capacity_keeps_one_stream_and_every_selected_profile_complete
 
 
 def test_wait_is_cancellable_and_failure_returns_all_cpu_slots():
-    budget = TrainingCpuBudget(3)
+    budget = TrainingCpuBudget(3, settings=TrainingResourceSettingsFixture().cpu)
     waiting, cancelled = Event(), Event()
 
     def heartbeat():
@@ -86,7 +89,7 @@ def test_wait_is_cancellable_and_failure_returns_all_cpu_slots():
 
 
 def test_sufficient_capacity_admits_parallel_profiles_and_charges_blas_baseline():
-    budget = TrainingCpuBudget(5)
+    budget = TrainingCpuBudget(5, settings=TrainingResourceSettingsFixture().cpu)
     entered = Barrier(2)
 
     def fit():
@@ -107,7 +110,7 @@ def test_loaded_blas_is_limited_in_workers_and_restored_after_failure():
 
     before = pools()
     assert before
-    budget = TrainingCpuBudget(1)
+    budget = TrainingCpuBudget(1, settings=TrainingResourceSettingsFixture().cpu)
     with pytest.raises(RuntimeError, match="fixture"), budget.native_runtime() as controller:
         def calculate():
             controller.limit(limits=budget.native_threads)
@@ -145,8 +148,8 @@ def test_capacity_honors_affinity_and_parent_cgroup_limits(monkeypatch, quota, e
 @pytest.mark.parametrize("value", (0, -1, True, 1.5))
 def test_invalid_capacity_and_requests_are_rejected(value):
     with pytest.raises(ValueError):
-        TrainingCpuBudget(value)
-    with pytest.raises(ValueError), TrainingCpuBudget(4).reserve(value, lambda: None):
+        TrainingCpuBudget(value, settings=TrainingResourceSettingsFixture().cpu)
+    with pytest.raises(ValueError), TrainingCpuBudget(4, settings=TrainingResourceSettingsFixture().cpu).reserve(value, lambda: None):
         pass
 
 

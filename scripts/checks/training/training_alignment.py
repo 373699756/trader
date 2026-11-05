@@ -218,7 +218,6 @@ def _probe(
     from trader.infra.settings import LoadRuntimeSettings
     from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
     from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
-    from trader.training.entrypoints.commands import ConfigureTrainingResources
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
     from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 
@@ -255,7 +254,6 @@ def _probe(
             for name in ("training.json", "features.json")
         )
     ).hexdigest()
-    ConfigureTrainingResources()
     with ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext():
         initial = _train_once(runtime, history, work, profiles)
         repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None

@@ -7,12 +7,16 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Event
 
 import numpy as np
 from threadpoolctl import threadpool_info
 
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.infra.settings.training import LoadTrainingResourceSettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.infra.disk_probe import DiskProbe
 from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
 from scripts.checks.reporting import emit_report
@@ -38,7 +42,11 @@ class _ProfileProbe:
 def ProbeTrainingResources(profiles: tuple[str, ...]) -> dict[str, object]:
     if not profiles or len(set(profiles)) != len(profiles) or not set(profiles) <= set(SCORING_PROFILE_IDS):
         raise ValueError("training_resource_profiles_invalid")
-    budget = TrainingCpuBudget(AvailableTrainingCpus())
+    project = Path(__file__).resolve().parents[3]
+    runtime = LoadRuntimeSettings(project / "config" / "runtime.json")
+    medium = runtime.disk_medium or DiskProbe().inspect(runtime.data_paths.root).kind
+    settings = LoadTrainingResourceSettings(project, medium)
+    budget = TrainingCpuBudget(AvailableTrainingCpus(), settings.cpu)
     before = _native_limits()
     started = time.monotonic()
     entered, cancelled = Event(), Event()

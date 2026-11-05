@@ -14,6 +14,7 @@ from trader.infra.settings.parser import (
     RequireExactKeys,
     RequireMapping,
 )
+from trader.infra.settings.training import ReadTrainingConfiguration
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.model_fitting import (
@@ -57,8 +58,7 @@ class ProfileTrainingSettings:
 def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId) -> ProfileTrainingSettings:
     if profile_id not in {"v2", "v3", "v5"}:
         raise ValueError("industry training settings require v2 or v3; V1 owns learned-rank settings")
-    document = ReadJsonObject(project_root / "config" / "training.json")
-    RequireExactKeys(document, {"profiles"}, "training")
+    document = ReadTrainingConfiguration(project_root / "config" / "training.json")
     profile = ProfileMapping(document.get("profiles"), profile_id, "training.profiles")
     common_keys = {"fit_dates", "minimum_industry_training_rows"}
     if profile_id == "v2":

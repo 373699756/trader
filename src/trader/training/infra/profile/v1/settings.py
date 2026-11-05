@@ -3,13 +3,13 @@
 from collections.abc import Mapping
 from pathlib import Path
 
-from trader.infra.settings.parser import Integer, Number, ProfileMapping, ReadJsonObject, RequireExactKeys
+from trader.infra.settings.parser import Integer, Number, ProfileMapping, RequireExactKeys
+from trader.infra.settings.training import ReadTrainingConfiguration
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 
 
 def LoadV1TrainingSettings(project_root: Path) -> V1TrainingSettings:
-    document = ReadJsonObject(project_root / "config" / "training.json")
-    RequireExactKeys(document, {"profiles"}, "training")
+    document = ReadTrainingConfiguration(project_root / "config" / "training.json")
     values = ProfileMapping(document.get("profiles"), "v1", "training.profiles")
     return ParseV1TrainingSettings(values)
 

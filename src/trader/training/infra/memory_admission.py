@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from threading import Condition
 
+from trader.training.application.resources import TrainingMemorySettings
 from trader.training.infra.cgroup import ReadTrainingCgroupScopes
 
 
@@ -35,17 +36,16 @@ class TrainingMemoryBudget:
                 self._condition.notify_all()
 
 
-def FittingMemoryCapacity() -> int:
-    # Reserve 1.5 GiB for Python/native runtimes, streaming windows and page cache.
-    capacity = 3 * 1024**3
+def FittingMemoryCapacity(settings: TrainingMemorySettings) -> int:
+    capacity = settings.maximum_bytes
     try:
         lines = Path("/proc/meminfo").read_text(encoding="ascii").splitlines()
         available = next(int(line.split()[1]) * 1024 for line in lines if line.startswith("MemAvailable:"))
-        capacity = min(capacity, max(256 * 1024**2, available - 1536 * 1024**2))
+        capacity = min(capacity, max(settings.minimum_available_bytes, available - settings.reserve_bytes))
     except (OSError, ValueError, StopIteration):
         pass
     for limit in _cgroup_limits():
-        capacity = min(capacity, max(1, limit - 1536 * 1024**2))
+        capacity = min(capacity, max(1, limit - settings.reserve_bytes))
     return capacity
 
 

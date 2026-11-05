@@ -332,15 +332,30 @@ flowchart TD
 
 `factor_index/factor_contract/news_signal`由A维护公式与解析，C只提出列、单位、锚点和缺失需求，不修改这些公共配置。
 
-### 6.2 硬编码资源与给A的注入清单
+### 6.2 作业资源配置与仍待核对的常量
 
-下表是源码现值及候选配置归属，均未迁出、未调数。A负责公共设置解析/组合根，C负责训练消费者；没有接口交接前不在training自行读取另一份JSON。算法常数、格式合同和运行参数必须先分类，再决定哪些可调。
+P54本批按用户授权由C接通公共解析及训练组合根。`config/training.json.resources`必含`hdd`及`ssd`两份独立机器策略，每份具有下表字段；默认保持原值，尚未以磁盘名称推定CPU/内存大小或启用性能候选。两台个人电脑分别依据自身实测调整对应策略，另一策略不随之变化。组合根按runtime的`disk_medium`或原磁盘探测结果选取，unknown明确沿用现行保守HDD策略；无静默补默认值，任一机器段缺字段、未知字段、bool冒充整数或非法范围均拒绝。
+
+| 每机器策略字段 | 默认值、单位与范围 | 最终消费者 |
+| --- | --- | --- |
+| `cpu.coordinator_cpus` | 1，整数≥0，CPU | 从当前进程亲和性/cgroup可用CPU中预留；至少留下1个拟合槽 |
+| `cpu.maximum_threads` | null或整数≥1，线程；null不另加配置上限 | 总拟合预约容量再受当前机器可用CPU收紧 |
+| `cpu.native_threads` | 2，整数≥1，线程 | 环境变量及全作业原生库基线，实际不超过总预约容量 |
+| `memory.maximum_bytes` | 3221225472，整数≥1，字节 | 拟合预约上限，不是RSS硬隔离 |
+| `memory.reserve_bytes` | 1610612736，整数≥0，字节 | 当前宿主MemAvailable及每个可见cgroup限制减去此预留 |
+| `memory.minimum_available_bytes` | 268435456，整数1–maximum_bytes，字节 | 宿主低水位延续原行为；不抬高更紧的cgroup限制 |
+| `fanout.batch_rows` | 256，整数≥1，行 | 公共历史流每次取数/派发行数 |
+| `fanout.queue_batches` | 2，整数≥1，批/档 | 每档独立队列容量；另外有一个接收中批次及公共派发批次 |
+
+`infra/settings/training.py`是根schema和资源解析唯一owner；仅训练启动及明确训练诊断读取，不让推荐或只读Web因训练资源错误而失效。不可变资源对象由bootstrap显式传至准入、训练请求及fanout，无消费者自行重读资源JSON。配置改后下次训练作业生效，不热切换运行中的作业。普通模型请求2线程及V5的`tcn.compute_threads/batch_size`仍是原拟合合同，未以运行批次覆盖；纯资源段不加入模型/样本参数身份。本次源码变化仍会改变既有宽范围implementation identity，不自动重训、发布或改写旧工件。线程设置可能影响实际数值路径，候选调值须核对数值/质量与D实测，不承诺任意调值逐位相等。
+
+下表区分已接入消费者和仍待核对项；未迁的映射、页缓存、安全估计及格式常数保持原owner，不能把本批CPU/内存/fanout接线说成全部P54性能方案已通过。
 
 | 实现与现值 | 实际消费者/作用 | 给A的要求及身份边界 |
 | --- | --- | --- |
-| `cpu_admission.py`留1 CPU，原生基线最多2；普通拟合请求2 | `TrainingCpuBudget`、V1拟合、`engine.py`、`TrainSelectedProfiles`原生库上下文 | 一份作业级不可变资源设置，启动显式注入；先保持现值，约束请求≤授权和总预约≤预算 |
-| `application/selected_training.py`每档队列2、公共批次256行 | `_TrainingFanout`发送/接收与取消清空 | 正整数，容量与最大驻留有界；不是V5张量batch_size |
-| `memory_admission.py`拟合容量最多3GiB、预留1.5GiB、宿主可用内存低时通常至少256MiB；cgroup v1/v2可进一步收紧 | `FittingMemoryCapacity → TrainingMemoryBudget` | 按实际挂载及可见父级读取限制；Linux cgroup约束无法核验时明确拒绝，软件预约不冒充RSS硬隔离 |
+| CPU现值留1、原生基线2 | `TrainingCpuBudget`及训练启动环境/原生上下文 | 已由cpu资源段注入；普通拟合请求2仍保留独立算法合同 |
+| 每档队列2、公共批次256行 | `_TrainingFanout`发送/接收与取消清空 | 已由fanout资源段注入；不是V5张量batch_size |
+| 拟合容量最多3GiB、预留1.5GiB、宿主低水位256MiB | `FittingMemoryCapacity → TrainingMemoryBudget` | 已由memory资源段注入；实际cgroup各级上限继续收紧，约束不可核验时拒绝 |
 | `engine.py`TCN预约512MiB，普通模型256MiB＋最大行业矩阵估计×4 | 拟合前内存预约 | 先实测估计与RSS误差；不能因常量小就直接降低预约 |
 | `sample_index.py`SQLite页缓存32MiB、SQLite mmap为0、矩阵阈值256MiB | 样本index、行业共享矩阵/临时映射 | 区分SQLite mmap与NumPy矩阵映射，单位统一字节；取消关闭句柄 |
 | V1 `samples.py`SQLite缓存16MiB、矩阵4096行批读 | V1临时样本及最多8矩阵 | 独立消费者，不拿V2缓存设置冒充已覆盖V1 |
@@ -364,7 +379,7 @@ flowchart TD
 
 Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU和内存共用membership、mountinfo、挂载根及可见父级，支持v1/v2和挂载路径转义；不受无关bind mount影响，不越过可见挂载根猜测宿主限制。CPU无法核验仍按1核保守运行；内存约束无法映射、读取或解析时抛出`training_memory_limit_unavailable`并保留原因，不退回宿主3GiB预算。内存容量和预约都要求正整数，拒绝bool、小数及非有限值。
 
-内存v1读取`memory.limit_in_bytes`，v2读取`memory.max`及`memory.high`，沿可见父级按每个有限限制减去原1.5GiB预留，再收紧现有拟合预算；没有启用控制器或明确无限值不增加限制。`memory.high`用于保守预算，不是硬隔离，语义见[Linux cgroup v2文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)；v1字段见[Linux内存控制器文档](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)。预约顺序、常量和调度策略未改变，线程/RSS峰值与性能仍由D实测。
+内存v1读取`memory.limit_in_bytes`，v2读取`memory.max`及`memory.high`，沿可见父级按每个有限限制减去配置预留（默认仍1.5GiB），再收紧现有拟合预算；没有启用控制器或明确无限值不增加限制。`memory.high`用于保守预算，不是硬隔离，语义见[Linux cgroup v2文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)；v1字段见[Linux内存控制器文档](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)。预约顺序、常量和调度策略未改变，线程/RSS峰值与性能仍由D实测。
 
 测量必须分别输出请求、授权和实际原生线程数，预约等待、持CPU等内存时长、实际并行区间、取消至归还时间和最终在途数。`model_fit` 心跳把多种等待放在同一阶段，不能据该阶段总时长反推CPU或内存等待各占多少；现有作业计量按第6.4节分开报告预约与队列区间。
 

@@ -141,9 +141,15 @@ def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlit
     return baseline, candidate
 
 
-def _parameters(path: Path) -> tuple[int, TcnFittingParameters]:
-    document = ReadJsonObject(path)
-    RequireExactKeys(document, {"profiles"}, "training")
+def _parameters(path: Path, *, archived: bool = False) -> tuple[int, TcnFittingParameters]:
+    from trader.infra.settings.training import ReadTrainingConfiguration
+
+    if archived:
+        # An explicitly supplied frozen comparison may predate the resource schema.
+        document = ReadJsonObject(path)
+        RequireExactKeys(document, {"profiles"} | ({"resources"} & document.keys()), "training")
+    else:
+        document = ReadTrainingConfiguration(path)
     profile = ProfileMapping(document.get("profiles"), "v5", "training.profiles")
     RequireExactKeys(profile, {"fit_dates", "minimum_industry_training_rows", "tcn"}, "training.v5")
     return Integer(profile, "fit_dates", minimum=61), ParseTcnParameters(
@@ -317,7 +323,7 @@ def Main() -> int:
     try:
         baseline = _parameters(project / "config" / "training.json")
         summary["reference_configuration"] = TcnConfigurationDocument(*baseline)
-        candidate = _parameters(args.candidate_config) if args.candidate_config is not None else None
+        candidate = _parameters(args.candidate_config, archived=True) if args.candidate_config is not None else None
         if candidate is not None:
             summary["candidate_configuration"] = TcnConfigurationDocument(*candidate)
         AtomicWriteJson(work / "result.json", report, indent=2)

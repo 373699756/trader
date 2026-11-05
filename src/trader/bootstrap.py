@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
+import logging
 import time
 import threading
 from collections.abc import Callable, Mapping
@@ -489,14 +490,18 @@ def ExecuteSelectedTraining(
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
     from trader.training.entrypoints.commands import ConfigureTrainingResources
+    from trader.infra.settings.training import LoadTrainingResourceSettings
+    from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
     scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
-    ConfigureTrainingResources()
+    medium = runtime.disk_medium or DiskProbe().inspect(runtime.data_paths.root).kind
+    resources = LoadTrainingResourceSettings(runtime.project_root, medium)
+    cpu_budget = TrainingCpuBudget(AvailableTrainingCpus(), resources.cpu)
+    ConfigureTrainingResources(cpu_budget.native_threads)
 
     from trader.training.application.selected_training import TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
-    from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
     if history_root is not None or training_root is not None:
         ConfigureDisk(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
@@ -505,14 +510,23 @@ def ExecuteSelectedTraining(
         training_root / "models" if training_root else runtime.data_paths.models,
         training_root / "samples" if training_root else runtime.data_paths.samples,
     )
+    memory_budget = TrainingMemoryBudget(FittingMemoryCapacity(resources.memory))
+    logging.getLogger(__name__).warning(
+        "训练资源配置 | 策略 %s | 拟合内存 %s字节 | 扫描批次 %s行 | 每档队列 %s批",
+        "hdd" if medium == "unknown" else medium,
+        memory_budget.capacity_bytes,
+        resources.fanout.batch_rows,
+        resources.fanout.queue_batches,
+    )
     return RunSelectedTraining(
         runtime,
         scoring_profiles,
         executor=BoundedExecutor(
             worker_count=len(scoring_profiles), queue_capacity=0, thread_name_prefix="profile-training"
         ),
-        memory_admission=TrainingMemoryBudget(FittingMemoryCapacity()),
-        cpu_budget=TrainingCpuBudget(AvailableTrainingCpus()),
+        memory_admission=memory_budget,
+        cpu_budget=cpu_budget,
+        fanout_settings=resources.fanout,
         paths=paths, sqlite_policy=BuildSqlitePolicy(runtime),
     )
 

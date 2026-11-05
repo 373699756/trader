@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.training_resources import TrainingResourceSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from datetime import date, timedelta
@@ -199,7 +201,7 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
         for profile, window in zip(profiles, windows, strict=True)
     )
     with ThreadPoolExecutor(max_workers=2) as executor:
-        result = RunSelectedTrainingTasks(tasks, read, executor, lambda: False)
+        result = RunSelectedTrainingTasks(tasks, read, executor, lambda: False, settings=TrainingResourceSettingsFixture().fanout)
     assert source.scans == result.history_scan_passes == 1
     for outcome, profile, window in zip(result.outcomes, profiles, windows, strict=True):
         assert outcome.failure is None

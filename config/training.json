@@ -1,4 +1,38 @@
 {
+  "resources": {
+    "hdd": {
+      "cpu": {
+        "coordinator_cpus": 1,
+        "maximum_threads": null,
+        "native_threads": 2
+      },
+      "memory": {
+        "maximum_bytes": 3221225472,
+        "reserve_bytes": 1610612736,
+        "minimum_available_bytes": 268435456
+      },
+      "fanout": {
+        "batch_rows": 256,
+        "queue_batches": 2
+      }
+    },
+    "ssd": {
+      "cpu": {
+        "coordinator_cpus": 1,
+        "maximum_threads": null,
+        "native_threads": 2
+      },
+      "memory": {
+        "maximum_bytes": 3221225472,
+        "reserve_bytes": 1610612736,
+        "minimum_available_bytes": 268435456
+      },
+      "fanout": {
+        "batch_rows": 256,
+        "queue_batches": 2
+      }
+    }
+  },
   "profiles": [
     {
       "profile": "v1",

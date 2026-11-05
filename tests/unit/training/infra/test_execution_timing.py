@@ -1,5 +1,7 @@
 """Reservation failures, bounded backpressure and exact timing with an injected clock."""
 
+from tests.helpers.training_resources import TrainingResourceSettingsFixture
+
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from datetime import date
@@ -80,7 +82,7 @@ def test_wait_hold_overlap_and_failed_acquisition_have_distinct_timings(failure)
 
 
 def test_failure_inside_a_reservation_preserves_cause_and_releases_the_real_budgets():
-    cpu_budget, memory_budget = TrainingCpuBudget(3), TrainingMemoryBudget(1024)
+    cpu_budget, memory_budget = TrainingCpuBudget(3, settings=TrainingResourceSettingsFixture().cpu), TrainingMemoryBudget(1024)
     measured = TrainingExecutionMeasurements(("v3",), time.monotonic)
     failure = RuntimeError("fixture_fit_failed")
     with pytest.raises(RuntimeError) as caught:
@@ -100,7 +102,7 @@ def test_failure_inside_a_reservation_preserves_cause_and_releases_the_real_budg
 @pytest.mark.parametrize("resource", ("cpu", "memory"))
 def test_cancelled_real_budget_wait_is_measured_and_does_not_leak_capacity(resource):
     measured = TrainingExecutionMeasurements(("v2",), time.monotonic)
-    budget = TrainingCpuBudget(3) if resource == "cpu" else TrainingMemoryBudget(1024)
+    budget = TrainingCpuBudget(3, settings=TrainingResourceSettingsFixture().cpu) if resource == "cpu" else TrainingMemoryBudget(1024)
     admission = measured.cpu_admission("v2", budget) if resource == "cpu" else measured.memory_admission("v2", budget)
     required = 2 if resource == "cpu" else 1024
     waiting, cancelled = Event(), Event()
@@ -132,7 +134,7 @@ def test_cancelled_real_budget_wait_is_measured_and_does_not_leak_capacity(resou
 
 def test_parallel_reservation_scopes_and_snapshots_are_job_local():
     measured = TrainingExecutionMeasurements(("v1", "v5"), time.monotonic)
-    cpu_budget, memory_budget = TrainingCpuBudget(5), TrainingMemoryBudget(2048)
+    cpu_budget, memory_budget = TrainingCpuBudget(5, settings=TrainingResourceSettingsFixture().cpu), TrainingMemoryBudget(2048)
     first_entered, second_entered = Event(), Event()
 
     def fit(profile, entered, other):
@@ -189,6 +191,7 @@ def test_full_queue_wait_is_separate_from_source_reading_and_reuse_reads_nothing
                 workers,
                 lambda: False,
                 observer=measured,
+                settings=TrainingResourceSettingsFixture().fanout,
             )
 
     with ThreadPoolExecutor(max_workers=1) as coordinator:
@@ -212,6 +215,7 @@ def test_full_queue_wait_is_separate_from_source_reading_and_reuse_reads_nothing
             workers,
             lambda: False,
             observer=reused,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
     assert run.history_scan_passes == run.history_rows_read == 0
     assert reused.snapshot().source_read_seconds == 0
@@ -246,7 +250,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         return SelectedTrainingRun((SelectedTrainingOutcome("v1", result),), 0, 0, timing=measured.snapshot())
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
-    cpu_budget, memory_budget = TrainingCpuBudget(3), TrainingMemoryBudget(1024)
+    cpu_budget, memory_budget = TrainingCpuBudget(3, settings=TrainingResourceSettingsFixture().cpu), TrainingMemoryBudget(1024)
     workers = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="timing-fixture")
     runtime = LoadRuntimeSettings(_empty_config(tmp_path))
     assert RunSelectedTraining(
@@ -257,6 +261,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         cpu_budget=cpu_budget,
         paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
         sqlite_policy=SqlitePolicyFixture(),
+        fanout_settings=TrainingResourceSettingsFixture().fanout,
     ) == expected_exit
     report = ReadJsonReports(capsys.readouterr().out)[-1]
     assert report["status"] == {0: "completed", 1: "failed", 130: "cancelled"}[expected_exit]

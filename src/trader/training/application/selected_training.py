@@ -15,7 +15,7 @@ from typing import Generic, TypeVar
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.application.resources import TrainingExecutionObserver, TrainingExecutionTiming
+from trader.training.application.resources import TrainingExecutionObserver, TrainingExecutionTiming, TrainingFanoutSettings
 
 ResultT = TypeVar("ResultT")
 
@@ -56,6 +56,7 @@ def RunSelectedTrainingTasks(
     executor: Executor,
     cancelled: Callable[[], bool],
     *,
+    settings: TrainingFanoutSettings,
     on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None = None,
     observer: TrainingExecutionObserver | None = None,
 ) -> SelectedTrainingRun[ResultT]:
@@ -65,6 +66,7 @@ def RunSelectedTrainingTasks(
         tasks,
         executor,
         cancelled,
+        settings,
         on_outcome,
         observer,
     ).execute(read_rows)
@@ -76,15 +78,19 @@ class _TrainingFanout(Generic[ResultT]):
         tasks: tuple[SelectedTrainingTask[ResultT], ...],
         executor: Executor,
         cancelled: Callable[[], bool],
+        settings: TrainingFanoutSettings,
         on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None,
         observer: TrainingExecutionObserver | None,
     ) -> None:
         self.tasks = tasks
         self.executor = executor
         self.cancelled = cancelled
+        self.settings = settings
         self.on_outcome = on_outcome
         self.observer = observer
-        self.queues: tuple[Queue[tuple[HistoryTrainingRow, ...] | None], ...] = tuple(Queue(maxsize=2) for _ in tasks)
+        self.queues: tuple[Queue[tuple[HistoryTrainingRow, ...] | None], ...] = tuple(
+            Queue(maxsize=settings.queue_batches) for _ in tasks
+        )
         self.stopped = Event()
         self.futures: list[Future[SelectedTrainingOutcome[ResultT]]] = []
 
@@ -150,7 +156,7 @@ class _TrainingFanout(Generic[ResultT]):
             ):
                 break
             with self.observer.read_source() if self.observer is not None else nullcontext():
-                batch = list(islice(rows, 256))
+                batch = list(islice(rows, self.settings.batch_rows))
             scanned += len(batch)
             if not batch:
                 break

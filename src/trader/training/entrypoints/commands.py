@@ -59,13 +59,13 @@ class ResearchCommandOptions:
     profile: ScoringProfileId | None = None
 
 
-def ConfigureTrainingResources() -> None:
+def ConfigureTrainingResources(native_threads: int) -> None:
     """Apply the bounded process policy before loading either training head."""
 
-    from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
-
+    if type(native_threads) is not int or native_threads < 1:
+        raise ValueError("training_native_threads_invalid")
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ[name] = str(TOMORROW_TRAINING_COMPUTE_THREADS)
+        os.environ[name] = str(native_threads)
     _lower_training_priority()
 
 

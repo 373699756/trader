@@ -18,7 +18,7 @@ from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.application.resources import TrainingMemoryAdmission
+from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission
 from trader.training.application.selected_training import SelectedTrainingOutcome, TrainingLocations
 from trader.training.entrypoints.profile_training import (
     CancellableTrainingProgress,
@@ -49,10 +49,21 @@ def RunSelectedTraining(
     executor: ManagedWorkerExecutor,
     memory_admission: TrainingMemoryAdmission,
     cpu_budget: TrainingCpuBudget,
+    fanout_settings: TrainingFanoutSettings,
     paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
-        return _run_selected_training(runtime, profiles, executor, memory_admission, paths, cancelled, cpu_budget=cpu_budget, sqlite_policy=sqlite_policy)
+        return _run_selected_training(
+            runtime,
+            profiles,
+            executor,
+            memory_admission,
+            paths,
+            cancelled,
+            cpu_budget=cpu_budget,
+            fanout_settings=fanout_settings,
+            sqlite_policy=sqlite_policy,
+        )
 
 
 def _run_selected_training(
@@ -61,7 +72,7 @@ def _run_selected_training(
     executor: ManagedWorkerExecutor,
     memory_admission: TrainingMemoryAdmission,
     paths: TrainingLocations,
-    cancelled: Event, *, cpu_budget: TrainingCpuBudget, sqlite_policy: SqliteIoPolicy,
+    cancelled: Event, *, cpu_budget: TrainingCpuBudget, fanout_settings: TrainingFanoutSettings, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     started = time.monotonic()
     measurements: TrainingExecutionMeasurements | None = None
@@ -98,6 +109,7 @@ def _run_selected_training(
                 SelectedTrainingRequest(
                     runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome,
                     cpu_budget=cpu_budget,
+                    fanout_settings=fanout_settings,
                     measurements=measurements,
                 ),
                 WorkerFutureExecutor(executor), sqlite_policy=sqlite_policy,

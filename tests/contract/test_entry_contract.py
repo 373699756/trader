@@ -602,8 +602,8 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     monkeypatch.setattr(research_commands.os, "name", "posix")
     monkeypatch.setattr(research_commands.os, "nice", observed.append)
 
-    research_commands.ConfigureTrainingResources()
-    research_commands.ConfigureTrainingResources()
+    research_commands.ConfigureTrainingResources(2)
+    research_commands.ConfigureTrainingResources(2)
 
     assert observed == [10]
     assert {

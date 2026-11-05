@@ -93,11 +93,16 @@ def test_train_missing_local_history_fails_without_download(tmp_path, monkeypatc
     for target in ("ExecuteSync", "ExecuteHistoryDownload", "ExecuteQfqDownload", "_prepare_reference"):
         monkeypatch.setattr(f"trader.bootstrap.{target}", forbidden)
     monkeypatch.setattr("requests.Session.request", forbidden)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
 
     assert Main(["--config", str(config), "train", "v2"]) == 1
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == {
+    result = json.loads(captured.out)
+    timing = result.pop("timing")
+    assert timing["source_read_seconds"] == timing["peak_cpu_reservations"] == timing["peak_memory_reservations"] == 0
+    assert timing["profiles"][0]["profile"] == "v2"
+    assert timing["profiles"][0]["started_after_seconds"] is None
+    assert result == {
         "schema_version": "selected_training_result",
         "status": "failed",
         "failure": "HistoryTrainingInputError",
@@ -219,7 +224,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         lambda *_args, **_kwargs: PreparedFixture(NOW, industry_version="fixture"),
     )
 
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda **_kwargs: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "trader.bootstrap.ExecuteSelectedTraining",
         lambda _runtime: pytest.fail("incomplete history must block training"),
@@ -258,7 +263,7 @@ def test_train_resource_setup_interrupt_returns_130(tmp_path, monkeypatch, capsy
 
     config = _empty_config(tmp_path)
 
-    def interrupt():
+    def interrupt(*_args):
         raise KeyboardInterrupt
 
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", interrupt)

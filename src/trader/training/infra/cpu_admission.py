@@ -11,18 +11,19 @@ from threading import Condition
 
 from threadpoolctl import ThreadpoolController
 
-from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+from trader.training.application.resources import TrainingCpuSettings
 from trader.training.infra.cgroup import ReadTrainingCgroupScopes
 
 
 class TrainingCpuBudget:
-    def __init__(self, available_cpus: int) -> None:
+    def __init__(self, available_cpus: int, settings: TrainingCpuSettings) -> None:
         if type(available_cpus) is not int or available_cpus < 1:
             raise ValueError("training_cpu_capacity_invalid")
         self.available_cpus = available_cpus
-        # Leave one CPU for history streaming, Python feature work and coordination.
-        self.capacity = max(1, available_cpus - 1)
-        self.native_threads = min(TOMORROW_TRAINING_COMPUTE_THREADS, self.capacity)
+        self.capacity = max(1, available_cpus - settings.coordinator_cpus)
+        if settings.maximum_threads is not None:
+            self.capacity = min(self.capacity, settings.maximum_threads)
+        self.native_threads = min(settings.native_threads, self.capacity)
         self._available = self.capacity
         self._peak = 0
         self._condition = Condition()

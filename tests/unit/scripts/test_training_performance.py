@@ -359,7 +359,7 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
             data_paths=SimpleNamespace(root=tmp_path / "configured-data", history=tmp_path / "configured-data/history"),
         )
     )
-    monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda *_args: None)
     calls = []
 
     def train_once(runtime, history, work, profiles):

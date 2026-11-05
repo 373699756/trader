@@ -1,5 +1,7 @@
 """Real worker fan-out, failure isolation, cancellation and memory admission."""
 
+from tests.helpers.training_resources import TrainingResourceSettingsFixture
+
 from concurrent.futures import CancelledError, ThreadPoolExecutor, wait
 from contextlib import closing, contextmanager, nullcontext
 from datetime import date
@@ -35,7 +37,7 @@ def test_one_scan_and_all_selected_workers_can_fit_concurrently(profiles):
 
     tasks = tuple(SelectedTrainingTask(profile, frozenset((DAY,)), fit) for profile in profiles)
     with ThreadPoolExecutor(max_workers=len(profiles)) as executor:
-        result = RunSelectedTrainingTasks(tasks, lambda dates: closing(read(dates)), executor, lambda: False)
+        result = RunSelectedTrainingTasks(tasks, lambda dates: closing(read(dates)), executor, lambda: False, settings=TrainingResourceSettingsFixture().fanout)
     assert len(scans) == result.history_scan_passes == 1
     assert result.history_rows_read == len(source)
     assert tuple(item.profile for item in result.outcomes) == profiles
@@ -52,6 +54,7 @@ def test_cache_hits_read_no_history_and_partial_failure_does_not_block_other_pro
             lambda _dates: pytest.fail("cache hit scanned history"),
             executor,
             lambda: False,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
     assert result.history_scan_passes == result.history_rows_read == 0
 
@@ -66,6 +69,7 @@ def test_cache_hits_read_no_history_and_partial_failure_does_not_block_other_pro
             lambda _dates: nullcontext(iter(rows)),
             executor,
             lambda: False,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
     assert result.outcomes[0].failure == "fixture failure"
     assert result.outcomes[1].result == rows
@@ -100,6 +104,7 @@ def test_finished_profile_reports_once_before_other_profile_finishes(terminal):
             executor,
             lambda: False,
             on_outcome=report,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
     assert tuple(outcomes) == run.outcomes
     assert run.outcomes[1].result == 24
@@ -125,6 +130,7 @@ def test_cancellation_unblocks_bounded_producer_and_workers():
             lambda dates: closing(read(dates)),
             executor,
             cancelled.is_set,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
 
 
@@ -181,6 +187,7 @@ def test_finished_consumers_stop_scan_and_close_source_before_cached_worker_fini
                 read,
                 executor,
                 lambda: False,
+                settings=TrainingResourceSettingsFixture().fanout,
             )
     assert 256 <= len(scanned) <= 512
     assert retained[0].gi_frame is None
@@ -222,6 +229,7 @@ def test_interrupted_scan_closes_retained_iterator_and_workers(interruption):
             executor,
             cancelled.is_set,
             on_outcome=outcomes.append,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
     assert closed.is_set() and retained[0].gi_frame is None
     assert len(outcomes) == 2 and all(outcome.cancelled for outcome in outcomes)
@@ -234,6 +242,7 @@ def test_cancelled_before_start_never_opens_history_or_schedules_work():
             lambda _dates: pytest.fail("history opened"),
             executor,
             lambda: True,
+            settings=TrainingResourceSettingsFixture().fanout,
         )
 
 
@@ -309,7 +318,7 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
         )
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
     runtime = LoadRuntimeSettings(_empty_config(tmp_path))
     assert ExecuteSelectedTraining(runtime, ("v1", "v5")) == 1
     assert not executors[0].status().running
@@ -334,7 +343,7 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
         return SelectedTrainingRun((SelectedTrainingOutcome("v1", result),), scans, rows)
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
     assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1",)) == 0
     output = capsys.readouterr().out
     assert '\n  "schema_version": ' in output
@@ -366,7 +375,7 @@ def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_pa
         raise error("cancelled")
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
-    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
     assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1", "v5")) == 130
     assert signal.getsignal(signal.SIGTERM) == previous
     assert not workers[0].status().running
